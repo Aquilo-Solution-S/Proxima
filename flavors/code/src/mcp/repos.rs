@@ -619,8 +619,12 @@ fn map_repo_registry(error: RepoRegistryError) -> ToolError {
         error @ RepoRegistryError::CrossOwnerReference { .. } => {
             ToolError::InvalidInput(error.to_string())
         }
-        // Not caller-facing: the finding statements and the deleting
-        // statements have drifted, which is ours to fix, not theirs.
+        // Only reachable once the retry budget is spent, since re-discovery
+        // is what answers the ordinary cause (a write that landed in the
+        // discovery window). Surviving that many attempts means either
+        // sustained contention on this repo or a genuine drift between the
+        // finding and deleting statements; neither is the caller's input,
+        // so neither is `InvalidInput`.
         error @ RepoRegistryError::FootprintIncomplete { .. } => {
             ToolError::Other(error.to_string())
         }

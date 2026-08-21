@@ -226,13 +226,22 @@ pub enum RepoRegistryError {
     },
     /// The sweep deleted a row the footprint never named.
     ///
-    /// The footprint is what the erase locks, so a row outside it is a row
-    /// deleted under no lock and, worse, a sign that the finding statements
-    /// and the deleting statements have drifted apart. Refusing is the only
-    /// safe answer; the alternative is an erase that looks like it worked.
+    /// Two causes, and the common one is not a bug. An ordinary write
+    /// committed between the discovery pass and the lock is a row the
+    /// footprint could not have seen and the sweep then reaches — which is
+    /// the guard doing exactly its job, and which re-discovery fixes, so
+    /// the erase treats it as transient and comes round again. The other
+    /// cause is that the finding statements and the deleting statements
+    /// have drifted apart, which no retry fixes and which surfaces here
+    /// once the budget is spent.
+    ///
+    /// Either way the answer is to refuse: the footprint is what the erase
+    /// locks, so a row outside it is a row deleted under no lock. The
+    /// alternative is an erase that looks like it worked.
     #[error(
         "repo {repo_id} erase reached memory {memory_id}, which its footprint never named — \
-         the finder and the sweep disagree"
+         a concurrent write landed in the discovery window, or the finder and the sweep \
+         have drifted apart"
     )]
     FootprintIncomplete { repo_id: Uuid, memory_id: Uuid },
     #[error("ingestion run not found: {run_id}")]

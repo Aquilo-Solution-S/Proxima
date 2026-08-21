@@ -1207,9 +1207,13 @@ async fn a_reference_from_another_owner_stops_the_erase_and_names_it() {
 /// The one write that would make the erase abort, attempted while the erase
 /// holds its locks.
 ///
-/// `SET LOCAL` so the timeout dies with the transaction, and a timeout
-/// rather than a wait so a lock that is NOT held shows up as a fast success
-/// instead of a hung test.
+/// `lock_timeout` and not `statement_timeout`: both stop the test hanging,
+/// but only `lock_timeout` distinguishes the two outcomes this has to tell
+/// apart. `57014` says "the statement ran too long", which a slow machine
+/// produces just as readily as a held lock; `55P03` says "gave up WAITING
+/// FOR A LOCK", which is the claim being made. `SET LOCAL` so it dies with
+/// the transaction rather than riding a pooled connection into another
+/// test.
 async fn insert_assignment_with_timeout(
     pool: &sqlx::PgPool,
     t: Uuid,
@@ -1218,7 +1222,7 @@ async fn insert_assignment_with_timeout(
     engineer: Uuid,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
-    sqlx::query("SET LOCAL statement_timeout = '2500ms'")
+    sqlx::query("SET LOCAL lock_timeout = '2500ms'")
         .execute(&mut *tx)
         .await?;
     sqlx::query(
@@ -1249,8 +1253,9 @@ fn sqlstate_of(err: &sqlx::Error) -> Option<String> {
 /// and the only thing missing is the guarantee that no row referencing the
 /// footprint can be committed between computing it and deleting it. That
 /// guarantee is only observable from a second session, so this opens one:
-/// the same INSERT lands immediately when the footprint is not held and
-/// times out waiting when it is.
+/// the same INSERT lands immediately when the footprint is not held, gives
+/// up WAITING FOR A LOCK when it is, and lands again once the erase rolls
+/// back.
 ///
 /// `FOR UPDATE` on the referenced admission is what does it. Inserting a
 /// row with a foreign key takes `FOR KEY SHARE` on the row it references,
@@ -1293,12 +1298,17 @@ async fn the_footprint_is_locked_against_a_concurrent_reference() {
             .expect_err("a reference into a locked footprint must wait, not land");
         assert_eq!(
             sqlstate_of(&err).as_deref(),
-            Some("57014"),
-            "the write should have blocked on the erase's row lock until the statement \
-             timeout cancelled it; instead it failed with {err}"
+            Some("55P03"),
+            "the write should have given up WAITING FOR THE ERASE'S ROW LOCK — 55P03, \
+             not a statement that merely ran long; instead it failed with {err}"
         );
 
+        // And once the erase lets go, the same write is ordinary again: the
+        // lock was the whole reason, not anything about the row.
         tx.rollback().await?;
+        insert_assignment_with_timeout(&writer, blocked, repo_id, work_item, engineer)
+            .await
+            .expect("once the erase has rolled back the reference lands");
         writer.close().await;
         Ok(())
     }
@@ -1426,4 +1436,166 @@ async fn a_deadlock_against_a_concurrent_writer_is_classified_as_retryable() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("a_deadlock_against_a_concurrent_writer_is_classified_as_retryable failed");
+}
+
+/// The seed leg of the same boundary, reached the way production reaches
+/// it.
+///
+/// The sibling test above builds the cross-owner row by hand and reaches it
+/// by FOLLOWING a reference. This one changes nothing by hand: it registers
+/// a repo, writes a work item into it, and hands that memory to another
+/// principal with the shipped transfer verb. The transfer moves
+/// `memory.owner_id` and nothing else — `repo_id` is a flavor column and
+/// appears nowhere in the owner-column machinery — so the row keeps the
+/// source's `repo_id` while the admission belongs to the destination, and
+/// the repo sweep's `repo_id = $1` finds it on the SEED leg, before any
+/// reference is followed.
+///
+/// That leg was unguarded: the ownership question was asked only of rows
+/// reached in step 3. The erase deleted the destination's sidecar row on
+/// the source's authority and left their `memory` row stamping a table it
+/// was no longer in, with no error of any kind — the row was in the
+/// footprint, so even `FootprintIncomplete` stayed quiet.
+#[tokio::test]
+async fn a_transferred_admission_stops_the_erase_instead_of_being_swept() {
+    let (db_name, pg) = migrated_db().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = test_owner();
+        let repo_id = Uuid::now_v7();
+        let WorkItemFixture { work_item, .. } =
+            seed_work_item_fixture(pool, &owner, repo_id).await?;
+
+        // The real verb, not a hand-written UPDATE.
+        let stranger = proxima_core::OwnerRef::Group(proxima_core::GroupId::new(Uuid::now_v7()));
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'group') ON CONFLICT DO NOTHING",
+        )
+        .bind(stranger.stored_owner_id())
+        .execute(pool)
+        .await?;
+        let permit = common::owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
+        let moved = proxima_core::storage_ports::OwnerTransferPort::transfer_to_owner(
+            &pg,
+            &permit,
+            proxima_core::EntityId::Memory(proxima_core::MemoryId::new(work_item)),
+            stranger,
+        )
+        .await?;
+        assert!(moved, "the transfer verb must move the work item");
+
+        let still_here: Option<Uuid> =
+            sqlx::query_scalar("SELECT repo_id FROM proxima_code.work_requested_v1 WHERE t = $1")
+                .bind(work_item)
+                .fetch_optional(pool)
+                .await?;
+        assert_eq!(
+            still_here,
+            Some(repo_id),
+            "the transfer moves owner_id and nothing else, so the sidecar row keeps \
+             the repo it was written into — which is what puts it on the sweep's seed leg"
+        );
+
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
+        let err = erase_repo(&store, &owner, repo_id)
+            .await
+            .expect_err("a transferred admission is not this owner's to erase");
+        let message = err.to_string();
+        assert!(
+            message.contains("proxima_code.work_requested_v1")
+                && message.contains(&work_item.to_string()),
+            "the refusal has to name the row on the seed leg too: {message}"
+        );
+
+        let survivors: Vec<String> = sqlx::query_scalar(
+            "SELECT 'work_requested_v1' AS relation
+               FROM proxima_code.work_requested_v1 WHERE t = $1
+             UNION ALL
+             SELECT 'its admission' FROM proxima_core.memory WHERE t = $1
+             ORDER BY relation",
+        )
+        .bind(work_item)
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            survivors.len(),
+            2,
+            "a refused erase leaves the other principal's row and its admission \
+             both intact: {survivors:?}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("a_transferred_admission_stops_the_erase_instead_of_being_swept failed");
+}
+
+/// Waiting for a lock is bounded, and giving up is retried.
+///
+/// Nothing on the erase path used to set `lock_timeout`, so the wait was
+/// bounded only by the pool's five-minute `statement_timeout` — and what it
+/// ended in, `57014`, is not a transient code, so no retry recognised it.
+/// A single long-lived `FOR KEY SHARE` holder therefore cost five minutes
+/// of blocking and then a hard failure. `SET LOCAL lock_timeout` turns the
+/// same situation into `55P03` in five seconds, which IS transient, so the
+/// attempt rolls back — releasing everything it held — and comes round
+/// again.
+///
+/// The holder here takes `acceptance_criteria_v1`, which carries no
+/// `repo_id`: that leaves the repo row free, so the erase gets past its
+/// first lock and blocks on the one this is about — the footprint's.
+#[tokio::test]
+async fn a_lock_the_erase_cannot_get_is_bounded_and_retried_not_waited_out() {
+    let (db_name, pg) = migrated_db().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = test_owner();
+        let repo_id = Uuid::now_v7();
+        let WorkItemFixture { work_item, .. } =
+            seed_work_item_fixture(pool, &owner, repo_id).await?;
+
+        let holder_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
+        let latecomer = Uuid::now_v7();
+        insert_memory(pool, &owner, latecomer).await?;
+        let mut holder = holder_pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO proxima_code.acceptance_criteria_v1
+                (t, work_item_memory_id, criteria_count)
+             VALUES ($1, $2, 1)",
+        )
+        .bind(latecomer)
+        .bind(work_item)
+        .execute(&mut *holder)
+        .await?;
+
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
+        let started = std::time::Instant::now();
+        let err = erase_repo(&store, &owner, repo_id)
+            .await
+            .expect_err("a footprint this erase cannot lock is not a footprint it may delete");
+        let waited = started.elapsed();
+        assert!(
+            waited < std::time::Duration::from_mins(2),
+            "the erase waited {waited:?} — with no lock_timeout it waits out the pool's \
+             statement_timeout instead of giving up and retrying"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("lock timeout"),
+            "giving up on a lock is 55P03 and says so; got {err}"
+        );
+
+        // Released: the same erase is ordinary again, which is what makes
+        // the give-up worth retrying rather than surfacing.
+        holder.rollback().await?;
+        erase_repo(&store, &owner, repo_id)
+            .await
+            .expect("once the holder is gone the erase takes the lock and completes");
+        holder_pool.close().await;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("a_lock_the_erase_cannot_get_is_bounded_and_retried_not_waited_out failed");
 }

@@ -19,7 +19,7 @@ use proxima_storage_pg::verbs::forget::{
 };
 use proxima_storage_pg::{MAX_TRANSACTION_ATTEMPTS, is_transient_conflict};
 use sqlx::PgPool;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 use super::records::{RepoEraseReceipt, RepoRegistryError};
@@ -154,21 +154,37 @@ WITH work_items AS (
     UNION
     SELECT t FROM proxima_code.test_requested_v1 WHERE repo_id = $1
 )
-SELECT t FROM proxima_code.commit_v1 WHERE repo_id = $1
-UNION SELECT t FROM proxima_code.commit_summary_v1 WHERE repo_id = $1
-UNION SELECT t FROM proxima_code.code_chunk_v1 WHERE repo_id = $1
-UNION SELECT t FROM proxima_code.file_revision_v1 WHERE repo_id = $1
-UNION SELECT t FROM proxima_code.work_requested_v1 WHERE repo_id = $1
-UNION SELECT t FROM proxima_code.test_requested_v1 WHERE repo_id = $1
-UNION SELECT t FROM proxima_code.execution_result_v1 WHERE repo_id = $1
-UNION SELECT t FROM proxima_code.test_result_v1 WHERE repo_id = $1
-UNION SELECT t FROM proxima_code.execution_plan_v1 WHERE repo_id = $1
-UNION SELECT t FROM proxima_code.acceptance_summary_v1 WHERE repo_id = $1
-UNION SELECT t FROM proxima_code.development_perspective_v1 WHERE repo_id = $1
-UNION SELECT t FROM proxima_code.work_assignment_v1 WHERE repo_id = $1
-UNION SELECT t FROM proxima_code.acceptance_criteria_v1
+SELECT 'commit_v1' AS src, t FROM proxima_code.commit_v1 WHERE repo_id = $1
+UNION ALL
+SELECT 'commit_summary_v1', t FROM proxima_code.commit_summary_v1 WHERE repo_id = $1
+UNION ALL
+SELECT 'code_chunk_v1', t FROM proxima_code.code_chunk_v1 WHERE repo_id = $1
+UNION ALL
+SELECT 'file_revision_v1', t FROM proxima_code.file_revision_v1 WHERE repo_id = $1
+UNION ALL
+SELECT 'work_requested_v1', t FROM proxima_code.work_requested_v1 WHERE repo_id = $1
+UNION ALL
+SELECT 'test_requested_v1', t FROM proxima_code.test_requested_v1 WHERE repo_id = $1
+UNION ALL
+SELECT 'execution_result_v1', t FROM proxima_code.execution_result_v1 WHERE repo_id = $1
+UNION ALL
+SELECT 'test_result_v1', t FROM proxima_code.test_result_v1 WHERE repo_id = $1
+UNION ALL
+SELECT 'execution_plan_v1', t FROM proxima_code.execution_plan_v1 WHERE repo_id = $1
+UNION ALL
+SELECT 'acceptance_summary_v1', t FROM proxima_code.acceptance_summary_v1 WHERE repo_id = $1
+UNION ALL
+SELECT 'development_perspective_v1', t
+  FROM proxima_code.development_perspective_v1 WHERE repo_id = $1
+UNION ALL
+SELECT 'work_assignment_v1', t FROM proxima_code.work_assignment_v1 WHERE repo_id = $1
+UNION ALL
+SELECT 'acceptance_criteria_v1', t
+  FROM proxima_code.acceptance_criteria_v1
  WHERE work_item_memory_id IN (SELECT t FROM work_items)
-UNION SELECT t FROM proxima_code.acceptance_verification_v1
+UNION ALL
+SELECT 'acceptance_verification_v1', t
+  FROM proxima_code.acceptance_verification_v1
  WHERE work_item_memory_id IN (SELECT t FROM work_items)";
 
 /// Every `proxima_code` row that references an erased admission through a
@@ -352,12 +368,33 @@ pub async fn erase_repo(
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<RepoEraseReceipt, RepoRegistryError> {
+    with_erase_retry(MAX_TRANSACTION_ATTEMPTS, || {
+        erase_repo_once(store, owner, repo_id)
+    })
+    .await
+}
+
+/// Re-run a whole erase transaction while it fails transiently, `attempts`
+/// times in total.
+///
+/// Separated from [`erase_repo`] so the loop itself is reachable from a
+/// test with an operation that fails on demand. Pinning a retry through the
+/// database means arranging a real deadlock at exactly the right moment,
+/// which is not something a test can schedule; the consequence, until this
+/// existed, was that the budget could be cut to one and every test stayed
+/// green. `a_transient_failure_is_retried_within_the_budget_and_not_past_it`
+/// is what fails now.
+///
+/// Nothing about it is test-only: it is the whole retry policy, named.
+async fn with_erase_retry<T, F, Fut>(attempts: usize, mut op: F) -> Result<T, RepoRegistryError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, RepoRegistryError>>,
+{
     let mut attempt = 1;
     loop {
-        match erase_repo_once(store, owner, repo_id).await {
-            Err(err) if attempt < MAX_TRANSACTION_ATTEMPTS && is_transient(&err) => {
-                attempt += 1;
-            }
+        match op().await {
+            Err(err) if attempt < attempts && is_transient(&err) => attempt += 1,
             outcome => return outcome,
         }
     }
@@ -367,10 +404,31 @@ pub async fn erase_repo(
 fn is_transient(err: &RepoRegistryError) -> bool {
     match err {
         RepoRegistryError::Database(err) => is_transient_conflict(err),
-        RepoRegistryError::Storage(StorageError::Retryable(_)) => true,
+        // `FootprintIncomplete` is here for a reason of its own, not because
+        // it resembles a deadlock: the ordinary cause is a row committed in
+        // the discovery-to-lock window, and re-discovery is exactly what
+        // fixes it. The refusal checks run again on the way, so a
+        // CROSS-OWNER row arriving in that window still comes back as
+        // `CrossOwnerReference` rather than looping.
+        RepoRegistryError::Storage(StorageError::Retryable(_))
+        | RepoRegistryError::FootprintIncomplete { .. } => true,
         _ => false,
     }
 }
+
+/// How long the erase waits for any one lock before giving up on the
+/// attempt.
+///
+/// Five seconds, the same figure and the same reasoning as the migration
+/// path: waiting FOR a lock is not the same as holding one. Without it the
+/// erase inherits the pool's five-minute `statement_timeout`, so a
+/// long-lived `FOR KEY SHARE` holder turns the lock statement into a
+/// five-minute stall ending in `57014` — which is not a transient code, so
+/// nothing retries it, and the erase fails hard after five minutes of
+/// blocking every writer queued behind it. With the timeout the same
+/// situation is a `55P03` in five seconds, which IS transient, so the
+/// transaction rolls back (releasing what it held) and comes round again.
+const ERASE_LOCK_TIMEOUT_SQL: &str = "SET LOCAL lock_timeout = '5s'";
 
 /// One attempt: begin, compute, lock, delete, commit.
 async fn erase_repo_once(
@@ -381,6 +439,10 @@ async fn erase_repo_once(
     let (kind, principal_id) = owner.columns();
     let pool: &PgPool = store.pool();
     let mut tx = pool.begin().await?;
+    // Before anything that takes a lock, which is the very next statement.
+    sqlx::query(ERASE_LOCK_TIMEOUT_SQL)
+        .execute(&mut *tx)
+        .await?;
 
     let exists: Option<(Uuid,)> = sqlx::query_as(REPO_EXISTS_SQL)
         .bind(kind)
@@ -472,64 +534,82 @@ pub fn reference_closure_sql() -> [&'static str; 2] {
 /// The lock is taken ONCE, over the whole answer, for the reason written on
 /// [`lock_admissions_for_erase`]: locking per round leaves a window between
 /// rounds in which this transaction holds part of the set and is not yet
-/// asking for the rest.
+/// asking for the rest. The ownership question is asked once too, over the
+/// whole answer, for a reason of the same shape — see below.
+///
+/// A retry re-runs all of this, which is what keeps the refusal a refusal:
+/// a cross-owner row that arrives during the discovery window is found by
+/// the next attempt's fixpoint and refused, rather than retried forever.
 ///
 /// # Errors
-/// Returns `RepoRegistryError::CrossOwnerReference` if any row reached in
-/// step 3 belongs to another principal; otherwise database/storage errors.
+/// Returns `RepoRegistryError::CrossOwnerReference` if any admission in the
+/// footprint — however it was reached — belongs to another principal;
+/// otherwise database/storage errors.
 pub async fn erase_footprint(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<Vec<Uuid>, RepoRegistryError> {
-    let mut frontier: Vec<Uuid> = sqlx::query_scalar(FIND_REPO_ROWS_SQL)
+    let mut found: Vec<(String, Uuid)> = sqlx::query_as(FIND_REPO_ROWS_SQL)
         .bind(repo_id)
         .fetch_all(&mut **tx)
         .await?;
     let mut seen: BTreeSet<Uuid> = BTreeSet::new();
-    let mut blocking: BTreeSet<String> = BTreeSet::new();
+    // Which row each admission was found through, so a refusal can name
+    // something an operator can go and look at. A version added by the
+    // series expansion has no flavor row of its own and so no entry; it
+    // also cannot be foreign, because the expansion is owner-scoped.
+    let mut found_through: BTreeMap<Uuid, String> = BTreeMap::new();
 
-    while !frontier.is_empty() {
+    loop {
+        let frontier: Vec<Uuid> = found
+            .iter()
+            .map(|(table, t)| {
+                found_through.entry(*t).or_insert_with(|| table.clone());
+                *t
+            })
+            .filter(|t| !seen.contains(t))
+            .collect();
+        if frontier.is_empty() {
+            break;
+        }
         seen.extend(frontier.iter().copied());
 
-        let mut next: Vec<Uuid> = expand_series_for_erase(tx, owner, &frontier).await?;
-        let referencing: Vec<(String, Uuid)> = sqlx::query_as(FIND_DANGLING_REFERENCES_SQL)
+        let expanded: Vec<Uuid> = expand_series_for_erase(tx, owner, &frontier).await?;
+        found = sqlx::query_as(FIND_DANGLING_REFERENCES_SQL)
             .bind(&frontier)
             .fetch_all(&mut **tx)
             .await?;
-
-        let fresh: Vec<Uuid> = referencing
-            .iter()
-            .map(|(_, t)| *t)
-            .filter(|t| !seen.contains(t))
-            .collect();
-        let foreign: BTreeSet<Uuid> = admissions_outside_owner(tx, owner, &fresh)
-            .await?
-            .into_iter()
-            .collect();
-        for (table, t) in &referencing {
-            if foreign.contains(t) {
-                blocking.insert(format!("proxima_code.{table} t={t}"));
-            }
-        }
-
-        next.extend(fresh.into_iter().filter(|t| !foreign.contains(t)));
-        next.retain(|t| !seen.contains(t));
-        next.sort_unstable();
-        next.dedup();
-        frontier = next;
+        found.extend(expanded.into_iter().map(|t| (String::new(), t)));
     }
 
-    if !blocking.is_empty() {
-        return Err(RepoRegistryError::CrossOwnerReference {
-            repo_id,
-            blocking: blocking.into_iter().collect(),
-        });
-    }
-
-    // Sorted, because `seen` is a BTreeSet: two erases whose footprints
-    // overlap ask for the shared rows in the same order.
+    // ONE ownership question, over the WHOLE footprint, and after the
+    // fixpoint rather than inside it.
+    //
+    // Asking it only of the rows reached by following references left the
+    // seed leg unguarded, and the seed leg is the ordinary case: a
+    // transferred memory keeps the `repo_id` it was written with — nothing
+    // in the transfer touches flavor columns, only `owner_id` — so
+    // `repo_id = $1` still finds it under the source owner's repo while the
+    // admission itself now belongs to someone else. Erasing then destroyed
+    // the destination's sidecar row on the source's authority and left
+    // their `memory` row stamping a table it was no longer in. Silently:
+    // the row was in the footprint, so nothing else complained.
     let footprint: Vec<Uuid> = seen.into_iter().collect();
+    let foreign = admissions_outside_owner(tx, owner, &footprint).await?;
+    if !foreign.is_empty() {
+        let blocking: Vec<String> = foreign
+            .into_iter()
+            .map(|t| match found_through.get(&t) {
+                Some(table) if !table.is_empty() => format!("proxima_code.{table} t={t}"),
+                _ => format!("t={t}"),
+            })
+            .collect();
+        return Err(RepoRegistryError::CrossOwnerReference { repo_id, blocking });
+    }
+
+    // Sorted, because `seen` was a BTreeSet: two erases whose footprints
+    // overlap ask for the shared rows in the same order.
     lock_admissions_for_erase(tx, &footprint).await?;
     Ok(footprint)
 }
@@ -659,7 +739,10 @@ mod tests {
             repo_id: uuid::Uuid::nil(),
             blocking: vec!["proxima_code.execution_result_v1 t=…".into()],
         }));
-        assert!(!is_transient(&RepoRegistryError::FootprintIncomplete {
+        // Not drift until the budget says so: the ordinary cause is an
+        // ordinary write landing in the discovery window, and re-discovery
+        // is the fix.
+        assert!(is_transient(&RepoRegistryError::FootprintIncomplete {
             repo_id: uuid::Uuid::nil(),
             memory_id: uuid::Uuid::nil(),
         }));
@@ -672,6 +755,62 @@ mod tests {
                 "a retry budget of one is not a retry"
             );
         }
+    }
+
+    /// The loop, run twice.
+    ///
+    /// The predicate above says what SHOULD be retried; nothing said the
+    /// loop ever runs a second attempt. It could be cut to one attempt and
+    /// every other test in the workspace stayed green, which makes the
+    /// retry — the entire answer to a deadlock — unpinned.
+    #[tokio::test]
+    async fn a_transient_failure_is_retried_within_the_budget_and_not_past_it() {
+        use std::cell::Cell;
+
+        let fails_once = || {
+            let calls = Cell::new(0_usize);
+            move || {
+                let seen = calls.get();
+                calls.set(seen + 1);
+                async move {
+                    if seen == 0 {
+                        Err(RepoRegistryError::Storage(
+                            proxima_core::StorageError::Retryable("deadlock detected".into()),
+                        ))
+                    } else {
+                        Ok(seen)
+                    }
+                }
+            }
+        };
+
+        let one = super::with_erase_retry(1, fails_once()).await;
+        assert!(
+            matches!(one, Err(RepoRegistryError::Storage(_))),
+            "a budget of one attempt must surface the first failure, not swallow it"
+        );
+
+        let budgeted = super::with_erase_retry(super::MAX_TRANSACTION_ATTEMPTS, fails_once())
+            .await
+            .expect("the second attempt succeeds and the loop must reach it");
+        assert_eq!(
+            budgeted, 1,
+            "the value returned is the SECOND attempt's, so the loop really re-ran"
+        );
+
+        // And a refusal is answered once, not three times.
+        let calls = Cell::new(0_usize);
+        let refused = super::with_erase_retry(super::MAX_TRANSACTION_ATTEMPTS, || {
+            calls.set(calls.get() + 1);
+            async {
+                Err::<(), _>(RepoRegistryError::NotFound {
+                    repo_id: uuid::Uuid::nil(),
+                })
+            }
+        })
+        .await;
+        assert!(matches!(refused, Err(RepoRegistryError::NotFound { .. })));
+        assert_eq!(calls.get(), 1, "a non-transient answer is not re-asked");
     }
 
     /// The erase asks before it deletes, which means the question and the
