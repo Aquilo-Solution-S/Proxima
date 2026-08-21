@@ -54,6 +54,19 @@ pub enum PayloadKind {
     CitationMapping,
 }
 
+/// The memory kind a payload layer writes, or `None` for the layers that
+/// are not memories at all (a Goal is its own spine; a cited object and a
+/// citation mapping are blob-side).
+#[must_use]
+pub const fn payload_entity_kind(kind: PayloadKind) -> Option<crate::EntityKind> {
+    match kind {
+        PayloadKind::Fact => Some(crate::EntityKind::Fact),
+        PayloadKind::Abstraction => Some(crate::EntityKind::Abstraction),
+        PayloadKind::Perspective => Some(crate::EntityKind::Perspective),
+        PayloadKind::Goal | PayloadKind::CitedObject | PayloadKind::CitationMapping => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SchemaTombstone {
     pub column: String,
@@ -445,6 +458,35 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn contracts(&self) -> &[&'static FlavorContract] {
         &self.contracts
+    }
+
+    /// How a `(schema, kind)` pair's provenance is reachable, or `None`
+    /// when no contract declares that pair.
+    ///
+    /// Keyed on the PAIR because one payload type registers across the F/A/P
+    /// layers and their provenance genuinely differs: `core/agent-derivation-v1`
+    /// declares `OriginEdges` as both an Abstraction and a Perspective, but a
+    /// schema that observes as a Fact and derives as an Abstraction would be
+    /// two different answers under one id.
+    ///
+    /// A MISS is not darkness. The lineage walk that reads this treats an
+    /// unknown schema as `OriginEdges` — expand what the row says — because
+    /// the alternative is that a flavor registered without a contract makes
+    /// its memories invisible to `core_think`, which is a worse failure than
+    /// showing a pin whose declaration nobody wrote.
+    #[must_use]
+    pub fn provenance_of(
+        &self,
+        schema_id: &SchemaId,
+        kind: crate::EntityKind,
+    ) -> Option<crate::flavor::Provenance> {
+        self.contracts
+            .iter()
+            .flat_map(|contract| contract.schemas.iter())
+            .find(|schema| {
+                schema.schema_id() == *schema_id && payload_entity_kind(schema.kind) == Some(kind)
+            })
+            .map(|schema| schema.provenance)
     }
 
     #[must_use]

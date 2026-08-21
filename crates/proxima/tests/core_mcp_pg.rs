@@ -1120,6 +1120,131 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
     result.expect("core recall MCP facade integration test failed");
 }
 
+/// The `PayloadOnly` arm, end to end: an interpretation's ancestors are its
+/// SUBJECTS, and until Phase 4 they were nothing at all.
+///
+/// `core/interpretation-v1` writes `derived_from: &[]` on both of its ingest
+/// paths — an interpretation is not made FROM its subjects, it is made ABOUT
+/// them — so `memory.origins` is empty and the walk, which expanded
+/// `origins[]` and nothing else, stopped dead at every interpretation. The
+/// subjects were never unreachable; they were in
+/// `interpretation_v1.subject_memory_ids`, which is exactly what
+/// `Provenance::PayloadOnly { subject_columns }` has declared since Phase 1
+/// and what nothing read.
+///
+/// This is the plan's checkpoint 9 in one assertion.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn facade_core_think_reaches_an_interpretations_subject_through_its_payload() {
+    let db_name = unique_db_name("proxima_core_think_payload");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+
+        let subject = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_remember",
+            serde_json::json!({
+                "title": "Interpretation subject",
+                "body": "the thing being interpreted",
+                "tags": ["provenance"],
+                "idempotency_key": "facade-provenance-subject"
+            }),
+        )
+        .await?;
+        let subject_handle = subject["handle"].as_str().expect("subject").to_owned();
+
+        let interpretation = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_interpret",
+            serde_json::json!({
+                "claim": "this is what the subject means",
+                "confidence": 90,
+                "subjects": [subject_handle.clone()],
+                "model_id": "test-model"
+            }),
+        )
+        .await?;
+        let interpretation_handle = interpretation["handle"]
+            .as_str()
+            .expect("interpretation")
+            .to_owned();
+
+        // The premise, asked of the row itself: the interpretation carries
+        // NO origins, and the subject is in the payload column the
+        // declaration names. If either becomes false the declaration is
+        // wrong, not this test.
+        let interpretation_t = interpretation_handle
+            .split_once(':')
+            .map_or(interpretation_handle.as_str(), |(_, id)| id)
+            .parse::<Uuid>()?;
+        let origins: i64 = sqlx::query_scalar(
+            "SELECT cardinality(origins)::bigint FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(interpretation_t)
+        .fetch_one(built.pool_for_tests())
+        .await?;
+        assert_eq!(
+            origins, 0,
+            "an interpretation is made ABOUT its subjects, not FROM them"
+        );
+        let subjects: i64 = sqlx::query_scalar(
+            "SELECT cardinality(subject_memory_ids)::bigint
+               FROM proxima_core.interpretation_v1 WHERE t = $1",
+        )
+        .bind(interpretation_t)
+        .fetch_one(built.pool_for_tests())
+        .await?;
+        assert_eq!(subjects, 1, "the subject lives in the declared column");
+
+        let page = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_think",
+            serde_json::json!({
+                "seeds": [interpretation_handle],
+                "direction": "ancestors",
+                "depth": 2,
+                "limit": 16
+            }),
+        )
+        .await?;
+        let handles = page["visits"]
+            .as_array()
+            .expect("visits")
+            .iter()
+            .filter_map(|visit| visit["handle"].as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            handles.contains(&subject_handle.as_str()),
+            "the subject is reached through the declared subject_columns, not \
+             through origins: {page}"
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("core_think payload-provenance integration test failed");
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_core_think_pages_ancestors_from_a_derivation() {

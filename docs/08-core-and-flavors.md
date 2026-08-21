@@ -321,6 +321,31 @@ declaration, and a `DeleteWithMemory` surface the forget cannot reach is
 is what separates the two: a `DeleteWithMemory` surface whose parent FK
 already cascades generates no statement, because the constraint is the list.
 
+**`Provenance` is the lineage walk.** `core_think`'s `ancestors` direction
+expanded `memory.origins` for every node, which is right for the schemas
+that write origins and silent for the ones that do not. `Provenance` says
+which is which, and the walk now asks: `OriginEdges` expands the array,
+`None` expands nothing, and `PayloadOnly { subject_columns }` loads the
+node's payload and takes the references whose declared FIELD is one of the
+named columns. That last arm is plan checkpoint 9 — an interpretation is
+made ABOUT its subjects and not FROM them, so its `origins` are empty by
+construction and it was a lineage dead end. No new statement was needed:
+`SidecarPayload::references()` already carries the field each reference came
+from, and `subject_columns` is what picks the grounding ones out of the rest.
+
+The `descendants` direction is deliberately NOT symmetric. Its inverse
+question — which nodes name me in a declared subject column — has no index
+to answer it, so it would be a sequential scan per hop. Descendants find
+what pinned you, not what named you.
+
+Three declarations were wrong when the field was first read, all in the code
+flavor and all in the same direction: `code-chunk-v1` and `execution-plan-v1`
+write an origin on every ingest and said `None`, and `work-assignment-v1`
+grounds through two payload columns and said `None` while the comment at its
+write site said `PayloadOnly` in prose. A fourth was over-declared: core's
+`interpretation-v1` named `subject_kinds` as a subject column, and it holds
+no memory id.
+
 Two declarations were wrong when the field was first read, and neither could
 have been found by reading: `ingest_keys` said `DeleteWithMemory` while the
 shipped forget kept the rows (as `core_forget`'s own wire description

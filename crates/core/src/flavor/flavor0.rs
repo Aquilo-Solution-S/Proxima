@@ -390,8 +390,13 @@ const INTERPRETATION_V1: SchemaContract = SchemaContract {
     },
     embedding: EmbeddingRecipe::Units(&[EmbedUnit::stored("embed_text", SLOT_DEFAULT)]),
     transfer: TransferRule::StaysOnKey,
+    // The columns that carry SUBJECT IDS, which is one column and not two.
+    // `subject_kinds` was declared here too and holds no id — it is the
+    // positionally-aligned kind vector — so a walk that took the field at
+    // its word would look for memory references in an enum array. Nothing
+    // read it, so nothing found out.
     provenance: Provenance::PayloadOnly {
-        subject_columns: &["subject_memory_ids", "subject_kinds"],
+        subject_columns: &["subject_memory_ids"],
     },
     surfaces: &[memory_sidecar(
         "proxima_core.interpretation_v1",

@@ -914,6 +914,96 @@ async fn every_cascade_the_contract_declares_is_a_cascade_the_schema_enforces() 
     result.expect("every_cascade_the_contract_declares_is_a_cascade_the_schema_enforces failed");
 }
 
+/// `Provenance::PayloadOnly { subject_columns }` names columns the lineage
+/// walk reads, and until Phase 4 nothing dereferenced them.
+///
+/// The walk reaches an interpretation's subjects by matching the DECLARED
+/// column names against the field names `SidecarPayload::references()`
+/// reports, so a name that resolves to no column is a lineage dead end
+/// that reports success — precisely the pre-phase behaviour, one layer
+/// down. Core's own declaration named `subject_kinds` alongside
+/// `subject_memory_ids` until this gate existed, and `subject_kinds`
+/// carries no memory id at all.
+///
+/// Both flavors, one registry: the code flavor's `work-assignment-v1`
+/// grounds through two scalar columns and core's `interpretation-v1`
+/// through one array, and a gate that saw only one of them would have
+/// missed the shape it does not handle.
+#[tokio::test]
+async fn every_declared_subject_column_is_a_column_the_catalog_has() {
+    let (db_name, pg) = migrated_db().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let mut registry = proxima_core::FlavorRegistry::new();
+        proxima_code::register(&mut registry).expect("the code flavor registers");
+        let registry = registry
+            .try_freeze()
+            .expect("core plus the code flavor freeze");
+
+        let mut tables = Vec::new();
+        let mut columns = Vec::new();
+        let mut schemas = Vec::new();
+        for contract in registry.contracts() {
+            for schema in contract.schemas {
+                let proxima_core::flavor::Provenance::PayloadOnly { subject_columns } =
+                    schema.provenance
+                else {
+                    continue;
+                };
+                let table = schema.sidecar_table.unwrap_or_else(|| {
+                    panic!(
+                        "{} grounds in payload columns and must have a sidecar to hold them",
+                        schema.schema_id()
+                    )
+                });
+                for column in subject_columns {
+                    tables.push(table.to_owned());
+                    columns.push((*column).to_owned());
+                    schemas.push(schema.schema_id().to_string());
+                }
+            }
+        }
+        let missing: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT d.schema_id, d.table_name, d.column_name
+               FROM unnest($1::text[], $2::text[], $3::text[])
+                    AS d(schema_id, table_name, column_name)
+              WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM information_schema.columns c
+                     WHERE c.table_schema || '.' || c.table_name = d.table_name
+                       AND c.column_name = d.column_name
+                       -- A subject column holds memory ids, so it is a uuid
+                       -- or an array of them. `subject_kinds` is neither,
+                       -- which is how the over-declaration was found.
+                       AND (c.data_type = 'uuid'
+                            OR (c.data_type = 'ARRAY' AND c.udt_name = '_uuid'))
+              )",
+        )
+        .bind(&schemas)
+        .bind(&tables)
+        .bind(&columns)
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        assert!(
+            missing.is_empty(),
+            "these schemas declare subject columns that are not uuid-bearing columns \
+             of their own sidecar, so the lineage walk would reach nothing through \
+             them and say so to nobody: {missing:?}"
+        );
+        // Coverage, asserted AFTER the catalog so a wrong column fails on
+        // being wrong rather than on being counted.
+        assert_eq!(
+            schemas.len(),
+            3,
+            "core's interpretation names one subject column and the code flavor's \
+             work assignment names two; found {schemas:?}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("every_declared_subject_column_is_a_column_the_catalog_has failed");
+}
+
 /// The version the sweep never saw.
 ///
 /// Reproduces the abort that survived the first repo-erase fix. A work item
