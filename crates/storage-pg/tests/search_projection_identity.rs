@@ -1184,3 +1184,229 @@ async fn a_superseded_backlog_does_not_starve_the_page() {
 async fn a_second_lexical_configuration_scores_what_it_scored() {
     run_identity(language_cases(), LANGUAGE_EXPECTED, alternating_language).await;
 }
+
+// ── The kind probe ──────────────────────────────────────────────────────
+//
+// A fourth database and a fourth corpus. `kind` is a filter admission
+// applies and the candidate side did not, and it is NOT a variant of
+// supersession: every row below is a current head.
+
+/// Flavor #0's other Perspective — the schema that gets starved here.
+const INTERPRETATION_SCHEMA: &str = "core/interpretation-v1";
+
+/// Abstraction-kind decoys. Chosen by the same rule as
+/// [`STARVED_HANDLES`]: above the `overfetch` a `limit = 1` request gets
+/// (20) and below the one a `limit = 8` request gets (160), so one corpus
+/// carries both the failure and its control.
+const KIND_DECOYS: u64 = 25;
+
+/// The anchor the non-Fact rows pin. `memory_pin_checks` wants a hot
+/// memory; it matches neither query.
+const KIND_ANCHOR_BODY: &str = "nothing here";
+
+/// Filler words in the interpretation's claim.
+const KIND_PROBE_FILLER: usize = 6;
+
+/// One owner, one anchor note, [`KIND_DECOYS`] ABSTRACTION-kind derivations
+/// matching strongly, and one PERSPECTIVE interpretation matching weakly.
+///
+/// The derivations' schema is `core/agent-derivation-v1`, which flavor #0
+/// registers under BOTH `Abstraction` and `Perspective`. That is what makes
+/// the corpus a counterexample rather than a tautology: a
+/// `kind = Perspective` request cannot narrow the schema away, so the
+/// abstraction-kind rows reach the projection scan and only admission knows
+/// they are doomed.
+async fn seed_kind_probe(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    let owner_id = owner_at(0).stored_owner_id();
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
+    )
+    .bind(owner_id)
+    .execute(pool)
+    .await?;
+
+    let anchor = det_uuid(100);
+    admit(pool, owner_id, anchor, "fact", NOTE_SCHEMA, &[]).await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+         VALUES ($1, $2, 'anchor', $3, '{}')",
+    )
+    .bind(anchor)
+    .bind(anchor)
+    .bind(KIND_ANCHOR_BODY)
+    .execute(pool)
+    .await?;
+    project(pool, anchor, NOTE_SCHEMA, None).await?;
+
+    for index in 0..KIND_DECOYS {
+        let t = det_uuid(1_000 + index);
+        admit(
+            pool,
+            owner_id,
+            t,
+            "abstraction",
+            DERIVATION_SCHEMA,
+            &[anchor],
+        )
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.agent_derivation_v1
+                 (t, title, body, tags, model_id, client_name, client_version)
+             VALUES ($1, 'atlas atlas', 'atlas atlas atlas cartography', '{}',
+                     'test-model', 'identity-fixture', '1')",
+        )
+        .bind(t)
+        .execute(pool)
+        .await?;
+        project(pool, t, DERIVATION_SCHEMA, None).await?;
+    }
+
+    let interpretation = det_uuid(3_000);
+    admit(
+        pool,
+        owner_id,
+        interpretation,
+        "perspective",
+        INTERPRETATION_SCHEMA,
+        // `memory_pin_checks` again: a Perspective pins an Abstraction.
+        &[det_uuid(1_000)],
+    )
+    .await?;
+    // Filler so the claim is a document rather than a keyword, and one
+    // `atlas` against the decoys' five — which is what puts it below the cut
+    // when the window is spent. The verifier's corpus used forty filler
+    // words; six reproduces both measured numbers and keeps the pin
+    // readable.
+    let filler = (0..KIND_PROBE_FILLER)
+        .map(|index| format!("filler{index}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    sqlx::query(
+        "INSERT INTO proxima_core.interpretation_v1
+             (t, claim, confidence, model_id, client_name, client_version)
+         VALUES ($1, $2, 50, 'test-model', 'identity-fixture', '1')",
+    )
+    .bind(interpretation)
+    .bind(format!("{filler} atlas cartography"))
+    .execute(pool)
+    .await?;
+    project(pool, interpretation, INTERPRETATION_SCHEMA, None).await?;
+    Ok(())
+}
+
+fn kind_probe_cases() -> Vec<(&'static str, MemorySearchRequest)> {
+    let at = |query: &str, limit: u32| {
+        let mut req = request(vec![owner_at(0)], query, SearchOrder::Relevance);
+        req.kind = Some(EntityKind::Perspective);
+        req.limit = limit;
+        req
+    };
+    vec![
+        ("kind/limit-1/relevance/atlas", at("atlas", 1)),
+        ("kind/limit-8/relevance/atlas", at("atlas", 8)),
+        (
+            "kind/limit-1/relevance/cartographies",
+            at("cartographies", 1),
+        ),
+        (
+            "kind/limit-8/relevance/cartographies",
+            at("cartographies", 8),
+        ),
+    ]
+}
+
+/// The single row every kind-probe case returns.
+const KIND_PROBE_ROW: &str = "018bcfe5-73b8-7bb8-80b8-b9babbbcbdbe 0.545455 filler0 filler1 \
+     filler2 filler3 filler4 filler5 atlas cartography";
+
+/// Captured from `e7c3c83f` with the kind-probe corpus, by the same method
+/// as the other pins: this file in a worktree at that commit.
+///
+/// All four are the SAME row at the SAME score. That is the point — the
+/// baseline answered a `kind`-filtered request identically at both page
+/// sizes, so any dependence of the score on `limit` in this tree is
+/// something the collapse introduced.
+const KIND_PROBE_EXPECTED: &[(&str, &[&str])] = &[
+    (
+        "kind/limit-1/relevance/atlas",
+        &[KIND_PROBE_ROW, "has_more=false"],
+    ),
+    (
+        "kind/limit-8/relevance/atlas",
+        &[KIND_PROBE_ROW, "has_more=false"],
+    ),
+    (
+        "kind/limit-1/relevance/cartographies",
+        &[KIND_PROBE_ROW, "has_more=false"],
+    ),
+    (
+        "kind/limit-8/relevance/cartographies",
+        &[KIND_PROBE_ROW, "has_more=false"],
+    ),
+];
+
+/// A `kind` filter must not cost the page its live rows either.
+///
+/// **This is the case that falsified "supersession was the last unmirrored
+/// admit filter".** `search_admit_sql` binds `kind` as `$3`; the candidate
+/// statements did not, because `core_search_flavors` was believed to have
+/// narrowed the participating SCHEMA set already. It does — but
+/// `core/agent-derivation-v1` is registered under two payload kinds, so
+/// narrowing by schema leaves the abstraction-kind ROWS of a Perspective
+/// schema in the scan, and `proxima_core.projection` carries no kind column
+/// to tell them apart.
+///
+/// Every row in this corpus is a current head, so `HeadsOnly` changes
+/// nothing here: if this test fails while
+/// [`a_superseded_backlog_does_not_starve_the_page`] passes, the kind mirror
+/// is what regressed.
+///
+/// Measured with the mirror removed: `limit = 1` returns the interpretation
+/// at `0.250000` (the substring arm's flat floor, because the starved schema
+/// is reported missing) and `limit = 8` returns it at `0.545455`. Same tree,
+/// same corpus, same row — a score that depends on the page size is not a
+/// score.
+#[tokio::test]
+async fn a_kind_filter_does_not_starve_the_page() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        seed_kind_probe(pg.pool_for_tests()).await?;
+
+        let projections = projections();
+        let mut actual = Vec::new();
+        for (name, req) in kind_probe_cases() {
+            let page = pg.search_memories(&req, &projections).await?;
+            actual.push((name, render(&page)));
+        }
+        for (name, lines) in &actual {
+            println!("CASE {name}");
+            for line in lines {
+                println!("  {line}");
+            }
+        }
+        for ((name, lines), (expected_name, expected)) in actual.iter().zip(KIND_PROBE_EXPECTED) {
+            assert_eq!(name, expected_name, "case order drifted");
+            assert_eq!(
+                lines.as_slice(),
+                *expected,
+                "{name}: a kind filter moved the page"
+            );
+        }
+        assert_eq!(
+            actual.len(),
+            KIND_PROBE_EXPECTED.len(),
+            "a case lost its pin"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("kind probe failed");
+}

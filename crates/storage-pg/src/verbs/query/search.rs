@@ -19,10 +19,10 @@
 //!    `schema_id` is on `memory`. The projection's `owner_id` is an
 //!    index accelerator; admit still filters `memory.owner_id`, so
 //!    authorization never rests on the copy. Both candidate arms ALSO
-//!    apply the current-head restriction when the request is `HeadsOnly`,
-//!    because a window spent on revisions this step will drop is a window
-//!    that returns fewer results than the corpus contains — see
-//!    [`head_restriction`].
+//!    apply every filter this step applies — supersession and kind — because
+//!    a window spent on rows this step will drop is a window that returns
+//!    fewer results than the corpus contains, at a wrong band or not at
+//!    all. See [`admit_side_restriction`].
 //! 4. **snippets** — one primary-key lookup per distinct sidecar present in
 //!    the PAGE, after admission and paging have run. The text lives in
 //!    exactly one place (R6) and is fetched for at most `limit` rows
@@ -210,7 +210,7 @@ pub(crate) async fn search_memories(
 /// superseded revisions. A window spent on rows admission will drop returns
 /// fewer than `limit` results while admissible rows sat below the cut, and
 /// one global window is five times easier to starve than five per-schema
-/// ones. [`head_restriction`] closes that: with it the window is the global
+/// ones. [`admit_side_restriction`] closes that: with it the window is the global
 /// top-`overfetch` of the ADMISSIBLE set, and the superset argument holds
 /// over the set the page is actually drawn from.
 ///
@@ -425,7 +425,7 @@ async fn scan_one_flavor(
     // substring floor, so a row the ranked arm would have scored 0.545455
     // comes back at 0.250000, and a lexeme-only match (`cartographies`
     // stems onto a row that does not contain the substring) comes back not
-    // at all. `head_restriction` is what keeps the window from being spent
+    // at all. `admit_side_restriction` is what keeps the window from being spent
     // on rows admission is going to drop, which is the only way that
     // starvation was reachable at default limits.
     let missing: Vec<&MemorySearchProjection> = flavor
@@ -577,9 +577,9 @@ fn substring_leg_sql(
     // zero width, and no `ts_rank` call to normalize.
     let (floor, _) = band(projection, BAND_NAME_SUBSTRING)?.parts();
     // Same reason as the ranked arm's: this window is shared across the
-    // missing schemas now, so a revision admission will drop must not spend
-    // a slot in it. See `head_restriction`.
-    let head_pred = head_restriction(req, SUBSTRING_MEMORY_ID);
+    // missing schemas now, so a row admission will drop must not spend a
+    // slot in it. See `admit_side_restriction`.
+    let admit_pred = admit_side_restriction(req, SUBSTRING_MEMORY_ID);
     // SQL-POLICY: PgIdent
     Ok(format!(
         "SELECT c.t,
@@ -589,7 +589,7 @@ fn substring_leg_sql(
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND (lower({search_text}) LIKE $1 ESCAPE '\\')
-            {tag_pred}{head_pred}
+            {tag_pred}{admit_pred}
             AND ($4::timestamptz IS NULL
                  OR COALESCE(uuid_extract_timestamp(c.t), TIMESTAMPTZ '1970-01-01') >= $4)
             AND ($5::timestamptz IS NULL
@@ -626,8 +626,9 @@ fn substring_leg_sql(
 /// `= ANY($8)`, one statement, the participating set. That is the whole
 /// collapse in one line.
 ///
-/// The head restriction ([`head_restriction`]) is the third predicate that
-/// has to be here rather than only at admit. See that function.
+/// The admit-side restriction ([`admit_side_restriction`]) is the third
+/// predicate that has to be here rather than only at admit. See that
+/// function.
 fn ranked_projection_sql(
     flavor: &FlavorScan<'_>,
     req: &MemorySearchRequest,
@@ -689,7 +690,7 @@ fn ranked_projection_sql(
         SearchOrder::Relevance => "lexical_score DESC, p.memory_id DESC",
         SearchOrder::Recency => "p.memory_id DESC",
     };
-    let head_pred = head_restriction(req, RANKED_MEMORY_ID);
+    let admit_pred = admit_side_restriction(req, RANKED_MEMORY_ID);
     // SQL-POLICY: PgIdent
     Ok(format!(
         "{q_cte}
@@ -700,7 +701,7 @@ fn ranked_projection_sql(
           WHERE p.owner_id = ANY($7::uuid[])
             AND p.schema_id = ANY($8::text[])
             AND ({tsv} @@ q.tsq{rescue_where})
-            {tag_pred}{head_pred}
+            {tag_pred}{admit_pred}
             AND ($4::timestamptz IS NULL
                  OR COALESCE(uuid_extract_timestamp(p.memory_id), TIMESTAMPTZ '1970-01-01') >= $4)
             AND ($5::timestamptz IS NULL
@@ -718,55 +719,123 @@ const RANKED_MEMORY_ID: &str = "p.memory_id";
 /// …and in a substring leg, which already drives `proxima_core.memory m`.
 const SUBSTRING_MEMORY_ID: &str = "m.t";
 
-/// The current-head restriction, applied to the CANDIDATE statements and
-/// not only at admit.
+/// The `memory_kind` literal a request's `kind` filter selects.
 ///
-/// Admission is not candidate-preserving. `search_admit_sql(heads_only)`
-/// drops every superseded revision from the hit set — and `HeadsOnly` is
-/// the tool default and what `core_recall` sends — so a window spent on
-/// superseded rows is a window that admits fewer than `limit` results while
+/// ONE author, used by the candidate statements AND by [`admit_hits`], so the
+/// two cannot drift: the whole of the kind starvation was the candidate side
+/// not knowing a filter the admit side applied. `EntityKind::Goal` selects
+/// nothing — `proxima_core.memory_kind` has exactly three values and goals
+/// are not among them — which is also why the admit side's `parse_kind` can
+/// never drop an admitted row for being unrecognised.
+///
+/// A closed enum in, a fixed fragment out: no caller text reaches the SQL,
+/// which is why the candidate statements can RENDER this rather than bind it
+/// and still keep their eight-parameter contract.
+fn kind_literal(kind: Option<EntityKind>) -> Option<&'static str> {
+    match kind {
+        Some(EntityKind::Fact) => Some("fact"),
+        Some(EntityKind::Abstraction) => Some("abstraction"),
+        Some(EntityKind::Perspective) => Some("perspective"),
+        Some(EntityKind::Goal) | None => None,
+    }
+}
+
+/// Every filter admission applies, applied to the CANDIDATE statements too.
+///
+/// Admission is not candidate-preserving. `search_admit_sql` drops rows the
+/// candidate window already paid for, so a window spent on rows this step
+/// will drop is a window that admits fewer than `limit` results while
 /// admissible rows sat just below the cut. That was survivable while the
 /// window was per-schema and five statements wide; with ONE global
-/// top-`overfetch` per flavor it is reachable at `limit = 1`
-/// (`overfetch` = 20): twenty-five superseded revisions of one schema will
-/// starve another schema's live row out of the window entirely, and the
-/// starved schema is then reported "missing" and re-found by the substring
-/// arm at its FLAT floor — a real result at a wrong, lower score, or no
-/// result at all when the match is lexeme-only.
+/// top-`overfetch` per flavor it is reachable at `limit = 1` (`overfetch` =
+/// 20): twenty-five doomed rows of one schema starve another schema's live
+/// row out of the window entirely, the starved schema is then reported
+/// "missing", and the substring arm re-finds it at its FLAT floor — a real
+/// result at a wrong, lower score, or no result at all when the match is
+/// lexeme-only.
+///
+/// TWO filters land here, each found by an adversarial verifier after the
+/// previous one was called the last:
+///
+/// 1. **Supersession.** `HeadsOnly` is the tool default and what
+///    `core_recall` sends. Measured on a 25-revision backlog: the starved
+///    row scores `0.250000` (substring floor) without this predicate and
+///    `0.545455` (its exact band) with it.
+/// 2. **Kind.** `kind` does NOT narrow the participating schema set the way
+///    `schema_id` does, because ONE schema id may register under two kinds —
+///    flavor #0's `core/agent-derivation-v1` is both an `Abstraction` and a
+///    `Perspective`. The projection carries no kind column, so under
+///    `kind = Perspective` the abstraction-kind rows of that same schema id
+///    enter the window and admit drops them after. Measured on the same
+///    tree, same row: `0.250000` at `limit = 1` and `0.545455` at
+///    `limit = 8`. A score that depends on the page size is not a score.
 ///
 /// Restricting the candidates is what makes the R4 claim ("the page cannot
 /// move for `Lexical` + `Relevance`") true rather than nearly true: with
-/// this predicate the window is the global top-`overfetch` of the
+/// these predicates the window is the global top-`overfetch` of the
 /// ADMISSIBLE set, and the top-`limit` of an admissible set is contained in
 /// its own top-`overfetch` whenever `overfetch >= limit`, which
-/// [`overfetch`] guarantees. `heads_only` is the only admit-side filter not
-/// already mirrored on the candidate side: owner, `since` and `until` are
-/// row predicates here, and `kind` / `schema_id` narrow the PARTICIPATING
-/// SCHEMA SET in `core_search_flavors` before a statement is rendered.
+/// [`overfetch`] guarantees. Owner, `since` and `until` are already row
+/// predicates on the candidate side, and `schema_id` narrows the
+/// participating schema set in `core_search_flavors` before a statement is
+/// rendered — but that list is a claim about admit's predicates, and the
+/// history of this function is the history of that claim being wrong, so it
+/// is checked mechanically by
+/// `every_admit_filter_is_mirrored_on_the_candidate_side` rather than
+/// asserted in prose.
 ///
-/// Two index probes per candidate row: `memory` has `UNIQUE (t)` and
-/// `memory_head` is keyed by `handle`. `include_superseded` requests render
-/// nothing here and keep the unfiltered window.
-fn head_restriction(req: &MemorySearchRequest, memory_id: &str) -> String {
-    if !matches!(req.supersession, SupersessionStatus::HeadsOnly) {
+/// # Cost
+///
+/// One index probe into `proxima_core.memory` (`UNIQUE (t)`) per MATCHING
+/// row — not per RETURNED candidate. `ORDER BY lexical_score DESC` has no
+/// index to walk, so the sort is fed by every row the `@@` matches and
+/// `overfetch_k` bounds only what comes back out; the EXISTS is evaluated
+/// below that sort. Measured at 50 000 matching rows: **+51%**. `HeadsOnly`
+/// adds a second probe into `memory_head` (keyed by `handle`).
+///
+/// The planner is free to answer with a hash join instead, and at 25 000
+/// heads it was FASTER doing so (51.5 ms vs 85.8 ms), so the plan pin asserts
+/// the nested loop's index names when it gets a nested loop and does not
+/// forbid the alternative. `include_superseded` requests with no `kind`
+/// filter render nothing here and keep the unfiltered window.
+fn admit_side_restriction(req: &MemorySearchRequest, memory_id: &str) -> String {
+    let heads_only = matches!(req.supersession, SupersessionStatus::HeadsOnly);
+    let kind = kind_literal(req.kind);
+    if !heads_only && kind.is_none() {
         return String::new();
     }
     if memory_id == SUBSTRING_MEMORY_ID {
-        // The leg already has the memory row in hand; only the head lookup
-        // is left.
-        return "
+        // The leg already drives `proxima_core.memory m`, so the kind is a
+        // column predicate on a row it has already fetched and only the head
+        // lookup needs a probe.
+        let kind_pred = kind.map_or_else(String::new, |kind| {
+            format!("\n            AND m.kind = '{kind}'")
+        });
+        let head_pred = if heads_only {
+            "
             AND EXISTS (SELECT 1
                           FROM proxima_core.memory_head hh
                          WHERE hh.handle = m.handle AND hh.t = m.t)"
-            .to_owned();
+        } else {
+            ""
+        };
+        return format!("{kind_pred}{head_pred}");
     }
+    let head_join = if heads_only {
+        "
+                          JOIN proxima_core.memory_head hh
+                            ON hh.handle = hm.handle AND hh.t = hm.t"
+    } else {
+        ""
+    };
+    let kind_pred = kind.map_or_else(String::new, |kind| {
+        format!("\n                           AND hm.kind = '{kind}'")
+    });
     format!(
         "
             AND EXISTS (SELECT 1
-                          FROM proxima_core.memory hm
-                          JOIN proxima_core.memory_head hh
-                            ON hh.handle = hm.handle AND hh.t = hm.t
-                         WHERE hm.t = {memory_id})"
+                          FROM proxima_core.memory hm{head_join}
+                         WHERE hm.t = {memory_id}{kind_pred})"
     )
 }
 
@@ -999,12 +1068,10 @@ async fn admit_hits(
         .map(OwnerRef::stored_owner_id)
         .collect();
     let hit_ts: Vec<uuid::Uuid> = hits.keys().copied().collect();
-    let kind_filter = match req.kind {
-        Some(EntityKind::Fact) => Some("fact"),
-        Some(EntityKind::Abstraction) => Some("abstraction"),
-        Some(EntityKind::Perspective) => Some("perspective"),
-        Some(EntityKind::Goal) | None => None,
-    };
+    // The SAME author the candidate statements render from. Two copies of
+    // this match is how the kind filter came to be applied on one side and
+    // not the other.
+    let kind_filter = kind_literal(req.kind);
     let schema_filter = req.schema_id.as_ref().map(SchemaId::as_str);
     let sql = search_admit_sql(matches!(req.supersession, SupersessionStatus::HeadsOnly));
 
@@ -1384,13 +1451,17 @@ mod tests {
         assert!(untagged.contains("p.owner_id = ANY($7::uuid[])"));
     }
 
-    /// The head restriction is on the CANDIDATE side, in both arms, and
-    /// only when the request asked for heads.
+    /// Admission's filters are on the CANDIDATE side, in both arms, and
+    /// only when the request asked for them.
     ///
-    /// `request_with_tags` is `HeadsOnly`, which is the tool default and
-    /// what `core_recall` sends. `IncludeSuperseded` must render nothing:
-    /// that request wants the revisions, so restricting its window would
-    /// be a different bug in the other direction.
+    /// `request_with_tags` is `HeadsOnly` with `kind = Fact` — the tool
+    /// default and what `core_recall` sends. `IncludeSuperseded` must render
+    /// no head restriction: that request wants the revisions, so restricting
+    /// its window would be a different bug in the other direction. The two
+    /// filters are INDEPENDENT, which is the part that was wrong: a
+    /// kind-filtered `IncludeSuperseded` request is reachable
+    /// (`core_search_memories` takes both parameters) and still needs its
+    /// kind mirror.
     #[test]
     fn the_candidate_window_is_not_spent_on_rows_admit_will_drop() {
         let note = proxima_core::FlavorRegistry::new()
@@ -1421,6 +1492,17 @@ mod tests {
              it must not be spent on superseded revisions either"
         );
 
+        assert!(
+            ranked.contains("AND hm.kind = 'fact'"),
+            "the projection has no kind column, so the kind filter admit \
+             applies has to be mirrored through the memory row"
+        );
+        assert!(
+            substring.contains("AND m.kind = 'fact'"),
+            "…and the substring leg already holds that row, so it is a plain \
+             column predicate there"
+        );
+
         req.supersession = SupersessionStatus::IncludeSuperseded;
         let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
         assert!(
@@ -1428,13 +1510,92 @@ mod tests {
             "IncludeSuperseded keeps the unfiltered window"
         );
         assert!(
-            !ranked.contains("proxima_core.memory"),
-            "and then the ranked arm reads the projection ALONE, as it always did"
+            ranked.contains("AND hm.kind = 'fact'"),
+            "…but the kind filter is independent of it: this request shape is \
+             reachable and admit still applies the kind"
         );
         let substring = super::substring_sql(&[&note], &req).expect("substring");
         assert!(
             !substring.contains("memory_head"),
             "IncludeSuperseded keeps the unfiltered window"
+        );
+
+        req.kind = None;
+        let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
+        assert!(
+            !ranked.contains("proxima_core.memory"),
+            "with neither filter the ranked arm reads the projection ALONE, \
+             as it always did"
+        );
+
+        // The counterexample that found this: ONE schema id registered under
+        // TWO kinds. `schema_id` cannot narrow it away, so only the kind
+        // predicate keeps the doomed rows out of the window.
+        req.kind = Some(EntityKind::Perspective);
+        let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
+        assert!(
+            ranked.contains("FROM proxima_core.memory hm\n") && !ranked.contains("memory_head"),
+            "a kind-only restriction probes the memory row and nothing else"
+        );
+        assert!(
+            ranked.contains("AND hm.kind = 'perspective'"),
+            "the literal is the REQUEST's kind, not a constant"
+        );
+    }
+
+    /// The class guard: every filter `search_admit_sql` applies is mirrored
+    /// on the candidate side.
+    ///
+    /// Two separate HIGH findings in this phase were the same mistake —
+    /// admit narrowing the hit set by something the candidate window had
+    /// already spent slots on. Both times the fix was accompanied by a claim
+    /// that the remaining filters were mirrored already, and both times the
+    /// claim was wrong. So this stops being prose: enumerate admit's binds,
+    /// require each to be accounted for, and FAIL when admit grows one more.
+    #[test]
+    fn every_admit_filter_is_mirrored_on_the_candidate_side() {
+        // Admit's binds, and where the candidate side answers each.
+        const MIRRORS: &[(&str, &str)] = &[
+            ("$1", "the candidate id set itself — this IS the window"),
+            ("$2", "m.owner_id — `p.owner_id = ANY($7::uuid[])`"),
+            (
+                "$3",
+                "kind — `admit_side_restriction` renders `hm.kind`/`m.kind`",
+            ),
+            ("$4", "schema_id — `p.schema_id = ANY($8::text[])`"),
+            (
+                "$5",
+                "since — a `uuid_extract_timestamp(...) >= $4` row predicate",
+            ),
+            (
+                "$6",
+                "until — a `uuid_extract_timestamp(...) <= $5` row predicate",
+            ),
+        ];
+        for heads_only in [false, true] {
+            let admit = super::search_admit_sql(heads_only);
+            for (bind, why) in MIRRORS {
+                assert!(
+                    admit.contains(bind),
+                    "admit no longer binds {bind} ({why}); re-derive the mirror"
+                );
+            }
+            assert!(
+                !admit.contains("$7"),
+                "admit grew a seventh filter. Mirror it in \
+                 `admit_side_restriction` or prove the candidate side already \
+                 applies it, then extend MIRRORS. Do not delete this line."
+            );
+        }
+        // …and supersession, which is not a bind but a shape.
+        assert_ne!(
+            super::search_admit_sql(true),
+            super::search_admit_sql(false),
+            "supersession is admit's seventh filter, spelled as a FROM clause"
+        );
+        assert!(
+            super::search_admit_sql(true).contains("proxima_core.memory_head h"),
+            "…and that is the shape `admit_side_restriction` mirrors"
         );
     }
 
