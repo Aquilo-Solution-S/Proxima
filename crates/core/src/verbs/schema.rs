@@ -460,7 +460,7 @@ impl FlavorRegistryFrozen {
     /// declaration that replaces `pg_sidecar!(owner_pinned: true)` as the
     /// authority.
     ///
-    /// Compliance erase and export select these by the sidecar's own owner
+    /// Owner erase and export select these by the sidecar's own owner
     /// rather than through the Memory, because a transfer leaves them
     /// behind: joining through the Memory would put them out of the writing
     /// owner's reach and into the receiving owner's bundle.

@@ -314,8 +314,8 @@ map therefore matches on **variants**, not kinds.
 | kind `Internal` (storage retryable/unavailable/internal, `Other`) | 500 |
 
 Suppression maps to `409` with a distinct `type`, not `451`.
-Suppression is a compliance primitive ([13](13-compliance.md)) and is
-not necessarily a legal hold; `451` would overclaim.
+Suppression is a refusal to re-ingest ([13](13-compliance.md)) and says
+nothing about anyone's legal position; `451` would overclaim.
 
 The map is an exhaustive `match` with no wildcard arm and lives beside
 the error definitions, so adding an error variant is a compile error
@@ -415,7 +415,7 @@ both `/mcp` and an enabled `/v1`.
 
 - Verb-shaped or resource-shaped route aliases beyond the generated
   surface: a consumer concern, built over the OpenAPI document.
-- Compliance operations. Erase, export, and pause/resume are admin
+- Owner inverses. Erase, export, and pause/resume are admin
   actions, not graph calls, and are not exposed on MCP either:
   [13](13-compliance.md).
 - Streaming, subscriptions, and server-sent events. REST responses are unary
@@ -455,5 +455,5 @@ both `/mcp` and an enabled `/v1`.
 - Runtime configuration: [10](10-configuration.md).
 - Deployment, network exposure, tool-surface profiles:
   [15](15-deployment.md).
-- Compliance primitives and the admin surface:
+- The inverses of storing and the admin surface:
   [13](13-compliance.md).

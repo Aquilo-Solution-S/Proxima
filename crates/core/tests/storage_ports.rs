@@ -631,104 +631,55 @@ impl SourceCursorPort for SourceCursorFake {
 }
 
 #[derive(Debug)]
-struct FactRetentionFake;
+struct OwnerInverseFake;
 
 #[async_trait::async_trait]
-impl FactRetentionPort for FactRetentionFake {
-    async fn upsert_fact_retention(
+impl OwnerInversePort for OwnerInverseFake {
+    async fn erase_group_owner(
         &self,
-        _permit: &OwnerWritePermit,
-        seconds: i64,
-    ) -> Result<(), StorageError> {
-        fake_error()
-    }
-
-    async fn get_fact_retention(&self, owner: &Owner) -> Result<Option<i64>, StorageError> {
-        fake_error()
-    }
-
-    async fn clear_fact_retention(&self, _permit: &OwnerWritePermit) -> Result<bool, StorageError> {
-        fake_error()
-    }
-
-    async fn set_legal_hold(&self, _permit: &OwnerWritePermit) -> Result<(), StorageError> {
-        fake_error()
-    }
-
-    async fn get_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError> {
-        fake_error()
-    }
-
-    async fn clear_legal_hold(&self, _permit: &OwnerWritePermit) -> Result<bool, StorageError> {
-        fake_error()
-    }
-}
-
-#[derive(Debug)]
-struct ComplianceEraseFake;
-
-#[async_trait::async_trait]
-impl ComplianceErasePort for ComplianceEraseFake {
-    async fn record_compliance_outcome(
-        &self,
-        _audit: &proxima_core::compliance::ComplianceAuditContext,
-        _outcome: &proxima_core::compliance::ComplianceEraseOutcome,
-    ) -> Result<(), StorageError> {
-        fake_error()
-    }
-
-    async fn erase_group_owner_if_abandoned(
-        &self,
-        _auth: &proxima_core::compliance::EraseAuthorization,
+        _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _group_id: GroupId,
         _object_purge_planned: bool,
-        _tables: &proxima_core::compliance::ComplianceSidecarTables,
-    ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         fake_error()
     }
 
-    async fn erase_personal_owner_if_drop_verified(
+    async fn erase_personal_owner(
         &self,
-        _auth: &proxima_core::compliance::EraseAuthorization,
+        _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _user_id: UserId,
         _object_purge_planned: bool,
-        _tables: &proxima_core::compliance::ComplianceSidecarTables,
-    ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         fake_error()
     }
 
-    async fn erase_group_source_scope_if_owner_abandoned(
+    async fn erase_group_source_scope(
         &self,
-        _auth: &proxima_core::compliance::EraseAuthorization,
+        _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _group_id: GroupId,
         _source_id: &SourceId,
-        _tables: &proxima_core::compliance::ComplianceSidecarTables,
-    ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         fake_error()
     }
 
-    async fn erase_personal_source_scope_if_drop_verified(
+    async fn erase_personal_source_scope(
         &self,
-        _auth: &proxima_core::compliance::EraseAuthorization,
+        _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _user_id: UserId,
         _source_id: &SourceId,
-        _tables: &proxima_core::compliance::ComplianceSidecarTables,
-    ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         fake_error()
     }
 
     async fn export_owner_bundle(
         &self,
-        _auth: &proxima_core::compliance::ExportAuthorization,
-        _tables: &proxima_core::compliance::ComplianceSidecarTables,
-    ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
-        fake_error()
-    }
-
-    async fn clear_cited_object_purge_pending(
-        &self,
-        _operation_id: uuid::Uuid,
-    ) -> Result<(), StorageError> {
+        _auth: &proxima_core::owner_inverse::ExportAuthorization,
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerExportBundle, StorageError> {
         fake_error()
     }
 }
@@ -778,7 +729,6 @@ fn public_storage_ports_can_be_mocked_independently() {
     assert_port::<OwnerMembershipAdminFake>();
     assert_port::<SourceBatchFake>();
     assert_port::<SourceCursorFake>();
-    assert_port::<FactRetentionFake>();
-    assert_port::<ComplianceEraseFake>();
+    assert_port::<OwnerInverseFake>();
     assert_port::<RegistryProjectionFake>();
 }

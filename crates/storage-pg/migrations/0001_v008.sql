@@ -129,7 +129,7 @@ CREATE INDEX memory_head_owner_kind_idx
 -- until this table existed nothing related the two: a stamp naming a table
 -- no flavor declares was accepted at write time and then quietly skipped by
 -- erase, export, forget and hydrate, because each of those walks the
--- registry. A row nobody can reach is the one shape Art. 17 cannot honour.
+-- registry. A row nobody can reach is the one shape no erase can destroy.
 --
 -- Stamp ⊆ registry is therefore a database constraint (see
 -- `assert_sidecar_stamp_declared` below), not a check in one of the callers.
@@ -340,7 +340,6 @@ CREATE INDEX cooled_owner_source_idx
 CREATE TABLE proxima_core.cold_purge_pending (
     object_key text PRIMARY KEY,
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
-    compliance_operation_id uuid,
     enqueued_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -517,7 +516,7 @@ CREATE TABLE proxima_core.mcp_call_logged_v1 (
 );
 
 COMMENT ON COLUMN proxima_core.mcp_call_logged_v1.owner_id IS
-'The owner that made the call, pinned at write time. Deliberately NOT derived from proxima_core.memory.owner_id on read: an owner transfer moves the Memory and leaves this row behind, so history, export, and Art. 17 erase all stay with the acting owner and the destination never sees the prior owner''s actor identities.';
+'The owner that made the call, pinned at write time. Deliberately NOT derived from proxima_core.memory.owner_id on read: an owner transfer moves the Memory and leaves this row behind, so history, export and erase all stay with the acting owner and the destination never sees the prior owner''s actor identities.';
 
 -- read_mcp_call_history pages by (time, t) for one owner, optionally
 -- filtered by actor. The Memory-side index cannot serve it any more: the
@@ -735,7 +734,7 @@ CREATE TABLE proxima_core.blob_uploads (
     -- DELIBERATELY NOT A FOREIGN KEY, against the projection map's §3.5
     -- prescription. A reference to blob_uploads (upload_id) makes one
     -- owner's mount a veto over another owner's erase: NO ACTION aborts
-    -- the source's Art. 17 deletion, SET NULL silently breaks the
+    -- the source's deletion, SET NULL silently breaks the
     -- destination's read (the row would then claim a key it did not mint
     -- and the gate would reject it), and CASCADE deletes the
     -- destination's row outright. Erase must stay owner-scoped, so the
@@ -766,80 +765,6 @@ CREATE TYPE proxima_core.access_ceiling AS ENUM (
     'perspective',
     'goal'
 );
-
-CREATE TYPE proxima_core.compliance_erase_outcome AS ENUM (
-    'Completed',
-    'Refused',
-    'NotFound',
-    'Unauthorized'
-);
-
-CREATE TYPE proxima_core.compliance_erase_refusal AS ENUM (
-    'OwnerNotAbandoned',
-    'SourceScopeOwnerStillLive',
-    'PersonalDropNotVerified',
-    'DropProofPortUnavailable',
-    'LegalHoldActive'
-);
-
-CREATE TABLE proxima_core.owner_legal_holds (
-    owner_kind proxima_core.owner_kind NOT NULL,
-    owner_id uuid NOT NULL,
-    hold_active boolean NOT NULL,
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (owner_kind, owner_id)
-);
-
--- Per-owner Fact-retention window, read by `proxima://graph` and enforced by
--- the `maintain-retention` sweep. `(owner_kind, owner_id)` is the ON CONFLICT
--- arbiter `upsert_fact_retention` names; every owner kind carries an id, so
--- no NULL arbiter arm is needed.
-CREATE TABLE proxima_core.owner_fact_retention (
-    owner_kind proxima_core.owner_kind NOT NULL,
-    owner_id uuid NOT NULL,
-    retention_seconds bigint NOT NULL,
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT owner_fact_retention_retention_seconds_check
-        CHECK (retention_seconds > 0),
-    UNIQUE (owner_kind, owner_id)
-);
-
-CREATE TABLE proxima_core.compliance_audit_log (
-    operation_id uuid PRIMARY KEY,
-    target_kind text NOT NULL,
-    outcome proxima_core.compliance_erase_outcome NOT NULL,
-    refusal proxima_core.compliance_erase_refusal,
-    owner_ref_digest bytea NOT NULL,
-    requester_digest bytea,
-    source_scope_digest bytea,
-    derived_auth_path text NOT NULL,
-    requested_at timestamptz NOT NULL,
-    completed_at timestamptz,
-    memories_count bigint NOT NULL DEFAULT 0,
-    goals_count bigint NOT NULL DEFAULT 0,
-    wake_configs_count bigint NOT NULL DEFAULT 0,
-    blobs_count bigint NOT NULL DEFAULT 0,
-    blob_uploads_count bigint NOT NULL DEFAULT 0,
-    sidecar_rows_count bigint NOT NULL DEFAULT 0,
-    edges_count bigint NOT NULL DEFAULT 0,
-    receipts_count bigint NOT NULL DEFAULT 0,
-    source_batches_count bigint NOT NULL DEFAULT 0,
-    source_cursors_count bigint NOT NULL DEFAULT 0,
-    embeddings_count bigint NOT NULL DEFAULT 0,
-    embedding_jobs_count bigint NOT NULL DEFAULT 0,
-    mcp_call_rows_count bigint NOT NULL DEFAULT 0,
-    change_events_count bigint NOT NULL DEFAULT 0,
-    redacted_edge_targets_count bigint NOT NULL DEFAULT 0,
-    suppressed_keys_count bigint NOT NULL DEFAULT 0,
-    delegated_authority_grants_count bigint NOT NULL DEFAULT 0,
-    cold_object_purge_pending boolean NOT NULL DEFAULT false,
-    cited_object_purge_pending boolean NOT NULL DEFAULT false
-);
-
-ALTER TABLE proxima_core.cold_purge_pending
-    ADD CONSTRAINT cold_purge_pending_compliance_operation_fk
-    FOREIGN KEY (compliance_operation_id)
-    REFERENCES proxima_core.compliance_audit_log (operation_id);
 
 CREATE TABLE proxima_core.delegated_authority_grants (
     delegation_id uuid PRIMARY KEY,

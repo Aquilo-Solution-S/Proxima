@@ -243,9 +243,10 @@ Scope:
 | declared by controller/flavor author | not inferred by substrate |
 | split schemas when mixed | do not mix special and non-special rows in one schema |
 
-The flag feeds compliance behavior: audit emphasis, export metadata,
-deletion policy checks, and administrative reporting (see
-[13 §Compliance vocabulary](13-compliance.md#compliance-vocabulary)).
+The flag is the one piece of processing metadata core reads back, and it
+exists for a host to key heightened handling off — audit emphasis, reporting,
+its own deletion policy (see
+[13 §Declared metadata](13-compliance.md#declared-metadata)).
 
 ## Sidecar tables
 

@@ -6,24 +6,23 @@
 
 pub(crate) mod active_goals;
 pub(crate) mod change_history;
-pub(crate) mod compliance_erase;
-pub(crate) mod compliance_export;
 pub mod consolidate;
 pub(crate) mod content;
 pub mod derive_append;
 pub mod fact_embeddings;
 pub mod fact_ingest;
-pub mod fact_retention;
 pub mod forget;
 pub mod goal_timeseries;
 pub(crate) mod goal_wake_candidates;
 pub(crate) mod goal_write;
+pub mod maintenance;
 pub(crate) mod mcp_call_history;
 pub mod memory_timeseries;
+pub(crate) mod owner_erase;
+pub(crate) mod owner_export;
 pub mod persist_mcp_call;
 pub mod query;
 pub mod query_timeseries;
-pub mod retention_maintenance;
 pub(crate) mod sketch;
 pub mod source_cursors;
 pub mod wake_timeseries;

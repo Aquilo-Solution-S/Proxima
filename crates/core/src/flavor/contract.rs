@@ -632,7 +632,7 @@ pub enum TransferRule {
     /// a `blob_id` with no SQL FK — cannot be listed here, because the
     /// flavor declaring them is not the flavor declaring this surface.
     /// The transfer walks the frozen registry for those, exactly as
-    /// compliance erase does.
+    /// owner erase does.
     FollowOrDedupe {
         dedupe_key: &'static [&'static str],
         remaps: &'static [&'static str],
@@ -692,11 +692,64 @@ pub enum Provenance {
 /// What a surface's rows are keyed on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyShape {
-    MemoryT,
-    GoalT,
-    BlobId,
+    /// Keyed on a `proxima_core.memory` t, under the column named here.
+    MemoryT {
+        column: &'static str,
+    },
+    /// Keyed on a `proxima_core.goal` t, under the column named here.
+    GoalT {
+        column: &'static str,
+    },
+    /// Keyed on a `proxima_core.blob` id, under the column named here.
+    ///
+    /// Every keyed variant names its column, because the two verbs that
+    /// consume this field have no other way to learn which one carries the
+    /// id: the owner erase reaches keyed sidecars through a selection set,
+    /// and the owner export joins the key's home table to find the owner.
+    /// A citation sidecar calls its blob `cited_object_id`, a mapping
+    /// sidecar `citation_mapping_id`, `blob` itself `blob_id`; a code
+    /// detail table calls its memory `plan_memory_id` or
+    /// `caller_memory_id`. Four such tables declared `Custom(&["memory_id"])`
+    /// — a column none of them has — and it went unnoticed for as long as
+    /// nothing read the field for a `Cascade` surface.
+    BlobId {
+        column: &'static str,
+    },
     OwnerId,
     Custom(&'static [&'static str]),
+}
+
+impl KeyShape {
+    /// The table this key lives in and the column it is stored under there,
+    /// for the three keys that name a core entity.
+    ///
+    /// This is what makes EMPTY `owner_columns` a checkable claim rather
+    /// than a hope: a surface that carries no owner asserts it is reached
+    /// through its key's owner, and the pair returned here is the join that
+    /// reaches it.
+    #[must_use]
+    pub const fn home(self) -> Option<(&'static str, &'static str, &'static str)> {
+        match self {
+            Self::MemoryT { column } => Some(("proxima_core.memory", "t", column)),
+            Self::GoalT { column } => Some(("proxima_core.goal", "t", column)),
+            Self::BlobId { column } => Some(("proxima_core.blob", "blob_id", column)),
+            Self::OwnerId | Self::Custom(_) => None,
+        }
+    }
+
+    /// Every column this key is stored under, in declaration order. Row
+    /// order in an export bundle comes off this, so it is part of the
+    /// bundle's bytes.
+    #[must_use]
+    pub fn columns(self) -> Vec<&'static str> {
+        match self {
+            Self::MemoryT { column } | Self::GoalT { column } | Self::BlobId { column } => {
+                vec![column]
+            }
+            Self::OwnerId => vec!["owner_id"],
+            Self::Custom(columns) => columns.to_vec(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -712,6 +765,110 @@ pub enum EraseRule {
     Never {
         why: &'static str,
     },
+}
+
+/// A surface whose inverse is a hand-written statement, paired with the
+/// name of the function that owns it.
+///
+/// Most surfaces are reached by a generated leg: the erase reads
+/// [`Surface::erase`] and [`Surface::key`] and writes the statement. Some
+/// cannot be — a table whose deletion has to interleave with a refcount
+/// anti-join, or whose rows feed a cold-purge queue — and those name the
+/// function that takes them instead. Naming it is the point: an unlisted
+/// surface with no generated leg is a table nothing deletes, and
+/// [`crate::flavor::FlavorRegistryError::UndeletableSurface`] refuses that
+/// at boot rather than letting an erase report success over surviving rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BespokeEraseLeg {
+    /// The schema-qualified table, matching [`Surface::table`] exactly.
+    pub table: &'static str,
+    /// The function that deletes it, for a reader following the claim.
+    pub leg: &'static str,
+}
+
+/// Which leg destroys a surface's rows when its owner is erased.
+///
+/// Derived from [`Surface::erase`] × [`Surface::key`] × the flavor's
+/// declared [`BespokeEraseLeg`] list, and derived in ONE place so the boot
+/// check and the erase itself cannot hold different opinions about which
+/// table is covered.
+///
+/// There are five real answers. [`Self::Unreachable`] is the sixth — the
+/// silence — turned into a value so freeze can refuse it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EraseLeg {
+    /// Generated: join the selection set the key's home table fills. The
+    /// carried shape is always one of the three homed variants.
+    Keyed(KeyShape),
+    /// Generated: filter the surface's own owner column. `source_scoped`
+    /// carries the memory-key column when a source scope can reach the
+    /// surface, and `None` when a source scope cannot reach it at all.
+    Owned { source_scoped: Option<&'static str> },
+    /// A hand-written statement, named by the flavor.
+    Bespoke { leg: &'static str },
+    /// A constraint removes it with its parent; erase emits no statement.
+    Cascade,
+    /// A declared non-erase, with the reason the declaration gave.
+    Never { why: &'static str },
+    /// Nothing deletes it. Always a freeze error, never a runtime state.
+    Unreachable,
+}
+
+impl EraseLeg {
+    /// Classify one surface against a flavor's declared bespoke list.
+    ///
+    /// THE classifier. `validate_erase_legs` calls it at freeze and the
+    /// erase calls it per surface, so "which tables does the erase cover"
+    /// has one answer and the boot check is a check on the code that runs
+    /// rather than on a second description of it.
+    ///
+    /// A `Cascade` or `Never` declaration wins over the bespoke list: those
+    /// two say NO statement runs, and a flavor that also names a
+    /// hand-written leg for such a table is contradicting itself.
+    /// `validate_erase_legs` refuses that rather than letting this silently
+    /// pick a winner.
+    #[must_use]
+    pub fn derive(surface: &Surface, bespoke: &[BespokeEraseLeg]) -> Self {
+        match surface.erase {
+            EraseRule::Cascade { .. } => Self::Cascade,
+            EraseRule::Never { why } => Self::Never { why },
+            EraseRule::ByKey | EraseRule::ByOwner => {
+                if let Some(entry) = bespoke.iter().find(|entry| entry.table == surface.table) {
+                    return Self::Bespoke { leg: entry.leg };
+                }
+                match surface.erase {
+                    EraseRule::ByKey => match surface.key {
+                        KeyShape::MemoryT { .. }
+                        | KeyShape::GoalT { .. }
+                        | KeyShape::BlobId { .. } => Self::Keyed(surface.key),
+                        // Keyed on nothing the erase builds a selection set
+                        // for, and no bespoke leg claimed it. The generator
+                        // has no statement for this shape, so nothing at all
+                        // would delete these rows.
+                        KeyShape::OwnerId | KeyShape::Custom(_) => Self::Unreachable,
+                    },
+                    // A surface that keeps its rows on transfer and is keyed
+                    // on a memory is the owner-pinned shape: erased by its
+                    // OWN owner_id, and asked which source the memory
+                    // belonged to when the scope is a source. Everything
+                    // else owned is owner-scope only, exactly as
+                    // `wake_config` and the grants are: a source scope is a
+                    // partial owner, and a row with no source attribution
+                    // belongs to neither half of it.
+                    _ => Self::Owned {
+                        source_scoped: match surface.key {
+                            KeyShape::MemoryT { column }
+                                if surface.transfer.retains_at_source() =>
+                            {
+                                Some(column)
+                            }
+                            _ => None,
+                        },
+                    },
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -737,7 +894,7 @@ pub enum ForgetRule {
 }
 
 /// One physical relation a flavor (or the kernel) owns, with every rule the
-/// compliance and transfer lanes need. No field is optional-by-omission:
+/// inverse and transfer lanes need. No field is optional-by-omission:
 /// adding a table without saying what forget does is a compile error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Surface {
@@ -883,12 +1040,12 @@ impl ProjectionSpec {
     /// what makes owner erase, memory forget and flavor repo erase all
     /// reach the projection with no new list, no new counter and no code
     /// that knows the word "projection". That is the inverse-at-scope
-    /// property: compliance never learns about this table.
+    /// property: the owner erase never learns about this table.
     #[must_use]
     pub const fn surface(&self) -> Surface {
         Surface {
             table: self.table,
-            key: KeyShape::MemoryT,
+            key: KeyShape::MemoryT { column: "t" },
             owner_columns: &["owner_id"],
             transfer: TransferRule::Follow,
             erase: EraseRule::Cascade {
@@ -1058,6 +1215,10 @@ pub struct FlavorContract {
     /// row, so it is deliberately absent from `proxima_core.flavor_surface`
     /// (whose domain is "tables a `memory` row may stamp") and present here.
     pub projection: ProjectionDecl,
+    /// Surfaces of this flavor whose erase is a hand-written statement
+    /// rather than a generated one. Empty for a flavor whose every surface
+    /// the generator reaches, which is the ordinary case.
+    pub bespoke_erase_legs: &'static [BespokeEraseLeg],
 }
 
 /// The ordinal that marks core. Load-bearing at runtime in exactly two
@@ -1094,6 +1255,22 @@ impl FlavorContract {
             .chain(projection.map(|spec| spec.surface()))
     }
 
+    /// Which leg destroys `surface`'s rows when its owner is erased.
+    ///
+    /// The single classifier. `validate_erase_legs` calls it at freeze and
+    /// the erase calls it per surface, so "which tables does the erase
+    /// cover" has one answer and the boot check is a check on the thing
+    /// that actually runs, not on a restatement of it.
+    ///
+    /// A `Cascade` or `Never` declaration wins over the bespoke list: those
+    /// two say NO statement runs, and a flavor that lists such a table is
+    /// contradicting itself. `validate_erase_legs` refuses that rather than
+    /// silently picking a winner here.
+    #[must_use]
+    pub fn erase_leg(&self, surface: &Surface) -> EraseLeg {
+        EraseLeg::derive(surface, self.bespoke_erase_legs)
+    }
+
     /// Every schema of this flavor that is a search surface, paired with
     /// its sidecar table. The generator's whole input.
     pub fn projected_schemas(
@@ -1110,7 +1287,7 @@ impl FlavorContract {
     }
 
     /// Sidecar tables whose rows stay with the source owner on transfer.
-    /// This is the list `compliance_erase` / `compliance_export` / `forget`
+    /// This is the list `owner_erase` / `owner_export` / `forget`
     /// hold out of the Memory-keyed sweep.
     #[must_use]
     pub fn retain_at_source_tables(&self) -> Vec<String> {

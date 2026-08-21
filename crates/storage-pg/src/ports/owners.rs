@@ -1,6 +1,6 @@
 use proxima_core::storage_ports::{
-    FactRetentionPort, OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort,
-    OwnerWritePermit, SourceBatchPort, SourceCursorPort,
+    OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort, OwnerWritePermit,
+    SourceBatchPort, SourceCursorPort,
 };
 
 use proxima_core::{
@@ -141,36 +141,5 @@ impl SourceCursorPort for PgStorage {
         source: &str,
     ) -> Result<Option<std::time::Duration>, StorageError> {
         verbs::source_cursors::source_cursor_age(&self.pool, owner, source).await
-    }
-}
-
-#[async_trait::async_trait]
-impl FactRetentionPort for PgStorage {
-    async fn upsert_fact_retention(
-        &self,
-        permit: &OwnerWritePermit,
-        seconds: i64,
-    ) -> Result<(), StorageError> {
-        verbs::fact_retention::upsert_fact_retention(&self.pool, permit, seconds).await
-    }
-
-    async fn get_fact_retention(&self, owner: &Owner) -> Result<Option<i64>, StorageError> {
-        verbs::fact_retention::get_fact_retention(&self.pool, owner).await
-    }
-
-    async fn clear_fact_retention(&self, permit: &OwnerWritePermit) -> Result<bool, StorageError> {
-        verbs::fact_retention::clear_fact_retention(&self.pool, permit).await
-    }
-
-    async fn set_legal_hold(&self, permit: &OwnerWritePermit) -> Result<(), StorageError> {
-        verbs::fact_retention::set_legal_hold(&self.pool, permit).await
-    }
-
-    async fn get_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError> {
-        verbs::fact_retention::get_legal_hold(&self.pool, owner).await
-    }
-
-    async fn clear_legal_hold(&self, permit: &OwnerWritePermit) -> Result<bool, StorageError> {
-        verbs::fact_retention::clear_legal_hold(&self.pool, permit).await
     }
 }

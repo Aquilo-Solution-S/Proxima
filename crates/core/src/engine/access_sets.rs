@@ -825,112 +825,50 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl FactRetentionPort for MembershipStorage {
-        async fn upsert_fact_retention(
+    impl OwnerInversePort for MembershipStorage {
+        async fn erase_group_owner(
             &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-            _seconds: i64,
-        ) -> Result<(), StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn get_fact_retention(&self, _owner: &Owner) -> Result<Option<i64>, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn clear_fact_retention(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-        ) -> Result<bool, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn set_legal_hold(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-        ) -> Result<(), StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn get_legal_hold(&self, _owner: &Owner) -> Result<bool, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn clear_legal_hold(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-        ) -> Result<bool, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl ComplianceErasePort for MembershipStorage {
-        async fn record_compliance_outcome(
-            &self,
-            _audit: &proxima_core::compliance::ComplianceAuditContext,
-            _outcome: &proxima_core::compliance::ComplianceEraseOutcome,
-        ) -> Result<(), StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn erase_group_owner_if_abandoned(
-            &self,
-            _auth: &proxima_core::compliance::EraseAuthorization,
+            _auth: &proxima_core::owner_inverse::EraseAuthorization,
             _group_id: GroupId,
             _object_purge_planned: bool,
-            _tables: &proxima_core::compliance::ComplianceSidecarTables,
-        ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+            _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
         }
 
-        async fn erase_personal_owner_if_drop_verified(
+        async fn erase_personal_owner(
             &self,
-            _auth: &proxima_core::compliance::EraseAuthorization,
+            _auth: &proxima_core::owner_inverse::EraseAuthorization,
             _user_id: UserId,
             _object_purge_planned: bool,
-            _tables: &proxima_core::compliance::ComplianceSidecarTables,
-        ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+            _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
         }
 
-        async fn erase_group_source_scope_if_owner_abandoned(
+        async fn erase_group_source_scope(
             &self,
-            _auth: &proxima_core::compliance::EraseAuthorization,
+            _auth: &proxima_core::owner_inverse::EraseAuthorization,
             _group_id: GroupId,
             _source_id: &SourceId,
-            _tables: &proxima_core::compliance::ComplianceSidecarTables,
-        ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+            _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
         }
 
-        async fn erase_personal_source_scope_if_drop_verified(
+        async fn erase_personal_source_scope(
             &self,
-            _auth: &proxima_core::compliance::EraseAuthorization,
+            _auth: &proxima_core::owner_inverse::EraseAuthorization,
             _user_id: UserId,
             _source_id: &SourceId,
-            _tables: &proxima_core::compliance::ComplianceSidecarTables,
-        ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+            _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -938,20 +876,11 @@ pub(in crate::engine) mod tests {
 
         async fn export_owner_bundle(
             &self,
-            _auth: &proxima_core::compliance::ExportAuthorization,
-            _tables: &proxima_core::compliance::ComplianceSidecarTables,
-        ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
+            _auth: &proxima_core::owner_inverse::ExportAuthorization,
+            _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        ) -> Result<proxima_core::owner_inverse::OwnerExportBundle, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects reads".into(),
-            ))
-        }
-
-        async fn clear_cited_object_purge_pending(
-            &self,
-            _operation_id: uuid::Uuid,
-        ) -> Result<(), StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
             ))
         }
     }
@@ -1011,8 +940,7 @@ pub(in crate::engine) mod tests {
                 .owner_transfer(storage.clone())
                 .source_batch(storage.clone())
                 .source_cursor(storage.clone())
-                .fact_retention(storage.clone())
-                .compliance_erase(storage.clone())
+                .owner_erase(storage.clone())
                 .registry_projection(storage.clone())
                 .write_session(storage)
                 .build()

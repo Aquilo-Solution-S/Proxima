@@ -679,7 +679,7 @@ async fn exercise_cross_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
 /// rediscovered: the payload documents `repo_id: None` as "cross-repo
 /// observations", which makes a perspective SERIES that never named this
 /// repository the owner's, not any one repository's — the same standing
-/// `engineer_self_v1` has. It goes with the owner, through the compliance
+/// `engineer_self_v1` has. It goes with the owner, through the owner
 /// erase.
 ///
 /// The series is the unit, so the sibling test

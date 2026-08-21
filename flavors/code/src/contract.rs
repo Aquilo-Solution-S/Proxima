@@ -157,7 +157,7 @@ pub fn substring_arm(schema_id: &str) -> Option<SubstringArm> {
 const fn memory_sidecar(table: &'static str, t_fkey: &'static str) -> Surface {
     Surface {
         table,
-        key: KeyShape::MemoryT,
+        key: KeyShape::MemoryT { column: "t" },
         owner_columns: &[],
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::ByKey,
@@ -173,11 +173,28 @@ const fn memory_sidecar(table: &'static str, t_fkey: &'static str) -> Surface {
 }
 
 /// A detail table keyed off another sidecar's `t` with `ON DELETE CASCADE`.
-/// It emits no statement in any inverse: the constraint is the proof.
-const fn detail_table(table: &'static str, parent_fkey: &'static str) -> Surface {
+/// It emits no ERASE statement: the constraint is the proof. It does emit an
+/// export statement, because a cascade says who deletes the row, not who the
+/// row belongs to.
+///
+/// `key_column` is the column carrying that `t`. All four detail tables
+/// declared `Custom(&["memory_id"])` and not one of them has a column by
+/// that name — they are `criteria_memory_id`, `plan_memory_id`,
+/// `caller_memory_id`, `test_requested_memory_id`. The declaration was
+/// unfalsifiable while nothing read it: erase skips a `Cascade` surface, and
+/// export reached only the schema-registered sidecar families, so these four
+/// tables were absent from every owner bundle ever produced.
+const fn detail_table(
+    table: &'static str,
+    key_column: &'static str,
+    parent_fkey: &'static str,
+) -> Surface {
     Surface {
         table,
-        key: KeyShape::Custom(&["memory_id"]),
+        // The parent FK targets the parent sidecar's `t`, and that `t` is a
+        // `proxima_core.memory` t — so this column holds a memory key under
+        // a different name, which is exactly what `MemoryT { column }` says.
+        key: KeyShape::MemoryT { column: key_column },
         owner_columns: &[],
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::Cascade {
@@ -359,6 +376,7 @@ const CODE_CHUNK_V1: SchemaContract = SchemaContract {
         memory_sidecar("proxima_code.code_chunk_v1", "code_chunk_v1_t_fkey"),
         detail_table(
             "proxima_code.code_chunk_call_v1",
+            "caller_memory_id",
             "code_chunk_call_v1_caller_memory_id_fkey",
         ),
     ],
@@ -416,6 +434,7 @@ const TEST_REQUESTED_V1: SchemaContract = record_schema(
         memory_sidecar("proxima_code.test_requested_v1", "test_requested_v1_t_fkey"),
         detail_table(
             "proxima_code.test_requested_criterion_v1",
+            "test_requested_memory_id",
             "test_requested_criterion_v1_test_requested_memory_id_fkey",
         ),
     ],
@@ -433,6 +452,7 @@ const ACCEPTANCE_CRITERIA_V1: SchemaContract = record_schema(
         ),
         detail_table(
             "proxima_code.acceptance_criterion_v1",
+            "criteria_memory_id",
             "acceptance_criterion_v1_criteria_memory_id_fkey",
         ),
     ],
@@ -480,6 +500,7 @@ const EXECUTION_PLAN_V1: SchemaContract = record_schema(
         memory_sidecar("proxima_code.execution_plan_v1", "execution_plan_v1_t_fkey"),
         detail_table(
             "proxima_code.execution_plan_item_v1",
+            "plan_memory_id",
             "execution_plan_item_v1_plan_memory_id_fkey",
         ),
     ],
@@ -714,6 +735,11 @@ pub static CODE_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
     tools: TOOLS,
     resources: &[],
     projection: ProjectionDecl::Table(CODE_PROJECTION),
+    // Every code surface is a memory-keyed sidecar or the repo state table,
+    // and the generic loops reach all of them. Nothing here needs a
+    // hand-written statement, and freeze now proves that rather than the
+    // flavor asserting it.
+    bespoke_erase_legs: &[],
 };
 
 /// The code flavor's projection: three search surfaces, one table, one
@@ -785,7 +811,7 @@ mod tests {
     }
 
     /// The freeze rejects resources from any flavor but #0. This one has
-    /// never declared any, so compliance is by absence — pin it so a future
+    /// never declared any, so conformance is by absence — pin it so a future
     /// `proxima://code/...` has to argue with a test.
     #[test]
     fn the_flavor_declares_no_resources_and_is_not_core() {

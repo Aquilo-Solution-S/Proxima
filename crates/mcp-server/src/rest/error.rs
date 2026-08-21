@@ -234,7 +234,7 @@ const fn protocol_status(code: ErrorCode) -> (StatusCode, &'static str, &'static
             "duplicate-trigger-in-request",
             "Duplicate trigger in request",
         ),
-        // 409, not 451. Suppression is a compliance primitive (13) and is not
+        // 409, not 451. Suppression is a erasure primitive (13) and is not
         // necessarily a legal hold; 451 would overclaim.
         ErrorCode::Suppressed => (StatusCode::CONFLICT, "suppressed", "Suppressed"),
         ErrorCode::Internal => (

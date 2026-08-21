@@ -236,7 +236,7 @@ headline pin theorems in `Causa/Edges.lean`.
 | CO-2/3/4/5/6, CO-8, CO-12/13/14 | Admin op surface / scope / outcomes / source-scope delete | excluded: admin op & outcome protocol — the kernel rule is the `abandoned` predicate, not an op/outcome enum (`ComplianceOp`/`ComplianceOutcome`/`DeleteSourceScope` retired 2026-06-28) |
 | CO-9/10 | Pause/resume semantics | excluded: runtime dispatch gate, NOT erasure (`paused` axiom retired 2026-06-28) |
 | CO-15/16/17/18/20 | Suppression / dedup-key retention + re-ingest block | excluded: source/flavor ingest boundary (`SuppressionKey`/`SuppressionEntry`/`suppression_key` retired 2026-06-28) |
-| CO-19/29 | Suppression/audit survive erasure indefinitely | excluded: audit & suppression are engine tables, never cognitive rows — they survive by not being kernel entities at all |
+| CO-19/29 | Suppression/audit survive erasure indefinitely | excluded: neither was ever a cognitive row, and as of v0.0.8 neither is a table either — the audit journal was deleted and the suppression table never existed. What an operation destroyed is returned to the caller as a receipt; whether a host keeps it is the host's promise, not the kernel's |
 | CO-11, CO-21..28, CO-30..58 | Export, audit content, side effects, vocabulary fields, owner policy, GDPR mappings | excluded: controller/engine obligations and legal commentary; ES-9 carries the kernel-relevant face |
 
 ### r1 additions (codex review, 2026-06-11)

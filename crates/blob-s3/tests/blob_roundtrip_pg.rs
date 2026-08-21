@@ -1340,7 +1340,7 @@ async fn purge_owner_objects_removes_completed_blob() {
         "object present in S3 before purge"
     );
 
-    // In-band purge (the port the compliance-erase engine calls on owner erase).
+    // In-band purge (the port the engine calls after an owner erase commits).
     let deleted = store.purge_owner_objects(owner).await.expect("purge");
     assert!(
         deleted >= 1,

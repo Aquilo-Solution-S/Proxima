@@ -87,7 +87,7 @@ lock fails and retries on the next pod rather than queueing behind readers.
 | `PROXIMA_REST_ENABLED` | no | `true` | Serve `/v1` on the MCP listener. Default `false`; has no effect unless the binary was built with the `rest` feature. |
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_transfer`). Set `full` to advertise the whole surface incl. `core_transfer` (moves a memory's owner to another group) — logged at startup. |
 | `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. |
-| `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow. Compliance erase is not exposed as an MCP action. |
+| `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow. Owner erase is not exposed as an MCP action. |
 | `PROXIMA_EMBED_BASE_URL` | when enabled | `https://embeddings.example/v1` | OpenAI-compatible `/embeddings` base. Required with `PROXIMA_EMBED_MODEL` when embeddings are enabled; plaintext `http://` is accepted for loopback only. |
 | `PROXIMA_EMBED_API_KEY` | no | `sk-...` | Bearer for a hosted embedding endpoint. Omit for a local one. |
 | `PROXIMA_EMBED_MODEL` | when enabled | `provider-embedding-model` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` when embeddings are enabled; must return 1024-dim vectors. |
@@ -137,7 +137,7 @@ cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
 >
 > Tool advertisement is `frozen registry ∩ deployment ToolScope ∩ bound-owner
 > role`: read-only tools require read access; write/unknown tools require
-> Fact write access. Compliance erase stays Host API/admin-only.
+> Fact write access. Owner erase stays Host API/admin-only.
 
 One non-empty `HostAllowlist` gates the complete listener *before* auth:
 `/mcp`, `/v1`, mounted flavor routes, OAuth metadata, and fallback responses.
@@ -249,12 +249,14 @@ Host-only operator methods:
 
 | Verb | Authorization | Contract |
 |---|---|---|
-| `Engine::embedding_ann_observability(authz)` | `AuthPath::System` or `ComplianceAdminPort::may_perform_operator_maintenance` | owner-agnostic rows/bytes/backlog/stale/orphan/recall-canary signals |
+| `Engine::embedding_ann_observability(authz)` | `AuthPath::System` or `OwnerEraseAuthorityPort::may_perform_operator_maintenance` | owner-agnostic rows/bytes/backlog/stale/orphan/recall-canary signals |
 | `Engine::sweep_orphan_embedding_rows(authz)` | same | deletes embedding infra rows whose source memory/goal row no longer exists |
 
-Compliance erase is separate: owner/source erasure deletes embeddings,
-`embedding_heads`, and `embedding_jobs` synchronously at commit. The orphan
-sweep is crash-residue maintenance only.
+An owner erase is separate: owner- and source-scope erasure delete
+embeddings, `embedding_heads` and `embedding_jobs` synchronously at commit.
+The orphan sweep is crash-residue maintenance only — it removes infra rows
+whose memory or goal is already gone, and destroys nothing an erase was
+responsible for.
 
 Day-2 operations — backup/restore, failed-migration behavior, readiness probe,
 and the embedding signal→action runbook: [how-to/operate.md](how-to/operate.md).

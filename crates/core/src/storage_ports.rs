@@ -10,7 +10,6 @@ mod cited_blob;
 mod cited_blob_read;
 mod cited_blob_reconcile;
 mod cited_object_erase;
-mod compliance;
 mod cursors;
 mod delegated_authority;
 mod embeddings;
@@ -19,6 +18,7 @@ mod goals;
 mod handles;
 mod mcp;
 mod memory;
+mod owner_inverse;
 mod proof;
 mod registry;
 mod rejecting;
@@ -45,9 +45,6 @@ pub use cited_blob_reconcile::{
     CitedBlobReconcilePort, MAX_RECONCILE_SAMPLE,
 };
 pub use cited_object_erase::CitedObjectErasePort;
-pub use compliance::{
-    ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
-};
 pub use cursors::SourceCursorPort;
 pub use delegated_authority::{
     DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegationGrant,
@@ -64,11 +61,11 @@ pub use embeddings::{
 pub use fact::{FactIngestPort, SourceBatchPort};
 pub use goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 pub use handles::{
-    ChangeEventHandle, CitationHandle, ComplianceAdminHandle, ComplianceEraseHandle,
-    EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle, EmbeddingWriteHandle,
-    FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWakeCandidateHandle,
-    GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle, MemoryAuthoringHandle,
-    MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
+    ChangeEventHandle, CitationHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle,
+    EmbeddingTextHandle, EmbeddingWriteHandle, FactIngestHandle, GoalReadHandle,
+    GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle,
+    MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle,
+    OwnerDropProofHandle, OwnerEraseAuthorityHandle, OwnerInverseHandle,
     OwnerMembershipAdminHandle, OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle,
     SourceCursorHandle, WriteSessionFactoryHandle,
 };
@@ -77,6 +74,7 @@ pub use memory::{
     CitationPort, InboundPinQuery, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
     OperatorWriteProof,
 };
+pub use owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
 pub use proof::{OperatorMaintenanceProof, OwnerWritePermit};
 pub use registry::RegistryProjectionPort;
 pub use write_session::{WriteSession, WriteSessionFactory};

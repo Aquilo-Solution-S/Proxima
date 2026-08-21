@@ -2,11 +2,11 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::handles::{
-    ChangeEventHandle, CitationHandle, ComplianceAdminHandle, ComplianceEraseHandle,
-    EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle, EmbeddingWriteHandle,
-    FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWakeCandidateHandle,
-    GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle, MemoryAuthoringHandle,
-    MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
+    ChangeEventHandle, CitationHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle,
+    EmbeddingTextHandle, EmbeddingWriteHandle, FactIngestHandle, GoalReadHandle,
+    GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle,
+    MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle,
+    OwnerDropProofHandle, OwnerEraseAuthorityHandle, OwnerInverseHandle,
     OwnerMembershipAdminHandle, OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle,
     SourceCursorHandle, WriteSessionFactoryHandle,
 };
@@ -36,9 +36,8 @@ pub struct StoragePorts {
     #[allow(dead_code)]
     source_batch: SourceBatchHandle,
     source_cursor: SourceCursorHandle,
-    fact_retention: FactRetentionHandle,
-    compliance_erase: ComplianceEraseHandle,
-    compliance_admin: Option<ComplianceAdminHandle>,
+    owner_erase: OwnerInverseHandle,
+    erase_authority: Option<OwnerEraseAuthorityHandle>,
     owner_drop_proof: Option<OwnerDropProofHandle>,
     registry_projection: RegistryProjectionHandle,
     write_session: WriteSessionFactoryHandle,
@@ -50,11 +49,6 @@ pub(crate) struct AccessAdminStoragePorts {
     pub owner_membership_admin: OwnerMembershipAdminHandle,
     pub owner_access_read: OwnerAccessReadHandle,
     pub owner_transfer: OwnerTransferHandle,
-}
-
-#[derive(Clone)]
-pub(crate) struct FactRetentionStoragePorts {
-    pub fact_retention: FactRetentionHandle,
 }
 
 #[derive(Clone)]
@@ -104,16 +98,15 @@ pub(crate) struct ReadVerbStoragePorts {
     pub memory_inspect: MemoryInspectHandle,
     pub change_event: ChangeEventHandle,
     pub citation: CitationHandle,
-    pub fact_retention: FactRetentionHandle,
     pub goal_wake_candidate: GoalWakeCandidateHandle,
     pub goal_read: GoalReadHandle,
 }
 
 #[derive(Clone)]
 #[allow(dead_code)]
-pub(crate) struct ComplianceStoragePorts {
-    pub compliance_erase: ComplianceEraseHandle,
-    pub compliance_admin: Option<ComplianceAdminHandle>,
+pub(crate) struct OwnerInverseStoragePorts {
+    pub owner_erase: OwnerInverseHandle,
+    pub erase_authority: Option<OwnerEraseAuthorityHandle>,
     pub owner_drop_proof: Option<OwnerDropProofHandle>,
     pub embedding_maintenance: EmbeddingMaintenanceHandle,
 }
@@ -121,8 +114,7 @@ pub(crate) struct ComplianceStoragePorts {
 #[derive(Clone)]
 pub(crate) struct EngineStoragePorts {
     pub access_admin: AccessAdminStoragePorts,
-    pub compliance: ComplianceStoragePorts,
-    pub fact_retention: FactRetentionStoragePorts,
+    pub owner_inverse: OwnerInverseStoragePorts,
     pub source_cursor: SourceCursorStoragePorts,
     pub goal_command: GoalCommandStoragePorts,
     pub ingest: IngestStoragePorts,
@@ -155,9 +147,8 @@ pub struct StoragePortsBuilder {
     owner_transfer: Option<OwnerTransferHandle>,
     source_batch: Option<SourceBatchHandle>,
     source_cursor: Option<SourceCursorHandle>,
-    fact_retention: Option<FactRetentionHandle>,
-    compliance_erase: Option<ComplianceEraseHandle>,
-    compliance_admin: Option<ComplianceAdminHandle>,
+    owner_erase: Option<OwnerInverseHandle>,
+    erase_authority: Option<OwnerEraseAuthorityHandle>,
     owner_drop_proof: Option<OwnerDropProofHandle>,
     registry_projection: Option<RegistryProjectionHandle>,
     write_session: Option<WriteSessionFactoryHandle>,
@@ -206,35 +197,36 @@ impl StoragePorts {
             owner_transfer: rejecting.clone(),
             source_batch: rejecting.clone(),
             source_cursor: rejecting.clone(),
-            fact_retention: rejecting.clone(),
-            compliance_erase: rejecting.clone(),
-            compliance_admin: None,
+            owner_erase: rejecting.clone(),
+            erase_authority: None,
             owner_drop_proof: None,
             registry_projection: rejecting.clone(),
             write_session: rejecting,
         }
     }
 
-    /// All-rejecting ports except a caller-supplied `compliance_erase` (and an
-    /// optional `owner_drop_proof`), so engine compliance verbs can be
+    /// All-rejecting ports except a caller-supplied `owner_erase` (and an
+    /// optional `owner_drop_proof`), so the engine's owner-inverse verbs can be
     /// exercised against a fake erase backend without wiring 20+ ports.
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn rejecting_with_compliance_erase(
-        compliance_erase: ComplianceEraseHandle,
+    pub(crate) fn rejecting_with_owner_inverse(
+        owner_erase: OwnerInverseHandle,
         owner_drop_proof: Option<OwnerDropProofHandle>,
     ) -> Self {
         let mut ports = Self::rejecting();
-        ports.compliance_erase = compliance_erase;
+        ports.owner_erase = owner_erase;
         ports.owner_drop_proof = owner_drop_proof;
         ports
     }
 
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn rejecting_with_compliance_admin(compliance_admin: ComplianceAdminHandle) -> Self {
+    pub(crate) fn rejecting_with_erase_authority(
+        erase_authority: OwnerEraseAuthorityHandle,
+    ) -> Self {
         let mut ports = Self::rejecting();
-        ports.compliance_admin = Some(compliance_admin);
+        ports.erase_authority = Some(erase_authority);
         ports
     }
 
@@ -258,14 +250,11 @@ impl From<StoragePorts> for EngineStoragePorts {
                 owner_access_read: ports.owner_access_read.clone(),
                 owner_transfer: ports.owner_transfer.clone(),
             },
-            compliance: ComplianceStoragePorts {
-                compliance_erase: ports.compliance_erase.clone(),
-                compliance_admin: ports.compliance_admin.clone(),
+            owner_inverse: OwnerInverseStoragePorts {
+                owner_erase: ports.owner_erase.clone(),
+                erase_authority: ports.erase_authority.clone(),
                 owner_drop_proof: ports.owner_drop_proof.clone(),
                 embedding_maintenance: ports.embedding_maintenance.clone(),
-            },
-            fact_retention: FactRetentionStoragePorts {
-                fact_retention: ports.fact_retention.clone(),
             },
             source_cursor: SourceCursorStoragePorts {
                 source_cursor: ports.source_cursor.clone(),
@@ -300,7 +289,6 @@ impl From<StoragePorts> for EngineStoragePorts {
                 memory_inspect: ports.memory_inspect.clone(),
                 change_event: ports.change_event.clone(),
                 citation: ports.citation.clone(),
-                fact_retention: ports.fact_retention.clone(),
                 goal_wake_candidate: ports.goal_wake_candidate.clone(),
                 goal_read: ports.goal_read.clone(),
             },
@@ -431,20 +419,14 @@ impl StoragePortsBuilder {
     }
 
     #[must_use]
-    pub fn fact_retention(mut self, handle: FactRetentionHandle) -> Self {
-        self.fact_retention = Some(handle);
+    pub fn owner_erase(mut self, handle: OwnerInverseHandle) -> Self {
+        self.owner_erase = Some(handle);
         self
     }
 
     #[must_use]
-    pub fn compliance_erase(mut self, handle: ComplianceEraseHandle) -> Self {
-        self.compliance_erase = Some(handle);
-        self
-    }
-
-    #[must_use]
-    pub fn compliance_admin(mut self, handle: ComplianceAdminHandle) -> Self {
-        self.compliance_admin = Some(handle);
+    pub fn erase_authority(mut self, handle: OwnerEraseAuthorityHandle) -> Self {
+        self.erase_authority = Some(handle);
         self
     }
 
@@ -472,7 +454,7 @@ impl StoragePortsBuilder {
     /// # Errors
     ///
     /// Returns [`StoragePortsBuildError`] naming every required port handle that
-    /// was not configured. `compliance_admin` and `owner_drop_proof` are
+    /// was not configured. `erase_authority` and `owner_drop_proof` are
     /// optional and never reported.
     pub fn try_build(self) -> Result<StoragePorts, StoragePortsBuildError> {
         // One list of required ports; the macro expands the missing-name
@@ -491,7 +473,7 @@ impl StoragePortsBuilder {
                 };
                 StoragePorts {
                     $($port,)+
-                    compliance_admin: self.compliance_admin,
+                    erase_authority: self.erase_authority,
                     owner_drop_proof: self.owner_drop_proof,
                 }
             }};
@@ -518,8 +500,7 @@ impl StoragePortsBuilder {
             owner_transfer,
             source_batch,
             source_cursor,
-            fact_retention,
-            compliance_erase,
+            owner_erase,
             registry_projection,
             write_session,
         ))
@@ -569,7 +550,7 @@ mod tests {
         assert!(err.to_string().contains("fact_ingest"));
 
         // Optional ports are never reported as missing.
-        assert!(!err.missing().contains(&"compliance_admin"));
+        assert!(!err.missing().contains(&"erase_authority"));
         assert!(!err.missing().contains(&"owner_drop_proof"));
     }
 }

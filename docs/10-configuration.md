@@ -149,7 +149,7 @@ Profiles:
 | Profile | Scope |
 |---|---|
 | `full` | Opt-in. No filtering (`ToolScope::All`) when allow/deny are unset; otherwise all registered ids resolved to a palette. Includes controller/destructive tools such as `core_membership` and `core_transfer`. |
-| `memory` | **Default.** Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, citation-only Fact actions, the full goal lifecycle, the cited-blob upload lane, and code-as-memory repository/chunk/commit reads. The upload lane activates with `PROXIMA_S3_BUCKET` (without it, `core_upload` fails typed at call time) and its actions are individually deniable as `core_upload:prepare`, `core_upload:complete`, `core_upload:abort`, `core_upload:read_url`. Excludes `core_membership`, `core_transfer`, and compliance erase. |
+| `memory` | **Default.** Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, citation-only Fact actions, the full goal lifecycle, the cited-blob upload lane, and code-as-memory repository/chunk/commit reads. The upload lane activates with `PROXIMA_S3_BUCKET` (without it, `core_upload` fails typed at call time) and its actions are individually deniable as `core_upload:prepare`, `core_upload:complete`, `core_upload:abort`, `core_upload:read_url`. Excludes `core_membership`, `core_transfer`, and owner erase. |
 
 Allow/deny ids use canonical scope keys: flat tool ids (`core_search_memories`),
 dispatcher action leaf keys (`core_goal:set`, `core_fact:citation_of_fact`),
@@ -337,31 +337,29 @@ inline with the configured embedding client and therefore requires the same
 `PROXIMA_EMBED_BASE_URL` + `PROXIMA_EMBED_MODEL` block; the API key remains
 optional.
 
-Retention maintenance follows the same doctrine — one idempotent,
+Storage maintenance follows the same doctrine — one idempotent,
 cron-safe command, serialized by its own advisory lock, with no
 in-process scheduler:
 
 ```sh
-proxima-mcp maintain-retention --enforce-fact-retention \
-    --prune-change-events-older-than 90d
+proxima-mcp maintain-storage --retry-cold-object-purges \
+    --prune-change-log-older-than 90d
 ```
 
-`--enforce-fact-retention` forgets (cools) Facts older than their owner's
-configured retention window, leaving a cold stub rather than a tombstone flag
-(owners without a window are untouched; MCP-call audit Facts are never aged
-out). A live (non-dry-run) action requires the same `PROXIMA_S3_*` block as
-the serving host; it fails closed rather than writing cold objects to a
-process-local store.
-`--prune-change-events-older-than <DURATION>` deletes `announce`
-rows older than the horizon (`3600s`, `45m`, `36h`, `90d`, `2w`). At
-least one action flag is required and there is deliberately no default
-horizon — destruction is always an explicit operator choice. Owners
-under an active legal/security hold are skipped and reported.
-`--dry-run` prints per-owner would-be counts without changing anything.
-See [13 §Retention
-enforcement](13-compliance.md#retention-enforcement--maintain-retention-pass)
-for the compliance contract, including the forward-poller cursor-gap
-caveat when choosing a prune horizon.
+`--retry-cold-object-purges` drains durable exact-key object-store debts an
+erase committed but could not destroy. `--prune-change-log-older-than
+<DURATION>` deletes `announce` rows older than the horizon (`3600s`, `45m`,
+`36h`, `90d`, `2w`). At least one action flag is required and there is
+deliberately no default horizon — destruction is always an explicit operator
+choice. `--dry-run` prints per-owner would-be counts without changing
+anything.
+
+There is no Fact-retention enforcement: a retention window is a promise about
+someone's data, and the host that made the promise schedules its own
+`forget_memory` calls. See [13 §Storage
+maintenance](13-compliance.md#storage-maintenance--maintain-storage-pass),
+including the forward-poller cursor-gap caveat when choosing a prune
+horizon.
 
 <a id="capability-vocabulary"></a>
 ## Capability vocabulary

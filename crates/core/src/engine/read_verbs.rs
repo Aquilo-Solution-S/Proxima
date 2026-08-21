@@ -70,7 +70,6 @@ pub struct GetGraphReadRequest {
 pub struct GetGraphReadResponse {
     pub pending_embedding_jobs: u64,
     pub failed_embedding_jobs: u64,
-    pub fact_retention_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -585,26 +584,14 @@ pub(in crate::engine) async fn get_graph_authorized(
     ports: &ReadVerbStoragePorts,
     owner: &OwnerRef,
 ) -> Result<GetGraphReadResponse, ProtocolError> {
-    let (job_status, fact_retention_seconds) = tokio::try_join!(
-        async {
-            ports
-                .embedding_job
-                .count_embedding_job_status(owner)
-                .await
-                .map_err(|err| storage_error("count_embedding_job_status", &err))
-        },
-        async {
-            ports
-                .fact_retention
-                .get_fact_retention(owner)
-                .await
-                .map_err(|err| storage_error("get_fact_retention", &err))
-        },
-    )?;
+    let job_status = ports
+        .embedding_job
+        .count_embedding_job_status(owner)
+        .await
+        .map_err(|err| storage_error("count_embedding_job_status", &err))?;
     Ok(GetGraphReadResponse {
         pending_embedding_jobs: job_status.pending,
         failed_embedding_jobs: job_status.failed,
-        fact_retention_seconds,
     })
 }
 

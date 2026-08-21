@@ -1,11 +1,11 @@
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{Owner, StorageError};
 
-mod compliance;
 mod embeddings;
 mod goals;
 mod ingest;
 mod memory;
+mod owner_inverse;
 mod owners;
 mod read;
 mod registry;

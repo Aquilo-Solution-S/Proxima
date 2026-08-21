@@ -86,6 +86,29 @@ pub enum FlavorRegistryError {
         flavor_id: &'static str,
         schema_id: SchemaId,
     },
+    /// A surface declares itself exportable while carrying neither an owner
+    /// column nor a key with a home table, so no statement can reach it from
+    /// the owner. It would go missing from every bundle.
+    UnreachableExportSurface {
+        flavor_id: &'static str,
+        table: &'static str,
+    },
+    /// A surface declares an erase no leg can perform: keyed on something
+    /// the erase builds no selection set for, and claimed by no bespoke
+    /// leg. The erase would skip it in silence and report `Completed` over
+    /// rows that survived the owner they belong to.
+    UndeletableSurface {
+        flavor_id: &'static str,
+        table: &'static str,
+    },
+    /// A declared bespoke erase leg that names nothing it could own — a
+    /// table the flavor does not declare, or one whose declaration says no
+    /// statement runs at all.
+    BespokeEraseLegMismatch {
+        flavor_id: &'static str,
+        table: &'static str,
+        why: &'static str,
+    },
     /// A schema declared `NotTransferable` without naming where the refusal
     /// is enforced. A refusal nothing backs is a comment.
     UnenforcedTransferRefusal {
@@ -274,6 +297,26 @@ impl std::fmt::Display for FlavorRegistryError {
             } => write!(
                 f,
                 "flavor {flavor_id} declares schema {schema_id}, which does not carry its prefix"
+            ),
+            Self::UnreachableExportSurface { flavor_id, table } => write!(
+                f,
+                "flavor {flavor_id} declares {table} exportable, but it carries no owner \
+                 column and its key has no home table, so no export statement can reach \
+                 its owner"
+            ),
+            Self::UndeletableSurface { flavor_id, table } => write!(
+                f,
+                "flavor {flavor_id} declares an erase for {table} that no leg can perform: it is \
+                 keyed on neither a memory, a goal nor a blob, and no bespoke erase leg claims \
+                 it, so an owner erase would skip it and still report success"
+            ),
+            Self::BespokeEraseLegMismatch {
+                flavor_id,
+                table,
+                why,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares a bespoke erase leg for {table}, which {why}"
             ),
             Self::UnenforcedTransferRefusal {
                 flavor_id,

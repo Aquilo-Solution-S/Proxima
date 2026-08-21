@@ -62,7 +62,7 @@ Active -> Abandoned
 
 Every transition writes a new `t` on the same `handle`; `goal_head.t` advances.
 There is no `supersedes` column and no in-place version mutation.
-Compliance erasure is the only delete path.
+An owner erase is the only hard-delete path.
 
 Active set:
 

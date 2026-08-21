@@ -1,5 +1,10 @@
-//! Art. 17 erasure for the S3 side: remove an owner's bytes, not merely
-//! the rows that point at them.
+//! The object-store half of an owner erase: remove an owner's BYTES, not
+//! merely the rows that point at them.
+//!
+//! Postgres and S3 are two stores, and only one of them is reached by a
+//! `DELETE`. A host that has promised a user their documents are gone has
+//! not kept that promise while the objects are still fetchable, so the
+//! inverse of storing a blob has to include this half.
 
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 use proxima_core::storage_ports::CitedObjectErasePort;
@@ -24,10 +29,10 @@ impl CitedObjectErasePort for CitedBlobStore {
     /// S3 lifecycle rule on `pending/` and by the orphan sweep
     /// `reconcile_all` reports.
     ///
-    /// Wired in-band by owner-scope compliance erase so an Art. 17 owner
-    /// erasure removes the owner's uploaded (PII-bearing) documents, not just
-    /// the Postgres rows. Best-effort: the caller has already committed the row
-    /// deletes and treats any error here as non-fatal.
+    /// Wired in-band by the owner-scope erase so destroying an owner takes
+    /// the owner's uploaded documents with it, not just the Postgres rows.
+    /// Best-effort: the caller has already committed the row deletes and
+    /// treats any error here as non-fatal.
     ///
     /// # Errors
     ///
@@ -73,8 +78,8 @@ async fn owned_object_keys(
 /// Deletion is by `(key, version_id)`, not by key alone. On a *versioned*
 /// bucket — the deployment recommended in `docs/how-to/operate.md` — a
 /// key-only `delete_objects` merely inserts a delete marker and leaves the
-/// noncurrent PII object versions recoverable via `GetObject?versionId`,
-/// defeating the Art. 17 erasure guarantee. Enumerating versions and
+/// noncurrent object versions recoverable via `GetObject?versionId` — the
+/// bytes an erase claimed to destroy, still readable. Enumerating versions and
 /// deleting each by its `version_id` physically removes the bytes. On a
 /// non-versioned bucket every entry has `version_id = "null"`, so the same
 /// path deletes the live object and remains correct.

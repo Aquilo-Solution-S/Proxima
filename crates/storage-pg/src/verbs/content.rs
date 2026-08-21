@@ -119,3 +119,35 @@ pub async fn gc_unreferenced_content(
     .map_err(map_err)?;
     Ok(())
 }
+
+/// The same orphan anti-join over a whole set of Content ids, in one
+/// statement.
+///
+/// Owner-scope erase used to call [`gc_unreferenced_content`] in a `for`
+/// loop, one round trip per distinct `content_id` of the owner — an N+1 leg
+/// inside the path whose whole argument is that it is set-based.
+/// `= ANY($1::uuid[])` is the entire fix, and the shape is already in the
+/// tree: `GC_UNREFERENCED_BLOBS_SQL` does the same anti-join over an array.
+pub async fn gc_unreferenced_content_batch(
+    tx: &mut Transaction<'_, Postgres>,
+    content_ids: &[Uuid],
+) -> Result<u64, StorageError> {
+    if content_ids.is_empty() {
+        return Ok(0);
+    }
+    Ok(sqlx::query(
+        "DELETE FROM proxima_core.content c
+          WHERE c.content_id = ANY($1::uuid[])
+            AND NOT EXISTS (
+                    SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id
+                )
+            AND NOT EXISTS (
+                    SELECT 1 FROM proxima_core.cooled k WHERE k.content_id = c.content_id
+                )",
+    )
+    .bind(content_ids)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    .rows_affected())
+}

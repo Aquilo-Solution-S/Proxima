@@ -414,18 +414,18 @@ def check_public_witnesses(findings: list[Finding]) -> None:
         findings,
         [p for p in export_files if p.exists()],
         r"\bpub\s+use\b.*\b(?:" + "|".join(witness_names) + r")\b",
-        "public forgeable compliance witness export",
+        "public forgeable abandonment witness export",
     )
-    compliance = ROOT / "crates/core/src/compliance.rs"
-    if compliance.exists():
-        lines = compliance.read_text(encoding="utf-8").splitlines()
+    inverse = ROOT / "crates/core/src/owner_inverse.rs"
+    if inverse.exists():
+        lines = inverse.read_text(encoding="utf-8").splitlines()
         public_ctor = re.compile(r"\bpub\s+fn\s+\w*Abandoned\w*\b")
         public_observation = re.compile(r"\bpub\s+enum\s+AbandonmentObservation\b")
         for line_no, line in enumerate(lines, 1):
             if ALLOW in line or "pub(crate)" in line:
                 continue
             if public_ctor.search(line) or public_observation.search(line):
-                findings.append(Finding(compliance, line_no, "public forgeable compliance witness constructor", line))
+                findings.append(Finding(inverse, line_no, "public forgeable abandonment witness constructor", line))
 
 
 def extract_struct_block(text: str, name: str) -> str:
@@ -445,26 +445,26 @@ def extract_struct_block(text: str, name: str) -> str:
 
 
 def check_caller_supplied_audit(findings: list[Finding]) -> None:
-    compliance = ROOT / "crates/core/src/compliance.rs"
-    if not compliance.exists():
+    inverse = ROOT / "crates/core/src/owner_inverse.rs"
+    if not inverse.exists():
         return
-    text = compliance.read_text(encoding="utf-8")
-    request = extract_struct_block(text, "ComplianceEraseRequest")
+    text = inverse.read_text(encoding="utf-8")
+    request = extract_struct_block(text, "OwnerEraseRequest")
     forbidden_fields = re.compile(r"\b(operation_id|requester|auth_path|requested_at|audit(?:_context)?)\b")
     for line_no, line in enumerate(request.splitlines(), 1):
         if ALLOW in line:
             continue
         if forbidden_fields.search(line):
-            findings.append(Finding(compliance, line_no, "caller-supplied compliance audit metadata", line))
+            findings.append(Finding(inverse, line_no, "caller-supplied erase audit metadata", line))
     for line_no, line in enumerate(text.splitlines(), 1):
-        if "ComplianceAuditContext" not in text:
+        if "OwnerEraseContext" not in text:
             break
-        if re.search(r"\bpub\s+fn\s+new\s*\(", line) and "ComplianceAuditContext" not in line:
+        if re.search(r"\bpub\s+fn\s+new\s*\(", line) and "OwnerEraseContext" not in line:
             # Only lines inside the impl are interesting; a small window keeps
             # false positives out without writing a Rust parser.
             window = "\n".join(text.splitlines()[max(0, line_no - 5) : line_no + 5])
-            if "impl ComplianceAuditContext" in window and "pub(crate)" not in line:
-                findings.append(Finding(compliance, line_no, "public ComplianceAuditContext constructor", line))
+            if "impl OwnerEraseContext" in window and "pub(crate)" not in line:
+                findings.append(Finding(inverse, line_no, "public OwnerEraseContext constructor", line))
 
 
 def rust_signature_for(text: str, name: str) -> tuple[int, str] | None:
@@ -532,12 +532,6 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
             "remove_group_member",
         ],
         "crates/core/src/storage_ports/cursors.rs": ["store_source_cursor"],
-        "crates/core/src/storage_ports/compliance.rs": [
-            "upsert_fact_retention",
-            "clear_fact_retention",
-            "set_legal_hold",
-            "clear_legal_hold",
-        ],
     }
     storage_pg_verbs = {
         "crates/storage-pg/src/verbs/fact_ingest.rs": [
@@ -554,12 +548,6 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
         "crates/storage-pg/src/verbs/persist_mcp_call.rs": [
             "persist_mcp_call_atomic",
             "persist_mcp_call_in_tx",
-        ],
-        "crates/storage-pg/src/verbs/fact_retention.rs": [
-            "upsert_fact_retention",
-            "clear_fact_retention",
-            "set_legal_hold",
-            "clear_legal_hold",
         ],
         "crates/storage-pg/src/verbs/fact_embeddings/jobs.rs": ["enqueue_missing_embedding_jobs"],
         "crates/storage-pg/src/verbs/source_cursors.rs": ["store_source_cursor"],

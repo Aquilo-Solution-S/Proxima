@@ -15,8 +15,8 @@ REQUIRED_SUBSTRINGS = {
         "Deferred rows are design intent, not implementation claims.",
     ],
     Path("docs/13-compliance.md"): [
-        "> **Status:** design intent plus current primitive inventory.",
-        "Deferred enforcement rows are not implementation claims.",
+        "> **Status:** current.",
+        "Deferred rows are design intent, not implementation claims.",
     ],
     Path("docs/14-protocol-surface.md"): [
         "> **Status:** current + deferred sections.",

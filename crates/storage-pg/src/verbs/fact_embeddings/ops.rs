@@ -312,7 +312,7 @@ async fn current_embedding_ids_by_distance(
 
 /// Delete embedding infrastructure rows whose source entity no longer exists.
 ///
-/// Compliance erase performs synchronous cascade deletes and must not rely on
+/// Owner erase performs synchronous cascade deletes and must not rely on
 /// this crash-residue maintenance path for lawful wipe semantics.
 ///
 /// # Errors

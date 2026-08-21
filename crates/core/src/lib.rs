@@ -16,7 +16,6 @@ pub mod capability;
 pub mod change_event;
 pub mod citations;
 pub mod cold;
-pub mod compliance;
 pub mod cursor;
 pub mod edge;
 pub mod engine;
@@ -33,6 +32,7 @@ pub mod models;
 pub mod net;
 pub mod operator_proofs;
 pub mod owner;
+pub mod owner_inverse;
 pub mod payload;
 pub mod payload_contract;
 pub mod protocol;
@@ -54,11 +54,6 @@ pub use capability::*;
 pub use change_event::*;
 pub use citations::*;
 pub use cold::{ColdObjectStore, cold_object_key};
-pub use compliance::{
-    ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseRequest,
-    ComplianceEraseTarget, ComplianceExportBundle, ComplianceExportCounts, ComplianceExportRequest,
-    ComplianceExportSidecarRows, ComplianceExportTarget,
-};
 pub use cursor::*;
 pub use edge::*;
 pub use engine::*;
@@ -81,6 +76,10 @@ pub use models::*;
 pub use net::*;
 pub use operator_proofs::*;
 pub use owner::*;
+pub use owner_inverse::{
+    OwnerEraseCounts, OwnerEraseOutcome, OwnerEraseRefusal, OwnerEraseRequest, OwnerEraseTarget,
+    OwnerExportBundle, OwnerExportRequest, OwnerExportTarget,
+};
 pub use payload::*;
 pub use payload_contract::assert_no_serde_json_value_fields;
 pub use read_models::*;
@@ -368,15 +367,15 @@ macro_rules! proxima_flavor {
 }
 
 pub use storage_ports::{
-    ChangeEventPort, CitationPort, ComplianceAdminPort, ComplianceErasePort,
-    DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegationId,
-    DelegationIssued, DelegationRevocation, EMBEDDING_RECONCILE_DEFAULT_LIMIT,
-    EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingJobStatusCounts,
-    EmbeddingMaintenancePort, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome,
-    EmbeddingRecallCanary, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
-    EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
-    FactIngestPort, FactRetentionPort, GoalReadPort, GoalWritePort, InboundPinQuery,
+    ChangeEventPort, CitationPort, DelegatedAuthorityError, DelegatedAuthorityService,
+    DelegatedCommand, DelegationId, DelegationIssued, DelegationRevocation,
+    EMBEDDING_RECONCILE_DEFAULT_LIMIT, EmbeddingAnnObservability, EmbeddingJobBacklog,
+    EmbeddingJobPort, EmbeddingJobStatusCounts, EmbeddingMaintenancePort, EmbeddingOrphanCounts,
+    EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, EmbeddingReconcileOptions,
+    EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome,
+    EmbeddingWritePort, FactIngestPort, GoalReadPort, GoalWritePort, InboundPinQuery,
     McpCallReadPort, McpCallWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
-    OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort, OwnerMembershipAdminPort,
-    OwnerTransferPort, RegistryProjectionPort, SourceBatchPort, SourceCursorPort, StoragePorts,
+    OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort, OwnerEraseAuthorityPort,
+    OwnerInversePort, OwnerMembershipAdminPort, OwnerTransferPort, RegistryProjectionPort,
+    SourceBatchPort, SourceCursorPort, StoragePorts,
 };

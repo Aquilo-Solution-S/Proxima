@@ -152,7 +152,7 @@ impl Engine {
     }
 
     /// Attach the host's external object-store erase port. Without it,
-    /// owner-scope compliance erase reclaims Postgres rows only; with it, the
+    /// owner-scope owner erase reclaims Postgres rows only; with it, the
     /// engine also purges the owner's object-store payloads in-band (best
     /// effort). Hosts wire the concrete blob backend here.
     #[must_use]

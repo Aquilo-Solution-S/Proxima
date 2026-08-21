@@ -12,10 +12,10 @@
 //! the write side: write, transfer, forget-to-cold, erase.
 #![allow(clippy::doc_markdown)]
 
-use proxima_core::compliance::{
-    ComplianceEraseOutcome, ComplianceEraseTarget, ComplianceSidecarTables, EraseAuthorization,
+use proxima_core::owner_inverse::{
+    EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget, OwnerSurfaces,
 };
-use proxima_core::storage_ports::{ComplianceErasePort, OwnerTransferPort, OwnerWritePermit};
+use proxima_core::storage_ports::{OwnerInversePort, OwnerTransferPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     AccessKind, AgentNoteV1, EntityId, FactPayload, GroupId, MemoryId, OwnerRef, SchemaId,
@@ -249,12 +249,12 @@ async fn erasing_an_admission_takes_its_projection_row() {
     .await;
 }
 
-/// R13: the compliance inverse reaches the projection WITHOUT being taught
+/// R13: the owner inverse reaches the projection WITHOUT being taught
 /// about it.
 ///
 /// `projection.memory_id` is `REFERENCES proxima_core.memory (t) ON DELETE
-/// CASCADE`, and Article 17 erase deletes `proxima_core.memory` rows, so
-/// the projection goes with them. Nothing in `verbs::compliance_erase`
+/// CASCADE`, and an owner erase deletes `proxima_core.memory` rows, so
+/// the projection goes with them. Nothing in `verbs::owner_erase`
 /// names a projection table and nothing should: the erase is the inverse
 /// of the write at the scope the write happened, and the constraint is
 /// what makes that true rather than a list somebody has to maintain.
@@ -263,8 +263,8 @@ async fn erasing_an_admission_takes_its_projection_row() {
 /// surviving its erased owner is a searchable row for a subject whose data
 /// was destroyed.
 #[tokio::test]
-async fn a_compliance_erase_takes_the_owners_projection_rows_by_cascade() {
-    with_db("proxima_proj_compliance", async |pg| {
+async fn an_owner_erase_takes_the_owners_projection_rows_by_cascade() {
+    with_db("proxima_proj_owner_erase", async |pg| {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let bystander = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -272,18 +272,18 @@ async fn a_compliance_erase_takes_the_owners_projection_rows_by_cascade() {
         let erased = write_note(pool, owner, None).await?;
         let kept = write_note(pool, bystander, None).await?;
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
             drop_event_id: "projection-cascade".into(),
         });
-        let sidecar_tables = ComplianceSidecarTables::for_registry(
+        let sidecar_tables = OwnerSurfaces::for_registry(
             &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
         );
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &sidecar_tables)
+            .erase_personal_owner(&auth, user, false, &sidecar_tables)
             .await?;
         assert!(
-            matches!(outcome, ComplianceEraseOutcome::Completed { .. }),
+            matches!(outcome, OwnerEraseOutcome::Completed { .. }),
             "expected a completed erase, got {outcome:?}"
         );
 

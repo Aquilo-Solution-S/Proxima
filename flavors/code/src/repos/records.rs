@@ -38,7 +38,7 @@ pub struct RepoEraseReceipt {
     /// named, Facts and Abstractions and Perspectives alike.
     pub memories_deleted: u64,
     /// Cold objects marked for destruction. They are destroyed by
-    /// `maintain-retention --retry-cold-object-purges`, not by the erase —
+    /// `maintain-storage --retry-cold-object-purges`, not by the erase —
     /// see `super::erase::erase_repo`.
     pub cold_objects_pending: u64,
     pub repo_record_deleted: bool,

@@ -2,8 +2,8 @@ use crate::access::{AccessKind, EntityId, Relation};
 use crate::authz::{
     AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome, MembershipChange,
 };
-use crate::compliance::ComplianceEraseTarget;
 use crate::error::ProtocolError;
+use crate::owner_inverse::OwnerEraseTarget;
 use crate::storage::StorageError;
 use crate::{GroupId, OwnerRef, UserId};
 
@@ -28,7 +28,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the caller lacks compliance-controller
+    /// Returns `Forbidden` when the caller lacks owner-erase authority
     /// authority or an authorization veto denies the bootstrap,
     /// `InvalidArgument` when the group already has an Admin, and `Internal`
     /// for storage failures.
@@ -38,10 +38,10 @@ impl Engine {
         group: GroupId,
         first_admin: UserId,
     ) -> Result<(), ProtocolError> {
-        let target = ComplianceEraseTarget::GroupOwner { group_id: group };
-        if !self.compliance_controller_authorized(authz, &target).await {
+        let target = OwnerEraseTarget::GroupOwner { group_id: group };
+        if !self.erase_authority_grants(authz, &target).await {
             return Err(ProtocolError::forbidden(
-                "compliance controller authorization required",
+                "owner-erase authority authorization required",
             ));
         }
 

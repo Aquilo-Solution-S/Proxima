@@ -1,6 +1,6 @@
-//! Best-effort external object-store erase for owner-scope compliance.
+//! Best-effort external object-store erase for an owner-scope erase.
 //!
-//! Core stays blob/storage-agnostic (docs/07): a compliance erase removes the
+//! Core stays blob/storage-agnostic (docs/07): a owner erase removes the
 //! owner's authoritative Postgres rows in-band, but any external object store
 //! holding the owner's cited-object payloads (e.g. an S3 bucket of uploaded OCR
 //! documents) lives behind this host-wired port. The facade registers the
@@ -11,7 +11,7 @@ use crate::OwnerRef;
 use crate::storage::StorageError;
 
 /// Purge an owner's external cited-object payloads during an OWNER-scope
-/// compliance erase.
+/// owner erase.
 ///
 /// Best-effort: the authoritative Postgres rows are already committed-deleted
 /// by the time this runs, and the object store is eventually consistent, so a

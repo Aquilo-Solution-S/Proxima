@@ -394,7 +394,7 @@ impl PgSidecarRegistry {
     ///
     /// Before the flavor contract, `owner_pinned` was declared once in
     /// `pg_sidecar!` and consumed by the Postgres adapter alone: core built
-    /// the compliance table lists without it and the adapter appended its
+    /// the owner-inverse table lists without it and the adapter appended its
     /// own leg on the way past. A schema could therefore be owner-pinned in
     /// storage and `Follow` in the contract with nothing to notice, which is
     /// a wrong-owner bundle rather than a crash.

@@ -140,9 +140,112 @@ impl FlavorRegistry {
             // (see `register_fixture_schema`).
             self.validate_contract_schemas(contract)?;
             Self::validate_contract_projection(contract)?;
+            Self::validate_contract_surfaces(contract)?;
+            Self::validate_erase_legs(contract)?;
         }
         if !self.contracts.is_empty() && !has_core {
             return Err(FlavorRegistryError::MissingCoreContract);
+        }
+        Ok(())
+    }
+
+    /// Every surface the flavor says is exportable must be REACHABLE from
+    /// the owner, and the check is here because the answer never depends on
+    /// the request.
+    ///
+    /// The owner export no longer keeps a hand-written statement per table;
+    /// it generates one per declared surface. That generator has exactly two
+    /// shapes — filter the surface's own `owner_id`, or join the home table
+    /// of its key and filter there — so a surface that declares `Rows` or
+    /// `Allowlist` while carrying neither an owner column nor a key with a
+    /// home is a bundle leg nothing can emit. Before the generator, such a
+    /// surface simply went missing from every bundle, silently, which is the
+    /// class of defect this refuses at boot.
+    ///
+    /// It is deliberately not a check on ERASE. An unreachable surface that
+    /// declares `Excluded` is a stated non-export; one that cascades is
+    /// deleted by a constraint whether or not anything can name its owner.
+    fn validate_contract_surfaces(
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        use crate::flavor::contract::ExportRule;
+
+        for surface in contract.all_surfaces() {
+            if matches!(surface.export, ExportRule::Excluded { .. }) {
+                continue;
+            }
+            if surface.owner_columns.is_empty() && surface.key.home().is_none() {
+                return Err(FlavorRegistryError::UnreachableExportSurface {
+                    flavor_id: contract.flavor_id,
+                    table: surface.table,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Every surface must have a leg that destroys it, and the check is at
+    /// boot because a missing one is discovered nowhere else.
+    ///
+    /// The erase partitions every declared surface into exactly one of five
+    /// answers — a generated keyed leg, a generated owned leg, a named
+    /// hand-written leg, a constraint, or a declared non-erase with a
+    /// reason. There is no sixth answer, and the sixth that kept appearing
+    /// was silence: `ByKey` on a key the erase builds no selection set for
+    /// fell through both generic loops, and only an exemption list nobody
+    /// had updated stood between that and a table nothing ever deletes.
+    ///
+    /// This was a unit test in `proxima-storage-pg` until it wasn't enough.
+    /// That crate does not depend on any flavor, so the test could only ever
+    /// see flavor #0; an out-of-tree flavor declaring `ByKey` on a
+    /// `Custom` key froze cleanly, booted cleanly, and its erase reported
+    /// `Completed` over rows that outlived their owner. Under a model where
+    /// the host owns every promise about erasure, a substrate that quietly
+    /// keeps rows is the one failure it must not have. So the partition is
+    /// here, where every flavor passes through, in-tree or not.
+    ///
+    /// [`FlavorContract::erase_leg`] is the classifier both this and the
+    /// erase itself call, so this is a check on the code that runs rather
+    /// than on a second description of it.
+    fn validate_erase_legs(
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        use crate::flavor::contract::{EraseLeg, EraseRule};
+
+        for surface in contract.all_surfaces() {
+            if contract.erase_leg(&surface) == EraseLeg::Unreachable {
+                return Err(FlavorRegistryError::UndeletableSurface {
+                    flavor_id: contract.flavor_id,
+                    table: surface.table,
+                });
+            }
+        }
+
+        // A stale name is how the hand-written lists rotted in the first
+        // place, and an exemption that claims a `Cascade` or `Never`
+        // surface is a flavor arguing with itself about whether a statement
+        // runs.
+        for entry in contract.bespoke_erase_legs {
+            let why = match contract
+                .all_surfaces()
+                .find(|surface| surface.table == entry.table)
+            {
+                None => "this flavor does not declare",
+                Some(surface) => match surface.erase {
+                    EraseRule::ByKey | EraseRule::ByOwner => continue,
+                    EraseRule::Cascade { .. } => {
+                        "a constraint removes, so no hand-written statement should touch it"
+                    }
+                    EraseRule::Never { .. } => {
+                        "is a declared non-erase, so no statement should touch it"
+                    }
+                },
+            };
+            return Err(FlavorRegistryError::BespokeEraseLegMismatch {
+                flavor_id: contract.flavor_id,
+                table: entry.table,
+                why,
+            });
         }
         Ok(())
     }
@@ -597,9 +700,10 @@ pub(crate) fn schema_capability_map(
 mod tests {
     use crate::SearchProjectionColumnKind;
     use crate::flavor::contract::{
-        EmbeddingRecipe, FlavorContract, LanguagePolicy, ProjectionDecl, Provenance,
-        ResourceContract, SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm,
-        ToolContract, TransferRule, WeightedField,
+        BespokeEraseLeg, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract,
+        ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, Provenance, ResourceContract,
+        SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm, Surface, ToolContract,
+        TransferRule, WeightedField,
     };
     use crate::verbs::schema::{PayloadKind, SchemaInfo};
     use crate::{FlavorRegistry, FlavorRegistryError, SchemaId, SchemaVersion};
@@ -620,6 +724,7 @@ mod tests {
             kernel_surfaces: &[],
             tools,
             resources,
+            bespoke_erase_legs: &[],
             projection: ProjectionDecl::None {
                 why: "a fixture registry has no schema that is a search surface",
             },
@@ -720,6 +825,123 @@ mod tests {
         &[],
         &[],
     );
+    /// The shape a fixture surface takes when the fixture is about the
+    /// erase: exportable and owned, so nothing but the erase rule is under
+    /// test.
+    const fn state_surface(
+        table: &'static str,
+        key: KeyShape,
+        erase: EraseRule,
+        export: ExportRule,
+    ) -> Surface {
+        Surface {
+            table,
+            key,
+            owner_columns: &["owner_id"],
+            transfer: TransferRule::StaysOnKey,
+            erase,
+            export,
+            forget: ForgetRule::Keep {
+                why: "a fixture, not a memory",
+            },
+            lexical_language_column: None,
+            counter: None,
+            completeness: None,
+        }
+    }
+
+    const fn erase_fixture(
+        surfaces: &'static [Surface],
+        bespoke: &'static [BespokeEraseLeg],
+    ) -> FlavorContract {
+        FlavorContract {
+            flavor_id: FIXTURE_FLAVOR,
+            ordinal: 7,
+            schemas: &[],
+            state_surfaces: surfaces,
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            bespoke_erase_legs: bespoke,
+            projection: ProjectionDecl::None {
+                why: "a fixture registry has no schema that is a search surface",
+            },
+        }
+    }
+
+    /// The out-of-tree flavor this whole check exists for: `ByKey` on a key
+    /// the erase builds no selection set for, claimed by no bespoke leg.
+    /// Both generic loops skip it, so nothing deletes these rows and the
+    /// erase still reports `Completed`.
+    static UNDELETABLE_SURFACE: FlavorContract = erase_fixture(
+        &[state_surface(
+            "test_flavor.thing_v1",
+            KeyShape::Custom(&["thing_id"]),
+            EraseRule::ByKey,
+            ExportRule::Rows,
+        )],
+        &[],
+    );
+
+    /// A bespoke leg claiming a table the flavor does not declare — the
+    /// stale name that let the hand-written lists rot.
+    static BESPOKE_LEG_FOR_NOTHING: FlavorContract = erase_fixture(
+        &[state_surface(
+            "test_flavor.thing_v1",
+            KeyShape::MemoryT { column: "t" },
+            EraseRule::ByKey,
+            ExportRule::Rows,
+        )],
+        &[BespokeEraseLeg {
+            table: "test_flavor.gone_v1",
+            leg: "delete_things",
+        }],
+    );
+
+    /// A flavor arguing with itself: the declaration says a constraint
+    /// removes the rows, and the exemption list says a hand-written
+    /// statement does.
+    static BESPOKE_LEG_OVER_A_CASCADE: FlavorContract = erase_fixture(
+        &[state_surface(
+            "test_flavor.thing_v1",
+            KeyShape::MemoryT { column: "t" },
+            EraseRule::Cascade {
+                via: DbConstraint {
+                    relation: "test_flavor.thing_v1",
+                    name: "thing_v1_t_fkey",
+                },
+            },
+            ExportRule::Rows,
+        )],
+        &[BespokeEraseLeg {
+            table: "test_flavor.thing_v1",
+            leg: "delete_things",
+        }],
+    );
+
+    /// Exportable while carrying neither an owner column nor a key with a
+    /// home table: the generator has no statement that reaches it from the
+    /// owner, so it would go missing from every bundle in silence.
+    static UNREACHABLE_EXPORT_SURFACE: FlavorContract = erase_fixture(
+        &[Surface {
+            table: "test_flavor.thing_v1",
+            key: KeyShape::Custom(&["thing_id"]),
+            owner_columns: &[],
+            transfer: TransferRule::StaysOnKey,
+            erase: EraseRule::Never {
+                why: "the export rule is what this fixture is about",
+            },
+            export: ExportRule::Rows,
+            forget: ForgetRule::Keep {
+                why: "a fixture, not a memory",
+            },
+            lexical_language_column: None,
+            counter: None,
+            completeness: None,
+        }],
+        &[],
+    );
+
     /// A `PerRow` policy naming a column that is not the projection
     /// table's. The generator emits one language column per projection
     /// table and names it `lexical_language`; a second name is a
@@ -760,6 +982,7 @@ mod tests {
         kernel_surfaces: &[],
         tools: &[],
         resources: &[],
+        bespoke_erase_legs: &[],
         projection: ProjectionDecl::Table(crate::flavor::contract::ProjectionSpec {
             table: "test_flavor.projection",
             index: "test_flavor_projection_owner_tsv_gin",
@@ -823,6 +1046,7 @@ mod tests {
             kernel_surfaces: &[],
             tools: &[],
             resources: &[],
+            bespoke_erase_legs: &[],
             projection: ProjectionDecl::Table(crate::flavor::contract::ProjectionSpec {
                 table: "test_flavor.projection",
                 index: "test_flavor_projection_owner_tsv_gin",
@@ -1237,6 +1461,58 @@ mod tests {
                         err,
                         FlavorRegistryError::ProjectionRenderNotUniform {
                             property: "rank_weights",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a surface declares an erase no leg can perform",
+                |registry| registry.contracts.push(&UNDELETABLE_SURFACE),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::UndeletableSurface {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a bespoke erase leg names a table the flavor does not declare",
+                |registry| registry.contracts.push(&BESPOKE_LEG_FOR_NOTHING),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::BespokeEraseLegMismatch {
+                            table: "test_flavor.gone_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a bespoke erase leg claims a surface a constraint removes",
+                |registry| registry.contracts.push(&BESPOKE_LEG_OVER_A_CASCADE),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::BespokeEraseLegMismatch {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "an exportable surface has neither an owner column nor a key with a home",
+                |registry| registry.contracts.push(&UNREACHABLE_EXPORT_SURFACE),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::UnreachableExportSurface {
+                            table: "test_flavor.thing_v1",
                             ..
                         }
                     )

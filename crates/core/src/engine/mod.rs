@@ -5,13 +5,12 @@
 mod access_admin;
 mod access_sets;
 mod builder;
-mod compliance;
 mod errors;
-mod fact_retention;
 mod goal_write;
 mod ingest;
 pub mod mcp_listener;
 mod memory_authoring;
+mod owner_inverse;
 mod pin_read;
 mod pipeline;
 mod query;
@@ -169,7 +168,7 @@ impl Engine {
     }
 
     /// Host-wired external object-store erase port. `None` when no blob backend
-    /// is configured — owner-scope compliance erase then touches Postgres rows
+    /// is configured — owner-scope owner erase then touches Postgres rows
     /// only (see [`crate::storage_ports::CitedObjectErasePort`]).
     #[must_use]
     pub fn cited_object_erase(&self) -> Option<Arc<dyn CitedObjectErasePort>> {

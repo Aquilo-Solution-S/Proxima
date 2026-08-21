@@ -101,7 +101,7 @@ Delegated-capable operations are closed and explicit:
 | `CitedBlobReadService` | `collect_verified` |
 
 Every other Engine/service API rejects a raw
-`AuthzContext { auth_path: Delegated, .. }`; notably query, compliance/admin,
+`AuthzContext { auth_path: Delegated, .. }`; notably query, owner-inverse/admin,
 and owner reconciliation are not delegated-capable. `CitedBlobService`,
 `CitedBlobReadService`, and `CitedBlobOwnerReconcileService` keep their backend
 ports private. Direct `proxima-core` hosts are the trusted composition root and
@@ -168,66 +168,78 @@ narrow Goals by `assignment` and `evidence_contains`.
 Source: `crates/proxima/src/flavor/authorized_read.rs`,
 `Engine::owned_series_handle`, `GoalRow`.
 
-## Compliance Erase Host API
+## Owner Erase Host API
 
 Public facade status:
 
 | Type | Import | Status |
 |---|---|---|
-| `ComplianceEraseRequest` | `proxima::ComplianceEraseRequest` | Host API DTO |
-| `ComplianceEraseTarget` | `proxima::ComplianceEraseTarget` | Host API DTO |
-| `ComplianceEraseOutcome` | `proxima::ComplianceEraseOutcome` | Host API DTO |
-| `ComplianceEraseRefusal` | `proxima::ComplianceEraseRefusal` | Host API DTO |
-| `ComplianceEraseCounts` | `proxima::ComplianceEraseCounts` | Host API DTO |
+| `OwnerEraseRequest` | `proxima::OwnerEraseRequest` | Host API DTO |
+| `OwnerEraseTarget` | `proxima::OwnerEraseTarget` | Host API DTO |
+| `OwnerEraseOutcome` | `proxima::OwnerEraseOutcome` | Host API DTO |
+| `OwnerEraseRefusal` | `proxima::OwnerEraseRefusal` | Host API DTO |
+| `OwnerEraseCounts` | `proxima::OwnerEraseCounts` | Host API DTO |
+
+| Engine verb | Scope |
+|---|---|
+| `erase_group_owner(authz, group_id)` | one group owner |
+| `erase_personal_owner(authz, user_id, drop_event_id)` | one personal owner |
+| `erase_group_source_scope(authz, group_id, source_id)` | one source inside a group owner |
+| `erase_personal_source_scope(authz, user_id, source_id, drop_event_id)` | one source inside a personal owner |
 
 Callers submit requests and inspect outcomes. Callers do not provide
 `operation_id`, requester, auth path, request time, audit context, or
-abandonment witnesses. Engine derives audit identity from `AuthzContext`,
-verifies personal-owner drop proof before minting sealed erase authorization,
-and storage rechecks group abandonment in-transaction before hard deletion.
-All storage erase paths require sealed `EraseAuthorization` (see
-[13 Compliance](../13-compliance.md) and
-[14 Compliance Admin Surface](../14-protocol-surface.md#compliance-admin-surface)).
+abandonment witnesses. Engine derives the operation identity from
+`AuthzContext`, verifies personal-owner drop proof before minting a sealed
+`EraseAuthorization`, and storage rechecks group abandonment in-transaction
+under the membership lock before hard deletion.
 
-Legal/security holds are host-side owner config:
+`OwnerEraseCounts` is a name→count map, not a fixed struct: its key set is
+exactly the `counter` names the frozen flavor contracts declare, seeded to
+zero before the first delete. A flavor that declares a new counter gets it in
+the receipt without a change here.
 
-| Engine verb | Effect |
-|---|---|
-| `set_legal_hold(authz, owner)` | idempotently activates a per-owner hold; requires compliance-erase operator approval plus owner `Admin` write authority |
-| `get_legal_hold(authz, owner)` | returns the active hold flag; requires owner `Admin` |
-| `clear_legal_hold(authz, owner)` | clears the hold and returns whether a row existed; requires compliance-erase operator approval plus owner `Admin` write authority |
+Core keeps no record of the operation. There is no audit table, no retention
+window and no legal hold — the last two were removed outright, because a
+retention schedule and a litigation hold are judgements about a hosting
+application's obligations rather than facts about a store. A host that owes
+its users an erasure right calls these verbs when its own rules say to, and
+records the returned receipt if its own rules say to. See
+[13 The Inverses of Storing](../13-compliance.md) and
+[14 Compliance Admin Surface](../14-protocol-surface.md#compliance-admin-surface).
 
-`set_legal_hold` / `clear_legal_hold` also require an owner `Admin` write
-permit for the target owner; compliance authority alone is not an owner write
-grant.
-
-While active, the hold suspends substantive owner-memory physical destruction
-for exactly the current compliance `erase_*` family. The four destructive
-owner/source erase paths return `ComplianceEraseOutcome::Refused { reason:
-ComplianceEraseRefusal::LegalHoldActive, .. }` and delete no substantive owner
-memory content. Reads, ordinary writes, and transient
-`proxima_core.embedding_jobs` work-queue consumption are unchanged. Future
-physical-destruction paths must inherit the same storage-transaction gate
-before they can exist. Operators own the legal judgment; Proxima guarantees
-only the mechanics.
-
-`ComplianceEraseTarget` is personal/group only (`crates/core/src/compliance.rs`).
-Every row has a personal or group owner, so every row is within some owner's
-erase reach; a transfer moves that reach to the destination owner. See
+`OwnerEraseTarget` is personal/group only
+(`crates/core/src/owner_inverse.rs`). Every row has a personal or group
+owner, so every row is within some owner's erase reach; a transfer moves that
+reach to the destination owner. See
 [Consumer Projector Guidance](#consumer-projector-guidance) below for what
 that means when deciding where to send a memory.
 
-## Compliance Export Host API
+## Who may erase — the provider seam
+
+`OwnerEraseAuthorityPort` is the seam, and the only place the question is
+asked.
+
+| Method | Contract |
+|---|---|
+| `may_erase_owner(authz, target)` | yes/no for one target; no reason, no deadline, no policy |
+| `may_export_owner(authz, target)` | defaults to asking the erase question; override for a looser portability rule |
+| `may_perform_operator_maintenance(authz)` | defaults to `false`; gates the owner-agnostic maintenance verbs |
+
+Wiring nothing is a valid deployment and refuses every erase and every
+export: fail-closed, because the failure mode of guessing wrong is
+unrecoverable. `AuthPath::System` bypasses the port; `AuthPath::Delegated`
+can never reach it.
+
+## Owner Export Host API
 
 Public facade status:
 
 | Type / verb | Import | Status |
 |---|---|---|
-| `ComplianceExportRequest` | `proxima::ComplianceExportRequest` | Host API DTO |
-| `ComplianceExportTarget` | `proxima::ComplianceExportTarget` | Host API DTO |
-| `ComplianceExportBundle` | `proxima::ComplianceExportBundle` | Host API DTO |
-| `ComplianceExportCounts` | `proxima::ComplianceExportCounts` | Host API DTO |
-| `ComplianceExportSidecarRows` | `proxima::ComplianceExportSidecarRows` | Host API DTO |
+| `OwnerExportRequest` | `proxima::OwnerExportRequest` | Host API DTO |
+| `OwnerExportTarget` | `proxima::OwnerExportTarget` | Host API DTO |
+| `OwnerExportBundle` | `proxima::OwnerExportBundle` | Host API DTO |
 | `Engine::export_owner_bundle(authz, target)` | `proxima::Engine` | Host API verb |
 
 Contract:
@@ -235,11 +247,12 @@ Contract:
 | Field | Rule |
 |---|---|
 | target | personal/group owner only |
-| authorization | `AuthPath::System` or `ComplianceAdminPort::may_perform_compliance_export`; default export authorization delegates to erase-family controller approval |
-| legal hold | does not block export |
+| authorization | `AuthPath::System` or `OwnerEraseAuthorityPort::may_export_owner` |
 | drop proof | not required; export is non-destructive |
-| rows | owner-scoped substrate rows, source cursors, registered sidecars, cited-object blob refs, delegated-grant non-secret metadata, and matching compliance audit rows; grant export omits redeemable `delegation_id` and credential material |
-| serialization | `ComplianceExportBundle::canonical_json_bytes()` emits recursively sorted-key JSON bytes |
+| shape | `tables: BTreeMap<String, Vec<Value>>` — one entry per surface the frozen contracts declare exportable, present even when empty — plus `edges` projected from the exported memory rows, plus derived `counts` |
+| rows | `ExportRule::Rows` exports the whole row; `ExportRule::Allowlist` exactly its named fields (grant export omits the redeemable `delegation_id`); `ExportRule::Excluded` exports nothing and says why |
+| order | the surface's declared key columns |
+| serialization | `OwnerExportBundle::canonical_json_bytes()` emits recursively sorted-key JSON bytes |
 
 ## PostgreSQL Runtime Configuration
 
@@ -278,11 +291,11 @@ Contract:
 
 | Field | Rule |
 |---|---|
-| authorization | `AuthPath::System` or `ComplianceAdminPort::may_perform_operator_maintenance`; ordinary owner read/admin roles are insufficient |
+| authorization | `AuthPath::System` or `OwnerEraseAuthorityPort::may_perform_operator_maintenance`; ordinary owner read/admin roles are insufficient |
 | scope | owner-agnostic operational reads over embedding infrastructure |
 | observability | rows, relation bytes, HNSW bytes, job backlog, stale processing jobs, orphan rows, recall canary |
 | orphan sweep | deletes embeddings, heads, and jobs whose source `memories` / `goals` row no longer exists |
-| compliance erase | not dependent on sweep; erase deletes embedding infra synchronously at transaction commit |
+| owner erase | not dependent on sweep; erase deletes embedding infra synchronously at transaction commit |
 | graph authority | embeddings remain engine infrastructure; similarity never authors a connection |
 
 ## Cited-Blob Read and Reconciliation APIs
@@ -325,7 +338,7 @@ execution or activity log projector):
 | source cursor bytes | `Cursor` is opaque byte state keyed by `(owner, source)`. A projector may encode `last_event_seq` into it; `store_source_cursor` persists the supplied bytes verbatim, and `load_source_cursor` returns the exact bytes last stored for that owner/source. No Centauri-side `piy_projection_cursor` table is required for that state. |
 | projection lag | `Engine::source_cursor_age(authz, owner, source)` returns the age of the owner/source cursor for EVD-012-style lag SLO evidence. It is owner-scoped and read-authorized (`Viewer`); `load_source_cursor` / `store_source_cursor` still require cursor mutation authority (`Ingest`) and do not expose cursor bytes to viewers. |
 | owner transfer | `transfer_to_owner` is an owner **move**, not an ACL flag or a copy: the series leaves the prior owner's view entirely and lands under the destination. The destination must be a group, and the caller must hold admin on the source (plus group-manage when the source is a group) and admin + group-manage on the destination — that receiving-side manage authority is the destination's consent, which is why a personal destination is refused. Transfer is memory-only: goals do not transfer. |
-| transfer and erase reach | a transferred memory moves *between* erase reaches, it does not leave them. The destination owner can erase it under `ComplianceEraseTarget::GroupOwner`; the source owner no longer can. Send tenant evidence only to a group whose operators should own its deletion decision, because after the transfer they do — the source's compliance-erase obligation for those rows lands on the destination. |
+| transfer and erase reach | a transferred memory moves *between* erase reaches, it does not leave them. The destination owner can erase it under `OwnerEraseTarget::GroupOwner`; the source owner no longer can. Send tenant evidence only to a group whose operators should own its deletion decision, because after the transfer they do — the source's erasure obligation for those rows lands on the destination. |
 | transfer and audit sidecars | `mcp_call_logged_v1` is **owner-pinned**: it carries `actor_upn` plus its own `owner_id`, stamped at write time with the owner that made the call, and describes who acted rather than what the memory says. A transfer leaves those rows with the source. The destination receives the memory without its call log — the payload hydrate joins the memory's owner to the row's, so `get_memory`/`get_memories`/`query_memories` return nothing for them — while `read_mcp_call_history`, the export bundle, and Art. 17 erase all stay with the source, which keeps both the history and the obligation to delete it. Every other registered sidecar follows the memory. |
 
 See [14 Protocol Surface — `core_transfer`](../14-protocol-surface.md)

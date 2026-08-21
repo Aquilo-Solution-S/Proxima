@@ -630,34 +630,21 @@ pub async fn purge_cold_objects_after_commit(
     outcome
 }
 
+/// The object is gone, so its debt is gone: one statement, no second write.
+///
+/// It used to be two, in a transaction — delete the queue row, then reconcile
+/// a `cold_object_purge_pending` flag on the journal row the erase had
+/// stamped, but only once no OTHER queue row still named that operation. The
+/// journal is gone and the debt is the queue itself, which is where it was
+/// always durable: `pending_cold_purge_count` answers "is anything owed" by
+/// counting rows, not by trusting a flag that a crash between the two writes
+/// could leave set forever.
 async fn clear_cold_purge_pending(pool: &PgPool, object_key: &str) -> Result<(), StorageError> {
-    let mut tx = pool.begin().await.map_err(map_err)?;
-    let operation_id: Option<Option<Uuid>> = sqlx::query_scalar(
-        "DELETE FROM proxima_core.cold_purge_pending
-          WHERE object_key = $1
-          RETURNING compliance_operation_id",
-    )
-    .bind(object_key)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(map_err)?;
-    if let Some(Some(operation_id)) = operation_id {
-        sqlx::query(
-            "UPDATE proxima_core.compliance_audit_log a
-                SET cold_object_purge_pending = false
-              WHERE a.operation_id = $1
-                AND NOT EXISTS (
-                    SELECT 1
-                      FROM proxima_core.cold_purge_pending p
-                     WHERE p.compliance_operation_id = a.operation_id
-                )",
-        )
-        .bind(operation_id)
-        .execute(&mut *tx)
+    sqlx::query("DELETE FROM proxima_core.cold_purge_pending WHERE object_key = $1")
+        .bind(object_key)
+        .execute(pool)
         .await
         .map_err(map_err)?;
-    }
-    tx.commit().await.map_err(map_err)?;
     Ok(())
 }
 
@@ -1260,7 +1247,7 @@ pub async fn erase_memory(
 /// `goal.evidence_t[]`, `wake_config.trigger_t` and
 /// `wake_config.hard_memory_t[]` name memories without a foreign key, so an
 /// erase here can leave them pointing at nothing. That is deliberate and
-/// not new: [`erase_memory`] has always left them, and the compliance
+/// not new: [`erase_memory`] has always left them, and the owner-erase
 /// erase's own partial arm (source scope) leaves `goal` and `wake_config`
 /// untouched too — it deletes them only in the owner arm, where the whole
 /// row goes rather than one column of it. Nulling them here would make the
@@ -1529,14 +1516,14 @@ SELECT b.blob_id FROM proxima_core.blob b
 /// `cooled.blob_id`, `blob_uploads.blob_id`, all `NO ACTION` — so "no
 /// admission cites it" is the whole reference question. Citation sidecars
 /// hold no foreign key on it: they are opaque payload tables, which is why
-/// `ComplianceSidecarTables::for_registry` finds no cited-object family for
+/// `OwnerSurfaces::for_registry` finds no cited-object family for
 /// core or code to consult.
 ///
 /// The three deletes and the enqueue are one statement so they share one
 /// snapshot. That is what makes the object anti-join ask the right
 /// question: "does a row OUTSIDE this orphan set name the key", evaluated
 /// against the rows as they stood before any of them went, exactly as the
-/// compliance arm evaluates it.
+/// owner-erase arm evaluates it.
 ///
 /// One snapshot is not one lock, though: the reference question is asked of
 /// this transaction's snapshot and the delete is enforced against the
