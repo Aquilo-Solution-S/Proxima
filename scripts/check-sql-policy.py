@@ -529,7 +529,12 @@ def run_fixture(path: Path) -> int:
 # sweeps for two generic loops. Generating a statement per DECLARED surface
 # instead of writing one per remembered table is not more dynamic SQL — it
 # is the same statement shapes with one producer each, which is what this
-# ratchet was built to reward.
+# ratchet was built to reward. The differential harness added in the same
+# phase contributes ZERO sites on purpose: it dumps every base relation
+# through one constant statement that lets Postgres assemble the per-relation
+# query with `format(..., %I)` inside `query_to_xml`, so the obvious spelling
+# — a `format!` per name read from `information_schema` — never enters the
+# tree. A harness should cost nothing to keep.
 EXPECTED_DYNAMIC_SQL_SITES = 75
 
 

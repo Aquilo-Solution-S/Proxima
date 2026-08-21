@@ -491,26 +491,40 @@ pub const DROPPED_TABLES: &[&str] = &[
 ];
 pub const DROPPED_COLUMNS: &[(&str, &str)] = &[("cold_purge_pending", "compliance_operation_id")];
 
+/// ONE statement, and no SQL built in Rust. The per-relation query is
+/// assembled by `format(..., %I)` INSIDE Postgres, where `%I` is the
+/// server's own identifier quoting, and `query_to_xml` runs it; `xpath`
+/// then pulls the `to_jsonb` text back out in row order. The obvious
+/// spelling — a `format!` per table name from `information_schema` — would
+/// have put two dynamic-SQL sites in the tree for a harness, and the whole
+/// point of a harness is that it costs nothing to keep.
 pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::Error>> {
-    let tables: Vec<String> = sqlx::query_scalar(
-        "SELECT table_name FROM information_schema.tables
-          WHERE table_schema = 'proxima_core' AND table_type = 'BASE TABLE'
-          ORDER BY table_name",
+    let relations: Vec<(String, Vec<String>)> = sqlx::query_as(
+        "SELECT t.table_name::text,
+                (xpath(
+                    '/table/row/to_jsonb/text()',
+                    query_to_xml(
+                        format(
+                            'SELECT to_jsonb(x) FROM proxima_core.%I x ORDER BY x.ctid',
+                            t.table_name
+                        ),
+                        false, false, ''
+                    )
+                ))::text[]
+           FROM information_schema.tables t
+          WHERE t.table_schema = 'proxima_core' AND t.table_type = 'BASE TABLE'
+          ORDER BY t.table_name",
     )
     .fetch_all(pool)
     .await?;
     let mut out = String::new();
-    for table in tables {
+    for (table, rows) in relations {
         if DROPPED_TABLES.contains(&table.as_str()) {
             continue;
         }
-        let sql = format!("SELECT to_jsonb(x) FROM proxima_core.{table} x ORDER BY x.ctid");
-        let rows: Vec<Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-            .fetch_all(pool)
-            .await?;
         out.push_str(&format!("## proxima_core.{table} ({})\n", rows.len()));
         for row in rows {
-            let mut row = row;
+            let mut row: Value = serde_json::from_str(&row)?;
             for (dropped_table, column) in DROPPED_COLUMNS {
                 if *dropped_table == table
                     && let Some(object) = row.as_object_mut()
