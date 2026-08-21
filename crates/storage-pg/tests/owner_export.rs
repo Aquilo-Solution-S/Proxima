@@ -428,3 +428,81 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
     let _ = drop_db(&db_name).await;
     result.expect("opaque blob export test failed");
 }
+
+/// The bundle carries EXACTLY the surfaces the contracts declare
+/// exportable — including the ones that came back empty.
+///
+/// `OwnerExportBundle`'s own doc states that invariant, and until this test
+/// nothing checked it. The differential harness could not: it strips empty
+/// sections before comparing, deliberately, because its goldens were
+/// captured from a corpus and a corpus writes what it writes. So a mutation
+/// that dropped one surface from the generator's loop passed the entire
+/// workspace, and the surface simply stopped being exported — the exact
+/// failure the whole "declaration generates the statement" argument was
+/// supposed to have made impossible.
+///
+/// A FRESH owner is the right subject. Every table is empty, so the only
+/// thing the assertion can be measuring is which surfaces the generator
+/// visited; a seeded owner would let a present-but-unwritten table hide
+/// behind a present-and-empty one.
+///
+/// This is the flavor-#0 half. The full-registry half, where the code
+/// flavor's surfaces are visible too, is in `crates/proxima`.
+#[tokio::test]
+async fn the_bundle_carries_every_exportable_surface_even_when_empty() {
+    use proxima_core::flavor::ExportRule;
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+
+        let surfaces = contract_sidecar_tables();
+        let expected: std::collections::BTreeSet<&str> = surfaces
+            .surfaces()
+            .iter()
+            .filter(|surface| !matches!(surface.export, ExportRule::Excluded { .. }))
+            .map(|surface| surface.table)
+            .collect();
+        assert!(
+            expected.len() > 10,
+            "flavor 0 declares more than ten exportable surfaces, got {}",
+            expected.len()
+        );
+
+        let auth = ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner {
+            user_id: UserId::new(Uuid::now_v7()),
+        });
+        let bundle = pg.export_owner_bundle(&auth, &surfaces).await?;
+        let actual: std::collections::BTreeSet<&str> =
+            bundle.tables.keys().map(String::as_str).collect();
+
+        assert_eq!(
+            actual,
+            expected,
+            "the bundle's tables must be exactly the declared exportable surfaces; \
+             missing {:?}, unexpected {:?}",
+            expected.difference(&actual).collect::<Vec<_>>(),
+            actual.difference(&expected).collect::<Vec<_>>()
+        );
+        for table in &expected {
+            assert!(
+                bundle.table(table).is_empty(),
+                "{table} should be empty for an owner that wrote nothing"
+            );
+            assert_eq!(
+                bundle.count(table),
+                0,
+                "{table}'s count must be derived from its rows"
+            );
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("exportable surface completeness failed");
+}
