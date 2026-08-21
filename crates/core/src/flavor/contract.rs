@@ -486,37 +486,34 @@ impl EmbeddingSlot {
 /// The only slot bound in v0.0.8.
 pub const SLOT_DEFAULT: EmbeddingSlot = EmbeddingSlot("default");
 
-/// Where one unit's text comes from.
+/// One `(column, slot)` pair: the output grain of a recipe.
 ///
-/// One arm, deliberately. `Render` (the memory row's rendered text) and
-/// `Concat` (sidecar columns joined generator-side) were declared beside it
-/// with ZERO members, and `resolve` folded both into the same
-/// `column: None` result — so the vocabulary offered two choices that were
-/// one choice, to nobody. A shape with no member is a guess about a future
-/// need; when that need arrives it arrives with a caller, and the caller is
-/// what tells you which of the two you actually wanted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EmbedText {
-    /// A pre-computed column on the schema's sidecar table — the shipped
-    /// idiom (`SearchProjection::embed_text_column`), read by
-    /// `storage-pg/src/verbs/fact_embeddings/text.rs`.
-    StoredColumn(&'static str),
-}
-
-/// One `(text, slot)` pair: the output grain of a recipe.
+/// `column` is a pre-computed column on the schema's sidecar table — the
+/// shipped idiom (`SearchProjection::embed_text_column`), read by
+/// `storage-pg/src/verbs/fact_embeddings/text.rs`.
+///
+/// THERE IS NO `EmbedText` ENUM, and there was one for exactly one commit.
+/// It carried three arms; `Render` (the memory row's rendered text) and
+/// `Concat` (sidecar columns joined generator-side) held zero members and
+/// resolved identically, so the commit that introduced the type deleted two
+/// of its arms in the same breath and left `StoredColumn(&str)` — a wrapper
+/// around one field, destructured irrefutably at its only reader. The
+/// argument that killed the empty arms kills the survivor: a shape with one
+/// speaker is a guess about a future need, and when that need arrives it
+/// arrives with a caller, which is what tells you what to name.
+///
+/// So the field is the field. A second source of embed text becomes an
+/// enum here on the day a second source has a reader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EmbedUnit {
-    pub text: EmbedText,
+    pub column: &'static str,
     pub slot: EmbeddingSlot,
 }
 
 impl EmbedUnit {
     #[must_use]
     pub const fn stored(column: &'static str, slot: EmbeddingSlot) -> Self {
-        Self {
-            text: EmbedText::StoredColumn(column),
-            slot,
-        }
+        Self { column, slot }
     }
 }
 
@@ -543,12 +540,16 @@ pub enum EmbeddingRecipe {
 }
 
 /// One resolved embed unit: the concrete `(table, column, slot)` a drain
-/// reads. `None` column means the text is not a stored column and the
-/// caller must render it.
+/// reads.
+///
+/// `table` is optional because a schema may declare no sidecar. `column`
+/// is not: it came back `Option` only to express "the text is not a stored
+/// column", which was the `Render`/`Concat` case, and those arms never had
+/// a reader. Every unit resolves to a column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ResolvedEmbedUnit {
     pub table: Option<&'static str>,
-    pub column: Option<&'static str>,
+    pub column: &'static str,
     pub slot: EmbeddingSlot,
 }
 
@@ -572,13 +573,10 @@ impl EmbeddingRecipe {
     pub fn resolve(&self, sidecar_table: Option<&'static str>) -> Vec<ResolvedEmbedUnit> {
         self.units()
             .iter()
-            .map(|unit| {
-                let EmbedText::StoredColumn(column) = unit.text;
-                ResolvedEmbedUnit {
-                    table: sidecar_table,
-                    column: Some(column),
-                    slot: unit.slot,
-                }
+            .map(|unit| ResolvedEmbedUnit {
+                table: sidecar_table,
+                column: unit.column,
+                slot: unit.slot,
             })
             .collect()
     }
@@ -1648,7 +1646,7 @@ impl FlavorContract {
 #[cfg(test)]
 mod tests {
     use super::{
-        Band, EmbedText, EmbedUnit, EmbeddingRecipe, LanguagePolicy, SLOT_DEFAULT, SchemaRef,
+        Band, EmbedUnit, EmbeddingRecipe, LanguagePolicy, SLOT_DEFAULT, SchemaRef,
         SearchProjectionDecl, SubstringArm, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
         TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, WEIGHT_UNIFORM, WeightedField,
     };
@@ -1670,13 +1668,13 @@ mod tests {
     #[test]
     fn a_stored_column_recipe_resolves_to_the_pair_the_drain_reads() {
         let recipe = EmbeddingRecipe::Units(&[EmbedUnit {
-            text: EmbedText::StoredColumn("embed_text"),
+            column: "embed_text",
             slot: SLOT_DEFAULT,
         }]);
         let resolved = recipe.resolve(Some("proxima_core.agent_note_v1"));
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].table, Some("proxima_core.agent_note_v1"));
-        assert_eq!(resolved[0].column, Some("embed_text"));
+        assert_eq!(resolved[0].column, "embed_text");
         assert_eq!(resolved[0].slot, SLOT_DEFAULT);
     }
 

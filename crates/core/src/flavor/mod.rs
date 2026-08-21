@@ -42,7 +42,7 @@ mod tests;
 // than reaching for module vocabulary that only looked universal.
 pub use contract::{
     BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
-    CounterRule, DEFAULT_RANK_WEIGHTS, DbConstraint, DbTrigger, EmbedText, EmbedUnit,
+    CounterRule, DEFAULT_RANK_WEIGHTS, DbConstraint, DbTrigger, EmbedUnit,
     EmbeddingRecipe, EmbeddingSlot, Enforcement, EraseLeg, EraseRule, ExportRule, FlavorContract,
     ForgetLeg, ForgetRule, KeyShape, LanguagePolicy, PROJECTION_MEMORY_FK, PROJECTION_TABLE_NAME,
     ProjectionDecl, ProjectionSpec, Provenance, RankSource, ResolvedEmbedUnit, ResourceContract,

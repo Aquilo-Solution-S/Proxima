@@ -124,7 +124,7 @@ mod tests {
         let units = schema.embedding.resolve(schema.sidecar_table);
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].table, Some("proxima_code.code_chunk_v1"));
-        assert_eq!(units[0].column, Some("embed_text"));
+        assert_eq!(units[0].column, "embed_text");
         assert_eq!(units[0].slot, SLOT_DEFAULT);
     }
 }

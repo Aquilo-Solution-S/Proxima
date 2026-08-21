@@ -2,8 +2,16 @@
 //!
 //! What this pins is not "the transfer works" — `owner_transfer.rs` does
 //! that, case by case. It pins that the DECLARATION-DRIVEN transfer does
-//! exactly what the hand-written one did, byte for byte, over a corpus that
+//! exactly what the hand-written one did — every relation holding the same
+//! multiset of rows, every column of every row equal — over a corpus that
 //! touches every table `owner_columns.rs`'s transfer path names.
+//!
+//! NOT byte for byte, which is what this paragraph used to claim and what
+//! the sibling `owner_erase_differential` really does. The comparison here
+//! is per-relation order-independent, for the reason set out under
+//! "Determinism" below. Saying "byte for byte" in the opening line and
+//! "multiset" thirty lines down left the file contradicting itself about
+//! the strength of its own gate.
 //!
 //! The goldens were produced by running this file verbatim against the tree
 //! at `eef54c8e` — the commit this phase branches from, with the

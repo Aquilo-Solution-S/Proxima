@@ -5,8 +5,7 @@
 //! the declaration matches the behaviour. Requires local PG.
 
 use proxima_core::flavor::{
-    EmbedText, EmbeddingRecipe, Enforcement, EraseLeg, SLOT_DEFAULT, SearchProjectionDecl,
-    TransferRule,
+    EmbeddingRecipe, Enforcement, EraseLeg, SLOT_DEFAULT, SearchProjectionDecl, TransferRule,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{FLAVOR_0, FlavorRegistry};
@@ -520,7 +519,7 @@ fn every_recipe_resolves_to_the_pair_the_shipped_drain_reads() {
             assert_eq!(resolved[0].table, schema.sidecar_table);
             assert_eq!(
                 resolved[0].column,
-                Some(column.as_str()),
+                column.as_str(),
                 "{}: the recipe must resolve to the shipped column",
                 schema_id.as_str()
             );
@@ -692,13 +691,10 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
                 unit.slot, SLOT_DEFAULT,
                 "{schema_id}: only `default` is wired"
             );
-            let (Some(table), Some(column)) = (unit.table, unit.column) else {
-                panic!("{schema_id}: the recipe must resolve to a stored column")
+            let Some(table) = unit.table else {
+                panic!("{schema_id}: the recipe must resolve against a sidecar table")
             };
-            assert!(
-                matches!(schema.embedding.units()[0].text, EmbedText::StoredColumn(_)),
-                "{schema_id}: the shipped idiom is a stored column"
-            );
+            let column = unit.column;
 
             // What the recipe says to read, read literally.
             // SQL-POLICY: fixed-fragment — `table` and `column` are

@@ -2282,8 +2282,16 @@ mod tests {
 
     /// The counterpart: the registry as the binary actually composes it,
     /// with core's contract in place, freezes.
+    ///
+    /// The failure surfaces the error. Every case in the table above is a
+    /// contract cross-check with its own message, and this is the test that
+    /// fires when one of them fires on the SHIPPED registry — the single
+    /// most useful moment to be told which. A bare `assert!(..is_ok())`
+    /// reports "assertion failed" and throws the reason away.
     #[test]
     fn the_shipped_registry_freezes() {
-        assert!(FlavorRegistry::new().try_freeze().is_ok());
+        if let Err(err) = FlavorRegistry::new().try_freeze() {
+            panic!("the registry the binary composes must freeze: {err}");
+        }
     }
 }

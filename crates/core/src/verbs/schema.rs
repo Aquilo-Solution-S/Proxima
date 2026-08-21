@@ -385,7 +385,7 @@ fn contract_embed_units(contracts: &[&'static FlavorContract]) -> Vec<MemoryEmbe
     for contract in contracts {
         for schema in contract.schemas {
             for unit in schema.embed_units() {
-                let (Some(table), Some(column)) = (unit.table, unit.column) else {
+                let Some(table) = unit.table else {
                     continue;
                 };
                 out.push(MemoryEmbedUnit {
@@ -393,7 +393,7 @@ fn contract_embed_units(contracts: &[&'static FlavorContract]) -> Vec<MemoryEmbe
                     schema_version: schema.schema_version(),
                     kind: schema.kind,
                     sidecar_table: table.to_owned(),
-                    column: column.to_owned(),
+                    column: unit.column.to_owned(),
                 });
             }
         }

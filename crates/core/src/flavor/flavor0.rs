@@ -542,9 +542,9 @@ const STATE_SURFACES: &[Surface] = &[
         transfer: GOAL_NOT_TRANSFERABLE,
         erase: EraseRule::ByOwner,
         export: ExportRule::Excluded {
-            why: "DECLARED GAP — wake_config is erased (delete_wake_configs) and never \
-                  exported, so a portability bundle omits the owner's own prompt text. \
-                  Stated rather than left to be discovered",
+            why: "DECLARED GAP — an owner erase destroys these rows and no export \
+                  emits them, so a portability bundle omits the owner's own prompt \
+                  text. Stated rather than left to be discovered",
         },
         forget: ForgetRule::Keep {
             why: "the goal lifecycle owns it",
@@ -594,16 +594,17 @@ const KERNEL_SURFACES: &[Surface] = &[
         },
         // CORRECTED in Phase 4 (plan §4.12 R2). `DeleteWithMemory` was true
         // for the last revision of a series and false for every other one:
-        // `sync_memory_head` REWINDS the head to the surviving newest `t`
-        // and deletes only when the series empties. The vocabulary gets no
-        // one-member `Rewind` arm for it — §4.6.1 forbids vocabulary with a
-        // single speaker — because `Keep` already means "the generated
-        // forget leg does not destroy this", and the statement that does
-        // touch it is named by the erase side's bespoke list.
+        // forgetting a revision REWINDS the head to the surviving newest
+        // `t` and deletes the head only when the series empties. The
+        // vocabulary gets no one-member `Rewind` arm for it — §4.6.1
+        // forbids vocabulary with a single speaker — because `Keep`
+        // already means "the generated forget leg does not destroy this",
+        // and this table is on the bespoke erase list, so the erase reaches
+        // it through a hand-written statement rather than a generated one.
         forget: ForgetRule::Keep {
-            why: "the head is rewound to the surviving newest t and deleted only when the \
-                  series empties; the statement is sync_memory_head, which the erase's \
-                  bespoke leg list already names",
+            why: "the head is rewound to the surviving newest t and deleted only when \
+                  the series empties, which no generated leg can express; the erase \
+                  reaches this table through its bespoke leg",
         },
         lexical_language_column: None,
         counter: CounterRule::Uncounted {
