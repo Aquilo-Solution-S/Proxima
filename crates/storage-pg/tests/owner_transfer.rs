@@ -374,6 +374,20 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             .bind(personal_content_id)
             .execute(pool)
             .await?;
+        // The cold dump's `embed_models` list is read off
+        // `proxima_core.embeddings` at cooling time, so this series has to
+        // carry an embedding BEFORE it is forgotten, or the hydrate below
+        // files no job at all and the owner assertion on it is vacuous.
+        sqlx::query(
+            "INSERT INTO proxima_core.embeddings (entity_id, model_id, vec, owner_id)
+             VALUES ($1, 'transfer-hydrate-model',
+                     ('[' || array_to_string(array_fill(0::real, ARRAY[1024]), ',') || ']')::vector,
+                     $2)",
+        )
+        .bind(first.memory_id.into_inner())
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
         let mut later = draft();
         later.handle = Some(first.handle);
@@ -457,6 +471,14 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             "exclusive cooled Content is GC'd after its destination remap"
         );
 
+        // Announce is append-only and the earlier ingest already wrote rows
+        // for this `t` under the giver, so the assertion has to be scoped to
+        // what THIS hydrate appends. `seq` is a uuidv7 PK; the pre-hydrate
+        // set is the watermark.
+        let announce_before: Vec<Uuid> = sqlx::query_scalar("SELECT seq FROM proxima_core.announce")
+            .fetch_all(pool)
+            .await?;
+
         let mut tx = pool.begin().await?;
         hydrate_memory(
             &mut tx,
@@ -475,6 +497,58 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             hydrated_owner,
             dest.stored_owner_id(),
             "the reminted cold record must hydrate under the destination"
+        );
+
+        // The `memory` row was already right, because the INSERT reads the
+        // owner off `cooled`. Everything ELSE the hydrate writes used to read
+        // it off the cold record's embedded `row.owner_id`, which a transfer
+        // never rewrites — the bytes keep naming the giver forever. Each of
+        // these three surfaces is owner-scoped on read, so a giver-owned row
+        // here is a memory the giver gave away and can still reach.
+        let sketch_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.sketch WHERE t = $1")
+                .bind(first.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            sketch_owner,
+            dest.stored_owner_id(),
+            "the sketch is read owner-scoped: hydrating it under the giver \
+             hands a transferred memory back to the owner that gave it away"
+        );
+
+        let hydrate_announce_owners: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT owner_id FROM proxima_core.announce
+              WHERE t = $1 AND seq <> ALL($2::uuid[])",
+        )
+        .bind(first.memory_id.into_inner())
+        .bind(&announce_before)
+        .fetch_all(pool)
+        .await?;
+        assert!(
+            !hydrate_announce_owners.is_empty(),
+            "the hydrate announces, or this assertion proves nothing"
+        );
+        for announced in &hydrate_announce_owners {
+            assert_eq!(
+                *announced,
+                dest.stored_owner_id(),
+                "the hydrate announces to the owner that HAS the memory now"
+            );
+        }
+
+        let embed_job_owners: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT owner_id FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+        )
+        .bind(first.memory_id.into_inner())
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            embed_job_owners,
+            vec![dest.stored_owner_id()],
+            "the re-embed job is the destination's work; filing it under the \
+             giver also breaks hydrate outright once the giver is erased, \
+             because the owner-kind lookup is a fetch_one"
         );
         Ok(())
     }

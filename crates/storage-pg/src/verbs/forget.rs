@@ -770,9 +770,19 @@ async fn restore_registered_sidecars(
     Ok(())
 }
 
+/// `owner_id` is the CALLER's, never `rec.row.owner_id`.
+///
+/// The cold record's embedded owner is the owner at dump time. A transfer
+/// rewrites `cooled.owner_id` and leaves the bytes alone, so the two diverge
+/// permanently for any series that changed hands while cold. Filing the
+/// embedding job under the dumped owner would hand the giver a job for a
+/// memory it no longer has — and, if the giver was since erased, the `owners`
+/// lookup below is a `fetch_one` against a row that is gone, which fails the
+/// whole hydrate.
 async fn enqueue_embed_jobs(
     tx: &mut Transaction<'_, Postgres>,
     rec: &ColdRecord,
+    owner_id: Uuid,
 ) -> Result<(), StorageError> {
     if rec.embed_models.is_empty() {
         return Ok(());
@@ -784,7 +794,7 @@ async fn enqueue_embed_jobs(
     };
     let owner_kind: String =
         sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
-            .bind(rec.row.owner_id)
+            .bind(owner_id)
             .fetch_one(tx.as_mut())
             .await
             .map_err(map_err)?;
@@ -796,7 +806,7 @@ async fn enqueue_embed_jobs(
         crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
             tx,
             owner_kind,
-            Some(rec.row.owner_id),
+            Some(owner_id),
             kind,
             rec.row.t,
             model_id,
@@ -1130,15 +1140,12 @@ pub async fn hydrate_memory(
             })
             .unwrap_or_else(|| rec.row.kind.clone())
     });
-    super::sketch::upsert_sketch(
-        tx,
-        rec.row.owner_id,
-        rec.row.t,
-        &rec.row.kind,
-        &hydrate_line,
-    )
-    .await?;
-    enqueue_embed_jobs(tx, &rec).await?;
+    // `owner_id` from `cooled`, not `rec.row.owner_id`: same reason as the
+    // memory INSERT above. The sketch is READ owner-scoped, so a sketch
+    // written under the dumped owner would let the owner that gave this
+    // series away go on recalling it.
+    super::sketch::upsert_sketch(tx, owner_id, rec.row.t, &rec.row.kind, &hydrate_line).await?;
+    enqueue_embed_jobs(tx, &rec, owner_id).await?;
 
     sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1")
         .bind(t)
@@ -1153,11 +1160,14 @@ pub async fn hydrate_memory(
         .await
         .map_err(map_err)?;
 
+    // Likewise owner-scoped: the announce feed a client tails is its own.
+    // Announcing a hydrate to the pre-transfer owner tells the wrong party
+    // that a memory it does not have came back.
     sqlx::query(
         "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
          VALUES ($1, 'append', 'memory', $2, $3)",
     )
-    .bind(rec.row.owner_id)
+    .bind(owner_id)
     .bind(rec.row.handle)
     .bind(t)
     .execute(tx.as_mut())
