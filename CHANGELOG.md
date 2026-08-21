@@ -20,6 +20,8 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
 
 ### Bug Fixes
+- **breaking:** **code**: The owner boundary covers the seed leg, and the erase stops waiting ([`2075839`](https://github.com/Aquilo-Solution-S/Proxima/commit/2075839cc4edcff813c18cfa35bfb8d2d6590c59))
+- **storage-pg**: Giving up on a lock is transient, not a fault ([`42270bd`](https://github.com/Aquilo-Solution-S/Proxima/commit/42270bd3fcd6cdbc2acd2a7d31f0ddc2dd639b52))
 - **breaking:** **code**: The erase footprint is a joint fixpoint, locked once, inside one owner ([`8543d52`](https://github.com/Aquilo-Solution-S/Proxima/commit/8543d52db41abfb3538ead6190ff609f900608c9))
 - **storage-pg**: A cited blob is held before the erase decides nothing cites it ([`c483af1`](https://github.com/Aquilo-Solution-S/Proxima/commit/c483af13a36dec6d4ecd24d75adce7c01c677037))
 - **dev-migrate**: The reset owns the namespace the boot check probes ([`3f502ce`](https://github.com/Aquilo-Solution-S/Proxima/commit/3f502cee258ddca4850e7334879c288ff8829986))
