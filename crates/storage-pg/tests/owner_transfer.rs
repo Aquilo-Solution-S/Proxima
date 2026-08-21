@@ -2100,3 +2100,85 @@ async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
     let _ = drop_db(&db_name).await;
     result.expect("series erase mount refcount failed");
 }
+
+/// The blob leg's lock, from a second session.
+///
+/// `gc_unreferenced_blobs` asks "does any admission still cite this blob"
+/// against its own snapshot and then deletes; the delete is enforced
+/// against the latest one. A citation committed between the two makes the
+/// delete wait on the citer's `FOR KEY SHARE` and then raise `23503`,
+/// which aborts the entire erase — a repo teardown lost to someone
+/// uploading a document at the wrong moment.
+///
+/// `cited_blobs_locked_for_erase` closes it by taking `FOR UPDATE` on every
+/// candidate before the erase loop runs, so the citer waits and then fails
+/// its own foreign key in its own transaction. This is what says the lock
+/// is really there: the same citation lands immediately when nothing holds
+/// the blob and is still waiting at the statement timeout when the erase
+/// does.
+///
+/// `FOR NO KEY UPDATE` would NOT pass this test, which is the point of
+/// spelling the mode out: it permits concurrent key-share holders, so the
+/// citation below would land and the race would be exactly where it was.
+#[tokio::test]
+async fn a_cited_blob_is_held_against_a_concurrent_citation() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+
+        let (blob_id, _upload) = seed_cited_blob(pool, owner, &[31_u8; 32]).await?;
+        let cited = cite(pool, &permit, "held-blob", blob_id).await?;
+
+        // A second session whose statements give up rather than hang.
+        let writer = sqlx::postgres::PgPoolOptions::new()
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    sqlx::query("SET statement_timeout = '2500ms'")
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&db_url(&db_name))
+            .await?;
+
+        // Nothing held: citing the same blob is an ordinary write.
+        cite(&writer, &permit, "before-the-lock", blob_id)
+            .await
+            .expect("with no erase in flight a second citation is an ordinary write");
+
+        let mut tx = pool.begin().await?;
+        let held = proxima_storage_pg::verbs::forget::cited_blobs_locked_for_erase(
+            &mut tx,
+            &owner,
+            &[cited.memory_id.into_inner()],
+        )
+        .await?;
+        assert_eq!(
+            held,
+            vec![blob_id],
+            "the erase holds exactly the blob its admissions cite"
+        );
+
+        let err = cite(&writer, &permit, "during-the-lock", blob_id)
+            .await
+            .expect_err("a citation of a held blob must wait, not land");
+        assert!(
+            err.to_string().contains("statement timeout"),
+            "the citation should have blocked on the erase's row lock until the \
+             statement timeout cancelled it; instead it failed with {err}"
+        );
+
+        tx.rollback().await?;
+        cite(&writer, &permit, "after-the-lock", blob_id)
+            .await
+            .expect("once the erase is gone the citation lands");
+        writer.close().await;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("a_cited_blob_is_held_against_a_concurrent_citation failed");
+}

@@ -1277,12 +1277,7 @@ pub async fn erase_memory_series(
 
     // Captured BEFORE the loop, because the loop is what makes them
     // unreferenced: after it, no row is left to read `blob_id` from.
-    let cited: Vec<Uuid> = sqlx::query_scalar(CITED_BLOBS_SQL)
-        .bind(&versions)
-        .bind(owner_id)
-        .fetch_all(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+    let cited = cited_blobs_locked_for_erase(tx, owner, &versions).await?;
 
     let mut keys = Vec::new();
     let mut erased = 0_u64;
@@ -1446,13 +1441,70 @@ pub async fn lock_admissions_for_erase(
 const LOCK_ADMISSIONS_SQL: &str =
     "SELECT t FROM proxima_core.memory WHERE t = ANY($1::uuid[]) ORDER BY t FOR UPDATE";
 
-/// The blobs the admissions about to be erased cite.
-const CITED_BLOBS_SQL: &str = "\
-SELECT m.blob_id FROM proxima_core.memory m
- WHERE m.t = ANY($1::uuid[]) AND m.owner_id = $2 AND m.blob_id IS NOT NULL
-UNION
-SELECT c.blob_id FROM proxima_core.cooled c
- WHERE c.t = ANY($1::uuid[]) AND c.owner_id = $2 AND c.blob_id IS NOT NULL";
+/// The blobs the given admissions cite, held.
+///
+/// Capture and lock in ONE statement, because doing one without the other
+/// is never right and a seam between them is a line someone can delete.
+/// `gc_unreferenced_blobs` decides "no admission cites this blob" and then
+/// deletes it; `memory.blob_id` is `NO ACTION`, so a citation committed
+/// between the deciding and the deleting makes the delete wait on the
+/// citer's `FOR KEY SHARE`, and then raise `23503` and take the whole erase
+/// down with it. `FOR UPDATE` taken here — before the erase loop, while the
+/// citing rows are all still there — is what turns that into the citer
+/// waiting on us and then failing its own foreign key in its own
+/// transaction.
+///
+/// `FOR UPDATE` and not `FOR NO KEY UPDATE`. `FOR NO KEY UPDATE` is the
+/// weaker mode that PERMITS concurrent key-share holders — exactly the
+/// writer this has to exclude — so it would leave the race untouched while
+/// looking like a fix. Measured on `PostgreSQL` 18, not assumed: against a
+/// `FOR NO KEY UPDATE` holder a second session takes `FOR KEY SHARE` on the
+/// same row immediately; against a `FOR UPDATE` holder it blocks until the
+/// holder's transaction ends.
+///
+/// Locking every cited blob rather than only the orphans over-locks by
+/// design: which of them are orphans is not known until the erase loop has
+/// run, and a lock taken after the question is answered is a lock taken too
+/// late. They are this owner's blobs and the transaction is short.
+///
+/// # Errors
+///
+/// Returns storage errors from the statement.
+pub async fn cited_blobs_locked_for_erase(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    ts: &[Uuid],
+) -> Result<Vec<Uuid>, StorageError> {
+    if ts.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar(CITED_BLOBS_LOCKED_SQL)
+        .bind(ts)
+        .bind(owner.stored_owner_id())
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)
+}
+
+/// The blobs the admissions about to be erased cite, locked against a
+/// concurrent citation.
+///
+/// The `FOR UPDATE` binds to `b` — the one plain table in the outer
+/// `FROM` — which is why the two-legged citation question lives in a CTE
+/// rather than in a `UNION` the locking clause could not attach to.
+const CITED_BLOBS_LOCKED_SQL: &str = "\
+WITH cited AS (
+    SELECT m.blob_id FROM proxima_core.memory m
+     WHERE m.t = ANY($1::uuid[]) AND m.owner_id = $2 AND m.blob_id IS NOT NULL
+    UNION
+    SELECT c.blob_id FROM proxima_core.cooled c
+     WHERE c.t = ANY($1::uuid[]) AND c.owner_id = $2 AND c.blob_id IS NOT NULL
+)
+SELECT b.blob_id FROM proxima_core.blob b
+ WHERE b.blob_id IN (SELECT blob_id FROM cited)
+   AND b.owner_id = $2
+ ORDER BY b.blob_id
+   FOR UPDATE";
 
 /// Delete each of `cited` that no admission still cites, with its upload
 /// rows, and enqueue the objects that no other upload row names.
@@ -1472,6 +1524,12 @@ SELECT c.blob_id FROM proxima_core.cooled c
 /// question: "does a row OUTSIDE this orphan set name the key", evaluated
 /// against the rows as they stood before any of them went, exactly as the
 /// compliance arm evaluates it.
+///
+/// One snapshot is not one lock, though: the reference question is asked of
+/// this transaction's snapshot and the delete is enforced against the
+/// latest one, so a citation committed in between still aborts it. Every
+/// candidate is held under `FOR UPDATE` from before the erase loop for
+/// that; see [`cited_blobs_locked_for_erase`].
 ///
 /// `b.owner_id = $1` is the Lean citation invariant restated
 /// (`memory_cites m b -> memory_owner m = blob_owner b`). It costs nothing
