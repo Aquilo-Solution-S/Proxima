@@ -262,13 +262,16 @@ def run_fixture(path: Path) -> int:
 #      opening quote of its template to be on the SAME line. Measured at this
 #      commit against the detector's own keyword set (SELECT/INSERT/UPDATE/
 #      DELETE/WITH/CREATE/ALTER/DROP), the tree holds 53 `format!` calls whose
-#      template begins with one of those verbs. The per-line rule can see 4.
-#      Forty-nine are invisible for no reason but line breaks — and rustfmt,
-#      not the author, decides where most of those breaks fall. Widen the verb
-#      set to include SET/TRUNCATE/EXPLAIN/ANALYZE and it is 67 statements
-#      against the same 4. (Reproduce: whole-file regex with re.DOTALL,
-#      comment lines stripped. The exact figure is sensitive to the verb set,
-#      which is the point.)
+#      template begins with one of those verbs. The per-line rule can see 4
+#      (and `safe_format_sql` then vouches two of those away, so only 2 stand
+#      in the 76). Forty-nine are invisible for no reason but line breaks —
+#      and rustfmt, not the author, decides where most of those breaks fall.
+#      Widen the verb set to include SET/TRUNCATE/EXPLAIN/ANALYZE and it is
+#      67 statements against 17 visible — widening the verb set widens the
+#      rule too, and most of the newly visible ones are the single-line
+#      EXPLAIN templates in the plan-pin tests. (Reproduce: whole-file regex
+#      with re.DOTALL, comment lines stripped. The exact figures are
+#      sensitive to the verb set, which is the point.)
 #
 #   2. `sqlx::raw_sql`. Not a pattern `collect_sites` looks for at all. There
 #      are 14 call sites. The clearest one is `pgvector.rs`'s
@@ -277,7 +280,18 @@ def run_fixture(path: Path) -> int:
 #      handed to `raw_sql` at `lib.rs:699` and two other reads. That statement
 #      is safe — the interpolated values are integers and a closed enum off
 #      `PgTuning` — but it is safe because of what it interpolates, not
-#      because this script noticed it.
+#      because this script noticed it. And the stakes at a `raw_sql` site are
+#      HIGHER than at a `query()` site, which is why the class matters: that
+#      two-statement payload is possible at all because `raw_sql` runs the
+#      SIMPLE query protocol, which permits `;`-chained statements. An
+#      injection there escalates to arbitrary extra statements; the extended
+#      protocol behind `query()`/`query_as` forbids chaining outright.
+#
+#   3. `push_str` assembly the receiver-name heuristic misses. The
+#      `sql-push-str` rule fires only when the receiver's name matches
+#      `\w*sql\w*`, and `intrinsic_proof` blanket-vouches every such site in
+#      `sidecars/sql.rs`. A builder named anything else assembles statements
+#      under both radars.
 #
 # WHERE THE SAFETY ACTUALLY COMES FROM
 # ====================================
@@ -630,8 +644,9 @@ def run_fixture(path: Path) -> int:
 #       `collect_sites`. Its replacement, `forget_leg_sql`, builds the same
 #       class of statement with a `format!(` whose template string sits on
 #       the NEXT line. The regex is applied per line, so it matches nothing.
-#       The execution site survived the move (base :782 -> HEAD :876), and
-#       the two unrelated sites in the file are untouched.
+#       The execution site survived the move (base :782 -> :893 as of the
+#       Keep-refusal commit), and the two unrelated sites in the file are
+#       untouched.
 #
 #       So the minus one is bought by wrapping a macro call, and nothing
 #       about the tree got safer or smaller when it was earned.
