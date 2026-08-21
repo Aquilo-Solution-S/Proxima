@@ -595,7 +595,19 @@ const KERNEL_SURFACES: &[Surface] = &[
         export: ExportRule::Excluded {
             why: "the head is derivable from the memory series",
         },
-        forget: ForgetRule::DeleteWithMemory,
+        // CORRECTED in Phase 4 (plan §4.12 R2). `DeleteWithMemory` was true
+        // for the last revision of a series and false for every other one:
+        // `sync_memory_head` REWINDS the head to the surviving newest `t`
+        // and deletes only when the series empties. The vocabulary gets no
+        // one-member `Rewind` arm for it — §4.6.1 forbids vocabulary with a
+        // single speaker — because `Keep` already means "the generated
+        // forget leg does not destroy this", and the statement that does
+        // touch it is named by the erase side's bespoke list.
+        forget: ForgetRule::Keep {
+            why: "the head is rewound to the surviving newest t and deleted only when the \
+                  series empties; the statement is sync_memory_head, which the erase's \
+                  bespoke leg list already names",
+        },
         lexical_language_column: None,
         counter: None,
         completeness: None,
@@ -688,7 +700,20 @@ const KERNEL_SURFACES: &[Surface] = &[
         },
         erase: EraseRule::ByKey,
         export: ExportRule::Rows,
-        forget: ForgetRule::DeleteWithMemory,
+        // CORRECTED in Phase 4. It declared `DeleteWithMemory` and the
+        // shipped verb has never done that: `core_forget` cools a version
+        // and leaves the receipt, and says so on the wire — its own tool
+        // description reads "…delete hot row, announce.forget. ingest_keys
+        // stay." The only statement that removes one is `erase_memory`'s,
+        // a different verb with a different promise. Generating a forget
+        // leg from the declaration as written would have destroyed an
+        // admission receipt on every cool.
+        forget: ForgetRule::Keep {
+            why: "cooling a version does not un-admit it: the receipt proves this owner \
+                  accepted this (source, ingest_key) and stays until the version is \
+                  erased, which is what keeps a re-ingest of the same key idempotent \
+                  across a cool",
+        },
         lexical_language_column: None,
         counter: Some("receipts"),
         completeness: None,
@@ -727,13 +752,20 @@ const KERNEL_SURFACES: &[Surface] = &[
         owner_columns: &["owner_id"],
         // The dedupe arm. A blob shared across owners used to refuse the
         // transfer outright; now the destination gets its own row over the
-        // same object. `blob_uploads.blob_id` is in the remap list because
-        // the read path requires the blob row and the upload row to name
-        // the same owner — an upload row left pointing at the source's
-        // blob would locate bytes for whoever now holds it.
+        // same object.
+        //
+        // CORRECTED in Phase 4. `remaps` named three columns and the
+        // shipped SQL performed two. `blob_uploads.blob_id` is never
+        // repointed at another blob row: the in-place case moves the upload
+        // row's OWNER and leaves its `blob_id` alone, and the dedupe case
+        // INSERTs a fresh mounted row already naming the destination's new
+        // blob. Declaration and behaviour agreed only by coincidence, which
+        // is the whole defect an unread declaration has. `remaps` is the
+        // list of referring columns a generated UPDATE repoints, and there
+        // are two.
         transfer: TransferRule::FollowOrDedupe {
             dedupe_key: &["owner_id", "schema_id", "content_hash"],
-            remaps: &["memory.blob_id", "cooled.blob_id", "blob_uploads.blob_id"],
+            remaps: &["memory.blob_id", "cooled.blob_id"],
         },
         erase: EraseRule::ByOwner,
         export: ExportRule::Allowlist(&["blob_id", "schema_id", "content_hash"]),

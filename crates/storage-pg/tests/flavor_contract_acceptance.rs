@@ -740,3 +740,118 @@ async fn every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces() {
     let _ = drop_db(&db_name).await;
     result.expect("every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces failed");
 }
+
+/// Every column a declaration NAMES is a column the catalog HAS.
+///
+/// `KeyShape` and `FollowOrDedupe { dedupe_key, remaps }` spell column
+/// names as `&'static str`, which the compiler cannot check against a
+/// table it has never seen. Three phases of evidence say the compiler not
+/// checking them is not a theoretical worry:
+///
+/// - four code-flavor detail tables declared `Custom(&["memory_id"])`, a
+///   column none of them has, and it went unnoticed for as long as nothing
+///   read the field for a `Cascade` surface;
+/// - `proxima_core.projection` declared its memory key as `t` until Phase
+///   4, and the column is `memory_id` — again unread, again untrue;
+/// - `blob`'s `remaps` named three columns where the shipped SQL touched
+///   two.
+///
+/// All three are the same defect: a string nothing resolves. This resolves
+/// every one of them against `information_schema`, so the next one fails a
+/// test instead of reaching a generator.
+///
+/// `owner_columns` is deliberately in scope too. It is genuinely consumed
+/// by the export generator, but only for surfaces the bundle carries — an
+/// `Excluded` surface's owner column has the same unread-string shape as
+/// the two above.
+#[tokio::test]
+async fn every_column_a_declaration_names_is_a_column_the_catalog_has() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+
+        // (schema-qualified table, column, what named it) — flattened so
+        // one round trip answers for the whole contract.
+        let mut cited: Vec<(String, String, String)> = Vec::new();
+        for surface in FLAVOR_0.all_surfaces() {
+            for column in surface.key.columns() {
+                cited.push((surface.table.to_owned(), column.to_owned(), "key".into()));
+            }
+            for column in surface.owner_columns {
+                cited.push((
+                    surface.table.to_owned(),
+                    (*column).to_owned(),
+                    "owner_columns".into(),
+                ));
+            }
+            if let Some(column) = surface.lexical_language_column {
+                cited.push((
+                    surface.table.to_owned(),
+                    column.to_owned(),
+                    "lexical_language_column".into(),
+                ));
+            }
+            if let TransferRule::FollowOrDedupe { dedupe_key, remaps } = surface.transfer {
+                for column in dedupe_key {
+                    cited.push((
+                        surface.table.to_owned(),
+                        (*column).to_owned(),
+                        "dedupe_key".into(),
+                    ));
+                }
+                // A remap names the REFERRING table, not this surface:
+                // `blob`'s remaps are columns on `memory` and `cooled`.
+                for entry in remaps {
+                    let (table, column) = entry
+                        .split_once('.')
+                        .unwrap_or_else(|| panic!("{entry} must be <table>.<column>"));
+                    cited.push((
+                        format!("proxima_core.{table}"),
+                        column.to_owned(),
+                        "remaps".into(),
+                    ));
+                }
+            }
+        }
+        assert!(
+            cited.len() > 40,
+            "flavor #0 names columns on the kernel spine as well as its own sidecars; \
+             found {}",
+            cited.len()
+        );
+
+        let tables: Vec<String> = cited.iter().map(|(table, ..)| table.clone()).collect();
+        let columns: Vec<String> = cited.iter().map(|(_, column, _)| column.clone()).collect();
+        let sources: Vec<String> = cited.iter().map(|(.., source)| source.clone()).collect();
+        let missing: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT d.table_name, d.column_name, d.source
+               FROM unnest($1::text[], $2::text[], $3::text[])
+                    AS d(table_name, column_name, source)
+              WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM information_schema.columns c
+                     WHERE c.table_schema || '.' || c.table_name = d.table_name
+                       AND c.column_name = d.column_name
+              )",
+        )
+        .bind(&tables)
+        .bind(&columns)
+        .bind(&sources)
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        assert!(
+            missing.is_empty(),
+            "these declarations name columns no relation has, which is a string the \
+             compiler cannot check and the catalog can: {missing:?}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("every_column_a_declaration_names_is_a_column_the_catalog_has failed");
+}

@@ -1817,3 +1817,126 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
     let _ = drop_db(&db_name).await;
     result.expect("erase fail-closed test failed");
 }
+
+/// The two corrected `ForgetRule` declarations, pinned as BEHAVIOUR.
+///
+/// `ingest_keys` declared `DeleteWithMemory` and `memory_head` declared it
+/// too; neither was true, and neither could have been found by reading,
+/// because nothing consumed the field. Phase 4 corrects both to
+/// `Keep { why }` — and a correction that only changes a string is worth
+/// nothing, so this asserts the shipped behaviour the new declarations
+/// claim, in both directions:
+///
+/// - a cool leaves the receipt and REWINDS the head to the surviving
+///   newest `t`;
+/// - an erase of the last version removes the receipt and takes the head
+///   with it.
+///
+/// Restoring either declaration to `DeleteWithMemory` after Phase 4's
+/// forget leg reads the contract makes this fail, which is the point: the
+/// declaration is now falsifiable.
+#[tokio::test]
+async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests().clone();
+        let cold = MemoryColdStore::default();
+
+        // Two versions on one handle, each with its own receipt.
+        let first = ingest_fact_atomic(&pool, &permit, &draft(Some(("src", "k1"))), None).await?;
+        let mut later = draft(Some(("src", "k2")));
+        later.handle = Some(first.handle);
+        let second = ingest_fact_atomic(&pool, &permit, &later, None).await?;
+        let (t1, t2) = (first.memory_id.into_inner(), second.memory_id.into_inner());
+
+        let receipts = |t: Uuid| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE t = $1",
+                )
+                .bind(t)
+                .fetch_one(&pool)
+                .await
+            }
+        };
+        let head_t = || {
+            let pool = pool.clone();
+            let handle = first.handle;
+            async move {
+                sqlx::query_scalar::<_, Option<Uuid>>(
+                    "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
+                )
+                .bind(handle)
+                .fetch_optional(&pool)
+                .await
+                .map(Option::flatten)
+            }
+        };
+
+        assert_eq!(
+            head_t().await?,
+            Some(t2),
+            "the head names the newest version"
+        );
+
+        // ── `ForgetRule::Keep` on ingest_keys: cooling the NEWEST version
+        // leaves its receipt behind. ────────────────────────────────────
+        forget_memory_oneshot(
+            &pool,
+            &core_pg_sidecars(),
+            &cold,
+            &cold_object_key(t2),
+            t2,
+            owner.stored_owner_id(),
+        )
+        .await?;
+        assert_eq!(
+            receipts(t2).await?,
+            1,
+            "cooling a version does not un-admit it: `ingest_keys` stay, exactly as \
+             core_forget's own wire description says"
+        );
+
+        // ── `ForgetRule::Keep` on memory_head: the head REWINDS rather
+        // than being deleted with the memory. ───────────────────────────
+        assert_eq!(
+            head_t().await?,
+            Some(t1),
+            "the head is rewound to the surviving newest t, not deleted — which is why \
+             `DeleteWithMemory` was true for exactly one revision of a series"
+        );
+
+        // ── Erase is the verb that takes them. ──────────────────────────
+        let mut tx = pool.begin().await?;
+        erase_memory(&mut tx, &core_pg_sidecars(), &owner, t1).await?;
+        tx.commit().await?;
+        assert_eq!(
+            receipts(t1).await?,
+            0,
+            "erase_memory is the only statement that removes a receipt"
+        );
+        assert_eq!(
+            receipts(t2).await?,
+            1,
+            "erasing one version does not touch another's receipt"
+        );
+        assert_eq!(
+            head_t().await?,
+            None,
+            "the head is deleted only when the hot series empties"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("the corrected forget declarations must match shipped behaviour");
+}

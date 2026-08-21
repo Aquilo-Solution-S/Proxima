@@ -1045,7 +1045,17 @@ impl ProjectionSpec {
     pub const fn surface(&self) -> Surface {
         Surface {
             table: self.table,
-            key: KeyShape::MemoryT { column: "t" },
+            // CORRECTED in Phase 4. It said `column: "t"`, and no projection
+            // table has a `t`: the memory column is `memory_id`, in the
+            // migration (`projection.memory_id REFERENCES memory (t)`) and
+            // in the generated statements alike. The wrong name survived
+            // because nothing read it — the surface is `Cascade` on erase
+            // and `Excluded` on export, the two lanes that consume
+            // `KeyShape`, so neither ever asked. Phase 4's transfer
+            // generator does ask, which is what turned it up.
+            key: KeyShape::MemoryT {
+                column: PROJECTION_MEMORY_COLUMN,
+            },
             owner_columns: &["owner_id"],
             transfer: TransferRule::Follow,
             erase: EraseRule::Cascade {
@@ -1079,6 +1089,13 @@ pub const PROJECTION_MEMORY_FK: &str = "projection_memory_id_fkey";
 
 /// The bare relation name every flavor's projection table carries.
 pub const PROJECTION_TABLE_NAME: &str = "projection";
+
+/// The column every flavor's projection table keys its memory on.
+///
+/// Named once, beside the FK whose name is derived from it, so the surface
+/// declaration and the generated statements cannot drift again: they did,
+/// and the surface spent three phases claiming a column called `t`.
+pub const PROJECTION_MEMORY_COLUMN: &str = "memory_id";
 
 /// Whether a flavor has a projection table — and, when it does not, why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
