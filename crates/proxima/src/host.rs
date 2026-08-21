@@ -33,9 +33,18 @@ pub use proxima_blob_s3::{BlobError, CitedBlobStore, S3RuntimeConfig};
 /// those are re-exported below, so every variant of this enum is
 /// constructible by a host depending on `proxima` alone — an exported
 /// enum whose variants cannot be built is not actually exported.
+///
+/// The export half comes with it. `Engine::export_owner_bundle` is `pub`
+/// and returns a [`ComplianceExportBundle`] built from a
+/// [`ComplianceExportTarget`], and neither type was nameable from
+/// `proxima` — so a host could call the verb, could not declare a variable
+/// for what it returned, and could not build the argument at all. The
+/// portability half of an owner's rights was reachable only by a crate that
+/// depended on `proxima-core` directly, which is the coupling the tiered
+/// facade exists to prevent.
 pub use proxima_core::compliance::{
     ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseRequest,
-    ComplianceEraseTarget,
+    ComplianceEraseTarget, ComplianceExportBundle, ComplianceExportRequest, ComplianceExportTarget,
 };
 pub use proxima_core::cursor::Cursor;
 /// The read verb a flavor searches its own corpus with.

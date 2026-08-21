@@ -111,9 +111,42 @@ fn host_api_can_construct_every_compliance_erase_target() {
         },
     ];
 
-    // Naming the count pins the enum's shape: a sixth variant has to be
+    // Naming the count pins the enum's shape: a fifth variant has to be
     // added here, which is the prompt to check it is constructible too.
     assert_eq!(targets.len(), 4);
+}
+
+#[test]
+fn host_api_can_ask_for_and_hold_an_owner_export() {
+    // `Engine::export_owner_bundle` is `pub`, takes a
+    // `ComplianceExportTarget` and returns a `ComplianceExportBundle`, and
+    // neither was on the facade: a host could call the verb, could not
+    // build its argument, and could not name what came back. Erase was
+    // reachable and export was not, so the destructive half of an owner's
+    // rights shipped without the portable half.
+    // Naming the return type is the half that inference cannot supply.
+    fn count_rows(bundle: &proxima::ComplianceExportBundle, table: &str) -> usize {
+        bundle.table(table).len()
+    }
+    let _ = count_rows;
+
+    let targets: [proxima::ComplianceExportTarget; 2] = [
+        proxima::ComplianceExportTarget::GroupOwner {
+            group_id: proxima::GroupId::new(uuid::Uuid::nil()),
+        },
+        proxima::ComplianceExportTarget::PersonalOwner {
+            user_id: proxima::UserId::new(uuid::Uuid::nil()),
+        },
+    ];
+    assert_eq!(targets.len(), 2);
+
+    let request = proxima::ComplianceExportRequest {
+        target: targets[1].clone(),
+    };
+    assert!(matches!(
+        request.target,
+        proxima::ComplianceExportTarget::PersonalOwner { .. }
+    ));
 }
 
 #[test]
