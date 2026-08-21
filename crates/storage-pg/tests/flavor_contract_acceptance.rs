@@ -666,3 +666,77 @@ fn entity_kind_of(kind: PayloadKind) -> proxima_core::EntityKind {
         other => panic!("{other:?} has no embedding lane"),
     }
 }
+
+// ── Phase C: a declared cascade is a cascade the catalog enforces ────────
+
+/// `EraseRule::Cascade { via }` is a claim about the database, and the
+/// consolidated owner erase acts on it: a cascading surface gets no
+/// statement, because the constraint is the proof. Until this test, nothing
+/// in core checked the claim, and two of flavor #0's three cascades were
+/// false — `memory_head` named a `NO ACTION` foreign key that runs the other
+/// way, and `content` named a Rust function. Both were corrected in the same
+/// commit that added this gate; generating from the declarations first would
+/// have left every erased owner's head rows behind.
+///
+/// Lifted from `flavors/code/tests/erase_repo_pg.rs`, which has asked
+/// `pg_constraint` this question since Phase 2. The core copy is the one
+/// that matters: flavor #0 speaks for the kernel spine.
+#[tokio::test]
+async fn every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces() {
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let mut relations: Vec<String> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for contract in registry.contracts() {
+        for surface in contract.all_surfaces() {
+            if let proxima_core::flavor::EraseRule::Cascade { via } = surface.erase {
+                relations.push(via.relation.to_owned());
+                names.push(via.name.to_owned());
+            }
+        }
+    }
+    assert!(
+        relations
+            .iter()
+            .any(|relation| relation == "proxima_core.projection"),
+        "the projection is the surface owner erase reaches on its cascade declaration \
+         alone, so it is the one this gate may not be blind to; found {relations:?}"
+    );
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let unenforced: Vec<(String, String)> = sqlx::query_as(
+            "SELECT d.relation, d.name
+               FROM unnest($1::text[], $2::text[]) AS d(relation, name)
+              WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM pg_constraint c
+                      JOIN pg_class src ON src.oid = c.conrelid
+                     WHERE c.conname = d.name
+                       AND c.contype = 'f'
+                       AND c.confdeltype = 'c'
+                       AND (src.relnamespace::regnamespace)::text || '.' || src.relname
+                           = d.relation
+                )",
+        )
+        .bind(&relations)
+        .bind(&names)
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        assert!(
+            unenforced.is_empty(),
+            "these surfaces declare EraseRule::Cascade, and the owner erase emits no \
+             statement for them on that declaration, but no ON DELETE CASCADE foreign \
+             key of that name backs it: {unenforced:?}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces failed");
+}

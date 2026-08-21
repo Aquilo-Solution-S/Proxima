@@ -585,12 +585,13 @@ const KERNEL_SURFACES: &[Surface] = &[
         key: KeyShape::Custom(&["handle"]),
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
-        erase: EraseRule::Cascade {
-            via: DbConstraint {
-                relation: "proxima_core.memory",
-                name: "memory_handle_fkey",
-            },
-        },
+        // NOT a cascade, though it declared one until Phase C. The
+        // constraint it named (`memory.handle -> memory_head.handle`) points
+        // the OTHER way and is `NO ACTION`: it forces the series rows to be
+        // deleted first and never removes the head. The head is rewound to
+        // the surviving newest `t` and deleted when the series is empty —
+        // an explicit statement, named by `owner_erase`'s leg table.
+        erase: EraseRule::ByOwner,
         export: ExportRule::Excluded {
             why: "the head is derivable from the memory series",
         },
@@ -775,12 +776,13 @@ const KERNEL_SURFACES: &[Surface] = &[
             dedupe_key: &["owner_id", "schema_id", "content_hash"],
             remaps: &["memory.content_id", "cooled.content_id"],
         },
-        erase: EraseRule::Cascade {
-            via: DbConstraint {
-                relation: "proxima_core.content",
-                name: "gc_unreferenced_content",
-            },
-        },
+        // NOT a cascade, though it declared one until Phase C: the name it
+        // gave (`gc_unreferenced_content`) is a Rust function, not a
+        // constraint, so the claim was unfalsifiable by the catalog. The row
+        // is reached through the selection set for its key and deleted only
+        // when no surviving admission still names it — the refcount guard
+        // `owner_erase`'s leg table records.
+        erase: EraseRule::ByKey,
         export: ExportRule::Excluded {
             why: "DECLARED GAP — the A/P body is erased but never exported",
         },
@@ -837,7 +839,16 @@ const KERNEL_SURFACES: &[Surface] = &[
         key: KeyShape::Custom(&["object_key"]),
         owner_columns: &["owner_id"],
         transfer: TransferRule::StaysOnKey,
-        erase: EraseRule::ByOwner,
+        // It declared `ByOwner` until Phase C, and no erase ever deleted
+        // from it — which was the only reason a generated statement had not
+        // yet destroyed the queue the erase itself enqueues into. The debt
+        // outlives the transaction that recorded it BY CONSTRUCTION: the row
+        // is what survives a crash between commit and destruction.
+        erase: EraseRule::Never {
+            why: "the purge queue is the erase's own outbox; the drain deletes the row \
+                  once the object is destroyed, and an erase that deleted it would lose \
+                  the bytes it promised to reclaim",
+        },
         export: ExportRule::Excluded {
             why: "erase bookkeeping",
         },
