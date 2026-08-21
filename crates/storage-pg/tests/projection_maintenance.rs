@@ -253,7 +253,7 @@ async fn erasing_an_admission_takes_its_projection_row() {
 /// about it.
 ///
 /// `projection.memory_id` is `REFERENCES proxima_core.memory (t) ON DELETE
-/// CASCADE`, and Article 17 erase deletes `proxima_core.memory` rows, so
+/// CASCADE`, and an owner erase deletes `proxima_core.memory` rows, so
 /// the projection goes with them. Nothing in `verbs::owner_erase`
 /// names a projection table and nothing should: the erase is the inverse
 /// of the write at the scope the write happened, and the constraint is
