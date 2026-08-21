@@ -471,6 +471,20 @@ pub fn summary_like_sql_for_tests() -> &'static str {
     SUMMARY_LIKE_SQL.as_str()
 }
 
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn commit_search_sql_for_tests() -> &'static str {
+    COMMIT_SEARCH_SQL.as_str()
+}
+
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn summary_search_sql_for_tests() -> &'static str {
+    SUMMARY_SEARCH_SQL.as_str()
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct ScoredMemoryRow {
     memory_id: uuid::Uuid,
@@ -496,6 +510,39 @@ mod tests {
             "summary search must @@ the stored vector, not recompute to_tsvector"
         );
         assert!(super::SUMMARY_SEARCH_SQL.contains("p.search_tsv @@"));
+    }
+
+    /// The RANKED arms bind the owner too, and nothing pinned it.
+    ///
+    /// This has been true since the projection landed and was never
+    /// asserted, so `AND $4::uuid[] IS NOT NULL` — a predicate that binds
+    /// the parameter and narrows nothing — left the whole workspace green
+    /// while candidate generation went owner-blind. Phase 3 declares the
+    /// owner-blindness follow-up discharged for this flavor, which is a
+    /// claim about all four arms and not only the three `LIKE` ones.
+    #[test]
+    fn the_ranked_arms_bind_the_owner_as_a_predicate() {
+        assert!(
+            super::COMMIT_SEARCH_SQL.contains("AND p.owner_id = ANY($4::uuid[])"),
+            "the commit arm narrows on the owner, on the projection's own column"
+        );
+        assert!(
+            super::SUMMARY_SEARCH_SQL.contains("AND p.owner_id = ANY($5::uuid[])"),
+            "the summary arm narrows on the owner; its bind is $5, one later than \
+             the commit arm's, because it also binds a kind"
+        );
+        // `IS NOT NULL` on the same bind reads as a use and narrows
+        // nothing. Naming the shape is what makes this assertion outlive
+        // the one spelling it currently rejects.
+        for sql in [
+            super::COMMIT_SEARCH_SQL.as_str(),
+            super::SUMMARY_SEARCH_SQL.as_str(),
+        ] {
+            assert!(
+                !sql.contains("::uuid[] IS NOT NULL"),
+                "a bind that is only checked for NULL is not an owner predicate"
+            );
+        }
     }
 
     /// The exact arm was raw `ts_rank_cd`, unbanded, merged with banded

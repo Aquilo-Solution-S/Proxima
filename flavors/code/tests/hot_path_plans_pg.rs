@@ -5,7 +5,10 @@ mod common;
 
 use common::{migrated_db, project_code, seed_memory, test_owner};
 use proxima_code::mcp::search_chunks::{chunk_gin_sql_for_tests, chunk_like_sql_for_tests};
-use proxima_code::mcp::search_commits::{commit_like_sql_for_tests, summary_like_sql_for_tests};
+use proxima_code::mcp::search_commits::{
+    commit_like_sql_for_tests, commit_search_sql_for_tests, summary_like_sql_for_tests,
+    summary_search_sql_for_tests,
+};
 use proxima_code::{CodeChunkV1, FileRevisionV1};
 use proxima_core::{AbstractionPayload, FactPayload};
 use proxima_pg_testkit::drop_db;
@@ -216,6 +219,49 @@ async fn code_hot_path_plans_use_expected_indexes() {
             assert!(
                 projection_predicates(&plan).contains("owner_id"),
                 "{label} substring arm must narrow candidates by owner; plan:\n{rendered}"
+            );
+        }
+
+        // The RANKED commit arms, same claim. R6 discharges the
+        // owner-blindness follow-up for this flavor, and that is a claim
+        // about all four arms — but only the chunk ranked arm and the three
+        // `LIKE` arms were plan-proved. These two bound the owner and
+        // nothing read it back, so `AND $4::uuid[] IS NOT NULL` would have
+        // passed every test in the workspace.
+        for (label, sql) in [
+            ("commit-ranked", commit_search_sql_for_tests()),
+            ("summary-ranked", summary_search_sql_for_tests()),
+        ] {
+            let explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {sql}");
+            let owner_ids = vec![owner.stored_owner_id()];
+            // SQL-POLICY: fixed-fragment
+            let query = sqlx::query_scalar(sqlx::AssertSqlSafe(explain));
+            let plan: serde_json::Value = if label == "commit-ranked" {
+                query
+                    .bind("needle")
+                    .bind(Some(repo_id))
+                    .bind(20_i64)
+                    .bind(&owner_ids)
+                    .fetch_one(&mut *tx)
+                    .await?
+            } else {
+                query
+                    .bind("needle")
+                    .bind(Some(repo_id))
+                    .bind(None::<String>)
+                    .bind(20_i64)
+                    .bind(&owner_ids)
+                    .fetch_one(&mut *tx)
+                    .await?
+            };
+            let rendered = plan.to_string();
+            assert!(
+                rendered.contains("\"Relation Name\":\"projection\""),
+                "{label} must reach the flavor's own projection; plan:\n{rendered}"
+            );
+            assert!(
+                projection_predicates(&plan).contains("owner_id"),
+                "{label} must narrow candidates by owner; plan:\n{rendered}"
             );
         }
 

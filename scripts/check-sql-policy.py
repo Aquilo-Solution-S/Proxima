@@ -483,18 +483,34 @@ def run_fixture(path: Path) -> int:
 #      replace carried.
 #   +3 `flavors/code/src/mcp/search_chunks.rs` (1) and `search_commits.rs`
 #      (2) — the three `LIKE` arms stopped being `&'static str` literals.
-#      They render their owner join and their score floor from the flavor's
-#      DECLARATION now (plan §4.8 R3/R6/R7), and a band floor is a
-#      `format!("{:.2}", ..)`, which no `const` can produce. Trading three
-#      literals for three `LazyLock<String>`s is the cost of the arms being
-#      declared rather than hand-written; each is built once, from data with
-#      no caller text in it, and carries a `PgIdent`/fixed-fragment proof.
+#      Each now renders part of itself from the flavor's DECLARATION (plan
+#      §4.8 R3/R6/R7), and the two arms differ in WHICH part:
+#        * `COMMIT_LIKE_SQL` / `SUMMARY_LIKE_SQL` interpolate the declared
+#          band floor as well as the schema id, and a band floor is a
+#          `format!("{:.2}", ..)` no `const` can produce.
+#        * `CHUNK_LIKE_SQL` interpolates only the declared schema id, which
+#          IS a `&'static str` const — chunk search bands nothing, it adds
+#          literal bonuses. A `const` still cannot build the statement:
+#          `concat!` takes literals, not const items, so the only `const`
+#          spelling is a second copy of the id the declaration exists to be
+#          the one copy of.
+#      Trading three literals for three `LazyLock<String>`s is the cost of
+#      the arms being declared rather than hand-written; each is built once,
+#      from data with no caller text in it, and carries a
+#      `PgIdent`/fixed-fragment proof.
 #   +2 test-only plan pins: `storage-pg/tests/hot_path_plans.rs` EXPLAINs the
 #      new substring statement and `flavors/code/tests/hot_path_plans_pg.rs`
 #      EXPLAINs the three `LIKE` arms to pin the R6 owner predicate on the
 #      flavor's own projection. Both EXPLAIN the audited production builders'
 #      output, which is the same shape as the 2026-07-16 HNSW pin above.
-EXPECTED_DYNAMIC_SQL_SITES = 73
+#
+# 73 -> 74 in the same PR's fix wave. One more test-only EXPLAIN in
+# `flavors/code/tests/hot_path_plans_pg.rs`: R6 discharges the owner-blind
+# candidate follow-up for the whole flavor, but only the chunk RANKED arm
+# and the three `LIKE` arms were plan-proved — the commit and
+# commit-summary ranked arms bound `p.owner_id` with nothing reading it
+# back, so `AND $4::uuid[] IS NOT NULL` passed the entire workspace.
+EXPECTED_DYNAMIC_SQL_SITES = 74
 
 
 def run_self_test() -> int:
