@@ -53,7 +53,14 @@ async fn forget_hydrate_restores_code_chunk_sidecar() {
         assert_eq!(hot, 0, "forget deletes the flavor sidecar before memory");
 
         let mut tx = pool.begin().await?;
-        hydrate_memory(&mut tx, pg.sidecars(), cold.as_ref(), memory_id).await?;
+        hydrate_memory(
+            &mut tx,
+            pg.sidecars(),
+            cold.as_ref(),
+            memory_id,
+            common::code_registry_with_test_citations().non_embeddable_schema_ids(),
+        )
+        .await?;
         tx.commit().await?;
 
         let text: String =

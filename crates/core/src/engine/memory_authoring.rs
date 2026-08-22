@@ -208,9 +208,9 @@ impl Engine {
     }
 
     /// Author one derived Memory and its already-resolved edges. When an
-    /// embedding client is configured, the Engine embeds before storage;
-    /// otherwise storage receives [`DerivedEmbedding::None`] and persists no
-    /// embedding row.
+    /// embedding client is configured AND the schema's recipe resolves to a
+    /// unit, the Engine embeds before storage; otherwise storage receives
+    /// [`DerivedEmbedding::None`] and persists no embedding row.
     ///
     /// An input this client cannot embed does not fail the write. The
     /// memory lands with no vector and a pending embedding job enqueued in
@@ -247,8 +247,10 @@ impl Engine {
         // model id for the length of the storage request.
         let client = self.embed_client();
         let embedding = match client.as_deref() {
-            None => DerivedEmbedding::None,
-            Some(client) => resolve_derived_embedding(client, req.memory_id, &req.text).await?,
+            Some(client) if self.registry().schema_is_embeddable(req.schema_id.as_str()) => {
+                resolve_derived_embedding(client, req.memory_id, &req.text).await?
+            }
+            _ => DerivedEmbedding::None,
         };
 
         let storage_req = AuthorDerivedRequest {

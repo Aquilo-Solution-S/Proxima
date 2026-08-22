@@ -486,7 +486,7 @@ impl UnitOfWork<'_> {
         super::memory_authoring::validate_operator_memory_invocation_request(&req)
             .map_err(super::memory_authoring::map_derived_storage_error)?;
         let embedding = self
-            .prepare_embedding(req.memory_id, &req.text)
+            .prepare_embedding(req.memory_id, req.schema_id.as_str(), &req.text)
             .await
             .map_err(super::memory_authoring::map_derived_storage_error)?;
         Ok(PreparedDerived {
@@ -511,12 +511,19 @@ impl UnitOfWork<'_> {
     async fn prepare_embedding(
         &mut self,
         memory_id: MemoryId,
+        schema_id: &str,
         text: &str,
     ) -> Result<PreparedEmbedding, crate::storage::StorageError> {
         let client = self.engine.embed_client();
         let Some(client) = client.as_deref() else {
             return Ok(PreparedEmbedding::None);
         };
+        // A deferral is a promise the drain can keep. It cannot for a schema
+        // whose recipe resolves to no unit: the job would be claimed, find no
+        // text and be dropped, once per memory.
+        if !self.engine.registry().schema_is_embeddable(schema_id) {
+            return Ok(PreparedEmbedding::None);
+        }
         // Transaction already open: do not hold the pool slot across HTTP.
         if self.session.is_some() {
             return Ok(PreparedEmbedding::Deferred {
