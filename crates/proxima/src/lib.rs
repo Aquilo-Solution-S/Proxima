@@ -5,7 +5,7 @@
 //! `apps/proxima-mcp`. Cohabitation contract: core, flavors, and the
 //! host's own sqlx migrations share one database; core records into the
 //! default `_sqlx_migrations` and each flavor into its own tracking table
-//! (see [`migrations`]). Every migrator in that database must set
+//! (see the `migrations` module). Every migrator in that database must set
 //! `ignore_missing(true)`, and host tables must stay out of the
 //! `proxima_core` / per-flavor schemas.
 //!
