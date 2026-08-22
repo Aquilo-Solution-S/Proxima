@@ -104,7 +104,7 @@ async fn code_chunk_sql_authority_matches_rust_ingest_constant() {
 /// SAME tsvector for every input — that identity is what keeps the vector
 /// off the sidecar honest.
 #[tokio::test]
-async fn the_generator_reproduces_the_v007_generated_column() {
+async fn the_generator_reproduces_the_reference_vector_expression() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -186,7 +186,7 @@ async fn the_generator_reproduces_the_v007_generated_column() {
         .await?;
         assert!(
             drifted.is_empty(),
-            "the generator and the v0.0.7 generated column disagree for: {drifted:?}"
+            "the generator and the reference vector expression disagree for: {drifted:?}"
         );
 
         Ok(())

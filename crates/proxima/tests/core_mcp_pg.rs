@@ -2376,10 +2376,9 @@ async fn remember_lands_a_20k_body_and_replays_by_digest() {
 ///
 /// Three MCP tools advertise a `language` parameter.
 /// `resolve_lexical_language` validates it and `FactWriteCommand` carries
-/// it; storage must not drop it. A GENERATED `search_tsv` at a fixed
-/// configuration would leave no column to put it in, and
-/// no expression that could have read it. `FactWriteCommand`'s doc claimed
-/// a memory-row stamp that did not exist.
+/// it; storage must not drop it. A sidecar `search_tsv` GENERATED at a fixed
+/// configuration is where it would be dropped: such a column offers nowhere
+/// to put the value and no expression that could read it.
 ///
 /// The projection row is the first place that has both. This asserts the
 /// value lands, and then asserts it MATTERS: `Häuser` is only findable by

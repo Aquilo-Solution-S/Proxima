@@ -1003,10 +1003,14 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
 ///
 /// The purge enumerates keys from the OWNER'S ROWS, so after a transfer the
 /// object is reachable from the destination's rows and from nobody else's.
-/// A source erase must therefore leave the destination's bytes standing —
-/// a prefix purge would delete them, because the key still spells the
-/// source's hash — and the destination's own erase must still remove them,
-/// so the object never becomes un-erasable.
+/// A source erase must therefore leave the destination's bytes standing,
+/// and the destination's own erase must still remove them, so the object
+/// never becomes un-erasable.
+///
+/// Enumerating rows is what buys that. A key is `objects/<upload_id>` and
+/// never moves, so it says nothing about who owns the object now: any purge
+/// that worked from the key itself would have to treat the transferred
+/// object as still the source's and delete bytes the destination owns.
 #[tokio::test]
 async fn erase_follows_the_transfer_rather_than_the_key() {
     if !S3RuntimeConfig::present_in_env() {

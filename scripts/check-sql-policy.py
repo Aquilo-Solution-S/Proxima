@@ -484,10 +484,13 @@ def run_fixture(path: Path) -> int:
 # the frozen sidecar registry through `PgIdent::table`, exactly as the
 # memory-keyed sidecar sweeps beside them already do — every value is bound.
 #
-# `owner_erase::delete_owner_pinned_sidecars` and the owner-pinned arm of
-# `owner_export::export_statement` each replace a single hardcoded
-# `proxima_core.mcp_call_logged_v1` statement, so the count rises while the
-# hardcoded table name disappears. The third,
+# `owner_erase::delete_owned_surfaces` renders one `DELETE` per declared
+# `EraseLeg::Owned` surface, filtered on that surface's own `owner_id`.
+# `owner_export::export_statement`'s owner-pinned arm — the one taken when
+# `owner_columns` is non-empty — renders the matching `SELECT ... WHERE
+# s.owner_id`. Each stands where a single hardcoded
+# `proxima_core.mcp_call_logged_v1` statement would otherwise be, so the
+# count rises while the hardcoded table name disappears. The third,
 # `sidecars::read_ctx::fetch_all_by_memory_ids_owner_pinned`, is the read
 # half: backend-generated SQL from `memory_select_batch_owner_pinned_sql`,
 # whose `proxima_core.memory` join IS the owner rule and is therefore the

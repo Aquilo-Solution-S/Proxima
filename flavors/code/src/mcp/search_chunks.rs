@@ -484,6 +484,9 @@ impl Tool for CodeSearchChunksTool {
                 });
             }
 
+            // Phase 3: the call-neighbour pins, only when the caller asks
+            // for them and the page phase 2 admitted is non-empty. Keyed on
+            // that page's chunk ids, so the pins cost nothing on a miss.
             let calls_edges = if args.include_calls && !chunk_ids.is_empty() {
                 load_call_edges(&ctx, &chunk_ids).await?
             } else {

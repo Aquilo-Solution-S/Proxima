@@ -700,8 +700,12 @@ async fn the_openapi_document_advertises_a_flavor_dispatchers_actions() {
 }
 
 /// The same narrowing for a flavor: a palette holding one leaf advertises
-/// one leaf. Keyed on the substrate tables, the narrowing projection has
-/// nothing to narrow with and the whole flattened schema is advertised.
+/// one leaf.
+///
+/// The projection narrows from the descriptor's own actions. Were it keyed
+/// on the substrate tables instead, a flavor dispatcher would give it
+/// nothing to narrow with and the whole flattened schema would be
+/// advertised — the assertion below is what proves it is not.
 #[tokio::test]
 async fn a_palette_narrows_a_flavor_dispatchers_advertised_actions() {
     let router = app(flavor_host());

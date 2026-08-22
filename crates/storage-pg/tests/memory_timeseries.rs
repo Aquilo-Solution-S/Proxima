@@ -1,4 +1,4 @@
-//! Slice 2: FactIngest timeseries write/read + ingest_keys replay.
+//! FactIngest timeseries write/read + ingest_keys replay.
 #![allow(
     clippy::missing_errors_doc,
     clippy::doc_markdown,

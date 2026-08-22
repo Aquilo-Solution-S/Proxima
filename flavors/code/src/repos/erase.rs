@@ -3,10 +3,22 @@
 //! The flavor is the only place that knows what "one repository's rows"
 //! means, so the split is: the flavor deletes the flavor's rows and names
 //! the admissions behind them; [`erase_memory_series`] deletes the
-//! substrate. Neither side holds a hardcoded table list — both iterate the
-//! contract's declared surfaces, so a surface added to the declaration is
-//! reached without touching either.
-//! Neither half enumerates the other's tables.
+//! substrate. Neither half enumerates the other's tables.
+//!
+//! The two halves reach their tables differently, and the difference is the
+//! point. [`erase_memory_series`] iterates the declared surfaces it is
+//! handed, so a surface added to the declaration is reached without
+//! touching it. This file is the flavor's own inverse and names its tables
+//! by hand: the statements below are `&'static str` constants spelling every
+//! `proxima_code` relation a repo's rows live in.
+//!
+//! A hand-written inverse is only as good as what checks it, so both
+//! directions are pinned against the contract:
+//! `every_declared_surface_is_reached_by_the_repo_erase_or_named_as_an_exemption`
+//! fails on a surface the contract declares and these statements miss,
+//! unless it is listed as an exemption with a reason, and
+//! `the_erase_names_no_table_the_contract_does_not_declare` fails on a table
+//! these statements name and the contract does not.
 
 use proxima_core::{Owner, StorageError};
 use proxima_storage_pg::verbs::forget::{

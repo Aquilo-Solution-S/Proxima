@@ -71,5 +71,5 @@ async fn commit_ingest_does_not_run_wake_execution() {
 
     drop(pg);
     let _ = drop_db(&db).await;
-    result.expect("commit_summary_e2e failed");
+    result.expect("commit_ingest_does_not_run_wake_execution failed");
 }

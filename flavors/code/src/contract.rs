@@ -1,9 +1,18 @@
 //! The code flavor's declaration.
 //!
-//! Every lane that touches this flavor's rows iterates these declarations
-//! rather than naming tables by hand: `validate_contract_schemas` and
-//! `check_owner_pinned_against_contracts` both read them, and `repos::erase`
-//! is checked against them by a test.
+//! The cross-checks read these declarations rather than a hand-written
+//! list, each over the part it owns: `validate_contract_schemas` walks
+//! `schemas` at freeze, and `check_owner_pinned_against_contracts` compares
+//! every registered PG sidecar against the retain-at-source set derived
+//! from here. Neither has to be edited when a declaration grows.
+//!
+//! `repos::erase` is the one lane that still names its tables by hand — a
+//! flavor's own inverse, spelled as SQL constants — so it is CHECKED
+//! against these declarations instead, in both directions:
+//! `every_declared_surface_is_reached_by_the_repo_erase_or_named_as_an_exemption`
+//! fails on a surface declared here that the erase misses without an
+//! exemption, and `the_erase_names_no_table_the_contract_does_not_declare`
+//! fails on a table the erase names that is not declared here.
 //!
 //! Style follows `crates/core/src/flavor/flavor0.rs` exactly: `const`
 //! everything, `const fn` helpers for the repeated shapes, every field

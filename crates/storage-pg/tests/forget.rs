@@ -1,4 +1,4 @@
-//! Slice 6: forget / hydrate / erase.
+//! Forget / hydrate / erase.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use std::sync::Arc;
