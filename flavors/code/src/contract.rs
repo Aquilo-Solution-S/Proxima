@@ -770,7 +770,7 @@ const CODE_PROJECTION: ProjectionSpec = ProjectionSpec {
     // recorded here is core's, so a shard-aware merge has one number to
     // start from rather than three.
     overfetch_k: 1_000,
-    // CONSUMED by `core_search_projections`, which admits a non-core
+    // CONSUMED by core's flavor-scan filter, which admits a non-core
     // projection into core's merge only under `CoreBands`. The divergence
     // is chunk search's, not commit search's.
     band_comparability: BandComparability::Divergent {

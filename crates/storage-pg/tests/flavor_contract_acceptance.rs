@@ -292,9 +292,9 @@ async fn every_cited_enforcement_site_resolves() {
 
 /// A non-surface is a value, not an omission.
 ///
-/// `search_projection() -> None` is reachable three ways — no projection,
-/// empty fields, no sidecar table — so without a declared value a schema that
-/// deliberately does not search is indistinguishable from one whose
+/// An absent projection has several possible causes — no projection, no
+/// searchable fields, no sidecar table — so without a declared value a schema
+/// that deliberately does not search is indistinguishable from one whose
 /// declaration was forgotten. Utterances are a search surface in this tree —
 /// they carry their own score band — so the declared-absence exemplars are the
 /// schemas that really do decline.

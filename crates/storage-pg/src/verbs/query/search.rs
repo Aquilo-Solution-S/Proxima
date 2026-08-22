@@ -328,8 +328,10 @@ fn merge_hits(into: &mut BTreeMap<uuid::Uuid, Hit>, rows: Vec<Hit>) {
 
 /// One job per participating FLAVOR, not one per schema.
 ///
-/// A flavor's whole lexical surface is one statement against its own shard;
-/// a tag-scoped request that reaches a second flavor runs one more.
+/// A flavor's ranked arm is one statement against its own shard, plus at
+/// most one substring statement over the schemas that arm returned nothing
+/// for. A tag-scoped request that reaches a second flavor runs the same
+/// again against that flavor's shard.
 async fn scan_flavors(
     pool: &PgPool,
     req: &MemorySearchRequest,
@@ -598,8 +600,8 @@ fn substring_leg_sql(
 /// And there is no sidecar join at all. `{sidecar}` is a per-SCHEMA value;
 /// one statement over a flavor's five projected schemas cannot name it, so
 /// the snippet is fetched after paging instead. The arm therefore binds no
-/// `LIKE` pattern, and `search_projection_identity` pins the emitted
-/// placeholder numbering.
+/// `LIKE` pattern, and `every_bind_is_where_the_scan_binds_it` pins the
+/// emitted placeholder numbering against the order the scan binds.
 ///
 /// `schema_id` is a row predicate — `= ANY($8)` — rather than a
 /// projection-selection criterion, which is what lets one statement serve
@@ -1302,9 +1304,10 @@ mod tests {
     /// sidecar carries no `owner_id`, so the loop drives from the owner
     /// index and probes the sidecar by `t`.
     ///
-    /// The numbering is the mechanical hazard: a mis-shifted `$8` turns the
-    /// owner predicate into the tag array. This asserts the EMITTED SQL, so
-    /// a shift fails here as well as in the identity fixture.
+    /// The numbering is the mechanical hazard: `$7` is the owner set and
+    /// `$8` the participating-schema array, and a shift by one puts each
+    /// where the other belongs. This asserts the EMITTED SQL, so a shift
+    /// fails here.
     #[test]
     fn every_bind_is_where_the_scan_binds_it() {
         let note = proxima_core::FlavorRegistry::new()
@@ -1359,10 +1362,10 @@ mod tests {
             "the unused-parameter guard went with the LIKE bind it kept alive"
         );
         // The ranked arm's OWNER never comes through a join — that is what
-        // the composite `gin(owner_id, search_tsv)` needs, and it is what
-        // The head restriction names `memory` and `memory_head` in an
-        // EXISTS, so the property is asserted directly rather than by a
-        // blanket string test for `proxima_core.memory`.
+        // the composite `gin(owner_id, search_tsv)` needs. The head
+        // restriction names `memory` and `memory_head` in an EXISTS, so the
+        // property is asserted directly rather than by a blanket string
+        // test for `proxima_core.memory`.
         assert!(
             !ranked.contains("m.owner_id"),
             "the ranked arm's owner is on the projection, never reached through memory"

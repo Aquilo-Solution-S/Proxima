@@ -524,9 +524,11 @@ pub async fn count_embedding_job_status(
 /// Idempotent on the table's natural key `(owner_id, entity_id, model_id)`,
 /// which is why a replayed write and a re-enqueued deferral are both free.
 ///
-/// `entity_kind` is deliberately a parameter rather than `Fact`: the
-/// column is the full `proxima_core.entity_kind` enum, so an `Abstraction`
-/// or `Perspective` job needs no schema change — only a caller.
+/// `entity_kind` is accepted and not stored: the row is keyed by
+/// `(owner_id, entity_id, model_id)` and records no kind at all, so an
+/// `Abstraction` or `Perspective` job needs no schema change. The
+/// parameter keeps the caller's kind in the signature where a future
+/// kind-scoped drain would need it.
 ///
 /// # Errors
 ///

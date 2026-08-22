@@ -10,11 +10,9 @@
 //!
 //! 1. **Declared absence is a value.** [`SearchProjectionDecl::None`] and
 //!    [`EmbeddingRecipe::Never`] carry a `why` and are distinct from "nobody
-//!    wrote a declaration". `FactPayload::search_projection() -> None`
-//!    is the same value three different ways
-//!    (`flavor/schema_registration.rs`: no projection, empty fields, no
-//!    sidecar table), which is precisely why a non-surface cannot be told
-//!    from an oversight.
+//!    wrote a declaration". A bare `Option::None` in their place would give
+//!    a stated non-surface and an oversight the same value, and nothing
+//!    downstream could tell the two apart.
 //! 2. **Every rule is non-optional on a [`Surface`].** A new table that
 //!    forgets to say what forget does will not compile.
 //! 3. **A constraint beats a list.** [`Surface::completeness`] names the
@@ -480,8 +478,8 @@ pub const SLOT_DEFAULT: EmbeddingSlot = EmbeddingSlot("default");
 
 /// One `(column, slot)` pair: the output grain of a recipe.
 ///
-/// `column` is a pre-computed column on the schema's sidecar table — the
-/// one idiom (`SearchProjection::embed_text_column`), read by
+/// `column` is a pre-computed column on the schema's sidecar table, read
+/// back by `load_embedding_text` in
 /// `storage-pg/src/verbs/fact_embeddings/text.rs`.
 ///
 /// THERE IS NO `EmbedText` ENUM. Every unit resolves to a stored column, and
@@ -641,9 +639,14 @@ pub enum TransferRule {
 }
 
 impl TransferRule {
-    /// Whether transfer leaves the row with the source owner. Both
-    /// [`Self::RetainAtSource`] and [`Self::NotTransferable`] do, for
-    /// different reasons.
+    /// Whether transfer leaves the row with the source owner because the
+    /// row is PINNED to it. True for [`Self::RetainAtSource`] only.
+    ///
+    /// [`Self::NotTransferable`] also leaves rows behind, but for an
+    /// unrelated reason — the whole entity refuses to move — and its
+    /// surfaces are not the owner-pinned sidecars this predicate selects.
+    /// Both callers want the pinned set: the source-scoped erase leg and
+    /// `retain_at_source_tables`.
     #[must_use]
     pub const fn retains_at_source(&self) -> bool {
         matches!(self, Self::RetainAtSource { .. })
@@ -1014,9 +1017,10 @@ pub enum ExportRule {
 ///
 /// A declared non-count carries its reason, because "feeds no counter" and
 /// "nobody said" must not be the same value — the exact shape the first rule
-/// of this module forbids. `wake_config` and `goal_head` are both uncounted
-/// for entirely different reasons: one is counted under another surface's
-/// key, the other is not owner-scoped rows at all.
+/// of this module forbids. `goal_head` and `owners` are both uncounted for
+/// entirely different reasons: the head is a POINTER into `goal` that
+/// counting would report twice, and the erase never deletes an `owners` row
+/// at all, so there is nothing there to count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CounterRule {
     /// Rows destroyed here are counted under this receipt key. Several
@@ -1205,7 +1209,8 @@ impl RankSource {
 
 /// How this flavor's score bands compare to flavor #0's.
 ///
-/// CONSUMED by `core_search_projections`: a non-core projection may enter
+/// CONSUMED by the flavor-scan filter in
+/// `storage-pg/src/verbs/query/search.rs`: a non-core projection may enter
 /// core's merge only if its flavor declares [`Self::CoreBands`], so the
 /// exclusion is the declaration doing its job rather than an accident of a
 /// missing `tag_column`. Freeze earns the declaration: a flavor claiming

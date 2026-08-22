@@ -6,9 +6,11 @@
 //! column of every row equal — over a corpus that touches every table
 //! `owner_columns.rs`'s transfer path names.
 //!
-//! The goldens were produced by running this file verbatim against the tree at
-//! `eef54c8e`, where a hand-written per-table transfer served this path. So a
-//! failure here is not "the golden is stale": it is a statement that this
+//! The goldens were produced by running the shared half of this file verbatim
+//! against a worktree at `eef54c8e`, where a hand-written per-table transfer
+//! served this path, with an adapter that differs only in that tree's
+//! vocabulary. So a failure here is not "the golden is stale": it is a
+//! statement that this
 //! implementation and the baseline disagree about what a transfer leaves
 //! behind, on either side of the move.
 //!
@@ -558,9 +560,9 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
 /// spelling — a `format!` per table name from `information_schema` — would
 /// have put a dynamic-SQL site in the tree for a harness.
 ///
-/// `embeddings.vec` is dropped: a 1024-dimension vector renders as 8 KB of
-/// zeroes per row and says nothing a transfer could get wrong that
-/// `owner_id` does not already say.
+/// `embeddings.vec` is dropped: a 1024-dimension vector renders as
+/// kilobytes of text per row and says nothing a transfer could get wrong
+/// that `owner_id` does not already say.
 pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::Error>> {
     let relations: Vec<(String, Vec<String>)> = sqlx::query_as(
         "SELECT t.table_name::text,
