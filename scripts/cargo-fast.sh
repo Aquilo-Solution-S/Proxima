@@ -6,7 +6,6 @@
 
 # If sourced, just set environment variables and return
 if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
-    # We are being sourced, not executed
     CCACHE_DIR="/opt/homebrew/opt/ccache"
     if [ -d "$CCACHE_DIR/libexec" ]; then
         export PATH="$CCACHE_DIR/libexec:$PATH"
@@ -49,11 +48,7 @@ else
     echo "Falling back to default compilation"
 fi
 
-# Enable parallel compilation
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
-
-# Enable pipelining (Rust 1.70+)
 export CARGO_TERM_VERBOSE="true"
 
-# Run cargo with the original arguments
 exec cargo "${@:-build}"
