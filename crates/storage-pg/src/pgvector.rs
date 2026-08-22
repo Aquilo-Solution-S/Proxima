@@ -10,8 +10,8 @@ pub(crate) const REQUIRED_PGVECTOR_PATCH: u32 = 0;
 ///
 /// `SET LOCAL` takes a single parameter, so these are inherently several
 /// statements — and sqlx's `query` uses the extended protocol, which sends
-/// one statement per round trip. Every semantic search therefore paid two
-/// round trips before its query even started. `raw_sql` uses the simple
+/// one statement per round trip, making every semantic search pay two
+/// round trips before its query starts. `raw_sql` uses the simple
 /// protocol, which accepts them in one message; there is nothing to bind
 /// here, so the usual reason to prefer the extended protocol does not apply.
 ///
@@ -53,10 +53,11 @@ pub(crate) fn literal(vec: &[f32]) -> String {
 mod tests {
     use super::*;
 
-    /// Golden text: at default tuning the session settings must be the
-    /// statement that shipped before they were built from anything.
+    /// Golden text: at default tuning the session settings are exactly this
+    /// statement, so a change to the defaults or to the builder has to be
+    /// typed here.
     #[test]
-    fn default_tuning_sets_the_settings_it_always_set() {
+    fn default_tuning_sets_the_golden_session_statement() {
         assert_eq!(
             set_hnsw_search_sql(&PgTuning::default()),
             "SET LOCAL hnsw.ef_search = 100; SET LOCAL hnsw.iterative_scan = relaxed_order; \

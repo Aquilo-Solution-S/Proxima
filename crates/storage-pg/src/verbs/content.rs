@@ -1,4 +1,4 @@
-//! Owner-scoped Content upsert (v0.0.8).
+//! Owner-scoped Content upsert.
 
 use proxima_core::{SidecarPayload, StorageError, canonical_json_bytes};
 use sqlx::{Postgres, Transaction};
@@ -123,11 +123,10 @@ pub async fn gc_unreferenced_content(
 /// The same orphan anti-join over a whole set of Content ids, in one
 /// statement.
 ///
-/// Owner-scope erase used to call [`gc_unreferenced_content`] in a `for`
-/// loop, one round trip per distinct `content_id` of the owner — an N+1 leg
-/// inside the path whose whole argument is that it is set-based.
-/// `= ANY($1::uuid[])` is the entire fix, and the shape is already in the
-/// tree: `GC_UNREFERENCED_BLOBS_SQL` does the same anti-join over an array.
+/// Owner-scope erase calls this, not [`gc_unreferenced_content`] in a loop:
+/// one round trip per distinct `content_id` is an N+1 leg inside a path whose
+/// whole argument is that it is set-based. `GC_UNREFERENCED_BLOBS_SQL` is the
+/// same anti-join over an array.
 pub async fn gc_unreferenced_content_batch(
     tx: &mut Transaction<'_, Postgres>,
     content_ids: &[Uuid],

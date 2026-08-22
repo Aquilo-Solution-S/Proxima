@@ -44,9 +44,9 @@ impl MemoryAuthoringPort for PgStorage {
                 embedding: req.embedding.clone(),
             };
             // ONE validator for both derived-write paths (this engine port and
-            // the flavor-SDK `append_derived_with_edges_in_tx`): the port used
-            // to carry its own near-duplicate proof validation here, which
-            // silently missed the created_at strict-time gate.
+            // the flavor-SDK `append_derived_with_edges_in_tx`): a second copy
+            // here drifts, and the gate it drops is the created_at strict-time
+            // check on origins.
             verbs::derive_append::validate_derived_origins_in_tx(&mut tx, &draft, req.origins)
                 .await?;
             verbs::derive_append::validate_derived_reference_kinds_in_tx(&mut tx, req.references)
@@ -181,9 +181,9 @@ impl MemoryAuthoringPort for PgStorage {
         let owner = permit.owner();
         let owner_id = owner.stored_owner_id();
         let t = memory_id.into_inner();
-        // Ownership precondition, not a key ingredient: the cold key is
-        // `cold/<t>` now, but a `t` the caller does not own must still be
-        // NotFound rather than a forget on someone else's row.
+        // Ownership precondition, not a key ingredient: the cold key derives
+        // from `t` alone, but a `t` the caller does not own must be NotFound
+        // rather than a forget on someone else's row.
         sqlx::query_scalar::<_, uuid::Uuid>(
             "SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
         )

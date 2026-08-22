@@ -6,11 +6,10 @@
 //! construction and carried on the handle; no query path re-reads the
 //! environment.
 //!
-//! Variables this crate once accepted but no longer reads are not ignored:
-//! a set-but-removed `PROXIMA_PG_*` tuning variable refuses at boot
-//! (`REMOVED_TUNING_VARS`), for the same reason a malformed value does — a
-//! knob that quietly stopped doing anything would ship a configuration the
-//! operator did not ask for.
+//! A `PROXIMA_PG_*` variable this crate does not read is not ignored: the
+//! ones in `REMOVED_TUNING_VARS` refuse at boot, for the same reason a
+//! malformed value does — a knob that does nothing would ship a
+//! configuration the operator did not ask for.
 
 use std::ops::RangeInclusive;
 
@@ -19,10 +18,9 @@ use proxima_core::{StorageError, env_value};
 pub(crate) const DEFAULT_HNSW_EF_SEARCH: u32 = 100;
 pub(crate) const DEFAULT_HNSW_MAX_SCAN_TUPLES: u32 = 20_000;
 
-/// Tuning variables removed in v0.0.8 together with the inert search knobs
-/// they set (`semantic_index_first`, `candidate_window_dedup`, the two
-/// overfetch-window fields — none was consumed by any query path). Setting
-/// one refuses at boot rather than silently doing nothing.
+/// Tuning variables this crate does not read. Setting one refuses at
+/// boot rather than silently doing nothing; the error names the release
+/// that removed it.
 const REMOVED_TUNING_VARS: [&str; 4] = [
     "PROXIMA_PG_SEMANTIC_INDEX_FIRST",
     "PROXIMA_PG_CANDIDATE_WINDOW_DEDUP",
@@ -234,7 +232,7 @@ mod tests {
     }
 
     /// The defaults are the contract: an unset environment runs the shipped
-    /// search path and leaves every knob at the behaviour that predates it.
+    /// search path.
     #[test]
     fn defaults_are_the_shipped_search_path() {
         let tuning = PgTuning::default();
@@ -346,7 +344,7 @@ mod tests {
         }
     }
 
-    /// The v0.0.8 removals fail loudly rather than no-op: a deployment still
+    /// A removed knob fails loudly rather than no-ops: a deployment still
     /// setting one learns at boot, from an error that names the removal,
     /// instead of silently running the shipped path under a knob it thinks
     /// it turned.

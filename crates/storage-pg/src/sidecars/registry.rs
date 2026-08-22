@@ -237,7 +237,7 @@ impl PgSidecarRegistry {
     /// because the flavor contracts are part of what a PG registration has
     /// to agree with: `pg_sidecar!(owner_pinned: true)` and
     /// `TransferRule::RetainAtSource` are two statements of the same fact,
-    /// and until this check existed nothing compared them.
+    /// and this is what compares them.
     ///
     /// # Errors
     ///
@@ -393,25 +393,18 @@ impl PgSidecarRegistry {
     /// The macro flag and the contract must agree about which sidecars stay
     /// with the source owner on transfer.
     ///
-    /// Before the flavor contract, `owner_pinned` was declared once in
-    /// `pg_sidecar!` and consumed by the Postgres adapter alone: core built
-    /// the owner-inverse table lists without it and the adapter appended its
-    /// own leg on the way past. A schema could therefore be owner-pinned in
-    /// storage and `Follow` in the contract with nothing to notice, which is
-    /// a wrong-owner bundle rather than a crash.
+    /// The two are read by different code: core builds the owner-inverse
+    /// table lists from the contract, and the Postgres adapter appends its
+    /// owner-pinned leg from the macro flag. A schema owner-pinned in
+    /// storage and `Follow` in the contract is a wrong-owner bundle rather
+    /// than a crash, which is why they are compared here.
     ///
-    /// Schemas whose flavor registered no contract are skipped: a flavor
-    /// without a contract has made no claim to contradict.
-    ///
-    /// EVERY LINKED FLAVOR THAT SHIPS A CONTRACT IS CHECKED, and both
-    /// shipped flavors now do: the code flavor's sixteen sidecars stopped
-    /// being exempt when `proxima-code` declared its own contract, and none
-    /// of them may be `owner_pinned` because none declares
-    /// `TransferRule::RetainAtSource`. Skipping a contract-less flavor
-    /// remains the only sound reading of an absent contract (the
-    /// alternative asserts every contract-less sidecar is `Follow`, which
-    /// is a claim nobody made), so the cross-check still grows teeth per
-    /// flavor rather than all at once.
+    /// EVERY LINKED FLAVOR THAT SHIPS A CONTRACT IS CHECKED. Schemas whose
+    /// flavor registered no contract are skipped: a flavor without a
+    /// contract has made no claim to contradict, and that is the only sound
+    /// reading of an absent contract — the alternative asserts every
+    /// contract-less sidecar is `Follow`, which is a claim nobody made. So
+    /// the cross-check grows teeth per flavor rather than all at once.
     fn check_owner_pinned_against_contracts(
         &self,
         registry: &proxima_core::FlavorRegistryFrozen,
@@ -458,8 +451,8 @@ impl PgSidecarRegistry {
     /// sidecars` reads its row into the cold record, and
     /// `delete_memory_dependents` deletes it — and the single test either
     /// walk applies is `is_owner_pinned`. Nothing in either one reads
-    /// `ForgetRule`. So a surface that declared `Keep` without the flag had
-    /// its rows dumped and deleted like any other, and the declaration was
+    /// `ForgetRule`. So a surface that declares `Keep` without the flag has
+    /// its rows dumped and deleted like any other, and the declaration is
     /// prose. Core ships exactly one `Keep` memory sidecar,
     /// `mcp_call_logged_v1`, and its rows survive because it is ALSO
     /// `RetainAtSource` and therefore owner-pinned — an unrelated property
@@ -474,8 +467,7 @@ impl PgSidecarRegistry {
     /// exempting the table from the forget/hydrate cycle in both walks,
     /// which is precisely and entirely what `owner_pinned` already means
     /// ("Owner-pinned sidecars do not take part in forget/hydrate at all").
-    /// Building a second mechanism for it would be the two-descriptions-of-
-    /// one-fact defect this whole phase exists to remove.
+    /// A second mechanism for it would be a second description of one fact.
     ///
     /// Checked in BOTH directions, like its sibling above. An owner-pinned
     /// sidecar's rows are kept whatever its `ForgetRule` says, so declaring

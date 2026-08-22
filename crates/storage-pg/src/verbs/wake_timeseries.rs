@@ -1,4 +1,4 @@
-//! WakeConfig + fire (one write-act per match). UML §3b / §5b.
+//! WakeConfig + fire (one write-act per match).
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
 use proxima_core::{Owner, StorageError};

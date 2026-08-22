@@ -1,4 +1,4 @@
-//! Goal timeseries write (v0.0.8). UML §3 / §5b / §8.
+//! Goal timeseries write.
 #![allow(
     clippy::missing_errors_doc,
     clippy::doc_markdown,

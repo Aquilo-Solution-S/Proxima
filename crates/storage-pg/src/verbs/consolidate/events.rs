@@ -23,9 +23,9 @@ const COMMIT_GRACE_ENV: &str = "PROXIMA_CHANGE_EVENT_COMMIT_GRACE_MS";
 /// `now - grace`, so a slow committer whose commit latency is below the grace
 /// is not skipped once the cursor advances.
 ///
-/// Default off because current consumers (and their tests) rely on immediate
-/// write-then-read visibility; enabling it trades up to `grace` of wake
-/// latency for skip-safety. See the module NOTE for the correctness bound.
+/// Default off: consumers rely on immediate write-then-read visibility.
+/// Enabling it trades up to `grace` of wake latency for skip-safety, and is
+/// correct only while commit latency stays below `grace`.
 fn configured_commit_grace() -> Duration {
     static GRACE: OnceLock<Duration> = OnceLock::new();
     *GRACE.get_or_init(|| {

@@ -13,11 +13,11 @@
 //! forward statement and its `DROP`, produced by the same call from the
 //! same declaration, so they cannot drift. That is what makes provisioning
 //! and de-provisioning a flavor in a deployment two readings of one
-//! derivation instead of two hand-maintained scripts — the failure mode
-//! `verbs/code_repo_erase.rs` demonstrated until this release, where a
-//! hand-written inverse living in the kernel reached five of the code
-//! flavor's sixteen sidecars. It is now `flavors/code/src/repos/erase.rs`,
-//! where a test can compare it against the contract.
+//! derivation instead of two hand-maintained scripts. A hand-written
+//! inverse is the alternative, and it reaches whatever subset of the
+//! sidecars its author remembered; `flavors/code/src/repos/erase.rs` is
+//! the flavor's own inverse, where a test can compare it against the
+//! contract.
 //!
 //! Two consumers, deliberately:
 //!
@@ -191,7 +191,7 @@ fn split_qualified(table: &str) -> Result<(&str, &str), StorageError> {
 
 /// The text expression the vector is built from, over sidecar alias `c`.
 ///
-/// This is the same shape the generated columns carry today —
+/// This is the same shape the generated columns carry —
 /// `lexical_join(VARIADIC ARRAY[NULLIF(col,''), lexical_text_array(arr)])`
 /// — which is what makes the identity re-proof provable rather than
 /// hopeful, not a re-derivation that happens to agree.
@@ -378,9 +378,8 @@ pub fn projection_insert_sql(
     // than a convention every caller has to remember. Search relies on it:
     // the ranked arm narrows on `p.schema_id` where `admit_hits` narrows on
     // `m.schema_id`, and those two agreeing is what lets one stand in for
-    // the other. Nothing in the schema enforces it — the audit that found
-    // the kind door found this next to it — and a mismatched write now
-    // inserts nothing instead of writing a row search would spend a window
+    // the other. Nothing in the schema enforces it, so a mismatched write
+    // inserts nothing rather than writing a row search would spend a window
     // slot on and admission would drop.
     Ok(format!(
         "INSERT INTO {table}
@@ -415,7 +414,7 @@ pub fn projection_tables(contracts: &[&'static FlavorContract]) -> Vec<String> {
 
 /// The snippet expression the search verb joins back to the sidecar for.
 ///
-/// R6: the projection carries no snippet. Search ranks on the projection
+/// The projection carries no snippet. Search ranks on the projection
 /// alone and joins the owning sidecar for the surviving top-k rows only, so
 /// the text lives in exactly one place and the hot path still scans one
 /// indexed table.
@@ -551,10 +550,8 @@ mod tests {
     /// `PROJECTION_MEMORY_COLUMN` names one thing, and everything that
     /// spells that thing agrees with it.
     ///
-    /// The constant's doc used to CLAIM this — "the surface declaration and
-    /// the generated statements cannot drift again" — on the strength of
-    /// being a constant. It is read in exactly one place
-    /// (`ProjectionSpec::surface`). The FK name is an independent literal,
+    /// Being a constant buys no agreement here: it is read in exactly one
+    /// place (`ProjectionSpec::surface`). The FK name is an independent literal,
     /// and the generator writes `memory_id` inline in the `CREATE TABLE`
     /// column list, in its `PRIMARY KEY`, in the projection `INSERT`, and in
     /// `PROJECTION_COLUMNS`. Interpolating the constant into fixed SQL text

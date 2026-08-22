@@ -1,5 +1,5 @@
 //! `FactIngest` verb — atomic insert of a Fact `memory` + optional
-//! `blob_id` citation. No `citation_mappings` / `cited_objects` tables.
+//! `blob_id` citation.
 //!
 //! [`ingest_fact_in_tx`] exposes the same body inside an existing
 //! transaction so flavor crates can append a typed sidecar row
@@ -283,8 +283,6 @@ where
 
 /// Read a typed Fact payload's schema-declared reference fields as index
 /// targets.
-///
-/// Schema-declared reference fields become index targets. Every address is a pin.
 fn payload_reference_targets<P: FactPayload>(
     payload: &P,
 ) -> Result<Vec<EdgeEndpoint>, StorageError> {
@@ -447,8 +445,8 @@ fn noop_fact_sidecar<'t>(
 ///
 /// # Errors
 ///
-/// Returns storage errors from Fact materialization, sidecar insertion,
-/// Fact-entity derivation, or embedding enqueue.
+/// Returns storage errors from Fact materialization, sidecar insertion, or
+/// embedding enqueue.
 pub async fn ingest_fact_with_sidecar<P>(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &FactIngestContext<'_>,
@@ -545,8 +543,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
 }
 
 /// Run raw-draft `FactIngest` plus a typed sidecar insert inside an
-/// already-open transaction, deriving a Fact-entity head from the
-/// sidecar row after the sidecar insert succeeds.
+/// already-open transaction.
 ///
 /// Crate-private: raw-owner write with no proof/authz param; the only
 /// caller is `ingest_fact_with_sidecar`, which carries the owner inside
@@ -554,9 +551,8 @@ pub(crate) async fn ingest_fact_command_in_tx(
 ///
 /// # Errors
 ///
-/// Returns storage errors from Fact materialization, sidecar
-/// insertion, Fact-entity derivation, or embedding enqueue. The caller
-/// owns transaction rollback/commit.
+/// Returns storage errors from Fact materialization, sidecar insertion, or
+/// embedding enqueue. The caller owns transaction rollback/commit.
 #[allow(clippy::too_many_arguments)] // one parameter per typed-ingest input
 pub(crate) async fn ingest_fact_with_derived_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
@@ -693,10 +689,9 @@ fn reject_unstamped_memory_tables(
     Ok(())
 }
 
-/// Verify a by-ref citation target: the cited object must exist for the
-/// Fact's owner and carry exactly the schema the mapping targets. Both
-/// failures are caller-fixable `ConstraintViolation`s whose messages the
-/// MCP surface passes through verbatim.
+/// Resolve the draft's citation to a `blob_id` per [`CitationPlan`]: a draft
+/// hint and an inline object both upsert a blob; a by-ref plan verifies the
+/// existing object and returns its id.
 async fn persist_citation_timeseries(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
@@ -784,6 +779,10 @@ async fn citation_object_for_t(
     Ok(blob_id.flatten())
 }
 
+/// Verify a by-ref citation target: the cited object must exist for the
+/// Fact's owner and carry exactly the schema the mapping targets. Both
+/// failures are caller-fixable `ConstraintViolation`s whose messages the
+/// MCP surface passes through verbatim.
 async fn verify_cited_object_ref_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,

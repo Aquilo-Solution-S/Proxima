@@ -250,11 +250,9 @@ pub(crate) async fn append_derived_in_tx(
 ///
 /// Flavor-SDK in-tx write tier: validates the operator proof ledger (origin
 /// shape, input liveness, F→A batch closure, supersedes owner/kind) but does
-/// NOT authorize the caller against the owner. Stays `pub` because
-/// `proxima-code` persists derived memories inside multi-write transactions
-/// through it (`ingest::blobs`, `mcp::emit_execution_request`); sealing this
-/// tier behind a permit is flavor-boundary work, not the engine-verb proof
-/// gate.
+/// NOT authorize the caller against the owner. `pub` because `proxima-code`
+/// persists derived memories inside multi-write transactions through it
+/// (`ingest::blobs`, `mcp::emit_execution_request`).
 ///
 /// `origins` and `references` are endpoints, never kinds: the first list is
 /// what the write says it was made from, the second is what its payload
@@ -316,8 +314,7 @@ pub struct DerivedBatchEntry<'a> {
 /// written.
 ///
 /// So the write is two phases in one transaction: every node row and sidecar
-/// first, then every node's declared index rows. Nothing about what a write
-/// may declare changes; only the order in which the group lands.
+/// first, then every node's declared index rows.
 ///
 /// # Errors
 ///
@@ -439,16 +436,15 @@ fn validate_permit_owner(permit: &OwnerWritePermit, owner: &Owner) -> Result<(),
 
 /// Operator proof-ledger validation for BOTH derived-write paths: the
 /// flavor-SDK in-tx tier (`append_derived_with_edges_in_tx`) and the engine
-/// port (`PgStorage::author_derived`). A prior review found the engine port
-/// carrying its own near-duplicate of this validation that had silently
-/// missed the `created_at` strict-time gate — one validator, `pub(crate)`,
-/// kills that drift class structurally.
+/// port (`PgStorage::author_derived`). One `pub(crate)` validator, not a copy
+/// per path — a second copy drifts, and the gate it drops silently is the
+/// `created_at` strict-time check.
 ///
-/// The declared origins ARE the operator's inputs. There is no separate
-/// ledger to cross-check any more, and no authorship kind to match against a
-/// phase: what the write says it was made from is the whole claim, so the
-/// only questions left are whether those rows exist, whether they are of the
-/// phase's input kind, and whether they are older than the row they ground.
+/// The declared origins ARE the operator's inputs: what the write says it was
+/// made from is the whole claim. There is no separate ledger and no authorship
+/// kind, so the only questions are whether those rows exist, whether they are
+/// of the phase's input kind, and whether they are older than the row they
+/// ground.
 ///
 /// A write that declares no origins declares no derivation, which is legal —
 /// an interpretation Perspective grounds through its references, not through
@@ -606,7 +602,7 @@ mod tests {
         let discarded = format!("{}{}", "let _ = (draft, rows, ", "expected_input_kind)");
         assert!(
             !src.contains(&discarded),
-            "D2: in-tx SELECT of kind must be compared to the declared origin"
+            "in-tx SELECT of kind must be compared to the declared origin"
         );
         let needle = format!("{}{}", "must match the stored ", "row");
         assert!(
@@ -628,7 +624,7 @@ mod tests {
         let declared_phase = format!("{}{}", "origin.kind != ", "expected_input_kind");
         assert!(
             !rest[..end].contains(&declared_phase),
-            "D6: phase contract is on stored kind, not the declared endpoint"
+            "phase contract is on stored kind, not the declared endpoint"
         );
     }
 }

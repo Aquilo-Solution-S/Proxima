@@ -24,9 +24,8 @@ use crate::error::map_err;
 use crate::pgvector::set_hnsw_search_sql;
 use crate::tuning::PgTuning;
 
-/// One vec per `(entity_id, model_id, embedding_version)`. Head join
-/// already picks the current version; do not DISTINCT ON a dropped
-/// multi-vector shape.
+/// One vec per `(entity_id, model_id, embedding_version)`. The head join
+/// already picks the current version; there is nothing to DISTINCT ON.
 const NEAREST_CODE_CHUNK_SQL: &str = "SELECT emb.entity_id AS memory_id,
                             GREATEST(0.0, (1 - (emb.vec <=> $4::vector)))::real
                                 AS similarity_score
@@ -64,8 +63,8 @@ pub struct CodeChunkVectorCandidate {
 /// search scoped to one repository otherwise spends its whole `limit` on
 /// the largest repository indexed and returns nothing.
 ///
-/// One row per memory: v0.0.8 stores one vec per head version. `ORDER BY
-/// distance LIMIT n` is the shape the HNSW index can serve.
+/// One row per memory: one vec per head version. `ORDER BY distance LIMIT n`
+/// is the shape the HNSW index can serve.
 ///
 /// # Errors
 ///

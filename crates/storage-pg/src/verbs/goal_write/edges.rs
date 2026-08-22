@@ -8,8 +8,7 @@ use super::{
 /// The Goal row is the home of all three statements — the Perspective it
 /// inspires, the Goals it waits on, the memories it rests on — so this is a
 /// derivation from columns, not an independent write. Drop the index and
-/// re-run this over the goals table and you get the same set back, which is
-/// what E7 asks for.
+/// re-run this over the goals table and you get the same set back.
 ///
 /// Nothing here names a kind: every entry is a reference because a reference
 /// is what a declared pointer from one node to another IS.

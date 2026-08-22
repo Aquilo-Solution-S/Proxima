@@ -114,8 +114,8 @@ async fn missing_embedding_ids(
     limit: i64,
     non_embeddable_schemas: &[String],
 ) -> Result<Vec<MemoryId>, StorageError> {
-    // Chunks are memory rows. A second arm against code_chunk_v1 is a
-    // subset of this anti-join and used to duplicate t.
+    // Chunks are memory rows. A second arm against code_chunk_v1 is a subset of
+    // this anti-join and duplicates t.
     let rows = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT m.t
            FROM proxima_core.memory_head h
@@ -142,8 +142,8 @@ async fn missing_embedding_ids(
 /// Atomically claim pending embedding jobs for one model.
 ///
 /// Selects `status = 'pending'` rows for `$1`, `FOR UPDATE SKIP LOCKED`, then
-/// sets `processing` and stamps `claimed_at`. v0.0.8 has no
-/// `next_attempt_at`; a claim a drainer never finishes is recovered by
+/// sets `processing` and stamps `claimed_at`. There is no `next_attempt_at`
+/// column; a claim a drainer never finishes is recovered by
 /// [`reclaim_stale_embedding_jobs`].
 ///
 /// # Errors
@@ -237,10 +237,10 @@ pub async fn renew_embedding_jobs(
 /// Fail an attempted job for a retryable cause: `failed`, with `error`
 /// kept on the row.
 ///
-/// v0.0.8 has no attempt counter or `next_attempt_at`, so `failed` is the
-/// retry dead-end that `reconcile_embeddings` lifts a memory out of —
-/// requeueing here instead would spin a broken provider at the drain
-/// loop's interval with nothing recording why. Permanent rejection uses
+/// There is no attempt counter or `next_attempt_at`, so `failed` is the retry
+/// dead-end that `reconcile_embeddings` lifts a memory out of — requeueing
+/// here instead would spin a broken provider at the drain loop's interval with
+/// nothing recording why. Permanent rejection uses
 /// [`fail_embedding_job_permanently`]; a claimed-but-unattempted job uses
 /// [`release_embedding_jobs`].
 ///
@@ -526,9 +526,7 @@ pub async fn count_embedding_job_status(
 ///
 /// `entity_kind` is deliberately a parameter rather than `Fact`: the
 /// column is the full `proxima_core.entity_kind` enum, so an `Abstraction`
-/// or `Perspective` job needs no schema change — only a caller. Facts have
-/// enqueued here since ingest existed; derived memories acquired the same
-/// rescue when an unembeddable text stopped meaning a failed write.
+/// or `Perspective` job needs no schema change — only a caller.
 ///
 /// # Errors
 ///
@@ -632,7 +630,7 @@ mod tests {
         let migration = include_str!("../../../migrations/0001_v008.sql");
         let job_table = migration
             .split_once("CREATE TABLE proxima_core.embedding_jobs (")
-            .expect("v0.0.8 migration defines embedding_jobs")
+            .expect("the migration defines embedding_jobs")
             .1
             .split_once("\n);")
             .expect("embedding_jobs definition is closed")

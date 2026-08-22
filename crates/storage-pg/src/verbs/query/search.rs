@@ -13,8 +13,8 @@
 //! 2. **substring** — at most ONE more statement, over exactly the schemas
 //!    the ranked arm returned nothing for, and only where the schema
 //!    declares an arm. `SubstringArm::Off` contributes no statement and no
-//!    rows: the blanket "GIN missed, re-query with `LIKE`" retry is gone,
-//!    and what replaced it is an opt-in.
+//!    rows. There is no blanket "GIN missed, re-query with `LIKE`" retry;
+//!    the arm is opt-in per schema.
 //! 3. **admit** — owner + optional current-head on the hit `t`s;
 //!    `schema_id` is on `memory`. The projection's `owner_id` is an
 //!    index accelerator; admit still filters `memory.owner_id`, so
@@ -25,17 +25,16 @@
 //!    all. See [`admit_side_restriction`].
 //! 4. **snippets** — one primary-key lookup per distinct sidecar present in
 //!    the PAGE, after admission and paging have run. The text lives in
-//!    exactly one place (R6) and is fetched for at most `limit` rows
+//!    exactly one place and is fetched for at most `limit` rows
 //!    instead of for the whole candidate window.
 //! 5. **pins** — engine neighbor load, only if the caller asked
 //!
 //! Unscoped search (no tags) scans only flavor #0's schemas. A tag filter
 //! is the documented flavor scope (`docs/09-developing-flavors.md`): those
-//! queries also scan flavor schemas that declare a `tag_column` — and, now,
-//! only flavors that declare `BandComparability::CoreBands` and
-//! `RankSource::Projection`, because a score this merge cannot compare and
-//! a shape this renderer cannot serve are both exclusions the contract
-//! should state rather than accidents of a `None`.
+//! queries also scan flavor schemas that declare a `tag_column`, and only
+//! flavors that declare `BandComparability::CoreBands` and
+//! `RankSource::Projection` — a score this merge cannot compare and a shape
+//! this renderer cannot serve are both exclusions the contract states.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -92,12 +91,12 @@ struct Hit {
     similarity_score: f32,
 }
 
-/// The ranked arm's row. `schema_id` rides along because the substring
-/// arm's trigger is per-SCHEMA: one statement per flavor destroys the
-/// granularity `if gin.is_empty()` had per projection, and re-reading it as
-/// "the flavor's ranked arm returned nothing" would LOSE rows — a query
-/// matching a note by lexeme and an utterance only by substring returns the
-/// utterance today. One extra column in the select list buys exact parity.
+/// The ranked arm's row. `schema_id` rides along because the substring arm's
+/// trigger is per-SCHEMA: one statement per flavor has no per-projection
+/// signal, and reading the trigger as "the flavor's ranked arm returned
+/// nothing" would LOSE rows — a query matching a note by lexeme and an
+/// utterance only by substring must still return the utterance. One extra
+/// column in the select list buys that.
 #[derive(Debug, sqlx::FromRow)]
 struct RankedRow {
     t: uuid::Uuid,
@@ -183,13 +182,13 @@ pub(crate) async fn search_memories(
     let mut page = page_hits(req, limit, admitted);
     // The snippet is fetched LAST, for the rows that made the page.
     //
-    // It used to ride the ranked statement, on a `JOIN {sidecar} c` — and
-    // `{sidecar}` is a per-SCHEMA value, so one statement per flavor cannot
-    // carry it without one `LEFT JOIN` per sidecar TABLE (four, for flavor
-    // #0's five projected schemas) and a `COALESCE` over as many snippet
-    // expressions, which is per-schema SQL in a statement whose whole point
-    // is that it has none. Hydrating after `page_hits` fetches at most
-    // `limit` rows instead of the whole candidate window.
+    // It cannot ride the ranked statement: `{sidecar}` is a per-SCHEMA
+    // value, so one statement per flavor would need one `LEFT JOIN` per
+    // sidecar TABLE (four, for flavor #0's five projected schemas) and a
+    // `COALESCE` over as many snippet expressions — per-schema SQL in a
+    // statement whose whole point is that it has none. Hydrating after
+    // `page_hits` fetches at most `limit` rows instead of the whole
+    // candidate window.
     hydrate_snippets(pool, projections, &mut page.results).await?;
     Ok(page)
 }
@@ -197,27 +196,21 @@ pub(crate) async fn search_memories(
 /// The candidate budget for one statement: the request-scaling rule,
 /// clamped to what the flavor DECLARES.
 ///
-/// The cap used to be `SIDECAR_OVERFETCH_CAP` in this file, applied per
-/// projected schema, so core's five statements could hand `merge_hits` up
-/// to 5 000 candidates. One statement per flavor hands it at most
-/// `overfetch_k`, which is the number the declaration always said it was.
+/// One statement per flavor hands `merge_hits` at most `overfetch_k`.
 ///
 /// For `Lexical` and `Relevance` the returned page cannot move — but the
-/// candidate-superset argument alone does NOT establish that, and reading
-/// it as if it did was a real defect. "The global top-`overfetch` by
-/// `lexical_score` contains the top-`limit` by `lexical_score`" is a claim
-/// about candidates, and admission is not candidate-preserving: it drops
-/// superseded revisions. A window spent on rows admission will drop returns
-/// fewer than `limit` results while admissible rows sat below the cut, and
-/// one global window is five times easier to starve than five per-schema
-/// ones. [`admit_side_restriction`] closes that: with it the window is the global
-/// top-`overfetch` of the ADMISSIBLE set, and the superset argument holds
-/// over the set the page is actually drawn from.
+/// candidate-superset argument alone does not establish that. "The global
+/// top-`overfetch` by `lexical_score` contains the top-`limit` by
+/// `lexical_score`" is a claim about candidates, and admission is not
+/// candidate-preserving: it drops superseded revisions. A window spent on
+/// rows admission will drop returns fewer than `limit` results while
+/// admissible rows sat below the cut. [`admit_side_restriction`] closes
+/// that: with it the window is the global top-`overfetch` of the ADMISSIBLE
+/// set, and the superset argument holds over the set the page is drawn from.
 ///
-/// It CAN still move for `Hybrid` — a row with weak lexical rank but strong
-/// similarity could previously ride in on its own schema's window — and for
-/// very deep cursor pages. Both are accepted movement (plan §4.8 R4); the
-/// `Lexical` + `Relevance` page is not.
+/// The page CAN still move for `Hybrid` — a row with weak lexical rank but
+/// strong similarity — and for very deep cursor pages. Both are accepted
+/// movement; the `Lexical` + `Relevance` page is not.
 fn overfetch(limit: u32, overfetch_k: u32) -> u32 {
     limit
         .saturating_mul(REQUEST_OVERFETCH_FACTOR)
@@ -226,8 +219,7 @@ fn overfetch(limit: u32, overfetch_k: u32) -> u32 {
 }
 
 /// The embedding scan is not per-flavor — `proxima_core.embeddings` is one
-/// table for every owner — so it keeps the cap the lexical arms used to
-/// share, spelled where the one reader of it lives.
+/// table for every owner — so its cap is spelled where its one reader lives.
 fn semantic_overfetch(limit: u32) -> u32 {
     const SEMANTIC_OVERFETCH_CAP: u32 = 1_000;
     overfetch(limit, SEMANTIC_OVERFETCH_CAP)
@@ -258,10 +250,10 @@ fn core_search_flavors<'a>(
 ) -> Vec<FlavorScan<'a>> {
     let mut by_schema = BTreeMap::<&str, &MemorySearchProjection>::new();
     for projection in projections {
-        // "Core" is the ordinal, asked of the contract. It used to be
-        // `starts_with("proxima_core.")` — a schema name standing in for a
-        // flavor identity, true by accident and satisfiable by any flavor
-        // that picked the same schema.
+        // "Core" is the ordinal, asked of the contract. A schema-name
+        // prefix (`starts_with("proxima_core.")`) would be a schema name
+        // standing in for a flavor identity, satisfiable by any flavor that
+        // picked the same schema.
         let is_core = proxima_core::FLAVOR_0.declares_sidecar_table(&projection.sidecar_table);
         // Unscoped search stays on flavor #0's sidecars. A tag filter is
         // how a flavor scopes `core_search_memories` (docs/09); those
@@ -271,11 +263,7 @@ fn core_search_flavors<'a>(
         }
         // A foreign flavor's score enters this merge only if its flavor
         // says the score is comparable, and only if its read shape is one
-        // this renderer can serve. Both exclusions were already true by
-        // accident — no code schema declares a `tag_column`, so the gate
-        // below caught them — and making them declarations is a consumer
-        // with a provably zero delta on the admitted set, which is the only
-        // kind worth shipping ahead of the deployment layer that needs it.
+        // this renderer can serve.
         if !is_core && !matches!(projection.band_comparability, BandComparability::CoreBands) {
             continue;
         }
@@ -295,8 +283,7 @@ fn core_search_flavors<'a>(
         }
         // Keyed by schema, not by sidecar table: the projection row is
         // keyed `(memory_id, schema_id)` and the scan filters `schema_id`,
-        // so a table shared by two schemas must be scanned for both. It
-        // used to be keyed by table because the scan WAS the table.
+        // so a table shared by two schemas must be scanned for both.
         by_schema
             .entry(projection.schema_id.as_str())
             .or_insert(projection);
@@ -341,11 +328,8 @@ fn merge_hits(into: &mut BTreeMap<uuid::Uuid, Hit>, rows: Vec<Hit>) {
 
 /// One job per participating FLAVOR, not one per schema.
 ///
-/// The concurrency did not disappear — it moved down a level. Core used to
-/// run five statements — one per projected SCHEMA, over four distinct
-/// sidecar tables — plus up to five retries; it now runs one, and a
-/// tag-scoped request that reaches a second flavor runs one more, against
-/// that flavor's own shard.
+/// A flavor's whole lexical surface is one statement against its own shard;
+/// a tag-scoped request that reaches a second flavor runs one more.
 async fn scan_flavors(
     pool: &PgPool,
     req: &MemorySearchRequest,
@@ -413,21 +397,20 @@ async fn scan_one_flavor(
         })
         .collect();
 
-    // R5, exact per-schema parity: the substring arm runs over the schemas
-    // the ranked arm returned NOTHING for, and only where the schema
-    // declares an arm. One extra statement at most, against up to five
-    // before.
+    // Exact per-schema parity: the substring arm runs over the schemas the
+    // ranked arm returned NOTHING for, and only where the schema declares an
+    // arm. One extra statement at most.
     //
-    // This differs from the per-schema retry it replaces in one direction,
-    // and the direction is NOT harmless: a schema whose ranked hits all
-    // fell outside the flavor-global top-`overfetch` is reported missing
-    // and served by the substring arm instead — which stamps the FLAT
-    // substring floor, so a row the ranked arm would have scored 0.545455
-    // comes back at 0.250000, and a lexeme-only match (`cartographies`
-    // stems onto a row that does not contain the substring) comes back not
-    // at all. `admit_side_restriction` is what keeps the window from being spent
-    // on rows admission is going to drop, which is the only way that
-    // starvation was reachable at default limits.
+    // The window is flavor-global, and that direction is NOT harmless: a
+    // schema whose ranked hits all fell outside the flavor-global
+    // top-`overfetch` is reported missing and served by the substring arm
+    // instead — which stamps the FLAT substring floor, so a row the ranked
+    // arm would have scored 0.545455 comes back at 0.250000, and a
+    // lexeme-only match (`cartographies` stems onto a row that does not
+    // contain the substring) comes back not at all. `admit_side_restriction`
+    // is what keeps the window from being spent on rows admission is going
+    // to drop, which is the only way that starvation is reachable at default
+    // limits.
     let missing: Vec<&MemorySearchProjection> = flavor
         .schemas
         .iter()
@@ -465,8 +448,8 @@ async fn scan_one_flavor(
 
 /// The band this schema declares under `name`.
 ///
-/// R1's resolution: a `&[Band]` is an unordered set with a `name` on each
-/// member, so the renderer looks its arms up by string. Freeze holds a
+/// A `&[Band]` is an unordered set with a `name` on each member, so the
+/// renderer looks its arms up by string. Freeze holds a
 /// `RankSource::Projection` flavor to declaring all three names, which is
 /// what keeps this `Err` unreachable in a frozen registry rather than a
 /// runtime hazard on a hot path.
@@ -551,11 +534,9 @@ fn substring_sql(
 
 /// One sidecar's leg of the substring arm.
 ///
-/// There is no query-side CTE here. The arm it replaces cross-joined one —
-/// computing a `websearch_to_tsquery` and a `plainto_tsquery` per statement
-/// — and then referenced none of its columns. A one-row cross join is an
-/// identity, so dropping it moves no row; it only stops paying for two
-/// tsqueries the `LIKE` predicate never reads.
+/// There is no query-side CTE here: the `LIKE` predicate reads no tsquery,
+/// so computing a `websearch_to_tsquery` and a `plainto_tsquery` per
+/// statement would be paid for and never read.
 fn substring_leg_sql(
     projection: &MemorySearchProjection,
     req: &MemorySearchRequest,
@@ -614,18 +595,15 @@ fn substring_leg_sql(
 /// (`access::owner_columns`, driven by the projection surface's declared
 /// `TransferLeg::Rehomed` like every other followed table).
 ///
-/// And there is no sidecar join at all now. `{sidecar}` is a per-SCHEMA
-/// value; one statement over a flavor's five projected schemas cannot
-/// name it, and
-/// the snippet it fetched is fetched after paging instead. That also
-/// removed `AND length($2::text) >= 0` — a no-op predicate whose only job
-/// was to keep the `LIKE` pattern a USED parameter in a statement that
-/// never used it. Every placeholder below renumbered when it went;
-/// `search_projection_identity` is what proves none of them shifted.
+/// And there is no sidecar join at all. `{sidecar}` is a per-SCHEMA value;
+/// one statement over a flavor's five projected schemas cannot name it, so
+/// the snippet is fetched after paging instead. The arm therefore binds no
+/// `LIKE` pattern, and `search_projection_identity` pins the emitted
+/// placeholder numbering.
 ///
-/// `schema_id` moved from projection-selection time to row-predicate time:
-/// `= ANY($8)`, one statement, the participating set. That is the whole
-/// collapse in one line.
+/// `schema_id` is a row predicate — `= ANY($8)` — rather than a
+/// projection-selection criterion, which is what lets one statement serve
+/// the whole participating set.
 ///
 /// The admit-side restriction ([`admit_side_restriction`]) is the third
 /// predicate that has to be here rather than only at admit. See that
@@ -722,9 +700,9 @@ const SUBSTRING_MEMORY_ID: &str = "m.t";
 
 /// The `memory_kind` literal a request's `kind` filter selects.
 ///
-/// ONE author, used by the candidate statements AND by [`admit_hits`], so the
-/// two cannot drift: the whole of the kind starvation was the candidate side
-/// not knowing a filter the admit side applied. `EntityKind::Goal` selects
+/// ONE author, used by the candidate statements AND by [`admit_hits`], so
+/// the two cannot drift: a filter the admit side applies and the candidate
+/// side does not know about is a starved window. `EntityKind::Goal` selects
 /// nothing — `proxima_core.memory_kind` has exactly three values and goals
 /// are not among them — which is also why the admit side's `parse_kind` can
 /// never drop an admitted row for being unrecognised.
@@ -746,17 +724,15 @@ fn kind_literal(kind: Option<EntityKind>) -> Option<&'static str> {
 /// Admission is not candidate-preserving. `search_admit_sql` drops rows the
 /// candidate window already paid for, so a window spent on rows this step
 /// will drop is a window that admits fewer than `limit` results while
-/// admissible rows sat just below the cut. That was survivable while the
-/// window was per-schema and five statements wide; with ONE global
-/// top-`overfetch` per flavor it is reachable at `limit = 1` (`overfetch` =
+/// admissible rows sat just below the cut. With ONE global top-`overfetch`
+/// per flavor it is reachable at `limit = 1` (`overfetch` =
 /// 20): twenty-five doomed rows of one schema starve another schema's live
 /// row out of the window entirely, the starved schema is then reported
 /// "missing", and the substring arm re-finds it at its FLAT floor — a real
 /// result at a wrong, lower score, or no result at all when the match is
 /// lexeme-only.
 ///
-/// TWO filters land here, each found by an adversarial verifier after the
-/// previous one was called the last:
+/// TWO filters land here:
 ///
 /// 1. **Supersession.** `HeadsOnly` is the tool default and what
 ///    `core_recall` sends. Measured on a 25-revision backlog: the starved
@@ -771,19 +747,17 @@ fn kind_literal(kind: Option<EntityKind>) -> Option<&'static str> {
 ///    tree, same row: `0.250000` at `limit = 1` and `0.545455` at
 ///    `limit = 8`. A score that depends on the page size is not a score.
 ///
-/// Restricting the candidates is what makes the R4 claim ("the page cannot
-/// move for `Lexical` + `Relevance`") true rather than nearly true: with
+/// Restricting the candidates is what makes "the page cannot move for
+/// `Lexical` + `Relevance`" true rather than nearly true: with
 /// these predicates the window is the global top-`overfetch` of the
 /// ADMISSIBLE set, and the top-`limit` of an admissible set is contained in
 /// its own top-`overfetch` whenever `overfetch >= limit`, which
 /// [`overfetch`] guarantees. Owner, `since` and `until` are already row
 /// predicates on the candidate side, and `schema_id` narrows the
 /// participating schema set in `core_search_flavors` before a statement is
-/// rendered — but that list is a claim about admit's predicates, and the
-/// history of this function is the history of that claim being wrong, so it
-/// is checked mechanically by
-/// `every_admit_filter_is_mirrored_on_the_candidate_side` rather than
-/// asserted in prose.
+/// rendered. That the list is complete is checked mechanically by
+/// `every_admit_filter_is_mirrored_on_the_candidate_side`, not asserted
+/// here.
 ///
 /// # Cost
 ///
@@ -1174,8 +1148,7 @@ fn ranks_after_cursor(result: &MemorySearchResult, after: SearchCursor) -> bool 
 /// The ranked arm, for the plan pins.
 ///
 /// It takes the flavor's participating schemas rather than one projection,
-/// because that is what one statement now serves — and it lost its
-/// `like_only` argument, because the arm it selected no longer exists.
+/// because that is what one statement serves.
 ///
 /// # Errors
 ///
@@ -1250,7 +1223,7 @@ mod tests {
         );
         assert!(
             !src.contains(&join),
-            "W5: non-HeadsOnly admit does not join head for schema_id"
+            "non-HeadsOnly admit does not join head for schema_id"
         );
         assert!(
             src.contains("m.schema_id"),
@@ -1280,15 +1253,13 @@ mod tests {
 
     /// Parity pin for the unscoped-search rewire.
     ///
-    /// The filter in `core_search_projections` was
-    /// `sidecar_table.starts_with("proxima_core.")` and is now
-    /// `FLAVOR_0.declares_sidecar_table(..)`. The literal below is the set
-    /// the prefix test selected out of the shipped registry, held HERE so
-    /// production carries no second copy of it: if the contract ever stops
-    /// declaring one of these, unscoped search silently narrows and this
-    /// test says which one went.
+    /// `core_search_flavors` selects it with
+    /// `FLAVOR_0.declares_sidecar_table(..)`. The literal lives HERE so
+    /// production carries no second copy: if the contract stops declaring
+    /// one of these, unscoped search silently narrows and this test says
+    /// which one went.
     #[test]
-    fn the_contract_selects_the_sidecars_the_name_prefix_used_to() {
+    fn unscoped_search_scans_exactly_flavor_0s_projected_sidecars() {
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         let mut by_contract = registry
             .search_projections()
@@ -1331,14 +1302,9 @@ mod tests {
     /// sidecar carries no `owner_id`, so the loop drives from the owner
     /// index and probes the sidecar by `t`.
     ///
-    /// The renumbering is the mechanical hazard of this phase.
-    /// `ranked_projection_sql` carried `AND length($2::text) >= 0`, a no-op
-    /// predicate whose only job was to keep `$2` — the LIKE pattern — a
-    /// USED parameter in a statement that never used it. Removing the bind
-    /// shifted every placeholder after it, and a mis-shifted `$8` would
-    /// have turned the owner predicate into the tag array. This asserts the
-    /// EMITTED SQL, so shifting any one of them fails here as well as in
-    /// the identity fixture.
+    /// The numbering is the mechanical hazard: a mis-shifted `$8` turns the
+    /// owner predicate into the tag array. This asserts the EMITTED SQL, so
+    /// a shift fails here as well as in the identity fixture.
     #[test]
     fn every_bind_is_where_the_scan_binds_it() {
         let note = proxima_core::FlavorRegistry::new()
@@ -1394,10 +1360,9 @@ mod tests {
         );
         // The ranked arm's OWNER never comes through a join — that is what
         // the composite `gin(owner_id, search_tsv)` needs, and it is what
-        // this used to assert as `!contains("proxima_core.memory")`. The
-        // head restriction now names `memory` and `memory_head` in an
-        // EXISTS, so the blanket string test would have to be weakened or
-        // deleted; asserting the PROPERTY instead is stronger than either.
+        // The head restriction names `memory` and `memory_head` in an
+        // EXISTS, so the property is asserted directly rather than by a
+        // blanket string test for `proxima_core.memory`.
         assert!(
             !ranked.contains("m.owner_id"),
             "the ranked arm's owner is on the projection, never reached through memory"
@@ -1459,8 +1424,8 @@ mod tests {
     /// default and what `core_recall` sends. `IncludeSuperseded` must render
     /// no head restriction: that request wants the revisions, so restricting
     /// its window would be a different bug in the other direction. The two
-    /// filters are INDEPENDENT, which is the part that was wrong: a
-    /// kind-filtered `IncludeSuperseded` request is reachable
+    /// filters are INDEPENDENT: a kind-filtered `IncludeSuperseded` request
+    /// is reachable
     /// (`core_search_memories` takes both parameters) and still needs its
     /// kind mirror.
     #[test]
@@ -1529,9 +1494,9 @@ mod tests {
              as it always did"
         );
 
-        // The counterexample that found this: ONE schema id registered under
-        // TWO kinds. `schema_id` cannot narrow it away, so only the kind
-        // predicate keeps the doomed rows out of the window.
+        // ONE schema id registered under TWO kinds: `schema_id` cannot
+        // narrow it away, so only the kind predicate keeps the doomed rows
+        // out of the window.
         req.kind = Some(EntityKind::Perspective);
         let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
         assert!(
@@ -1561,18 +1526,16 @@ mod tests {
     /// The class guard: every filter `search_admit_sql` applies is mirrored
     /// on the candidate side.
     ///
-    /// Two separate HIGH findings in this phase were the same mistake —
-    /// admit narrowing the hit set by something the candidate window had
-    /// already spent slots on. Both times the fix was accompanied by a claim
-    /// that the remaining filters were mirrored already, and both times the
-    /// claim was wrong. So this stops being prose: enumerate admit's binds,
-    /// require each to be accounted for, and FAIL when admit grows one more.
+    /// Admit narrowing the hit set by something the candidate window
+    /// already spent slots on is the defect class this closes, and a claim
+    /// that the remaining filters are mirrored is exactly what cannot be
+    /// trusted in prose. So: enumerate admit's binds, require each to be
+    /// accounted for, and FAIL when admit grows one more.
     ///
-    /// Counting BINDS is not enough, and that gap was found by mutation: a
-    /// filter needs no bind at all. `AND NOT EXISTS (SELECT 1 FROM
-    /// proxima_core.cooled cl WHERE cl.t = m.t)` — a plausible future
-    /// filter — left the whole workspace green, because it adds a predicate
-    /// and no `$n`. So the PREDICATE count is pinned as well.
+    /// Counting BINDS is not enough — a filter needs no bind at all.
+    /// `AND NOT EXISTS (SELECT 1 FROM proxima_core.cooled cl WHERE
+    /// cl.t = m.t)` adds a predicate and no `$n`, so the PREDICATE count is
+    /// pinned as well.
     #[test]
     fn every_admit_filter_is_mirrored_on_the_candidate_side() {
         // Admit's binds, and where the candidate side answers each.
@@ -1659,29 +1622,23 @@ mod tests {
         }
     }
 
-    /// R1 consumed: the bands the builder renders are the bands flavor #0
-    /// DECLARES, resolved by name.
+    /// The bands the builder renders are the bands flavor #0 DECLARES,
+    /// resolved by name.
     ///
-    /// This was the deferral's parity pin — "the two agree, so the day the
-    /// declaration is consumed no score moves". The declaration IS consumed
-    /// now, so the test's job changes: it stops comparing two sources and
-    /// starts pinning the one that is left.
-    ///
-    /// It has to do that by calling the BUILDERS. An earlier version of
-    /// this test asserted only `Band::parts()` and `normalization_arg()` —
-    /// which are properties of the declaration, not of the renderer — so
-    /// hardcoding `("0.50", "0.50")` inside `ranked_projection_sql` left
-    /// the whole workspace green. The second half below is what makes the
-    /// direction right: render from a PERTURBED band and require the
-    /// emitted SQL to move with it. A renderer holding a literal cannot
-    /// pass both halves.
+    /// It has to pin that by calling the BUILDERS. Asserting only
+    /// `Band::parts()` and `normalization_arg()` tests properties of the
+    /// declaration, not of the renderer, and leaves a hardcoded
+    /// `("0.50", "0.50")` inside `ranked_projection_sql` passing. The second
+    /// half below renders from a PERTURBED band and requires the emitted SQL
+    /// to move with it; a renderer holding a literal cannot pass both
+    /// halves.
     #[test]
     // Three bands, each with a declared half and a rendered half, and
     // the perturbation that kills a hardcode. Splitting it would put
     // one band in a second function to forget the other two in — which
     // is the shape this test exists to correct.
     #[allow(clippy::too_many_lines)]
-    fn the_declared_bands_render_the_arithmetic_the_sql_already_had() {
+    fn the_renderer_reads_every_band_from_the_declaration() {
         use proxima_core::flavor::{
             BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band,
             TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
@@ -1715,7 +1672,7 @@ mod tests {
                 ("0.25".to_owned(), "0.00".to_owned()),
                 "the substring arm admits, it does not rank: zero width"
             );
-            // R7: the normalization flag each arm renders TODAY, declared.
+            // The normalization flag each arm renders, declared.
             assert_eq!(exact.normalization, TS_RANK_NORMALIZATION_SCALE);
             assert_eq!(exact.normalization_arg(), ", 32");
             assert_eq!(rescue.normalization, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE);
@@ -1821,15 +1778,13 @@ mod tests {
     }
 
     /// The band-comparability gate has a consumer, and the consumer moves
-    /// no score today.
+    /// no score.
     ///
-    /// `core_search_projections` grew a gate that admits a non-core
-    /// projection only under `CoreBands` and only under
-    /// `RankSource::Projection`. The admitted set does not change — the
-    /// code flavor declares no `tag_column`, so it was already excluded in
-    /// every request shape — which is exactly what makes this a real
-    /// consumer with a provably zero delta rather than a behaviour change
-    /// shipped ahead of the deployment layer that needs it.
+    /// `core_search_flavors` admits a non-core projection only under
+    /// `CoreBands` and only under `RankSource::Projection`. The admitted set
+    /// is unchanged by that gate — the code flavor declares no `tag_column`,
+    /// so it is already excluded in every request shape — which is what this
+    /// test pins.
     #[test]
     fn the_merge_admits_only_flavors_that_declare_a_comparable_shape() {
         let frozen = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
