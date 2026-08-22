@@ -191,8 +191,8 @@ artefact through `core/uploaded-blob-whole-v1`. Its rendered text names
 the file, so an upload is findable by name through
 `core/search_memories` with nobody having written a Fact for it.
 
-**Findable, not embedded.** `UploadV1` declares
-`FactPayload::EMBEDDABLE = false`, so the Fact keeps its text — and with
+**Findable, not embedded.** `core/upload-v1` declares
+`EmbeddingRecipe::Never`, so the Fact keeps its text — and with
 it lexical search on the filename, which is the whole point of rendering
 one — and is never queued for a vector. A filename is worth finding and
 not worth embedding: every upload renders from the same template and

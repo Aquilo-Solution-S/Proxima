@@ -622,14 +622,18 @@ Contract points that are easy to get wrong:
   `t`, pass that prior `t` as `supersedes`; storage resolves its stable handle
   and appends the new `t` to the same series. Neither row stores a lineage
   pointer.
-- **Embedding runs before the write transaction begins.** A refused text
-  is not a lost write: the memory lands with no vector and a durable
-  `embedding_jobs` row enqueued in the same transaction, and the
-  outcome's `embedding_deferred` says so. Several derived rows that must
-  commit together use `UnitOfWork::author_derived_all` (embed the batch,
-  then one `BEGIN`). A derived write after the transaction is already
-  open defers the vector rather than hold the pool slot across HTTP.
-  Only a provider that is genuinely unavailable fails the write.
+- **Embedding runs before the write transaction begins — if the recipe
+  asks for it.** A schema declaring `EmbeddingRecipe::Never` is never
+  embedded and never queued, whatever embedding client the host has
+  configured; the rest of this bullet is about the schemas that declare
+  units. A refused text is not a lost write: the memory lands with no
+  vector and a durable `embedding_jobs` row enqueued in the same
+  transaction, and the outcome's `embedding_deferred` says so. Several
+  derived rows that must commit together use
+  `UnitOfWork::author_derived_all` (embed the batch, then one `BEGIN`). A
+  derived write after the transaction is already open defers the vector
+  rather than hold the pool slot across HTTP. Only a provider that is
+  genuinely unavailable fails the write.
 - **`text` is the whole semantic surface.** `render()` / authored text
   is the only string ever embedded. The schema's `search` declaration
   adds LEXICAL reach over sidecar columns and never affects the vector;
