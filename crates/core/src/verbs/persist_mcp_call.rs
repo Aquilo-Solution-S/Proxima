@@ -99,11 +99,6 @@ pub struct McpCallLoggedV1 {
 }
 
 impl FactPayload for McpCallLoggedV1 {
-    /// Matches this schema's `EmbeddingRecipe::Never`, which carries the
-    /// reason. Freeze refuses the two disagreeing; they did, and the
-    /// enqueue lane filed jobs the drain could only drop.
-    const EMBEDDABLE: bool = false;
-
     const SCHEMA_ID: &'static str = MCP_CALL_FACT_SCHEMA;
     const SCHEMA_VERSION: u32 = 1;
 

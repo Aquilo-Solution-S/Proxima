@@ -10,7 +10,6 @@ pub struct WriteActV1 {
 impl FactPayload for WriteActV1 {
     const SCHEMA_ID: &'static str = "core/write-act-v1";
     const SCHEMA_VERSION: u32 = 1;
-    const EMBEDDABLE: bool = false;
 
     fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
