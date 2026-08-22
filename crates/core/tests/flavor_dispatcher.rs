@@ -1,13 +1,12 @@
 //! A flavor can declare a dispatcher, and every seam treats it as one.
 //!
 //! `McpToolDescriptor::action_arg_specs` is THE enumeration of a dispatcher's
-//! actions. Before that was true, a flavor tool with an internally tagged
-//! `Args` reached the registry through `try_add_tool`, which hardcoded an
-//! empty spec slice: the schema pass still stamped `x-proxima-actions` on it,
-//! so clients saw a dispatcher, while the scope gate keyed off the substrate
-//! `CoreActionMeta` tables and saw a flat tool. The tool was gated whole,
-//! validated against every variant's fields merged together, listed no
-//! actions in `proxima://tools`, and served no REST action route.
+//! actions. Every seam reads it: the scope gate, argument validation,
+//! `proxima://tools`, and the REST action routes. A tool whose `Args` is an
+//! internally tagged enum has `x-proxima-actions` stamped on its schema, so
+//! clients see a dispatcher — and one registered with an empty spec slice is
+//! gated whole, validated against every variant's fields merged together,
+//! lists no actions in `proxima://tools`, and serves no REST action route.
 
 use std::sync::Arc;
 

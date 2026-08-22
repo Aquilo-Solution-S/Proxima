@@ -3,8 +3,8 @@
 //!
 //! [`Engine::complete_upload_as_fact`] is the whole completion verb. There
 //! is no other: [`CitedBlobPort`] stages bytes and is told what they were
-//! recorded as, but it no longer persists anything, so a caller reaching
-//! past this verb would leave the corpus with nothing in it.
+//! recorded as, but it persists nothing, so a caller reaching past this
+//! verb would leave the corpus with nothing in it.
 //!
 //! The shape follows from where the transaction has to be. Persisting a
 //! cited object is a Fact write with an inline citation — storage already

@@ -470,6 +470,13 @@ pub async fn embed_in_chunks_after_failure_with_timeout(
     .await
 }
 
+/// Queue both halves of a split onto a LIFO stack so the left one is taken
+/// next, which is what keeps chunk vectors in text order.
+fn push_left_half_first<'a>(pending: &mut Vec<&'a str>, left: &'a str, right: &'a str) {
+    pending.push(right);
+    pending.push(left);
+}
+
 async fn embed_in_chunks_with<'a, F, P>(
     client: &'a dyn EmbeddingClient,
     text: &'a str,
@@ -502,9 +509,7 @@ where
         let Some((left, right)) = split_segment(text) else {
             return Ok(None);
         };
-        // Push the right half first so the left half embeds (or splits) next.
-        pending.push(right);
-        pending.push(left);
+        push_left_half_first(&mut pending, left, right);
     } else {
         pending.push(text);
     }
@@ -516,10 +521,7 @@ where
                 let Some((left, right)) = split_segment(segment) else {
                     return Ok(None);
                 };
-                // Pop order: push right half first so the left half embeds
-                // (or splits) next.
-                pending.push(right);
-                pending.push(left);
+                push_left_half_first(&mut pending, left, right);
             }
             Err(error) => return Err(error),
         }

@@ -188,7 +188,7 @@ impl Engine {
     ///
     /// Storage faults from beginning the transaction (deferred to the first
     /// write).
-    #[allow(clippy::unused_async)] // signature stays async so callers do not change
+    #[allow(clippy::unused_async)] // async is part of the port contract, not of this body
     pub async fn unit_of_work<'a>(
         &'a self,
         authz: &'a AuthzContext,

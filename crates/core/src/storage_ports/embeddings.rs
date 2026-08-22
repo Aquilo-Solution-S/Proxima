@@ -252,7 +252,7 @@ pub trait EmbeddingJobPort: Send + Sync {
     ///
     /// Used when a batch embed call fails for a transient provider-side
     /// cause. Nothing was tried, so the rows stay immediately claimable;
-    /// v0.0.8 has no attempt counter or `next_attempt_at`.
+    /// there is no attempt counter and no `next_attempt_at`.
     async fn release_embedding_jobs(
         &self,
         claims: &[EmbeddingJobClaim],

@@ -889,8 +889,7 @@ mod tests {
         );
 
         // Every other relation maps to a role without `manage`, so none of
-        // them is consent — this is the regression that made the verb
-        // unreachable in the first place, inverted.
+        // them is consent.
         for relation in [Relation::Editor, Relation::Viewer, Relation::Ingest] {
             let denied = storage_with_relation(relation)
                 .transfer_to_owner(&narrowed, entity, destination_owner)

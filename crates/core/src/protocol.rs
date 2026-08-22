@@ -59,13 +59,6 @@ pub mod resource {
     pub const GOAL: &str = "resource:goal";
 }
 
-// `resource_path` and `resource_uri` used to live here: two more tables of
-// ten, one keying the dispatcher's match and one keying the advertised
-// manifest, neither aware of the other. Both are now fields on the
-// `ResourceContract` entries in `flavor::flavor0`, reachable by scope key
-// through `flavor0::resource`, so a resource's URI template, its dispatch
-// path and its palette entry cannot drift apart.
-
 pub mod profile {
     pub const FULL: &str = "full";
     pub const MEMORY: &str = "memory";

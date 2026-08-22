@@ -1,9 +1,9 @@
 //! Flavor #0 — core, as a declaration.
 //!
 //! Core registers 15 schemas, 15 MCP tools and 10 `proxima://` resources
-//! across five unlinked sites and, until now, had no `FlavorDescriptor` at
-//! all: it was invisible to the very registry that is meant to be the single
-//! source of truth. This module is that missing declaration.
+//! across five sites, and this module is the `FlavorDescriptor` that makes
+//! them visible to the registry that is meant to be the single source of
+//! truth.
 //!
 //! Two things make flavor #0 asymmetric, and both are named rather than
 //! inferred:
@@ -13,12 +13,8 @@
 //!   live here because a second resource list would be a second place to
 //!   forget one.
 //! - **Its ordinal is load-bearing.** Unscoped search stays on core sidecars;
-//!   `ordinal == 0` is what says so, replacing a `"proxima_core."` table-name
-//!   prefix test.
-//!
-//! Nothing here renames anything: every core schema id already carries
-//! `core/` and every core tool name already carries `core_`, so the existing
-//! compile-time prefix assertions pass with zero renames.
+//!   `ordinal == 0` is what says so, rather than a `"proxima_core."`
+//!   table-name prefix test.
 
 use crate::SearchProjectionColumnKind as ColumnKind;
 use crate::flavor::contract::{
@@ -78,10 +74,7 @@ const BANDS: &[Band] = &[BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING];
 const CORE_PROJECTION: ProjectionSpec = ProjectionSpec {
     table: "proxima_core.projection",
     index: "core_projection_owner_tsv_gin",
-    // The candidate budget for ONE statement over this table. It was
-    // `SIDECAR_OVERFETCH_CAP` in `storage-pg`, applied per projected
-    // schema, so core's four statements could hand the merge 4 000 rows;
-    // the collapse makes it what the number always said it was.
+    // The candidate budget for ONE statement over this table.
     overfetch_k: 1_000,
     band_comparability: BandComparability::CoreBands,
     // Core IS the projection-ranking shape: `core_search_memories` ranks
@@ -91,9 +84,8 @@ const CORE_PROJECTION: ProjectionSpec = ProjectionSpec {
 };
 
 /// Goals do not transfer, and the refusal is real in three places. There is
-/// no CHECK constraint to name: removing the World owner deleted
-/// `goal_not_world_owner_chk` and `goal_head_not_world_owner_chk` with it,
-/// so the DDL leg is a trigger that freezes `goal_head.owner_id`.
+/// no CHECK constraint to name, so the DDL leg is a trigger that freezes
+/// `goal_head.owner_id`.
 const GOAL_NOT_TRANSFERABLE: TransferRule = TransferRule::NotTransferable {
     why: "a goal series cannot change owner: an armed goal's wake_config, \
           hard-context memory set and tool grants are the receiving owner's \
@@ -199,11 +191,9 @@ const AGENT_NOTE_V1: SchemaContract = SchemaContract {
     natural_key_columns: &["note_id"],
 };
 
-/// Utterances ARE searchable in this tree, with their own band set. The
-/// acceptance case the plan calls "utterances-don't-search" is about an
-/// out-of-tree `ChatTurnV1`; what is testable here is that
-/// [`SearchProjectionDecl::None`] is a *value* — see `WRITE_ACT_V1` and
-/// `MCP_CALL_LOGGED_V1`, which declare it.
+/// Utterances ARE searchable in this tree, with their own band set. What is
+/// testable here is that [`SearchProjectionDecl::None`] is a *value* — see
+/// `WRITE_ACT_V1` and `MCP_CALL_LOGGED_V1`, which declare it.
 const UTTERANCE_V1: SchemaContract = SchemaContract {
     id: SchemaRef::new(FLAVOR_ID, "utterance", 1),
     kind: PayloadKind::Fact,
@@ -361,9 +351,9 @@ const AGENT_DERIVATION_V1_P: SchemaContract = SchemaContract {
     natural_key_columns: &[],
 };
 
-/// Checkpoint 9: an interpretation grounds through payload columns and
-/// writes no `origin` rows, so the lineage walk will not reach its subjects.
-/// That is now a declaration instead of a call-site choice.
+/// An interpretation grounds through payload columns and writes no `origin`
+/// rows, so the lineage walk does not reach its subjects through `origins[]`.
+/// A declaration says so, rather than a call-site choice.
 const INTERPRETATION_V1: SchemaContract = SchemaContract {
     id: SchemaRef::new(FLAVOR_ID, "interpretation", 1),
     kind: PayloadKind::Perspective,
@@ -384,10 +374,9 @@ const INTERPRETATION_V1: SchemaContract = SchemaContract {
     embedding: EmbeddingRecipe::Units(&[EmbedUnit::stored("embed_text", SLOT_DEFAULT)]),
     transfer: TransferRule::StaysOnKey,
     // The columns that carry SUBJECT IDS, which is one column and not two.
-    // `subject_kinds` was declared here too and holds no id — it is the
-    // positionally-aligned kind vector — so a walk that took the field at
-    // its word would look for memory references in an enum array. Nothing
-    // read it, so nothing found out.
+    // `subject_kinds` is the positionally-aligned kind vector and holds no
+    // id, so a walk that took it for a subject column would look for memory
+    // references in an enum array.
     provenance: Provenance::PayloadOnly {
         subject_columns: &["subject_memory_ids"],
     },
@@ -511,9 +500,8 @@ const STATE_SURFACES: &[Surface] = &[
         },
         lexical_language_column: None,
         counter: CounterRule::Counted("goals"),
-        // WAS goal_not_world_owner_chk. That CHECK went with the World
-        // owner; the DDL backstop is now the goal_head_t_only trigger, which
-        // TransferRule::NotTransferable names directly.
+        // No CHECK to name: the DDL backstop is the goal_head_t_only
+        // trigger, which TransferRule::NotTransferable names directly.
         completeness: None,
     },
     Surface {
@@ -582,25 +570,16 @@ const KERNEL_SURFACES: &[Surface] = &[
         key: KeyShape::Custom(&["handle"]),
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
-        // NOT a cascade, though it declared one until Phase C. The
-        // constraint it named (`memory.handle -> memory_head.handle`) points
-        // the OTHER way and is `NO ACTION`: it forces the series rows to be
-        // deleted first and never removes the head. The head is rewound to
-        // the surviving newest `t` and deleted when the series is empty —
-        // an explicit statement, named by `owner_erase`'s leg table.
+        // NOT a cascade: the constraint `memory.handle ->
+        // memory_head.handle` points the OTHER way and is `NO ACTION`, so it
+        // forces the series rows to be deleted first and never removes the
+        // head. The head is rewound to the surviving newest `t` and deleted
+        // when the series is empty — an explicit statement, named by
+        // `owner_erase`'s leg table.
         erase: EraseRule::ByOwner,
         export: ExportRule::Excluded {
             why: "the head is derivable from the memory series",
         },
-        // CORRECTED in Phase 4 (plan §4.12 R2). `DeleteWithMemory` was true
-        // for the last revision of a series and false for every other one:
-        // forgetting a revision REWINDS the head to the surviving newest
-        // `t` and deletes the head only when the series empties. The
-        // vocabulary gets no one-member `Rewind` arm for it — §4.6.1
-        // forbids vocabulary with a single speaker — because `Keep`
-        // already means "the generated forget leg does not destroy this",
-        // and this table is on the bespoke erase list, so the erase reaches
-        // it through a hand-written statement rather than a generated one.
         forget: ForgetRule::Keep {
             why: "the head is rewound to the surviving newest t and deleted only when \
                   the series empties, which no generated leg can express; the erase \
@@ -630,9 +609,8 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.sketch",
         // A memory t OR a goal t, in one column, with no discriminator —
-        // which is exactly what `EntityT` names. It said `Custom` until
-        // Phase 4, and `Custom` is the arm for a key this crate cannot
-        // reason about at all.
+        // which is exactly what `EntityT` names, and what `Custom` (the arm
+        // for a key this crate cannot reason about at all) does not.
         key: KeyShape::EntityT { column: "t" },
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
@@ -640,13 +618,11 @@ const KERNEL_SURFACES: &[Surface] = &[
         export: ExportRule::Allowlist(&["t", "owner_id", "kind", "text"]),
         forget: ForgetRule::DeleteWithMemory,
         // The sketch has no reader: the search verb scans exactly the four
-        // declared sidecars, and export strips the column. Its `search_tsv`,
-        // its GIN and its stamp go with the projection move rather than
-        // being carried to a new home nothing reads.
+        // declared sidecars, and export strips the column.
         lexical_language_column: None,
-        // Recorded by erase today and dropped on the floor: there is no
-        // `sketches` key in the final counts and no audit-log column.
-        // Declaring it is what makes the gap addressable.
+        // DECLARED GAP — the erase destroys these rows and no receipt
+        // reports them: there is no `sketches` key in the final counts and
+        // no audit-log column.
         counter: CounterRule::Counted("sketches"),
         // No FK: `t` is a Memory t OR a Goal t, and there is no constraint
         // that can span two home tables.
@@ -711,14 +687,6 @@ const KERNEL_SURFACES: &[Surface] = &[
         },
         erase: EraseRule::ByKey,
         export: ExportRule::Rows,
-        // CORRECTED in Phase 4. It declared `DeleteWithMemory` and the
-        // shipped verb has never done that: `core_forget` cools a version
-        // and leaves the receipt, and says so on the wire — its own tool
-        // description reads "…delete hot row, announce.forget. ingest_keys
-        // stay." The only statement that removes one is `erase_memory`'s,
-        // a different verb with a different promise. Generating a forget
-        // leg from the declaration as written would have destroyed an
-        // admission receipt on every cool.
         forget: ForgetRule::Keep {
             why: "cooling a version does not un-admit it: the receipt proves this owner \
                   accepted this (source, ingest_key) and stays until the version is \
@@ -761,19 +729,15 @@ const KERNEL_SURFACES: &[Surface] = &[
         table: "proxima_core.blob",
         key: KeyShape::BlobId { column: "blob_id" },
         owner_columns: &["owner_id"],
-        // The dedupe arm. A blob shared across owners used to refuse the
-        // transfer outright; now the destination gets its own row over the
-        // same object.
+        // The dedupe arm: a blob shared across owners gives the destination
+        // its own row over the same object.
         //
-        // CORRECTED in Phase 4. `remaps` named three columns and the
-        // shipped SQL performed two. `blob_uploads.blob_id` is never
-        // repointed at another blob row: the in-place case moves the upload
-        // row's OWNER and leaves its `blob_id` alone, and the dedupe case
-        // INSERTs a fresh mounted row already naming the destination's new
-        // blob. Declaration and behaviour agreed only by coincidence, which
-        // is the whole defect an unread declaration has. `remaps` is the
-        // list of referring columns a generated UPDATE repoints, and there
-        // are two.
+        // `blob_uploads.blob_id` is deliberately NOT in `remaps`, because it
+        // is never repointed at another blob row: the in-place case moves
+        // the upload row's OWNER and leaves its `blob_id` alone, and the
+        // dedupe case INSERTs a fresh mounted row already naming the
+        // destination's new blob. `remaps` is the list of referring columns
+        // a generated UPDATE repoints, and there are two.
         transfer: TransferRule::FollowOrDedupe {
             dedupe_key: &["owner_id", "schema_id", "content_hash"],
             remaps: &["memory.blob_id", "cooled.blob_id"],
@@ -810,21 +774,18 @@ const KERNEL_SURFACES: &[Surface] = &[
         table: "proxima_core.content",
         key: KeyShape::Custom(&["content_id"]),
         owner_columns: &["owner_id"],
-        // The arm's original member, and the shape `blob` was made to
-        // copy: ensure a destination-owned row, remap the referring
-        // columns, GC the orphan. The difference is that `content` has an
-        // orphan and nothing else, while `blob` also has an object in S3
-        // that two owners may now name.
+        // Ensure a destination-owned row, remap the referring columns, GC
+        // the orphan. `content` has an orphan and nothing else, while `blob`
+        // also has an object in S3 that two owners may now name.
         transfer: TransferRule::FollowOrDedupe {
             dedupe_key: &["owner_id", "schema_id", "content_hash"],
             remaps: &["memory.content_id", "cooled.content_id"],
         },
-        // NOT a cascade, though it declared one until Phase C: the name it
-        // gave (`gc_unreferenced_content`) is a Rust function, not a
-        // constraint, so the claim was unfalsifiable by the catalog. The row
-        // is reached through the selection set for its key and deleted only
-        // when no surviving admission still names it — the refcount guard
-        // `owner_erase`'s leg table records.
+        // NOT a cascade: `gc_unreferenced_content` is a Rust function, not a
+        // constraint, so a `Cascade` claim naming it would be unfalsifiable
+        // by the catalog. The row is reached through the selection set for
+        // its key and deleted only when no surviving admission still names
+        // it — the refcount guard `owner_erase`'s leg table records.
         erase: EraseRule::ByKey,
         export: ExportRule::Excluded {
             why: "DECLARED GAP — the A/P body is erased but never exported",
@@ -887,11 +848,10 @@ const KERNEL_SURFACES: &[Surface] = &[
         key: KeyShape::Custom(&["object_key"]),
         owner_columns: &["owner_id"],
         transfer: TransferRule::StaysOnKey,
-        // It declared `ByOwner` until Phase C, and no erase ever deleted
-        // from it — which was the only reason a generated statement had not
-        // yet destroyed the queue the erase itself enqueues into. The debt
-        // outlives the transaction that recorded it BY CONSTRUCTION: the row
-        // is what survives a crash between commit and destruction.
+        // The debt outlives the transaction that recorded it BY
+        // CONSTRUCTION: the row is what survives a crash between commit and
+        // destruction, so a generated statement here would destroy the queue
+        // the erase itself enqueues into.
         erase: EraseRule::Never {
             why: "the purge queue is the erase's own outbox; the drain deletes the row \
                   once the object is destroyed, and an erase that deleted it would lose \
@@ -937,9 +897,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     },
     // A membership names TWO owners and belongs to neither exclusively, so
     // `owner_columns` is EMPTY and means it: there is no column here whose
-    // value makes the row somebody's to erase. That is the whole content of
-    // the declaration, and stating it is what turns a recorded follow-up
-    // into a position.
+    // value makes the row somebody's to erase.
     Surface {
         table: "proxima_core.group_memberships",
         key: KeyShape::Custom(&["group_id", "member_user_id", "relation"]),
@@ -1200,15 +1158,11 @@ const RESOURCES: &[ResourceContract] = &[
 /// The kernel surfaces the owner erase reaches with a hand-written
 /// statement instead of a generated one.
 ///
-/// A bare table list, and deliberately so (plan §4.11). Each entry used to
-/// carry the NAME of the storage-pg function that deletes it, kept honest
-/// by a test that grepped that crate's own source for `fn <name>(`. The
-/// operator ruled the names ceremony: both freeze checks work on table
-/// names alone, the behaviour is already pinned by the differential
-/// goldens, and a string-level proof that a string names a function
-/// verifies documentation rather than behaviour. What the list must say is
-/// WHICH tables the generator does not reach; who reaches them is a fact
-/// about `proxima-storage-pg`'s code, and the place to read it is
+/// A bare table list, and deliberately so. Both freeze checks work on table
+/// names alone, and what the list must say is WHICH tables the generator
+/// does not reach. Naming the statement that reaches each one would be a
+/// string-level claim about another crate's code: who reaches them is a
+/// fact about `proxima-storage-pg`, and the place to read it is
 /// `proxima-storage-pg`.
 ///
 /// Sixteen entries, and every one of them earns the exemption by needing
@@ -1313,9 +1267,9 @@ pub const FLAVOR_0: FlavorContract = FlavorContract {
 /// Look up a flavor-#0 resource by its palette scope key.
 ///
 /// `const fn` so the dispatcher's match arms and the served manifest are
-/// *derived* from the contract rather than repeating it: the three parallel
-/// lists that used to spell each resource's scope key, path and URI template
-/// separately are now one declaration and two projections of it.
+/// *derived* from the contract rather than repeating it: a resource's scope
+/// key, path and URI template are one declaration and two projections of
+/// it, not three parallel lists.
 ///
 /// # Panics
 ///
@@ -1414,7 +1368,6 @@ mod tests {
         assert!(RESOURCES.iter().all(|entry| entry.read_only));
     }
 
-    /// Case 1 of the plan's acceptance set, as a declaration.
     #[test]
     fn goals_declare_not_transferable_with_real_enforcement() {
         for schema in FLAVOR_0
@@ -1433,7 +1386,7 @@ mod tests {
         }
     }
 
-    /// Case 2: declared absence is a value with a reason attached.
+    /// Declared absence is a value with a reason attached.
     #[test]
     fn declared_absence_carries_a_reason() {
         let write_act = FLAVOR_0

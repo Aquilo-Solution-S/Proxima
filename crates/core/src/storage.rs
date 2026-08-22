@@ -230,7 +230,7 @@ impl SidecarPayload {
         self.value.downcast_ref::<T>()
     }
 
-    /// Node references this payload declares (docs/16 §Reference).
+    /// Node references this payload declares (docs/16 §The Model).
     /// Empty for payload kinds that cannot reference nodes.
     #[must_use]
     pub fn references(&self) -> Vec<PayloadReference> {

@@ -55,9 +55,9 @@ impl FactPayload for UploadV1 {
     /// differs only in a name, a mime and an integer.
     ///
     /// Scale is what makes it matter rather than merely tidy. Nothing
-    /// says an upload is a whole document — proxima-docs uploads a page
-    /// scan and a figure crop each as their own artefact, so one shelf
-    /// is ~52,000 of these Facts. Embedded, they would be a dense cluster
+    /// says an upload is a whole document — a page scan and a figure crop
+    /// are each their own artefact, so one shelf can run to tens of
+    /// thousands of these Facts. Embedded, they would be a dense cluster
     /// of mutual near-neighbours sitting in the same index as the prose
     /// somebody is actually searching for.
     const EMBEDDABLE: bool = false;

@@ -28,7 +28,7 @@ impl OwnerRef {
         }
     }
 
-    /// Stored `owner_id` (v0.0.8), never NULL.
+    /// Stored `owner_id`, never NULL.
     #[must_use]
     pub const fn stored_owner_id(self) -> Uuid {
         self.stable_key_uuid()
@@ -36,7 +36,7 @@ impl OwnerRef {
 
     /// Stable non-DB UUID component for deterministic hashes / object keys.
     ///
-    /// v0.0.8 stores this value in `owner_id` (NOT NULL).
+    /// This value is what `owner_id` stores (NOT NULL).
     #[must_use]
     pub const fn stable_key_uuid(self) -> Uuid {
         match self {

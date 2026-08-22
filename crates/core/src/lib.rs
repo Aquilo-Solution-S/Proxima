@@ -88,7 +88,6 @@ pub use storage::*;
 pub use text_bounds::*;
 pub use tool::*;
 
-// Re-export verb modules for convenience.
 pub use verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
     FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
@@ -136,9 +135,7 @@ macro_rules! proxima_schema_id {
 /// Hosts inject [`crate::llm::EmbeddingClient`] at boot; this macro does
 /// not bind models, and there is no inference-target registry.
 ///
-/// Future verbs (sources, operators) land as the
-/// underlying systems materialize. Reject unknown keys at expansion
-/// time to keep authors honest.
+/// Unknown keys are rejected at expansion time.
 ///
 /// ```ignore
 /// proxima_flavor! {
@@ -157,8 +154,7 @@ macro_rules! proxima_flavor {
     // Internal: register one schema-kind list, compile-checking each
     // `SCHEMA_ID` carries the flavor prefix. The check is a `const`
     // assertion — a misprefixed `SCHEMA_ID` fails the build, not the
-    // first boot. Collapses what were five byte-identical per-kind arms
-    // in the main rule below.
+    // first boot.
     (@schemas $registry:ident $name:literal $trait:ident $add:ident [ $($ty:ty),* $(,)? ]) => {
         $(
             const _: () = ::std::assert!(

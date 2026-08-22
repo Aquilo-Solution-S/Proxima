@@ -1,5 +1,4 @@
-//! Cold object store and persisted object-key derivation for forget/hydrate
-//! (UML §5c).
+//! Cold object store and persisted object-key derivation for forget/hydrate.
 
 use uuid::Uuid;
 

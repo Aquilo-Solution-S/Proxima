@@ -52,18 +52,15 @@ mod manifest_tests {
         );
     }
 
-    /// Parity pin for the manifest rewire.
+    /// Parity pin for the resource manifest.
     ///
-    /// `all_core_resources()` used to read a hand-written `CORE_RESOURCES`
-    /// table here, whose `uri_template`s pointed at a second table in
-    /// `protocol::resource_uri` and whose dispatch paths lived in a third,
-    /// `protocol::resource_path`. All three are now projections of flavor
-    /// #0's `ResourceContract` entries. The literals below are the three
-    /// deleted tables, transcribed once, in the test — so a contract edit
+    /// A resource's URI template, its dispatch path and its advertised name
+    /// are all projections of flavor #0's `ResourceContract` entries. The
+    /// literals below are the independent transcription, so a contract edit
     /// that changes what the server advertises or how it routes has to be
     /// stated here too.
     #[test]
-    fn the_derived_resource_manifest_matches_the_deleted_hand_tables() {
+    fn the_derived_resource_manifest_matches_its_transcribed_literals() {
         let expected: &[(&str, &str, &str, bool)] = &[
             (
                 "proxima://schemas{?kind}",

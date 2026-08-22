@@ -82,10 +82,11 @@ impl ScopeGateBehavior {
     ) -> Result<(), McpToolError> {
         let scope = ctx.authz.tool_scope();
         // Whether a tool dispatches actions is read off its descriptor, not
-        // off the substrate `CoreActionMeta` tables. Keying it on those meant
-        // a flavor dispatcher fell to the whole-tool branch below: a palette
-        // holding only `flavor_tool:action` denied the tool outright, and an
-        // unknown action sailed past this gate into the tool.
+        // off the substrate `CoreActionMeta` tables: a flavor dispatcher is
+        // absent from those tables, so keying on them would drop it to the
+        // whole-tool branch below — a palette holding only
+        // `flavor_tool:action` would deny the tool outright, and an unknown
+        // action would sail past this gate into the tool.
         let descriptor = ctx.registry.mcp_tool(tool);
         let specs = descriptor.map_or(&[] as &[McpActionArgSpec], |d| d.action_arg_specs);
         if specs.is_empty() {
@@ -123,13 +124,13 @@ impl ScopeGateBehavior {
         // Resource reads are reads. `read_resource` funnels through this same
         // gate with the resource's scope key in `tool`, and nothing in the
         // tool manifest is keyed by a `resource:` name — so the lookups below
-        // all miss and the `unwrap_or(false)` default asks for *write*
-        // access. A read-only role could therefore see every `proxima://`
-        // resource `resources/list` advertises to it and read none of them.
+        // all miss and the `unwrap_or(false)` default would ask for *write*
+        // access, denying a read-only role every `proxima://` resource
+        // `resources/list` advertises to it.
         //
         // The answer comes from the declaration, not from the shape of the
-        // string: an unknown `resource:`-prefixed key is no longer waved
-        // through as a read on the strength of its prefix alone.
+        // string: an unknown `resource:`-prefixed key is not waved through
+        // as a read on the strength of its prefix.
         let read_only = if let Some(resource) = crate::flavor::FLAVOR_0.resource_by_scope_key(tool)
         {
             resource.read_only

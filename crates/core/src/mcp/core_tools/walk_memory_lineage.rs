@@ -65,7 +65,7 @@ pub struct WalkMemoryLineageOutput {
     pub edges: Vec<LineageEdgeOutput>,
     /// More lineage edges exist beyond this page; `true` iff
     /// `next_cursor` is present. Named `has_more` to match every other
-    /// paginated surface (this field was `truncated` before v0.0.7).
+    /// paginated surface.
     pub has_more: bool,
     /// Opaque cursor for the next page of lineage edges; absent on the
     /// last page. Pass back as `cursor` with the same memory, direction,

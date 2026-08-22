@@ -1,6 +1,5 @@
-//! Phase 1d: `Engine::start` exposes the bound MCP URL after start;
-//! `mcp_url()` is `None` before start; `Engine::stop` aborts the MCP
-//! listener task.
+//! `Engine::start` exposes the bound MCP URL after start; `mcp_url()` is
+//! `None` before start; `Engine::stop` aborts the MCP listener task.
 //!
 //! The MCP listener is wired via the `EngineMcpListener` trait so
 //! `proxima-core` need not depend on `proxima-mcp-server` (that

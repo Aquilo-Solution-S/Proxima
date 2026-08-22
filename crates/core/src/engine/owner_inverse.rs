@@ -24,11 +24,11 @@ enum EraseAdmission {
 impl Engine {
     /// The one place the owner-inverse lanes learn which tables exist.
     ///
-    /// The `owner_pinned` leg used to be appended by the Postgres adapter
-    /// from `pg_sidecar!(owner_pinned: true)`, a third source of truth core
-    /// could not see. It now comes off the same flavor contracts as the
-    /// other four, via `TransferRule::RetainAtSource`, and the adapter's
-    /// macro flag is checked against it when the sidecar registry freezes.
+    /// Every leg, including `owner_pinned`, comes off the flavor contracts —
+    /// via `TransferRule::RetainAtSource` for that one — so the Postgres
+    /// adapter's `pg_sidecar!(owner_pinned: true)` flag is a second source
+    /// core can see, and it is checked against this one when the sidecar
+    /// registry freezes.
     pub(crate) fn owner_surfaces(&self) -> OwnerSurfaces {
         OwnerSurfaces::for_registry(&self.registry)
     }
@@ -190,10 +190,9 @@ impl Engine {
     /// - purge succeeds: `false`.
     /// - purge fails: `true`, and the host retries out-of-band.
     ///
-    /// There used to be a fourth case — the purge succeeded but clearing the
-    /// durable audit flag failed, so the row over-reported forever. There is
-    /// no durable flag now: the receipt states what this operation did, and
-    /// the host records it if its promises require a record.
+    /// There is no fourth case, because there is no durable flag to fail at
+    /// clearing: the receipt states what this operation did, and the host
+    /// records it if its promises require a record.
     async fn finalize_owner_erase_with_object_purge(
         &self,
         owner: OwnerRef,

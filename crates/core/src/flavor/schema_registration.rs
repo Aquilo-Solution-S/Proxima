@@ -15,11 +15,9 @@ impl FlavorRegistry {
     /// for the ingress entry are read back off it so they cannot drift
     /// from the schema.
     ///
-    /// A search projection is NOT recorded here any more. It used to be
-    /// `FactPayload::search_projection()`, a second search vocabulary that
-    /// the `FlavorContract`'s `SearchProjectionDecl` shadowed without
-    /// governing. There is one vocabulary now, and the projections are
-    /// derived from the contracts at freeze.
+    /// A search projection is NOT recorded here. There is one search
+    /// vocabulary — the `FlavorContract`'s `SearchProjectionDecl` — and the
+    /// projections are derived from the contracts at freeze.
     fn register_schema(
         &mut self,
         schema_info: SchemaInfo,
