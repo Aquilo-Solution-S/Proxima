@@ -137,7 +137,7 @@ async fn local_git_source_full_cycle() {
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
-        // Phase 1 — initial index.
+        // Initial index.
         let repo = fixture_repo();
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
@@ -215,7 +215,7 @@ async fn local_git_source_full_cycle() {
         );
 
         // ----------------------------------------------------------------
-        // Phase 2 — mutate src/lib.rs and reindex.
+        // Mutate src/lib.rs and reindex.
         write_file(
             repo.path(),
             "src/lib.rs",
@@ -287,7 +287,7 @@ async fn local_git_source_full_cycle() {
         );
 
         // ----------------------------------------------------------------
-        // Phase 3 — grow a previously indexed file past the blob cap.
+        // Grow an already-indexed file past the blob cap.
         // It should tombstone the prior chunks instead of leaving stale
         // Present heads behind.
         std::fs::write(
@@ -315,7 +315,7 @@ async fn local_git_source_full_cycle() {
         );
 
         // ----------------------------------------------------------------
-        // Phase 4 — delete src/main.ts and reindex.
+        // Delete src/main.ts and reindex.
         std::fs::remove_file(repo.path().join("src/main.ts"))?;
         git(repo.path(), &["add", "-A"]);
         git(repo.path(), &["commit", "-q", "-m", "drop main.ts"]);
@@ -327,7 +327,7 @@ async fn local_git_source_full_cycle() {
         assert_eq!(main_state, Some(FileState::Tombstone));
 
         // ----------------------------------------------------------------
-        // Phase 5 — rename README.md → docs/README.md and reindex.
+        // Rename README.md → docs/README.md and reindex.
         std::fs::create_dir_all(repo.path().join("docs"))?;
         std::fs::rename(
             repo.path().join("README.md"),
@@ -345,7 +345,7 @@ async fn local_git_source_full_cycle() {
         assert_eq!(new_state, Some(FileState::Present));
 
         // ----------------------------------------------------------------
-        // Phase 6 — markdown is polyglot: present revision, fallback chunks.
+        // Markdown is polyglot: present revision, fallback chunks.
         // (The renamed docs/README.md proves this.)
         let md_chunk_count: (i64,) = sqlx::query_as(
             "SELECT COUNT(*)::bigint FROM proxima_code.code_chunk_v1 s \

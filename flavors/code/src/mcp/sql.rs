@@ -32,9 +32,9 @@ pub async fn resolve_repo_identifier(
 
     let (owner_kind, owner_id) = owner_columns(&ctx.owner());
     let pool = code_store(ctx)?;
-    // The name arms stay gated behind `claimed_id IS NULL` so an id-shaped
-    // identifier is still resolved only as an id — matching what the early
-    // return did, minus the missing existence check.
+    // The name arms are gated behind `claimed_id IS NULL`, so an id-shaped
+    // identifier resolves only as an id and never falls through to a name
+    // match.
     let rows: Vec<RepoLookupRow> = sqlx::query_as(
         "SELECT repo_id
          FROM proxima_code.repos

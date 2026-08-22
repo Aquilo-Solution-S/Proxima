@@ -41,10 +41,8 @@ pub struct CodeCallSiteV1 {
 ///
 /// `callee_memory_id` is the schema-declared reference field: ingest reads
 /// it and asserts one `reference` index row per entry, in the chunk's own
-/// write transaction. That is the whole of what the retired
-/// `proxima-code/calls` relation and its `EdgeCallsV1` edge sidecar used
-/// to carry — the callee moved to a field, the site data moved to
-/// `sites`, and the edge went back to carrying nothing.
+/// write transaction. The callee is a field and the site data is in
+/// `sites`, so the index row carries nothing of its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeCallV1 {
     #[schemars(description = "Memory id of the callee `code-chunk-v1` Abstraction.")]

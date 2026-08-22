@@ -12,22 +12,21 @@
 //! `file-revision-v1` Facts for that commit's tree diff against its
 //! first parent (or the empty tree for root commits). Deterministic
 //! chunk/call extraction is F→A operator work over those file Facts:
-//! it emits `code-chunk-v1` code-slice Abstractions plus Engine-authored
-//! `proxima-code/calls` structural edges; code slices carry provenance to
-//! file/commit Facts. `indexed_commit_sha` is the commit's own sha, not HEAD.
+//! it emits `code-chunk-v1` code-slice Abstractions whose payload carries
+//! the call sites; code slices carry provenance to file/commit Facts.
+//! `indexed_commit_sha` is the commit's own sha, not HEAD.
 //!
 //! Cursor format (tagged binary bytes inside the opaque `Cursor` newtype):
 //! ```ignore
 //! b"PXC1" || opt_string(last_commit_sha) || opt_string(last_tree_sha)
-//!         || opt_string(last_scope_hash)   // optional trailing; old cursors omit it
+//!         || opt_string(last_scope_hash)   // optional trailing field
 //! ```
 //! `None` for both shas means "from the beginning"; subsequent polls walk
 //! only commits between `last_commit_sha` and `HEAD`. Missing
 //! `last_scope_hash` means the snapshot cannot take the same-tree no-op.
 //!
-//! Typed sidecar inserts must run alongside Fact materialization
-//! (AGENTS.md invariant 15), so this surface is intentionally
-//! DB-aware rather than substrate-generic.
+//! Typed sidecar inserts must run alongside Fact materialization, so this
+//! surface is DB-aware rather than substrate-generic.
 //!
 //! Uses shell `git` via `std::process::Command`. The host must have
 //! `git` on PATH. This trade-off keeps the dep surface minimal —
@@ -320,9 +319,9 @@ impl LocalGitSource {
     /// DB-aware ingest. Walks each commit since the cursor, opens a
     /// `source_batch` per commit, emits the commit Fact plus the
     /// file-revision Facts from that commit's tree diff, derives
-    /// code-slice Abstractions/call edges from those Facts, then
-    /// closes the batch. F→A in M5+ consumes one batch = one commit's
-    /// worth of causally-coherent Facts.
+    /// code-slice Abstractions from those Facts, then closes the batch.
+    /// F→A consumes one batch = one commit's worth of causally-coherent
+    /// Facts.
     ///
     /// # Errors
     ///
@@ -352,9 +351,6 @@ impl LocalGitSource {
     ) -> Result<(IndexReport, Cursor), IndexError> {
         let parsed = decode_cursor(cursor)?;
         let plan = self.walk_git(&parsed)?;
-        // Same scope the snapshot applies. A poll that skipped it would
-        // re-add exactly what a snapshot had just excluded, making the
-        // indexed set depend on which verb ran most recently.
         let (scope, scope_hash) = self.load_scope(ctx.pool()).await?;
         let mut report = IndexReport::default();
         let commit_limit = max_commits.unwrap_or(usize::MAX);
@@ -366,7 +362,7 @@ impl LocalGitSource {
         // projection rows tied to its own file-revision Fact.
         let mut blob_analysis_cache: HashMap<BlobAnalysisKey, BlobAnalysis> = HashMap::new();
 
-        // git_log returns newest-first; process oldest-first so each
+        // `git::log` returns newest-first; process oldest-first so each
         // commit's tree diff against its first parent reflects the
         // historical order, and the NK head advances monotonically.
         let mut last_ingested_sha: Option<String> = None;
@@ -495,9 +491,8 @@ impl LocalGitSource {
         scope: &ScopeMatcher,
         head_sha: &str,
     ) -> Result<IndexReport, IndexError> {
-        // Listing first, contents in bounded batches. Reading the whole tree
-        // up front held every tracked file of the repository in memory at once
-        // before a single row was written.
+        // Listing first, contents in bounded batches, so the whole tree's
+        // file contents are never resident at once.
         let within_cap: Vec<git::TreeEntry> = git::ls_tree(&self.repo_path, "HEAD")?
             .into_iter()
             .filter(|entry| entry.size <= crate::chunker::MAX_BLOB_BYTES as u64)
@@ -627,9 +622,8 @@ impl LocalGitSource {
             let parent_tree = git::tree_sha(&self.repo_path, parent_sha)?;
             git::diff_paths(&self.repo_path, &parent_tree, &commit_tree)?
         } else {
-            // Listing only: a root commit needs the *paths* it added, and
-            // reading every blob's contents here to throw them away cost two
-            // git processes and the whole tree in memory per root commit.
+            // Listing only: a root commit needs the *paths* it added, not
+            // the blob contents.
             let added: Vec<String> = git::ls_tree(&self.repo_path, &commit_info.sha)?
                 .into_iter()
                 .map(|entry| entry.path)
@@ -649,7 +643,7 @@ impl LocalGitSource {
             (changed, deleted)
         };
 
-        // Phase 1 — the commit Fact itself.
+        // The commit Fact itself.
         let commit_payload = CommitV1 {
             repo_id: self.repo_id,
             sha: commit_info.sha.clone(),
@@ -671,9 +665,9 @@ impl LocalGitSource {
         }
         let commit_memory_id = outcome.memory_id;
 
-        // Phase 2 — materialize every changed file-revision Fact for this
-        // commit. Oversized blobs are intentionally represented as
-        // tombstones so prior chunk heads are closed instead of left stale.
+        // Every changed file-revision Fact for this commit. Oversized blobs
+        // are represented as tombstones so prior chunk heads are closed
+        // instead of left stale.
         let mut pending_present = Vec::with_capacity(changed.len());
         let mut pending_deleted = Vec::with_capacity(deleted.len());
         for path in &changed {
@@ -695,7 +689,7 @@ impl LocalGitSource {
             }
         }
 
-        // Phase 3 — materialize deletion Facts for this commit's diff.
+        // Deletion Facts for this commit's diff.
         for path in &deleted {
             pending_deleted.push(
                 self.tombstone_deleted_path(
@@ -722,7 +716,7 @@ impl LocalGitSource {
         Ok(())
     }
 
-    /// Phase-2 inner loop: emit one file's `file-revision-v1` Fact and
+    /// Emit one file's `file-revision-v1` Fact and
     /// cache the deterministic blob analysis to derive after batch close.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn ingest_changed_path(
@@ -767,9 +761,8 @@ impl LocalGitSource {
 
     /// Read a HEAD listing's blobs in byte-bounded batches and ingest each.
     ///
-    /// One `git cat-file --batch` per batch rather than two `git` processes
-    /// per file, and at most [`BLOB_BATCH_BYTES`] of file contents resident at
-    /// a time rather than the whole tree.
+    /// One `git cat-file --batch` per batch, with at most
+    /// [`BLOB_BATCH_BYTES`] of file contents resident at a time.
     #[allow(clippy::too_many_arguments)]
     async fn ingest_head_entries(
         &self,
@@ -904,7 +897,7 @@ impl LocalGitSource {
         // resulting `ConstraintViolation` fails the whole snapshot — leaving
         // the cursor unmoved so every retry fails the same way.
         //
-        // This is reached by ordinary branch work, not an exotic sequence:
+        // Ordinary branch work reaches this:
         // index `main`, index a branch that touches the same path, check
         // `main` out again. The `already_current` skip does not catch it,
         // because the current head is by then the *branch's* revision, so
@@ -1003,8 +996,7 @@ impl LocalGitSource {
         // in the *caller's payload*. Resolution is intra-file v1;
         // cross-file calls wait for an indexed name table. Ten sites into
         // the same callee are ten entries here and one index row — the
-        // multiplicity belongs to the node (docs/16 §The edge table is an
-        // index).
+        // multiplicity belongs to the node (docs/16 §The Model).
         for call in &pending.analysis.calls {
             let Some(caller_index) = file_chunks
                 .iter()
@@ -1079,7 +1071,7 @@ impl LocalGitSource {
         Ok(())
     }
 
-    /// Phase-3 inner loop: emit a `file-revision-v1` tombstone Fact
+    /// Emit a `file-revision-v1` tombstone Fact
     /// for the deleted path. Code-slice tombstones derive after batch close.
     #[allow(clippy::too_many_arguments)]
     async fn tombstone_deleted_path(

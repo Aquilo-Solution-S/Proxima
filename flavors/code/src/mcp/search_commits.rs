@@ -184,7 +184,6 @@ impl Tool for CodeSearchCommitsTool {
             let summaries = summary_payloads
                 .into_iter()
                 .map(|(memory_id, row)| SummaryMatch {
-                    // CommitSummaryV1 is an AbstractionPayload; emit an `A:` handle.
                     handle: ctx.format_abstraction_memory(memory_id),
                     repo_handle: ctx.format_flavor_object(
                         super::REPO_HANDLE_KIND,
@@ -214,12 +213,11 @@ impl Tool for CodeSearchCommitsTool {
 
 /// The commit GIN arm, over `proxima_code.projection`.
 ///
-/// The exact arm was RAW `ts_rank_cd` — an unbanded score in a result set
-/// that is merged with banded ones. It is `BAND_EXACT` now, the same window
-/// core's exact arm uses, so a commit hit and a note hit mean the same
-/// thing at the same number. Scores in the exact arm therefore MOVE: a raw
-/// `ts_rank_cd` of `r` becomes `0.50 + LEAST(r, 1.0) * 0.50`. That is
-/// monotone in `r`, so the ORDER within this arm is unchanged.
+/// The exact arm scores into `BAND_EXACT`, the same window core's exact arm
+/// uses, so a commit hit and a note hit mean the same thing at the same
+/// number in a merged result set. A `ts_rank_cd` of `r` renders as
+/// `0.50 + LEAST(r, 1.0) * 0.50`, monotone in `r`, so banding does not
+/// reorder the arm.
 ///
 /// `p.owner_id = ANY($4)` carries the caller's resolved read set. Without
 /// it the composite `gin(owner_id, search_tsv)` is unreachable — the
@@ -234,8 +232,7 @@ impl Tool for CodeSearchCommitsTool {
 /// `search_chunks::CHUNK_GIN_SQL` for the full argument.
 ///
 /// The exact arm passes NO `ts_rank_cd` normalization flag where core's
-/// passes `32`. That was an undeclared divergence between two renderers
-/// claiming one band; it is now
+/// passes `32`. The divergence is declared, not implicit:
 /// `BAND_EXACT.with_normalization(TS_RANK_NORMALIZATION_NONE)` in
 /// `COMMIT_BANDS`, and `Band::normalization_arg` renders the absence — so
 /// declaring it moved no score.
@@ -275,8 +272,8 @@ LIMIT $3
     )
 });
 
-/// The commit-summary GIN arm. Same rewrite, same bands, read off the
-/// summary schema's own declaration.
+/// The commit-summary GIN arm. Same shape and same bands as
+/// [`COMMIT_SEARCH_SQL`], read off the summary schema's own declaration.
 static SUMMARY_SEARCH_SQL: LazyLock<String> = LazyLock::new(|| {
     let exact = band(COMMIT_SUMMARY_SCHEMA_ID, BAND_NAME_EXACT);
     let rescue = band(COMMIT_SUMMARY_SCHEMA_ID, BAND_NAME_RESCUE);
@@ -316,17 +313,14 @@ LIMIT $4
 
 /// The commit substring arm, `SameTableLike` as declared.
 ///
-/// Two changes from the arm it replaces, both §4.8 rulings:
-///
 /// - **The score is the declared band**, not a bare `0.25::real`. Commit
 ///   search's substring window is `flavor0::BAND_SUBSTRING`, referenced —
 ///   which is the band-comparability claim for this schema.
-/// - **`p.owner_id = ANY($4)`.** This arm bound pattern, repo and limit and
-///   nothing else: candidate generation was owner-blind, so a neighbour's
-///   repository could consume the whole budget before authorization ran.
-///   The owner reaches a code sidecar through the Memory, and the join is
-///   to this flavor's OWN projection — never `proxima_core.memory`, which
-///   flavor SQL may not name.
+/// - **`p.owner_id = ANY($4)`** keeps candidate generation owner-scoped, so
+///   a neighbour's repository cannot consume the whole budget before
+///   authorization runs. The owner reaches a code sidecar through the
+///   Memory, and the join is to this flavor's OWN projection — never
+///   `proxima_core.memory`, which flavor SQL may not name.
 static COMMIT_LIKE_SQL: LazyLock<String> = LazyLock::new(|| {
     let (floor, _) = band(COMMIT_SCHEMA_ID, BAND_NAME_SUBSTRING).parts();
     format!(
@@ -351,8 +345,8 @@ LIMIT $3
     )
 });
 
-/// The commit-summary substring arm. Same two changes as
-/// [`COMMIT_LIKE_SQL`].
+/// The commit-summary substring arm. Declared band and owner predicate as
+/// in [`COMMIT_LIKE_SQL`].
 static SUMMARY_LIKE_SQL: LazyLock<String> = LazyLock::new(|| {
     let (floor, _) = band(COMMIT_SUMMARY_SCHEMA_ID, BAND_NAME_SUBSTRING).parts();
     format!(
@@ -382,12 +376,11 @@ LIMIT $4
 
 /// Whether `schema_id` opts into the substring shape this module renders.
 ///
-/// The retry used to be unconditional — "the `@@` arm returned zero rows,
-/// run `LIKE`" — which made `SubstringArm` a declaration no reader
-/// consulted. Each of these tools ranks exactly one schema, so "the ranked
+/// A schema that declares no `SameTableLike` arm contributes no `LIKE`
+/// statement. Each of these tools ranks exactly one schema, so "the ranked
 /// arm returned nothing for this schema" and "the ranked arm returned
-/// nothing" are the same sentence: the trigger keeps exact per-schema
-/// parity with what it replaces, and only the GATE is new.
+/// nothing" are the same sentence — the gate is per schema and the trigger
+/// is the empty ranked result.
 fn same_table_like_is_declared(schema_id: &str) -> bool {
     matches!(substring_arm(schema_id), Some(SubstringArm::SameTableLike))
 }
@@ -503,7 +496,7 @@ mod tests {
         assert!(super::COMMIT_SEARCH_SQL.contains("p.search_tsv @@"));
         assert!(
             super::COMMIT_SEARCH_SQL.contains("proxima_code.projection p"),
-            "the vector lives on the projection now"
+            "the vector is read from the projection"
         );
         assert!(
             !super::SUMMARY_SEARCH_SQL.contains(&needle),
@@ -514,12 +507,10 @@ mod tests {
 
     /// The RANKED arms bind the owner too, and nothing pinned it.
     ///
-    /// This has been true since the projection landed and was never
-    /// asserted, so `AND $4::uuid[] IS NOT NULL` — a predicate that binds
-    /// the parameter and narrows nothing — left the whole workspace green
-    /// while candidate generation went owner-blind. Phase 3 declares the
-    /// owner-blindness follow-up discharged for this flavor, which is a
-    /// claim about all four arms and not only the three `LIKE` ones.
+    /// `AND $4::uuid[] IS NOT NULL` binds the parameter and narrows nothing,
+    /// which would leave candidate generation owner-blind while the whole
+    /// workspace stayed green. The claim covers all four arms, not only the
+    /// three `LIKE` ones.
     #[test]
     fn the_ranked_arms_bind_the_owner_as_a_predicate() {
         assert!(
@@ -545,11 +536,10 @@ mod tests {
         }
     }
 
-    /// The exact arm was raw `ts_rank_cd`, unbanded, merged with banded
-    /// scores from the rescue arm and from core. It renders the window it
-    /// DECLARES now, and the declaration is `flavor0::BAND_EXACT` with one
-    /// property changed — so the window is still core's and the
-    /// normalization divergence is a value rather than an accident.
+    /// The exact arm renders the window it DECLARES, and the declaration is
+    /// `flavor0::BAND_EXACT` with one property changed — so the window is
+    /// core's and the normalization divergence is a declared value rather
+    /// than an accident, comparable with the rescue arm's scores and core's.
     #[test]
     fn the_exact_arm_is_banded_like_cores() {
         use proxima_core::flavor::{BAND_NAME_EXACT, TS_RANK_NORMALIZATION_NONE};
@@ -565,7 +555,7 @@ mod tests {
         );
         assert_eq!(
             declared.normalization, TS_RANK_NORMALIZATION_NONE,
-            "this arm has always passed no normalization flag; declaring that must not add one"
+            "this arm passes no normalization flag; declaring that must not add one"
         );
         let (floor, width) = declared.parts();
         assert_eq!((floor.as_str(), width.as_str()), ("0.50", "0.50"));
@@ -582,10 +572,10 @@ mod tests {
 
     /// The substring arms are DECLARED and OWNER-SCOPED.
     ///
-    /// Owner-blindness at candidate time was PR #231's recorded follow-up:
-    /// authorization admits later so nothing leaks, but a neighbour's
-    /// corpus could consume the whole candidate budget. The fix is a join
-    /// to this flavor's own projection — never `proxima_core.memory`.
+    /// Authorization admits later, so an owner-blind candidate scan leaks
+    /// nothing — but a neighbour's corpus could consume the whole candidate
+    /// budget. The owner predicate rides a join to this flavor's own
+    /// projection, never `proxima_core.memory`.
     #[test]
     fn the_substring_arms_are_declared_and_owner_scoped() {
         use proxima_core::flavor::SubstringArm;

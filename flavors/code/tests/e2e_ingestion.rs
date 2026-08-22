@@ -193,7 +193,7 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
         // Sweep is idempotent — second call retires nothing.
         assert_eq!(sweep_orphaned_runs(pg.pool_for_tests()).await?, 0);
 
-        // The partial unique index no longer blocks a fresh run.
+        // The partial unique index admits a fresh run.
         let fresh = start_run(pg.pool_for_tests(), &owner, queued_repo).await?;
         assert_eq!(fresh.status, RunStatus::Queued);
         assert_ne!(fresh.run_id, queued.run_id);

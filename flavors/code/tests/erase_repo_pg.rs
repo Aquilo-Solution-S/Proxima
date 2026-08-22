@@ -289,9 +289,8 @@ async fn assert_repo_rebuild_allowed(
 /// `acceptance_verification_v1` and `work_assignment_v1` hold a plain
 /// (non-cascading, non-nulling) foreign key on `proxima_core.memory(t)`
 /// through `work_item_memory_id`. Leaving them behind does not leave a
-/// stale row, it makes the substrate delete RAISE — which the old code
-/// never discovered because it never deleted the work item's memory row
-/// either.
+/// stale row, it makes the substrate delete RAISE — which is only reachable
+/// once the work item's memory row is deleted too.
 ///
 /// The two the erase must NOT reach are the owner's self-model rows. They
 /// carry no `repo_id`, they are what `work_assignment_v1` points at, and
@@ -915,14 +914,14 @@ async fn every_cascade_the_contract_declares_is_a_cascade_the_schema_enforces() 
 }
 
 /// `Provenance::PayloadOnly { subject_columns }` names columns the lineage
-/// walk reads, and until Phase 4 nothing dereferenced them.
+/// walk dereferences.
 ///
 /// The walk reaches an interpretation's subjects by matching the DECLARED
 /// column names against the field names `SidecarPayload::references()`
 /// reports, so a name that resolves to no column is a lineage dead end
-/// that reports success — precisely the pre-phase behaviour, one layer
-/// down. Core's own declaration named `subject_kinds` alongside
-/// `subject_memory_ids` until this gate existed, and `subject_kinds`
+/// that reports success. Core's own declaration named `subject_kinds`
+/// alongside `subject_memory_ids` before this gate existed, and
+/// `subject_kinds`
 /// carries no memory id at all.
 ///
 /// Both flavors, one registry: the code flavor's `work-assignment-v1`
@@ -1556,11 +1555,11 @@ async fn a_deadlock_against_a_concurrent_writer_is_classified_as_retryable() {
 /// the repo sweep's `repo_id = $1` finds it on the SEED leg, before any
 /// reference is followed.
 ///
-/// That leg was unguarded: the ownership question was asked only of rows
-/// reached in step 3. The erase deleted the destination's sidecar row on
-/// the source's authority and left their `memory` row stamping a table it
-/// was no longer in, with no error of any kind — the row was in the
-/// footprint, so even `FootprintIncomplete` stayed quiet.
+/// Without a guard on this leg the ownership question is asked only of rows
+/// reached in step 3, so the erase destroys the destination's sidecar row on
+/// the source's authority and leaves their `memory` row stamping a table it
+/// is absent from, with no error of any kind — the row is in the footprint,
+/// so even `FootprintIncomplete` stays quiet.
 #[tokio::test]
 async fn a_transferred_admission_stops_the_erase_instead_of_being_swept() {
     let (db_name, pg) = migrated_db().await;
@@ -1639,10 +1638,10 @@ async fn a_transferred_admission_stops_the_erase_instead_of_being_swept() {
 
 /// Waiting for a lock is bounded, and giving up is retried.
 ///
-/// Nothing on the erase path used to set `lock_timeout`, so the wait was
-/// bounded only by the pool's five-minute `statement_timeout` — and what it
-/// ended in, `57014`, is not a transient code, so no retry recognised it.
-/// A single long-lived `FOR KEY SHARE` holder therefore cost five minutes
+/// Without `lock_timeout` on the erase path the wait is bounded only by the
+/// pool's five-minute `statement_timeout`, and what it ends in, `57014`, is
+/// not a transient code, so no retry recognises it.
+/// A single long-lived `FOR KEY SHARE` holder therefore costs five minutes
 /// of blocking and then a hard failure. `SET LOCAL lock_timeout` turns the
 /// same situation into `55P03` in five seconds, which IS transient, so the
 /// attempt rolls back — releasing everything it held — and comes round
@@ -1728,9 +1727,8 @@ async fn a_lock_the_erase_cannot_get_is_bounded_and_retried_not_waited_out() {
 ///
 /// Rename a `field` literal in `references()` — leaving the SQL column
 /// alone, which no migration forces you to touch — and the catalog gate
-/// stays green while the walk silently returns no subjects. That is exactly
-/// the pre-Phase-4 failure this whole area exists to remove: a lineage dead
-/// end that reports success.
+/// stays green while the walk silently returns no subjects: a lineage dead
+/// end that reports success, which is what this gate exists to catch.
 ///
 /// So: every `subject_columns` entry must ALSO be a field name that schema's
 /// `references()` emits. `PayloadReference::field`'s own doc still calls

@@ -645,7 +645,7 @@ mod tests {
         let production = src.split("mod tests").next().expect("tests module");
         assert!(
             !production.contains("load_criterion_rows"),
-            "per-parent criterion loader is gone"
+            "criteria load in one query, not per parent"
         );
         assert!(
             !production.contains("query_active_goals"),

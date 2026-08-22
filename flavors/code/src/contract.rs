@@ -1,16 +1,9 @@
 //! The code flavor's declaration.
 //!
-//! Until now this flavor registered thirty-two schemas and eleven tools
-//! through `proxima_flavor!` and declared nothing about what its rows *are*.
-//! Two cross-checks were inert as a direct result:
-//! `validate_contract_schemas` never saw its schemas, and
-//! `check_owner_pinned_against_contracts` skipped it outright — its own doc
-//! comment said so ("the code flavor ships no `FlavorContract`, so its
-//! sixteen sidecars are exempt"). Every lane that should have iterated its
-//! declarations named its tables by hand instead, which is why
-//! `code_repo_erase` deleted five of sixteen sidecars and reported counters
-//! it never counted. Its replacement, `repos::erase`, is checked against
-//! these declarations by a test.
+//! Every lane that touches this flavor's rows iterates these declarations
+//! rather than naming tables by hand: `validate_contract_schemas` and
+//! `check_owner_pinned_against_contracts` both read them, and `repos::erase`
+//! is checked against them by a test.
 //!
 //! Style follows `crates/core/src/flavor/flavor0.rs` exactly: `const`
 //! everything, `const fn` helpers for the repeated shapes, every field
@@ -40,11 +33,11 @@ pub const CODE_ORDINAL: u16 = 1;
 /// two schemas, in the same way `BandComparability::CoreBands` would be at
 /// flavor level.
 ///
-/// The exact arm diverges in exactly one declared property. Core's passes
-/// `ts_rank_cd`'s normalization `32`; this one has always passed nothing,
-/// and `Band::with_normalization` is how that stops being an accident of
-/// two renderers and becomes a value. The WINDOW is still core's: `[0.50,
-/// 1.00]`, from `flavor0::BAND_EXACT`.
+/// The exact arm diverges in exactly one declared property: core's passes
+/// `ts_rank_cd`'s normalization `32`, this one passes none, and
+/// `Band::with_normalization` makes that a declared value rather than an
+/// accident of two renderers. The WINDOW is core's: `[0.50, 1.00]`, from
+/// `flavor0::BAND_EXACT`.
 const COMMIT_BANDS: &[Band] = &[
     BAND_EXACT.with_normalization(TS_RANK_NORMALIZATION_NONE),
     BAND_RESCUE,
@@ -56,15 +49,13 @@ const COMMIT_BANDS: &[Band] = &[
 /// Chunk search does not score on core's scale and never has: the arms are
 /// based at 1.0/2.0/3.0/4.0 with a 0.6 width, and three additive literal
 /// bonuses (+10 exact path, +6 path LIKE, +4 text LIKE) can carry a hit to
-/// 24.9. Referencing core's bands here would be a false statement about a
-/// merge that has not been written yet; declaring the real windows is what
-/// lets the deployment layer discover the divergence from the contract
-/// instead of from a score it cannot explain.
+/// 24.9. Referencing core's bands here would be a false statement about
+/// comparability; declaring the real windows is what lets the deployment
+/// layer discover the divergence from the contract instead of from a score
+/// it cannot explain.
 ///
-/// The values live HERE, in the declaration that renders them — they used
-/// to be four free `pub const`s plus a slice that named them, read by
-/// `search_chunks.rs` directly. A band nothing declares is a number with
-/// no author.
+/// The values live HERE, in the declaration that renders them: a band
+/// nothing declares is a number with no author.
 const CHUNK_BANDS: &[Band] = &[
     Band {
         name: CHUNK_BAND_STRICT,
@@ -113,11 +104,9 @@ pub const CODE_CHUNK_SCHEMA_ID: &str = "proxima-code/code-chunk-v1";
 
 /// The band this flavor DECLARES for `schema_id` under `name`.
 ///
-/// R1's lookup, applied inside the flavor: the SQL builders resolve their
-/// arms out of the declaration instead of importing free constants that
-/// nothing checked the declaration against. A band that moved in the
-/// contract without moving here used to be a score nobody could explain;
-/// now there is only one place for it to move.
+/// The SQL builders resolve their arms out of the declaration instead of
+/// importing free constants that nothing checks the declaration against, so
+/// a band has exactly one place to move.
 ///
 /// # Panics
 ///
@@ -137,10 +126,8 @@ pub fn band(schema_id: &str, name: &str) -> Band {
 /// The substring arm `schema_id` DECLARES, or `None` for a schema that is
 /// not a search surface.
 ///
-/// This is what gates the three `LIKE` lanes. The mechanism used to be
-/// unconditional — "the `@@` arm returned zero rows, run `LIKE`" — so a
-/// flavor could not turn it off, and `SubstringArm` was a declaration
-/// nothing read.
+/// This is what gates the three `LIKE` lanes: a schema that declares no arm
+/// contributes no `LIKE` statement.
 #[must_use]
 pub fn substring_arm(schema_id: &str) -> Option<SubstringArm> {
     CODE_FLAVOR_CONTRACT
@@ -153,7 +140,7 @@ pub fn substring_arm(schema_id: &str) -> Option<SubstringArm> {
 /// Every code sidecar is keyed on `memory.t` and carries no `owner_id`, so
 /// it reaches its owner through the Memory and follows it. EMPTY
 /// `owner_columns` is that claim, and it is what
-/// `check_owner_pinned_against_contracts` now compares against
+/// `check_owner_pinned_against_contracts` compares against
 /// `pg_sidecar!`'s `owner_pinned` flag — none of the sixteen sets it.
 const fn memory_sidecar(table: &'static str, t_fkey: &'static str) -> Surface {
     Surface {
@@ -178,13 +165,11 @@ const fn memory_sidecar(table: &'static str, t_fkey: &'static str) -> Surface {
 /// export statement, because a cascade says who deletes the row, not who the
 /// row belongs to.
 ///
-/// `key_column` is the column carrying that `t`. All four detail tables
-/// declared `Custom(&["memory_id"])` and not one of them has a column by
-/// that name — they are `criteria_memory_id`, `plan_memory_id`,
-/// `caller_memory_id`, `test_requested_memory_id`. The declaration was
-/// unfalsifiable while nothing read it: erase skips a `Cascade` surface, and
-/// export reached only the schema-registered sidecar families, so these four
-/// tables were absent from every owner bundle ever produced.
+/// `key_column` is the column carrying that `t`, and each detail table names
+/// it differently: `criteria_memory_id`, `plan_memory_id`,
+/// `caller_memory_id`, `test_requested_memory_id`. Export reads these
+/// surfaces directly, so a wrong column here drops the table from every
+/// owner bundle.
 const fn detail_table(
     table: &'static str,
     key_column: &'static str,
@@ -224,11 +209,11 @@ const fn detail_table(
 /// A typed sidecar that is neither a search surface nor embeddable: the
 /// bulk of this flavor's schemas are structured records read by key.
 ///
-/// `provenance` is a PARAMETER and not a default. It was `Provenance::None`
-/// for all twelve, which was false for two of them — `execution-plan-v1`
-/// writes an origin on every ingest, and `work-assignment-v1` grounds
-/// through two payload columns — and the reason nobody noticed is that a
-/// helper is exactly where a declaration goes to stop being a declaration.
+/// `provenance` is a PARAMETER and not a default: `execution-plan-v1` writes
+/// an origin on every ingest and `work-assignment-v1` grounds through two
+/// payload columns, so a shared default would state something false about
+/// them. A helper is exactly where a declaration goes to stop being a
+/// declaration.
 const fn record_schema(
     name: &'static str,
     kind: PayloadKind,
@@ -383,9 +368,9 @@ const CODE_CHUNK_V1: SchemaContract = SchemaContract {
     transfer: TransferRule::StaysOnKey,
     // Every chunk is derived from the file revision it was cut out of, and
     // from the commit when one is known (`ingest/blobs.rs` builds that list
-    // unconditionally). Declared `None` until Phase 4 read the field, which
-    // made the largest Abstraction population in the tree a lineage dead
-    // end: a chunk's `origins` were written and never walked.
+    // unconditionally). Anything but `OriginEdges` makes the largest
+    // Abstraction population in the tree a lineage dead end: a chunk's
+    // `origins` written and never walked.
     provenance: Provenance::OriginEdges,
     surfaces: &[
         memory_sidecar("proxima_code.code_chunk_v1", "code_chunk_v1_t_fkey"),
@@ -401,9 +386,8 @@ const CODE_CHUNK_V1: SchemaContract = SchemaContract {
 /// A file revision is a *path* surface, not a lexical projection: its index
 /// is an expression GIN over `to_tsvector('simple', file_path)` serving
 /// path prefix lookups, and it carries no `search_tsv` column. It is still
-/// embeddable — `embed_text` is a generated column — which is exactly the
-/// pair the old `SearchProjection` could not express, because it carried
-/// `embed_text_column` inside the *search* declaration.
+/// embeddable — `embed_text` is a generated column — which is why embedding
+/// is declared separately from search rather than inside it.
 const FILE_REVISION_V1: SchemaContract = SchemaContract {
     id: SchemaRef::new(FLAVOR_ID, "file-revision", 1),
     kind: PayloadKind::Fact,
@@ -526,8 +510,8 @@ const EXECUTION_PLAN_V1: SchemaContract = record_schema(
     RECORD_WHY,
     // Every plan is authored from the perspective it was planned against:
     // `plan_persistence.rs` builds a one-element origin list and there is
-    // no branch that leaves it empty. Declared `None` until Phase 4 read
-    // the field, which would have made every plan a lineage dead end.
+    // no branch that leaves it empty. Anything but `OriginEdges` makes every
+    // plan a lineage dead end.
     Provenance::OriginEdges,
 );
 
@@ -591,11 +575,10 @@ const WORK_ASSIGNMENT_V1: SchemaContract = record_schema(
         "work_assignment_v1_t_fkey",
     )],
     "an assignment claim is walked from the work item it names, never searched",
-    // "An assignment consumes nothing. It grounds through the references
-    // its payload carries" — the comment at the write site (`retry.rs`),
-    // which is precisely `PayloadOnly` and was declared `None`. Both
-    // columns hold a memory id; `references()` names them, and the walk
-    // reaches them through those names.
+    // An assignment consumes nothing; it grounds through the references its
+    // payload carries, which is precisely `PayloadOnly`. Both columns hold a
+    // memory id, `references()` names them, and the walk reaches them
+    // through those names.
     Provenance::PayloadOnly {
         subject_columns: &["target_perspective_memory_id", "work_item_memory_id"],
     },
@@ -605,11 +588,9 @@ const WORK_ASSIGNMENT_V1: SchemaContract = record_schema(
 
 /// A repo registration names a working tree on the host that registered it.
 ///
-/// `RetainAtSource` is the honest reading of what transfer does today,
-/// which is nothing: no code path reassigns `repos.owner_id` (every
-/// `UPDATE proxima_code.repos` uses the owner only in `WHERE`). Saying so
-/// makes "a repo registration does not follow its memories" a decision
-/// rather than an omission.
+/// `RetainAtSource` states that a repo registration does not follow its
+/// memories: no code path reassigns `repos.owner_id`, and every
+/// `UPDATE proxima_code.repos` uses the owner only in `WHERE`.
 ///
 /// `completeness: None` is equally deliberate: neither state table has a
 /// foreign key to `proxima_core.owners`, so no constraint proves the
@@ -772,9 +753,9 @@ pub static CODE_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
     resources: &[],
     projection: ProjectionDecl::Table(CODE_PROJECTION),
     // Every code surface is a memory-keyed sidecar or the repo state table,
-    // and the generic loops reach all of them. Nothing here needs a
-    // hand-written statement, and freeze now proves that rather than the
-    // flavor asserting it.
+    // and the generic loops reach all of them, so nothing here needs a
+    // hand-written statement. Freeze proves that rather than the flavor
+    // asserting it.
     bespoke_erase_legs: &[],
     bespoke_transfer_legs: &[],
 };
@@ -785,9 +766,9 @@ pub static CODE_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
 const CODE_PROJECTION: ProjectionSpec = ProjectionSpec {
     table: "proxima_code.projection",
     index: "code_projection_owner_tsv_gin",
-    // RESERVED, UNCONSUMED. Chunk search overfetches 4x its limit today;
-    // the cap recorded here is core's, so a shard-aware merge starts from
-    // one number rather than three.
+    // RESERVED, UNCONSUMED. Chunk search overfetches 4x its limit; the cap
+    // recorded here is core's, so a shard-aware merge has one number to
+    // start from rather than three.
     overfetch_k: 1_000,
     // CONSUMED by `core_search_projections`, which admits a non-core
     // projection into core's merge only under `CoreBands`. The divergence
@@ -797,14 +778,13 @@ const CODE_PROJECTION: ProjectionSpec = ProjectionSpec {
               additive literal bonuses up to +20.3, so a chunk hit is not comparable to a \
               core hit without a rescale; commit search does score inside core's bands",
     },
-    // The R6 deviation, declared instead of explained in a doc comment.
-    // Both index columns still sit on `p`, so the composite
-    // `gin(owner_id, search_tsv)` is reached and the owner is an Index Cond
-    // — which is what R6 is FOR — but the top-k is taken on the sidecar,
-    // because the score reads sidecar columns and the selective filters are
-    // sidecar-side. Conforming would need `repo_id`, `language`,
-    // `chunk_type` and `state` on the projection table, i.e. a per-flavor
-    // projection shape, which §4.6.1's slim-generator ruling forbids.
+    // Both index columns sit on `p`, so the composite
+    // `gin(owner_id, search_tsv)` is reached and the owner is an Index Cond,
+    // but the top-k is taken on the sidecar because the score reads sidecar
+    // columns and the selective filters are sidecar-side. Taking it on the
+    // projection would need `repo_id`, `language`, `chunk_type` and `state`
+    // there too — a per-flavor projection shape, which the slim generator
+    // does not emit.
     rank_source: RankSource::SidecarWithProjectionOwner {
         why: "chunk search's score reads sidecar columns the projection does not carry \
               (chunk_type, an exact file_path match, a path LIKE and a text LIKE contribute \
@@ -858,10 +838,10 @@ mod tests {
     }
 
     /// No code sidecar carries its own `owner_id`, and
-    /// `check_owner_pinned_against_contracts` now compares that against
-    /// `pg_sidecar!(owner_pinned)` for the first time. An accidental
-    /// `RetainAtSource` here would fail the storage freeze at boot with a
-    /// message about a flag nobody changed.
+    /// `check_owner_pinned_against_contracts` compares that against
+    /// `pg_sidecar!(owner_pinned)`. An accidental `RetainAtSource` here
+    /// would fail the storage freeze at boot with a message about a flag
+    /// nobody changed.
     #[test]
     fn no_schema_retains_at_source() {
         assert!(CODE_FLAVOR_CONTRACT.retain_at_source_tables().is_empty());
@@ -873,9 +853,6 @@ mod tests {
     /// `freeze_against` — schema-to-table agreement, typed inserters,
     /// `owner_pinned` against `TransferRule`, and the projection generator.
     ///
-    /// Both were vacuous before this contract existed:
-    /// `validate_contract_schemas` never saw these schemas and
-    /// `check_owner_pinned_against_contracts` skipped the flavor by name.
     /// This is the same composition `ProximaBuilder::boot` performs, so a
     /// declaration that would fail at boot fails here instead.
     #[test]

@@ -261,10 +261,9 @@ pub struct ChunkMatch {
 /// One caller→callee connection between two code chunks, with every call
 /// site the caller's payload records for it.
 ///
-/// There is no `edge_handle`: an edge has no id, and it never carried the
-/// call site anyway. The connection comes back from the index; the sites
-/// come back from the caller chunk's own payload, which is where they now
-/// live (docs/16 §Flavor Migration).
+/// There is no `edge_handle`: an edge has no id. The connection comes back
+/// from the index; the sites come from the caller chunk's own payload
+/// (docs/16 §The Model).
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CallEdge {
     pub source: Option<String>,
@@ -485,7 +484,6 @@ impl Tool for CodeSearchChunksTool {
                 });
             }
 
-            // Phase 3: pins only if requested.
             let calls_edges = if args.include_calls && !chunk_ids.is_empty() {
                 load_call_edges(&ctx, &chunk_ids).await?
             } else {
@@ -571,9 +569,9 @@ fn reciprocal_rank(rank: usize) -> f32 {
 
 /// Merge the two arms into one ranked candidate list.
 ///
-/// `Lexical` and `Semantic` each pass their own arm through untouched, so a
-/// lexical search ranks exactly as it did before a semantic arm existed —
-/// including the tiebreak, which reproduces the candidate scan's
+/// `Lexical` and `Semantic` each pass their own arm through untouched: the
+/// order and the reported score are the arm's own, including the tiebreak,
+/// which reproduces the candidate scan's
 /// `ORDER BY score DESC, memory_id DESC`.
 ///
 /// `Hybrid` sums each arm's reciprocal rank and adds the literal bonus on
@@ -851,11 +849,9 @@ async fn scan_chunk_sidecar(
 /// # Why this arm drives from the sidecar, where core's drives from the
 /// projection
 ///
-/// Because the contract SAYS so:
+/// Because the contract says so:
 /// `RankSource::SidecarWithProjectionOwner` on `CODE_PROJECTION`, whose
-/// `why` carries the argument below. §4.8 R3 ruled the deviation kept and
-/// declared — it used to be this doc comment and nothing else, which a
-/// deployment layer cannot read.
+/// `why` carries the argument below in a form a deployment layer can read.
 ///
 /// The two reasons, in short, both of which change *which rows come back*
 /// and not just how fast:
@@ -873,11 +869,11 @@ async fn scan_chunk_sidecar(
 ///    a repo-scoped search with nothing — the same failure the semantic arm
 ///    documents at its call site.
 ///
-/// What R6 is *for* survives: the composite `gin(owner_id, search_tsv)` on
-/// `proxima_code.projection` is reachable, because `p.owner_id = ANY($8)`
-/// puts both index columns on `p`. The owner set is the caller's resolved
-/// read set, so the scan reads only rows phase 2 could have admitted
-/// anyway. `code_hot_path_plans_use_expected_indexes` pins the index.
+/// The composite `gin(owner_id, search_tsv)` on `proxima_code.projection`
+/// stays reachable because `p.owner_id = ANY($8)` puts both index columns
+/// on `p`. The owner set is the caller's resolved read set, so the scan
+/// reads only rows phase 2 could admit anyway.
+/// `code_hot_path_plans_use_expected_indexes` pins the index.
 static CHUNK_GIN_SQL: LazyLock<String> = LazyLock::new(|| {
     let strict = crate::contract::band(CODE_CHUNK_SCHEMA_ID, CHUNK_BAND_STRICT);
     let rare_all = crate::contract::band(CODE_CHUNK_SCHEMA_ID, CHUNK_BAND_RARE_ALL);
@@ -964,21 +960,18 @@ pub fn chunk_gin_sql_for_tests() -> &'static str {
 
 /// The substring arm, over the sidecar's own trigram-indexed columns.
 ///
-/// `SubstringArm::SameTableLike` is what declares this shape, and
-/// `chunk_substring_arm_is_declared` is what stops it running for a schema
-/// that turned it off. It fires only when the `@@` arm returned nothing —
-/// per-schema parity with the retry it replaces, because this tool ranks
-/// exactly one schema, so "the ranked arm returned nothing for this schema"
-/// and "the ranked arm returned nothing" are the same sentence.
+/// `SubstringArm::SameTableLike` declares this shape, and
+/// `chunk_substring_arm_is_declared` stops it running for a schema that
+/// turns it off. It fires only when the `@@` arm returns nothing: this tool
+/// ranks exactly one schema, so "the ranked arm returned nothing for this
+/// schema" and "the ranked arm returned nothing" are the same sentence.
 ///
-/// **It carries an owner predicate now** (§4.8 R6). It used to bind six
-/// parameters, none of them owners: candidate generation was owner-blind,
-/// so a neighbour's repository could consume the whole candidate budget
-/// before authorization ever ran. The owner reaches a code sidecar through
-/// the Memory, and the spelling is a join to THIS FLAVOR's own projection
-/// — the same table, the same composite index and the same alias the `@@`
-/// arm already joins — rather than to `proxima_core.memory`, which flavor
-/// SQL may not name.
+/// `p.owner_id = ANY($7)` keeps candidate generation owner-scoped, so a
+/// neighbour's repository cannot consume the whole candidate budget before
+/// authorization runs. The owner reaches a code sidecar through the Memory,
+/// and the spelling is a join to THIS FLAVOR's own projection — the same
+/// table, composite index and alias the `@@` arm joins — rather than to
+/// `proxima_core.memory`, which flavor SQL may not name.
 static CHUNK_LIKE_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT c.t AS memory_id,
@@ -1180,9 +1173,9 @@ mod tests {
     }
 
     /// The candidates are merged through a `HashMap`, whose iteration order
-    /// Rust randomises by design — the defect that made `calls_edges`
-    /// return an arbitrary subset per run. `memory_id` is unique across the
-    /// merged set, so score-then-id is a total order and the sort erases it.
+    /// Rust randomises by design. `memory_id` is unique across the merged
+    /// set, so score-then-id is a total order and the sort erases that
+    /// randomness.
     #[test]
     fn fusion_is_deterministic_across_runs() {
         let lexical = (0..40).map(|i| lex(i, 4.0, 0.0)).collect::<Vec<_>>();
@@ -1213,7 +1206,7 @@ mod tests {
 
     /// The property the rare bands depend on: a question with no identifiers
     /// must produce no terms, so `rare_all_tsq`/`rare_any_tsq` bind NULL and
-    /// the query ranks exactly as it did before those bands existed.
+    /// the rare bands contribute nothing.
     #[test]
     fn prose_questions_yield_no_distinctive_terms() {
         for q in [

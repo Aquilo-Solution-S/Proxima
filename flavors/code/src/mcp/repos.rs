@@ -496,8 +496,7 @@ pub struct CodeEraseRepoOutput {
     pub canonical_path: String,
     pub completed_at: String,
     /// Every admission erased — Facts, Abstractions and Perspectives —
-    /// across every version of every series the repo's rows named. This
-    /// replaces six counters, five of which were structurally zero; see
+    /// across every version of every series the repo's rows named. See
     /// [`crate::repos::RepoEraseReceipt`].
     pub memories_deleted: u64,
     /// Cold objects queued for destruction by the operator's retention
@@ -641,7 +640,6 @@ mod tests {
     /// for the ingest. The conversion is written field by field, so a
     /// counter added to `IndexReport` and forgotten here is not a compile
     /// error — it is a number the wire silently never carries.
-    /// `call_references_emitted` was exactly that.
     ///
     /// Comparing the serialized form rather than field by field pins the
     /// JSON key names an MCP client reads, and the distinct value per field

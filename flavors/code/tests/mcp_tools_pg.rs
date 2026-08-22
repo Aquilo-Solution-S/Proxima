@@ -1246,9 +1246,9 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
 
 /// A chunk the cap cut says so, and one it fits does not.
 ///
-/// `search_chunks` has always flagged `snippet_truncated`; this tool sent
-/// the cut text with nothing to distinguish it from a chunk that
-/// genuinely ends where the text stops.
+/// `search_chunks` flags `snippet_truncated` for the same reason: without a
+/// flag a caller cannot tell cut text from a chunk that genuinely ends where
+/// the text stops.
 #[tokio::test]
 async fn open_file_revision_flags_a_chunk_the_cap_cut() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;

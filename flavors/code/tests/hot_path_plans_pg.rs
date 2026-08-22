@@ -136,11 +136,10 @@ async fn code_hot_path_plans_use_expected_indexes() {
         // The R6 fix, plan-proved: every substring arm reaches the owner
         // through THIS FLAVOR's own projection.
         //
-        // These three arms bound pattern, repo, kind and limit and nothing
-        // else — candidate generation was owner-blind, so a neighbour's
-        // repository could consume the whole candidate budget before
-        // authorization ever ran (PR #231's own recorded follow-up). The
-        // owner reaches a code sidecar through the Memory; the join is to
+        // Without an owner bind these three arms leave candidate generation
+        // owner-blind, so a neighbour's repository could consume the whole
+        // candidate budget before authorization runs. The owner reaches a
+        // code sidecar through the Memory; the join is to
         // `proxima_code.projection`, never `proxima_core.memory`, because
         // flavor SQL may not name a core table for this.
         for (label, sql, binds) in [
