@@ -91,11 +91,6 @@ pub struct AcceptanceCriteriaV1 {
 }
 
 impl FactPayload for AcceptanceCriteriaV1 {
-    /// Matches this schema's `EmbeddingRecipe::Never`, which carries the
-    /// reason. Freeze refuses the two disagreeing; they did, and the
-    /// enqueue lane filed jobs the drain could only drop.
-    const EMBEDDABLE: bool = false;
-
     const SCHEMA_ID: &'static str = proxima_schema_id!("acceptance-criteria-v1");
     const SCHEMA_VERSION: u32 = 1;
 

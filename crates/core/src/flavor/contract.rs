@@ -505,17 +505,22 @@ impl EmbedUnit {
 
 /// Per schema: typed sidecar in → list of embed units out.
 ///
-/// `Never` carries a reason instead of being a naked `false`, and the unit
-/// list is per-field, so a schema may target more than one column.
+/// The single declaration of whether a schema embeds, for every kind. Every
+/// write path that can attach a vector — Fact ingest, derived write,
+/// rehydrate — resolves its answer from here, so a second statement of it
+/// anywhere would be a thing to keep equal rather than a thing to read.
+/// `Never` carries a reason, and the unit list is per-field, so a schema may
+/// target more than one column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EmbeddingRecipe {
     /// Structurally non-embeddable, with the reason attached.
     ///
-    /// The reasoned form of `FactPayload::EMBEDDABLE = false`, and freeze
-    /// refuses the two disagreeing
-    /// (`FlavorRegistryError::EmbeddabilityDisagreement`). The constant is
-    /// what `non_embeddable_schema_ids` is built from and what the enqueue
-    /// lane excludes; this arm is what says why.
+    /// This arm is what `non_embeddable_schema_ids` is built from and what
+    /// the enqueue lane excludes; the `why` is what makes the exclusion
+    /// answerable. Freeze refuses a declaration that disagrees with the
+    /// units the drain resolves
+    /// (`FlavorRegistryError::EmbeddabilityDisagreement`), so the arm
+    /// governs rather than describes.
     Never {
         why: &'static str,
     },

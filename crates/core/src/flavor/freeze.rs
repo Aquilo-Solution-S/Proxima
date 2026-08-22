@@ -99,6 +99,7 @@ impl FlavorRegistry {
         self.validate_tools_declare_behavior()?;
         self.validate_dispatcher_action_specs()?;
         self.validate_contracts()?;
+        self.validate_embedding_recipes_match_behavior()?;
         Ok(FlavorRegistryFrozen::from_registry(self))
     }
 
@@ -426,10 +427,48 @@ impl FlavorRegistry {
         Ok(())
     }
 
+    /// Every recipe against the answer the embedding lane will act on.
+    ///
+    /// `EmbeddingRecipe` is the declaration. The two functions called here
+    /// are the behaviour: `contract_embed_units` is the sole producer of
+    /// what the drain reads, and `non_embeddable_schema_ids` is the exact
+    /// list the enqueue queries bind and `schema_is_embeddable` answers
+    /// from. Comparing the declaration to the behaviour is what makes the
+    /// recipe govern rather than describe — a second declaration to compare
+    /// against would only have to be kept equal in its turn.
+    ///
+    /// Two divergences this reaches. A `Units` arm on a schema with no
+    /// sidecar table resolves to nothing, so the drain is handed no text
+    /// while the lane keeps filing jobs. A `Never` arm on an id another
+    /// registration embeds cannot take effect at all: the list is keyed by
+    /// schema id, because the column it is bound against carries no kind.
+    fn validate_embedding_recipes_match_behavior(&self) -> Result<(), FlavorRegistryError> {
+        let units = crate::verbs::schema::contract_embed_units(&self.contracts);
+        let non_embeddable =
+            crate::verbs::schema::non_embeddable_schema_ids(&self.contracts, &units);
+        for contract in &self.contracts {
+            for schema in contract.schemas {
+                let schema_id = schema.schema_id();
+                let machinery_embeds = !non_embeddable
+                    .iter()
+                    .any(|excluded| excluded == schema_id.as_str());
+                if schema.embedding.is_never() == machinery_embeds {
+                    return Err(FlavorRegistryError::EmbeddabilityDisagreement {
+                        flavor_id: contract.flavor_id,
+                        schema_id,
+                        recipe_is_never: schema.embedding.is_never(),
+                        machinery_embeds,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Where a contract declaration and the registration it describes are
     /// checked for being ONE fact rather than two copies.
     ///
-    /// Both fields here are declared twice — once on the contract, once on
+    /// The field here is declared twice — once on the contract, once on
     /// the registration — and nothing but this check keeps the two equal.
     fn validate_registration_agreement(
         contract: &crate::flavor::contract::FlavorContract,
@@ -437,56 +476,10 @@ impl FlavorRegistry {
         info: &crate::verbs::schema::SchemaInfo,
     ) -> Result<(), FlavorRegistryError> {
         let schema_id = schema.schema_id();
-        // The contract and the trait constant are one fact, so they
-        // have to be one answer.
-        //
-        // `EmbeddingRecipe::Never { why }` is the reasoned form of
-        // `FactPayload::EMBEDDABLE = false`, but `non_embeddable_schema_ids`
-        // is built from the trait constant, and the enqueue lane believes
-        // the trait. A contract saying "never embed, and here is why"
-        // against a trait saying "embeddable" files embedding jobs for rows
-        // whose recipe yields zero units, so the drain has nothing to send
-        // and drops them. A declaration that costs work and produces
-        // nothing is worse than an inert one.
-        //
-        // WHY THIS STOPS AT `Fact`, and why extending it would be wrong.
-        // The check compares two DECLARATIONS. `FactPayload::EMBEDDABLE` is
-        // one — a trait constant a schema author writes, defaulting to
-        // `true`. For every other kind there is no such constant, and
-        // `schema_registration.rs` hardcodes `embeddable: true` on the way
-        // into `SchemaInfo` because the flag has nothing to gate there
-        // (`SchemaInfo::embeddable`'s own doc says so, and
-        // `non_embeddable_schema_ids` filters on `kind == Fact` for the
-        // same reason). Comparing a declaration against a literal that
-        // nobody wrote is not an agreement check; it is an assertion that
-        // every non-Fact schema embeds. The code flavor declares six
-        // Abstraction/Perspective schemas as `Never { why }`, and widening
-        // this gate would refuse all six at boot for disagreeing with a
-        // constant that is not a claim.
-        //
-        // The comparison is not well-defined off `Fact`, so it is not made.
-        // What DOES cover every kind is the `Units(&[])` refusal in
-        // `validate_contract_schemas`, which needs no second declaration to
-        // compare against.
-        if schema.kind == crate::verbs::schema::PayloadKind::Fact {
-            let never = matches!(
-                schema.embedding,
-                crate::flavor::contract::EmbeddingRecipe::Never { .. }
-            );
-            if never == info.embeddable {
-                return Err(FlavorRegistryError::EmbeddabilityDisagreement {
-                    flavor_id: contract.flavor_id,
-                    schema_id,
-                    recipe_is_never: never,
-                    trait_says_embeddable: info.embeddable,
-                });
-            }
-        }
-        // Same shape, one field over: `natural_key_columns` is declared
-        // twice — on the contract and on the payload trait — and the
-        // ingest reads the trait's copy, so without this check the
-        // contract's copy is a description of the ingest that can stop
-        // being true with no test noticing.
+        // `natural_key_columns` is declared twice — on the contract and on
+        // the payload trait — and the ingest reads the trait's copy, so
+        // without this the contract's copy is a description of the ingest
+        // that can stop being true with no test noticing.
         if schema.natural_key_columns.len() != info.natural_key_columns.len()
             || !schema
                 .natural_key_columns
@@ -1418,16 +1411,14 @@ mod tests {
         }
     }
 
-    /// A Fact whose recipe names a unit while its registration says the
-    /// schema does not embed. The recipe is the one with the text in it, so
-    /// this direction loses embeddings that were declared.
-    ///
-    /// `register_fixture_schema` registers `embeddable: false`, which is
-    /// what makes this the disagreement.
+    /// A recipe that names a unit on a schema declaring no sidecar table.
+    /// The unit resolves against nothing, so the drain is handed no text
+    /// while the recipe still reads as the embedding arm — jobs filed that
+    /// nobody can serve.
     static EMBEDDING_DISAGREEMENT: FlavorContract = uniformity_contract(&[SchemaContract {
         id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
         kind: PayloadKind::Fact,
-        sidecar_table: Some("test_flavor.thing_v1"),
+        sidecar_table: None,
         search: SearchProjectionDecl::None {
             why: "the embedding recipe is what this fixture is about",
         },
@@ -1441,19 +1432,30 @@ mod tests {
         natural_key_columns: &[],
     }]);
 
-    /// The costly direction, and the mirror of the fixture above.
+    /// A `Never` arm on an id another layer of the same id embeds.
     ///
-    /// The recipe says "never embed, and here is why" while the
-    /// registration says the enqueue lane should embed it. The enqueue lane
-    /// reads the REGISTRATION, so the reason is stated and ignored and the
-    /// jobs filed for these rows can only be dropped: the recipe yields no
-    /// units, so the drain has no text to send.
-    ///
-    /// Paired with `register_fixture_schema_embeddable`, which registers
-    /// `embeddable: true`; the normal helper hardcodes `false` precisely so
-    /// that every OTHER fixture's `Never` declaration agrees with it.
-    static EMBEDDING_DISAGREEMENT_NEVER_BUT_EMBEDDABLE: FlavorContract =
-        uniformity_contract(&[SchemaContract {
+    /// The enqueue list is keyed by schema id alone, because the column it
+    /// is bound against — `memory.schema_id` — carries no kind. An id one
+    /// registration embeds is therefore embeddable for every registration
+    /// of that id, so this `Never` is stated and cannot be applied.
+    static EMBEDDING_NEVER_ON_AN_EMBEDDED_ID: FlavorContract = uniformity_contract(&[
+        SchemaContract {
+            id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+            kind: PayloadKind::Abstraction,
+            sidecar_table: Some("test_flavor.thing_v1"),
+            search: SearchProjectionDecl::None {
+                why: "the embedding recipe is what this fixture is about",
+            },
+            embedding: EmbeddingRecipe::Units(&[crate::flavor::contract::EmbedUnit::stored(
+                "embed_text",
+                crate::flavor::contract::SLOT_DEFAULT,
+            )]),
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[],
+            natural_key_columns: &[],
+        },
+        SchemaContract {
             id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
             kind: PayloadKind::Fact,
             sidecar_table: Some("test_flavor.thing_v1"),
@@ -1461,23 +1463,23 @@ mod tests {
                 why: "the embedding recipe is what this fixture is about",
             },
             embedding: EmbeddingRecipe::Never {
-                why: "the reason the enqueue lane never read",
+                why: "the reason the enqueue lane cannot act on",
             },
             transfer: TransferRule::StaysOnKey,
             provenance: Provenance::None,
             surfaces: &[],
             natural_key_columns: &[],
-        }]);
+        },
+    ]);
 
     /// `Never` with the reason deleted, wearing the arm that means "embeds".
     ///
     /// `resolve()` yields zero units, so the drain gets nothing — the same
-    /// outcome as `Never`. But `is_never()` answers `false`, so the
-    /// agreement check reads it as "this embeds" and the enqueue lane files
-    /// jobs against it. Registered `embeddable: true` here so that the
-    /// agreement check would be SATISFIED: this fixture proves the empty
-    /// list is refused on its own account, not caught in passing by the
-    /// disagreement it slips past.
+    /// outcome as `Never`. But `is_never()` answers `false`, so the enqueue
+    /// lane reads it as "this embeds" and files jobs against it. Refused on
+    /// its own account by `validate_contract_schemas`, which runs first;
+    /// this fixture proves that, rather than the behaviour check catching it
+    /// in passing.
     static EMPTY_EMBEDDING_UNITS: FlavorContract = uniformity_contract(&[SchemaContract {
         id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
         kind: PayloadKind::Fact,
@@ -1799,50 +1801,34 @@ mod tests {
     /// `SchemaIngressMismatch` fires first and the fixture proves that
     /// instead.
     fn register_fixture_schema(registry: &mut FlavorRegistry, name: &str, table: &str) {
-        // Every fixture contract declares `EmbeddingRecipe::Never`, and
-        // freeze refuses a Fact whose trait constant disagrees — so a
-        // registration that said `true` here would make every fixture report
-        // the embeddability error instead of its own subject.
-        register_fixture_schema_with(registry, name, table, false);
+        register_fixture_schema_of_kind(registry, name, table, PayloadKind::Fact);
     }
 
-    /// The same registration, saying the enqueue lane SHOULD embed this
-    /// schema.
-    ///
-    /// `FactPayload::EMBEDDABLE` defaults to `true`, so this is what a
-    /// schema author gets by not thinking about it — and therefore the way
-    /// a `Never { why }` declaration ends up facing a registration that
-    /// says "embed me".
-    fn register_fixture_schema_embeddable(registry: &mut FlavorRegistry, name: &str, table: &str) {
-        register_fixture_schema_with(registry, name, table, true);
-    }
-
-    fn register_fixture_schema_with(
+    fn register_fixture_schema_of_kind(
         registry: &mut FlavorRegistry,
         name: &str,
         table: &str,
-        embeddable: bool,
+        kind: PayloadKind,
     ) {
         let schema_id = SchemaId::new(format!("{FIXTURE_FLAVOR}/{name}-v1"));
         let schema_version = SchemaVersion::new(1);
         registry.schemas.push(SchemaInfo {
             schema_id: schema_id.clone(),
             schema_version,
-            kind: PayloadKind::Fact,
+            kind,
             filter_keys: Vec::new(),
             sidecar_table: Some(table.to_owned()),
             natural_key_columns: Vec::new(),
             tombstone: None,
             has_typed_ingress: true,
             cited_object_schema: None,
-            embeddable,
         });
         registry
             .protocol_ingress
             .push(crate::verbs::schema::ProtocolPayloadIngressEntry {
                 schema_id,
                 schema_version,
-                kind: PayloadKind::Fact,
+                kind,
                 ingress: fixture_ingress,
                 json_schema: None,
             });
@@ -1868,7 +1854,6 @@ mod tests {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
-            embeddable: true,
         }
     }
 
@@ -2153,7 +2138,7 @@ mod tests {
                 },
             ),
             (
-                "a Fact's embedding recipe names units and its registration says it does not embed",
+                "an embedding recipe names a unit the schema has no table to resolve it against",
                 |registry| {
                     register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
                     registry.contracts.push(&EMBEDDING_DISAGREEMENT);
@@ -2163,7 +2148,7 @@ mod tests {
                         err,
                         FlavorRegistryError::EmbeddabilityDisagreement {
                             recipe_is_never: false,
-                            trait_says_embeddable: false,
+                            machinery_embeds: false,
                             ..
                         }
                     )
@@ -2171,30 +2156,34 @@ mod tests {
             ),
             (
                 // The costly direction; the case above is its mirror.
-                "a Fact's recipe says Never and its registration says embed it",
+                "a recipe says Never on an id another registration embeds",
                 |registry| {
-                    register_fixture_schema_embeddable(registry, "thing", "test_flavor.thing_v1");
-                    registry
-                        .contracts
-                        .push(&EMBEDDING_DISAGREEMENT_NEVER_BUT_EMBEDDABLE);
+                    register_fixture_schema_of_kind(
+                        registry,
+                        "thing",
+                        "test_flavor.thing_v1",
+                        PayloadKind::Abstraction,
+                    );
+                    register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
+                    registry.contracts.push(&EMBEDDING_NEVER_ON_AN_EMBEDDED_ID);
                 },
                 |err| {
                     matches!(
                         err,
                         FlavorRegistryError::EmbeddabilityDisagreement {
                             recipe_is_never: true,
-                            trait_says_embeddable: true,
+                            machinery_embeds: true,
                             ..
                         }
                     )
                 },
             ),
             (
-                // Registered `embeddable: true`, so the disagreement check
-                // is SATISFIED and this has to be refused on its own.
+                // `validate_contract_schemas` runs first, so this is refused
+                // on its own account rather than as a behaviour disagreement.
                 "a recipe declares an empty unit list, which is Never without the reason",
                 |registry| {
-                    register_fixture_schema_embeddable(registry, "thing", "test_flavor.thing_v1");
+                    register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
                     registry.contracts.push(&EMPTY_EMBEDDING_UNITS);
                 },
                 |err| matches!(err, FlavorRegistryError::EmptyEmbeddingUnits { .. }),

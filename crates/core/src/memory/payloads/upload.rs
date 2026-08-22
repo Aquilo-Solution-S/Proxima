@@ -43,25 +43,6 @@ impl FactPayload for UploadV1 {
     const SCHEMA_ID: &'static str = "core/upload-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    /// A filename is worth FINDING and not worth EMBEDDING, and this is
-    /// the schema the distinction was written for.
-    ///
-    /// [`Self::render`] still reaches search, so an upload stays
-    /// readable and still matches full-text search on its filename —
-    /// which is the only handle a person has on a file they are looking
-    /// for, and the reason `render` carries it at all. What it does not
-    /// earn is a vector, because there is no semantic question a vector
-    /// would answer here: every upload renders from one template and
-    /// differs only in a name, a mime and an integer.
-    ///
-    /// Scale is what makes it matter rather than merely tidy. Nothing
-    /// says an upload is a whole document — a page scan and a figure crop
-    /// are each their own artefact, so one shelf can run to tens of
-    /// thousands of these Facts. Embedded, they would be a dense cluster
-    /// of mutual near-neighbours sitting in the same index as the prose
-    /// somebody is actually searching for.
-    const EMBEDDABLE: bool = false;
-
     /// The content hash alone.
     ///
     /// The other three fields are FUNCTIONS of it: for one owner, the

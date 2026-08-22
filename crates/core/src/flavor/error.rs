@@ -134,15 +134,14 @@ pub enum FlavorRegistryError {
         flavor_id: &'static str,
         table: &'static str,
     },
-    /// A Fact schema's `EmbeddingRecipe` and its `FactPayload::EMBEDDABLE`
-    /// constant disagree about whether it embeds. One of them drives the
-    /// enqueue lane and the other is read by nobody, which is exactly why
-    /// they were allowed to drift.
+    /// A schema's `EmbeddingRecipe` and the units the drain resolves for it
+    /// disagree about whether it embeds. The recipe is the claim; the units
+    /// are what the machinery will actually be handed.
     EmbeddabilityDisagreement {
         flavor_id: &'static str,
         schema_id: SchemaId,
         recipe_is_never: bool,
-        trait_says_embeddable: bool,
+        machinery_embeds: bool,
     },
     /// A schema declares `EmbeddingRecipe::Units(&[])` — the claim
     /// `Never { why }` exists to carry, with the reason deleted, and wearing
@@ -399,13 +398,14 @@ impl std::fmt::Display for FlavorRegistryError {
                 flavor_id,
                 schema_id,
                 recipe_is_never,
-                trait_says_embeddable,
+                machinery_embeds,
             } => write!(
                 f,
                 "flavor {flavor_id} declares {schema_id} with EmbeddingRecipe::Never = \
-                 {recipe_is_never} and FactPayload::EMBEDDABLE = {trait_says_embeddable}; \
-                 the enqueue lane reads the constant and the reason lives on the recipe, \
-                 so a disagreement files embedding jobs the drain can only drop"
+                 {recipe_is_never}, but the drain resolves embed units for it = \
+                 {machinery_embeds}; a schema that declares it embeds and hands the \
+                 drain nothing files embedding jobs the drain can only drop, and one \
+                 that declares Never while resolving a unit is silently embedded"
             ),
             Self::EmptyEmbeddingUnits {
                 flavor_id,

@@ -14,7 +14,7 @@ use crate::{
     CapabilityTag, FlavorDescriptor, McpToolDescriptor, Owner, SchemaId, SchemaVersion,
     SearchProjectionColumnKind, SidecarPayload,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 pub type ProtocolPayloadIngress = fn(&serde_json::Value) -> Result<ProtocolPayload, String>;
@@ -99,11 +99,6 @@ pub struct SchemaInfo {
     /// `CitedObjectPayload` schema id accepted by a `CitationMappingPayload`.
     /// Populated only for citation-mapping schemas.
     pub cited_object_schema: Option<SchemaId>,
-    /// `FactPayload::EMBEDDABLE`. `true` for every other kind: derived
-    /// memories are embedded inside their own write and cited
-    /// objects/mappings are not memories at all, so the flag would have
-    /// nothing to gate.
-    pub embeddable: bool,
 }
 
 impl SchemaInfo {
@@ -134,10 +129,6 @@ impl SchemaInfo {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
-            // An opaque schema is a cited object or a citation mapping,
-            // never a memory, so nothing here is ever a candidate for a
-            // vector. `true` keeps the default meaning "nobody opted out".
-            embeddable: true,
         }
     }
 }
@@ -256,7 +247,7 @@ struct FrozenIndex {
     schema_by_id_version_kind: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
     /// Protocol-ingress parsers keyed by `(schema_id, version, kind)`.
     protocol_ingress_by_key: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
-    /// Schema ids of Fact schemas that declared `EMBEDDABLE = false`.
+    /// Schema ids the embed-text drain resolves no unit for.
     ///
     /// Precomputed as a flat `Vec<String>` because its consumer is a SQL
     /// bind: the enqueue-side queries exclude these ids, and building the
@@ -267,7 +258,12 @@ struct FrozenIndex {
 }
 
 impl FrozenIndex {
-    fn build(schemas: &[SchemaInfo], protocol_ingress: &[ProtocolPayloadIngressEntry]) -> Self {
+    fn build(
+        schemas: &[SchemaInfo],
+        protocol_ingress: &[ProtocolPayloadIngressEntry],
+        contracts: &[&'static FlavorContract],
+        embed_units: &[MemoryEmbedUnit],
+    ) -> Self {
         let mut index = Self::default();
         for (position, schema) in schemas.iter().enumerate() {
             index
@@ -289,15 +285,46 @@ impl FrozenIndex {
                 ))
                 .or_insert(position);
         }
-        index.non_embeddable_schema_ids = schemas
-            .iter()
-            .filter(|schema| schema.kind == PayloadKind::Fact && !schema.embeddable)
-            .map(|schema| schema.schema_id.as_str().to_owned())
-            .collect();
-        index.non_embeddable_schema_ids.sort();
-        index.non_embeddable_schema_ids.dedup();
+        index.non_embeddable_schema_ids = non_embeddable_schema_ids(contracts, embed_units);
         index
     }
+}
+
+/// The ids the drain can produce no text for: every registration of the id
+/// resolved to zero embed units.
+///
+/// Kind-agnostic because its consumer is. The enqueue-side SQL binds this
+/// against `memory.schema_id`, a column that carries no kind, so an id
+/// registered across layers stays embeddable unless every layer declines —
+/// the asymmetric direction, because a vector nobody wanted is waste while a
+/// missing one is a memory that is semantically invisible and says so
+/// nowhere.
+///
+/// `BTreeMap` sorts and deduplicates on the way in: the bound array must be
+/// stable across processes so a query plan does not depend on registration
+/// order.
+pub(crate) fn non_embeddable_schema_ids(
+    contracts: &[&'static FlavorContract],
+    embed_units: &[MemoryEmbedUnit],
+) -> Vec<String> {
+    let mut embeds: BTreeMap<String, bool> = BTreeMap::new();
+    for contract in contracts {
+        for schema in contract.schemas {
+            let schema_id = schema.schema_id();
+            let resolved = embed_units.iter().any(|unit| {
+                unit.schema_id == schema_id
+                    && unit.schema_version == schema.schema_version()
+                    && unit.kind == schema.kind
+            });
+            let entry = embeds.entry(schema_id.as_str().to_owned()).or_default();
+            *entry |= resolved;
+        }
+    }
+    embeds
+        .into_iter()
+        .filter(|(_, embeds)| !embeds)
+        .map(|(schema_id, _)| schema_id)
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -374,7 +401,12 @@ fn contract_search_projections(
 }
 
 /// Every stored embed-text column the linked contracts declare.
-fn contract_embed_units(contracts: &[&'static FlavorContract]) -> Vec<MemoryEmbedUnit> {
+///
+/// The single producer of what the drain reads, which is why freeze checks
+/// each declaration against this rather than against a second declaration:
+/// a recipe that resolves to nothing here is a schema that does not embed,
+/// whatever it says it does.
+pub(crate) fn contract_embed_units(contracts: &[&'static FlavorContract]) -> Vec<MemoryEmbedUnit> {
     let mut out = Vec::new();
     for contract in contracts {
         for schema in contract.schemas {
@@ -416,9 +448,9 @@ impl FlavorRegistryFrozen {
             authorization_hooks,
         } = registry;
         let schema_capability_tags = crate::flavor::schema_capability_map(&schema_capability_tags);
-        let index = FrozenIndex::build(&schemas, &protocol_ingress);
         let search_projections = contract_search_projections(&contracts);
         let embed_units = contract_embed_units(&contracts);
+        let index = FrozenIndex::build(&schemas, &protocol_ingress, &contracts, &embed_units);
         Self {
             schemas,
             schema_capability_tags,
@@ -528,7 +560,11 @@ impl FlavorRegistryFrozen {
         &self.schemas
     }
 
-    /// Whether a Fact written under `schema_id` earns a vector.
+    /// Whether a memory written under `schema_id` earns a vector.
+    ///
+    /// Every kind, because every kind can be written with an embedding
+    /// client attached: a Fact ingest, a derived write and a rehydrate all
+    /// ask this before spending a provider call or filing a job.
     ///
     /// UNKNOWN SCHEMAS ARE EMBEDDABLE, and that direction is chosen. The
     /// two failure modes are not symmetric: a vector nobody wanted is
@@ -548,7 +584,7 @@ impl FlavorRegistryFrozen {
             .any(|id| id == schema_id)
     }
 
-    /// Fact schema ids that declared `EMBEDDABLE = false`, sorted.
+    /// Schema ids that resolve to no embed unit, sorted.
     ///
     /// For the enqueue-side queries, which exclude them: the inline write
     /// path is not enough on its own, because reconciliation would find
