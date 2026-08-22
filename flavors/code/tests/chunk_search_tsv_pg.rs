@@ -1,24 +1,21 @@
 //! The stored code-chunk vector must equal what both search surfaces expect.
 //!
-//! The vector used to be a `GENERATED ALWAYS AS` column on
-//! `proxima_code.code_chunk_v1`, with its definition living in three places
-//! that could not see each other. It is now written by ONE expression —
+//! The vector is written by ONE expression —
 //! `projection_vector_sql(&CODE_CHUNK_V1.search)` — into
-//! `proxima_code.projection`, and these tests pin that expression against
-//! the one the v0.0.7 generated column carried, input by input, so the move
-//! is provably score-preserving rather than plausibly so.
+//! `proxima_code.projection`. These tests pin that expression against the
+//! reference definition below, input by input, so any divergence in scoring
+//! is caught rather than inferred.
 
 use proxima_code::payloads::CODE_LEXICAL_LANGUAGE;
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 
-/// The v0.0.7 generated column's expression, verbatim, over alias `c`.
+/// The reference chunk-vector expression, verbatim, over alias `c`.
 ///
-/// The reference side of the identity proof. It is a literal here because
-/// the column it came from no longer exists to read out of the catalog —
-/// this is the last copy, and its job is to disagree if the generator ever
-/// stops reproducing it.
-const V007_GENERATED_COLUMN: &str = "proxima_core.lexical_tsv(
+/// The reference side of the identity proof. It is a literal because no
+/// catalog object carries it: this is the only copy, and its job is to
+/// disagree if the generator ever stops reproducing it.
+const REFERENCE_VECTOR_SQL: &str = "proxima_core.lexical_tsv(
      proxima_code.code_lexical_config(),
      proxima_core.lexical_join(
          VARIADIC ARRAY[NULLIF(c.file_path, ''), NULLIF(c.text, '')]))";
@@ -103,11 +100,11 @@ async fn code_chunk_sql_authority_matches_rust_ingest_constant() {
     result.expect("code-chunk lexical authority guard failed");
 }
 
-/// The generator's expression and the v0.0.7 generated column must produce
-/// the SAME tsvector for every input — that identity is the whole warrant
-/// for moving the vector off the sidecar.
+/// The generator's expression and the reference expression must produce the
+/// SAME tsvector for every input — that identity is what keeps the vector
+/// off the sidecar honest.
 #[tokio::test]
-async fn the_generator_reproduces_the_v007_generated_column() {
+async fn the_generator_reproduces_the_reference_vector_expression() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -183,13 +180,13 @@ async fn the_generator_reproduces_the_v007_generated_column() {
         let drifted: Vec<(String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT c.file_path, c.text
                FROM tsv_probe c
-              WHERE ({generated}) IS DISTINCT FROM COALESCE({V007_GENERATED_COLUMN}, ''::tsvector)"
+              WHERE ({generated}) IS DISTINCT FROM COALESCE({REFERENCE_VECTOR_SQL}, ''::tsvector)"
         )))
         .fetch_all(pg.pool_for_tests())
         .await?;
         assert!(
             drifted.is_empty(),
-            "the generator and the v0.0.7 generated column disagree for: {drifted:?}"
+            "the generator and the reference vector expression disagree for: {drifted:?}"
         );
 
         Ok(())
@@ -280,8 +277,7 @@ async fn code_chunk_search_tsv_is_stored_and_indexed() {
         pg.run_migrations().await?;
         proxima_code::migrator().run(pg.pool_for_tests()).await?;
 
-        // ONE composite GIN for the whole flavor, on the projection, where
-        // three per-sidecar ones used to be.
+        // ONE composite GIN for the whole flavor, on the projection.
         let has_index: bool = sqlx::query_scalar(
             "SELECT EXISTS (
                  SELECT 1 FROM pg_indexes

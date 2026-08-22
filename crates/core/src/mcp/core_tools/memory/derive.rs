@@ -212,12 +212,10 @@ impl McpTool for DeriveTool {
                 .model_id
                 .clone()
                 .unwrap_or_else(|| ctx.author.model_id.clone());
-            // Trimmed before it is *used*, not just before it is checked. The
-            // old guard tested `model_id.trim().is_empty()` and then stored
-            // and hashed the untrimmed string, so `" example "` and `"example"`
-            // were one label to the validator and two to the idempotency key
-            // derived from it — the same replay-dedup miss
-            // `normalize_idempotency_key` exists to prevent.
+            // Trimmed before it is *used*, not just before it is checked: the
+            // stored label and the idempotency key derived from it must be
+            // the same string, or `" example "` and `"example"` are one label
+            // to the validator and two to the dedup key.
             let model_id = validate_trimmed_len("model_id", &raw_model_id, 120)?.to_string();
             let tags = normalize_tags(args.tags)?;
 
@@ -260,9 +258,9 @@ impl McpTool for DeriveTool {
             // `memories` row: text, kind, operator, model, owner. `text` is
             // the body alone — the title and tags live in the
             // `agent_derivation_v1` sidecar, which the proof never reads and
-            // which the replay path never even writes. So hashing the body
-            // alone made two derivations with one body and different titles a
-            // single write: the second caller got `idempotent_replay: true`
+            // which the replay path never even writes. Hashing the body alone
+            // would make two derivations with one body and different titles a
+            // single write: the second caller gets `idempotent_replay: true`
             // and a handle to somebody else's Abstraction, with their own
             // title silently discarded. A success flag over dropped content
             // is the worst shape a write can fail in.

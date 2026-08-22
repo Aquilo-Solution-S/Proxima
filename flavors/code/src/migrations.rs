@@ -10,12 +10,10 @@
 /// Embedded migration set (`flavors/code/migrations/`).
 ///
 /// `SQLx` checksums content, not filename: do not edit a comment byte in
-/// an already-applied file. The header text may name a lane it replaced.
+/// an already-applied file.
 #[must_use]
 pub fn migrator() -> sqlx::migrate::Migrator {
     let mut m = sqlx::migrate!("./migrations");
-    // In `public`, not `proxima_code` — see the module docs: destructive
-    // baselines drop the flavor schema, and the ledger must survive them.
     m.dangerous_set_table_name("public._sqlx_migrations_proxima_code");
     m.set_ignore_missing(true);
     m

@@ -435,8 +435,8 @@ async fn embed_claim(
                     store_claim_chunks(pool, client, claim, &vectors).await?;
                     Ok(true)
                 }
-                // Rejected at every length by a live provider: genuinely
-                // invalid input, so the job goes terminal exactly as before.
+                // Rejected at every length by a live provider: genuinely invalid input, so
+                // the job goes terminal.
                 Ok(None) => Err(EmbedClaimFailure::Permanent(format!(
                     "embed memory text: {initial_error}"
                 ))),

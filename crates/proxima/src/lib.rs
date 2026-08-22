@@ -2,11 +2,12 @@
 //!
 //! Wraps the blessed `Engine::try_compose` embedding entry point
 //! (`proxima_core::engine`) for host binaries. Host wiring template:
-//! `apps/proxima-mcp`. Cohabitation contract: core, flavors,
-//! and the host's own sqlx migrations share one database and the
-//! default `_sqlx_migrations` table; every migrator in that database
-//! must set `ignore_missing(true)`, and host tables must stay out of
-//! the `proxima_core` / per-flavor schemas.
+//! `apps/proxima-mcp`. Cohabitation contract: core, flavors, and the
+//! host's own sqlx migrations share one database; core records into the
+//! default `_sqlx_migrations` and each flavor into its own tracking table
+//! (see the `migrations` module). Every migrator in that database must set
+//! `ignore_missing(true)`, and host tables must stay out of the
+//! `proxima_core` / per-flavor schemas.
 //!
 //! # Public surface tiers
 //!
@@ -59,9 +60,9 @@ use sqlx::PgPool;
 
 /// One Owner per embedded host: a Group principal.
 ///
-/// This is the single place embedded hosts construct `Owner`. Since the
-/// `Owner = OwnerRef` collapse removed the org scalar from Core; the
-/// gone — tenancy is a flavor/app concern, not a substrate one.
+/// This is the single place embedded hosts construct `Owner`. `Owner` is
+/// `OwnerRef` and carries no org scalar: tenancy is a flavor/app concern,
+/// not a substrate one.
 #[must_use]
 pub fn company_owner(id: uuid::Uuid) -> Owner {
     OwnerRef::Group(GroupId::new(id))

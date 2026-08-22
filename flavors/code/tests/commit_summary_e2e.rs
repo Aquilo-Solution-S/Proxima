@@ -14,7 +14,7 @@ use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
+async fn commit_ingest_does_not_run_wake_execution() {
     let (db, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -71,5 +71,5 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
 
     drop(pg);
     let _ = drop_db(&db).await;
-    result.expect("commit_summary_e2e failed");
+    result.expect("commit_ingest_does_not_run_wake_execution failed");
 }

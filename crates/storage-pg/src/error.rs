@@ -2,8 +2,8 @@
 //!
 //! Policy: reads and writes both classify through [`map_err`] — a
 //! serialization failure inside a read transaction is just as
-//! `Retryable` as one inside a write, even though only write paths run
-//! retry loops today. [`internal`] is for non-sqlx failures (row
+//! `Retryable` as one inside a write, whether or not the path in hand
+//! runs a retry loop. [`internal`] is for non-sqlx failures (row
 //! conversion, arithmetic) where no sqlx taxonomy applies.
 
 use proxima_core::StorageError;
@@ -34,13 +34,10 @@ pub(crate) const FTOA_BATCH_EXCLUSIVE_INDEX: &str = "memories_ftoa_batch_exclusi
 pub fn map_err(e: sqlx::Error) -> StorageError {
     use sqlx::Error;
     match &e {
-        // This arm already knew which rule fired -- it matches the index by
-        // name -- and then forwarded Postgres's sentence anyway, so an agent
-        // consolidating a source batch twice was answered `duplicate key
-        // value violates unique constraint
-        // "memories_ftoa_batch_exclusive_uidx"`. An index name is part of no
-        // contract the caller can see, and the rule it enforces is never
-        // stated. Say the rule instead.
+        // This arm matches the index by name, so it already knows which rule
+        // fired. An index name is part of no contract the caller can see, so
+        // the reply states the rule instead of forwarding Postgres's
+        // sentence.
         Error::Database(db)
             if db.is_unique_violation() && db.constraint() == Some(FTOA_BATCH_EXCLUSIVE_INDEX) =>
         {

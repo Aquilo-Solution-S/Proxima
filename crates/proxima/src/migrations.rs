@@ -1,7 +1,7 @@
 //! Shared migration facade for embedded Proxima hosts.
 //!
-//! Core records into `SQLx`'s default `public._sqlx_migrations`; since
-//! v0.0.7 each flavor records into its own tracking table
+//! Core records into `SQLx`'s default `public._sqlx_migrations`; each
+//! flavor records into its own tracking table
 //! (`public._sqlx_migrations_<flavor>` — in `public`, because destructive
 //! flavor baselines drop the flavor schema and the ledger must survive
 //! them), with a one-time cutover moving a pre-split database's flavor rows
@@ -151,7 +151,7 @@ pub async fn run_core_and_flavor_migrations(
 /// For `GitOps` / split-role deploys (see docs/15): an init container or
 /// `tools/dev-migrate` applies migrations under a DDL-capable role, and the
 /// long-running app then boots under a DML-only role that cannot issue DDL.
-/// This still rejects a stale pre-v0.0.4 database and still rejects duplicate
+/// This rejects a stale pre-v0.0.4 database and rejects duplicate
 /// migration versions across composed sources, but never runs
 /// `run_direct` / touches schema — so it succeeds against an already-migrated
 /// database held by a narrow role.
@@ -251,18 +251,18 @@ async fn run_sources_on_connection(
 /// One-time per-database cutover of a flavor's ledger rows out of the shared
 /// `public._sqlx_migrations` table into the flavor's own tracking table.
 ///
-/// Through v0.0.7, core and every flavor recorded into one table, which is
-/// why every migrator carried `ignore_missing = true` — each one saw versions
-/// it didn't author. Since v0.0.7 a flavor's migrator declares its own table
-/// (see `flavors/code/src/migrations.rs`); a database migrated before the
-/// split still carries the flavor's rows in `public`, and `SQLx` would re-run
-/// the flavor's DDL against the flavor's empty new table. This moves exactly
+/// A flavor's migrator declares its own table (see
+/// `flavors/code/src/migrations.rs`). A database migrated before the ledger
+/// split still carries the flavor's rows in `public`, and `SQLx` would
+/// re-run the flavor's DDL against the flavor's empty new table. Every
+/// migrator sets `ignore_missing = true` because a shared table shows each
+/// one versions it did not author. This moves exactly
 /// the rows the flavor's embedded migrator recognizes, inside one
 /// transaction, before the flavor migrator first runs against the new table.
 /// Idempotent: a moved row is gone from `public`, and a database created
-/// after the split never has rows to move. Rows an old flavor lane recorded
-/// and later retired are recognized by no migrator and deliberately stay in
-/// `public` — orphan rows there are inert (core runs with `ignore_missing`).
+/// after the split never has rows to move. Rows no migrator recognizes stay
+/// in `public` by design — orphan rows there are inert (core runs with
+/// `ignore_missing`).
 async fn cut_over_flavor_ledger(
     conn: &mut PgConnection,
     source: &NamedMigrator,

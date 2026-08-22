@@ -380,10 +380,10 @@ async fn load_lineage_snippets(
 /// One primary-key lookup over one sidecar, rendering the declared snippet
 /// expression for the ids given.
 ///
-/// Shared with `search`, which hydrates the snippets of the rows that made
-/// its page the same way — the lineage walk got there first, and a second
-/// copy of "group by schema, look the projection up, `c.t = ANY($1)`" would
-/// be a second place for the snippet expression to drift.
+/// Shared with `search`, which hydrates the snippets of the rows that made its
+/// page the same way. A second copy of "group by schema, look the projection
+/// up, `c.t = ANY($1)`" would be a second place for the snippet expression to
+/// drift.
 pub(super) async fn load_one_schema_snippets(
     pool: &PgPool,
     projection: &MemorySearchProjection,
@@ -447,20 +447,20 @@ mod tests {
         let parent_owner = format!("{}{}", "parent.owner_id = ", "ANY");
         assert!(
             !prod.contains(&tgt_owner),
-            "D8: target owner is redaction, not a walk filter"
+            "target owner is redaction, not a walk filter"
         );
         assert!(
             !prod.contains(&tgt_join),
-            "D8: pin UUID is on the source; do not join tgt for existence"
+            "pin UUID is on the source; do not join tgt for existence"
         );
         assert!(
             !prod.contains(&parent_owner),
-            "D8: descendants do not re-admit the start via parent owner"
+            "descendants do not re-admit the start via parent owner"
         );
         let head_schema = format!("{}{}", "h.schema", "_id");
         assert!(
             !prod.contains(&head_schema),
-            "W5: lineage reads schema_id from memory, not memory_head"
+            "lineage reads schema_id from memory, not memory_head"
         );
     }
 

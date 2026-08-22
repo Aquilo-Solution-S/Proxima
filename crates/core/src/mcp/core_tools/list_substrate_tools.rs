@@ -46,7 +46,7 @@ pub(super) fn substrate_tool_source(desc: &McpToolDescriptor) -> String {
 #[allow(clippy::unused_async)]
 /// # Errors
 ///
-/// This projection is infallible today; the `Result` shape matches the tool
+/// This projection is infallible; the `Result` shape matches the tool
 /// dispatch contract.
 pub async fn list_substrate_tools(
     ctx: McpToolCtx,

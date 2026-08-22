@@ -59,11 +59,8 @@ pub struct CoreActionMeta {
 
 /// Flavor #0's `proxima://` resources, in declaration order.
 ///
-/// The list is the contract's, not a second copy of it. Before the flavor
-/// contract landed this module held its own ten-entry `CORE_RESOURCES`
-/// table whose `uri_template`s pointed at a third table in
-/// `protocol::resource_uri`, so advertising a resource and dispatching it
-/// were two acts of remembering.
+/// The list is the contract's, not a second copy of it: advertising a
+/// resource and dispatching it read the same `ResourceContract` entry.
 #[must_use = "iterators are lazy and must be consumed"]
 pub fn all_core_resources() -> impl Iterator<Item = &'static ResourceContract> {
     FLAVOR_0.resources.iter()

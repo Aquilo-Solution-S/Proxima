@@ -603,7 +603,7 @@ pub struct QueryResponse {
     pub goals: Vec<GoalRow>,
     pub edges: Vec<Edge>,
     pub next_cursor: Option<QueryCursor>,
-    /// docs/14 §"Cursor & resume".
+    /// docs/14 §Query.
     pub seq_high_water: Option<Uuid>,
 }
 

@@ -227,7 +227,7 @@ impl Answer {
 
 /// Send one request with the auth context the shared `mcp_auth` layer would
 /// have injected. Nothing here authenticates — that layer is not under test,
-/// and re-implementing it is what R3 forbids.
+/// and re-implementing authentication here is forbidden.
 async fn call(
     router: &Router,
     method: Method,
@@ -377,7 +377,7 @@ async fn rest_tool_list_equals_the_mcp_catalog_for_every_scope() {
     assert_eq!(answer.json()["tools"].as_array().map(Vec::len), Some(0));
 }
 
-/// R6 reaches per-action narrowing too: a palette holding one leaf of a
+/// The narrowing reaches per-action too: a palette holding one leaf of a
 /// dispatcher advertises one leaf, not the whole flattened schema.
 #[tokio::test]
 async fn a_palette_narrows_the_advertised_dispatcher_actions() {
@@ -699,9 +699,13 @@ async fn the_openapi_document_advertises_a_flavor_dispatchers_actions() {
     );
 }
 
-/// R6 for a flavor: a palette holding one leaf advertises one leaf. Keyed on
-/// the substrate tables, the narrowing projection had nothing to narrow with
-/// and the whole flattened schema was advertised.
+/// The same narrowing for a flavor: a palette holding one leaf advertises
+/// one leaf.
+///
+/// The projection narrows from the descriptor's own actions. Were it keyed
+/// on the substrate tables instead, a flavor dispatcher would give it
+/// nothing to narrow with and the whole flattened schema would be
+/// advertised — the assertion below is what proves it is not.
 #[tokio::test]
 async fn a_palette_narrows_a_flavor_dispatchers_advertised_actions() {
     let router = app(flavor_host());

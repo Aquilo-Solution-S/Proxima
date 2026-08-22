@@ -127,8 +127,6 @@ pub(crate) async fn bootstrap_group_admin(
     first_admin_user_id: UserId,
     _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    // Retry the whole transaction on transient deadlock/serialization,
-    // like the other atomic writers.
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
         lock_group_membership_tx(&mut tx, group_id).await?;
@@ -173,8 +171,6 @@ pub(crate) async fn add_group_member(
     relation: Relation,
     _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    // Retry the whole transaction on a transient deadlock/serialization
-    // failure, matching every other atomic writer.
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
         lock_group_membership_tx(&mut tx, group_id).await?;
@@ -204,8 +200,6 @@ pub(crate) async fn remove_group_member(
     group_id: GroupId,
     member_user_id: UserId,
 ) -> Result<(), StorageError> {
-    // Retry the whole transaction on a transient deadlock/serialization
-    // failure, matching every other atomic writer.
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
         lock_group_membership_tx(&mut tx, group_id).await?;
@@ -372,8 +366,9 @@ pub(crate) async fn visible_home_owner(
 ///
 /// Most sidecar rows stay keyed by `t` and so follow the memory to
 /// `to_owner`. Owner-pinned sidecars are the exception and this transaction
-/// does not touch them at all. `mcp_call_logged_v1` is the one today: it
-/// describes the ACTOR of a tool call (`actor_upn`), not the memory, and it
+/// does not touch them at all. `mcp_call_logged_v1` is the one in the core
+/// contract: it describes the ACTOR of a tool call (`actor_upn`), not the
+/// memory, and it
 /// carries its own `owner_id`, stamped at write time with the owner that
 /// made the call. The row stays under that owner, so the source keeps
 /// answering "what did my agents do" after giving the memory away.
@@ -408,14 +403,11 @@ pub(crate) async fn transfer_to_owner(
     from_owner: OwnerRef,
     to_owner: OwnerRef,
 ) -> Result<bool, StorageError> {
-    // The backstop, DRIVEN by the declaration rather than agreeing with
-    // it. This was `matches!(entity, EntityId::Goal(_))` — a hardcoded
-    // refusal that `TransferRule::NotTransferable` NAMED as one of its
-    // three enforcement sites and did not cause. Now the entity picks the
-    // surface that speaks for it and the surface's resolved leg decides:
-    // re-declare `proxima_core.goal` as anything that moves rows and goals
-    // start transferring, which is what "enforced by the declaration"
-    // has to mean if it is to mean anything.
+    // The backstop, DRIVEN by the declaration rather than merely agreeing
+    // with it: the entity picks the surface that speaks for its series, and
+    // that surface's resolved leg decides. Re-declare `proxima_core.goal` as
+    // a rule that moves rows and goals start transferring, which is what
+    // "enforced by the declaration" has to mean if it is to mean anything.
     let memory_id = match entity {
         EntityId::Memory(memory_id) => memory_id,
         EntityId::Goal(_) => {
@@ -574,8 +566,8 @@ async fn transfer_memory_handle(
     from_id: uuid::Uuid,
     to_owner: OwnerRef,
 ) -> Result<bool, StorageError> {
-    // The destination's `owners` row is no longer migration-seeded, so mint
-    // it (or confirm its kind) BEFORE any statement below binds `to_id` into
+    // The destination's `owners` row is not seeded anywhere, so mint it (or
+    // confirm its kind) BEFORE any statement below binds `to_id` into
     // an `owner_id` FK — `blob`, `content`, `cooled`, `memory_head`,
     // `memory`, `sketch`, embeddings and the announce lanes all reference
     // `proxima_core.owners`.
@@ -617,8 +609,7 @@ async fn transfer_memory_handle(
     // cites, and the generated re-home is what stops those reads from
     // matching.
     //
-    // The generated legs run SECOND, and — this is the part that is a
-    // property rather than a habit — BEFORE the head compare-and-set. A
+    // The generated legs run SECOND, and BEFORE the head compare-and-set. A
     // transfer that took the head row first would hold that lock across
     // every remaining statement, and `memory_head` is the row a same-series
     // ingest has to read: the transfer would be serializing ordinary writes
@@ -639,45 +630,14 @@ async fn transfer_memory_handle(
     Ok(false)
 }
 
-/// The head compare-and-set, then ONE loop over the declarations.
+/// The head compare-and-set that DECIDES whether the transfer happened.
 ///
-/// The CAS is the reason `memory_head` is a declared bespoke transfer leg
-/// and not a generated one: its `rows_affected` is what DECIDES whether the
-/// transfer happened. Zero means either the head advanced under us — a
-/// retryable race — or the series left the owner entirely, which is the
-/// clean `false`. No generated `UPDATE ... WHERE key = ANY($1)` can carry
-/// that question, and the two races that hang off the answer are the ones
-/// `owner_transfer.rs` exists to pin.
-///
-/// Everything after it used to be eight hand-written statements over eight
-/// remembered tables: `memory`, `sketch`, a registry walk for projections,
-/// three identical embedding UPDATEs differing only in a table name, and a
-/// `DELETE FROM ingest_keys`. `cooled` was a ninth, run earlier still.
-/// They are now one loop over `OwnerSurfaces::generated_transfer_legs()`,
-/// in table order, and the tables come from the contract:
-///
-/// - [`TransferLeg::Rehomed`] sets every declared owner column of the
-///   surface, selecting on the column the key names against the series' `t`
-///   set. That is `Follow` × `MemoryT`/`EntityT`, and it covers `cooled`,
-///   `memory`, `sketch`, the three embedding tables and EVERY flavor's
-///   projection with one statement shape.
-/// - [`TransferLeg::Dropped`] deletes them, which is `Drop` — one member,
-///   `ingest_keys`, whose receipt proves admission by the SOURCE and does
-///   not travel.
-///
-/// What this stops being able to happen: a flavor adding a `Follow` surface
-/// and it silently not following. The surface is in the loop because it is
-/// in the contract; a surface the loop cannot reach is
-/// `FlavorRegistryError::UnmovableSurface` at boot.
-///
-/// Owner-pinned sidecars are still deliberately untouched — but now by
-/// their DECLARATION rather than by a comment. `mcp_call_logged_v1` carries
-/// `actor_upn` and its own `owner_id`, stamped with the owner that made the
-/// call; `TransferRule::RetainAtSource` resolves to `TransferLeg::Retained`,
-/// which is not in `generated_transfer_legs()`, so no statement reaches it.
-/// The source keeps answering "what did my agents do" after giving the
-/// memory away. The eight-line comment that used to be the only thing
-/// standing here is now a value freeze can refuse.
+/// This is why `memory_head` is a declared bespoke transfer leg and not a
+/// generated one: `rows_affected` carries the question. Zero means either
+/// the head advanced under us — a retryable race — or the series left the
+/// owner entirely, which is the clean `false`. No generated
+/// `UPDATE ... WHERE key = ANY($1)` can carry that question, and the two
+/// races that hang off the answer are the ones `owner_transfer.rs` pins.
 async fn persist_series_head_transfer(
     tx: &mut Transaction<'_, Postgres>,
     handle: uuid::Uuid,
@@ -721,26 +681,28 @@ async fn persist_series_head_transfer(
 
 /// ONE loop over the declarations, in table order.
 ///
-/// This was nine hand-written statements over nine remembered tables:
-/// `cooled`, `memory`, `sketch`, three embedding UPDATEs differing only in
-/// a table name, a registry walk for projections, and a `DELETE FROM
-/// ingest_keys`. Every one of them is now a `TransferLeg` the flavor that
-/// declared the surface resolved at registry time.
+/// Every statement here is a `TransferLeg` the flavor that declared the
+/// surface resolved at registry time:
 ///
-/// What stops being able to happen: a flavor adding a `Follow` surface and
-/// it silently not following. The surface is in this loop because it is in
-/// the contract, and a surface this loop cannot reach is
-/// `FlavorRegistryError::UnmovableSurface` at boot rather than a row the
-/// source owner can still read after the memory became someone else's.
+/// - [`TransferLeg::Rehomed`] sets every declared owner column of the
+///   surface, selecting on the column the key names against the series' `t`
+///   set. That covers `cooled`, `memory`, `sketch`, the three embedding
+///   tables and EVERY flavor's projection with one statement shape.
+/// - [`TransferLeg::Dropped`] deletes them — one member, `ingest_keys`,
+///   whose receipt proves admission by the SOURCE and does not travel.
 ///
-/// Owner-pinned sidecars are still untouched — but now BY THEIR
-/// DECLARATION rather than by a comment. `mcp_call_logged_v1` carries
-/// `actor_upn` and its own `owner_id`, stamped with the owner that made the
-/// call; `RetainAtSource` resolves to `TransferLeg::Retained`, which is not
-/// in `generated_transfer_legs()`, so no statement reaches it. The source
-/// keeps answering "what did my agents do" after giving the memory away.
-/// The eight-line comment that used to be the only thing standing here is a
-/// value freeze can refuse.
+/// A flavor adding a `Follow` surface cannot have it silently not follow:
+/// the surface is in this loop because it is in the contract, and a surface
+/// this loop cannot reach is `FlavorRegistryError::UnmovableSurface` at boot
+/// rather than a row the source owner can still read after the memory became
+/// someone else's.
+///
+/// Owner-pinned sidecars are untouched BY THEIR DECLARATION.
+/// `mcp_call_logged_v1` carries `actor_upn` and its own `owner_id`, stamped
+/// with the owner that made the call; `RetainAtSource` resolves to
+/// `TransferLeg::Retained`, which is not in `generated_transfer_legs()`, so
+/// no statement reaches it. The source keeps answering "what did my agents
+/// do" after giving the memory away.
 async fn run_generated_transfer_legs(
     tx: &mut Transaction<'_, Postgres>,
     surfaces: &OwnerSurfaces,
@@ -854,21 +816,18 @@ async fn announce_series_transfer(
 ///
 /// 1. **The destination already holds these bytes.** Its own row wins;
 ///    this handle's references are repointed at it and the source keeps
-///    whatever it still uses. Before the arm this raised a UNIQUE
-///    violation on `(owner_id, schema_id, content_hash)` — the move would
-///    collide with the row already sitting there — which is a second bug
-///    the arm closes.
-/// 2. **Nothing else references the bytes.** Move the rows in place, which
-///    is exactly what this did before the arm existed: same `blob_id`, same
-///    `upload_id`, same object, no mount. The common case does not pay for
-///    the uncommon one, and a citation id a client already holds does not
-///    move under it.
-/// 3. **Another owner's live series references the bytes.** This is the
-///    case that used to be `Conflict`. The destination gets a row of its
-///    own and an upload row that MOUNTS the source's object — OCI's
-///    cross-repo blob mount, where a mount is an optimisation over a copy
-///    and never a correctness requirement. Nothing in S3 is read, written
-///    or copied; ownership is metadata over an immutable store.
+///    whatever it still uses. Moving the row instead would collide with the
+///    destination's UNIQUE `(owner_id, schema_id, content_hash)`.
+/// 2. **Nothing else references the bytes.** Move the rows in place: same
+///    `blob_id`, same `upload_id`, same object, no mount. The common case
+///    does not pay for the uncommon one, and a citation id a client already
+///    holds does not move under it.
+/// 3. **Another owner's live series references the bytes.** The destination
+///    gets a row of its own and an upload row that MOUNTS the source's
+///    object — OCI's cross-repo blob mount, where a mount is an optimisation
+///    over a copy and never a correctness requirement. Nothing in S3 is
+///    read, written or copied; ownership is metadata over an immutable
+///    store.
 ///
 /// The source's rows are never deleted here. Deleting a blob row decides
 /// the fate of an S3 object, and a transfer has no object-store handle in
@@ -930,7 +889,7 @@ fn dedupe_leg(surfaces: &OwnerSurfaces, table: &str) -> Result<TransferLeg, Stor
 /// The key is not decoration: it is the UNIQUE constraint the move would
 /// collide with, which is exactly why the arm exists. Declaring it and then
 /// hardcoding the same three columns in SQL is how the two drift, and
-/// `every_dedupe_key_is_a_uniqueness_the_schema_enforces` now asks
+/// `every_dedupe_key_is_a_uniqueness_the_schema_enforces` asks
 /// `pg_constraint` whether each declared key really is one.
 ///
 /// The bind order is the declared column order, and the caller binds
@@ -1031,10 +990,9 @@ async fn transfer_one_cited_blob(
     }
 
     // Case 2: nobody else's live series names these bytes, so the rows can
-    // simply change hands. `handle <> $2 AND owner_id <> $3` is the
-    // predicate this arm inherited, and reading it is worth the moment it
-    // takes: `$3` is the DESTINATION, so the source owner's OWN second
-    // series satisfies it. That is what the `Conflict` was refusing.
+    // simply change hands. Read `handle <> $2 AND owner_id <> $3` carefully:
+    // `$3` is the DESTINATION, so the source owner's OWN second series
+    // satisfies it and does not count as sharing.
     let shared: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
@@ -1073,8 +1031,7 @@ async fn transfer_one_cited_blob(
 }
 
 /// Case 2: the rows change hands, the object does not move, nothing is
-/// minted. Byte for byte what a transfer of an uncontested cited blob did
-/// before the dedupe arm.
+/// minted.
 async fn move_blob_rows_in_place(
     tx: &mut Transaction<'_, Postgres>,
     blob_id: uuid::Uuid,
@@ -1086,11 +1043,11 @@ async fn move_blob_rows_in_place(
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
-    // The upload row moves with the blob row it describes. The read path
-    // requires both to name the same owner, so leaving this behind made a
+    // The upload row moves with the blob row it describes: the read path
+    // requires both to name the same owner, so leaving it behind makes a
     // transferred citation unreadable at the destination while still
-    // counting against the source. The object itself does not move: its key
-    // is derived from `upload_id`, which is unchanged.
+    // counting against the source. The object itself does not move — its key
+    // derives from `upload_id`, which is unchanged.
     sqlx::query("UPDATE proxima_core.blob_uploads SET owner_id = $2 WHERE blob_id = $1")
         .bind(blob_id)
         .bind(to_id)
@@ -1154,14 +1111,7 @@ async fn mount_blob_for_destination(
 
 /// Repoint this series' referring columns from one row to another.
 ///
-/// This used to be `remap_handle_blob_refs`, two hand-written `UPDATE`s
-/// over `memory` and `cooled`, under a doc comment that said "This is
-/// `TransferRule::FollowOrDedupe { remaps }` executed" — prose above a
-/// function that executed nothing of the sort. The declaration named three
-/// columns and the function performed two, and they agreed about the other
-/// two only by coincidence, because nothing connected them.
-///
-/// Now `remaps` IS the loop. The declaration lists the referring columns
+/// `remaps` IS the loop. The declaration lists the referring columns
 /// this crate can see; columns that point at the row by convention rather
 /// than by constraint — every flavor's cited-object and citation-mapping
 /// sidecars point at a `blob_id` with no SQL FK — cannot be listed there,
@@ -1232,11 +1182,9 @@ async fn transfer_content_for_handle(
                 .map_err(map_err)?;
         } else {
             // The same generated remap the blob arm runs, off `content`'s
-            // own declared `remaps`. It was two hand-written UPDATEs that
-            // also filtered `owner_id = from`; dropping that filter changes
-            // nothing, because this runs BEFORE the generated re-home, so
-            // every row of the handle is still the source's — and the
-            // differential is what proves it rather than this comment.
+            // own declared `remaps`. No owner filter is needed: this runs
+            // BEFORE the generated re-home, so every row of the handle is
+            // still the source's.
             remap_handle_refs(tx, remaps, handle, old_id, new_id).await?;
             crate::verbs::content::gc_unreferenced_content(tx, old_id).await?;
         }
@@ -1288,7 +1236,7 @@ mod tests {
     /// Freeze decides in core that every surface reaches SOME leg. What core
     /// cannot know is whether THIS crate can execute the answer: a `Rehomed`
     /// leg whose SQL this file declines to build would be skipped in exactly
-    /// the way freeze now prevents flavor-side. So every generated leg is
+    /// the way freeze prevents flavor-side. So every generated leg is
     /// asked for its statement here, and every non-generated one must be a
     /// table a named site in this file claims.
     #[test]

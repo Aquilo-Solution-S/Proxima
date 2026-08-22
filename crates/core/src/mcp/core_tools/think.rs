@@ -277,18 +277,15 @@ fn page_complete(ordered_len: usize, start: usize, limit: u32) -> bool {
 /// One hop of the lineage walk, and the place `Provenance` is spent.
 ///
 /// The declaration answers "how is this node's provenance REACHABLE", and
-/// until Phase 4 the walk did not ask: `Ancestors` expanded `origins[]` for
-/// every node, which is right for the two thirds of the vocabulary that
-/// write origins and wrong for the third that does not. A
-/// `PayloadOnly` node has an EMPTY `origins[]` by construction — its
-/// subjects live in payload columns the array never sees — so an
-/// interpretation was a lineage dead end, which is exactly the defect plan
-/// checkpoint 9 named: *"`core_think`'s edge-walk never traverses
-/// interpretation→subject"*.
+/// the walk has to ask: expanding `origins[]` for every node is right for
+/// the two thirds of the vocabulary that write origins and wrong for the
+/// third that does not. A `PayloadOnly` node has an EMPTY `origins[]` by
+/// construction — its subjects live in payload columns the array never
+/// sees — so an unasking walk makes an interpretation a lineage dead end.
 ///
 /// The three arms, and what each costs:
 ///
-/// - `OriginEdges` — expand `origins[]`. Today's behaviour, unchanged.
+/// - `OriginEdges` — expand `origins[]`.
 /// - `PayloadOnly { subject_columns }` — load the node's payload and take
 ///   the references whose declared FIELD is one of the named columns. No
 ///   new statement and no new port: `SidecarPayload::references()` already

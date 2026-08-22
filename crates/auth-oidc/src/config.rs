@@ -23,8 +23,8 @@ pub enum OidcConfigError {
 /// Configuration for [`crate::OidcTokenValidator`] / [`crate::OidcAuthenticator`].
 ///
 /// Carries only the audited JWT-validation boundary (issuer, audience, JWKS,
-/// clock skew) plus an optional `sub` allowlist. It no longer carries an
-/// identity mapping: [`crate::OidcAuthenticator::new`] maps the validated
+/// clock skew) plus an optional `sub` allowlist. It carries no identity
+/// mapping: [`crate::OidcAuthenticator::new`] maps the validated
 /// `(iss, sub)` through a [`crate::OidcSubjectMap`] and an
 /// `OwnerAccessPort`. [`Self::allowed_subjects`] is always an additional
 /// allowlist gate on the token's actual `sub`, never an identity source.

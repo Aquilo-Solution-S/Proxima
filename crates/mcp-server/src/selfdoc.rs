@@ -566,7 +566,7 @@ mod tests {
         ] {
             let s = build_instructions(&tools, &resources);
             for forbidden in [
-                "instantiate_personality", // PR9-RATCHET-ALLOW historical denied-tool regression fixture
+                "instantiate_personality", // ARCH-GUARDRAIL-ALLOW: a denied tool name that must never reach instructions
                 "add_wake_entry",
                 "emit_execution_request",
                 "wake_execute",
@@ -589,11 +589,11 @@ mod tests {
         assert!(!s.contains("`core_interpret`"));
     }
 
-    /// The retired vocabulary must not survive anywhere in the generated
-    /// text: a profile that still advertised `core_link` or an edge-type
-    /// catalog would be telling agents to call surfaces that no longer exist.
+    /// No profile may name an unserved surface: advertising `core_link` or
+    /// an edge-type catalog would tell agents to call tools that do not
+    /// exist.
     #[test]
-    fn no_profile_names_the_retired_edge_vocabulary() {
+    fn no_profile_names_an_unserved_edge_vocabulary() {
         for (tools, resources) in [
             (full_tool_set(), full_resource_set()),
             (

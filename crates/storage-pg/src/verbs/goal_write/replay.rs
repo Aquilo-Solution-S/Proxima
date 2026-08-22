@@ -80,9 +80,8 @@ pub(super) async fn goal_evidence_matches(
 }
 
 pub(super) fn idempotency_conflict(request_id: &str) -> StorageError {
-    // Typed variant (was a stringly `ConstraintViolation`). Its `Display`
-    // stays `idempotency_conflict:{request_id}` so storage-level callers that
-    // match on the message keep working; the engine matches the variant.
+    // The `Display` form is load-bearing: storage-level callers match on the
+    // message `idempotency_conflict:{request_id}`. The engine matches the variant.
     StorageError::IdempotencyConflict {
         request_id: request_id.to_string(),
     }

@@ -15,7 +15,7 @@ pub struct WorkRequestedV1 {
     /// Work items that must land before this one can dispatch. The
     /// schema-declared reference field that replaced `core/depends-on`:
     /// the dependency is a property of the depending row, so the index
-    /// rows come from here (docs/16 §Flavor Migration).
+    /// rows come from here (docs/16 §The Model).
     ///
     /// Not receipt key material — `repo_id` plus `request_key` is what
     /// makes a request the same request.

@@ -280,10 +280,9 @@ pub(super) async fn load_blob_location(
     }
 
     // No completed upload row for this owner: there is no locator to
-    // return. A blob row alone never yielded one — the content-addressed
-    // derivation that used to stand here computed a key and discarded it,
-    // and under owner-free keys there is nothing to derive from a hash at
-    // all. One answer for "absent" and "not yours", so neither is a probe.
+    // return. A blob row alone never yields one, because an owner-free key
+    // derives from the upload's primary key and not from a content hash.
+    // One answer for "absent" and "not yours", so neither is a probe.
     Err(BlobError::State("cited object not found for Owner".into()))
 }
 

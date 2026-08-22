@@ -239,7 +239,7 @@ async fn host_bearer_lists_all_tools_without_origin() -> Result<(), Box<dyn std:
         !template_uris
             .iter()
             .any(|uri| uri.contains("proxima://edges")),
-        "proxima://edges was retired; catalog is expand_neighbors/lineage: {template_uris:?}"
+        "proxima://edges is not a resource; catalog is expand_neighbors/lineage: {template_uris:?}"
     );
 
     common::stop_server(handle, &db_name).await?;

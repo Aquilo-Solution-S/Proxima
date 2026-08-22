@@ -12,8 +12,8 @@ fn substrate_schemas_register() {
     assert!(schema_ids.contains("core/agent-note-v1"));
     assert!(schema_ids.contains("core/utterance-v1"));
     assert!(schema_ids.contains("core/agent-derivation-v1"));
-    // The interpretation Perspective is where `core_link`'s reason and
-    // confidence went: into a node, not onto an edge.
+    // Reason and confidence live on the interpretation Perspective node,
+    // never on an edge.
     assert!(schema_ids.contains("core/interpretation-v1"));
 }
 

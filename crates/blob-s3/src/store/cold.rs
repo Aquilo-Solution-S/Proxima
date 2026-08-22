@@ -1,4 +1,4 @@
-//! S3 adapter for UML §5c cold objects.
+//! S3 adapter for cold Memory objects.
 
 use aws_sdk_s3::primitives::ByteStream;
 use proxima_core::{ColdObjectStore, StorageError};

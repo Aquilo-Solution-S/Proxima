@@ -1,8 +1,7 @@
-// Five erase entry points take (pool, owner parts, source scope, audit
-// context, authorization) — every argument is a distinct authority the erase
-// has to be handed, and bundling them into a struct would only move the arity
-// to its constructor. `too_many_lines` is narrowed to the two functions that
-// earn it, below.
+// The erase entry points take (pool, cold store, authorization, owner parts,
+// source scope) — every argument is a distinct authority the erase has to be
+// handed, and bundling them into a struct would only move the arity to its
+// constructor.
 #![allow(clippy::too_many_arguments)]
 
 use proxima_core::flavor::{EraseLeg, KeyShape};
@@ -25,11 +24,15 @@ enum SelectionScope<'a> {
     Source(&'a SourceId),
 }
 
-/// Begin a bulk-erase transaction: disable the pool's request-serving
-/// `statement_timeout` — a full-owner erase DELETEs across every
-/// owner-scoped table and can legitimately run longer than the request bound;
-/// `SET LOCAL` scopes the override to this transaction only) and defer
-/// constraint checks until commit.
+/// Begin a bulk-erase transaction.
+///
+/// A full-owner erase DELETEs across every owner-scoped table and can
+/// legitimately run longer than the pool's request-serving
+/// `statement_timeout`; `SET LOCAL` scopes that override to this transaction
+/// alone. `SET CONSTRAINTS ALL DEFERRED` moves any DEFERRABLE constraint
+/// check to commit; a constraint declared NOT DEFERRABLE is unaffected and
+/// still checked per statement, which is why the delete order below is
+/// load-bearing rather than incidental.
 async fn begin_bulk_erase_tx(pool: &PgPool) -> Result<Tx<'_>, StorageError> {
     let mut tx = pool.begin().await.map_err(map_err)?;
     sqlx::query("SET LOCAL statement_timeout = 0")
@@ -355,10 +358,7 @@ async fn erase_selected(
     // inverse is `ByKey` and whose key is a memory or goal `t` is deleted
     // through the matching selection set; owner-pinned surfaces are held out
     // of it, because their rows do not follow a transfer and the selection
-    // set is the wrong set for them in both directions. There used to be five
-    // hand-assembled name lists here, built from `PayloadKind` and from a
-    // `pg_sidecar!` macro flag — two projections of the contract, written to
-    // agree with it and checked against nothing.
+    // set is the wrong set for them in both directions.
     delete_keyed_surfaces(tx, surfaces, KeyedSet::Memories).await?;
     delete_keyed_surfaces(tx, surfaces, KeyedSet::Goals).await?;
 
@@ -374,7 +374,7 @@ async fn erase_selected(
     delete_owned_surfaces(tx, surfaces, owner, scope).await?;
 
     let content_ids = selected_content_ids(tx).await?;
-    let memories = delete_selected_table(
+    let memories = delete_fixed_by_selected(
         tx,
         "proxima_core.memory",
         "t",
@@ -386,7 +386,7 @@ async fn erase_selected(
     super::content::gc_unreferenced_content_batch(tx, &content_ids).await?;
     record_count(tx, "memories", memories.saturating_add(cooled)).await?;
     let goals =
-        delete_selected_table(tx, "proxima_core.goal", "t", "selected_goals", "goal_id").await?;
+        delete_fixed_by_selected(tx, "proxima_core.goal", "t", "selected_goals", "goal_id").await?;
     record_count(tx, "goals", goals).await?;
     let wake_configs = delete_wake_configs(tx, owner, scope).await?;
     record_count(tx, "wake_configs", wake_configs).await?;
@@ -409,14 +409,12 @@ async fn erase_selected(
 /// correct: a declared counter whose leg deleted nothing is present at zero,
 /// so a host reading the receipt can tell "the erase counted none" from "the
 /// erase does not count this". A count nothing declares cannot appear, and a
-/// declared counter cannot be missing — the property `OwnerEraseCounts`
-/// used to try to get from a fixed struct definition, and got wrong in four
-/// fields at once.
+/// declared counter cannot be missing — a property no fixed struct
+/// definition can hold.
 ///
-/// It also used to stamp an in-progress `Refused` journal row here, so that
-/// a crash mid-erase left a durable trace. Core keeps no journal now: the
-/// erase is one transaction, a crash rolls it back whole, and what the host
-/// owes its users is the host's record to keep.
+/// Core keeps no erase journal: the erase is one transaction, a crash rolls
+/// it back whole, and what the host owes its users is the host's record to
+/// keep.
 async fn open_erase_bookkeeping(
     tx: &mut Tx<'_>,
     surfaces: &OwnerSurfaces,
@@ -668,11 +666,8 @@ async fn record_count(tx: &mut Tx<'_>, name: &str, count: u64) -> Result<(), Sto
 
 /// The receipt: every counter the transaction tallied, in one read.
 ///
-/// It used to be seventeen `count_named` round trips into seventeen named
-/// struct fields, which is why `sketches` — recorded on line 496 since the
-/// cooled-export fix — never reached a caller, and why the code flavor's
-/// `repo_rows` and `ingestion_run_rows` could not. Reading the whole table
-/// makes the receipt exactly what the erase counted.
+/// Reading the whole table makes the receipt exactly what the erase counted,
+/// including counters a flavor declares that no fixed struct could name.
 async fn final_counts(tx: &mut Tx<'_>) -> Result<OwnerEraseCounts, StorageError> {
     let rows: Vec<(String, i64)> =
         sqlx::query_as("SELECT name, count FROM erase_counts ORDER BY name")
@@ -711,16 +706,6 @@ async fn delete_fixed_by_selected(
         .await
         .map_err(map_err)?;
     Ok(result.rows_affected())
-}
-
-async fn delete_selected_table(
-    tx: &mut Tx<'_>,
-    table: &str,
-    table_column: &str,
-    selected_table: &str,
-    selected_column: &str,
-) -> Result<u64, StorageError> {
-    delete_fixed_by_selected(tx, table, table_column, selected_table, selected_column).await
 }
 
 /// Delete cooled stubs for selected admissions and mark their cold objects
@@ -887,11 +872,12 @@ struct BlobEraseCounts {
 ///
 /// `blob` carries `schema_id` and `content_hash`; `blob_uploads` carries
 /// `bucket`, `object_key`, `filename`, `mime`, `sha256`, `etag` and
-/// `error_message`. All of it is owner data, and nothing else collected it:
-/// erase never deletes the `owners` row, so the rows persisted forever.
+/// `error_message`. All of it is owner data, and nothing else collects it:
+/// erase never deletes the `owners` row, so a forgotten statement here
+/// leaves the rows behind forever.
 ///
-/// Owner erase takes every
-/// blob row of the owner — the memory rows are already gone, so a surviving
+/// Owner erase takes every blob row of the owner — the memory rows are
+/// already gone, so a surviving
 /// reference means the erase is wrong and the `NO ACTION` FK aborts it rather
 /// than letting the row survive quietly. Source-scope candidates are captured
 /// from the selected hot and cooled admissions before either table is deleted.
@@ -904,11 +890,9 @@ struct BlobEraseCounts {
 ///
 /// ROW deletion is unconditional; OBJECT deletion is not. `blob` rows are
 /// per-owner by `UNIQUE (owner_id, schema_id, content_hash)`, so deleting
-/// this owner's rows can never touch another owner's — that part of the
-/// invariant above is untouched by the shared-blob dedupe arm. The S3
-/// object is the thing the arm made shareable, and
-/// [`enqueue_blob_object_keys`] is where "the row is going" stopped
-/// implying "the bytes are going".
+/// this owner's rows can never touch another owner's. The S3 object is
+/// shareable, though, so "the row is going" does not imply "the bytes are
+/// going" — [`enqueue_blob_object_keys`] is where that question is asked.
 async fn delete_blobs(
     tx: &mut Tx<'_>,
     owner: OwnerRef,
@@ -944,7 +928,7 @@ async fn delete_blobs(
                 .rows_affected()
         }
         SelectionScope::Source(_) => {
-            delete_selected_table(
+            delete_fixed_by_selected(
                 tx,
                 "proxima_core.blob_uploads",
                 "blob_id",
@@ -954,7 +938,7 @@ async fn delete_blobs(
             .await?
         }
     };
-    let blobs = delete_selected_table(
+    let blobs = delete_fixed_by_selected(
         tx,
         "proxima_core.blob",
         "blob_id",
@@ -972,9 +956,7 @@ async fn delete_blobs(
 /// Which of the erased scope's objects may actually be destroyed.
 ///
 /// REFCOUNT BY QUERY, not by counter — `gc_unreferenced_content`'s idiom,
-/// one level down. Before the shared-blob dedupe arm, an object had exactly
-/// one `blob_uploads` row and "the row is going" and "the object is going"
-/// were the same statement. A mount makes the relation many-to-one: two
+/// one level down. A mount makes object-to-upload-row many-to-one: two
 /// owners' rows may name one object, so erasing one owner must leave the
 /// bytes the other still reads.
 ///
@@ -1085,7 +1067,7 @@ mod tests {
         let needle = format!("{}.{}", "proxima_core", "compliance_suppression_keys");
         assert!(
             !src.contains(&needle),
-            "v008 has no suppression table; Lean retired SuppressionKey"
+            "the schema declares no suppression table"
         );
     }
 
@@ -1109,21 +1091,17 @@ mod tests {
         let live = format!("{}.{}", "proxima_core", "group_memberships");
         assert!(
             !src.contains(&retired),
-            "P1: resolved_group_memberships is not in 0001_v008"
+            "the resolved-membership view is not part of the schema"
         );
         assert!(
             src.contains(&live),
-            "P1: abandonment counts proxima_core.group_memberships"
+            "abandonment counts proxima_core.group_memberships"
         );
     }
 
-    /// Parity pin for the deleted `delete_fixed_*_sidecars` overlays.
-    ///
-    /// Those two functions named four core sidecar tables by hand and
-    /// deleted from them a second time, after the registry-driven sweep had
-    /// already done it. The literals below are exactly the tables they
-    /// named; the assertion is that the registry pass reaches each one, so
-    /// removing the overlay removed duplicate work and not coverage.
+    /// The registry-driven sweep reaches every core sidecar: the
+    /// memory-keyed pass for the memory sidecars, the goal-keyed pass for
+    /// `task_goal_v1`.
     #[test]
     fn the_registry_pass_reaches_every_core_sidecar() {
         use proxima_core::flavor::{EraseLeg, KeyShape};
@@ -1139,13 +1117,13 @@ mod tests {
             assert_eq!(
                 surfaces.erase_leg(table),
                 EraseLeg::Keyed(KeyShape::MemoryT { column: "t" }),
-                "{table} was in delete_fixed_memory_sidecars; the memory-keyed sweep must reach it"
+                "{table} is a memory sidecar; the memory-keyed sweep must reach it"
             );
         }
         assert_eq!(
             surfaces.erase_leg("proxima_core.task_goal_v1"),
             EraseLeg::Keyed(KeyShape::GoalT { column: "t" }),
-            "task_goal_v1 was in delete_fixed_goal_sidecars; the goal sweep must reach it"
+            "task_goal_v1 is a goal sidecar; the goal sweep must reach it"
         );
     }
 
@@ -1156,7 +1134,7 @@ mod tests {
     /// know is whether THIS crate can actually execute the answer, and the
     /// two generic loops skip anything they cannot map: a `Keyed` leg whose
     /// key shape has no selection set here would be silently dropped in
-    /// exactly the way freeze now prevents one flavor-side.
+    /// exactly the way freeze prevents one flavor-side.
     ///
     /// So: no core surface resolves to `Unreachable`, and every keyed one
     /// maps to a temp table this transaction fills.
@@ -1191,7 +1169,7 @@ mod tests {
     }
 
     /// The exemption list stays sorted. A list nobody can scan is a list
-    /// nobody prunes, and this one is now read by two crates.
+    /// nobody prunes, and this one is read by two crates.
     #[test]
     fn the_bespoke_leg_list_is_sorted_by_table() {
         let tables = proxima_core::flavor::FLAVOR_0.bespoke_erase_legs;

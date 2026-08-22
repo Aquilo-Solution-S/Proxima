@@ -7,23 +7,19 @@
 /// Read an env var gating a local-only or PG-backed e2e test.
 ///
 /// Locally (or on any runner without `CI=true`), a missing/empty value
-/// skips the test cleanly, mirroring the pre-existing
-/// `let Ok(..) = std::env::var(..) else { return Ok(()) }` idiom. Under
-/// `CI=true`, a missing value is a hard test failure instead of a silent
-/// skip.
+/// skips the test cleanly. Under `CI=true`, a missing value is a hard test
+/// failure instead of a silent skip.
 ///
-/// GitHub Actions already exports `DATABASE_URL` / `PROXIMA_TEST_DATABASE_URL`
-/// and runs the PG/OIDC e2e lane against live pgvector/pg18
-/// (`.github/workflows/ci.yml`), so this hardens non-GHA CI runners and
-/// local `CI=true` runs against that lane silently going dark — it does not
-/// close a currently-open GHA hole.
+/// GitHub Actions exports `DATABASE_URL` / `PROXIMA_TEST_DATABASE_URL` and
+/// runs the PG/OIDC e2e lane against live pgvector/pg18
+/// (`.github/workflows/ci.yml`); this keeps non-GHA CI runners and local
+/// `CI=true` runs from letting that lane go dark unnoticed.
 pub fn require_env_or_skip(name: &str) -> Option<String> {
     require_env_or_skip_with(name, proxima_core::process_env)
 }
 
-/// Env-lookup-parameterized core (mirrors the `impl Fn(&str) -> Option<String>`
-/// lookup pattern already used throughout `apps/proxima-mcp/src/lib.rs`) so
-/// unit tests can exercise every branch without mutating real process env —
+/// Env-lookup-parameterized core, so unit tests can exercise every branch
+/// without mutating real process env —
 /// other `#[tokio::test]` functions in this same binary read `DATABASE_URL`
 /// / `CI` concurrently, and cargo's default parallel test threads would
 /// otherwise race a mutation against them.

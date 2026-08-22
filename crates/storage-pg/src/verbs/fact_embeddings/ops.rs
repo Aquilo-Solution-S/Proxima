@@ -284,9 +284,8 @@ async fn current_embedding_ids_by_distance(
                 .map_err(map_err)?;
         }
     }
-    // One vec per (entity_id, model_id, embedding_version). Head join
-    // already picks the current version; do not DISTINCT ON a dropped
-    // entity_kind column.
+    // One vec per (entity_id, model_id, embedding_version). The head join already
+    // picks the current version; there is nothing to DISTINCT ON.
     let rows = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT emb.entity_id
            FROM proxima_core.embeddings emb

@@ -1,15 +1,15 @@
 //! Every verb that touches a searchable admission maintains its projection.
 //!
-//! The projection is the first memory-keyed surface that is neither stamped
-//! on `memory.sidecar_tables` nor derived at read time: it is a row the
-//! WRITE path has to keep, and a row every inverse has to reach. Before it,
-//! the vector lived in the sidecar's own GENERATED column and followed the
-//! sidecar around for free — delete the sidecar row and the vector went
-//! with it, transfer the Memory and the vector never had an owner to move.
-//! None of that is true now, so each verb needs its own evidence.
+//! The projection is the one memory-keyed surface that is neither stamped on
+//! `memory.sidecar_tables` nor derived at read time: it is a row the WRITE path
+//! has to keep, and a row every inverse has to reach. A vector living in the
+//! sidecar's own GENERATED column follows the sidecar for free — delete the
+//! sidecar row and the vector goes with it, transfer the Memory and the vector
+//! has no owner to move. A projection row has neither property, so each verb
+//! needs its own evidence.
 //!
-//! `search_projection_identity` proves the READ side is unchanged. This is
-//! the write side: write, transfer, forget-to-cold, erase.
+//! `search_projection_identity` carries the READ side. This is the write side:
+//! write, transfer, forget-to-cold, erase.
 #![allow(clippy::doc_markdown)]
 
 use proxima_core::owner_inverse::{
@@ -266,8 +266,7 @@ async fn erasing_an_admission_takes_its_projection_row() {
     .await;
 }
 
-/// R13: the owner inverse reaches the projection WITHOUT being taught
-/// about it.
+/// The owner inverse reaches the projection WITHOUT being taught about it.
 ///
 /// `projection.memory_id` is `REFERENCES proxima_core.memory (t) ON DELETE
 /// CASCADE`, and an owner erase deletes `proxima_core.memory` rows, so

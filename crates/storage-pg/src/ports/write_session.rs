@@ -216,9 +216,9 @@ impl WriteSession for PgWriteSession {
         let owner = permit.owner();
         let owner_id = owner.stored_owner_id();
         let t = memory_id.into_inner();
-        // Ownership precondition, not a key ingredient: the cold key is
-        // `cold/<t>` now, but a `t` the caller does not own must still be
-        // NotFound rather than a forget on someone else's row.
+        // Ownership precondition, not a key ingredient: the cold key derives
+        // from `t` alone, but a `t` the caller does not own must be NotFound
+        // rather than a forget on someone else's row.
         sqlx::query_scalar::<_, uuid::Uuid>(
             "SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
         )

@@ -77,7 +77,7 @@ fn memory_select_batch_sql_validates_identifiers() {
         "SELECT memory_id, title, tags FROM proxima_core.agent_note_v1 \
              WHERE memory_id = ANY($1)"
     );
-    // Regression: enum projection expressions (`<col>::text AS <col>`,
+    // Enum projection expressions (`<col>::text AS <col>`,
     // emitted by `pg_sidecar_select_col!`) are trusted compile-time
     // expressions and must be accepted verbatim, not rejected as
     // non-identifiers.
@@ -374,14 +374,13 @@ fn public_sidecar_batch_read_denies_core_schema_unless_registry_admits_it() {
     validate_sidecar_read_sql(sql, true).expect("registered core sidecars may read core tables");
 }
 
-/// Parity pin for the RA-11 unification.
+/// Parity pin: the `pg_sidecar!` `owner_pinned` flag and the contract's
+/// `RetainAtSource` rule are two statements of one fact.
 ///
-/// `owner_pinned` was declared in `pg_sidecar!` and consumed only by the
-/// Postgres adapter, which appended it to the owner-inverse table lists on the
-/// way past — a fifth leg core never saw. The engine now builds all five
-/// legs from the flavor contracts, and `freeze_against` refuses a
-/// registration whose macro flag contradicts its schema's transfer rule.
-/// The literal below is the whole owner-pinned set as of v0.0.8.
+/// `freeze_against` refuses a registration whose macro flag contradicts its
+/// schema's transfer rule; this pins the resulting set as a literal so
+/// adding an owner-pinned sidecar is a deliberate edit here rather than a
+/// silent widening.
 #[test]
 fn the_owner_pinned_set_is_the_contracts_retain_at_source_set() {
     let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
@@ -402,17 +401,17 @@ fn the_owner_pinned_set_is_the_contracts_retain_at_source_set() {
     );
 }
 
-/// The second half of the same unification, for the forget.
+/// The forget half of the same parity.
 ///
 /// `ForgetRule::Keep` on a memory sidecar says the forget leaves its rows
 /// alone. Nothing in the forget reads it: both walks — the dump and the
 /// delete — test `is_owner_pinned` and nothing else. So `Keep` is honoured
 /// exactly when the sidecar is also owner-pinned, and `freeze_against`'s
-/// `check_keep_is_owner_pinned` now refuses any registry where the two
+/// `check_keep_is_owner_pinned` refuses any registry where the two
 /// disagree in either direction.
 ///
-/// This is the literal set as of v0.0.8, and it is the same one line for
-/// line as the transfer sibling above — which is the point.
+/// The pinned set is the same one line for line as the transfer sibling
+/// above, which is the point.
 /// `mcp_call_logged_v1` is `RetainAtSource` AND `Keep` AND owner-pinned
 /// because all three are the same fact about an audit row: it belongs to the
 /// owner that acted, not to the memory.

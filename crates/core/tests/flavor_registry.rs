@@ -81,7 +81,7 @@ fn served_catalog_includes_forget_and_drops_open_batch() {
         .collect::<Vec<_>>();
     assert!(
         names.contains(&"core_forget"),
-        "slice 9 catalog must serve forget: {names:?}"
+        "the catalog must serve forget: {names:?}"
     );
     assert!(
         !names.iter().any(|name| name.contains("open_batch")),

@@ -107,16 +107,15 @@ impl McpToolPresentation {
 /// [`McpToolCtx`] carries `format_*`/`resolve_*` as inherent methods, but a
 /// flavor implementing [`crate::Tool`] is handed a transport-neutral
 /// [`ToolCtx`] and has to go through [`ToolCtx::service`] instead. Every
-/// flavor that mints handles therefore ends up writing the same forwarding
-/// shim; the code flavor carried one for eleven tools, and proxima-docs
-/// would have written the second copy. This is that shim, once, in the
-/// crate that owns the grammar.
+/// flavor that mints handles would otherwise write the same forwarding
+/// shim, once per tool. This is that shim, once, in the crate that owns
+/// the grammar.
 ///
 /// `ToolCtx` itself stays transport-neutral: import this trait and the
 /// methods appear, don't and they don't exist.
 ///
 /// The `format_*` methods panic when the presentation service is absent,
-/// which is the pre-existing contract they inherited: [`crate::mcp::McpTool`]'s
+/// which is the contract they inherit: [`crate::mcp::McpTool`]'s
 /// blanket impl over [`crate::Tool`] always installs the service, so absence
 /// means the tool was invoked outside the MCP adapter and has no business
 /// minting MCP wire references. `resolve_*` reports the same condition as

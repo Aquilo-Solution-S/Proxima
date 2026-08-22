@@ -267,11 +267,11 @@ mod tests {
         );
         assert!(
             !src.contains(&join),
-            "W5: IncludeSuperseded reads m.schema_id; head join is HeadsOnly only"
+            "IncludeSuperseded reads m.schema_id; head join is HeadsOnly only"
         );
         assert!(
             src.contains("m.schema_id"),
-            "W5: query page selects memory.schema_id"
+            "query page selects memory.schema_id"
         );
     }
 

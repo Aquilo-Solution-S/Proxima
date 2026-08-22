@@ -72,7 +72,7 @@ impl ExecutionPlanItemKind {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExecutionPlanItemArgs {
     #[serde(default)]
-    #[schemars(description = "Plan item kind. Defaults to `implementation` for compatibility.")]
+    #[schemars(description = "Plan item kind. Defaults to `implementation`.")]
     pub kind: ExecutionPlanItemKind,
     #[schemars(description = "Unique item key inside this plan, 1 to 80 ASCII chars.")]
     pub key: String,
@@ -176,9 +176,8 @@ pub struct CodeRetryExecutionRequestArgs {
 pub struct CodeRetryExecutionRequestOutput {
     pub handle: String,
     /// `P:` handle of the assignment Perspective that names the target
-    /// worker and this request. The successor to the retired
-    /// `proxima-code/targets-execution-request` edge: a memory handle,
-    /// because the claim is a node.
+    /// worker and this request. A memory handle, because the claim is a node
+    /// rather than an edge.
     pub assignment_handle: Option<String>,
     /// `origin` rows asserted by the retry: the prior request, everything
     /// it was made from, and any extra evidence.

@@ -1,8 +1,9 @@
-//! The plan's §2.5 acceptance criteria, and the embedding byte-parity gate.
+//! Acceptance criteria for the flavor contract, and the embedding byte-parity
+//! gate.
 //!
-//! Each case is the same shape: something that used to be true only because
-//! several places happened to agree is now a declaration plus a test that
-//! the declaration matches the behaviour. Requires local PG.
+//! Each case is the same shape: a property that several places have to agree
+//! on is a declaration plus a test that the declaration matches the behaviour.
+//! Requires local PG.
 
 use proxima_core::flavor::{
     EmbeddingRecipe, Enforcement, EraseLeg, SLOT_DEFAULT, SearchProjectionDecl, TransferRule,
@@ -13,15 +14,15 @@ use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-// ── §2.5 (1): goals don't transfer ──────────────────────────────────────
+// ── Goals don't transfer ────────────────────────────────────────────────
 
 /// The refusal is a declaration, and the declaration names the sites that
 /// actually enforce it.
 ///
-/// This is the case the map (RA-6) flagged: after #229 there is no CHECK
-/// constraint to point at, so a contract that claimed one would be a lie.
-/// What exists is an engine refusal, a storage backstop and a DDL trigger,
-/// and `try_freeze` rejects a `NotTransferable` that names none of them.
+/// After #229 there is no CHECK constraint to point at, so a contract that
+/// claimed one would be a lie. What exists is an engine refusal, a storage
+/// backstop and a DDL trigger, and `try_freeze` rejects a `NotTransferable`
+/// that names none of them.
 #[test]
 fn goals_are_not_transferable_and_the_declaration_names_its_enforcement() {
     let goals = FLAVOR_0
@@ -66,7 +67,7 @@ fn goals_are_not_transferable_and_the_declaration_names_its_enforcement() {
             !enforced_by
                 .iter()
                 .any(|site| matches!(site, Enforcement::Constraint(_))),
-            "{}: there is no CHECK constraint to cite (map RA-6); claiming one \
+            "{}: there is no CHECK constraint to cite; claiming one \
              would make the contract a comment",
             schema.id.render()
         );
@@ -287,16 +288,15 @@ async fn every_cited_enforcement_site_resolves() {
     result.expect("every_cited_enforcement_site_resolves failed");
 }
 
-// ── §2.5 (2): declared absence ──────────────────────────────────────────
+// ── Declared absence ────────────────────────────────────────────────────
 
 /// A non-surface is a value, not an omission.
 ///
-/// Before the contract, `search_projection() -> None` was reachable three
-/// ways — no projection, empty fields, no sidecar table — so a schema that
-/// deliberately does not search was indistinguishable from one whose
-/// declaration was forgotten. The plan's acceptance case is spelled
-/// "ChatTurn-style"; utterances are a search surface in this tree — they
-/// carry their own score band — so the declared-absence exemplars are the
+/// An absent projection has several possible causes — no projection, no
+/// searchable fields, no sidecar table — so without a declared value a schema
+/// that deliberately does not search is indistinguishable from one whose
+/// declaration was forgotten. Utterances are a search surface in this tree —
+/// they carry their own score band — so the declared-absence exemplars are the
 /// schemas that really do decline.
 #[test]
 fn declared_absence_is_a_value_with_a_reason() {
@@ -328,7 +328,7 @@ fn declared_absence_is_a_value_with_a_reason() {
         .expect("core declares utterance-v1");
     assert!(
         utterance.search.is_projected(),
-        "utterances ARE searchable here (§4.3); the tested value is that \
+        "utterances ARE searchable here; the tested value is that \
          absence is declarable, not that utterances declare it"
     );
 
@@ -391,7 +391,7 @@ fn every_declared_non_count_says_why() {
     );
 }
 
-// ── §2.5 (3): forget touches everything ─────────────────────────────────
+// ── Forget touches everything ───────────────────────────────────────────
 
 /// Every declared surface says what forget does to it, non-optionally.
 ///
@@ -421,8 +421,7 @@ fn every_declared_surface_states_what_forget_does() {
         }
     }
 
-    // And the same for erase and export, which is the asymmetry the plan
-    // (§2.5 item 6) calls out: exclusions are declared per table.
+    // And the same for erase and export: exclusions are declared per table.
     for surface in &surfaces {
         if let proxima_core::flavor::ExportRule::Excluded { why } = surface.export {
             assert!(
@@ -441,7 +440,7 @@ fn every_declared_surface_states_what_forget_does() {
     }
 }
 
-// ── §2.5 (4): transfers announce everywhere ─────────────────────────────
+// ── Transfers announce everywhere ───────────────────────────────────────
 
 /// `proxima_core.announce` is a declared surface with a stated transfer
 /// rule, so a transfer cannot move a memory and leave its change log
@@ -527,7 +526,7 @@ fn every_recipe_resolves_to_the_pair_the_shipped_drain_reads() {
         } else {
             assert!(
                 resolved.is_empty(),
-                "{}: nothing embeds this schema today, so the recipe must \
+                "{}: nothing embeds this schema, so the recipe must \
                  produce no units",
                 schema_id.as_str()
             );
@@ -685,7 +684,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
                 .expect("seeded schema is declared by flavor #0");
 
             let units = schema.embedding.resolve(schema.sidecar_table);
-            assert_eq!(units.len(), 1, "{schema_id} embeds one unit in v0.0.8");
+            assert_eq!(units.len(), 1, "{schema_id} embeds exactly one unit");
             let unit = units[0];
             assert_eq!(
                 unit.slot, SLOT_DEFAULT,
@@ -706,7 +705,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
             .fetch_one(pool)
             .await?;
 
-            // What the drain reads today.
+            // What the drain reads.
             let shipped_text = proxima_storage_pg::verbs::fact_embeddings::load_embedding_text(
                 pool,
                 &owner,
@@ -750,20 +749,17 @@ fn entity_kind_of(kind: PayloadKind) -> proxima_core::EntityKind {
     }
 }
 
-// ── Phase C: a declared cascade is a cascade the catalog enforces ────────
+// ── A declared cascade is a cascade the catalog enforces ────────────────
 
 /// `EraseRule::Cascade { via }` is a claim about the database, and the
-/// consolidated owner erase acts on it: a cascading surface gets no
-/// statement, because the constraint is the proof. Until this test, nothing
-/// in core checked the claim, and two of flavor #0's three cascades were
-/// false — `memory_head` named a `NO ACTION` foreign key that runs the other
-/// way, and `content` named a Rust function. Both were corrected in the same
-/// commit that added this gate; generating from the declarations first would
-/// have left every erased owner's head rows behind.
+/// consolidated owner erase acts on it: a cascading surface gets no statement,
+/// because the constraint is the proof. A declaration naming a foreign key that
+/// runs the other way, or a `NO ACTION` one, or a Rust function, leaves every
+/// erased owner's rows behind and nothing else notices.
 ///
-/// Lifted from `flavors/code/tests/erase_repo_pg.rs`, which has asked
-/// `pg_constraint` this question since Phase 2. The core copy is the one
-/// that matters: flavor #0 speaks for the kernel spine.
+/// `flavors/code/tests/erase_repo_pg.rs` asks `pg_constraint` the same question
+/// for the code flavor. The core copy is the one that matters: flavor #0 speaks
+/// for the kernel spine.
 #[tokio::test]
 async fn every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces() {
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
@@ -826,22 +822,14 @@ async fn every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces() {
 
 /// Every column a declaration NAMES is a column the catalog HAS.
 ///
-/// `KeyShape` and `FollowOrDedupe { dedupe_key, remaps }` spell column
-/// names as `&'static str`, which the compiler cannot check against a
-/// table it has never seen. Three phases of evidence say the compiler not
-/// checking them is not a theoretical worry:
-///
-/// - four code-flavor detail tables declared `Custom(&["memory_id"])`, a
-///   column none of them has, and it went unnoticed for as long as nothing
-///   read the field for a `Cascade` surface;
-/// - `proxima_core.projection` declared its memory key as `t` until Phase
-///   4, and the column is `memory_id` — again unread, again untrue;
-/// - `blob`'s `remaps` named three columns where the shipped SQL touched
-///   two.
-///
-/// All three are the same defect: a string nothing resolves. This resolves
-/// every one of them against `information_schema`, so the next one fails a
-/// test instead of reaching a generator.
+/// `KeyShape` and `FollowOrDedupe { dedupe_key, remaps }` spell column names as
+/// `&'static str`, which the compiler cannot check against a table it has never
+/// seen. A name that resolves to nothing is invisible until a generator reads
+/// the field — a `Custom(&["memory_id"])` on a table with no such column, a
+/// memory key declared `t` where the column is `memory_id`, a `remaps` naming
+/// three columns where the SQL touches two. This resolves every declared column
+/// against `information_schema`, so the next one fails a test instead of
+/// reaching a generator.
 ///
 /// `owner_columns` is deliberately in scope too. It is genuinely consumed
 /// by the export generator, but only for surfaces the bundle carries — an
@@ -1020,24 +1008,19 @@ async fn every_dedupe_key_is_a_uniqueness_the_schema_enforces() {
 
 // ── the connect default resolves through a registry, not the test seam ──
 
-/// A `PgStorage` built by the production constructor classifies flavor #0's
-/// surfaces the way flavor #0 declared them.
+/// The production constructor must resolve surfaces through the registry.
+/// `OwnerSurfaces::from_surfaces` is a test seam — its own doc says "Production
+/// reaches for `for_registry`" — and it classifies every surface handed to it
+/// against an EMPTY bespoke list, because a surface arriving loose has no
+/// contract to have exempted it. Flavor #0's surfaces are not loose: built that
+/// way, sixteen of its twenty-eight get the wrong leg — `memory` and `cooled`
+/// as `Keyed` rather than `Bespoke`, `announce`, `content`, `sketch` and the
+/// three embedding tables as `Unreachable`, the value that is supposed to be a
+/// freeze error and never a runtime state.
 ///
-/// `connect_with_config` used to fill `surfaces` with
-/// `OwnerSurfaces::from_surfaces(FLAVOR_0.all_surfaces())`. That constructor
-/// is a test seam — its own doc says "Production reaches for
-/// `for_registry`" — and it classifies every surface handed to it against an
-/// EMPTY bespoke list, because a surface arriving loose has no contract to
-/// have exempted it. Flavor #0's surfaces are not loose. Sixteen of its
-/// twenty-eight came back with the wrong leg: `memory` and `cooled` as
-/// `Keyed` rather than `Bespoke`, `announce`, `content`, `sketch` and the
-/// three embedding tables as `Unreachable` — the value that is supposed to
-/// be a freeze error and never a runtime state.
-///
-/// Nothing consumed it yet, which is why nothing failed. `surfaces()` is
-/// public and `mcp-server` connects without `with_flavors`, so "nothing
-/// consumes it" was a property of the current call graph rather than of the
-/// design.
+/// `surfaces()` is public and `mcp-server` connects without `with_flavors`, so
+/// "nothing consumes it" is a property of the current call graph rather than of
+/// the design.
 ///
 /// The assertion is on the real constructor, not on the helper it calls, so
 /// it survives someone reintroducing the seam at the call site.
@@ -1106,13 +1089,11 @@ async fn the_connect_default_resolves_surfaces_through_the_registry() {
 
 // ── which declared keys are actually unique ─────────────────────────────
 
-/// `KeyShape` names the columns the erase joins on and the export orders
-/// by. Whether those columns identify ONE row is a property of the schema,
-/// and until this test nothing asked.
-///
-/// `owner_export::order_by` claimed they always do — "every declared key is
-/// unique, so every generated order is total". Five of flavor #0's
-/// twenty-eight are not, and the list below is the measurement rather than
+/// `KeyShape` names the columns the erase joins on and the export orders by.
+/// Whether those columns identify ONE row is a property of the schema, not of
+/// the declaration. `owner_export::order_by` assumes they always do — "every
+/// declared key is unique, so every generated order is total". Five of flavor
+/// #0's twenty-eight are not, and the list below is the measurement rather than
 /// a guess.
 ///
 /// Four of the five are `ExportRule::Excluded`, so a non-total order costs
@@ -1120,9 +1101,8 @@ async fn the_connect_default_resolves_surfaces_through_the_registry() {
 /// and its key is `t` while its primary key is
 /// `(owner_id, source_id, ingest_key)` — one memory can hold several
 /// admission receipts, and their order in a bundle is whatever the executor
-/// returns. That is the live one, recorded as a declared follow-up on
-/// `order_by` because fixing it needs the surface to carry a tiebreak the
-/// erase does not use.
+/// returns. That is the live one, and `order_by` states it: a total export
+/// order needs the surface to carry a tiebreak the erase does not use.
 ///
 /// The assertion is EQUALITY, not containment, so both directions are
 /// pinned: a new non-unique key has to be added here deliberately, and a

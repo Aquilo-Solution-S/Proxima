@@ -46,16 +46,15 @@ pub trait OwnerTransferPort: Send + Sync {
     /// all select by the row's own owner, so the source keeps both the history
     /// and the ability to destroy it.
     ///
-    /// This replaced a DELETE. Deleting kept the destination out, but it also
-    /// destroyed history the source could still be asked to produce — and left
-    /// nothing for the source's own erase to reach, which is the worse half:
-    /// rows a host cannot export are an inconvenience, rows a host cannot
-    /// destroy are a promise it cannot keep.
+    /// The rows stay put rather than being deleted. Deleting would keep the
+    /// destination out, but it would also destroy history the source could
+    /// still be asked to produce and leave nothing for the source's own
+    /// erase to reach: rows a host cannot export are an inconvenience, rows
+    /// a host cannot destroy are a promise it cannot keep.
+    ///
     /// `surfaces` carries the registry-resolved [`TransferLeg`] per table.
-    /// The verb READS those answers; it does not re-derive them, and it
-    /// holds no table list of its own — which is the whole of Phase 4's
-    /// change to this lane. Erase and export have taken the same argument
-    /// since #233, for the same reason.
+    /// The verb READS those answers; it does not re-derive them and holds no
+    /// table list of its own, exactly as erase and export do.
     ///
     /// [`TransferLeg`]: crate::flavor::TransferLeg
     async fn transfer_to_owner(

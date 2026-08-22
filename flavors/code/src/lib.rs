@@ -199,9 +199,9 @@ mod tests {
         assert!(schema_ids.contains("proxima-code/commit-summarizer-self-v1"));
         assert!(schema_ids.contains("proxima-code/engineer-self-v1"));
         assert!(schema_ids.contains("proxima-code/work-assignment-v1"));
-        // The retired edge schema. `proxima-code/calls` was a typed edge
-        // payload; a flavor cannot declare one any more, and the call sites
-        // it held live in the caller chunk's payload.
+        // `proxima-code/calls` is not a schema: a flavor cannot declare a
+        // typed edge payload, and call sites live on the caller chunk's
+        // payload.
         assert!(!schema_ids.contains("proxima-code/calls"));
         // Opaque cited-object / citation-mapping schemas
         assert!(schema_ids.contains(CODE_BLOB_SCHEMA));
@@ -222,14 +222,14 @@ mod tests {
         assert!(schema_ids.contains(ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA));
     }
 
-    /// What the three retired relations became: every connection this flavor
-    /// creates is now a field on a payload, and the payload says so itself.
+    /// Every connection this flavor creates is a field on a payload, and the
+    /// payload says so itself.
     ///
-    /// This is the checkable half of docs/16 §Flavor Migration. There is no
-    /// relation registry left to interrogate, so the assertion is against the
-    /// schemas that own the statements instead.
+    /// This is the checkable half of docs/16 §The Model. There is no relation
+    /// registry to interrogate, so the assertion is against the schemas that
+    /// own the statements instead.
     #[test]
-    fn every_retired_relation_has_a_payload_that_owns_it() {
+    fn every_connection_is_a_field_on_a_payload_that_owns_it() {
         use super::payloads::{
             AcceptanceCriteriaV1, CodeCallSiteV1, CodeCallV1, CodeChunkV1, CodeWorkAssignmentV1,
             FileState,
@@ -294,8 +294,8 @@ mod tests {
             proxima_core::EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(work_item))
         );
 
-        // proxima-code/targets-execution-request: neither endpoint could own
-        // the claim, so it became a node that names both.
+        // proxima-code/targets-execution-request: neither endpoint owns the
+        // claim, so it is a node that names both.
         let worker = uuid::Uuid::now_v7();
         let assignment = CodeWorkAssignmentV1 {
             repo_id: uuid::Uuid::now_v7(),
@@ -320,13 +320,11 @@ mod tests {
 
     /// Every tool this flavor serves declares what it does to the world.
     ///
-    /// Not cosmetic. `ScopeGateBehavior::enforce_owner_role` asks whether
-    /// a tool is read-only and demands WRITE access when it cannot tell,
-    /// and its only source was a hardcoded match over *core* tool names —
-    /// so every tool here was billed as a write, and a viewer was refused
-    /// a search. The other half is `erase_repo`, which is irreversible and
-    /// advertised nothing at all to a client deciding what to
-    /// auto-approve.
+    /// Not cosmetic. `ScopeGateBehavior::enforce_owner_role` asks whether a
+    /// tool is read-only and demands WRITE access when it cannot tell, so an
+    /// undeclared read tool is billed as a write and a viewer is refused a
+    /// search. The other half is `erase_repo`, which is irreversible and must
+    /// advertise that to a client deciding what to auto-approve.
     ///
     /// Asserted over the whole registered set rather than tool by tool, so
     /// a tool added later cannot ship silent.

@@ -161,11 +161,11 @@ impl Engine {
                 ));
             }
         }
-        // One uniform admission rule replaces the per-relation policy
-        // matrix (docs/16 §Ownership and visibility): the row is owned by
-        // the source owner — already established by the write permit
-        // above — and the write is admitted iff the writer can also READ
-        // every target at write time.
+        // One uniform admission rule governs every index row (docs/16
+        // §The Model): the row is owned by the source owner — already
+        // established by the write permit above — and the write is
+        // admitted iff the writer can also READ every target at write
+        // time.
         let source = EdgeEndpoint::memory(req.kind, req.memory_id);
         let origins = self
             .authorized_index_targets(authority, source, req.derived_from, "derived_from")
@@ -685,7 +685,7 @@ mod tests {
         let reload = format!("{}{}", "load_required_memory_", "kind");
         assert!(
             !body.contains(&reload),
-            "D2: stored kind is the in-tx TOCTOU SELECT, not a second pre-tx fanout"
+            "stored kind is the in-tx TOCTOU SELECT, not a second pre-tx fanout"
         );
         assert!(
             body.contains("authorize_entry_read"),

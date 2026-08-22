@@ -1,5 +1,5 @@
-//! D2: in-tx origin proof uses stored kind. Declared Fact on a
-//! Perspective row must fail — old code discarded the SELECT kind.
+//! The in-tx origin proof reads the STORED kind, not the declared one: a
+//! declared Fact on a Perspective row must fail.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::storage_ports::OwnerWritePermit;
@@ -182,7 +182,7 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
             StorageError::ConstraintViolation(msg) => {
                 assert!(
                     msg.contains("does not match operator phase"),
-                    "D6: phase is on stored kind, got {msg}"
+                    "phase is on stored kind, got {msg}"
                 );
             }
             other => panic!("expected ConstraintViolation, got {other:?}"),
@@ -210,5 +210,5 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("D2 stored-kind origin proof failed");
+    result.expect("stored-kind origin proof failed");
 }

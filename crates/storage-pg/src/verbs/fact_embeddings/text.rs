@@ -225,7 +225,7 @@ mod tests {
         );
         assert!(
             !src.contains(&join),
-            "W5: embed text reads schema_id from memory"
+            "embed text reads schema_id from memory"
         );
     }
 
@@ -235,11 +235,11 @@ mod tests {
         let concat = format!("{}{}", "concat_ws", "(' ',");
         assert!(
             !src.contains(&concat),
-            "W6: drain does not re-concat projection columns"
+            "drain does not re-concat projection columns"
         );
         assert!(
             src.contains("unit.column"),
-            "W6: drain selects the stored sidecar column"
+            "drain selects the stored sidecar column"
         );
     }
 }

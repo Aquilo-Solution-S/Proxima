@@ -1,8 +1,8 @@
 //! `FactIngest` verb — typed surface only.
 //!
-//! See docs/14-protocol-surface.md §"Fact write" and
-//! docs/01-event-source.md §"Fact membrane". The storage-side body
-//! lives in `proxima-storage-pg`.
+//! See docs/14-protocol-surface.md §`FactIngest` and
+//! docs/01-event-source.md. The storage-side body lives in
+//! `proxima-storage-pg`.
 
 use uuid::Uuid;
 
@@ -140,11 +140,9 @@ pub struct FactWriteCommand {
     ///
     /// It lands on the PROJECTION row — `<flavor>.projection`'s
     /// `lexical_language` column — which is where the vector it governs is
-    /// derived. This doc said "the memory row" for two releases while no
-    /// such column existed, so three MCP tools advertised a `language`
-    /// parameter that reached storage and stopped there; the projection is
-    /// the first write path that has both the value and a column in scope
-    /// (R12).
+    /// derived. The projection is the first write path that has both the
+    /// value and a column in scope, which is why the `language` parameter
+    /// three MCP tools advertise lands here and nowhere earlier.
     ///
     /// `skip` like `rendered_text`: the language describes how the text is
     /// indexed, it is not receipt key material, and replaying an import

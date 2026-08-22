@@ -1,5 +1,5 @@
--- Proxima core schema — v0.0.8 timeseries (one file, fresh CREATE).
--- No ALTER of 0001–0021. Existing databases must reset.
+-- Proxima core schema — the timeseries lane, one file, fresh CREATE.
+-- This file is never ALTERed. Existing databases must reset.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 -- The projection's index is `gin (owner_id, search_tsv)`. `btree_gin` is
@@ -126,10 +126,10 @@ CREATE INDEX memory_head_owner_kind_idx
 -- `memory.sidecar_tables` is a row-stamp: it answers "what did THIS row
 -- actually write". The registry answers "what could this schema have
 -- written". Those are different questions with different failure modes, and
--- until this table existed nothing related the two: a stamp naming a table
--- no flavor declares was accepted at write time and then quietly skipped by
--- erase, export, forget and hydrate, because each of those walks the
--- registry. A row nobody can reach is the one shape no erase can destroy.
+-- nothing else relates them: a stamp naming a table no flavor declares
+-- would be accepted at write time and then quietly skipped by erase,
+-- export, forget and hydrate, because each of those walks the registry.
+-- A row nobody can reach is the one shape no erase can destroy.
 --
 -- Stamp ⊆ registry is therefore a database constraint (see
 -- `assert_sidecar_stamp_declared` below), not a check in one of the callers.
@@ -519,8 +519,8 @@ COMMENT ON COLUMN proxima_core.mcp_call_logged_v1.owner_id IS
 'The owner that made the call, pinned at write time. Deliberately NOT derived from proxima_core.memory.owner_id on read: an owner transfer moves the Memory and leaves this row behind, so history, export and erase all stay with the acting owner and the destination never sees the prior owner''s actor identities.';
 
 -- read_mcp_call_history pages by (time, t) for one owner, optionally
--- filtered by actor. The Memory-side index cannot serve it any more: the
--- scope is this table's own owner_id.
+-- filtered by actor. The Memory-side index cannot serve it: the scope is
+-- this table's own owner_id.
 CREATE INDEX mcp_call_logged_v1_owner_t_idx
     ON proxima_core.mcp_call_logged_v1 (owner_id, t DESC);
 
@@ -533,11 +533,10 @@ CREATE TYPE proxima_core.sketch_kind AS ENUM (
     'goal'
 );
 
--- The sketch carries no vector. It never had a reader: `core_search_memories`
--- scans the four declared sidecars and nothing scanned `sketch`, so its
--- `search_tsv`, its GIN and the `lexical_language` that fed them were index
--- maintenance on every recall write for no query. Lexical search is the
--- projection's job now.
+-- The sketch carries no vector and no reader scans it: `core_search_memories`
+-- scans the declared sidecars, and lexical search is the projection's job.
+-- A `search_tsv` here would be index maintenance on every recall write for
+-- no query.
 CREATE TABLE proxima_core.sketch (
     t uuid PRIMARY KEY,
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
@@ -670,10 +669,9 @@ CREATE TABLE proxima_core.interpretation_v1 (
 -- not this block.
 --
 -- One table per flavor, in the flavor's own schema, holding one row per
--- (memory, projected schema). It replaces five per-sidecar `search_tsv`
--- generated columns and their five GIN indexes with one index the whole
--- flavor shares, and it is where a memory's `lexical_language` is stamped
--- now that the sidecars no longer carry one.
+-- (memory, projected schema). One index the whole flavor shares, rather
+-- than a `search_tsv` and a GIN per sidecar, and it is where a memory's
+-- `lexical_language` is stamped.
 --
 -- Deliberately NOT registered in `proxima_core.flavor_surface`: a
 -- projection row is derived from a sidecar row, never stamped by a memory,
@@ -731,8 +729,8 @@ CREATE TABLE proxima_core.blob_uploads (
     -- had one of its own. The transfer writes
     -- COALESCE(source.mounted_from_upload_id, source.upload_id).
     --
-    -- DELIBERATELY NOT A FOREIGN KEY, against the projection map's §3.5
-    -- prescription. A reference to blob_uploads (upload_id) makes one
+    -- DELIBERATELY NOT A FOREIGN KEY. A reference to blob_uploads
+    -- (upload_id) makes one
     -- owner's mount a veto over another owner's erase: NO ACTION aborts
     -- the source's deletion, SET NULL silently breaks the
     -- destination's read (the row would then claim a key it did not mint
@@ -751,10 +749,9 @@ CREATE INDEX blob_uploads_owner_status_idx
     ON proxima_core.blob_uploads (owner_id, status);
 
 -- Refcount-by-query for the object, the way gc_unreferenced_content is
--- refcount-by-query for the row. Two owners may now name one object, so
--- "delete the object when its row goes" became "delete the object when no
--- surviving row names it" -- an anti-join that wants this index and no
--- stored counter.
+-- refcount-by-query for the row. Two owners may name one object, so the
+-- rule is "delete the object when no surviving row names it" — an anti-join
+-- that wants this index and no stored counter.
 CREATE INDEX blob_uploads_object_key_idx
     ON proxima_core.blob_uploads (object_key);
 
@@ -918,7 +915,7 @@ BEGIN
 END;
 $$;
 
--- B2 — a pin is grounding support iff it is a hot row, or a cooled Fact.
+-- A pin is grounding support iff it is a hot row, or a cooled Fact.
 -- `cooling` is the t about to leave the hot set (forget); NULL at admit.
 CREATE FUNCTION proxima_core.pins_have_grounding_support(
     pins uuid[],
@@ -956,7 +953,8 @@ BEGIN
     END IF;
 
     IF NEW.origins <> '{}' OR NEW.refs <> '{}' THEN
-        -- Wait out an in-flight forget *before* B2 (FOR UPDATE in commit_forget).
+        -- Wait out an in-flight forget before the support test
+        -- (FOR UPDATE in commit_forget).
         PERFORM 1
           FROM proxima_core.memory
          WHERE t = ANY (NEW.origins || NEW.refs)
@@ -1117,11 +1115,10 @@ CREATE TRIGGER owners_append_only
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.enforce_row_append_only();
 
--- The four searchable core sidecars became append-only WITH the projection.
--- Their text used to be indexed in place by a GENERATED column, so an
--- UPDATE re-derived the vector for free. The projection row is written
--- once, by the same transaction as the sidecar row; an UPDATE of the text
--- would leave the vector describing the old text with nothing to notice.
+-- The searchable core sidecars are append-only, because the projection row
+-- is written once, by the same transaction as the sidecar row; an UPDATE of
+-- the text would leave the vector describing the superseded text with
+-- nothing to notice.
 -- Supersession is a later `t` on the same handle, never an UPDATE, so this
 -- forbids nothing the write path does — it forbids the drift.
 CREATE TRIGGER agent_note_v1_append_only

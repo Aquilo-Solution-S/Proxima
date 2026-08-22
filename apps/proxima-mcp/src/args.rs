@@ -5,10 +5,8 @@ pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_de
 
 /// `DATABASE_URL`, or the dev default when it is not configured.
 ///
-/// Written out once rather than at each of the four subcommand parsers that
-/// need it, and read through [`proxima_core::env_value`] so `DATABASE_URL=`
-/// falls back to the default instead of handing an empty connection string to
-/// the pool.
+/// Read through [`proxima_core::env_value`] so `DATABASE_URL=` falls back to
+/// the default instead of handing an empty connection string to the pool.
 fn database_url_from_env() -> String {
     proxima_core::env_value(&proxima_core::process_env, "DATABASE_URL")
         .unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string())
@@ -56,7 +54,7 @@ Environment:
                                 Required when PROXIMA_OIDC_ISSUER is set,
                                 unless PROXIMA_OIDC_SUBJECT_MAP is given
                                 instead.
-  PROXIMA_OIDC_SUBJECT_MAP      Legacy single-issuer shorthand:
+  PROXIMA_OIDC_SUBJECT_MAP      Single-issuer shorthand:
                                 sub:<uuid>,sub2:<uuid2>; every entry binds
                                 to PROXIMA_OIDC_ISSUER. Mutually exclusive
                                 with PROXIMA_OIDC_SUBJECT_MAP_JSON.

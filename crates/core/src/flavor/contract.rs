@@ -4,18 +4,15 @@
 //! search surface, how their embed text is produced, what a transfer does
 //! to them, and which physical surfaces erase / export / forget must walk.
 //! Core consumes the declarations by iterating the registry, so a surface
-//! cannot be missed by forgetting to add it to a hand-written list — the
-//! bug class the v0.0.8 plan cites (#215, #223/#224, `lexical_language_forget`).
+//! cannot be missed by forgetting to add it to a hand-written list.
 //!
 //! Three rules shape every type here:
 //!
 //! 1. **Declared absence is a value.** [`SearchProjectionDecl::None`] and
 //!    [`EmbeddingRecipe::Never`] carry a `why` and are distinct from "nobody
-//!    wrote a declaration". Today `FactPayload::search_projection() -> None`
-//!    is the same value three different ways
-//!    (`flavor/schema_registration.rs`: no projection, empty fields, no
-//!    sidecar table), which is precisely why a non-surface cannot be told
-//!    from an oversight.
+//!    wrote a declaration". A bare `Option::None` in their place would give
+//!    a stated non-surface and an oversight the same value, and nothing
+//!    downstream could tell the two apart.
 //! 2. **Every rule is non-optional on a [`Surface`].** A new table that
 //!    forgets to say what forget does will not compile.
 //! 3. **A constraint beats a list.** [`Surface::completeness`] names the
@@ -75,8 +72,7 @@ impl SchemaRef {
 /// `D` leads because `D` is what an unweighted `to_tsvector` produces:
 /// "The default weight is `D` for lexemes that have no explicit weight"
 /// (`PostgreSQL` *12.3.1*). A projection unit that declares one level is
-/// therefore rank-identical to today's unweighted vector, which is what the
-/// membership-identity re-proof rests on.
+/// therefore rank-identical to an unweighted vector.
 pub const TSVECTOR_WEIGHT_CLASSES: [&str; 4] = ["D", "C", "B", "A"];
 
 /// `PostgreSQL`'s default `ts_rank` weight array, `{D, C, B, A}`
@@ -104,12 +100,12 @@ pub struct WeightedField {
     pub weight: f32,
 }
 
-/// The one weight every flavor #0 field declares in v0.0.8.
+/// The one weight every flavor #0 field declares.
 ///
-/// Uniform ⇒ one distinct level ⇒ every lexeme lands in class `D` and the
-/// emitted vector is textually the vector the generated column already
-/// produced. The projection move is provably score-free; honouring
-/// non-uniform weights is a separate, measured retrieval-quality change.
+/// Uniform ⇒ one distinct level ⇒ every lexeme lands in class `D`, so the
+/// emitted vector is textually the vector an unweighted `to_tsvector`
+/// produces. Honouring non-uniform weights is a separate, measured
+/// retrieval-quality change.
 pub const WEIGHT_UNIFORM: f32 = 1.0;
 
 /// Which lexical configuration produces and ranks a row's vector.
@@ -132,7 +128,7 @@ pub enum LanguagePolicy {
     /// The union of several pinned configurations, concatenated in the
     /// declared order — `lexical_tsv(c1, txt) || lexical_tsv(c2, txt)`.
     ///
-    /// Vocabulary extension rather than a generator feature (map §2.0.1):
+    /// Vocabulary extension rather than a generator feature:
     /// `proxima_code.commit_search_tsv` indexes commit prose under
     /// `simple` *and* `english` so non-English words survive English
     /// stop-word rules, and no single-configuration arm can say that. The
@@ -170,7 +166,7 @@ impl LanguagePolicy {
     }
 }
 
-/// Substring / `LIKE` search, opt-in per plan §4.2.3.
+/// Substring / `LIKE` search, opt-in per schema.
 ///
 /// Default is [`SubstringArm::Off`]: the arm adds zero rows for natural
 /// multi-word queries and is the only arm for all-stopword and
@@ -178,8 +174,8 @@ impl LanguagePolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SubstringArm {
     Off,
-    /// The shipped shape: a memory-first nested loop, deliberately NOT
-    /// routed at the composite index (probe-measured regression).
+    /// A memory-first nested loop, deliberately NOT routed at the composite
+    /// index (probe-measured regression).
     MemoryFirstNestedLoop,
     /// A same-table `LIKE` scan over the sidecar's own text columns, run
     /// only when the `@@` arm returned zero rows. The code flavor's three
@@ -212,14 +208,13 @@ pub const TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE: i32 = 1 | TS_RANK_NORMALIZATIO
 /// saying "my exact band is core's" — which is what
 /// [`BandComparability::CoreBands`] asserts at flavor level. They are
 /// deliberately NOT `flavor::contract` vocabulary: as module constants they
-/// masqueraded as universal while three renderers spelled three different
+/// would read as universal while three renderers spell three different
 /// score functions inside them.
 ///
-/// `normalization` is the last undeclared author of what a score means.
-/// Core's exact arm passes `32`; the code flavor's commit arm passes
-/// nothing; every rescue arm passes `1|32`. Three renderers, three
-/// conventions, one claimed band — so the flag becomes a declared property
-/// of the band, initialised to what each arm renders today.
+/// `normalization` is a declared property of the band because it is an
+/// author of what a score means. Core's exact arm passes `32`; the code
+/// flavor's commit arm passes nothing; every rescue arm passes `1|32`.
+/// Three renderers, three conventions, one claimed band.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Band {
     pub name: &'static str,
@@ -252,15 +247,13 @@ impl Band {
     ///
     /// Rendered at two decimals rather than through `f32`'s own `Display`,
     /// because `0.45f32 - 0.25f32` is `0.19999999`, which is a different
-    /// NUMBER from the `0.2` the shipped builders emit. Two decimals is the
-    /// precision the bands are declared at. The spelling does change —
-    /// `0.5` becomes `0.50` — but `0.5` and `0.50` are the same `numeric`
+    /// NUMBER from the `0.2` the SQL builders emit. Two decimals is the
+    /// precision the bands are declared at. The spelling does differ —
+    /// `0.5` renders as `0.50` — but `0.5` and `0.50` are the same `numeric`
     /// to `PostgreSQL`, so no score moves.
     ///
-    /// One author, in the crate that owns [`Band`]. There used to be two
-    /// byte-identical copies of this arithmetic — `storage-pg`'s private
-    /// `band_parts` and the code flavor's public one — because the first
-    /// was private.
+    /// One author for this arithmetic, in the crate that owns [`Band`], and
+    /// public so no other crate needs a copy.
     #[must_use]
     pub fn parts(self) -> (String, String) {
         (
@@ -275,8 +268,7 @@ impl Band {
     /// Omitted rather than rendered as `, 0` so that declaring the flag an
     /// arm already renders is provably score-free at the level of the
     /// emitted TEXT, not just of the value: `ts_rank_cd(v, q)` and
-    /// `ts_rank_cd(v, q, 0)` are the same call, and an arm that passed
-    /// nothing keeps passing nothing.
+    /// `ts_rank_cd(v, q, 0)` are the same call.
     #[must_use]
     pub fn normalization_arg(self) -> String {
         if self.normalization == TS_RANK_NORMALIZATION_NONE {
@@ -289,9 +281,8 @@ impl Band {
 
 /// Whether a schema is a search surface — and, when it is not, *why*.
 ///
-/// The map calls this `Searchable::{Never, Projected}`; the plan spells the
-/// absent arm `SearchProjection::None`. Same value either way: a declared
-/// non-surface, distinguishable from a missing declaration. The registry
+/// A declared non-surface, distinguishable from a missing declaration. The
+/// registry
 /// refuses to emit a projection row for [`Self::None`] and refuses to
 /// register a schema that declares neither.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -363,8 +354,8 @@ impl SearchProjectionDecl {
         }
     }
 
-    /// The band this schema declares under `name`, if any. This is the
-    /// lookup R1 settled on, in the one place that can be freeze-checked.
+    /// The band this schema declares under `name`, if any. Resolved by
+    /// name, in the one place freeze can check.
     #[must_use]
     pub fn band(&self, name: &str) -> Option<Band> {
         self.bands().iter().copied().find(|band| band.name == name)
@@ -447,7 +438,7 @@ impl SearchProjectionDecl {
     ///
     /// Uniform is `None` rather than `[w, .., w]` on purpose: one level
     /// means every lexeme is class `D`, and `PostgreSQL`'s own default array
-    /// is then the array that reproduces today's unweighted score exactly.
+    /// is then the array that reproduces the unweighted score exactly.
     /// Passing a rewritten array would move every score for no declared
     /// reason.
     #[must_use]
@@ -464,15 +455,14 @@ impl SearchProjectionDecl {
     }
 }
 
-// ── Embedding recipe (plan §4.5.1) ──────────────────────────────────────
+// ── Embedding recipe ────────────────────────────────────────────────────
 
 /// A named abstract model target, bound to a concrete model by deployment
 /// config. This is what lets a flavor say "embed this field with the code
 /// model" without hardcoding a model id into the declaration.
 ///
-/// v0.0.8 binds exactly one slot, [`SLOT_DEFAULT`]. Per-slot vector storage
-/// needs its own column or table (dimensionality differs per model) and is
-/// Phase 2+ machinery.
+/// Exactly one slot is bound, [`SLOT_DEFAULT`]. Per-slot vector storage
+/// needs its own column or table, because dimensionality differs per model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EmbeddingSlot(pub &'static str);
 
@@ -483,24 +473,20 @@ impl EmbeddingSlot {
     }
 }
 
-/// The only slot bound in v0.0.8.
+/// The only slot bound.
 pub const SLOT_DEFAULT: EmbeddingSlot = EmbeddingSlot("default");
 
 /// One `(column, slot)` pair: the output grain of a recipe.
 ///
-/// `column` is a pre-computed column on the schema's sidecar table — the
-/// shipped idiom (`SearchProjection::embed_text_column`), read by
+/// `column` is a pre-computed column on the schema's sidecar table, read
+/// back by `load_embedding_text` in
 /// `storage-pg/src/verbs/fact_embeddings/text.rs`.
 ///
-/// THERE IS NO `EmbedText` ENUM, and there was one for exactly one commit.
-/// It carried three arms; `Render` (the memory row's rendered text) and
-/// `Concat` (sidecar columns joined generator-side) held zero members and
-/// resolved identically, so the commit that introduced the type deleted two
-/// of its arms in the same breath and left `StoredColumn(&str)` — a wrapper
-/// around one field, destructured irrefutably at its only reader. The
-/// argument that killed the empty arms kills the survivor: a shape with one
-/// speaker is a guess about a future need, and when that need arrives it
-/// arrives with a caller, which is what tells you what to name.
+/// THERE IS NO `EmbedText` ENUM. Every unit resolves to a stored column, and
+/// a one-arm enum over that is a wrapper around one field, destructured
+/// irrefutably at its only reader: a shape with one speaker is a guess about
+/// a future need, and when that need arrives it arrives with a caller, which
+/// is what tells you what to name.
 ///
 /// So the field is the field. A second source of embed text becomes an
 /// enum here on the day a second source has a reader.
@@ -519,9 +505,8 @@ impl EmbedUnit {
 
 /// Per schema: typed sidecar in → list of embed units out.
 ///
-/// Supersedes the bare `FactPayload::EMBEDDABLE` / `embed_text_column`
-/// pair: `Never` carries a reason instead of being a naked `false`, and the
-/// unit list reserves the shape per-field target models need later.
+/// `Never` carries a reason instead of being a naked `false`, and the unit
+/// list is per-field, so a schema may target more than one column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EmbeddingRecipe {
     /// Structurally non-embeddable, with the reason attached.
@@ -530,9 +515,7 @@ pub enum EmbeddingRecipe {
     /// refuses the two disagreeing
     /// (`FlavorRegistryError::EmbeddabilityDisagreement`). The constant is
     /// what `non_embeddable_schema_ids` is built from and what the enqueue
-    /// lane excludes; this arm is what says why. They drifted for seven
-    /// Fact schemas before the check existed, all in the direction that
-    /// files embedding jobs for rows whose recipe yields no units.
+    /// lane excludes; this arm is what says why.
     Never {
         why: &'static str,
     },
@@ -543,9 +526,7 @@ pub enum EmbeddingRecipe {
 /// reads.
 ///
 /// `table` is optional because a schema may declare no sidecar. `column`
-/// is not: it came back `Option` only to express "the text is not a stored
-/// column", which was the `Render`/`Concat` case, and those arms never had
-/// a reader. Every unit resolves to a column.
+/// is not: every unit resolves to a stored column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ResolvedEmbedUnit {
     pub table: Option<&'static str>,
@@ -591,9 +572,8 @@ pub struct DbConstraint {
 }
 
 /// A trigger, for the cases where no declarative CHECK/FK is available.
-/// `goal_head_t_only` is the only member today, and it exists *because*
-/// removing the World owner deleted the CHECK constraints that used to back
-/// goals-don't-transfer.
+/// `goal_head_t_only` is the only member: goals-don't-transfer has no CHECK
+/// constraint to name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DbTrigger {
     pub relation: &'static str,
@@ -618,12 +598,8 @@ pub enum Enforcement {
 
 /// What a transfer does to one surface.
 ///
-/// Six arms describe the shipped tree, and every one of them has a member.
-/// [`TransferRule::FollowOrDedupe`] was reserved vocabulary with exactly
-/// one member (`content`) while `blob` refused cross-owner shared
-/// transfers with `Conflict`; the dedupe arm landed, `blob` joined it, and
-/// `FollowIfUnshared` — which then had zero members — was deleted, the
-/// same way `FollowAndRemint` was.
+/// Six arms, and every one of them has a member: vocabulary with no speaker
+/// is not carried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransferRule {
     /// `UPDATE` every `owner_columns` to the destination.
@@ -663,9 +639,14 @@ pub enum TransferRule {
 }
 
 impl TransferRule {
-    /// Whether transfer leaves the row with the source owner. Both
-    /// [`Self::RetainAtSource`] and [`Self::NotTransferable`] do, for
-    /// different reasons.
+    /// Whether transfer leaves the row with the source owner because the
+    /// row is PINNED to it. True for [`Self::RetainAtSource`] only.
+    ///
+    /// [`Self::NotTransferable`] also leaves rows behind, but for an
+    /// unrelated reason — the whole entity refuses to move — and its
+    /// surfaces are not the owner-pinned sidecars this predicate selects.
+    /// Both callers want the pinned set: the source-scoped erase leg and
+    /// `retain_at_source_tables`.
     #[must_use]
     pub const fn retains_at_source(&self) -> bool {
         matches!(self, Self::RetainAtSource { .. })
@@ -678,7 +659,7 @@ impl TransferRule {
 }
 
 /// How a node's provenance is reachable. Declared rather than implied, so
-/// `core_think`'s edge walk does not have to guess (checkpoint 9).
+/// `core_think`'s edge walk does not have to guess.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Provenance {
     /// Writes `origins[]` pins; the lineage walk traverses them.
@@ -714,9 +695,9 @@ pub enum KeyShape {
     /// A citation sidecar calls its blob `cited_object_id`, a mapping
     /// sidecar `citation_mapping_id`, `blob` itself `blob_id`; a code
     /// detail table calls its memory `plan_memory_id` or
-    /// `caller_memory_id`. Four such tables declared `Custom(&["memory_id"])`
-    /// — a column none of them has — and it went unnoticed for as long as
-    /// nothing read the field for a `Cascade` surface.
+    /// `caller_memory_id`. A table declaring `Custom(&["memory_id"])` over a
+    /// column it does not have goes undetected for as long as nothing reads
+    /// the field for a `Cascade` surface.
     BlobId {
         column: &'static str,
     },
@@ -726,15 +707,13 @@ pub enum KeyShape {
     /// Four kernel tables are this shape and no other: `sketch.t`, and
     /// `entity_id` on the three embedding tables. Each holds a row for a
     /// memory version and a row for a goal version, in the same column,
-    /// with no discriminator — `sketch`'s own declaration has said so in
-    /// prose since Phase 1 ("`t` is a Memory t OR a Goal t, and there is no
-    /// constraint that can span two home tables").
+    /// with no discriminator, and no constraint that can span two home
+    /// tables.
     ///
-    /// They declared [`Self::Custom`] until Phase 4, which was true but
-    /// said nothing: `Custom` is the arm for "this crate cannot reason
-    /// about the key at all", and it put `sketch.t` in the same class as
-    /// `blob_uploads.upload_id`, which is not an entity t and never was.
-    /// The distinction earns its arm because the two verbs answer it
+    /// Distinct from [`Self::Custom`], the arm for "this crate cannot reason
+    /// about the key at all", which would put `sketch.t` in the same class
+    /// as `blob_uploads.upload_id` — not an entity `t` at all. The
+    /// distinction earns its arm because the two verbs answer it
     /// differently:
     ///
     /// - **Erase** cannot reach it. It builds one selection set per home
@@ -894,18 +873,16 @@ impl EraseLeg {
 /// a memory series changes owner.
 ///
 /// The exact shape of [`EraseLeg`], for the same reason and against a worse
-/// failure. Erase's hole was a table nothing deleted: rows outliving their
-/// owner, discovered nowhere. Transfer's hole is a table nothing MOVED, and
+/// failure. Erase's hole is a table nothing deletes: rows outliving their
+/// owner, discovered nowhere. Transfer's hole is a table nothing MOVES, and
 /// under a multi-owner deployment that is not a stale row — it is a row the
 /// SOURCE owner can still read after the memory it belongs to became
 /// someone else's. A cross-tenant read, arrived at by silence.
 ///
-/// Before this, the silence was total: `owner_columns.rs` held no reference
-/// to `Surface`, `TransferRule` or the registry in 732 lines, a new `Follow`
-/// surface was simply not followed, and the only thing standing where a
-/// check belongs was an eight-line comment. Every arm below is derived in
-/// ONE place, so freeze and the verb cannot hold different opinions about
-/// which tables a transfer covers.
+/// Every arm below is derived in ONE place, so freeze and the verb cannot
+/// hold different opinions about which tables a transfer covers. A table
+/// list written beside the verb instead would let a new `Follow` surface go
+/// unfollowed with no statement, no error, and no way to find out.
 ///
 /// [`Self::Unreachable`] is the silence turned into a value, so freeze can
 /// refuse it.
@@ -1038,12 +1015,12 @@ pub enum ExportRule {
 
 /// Which key on the erase receipt a surface's destroyed rows land under.
 ///
-/// Was `Option<&'static str>`, and `None` was the last declared absence in
-/// the contract with no reason attached — "feeds no counter" and "nobody
-/// said" were the same value, which is the exact shape the first rule of
-/// this module forbids. `wake_config` and `goal_head` are both `None` in the
-/// shipped tree and for entirely different reasons: one is counted under
-/// another surface's key, the other is not owner-scoped rows at all.
+/// A declared non-count carries its reason, because "feeds no counter" and
+/// "nobody said" must not be the same value — the exact shape the first rule
+/// of this module forbids. `goal_head` and `owners` are both uncounted for
+/// entirely different reasons: the head is a POINTER into `goal` that
+/// counting would report twice, and the erase never deletes an `owners` row
+/// at all, so there is nothing there to count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CounterRule {
     /// Rows destroyed here are counted under this receipt key. Several
@@ -1180,11 +1157,9 @@ pub struct Surface {
 /// Where a flavor's search verb ranks, and therefore which shape of
 /// statement serves it.
 ///
-/// This used to be a doc comment in one Rust file
-/// (`flavors/code/src/mcp/search_chunks.rs`, "why this arm drives from the
-/// sidecar"). A deployment layer that has to know whether a shard ranks on
-/// its projection cannot read a doc comment, and a freeze check cannot
-/// scope itself to a prose paragraph.
+/// A declaration rather than prose: a deployment layer that has to know
+/// whether a shard ranks on its projection cannot read a doc comment, and a
+/// freeze check cannot scope itself to a paragraph.
 ///
 /// **What this is NOT.** Freeze checks what a `Projection` claim implies
 /// about the rest of the DECLARATION — that the three band names are
@@ -1234,14 +1209,13 @@ impl RankSource {
 
 /// How this flavor's score bands compare to flavor #0's.
 ///
-/// CONSUMED in Phase 3 by `core_search_projections`: a non-core projection
-/// may enter core's merge only if its flavor declares [`Self::CoreBands`].
-/// The admitted set does not change — the code flavor declares no
-/// `tag_column`, so it was already excluded in every request shape — but
-/// the exclusion stops being an accident of a `None` and becomes the
-/// declaration doing its job. Freeze earns the declaration: a flavor
-/// claiming `CoreBands` whose schemas declare a band outside `[0.0, 1.0]`
-/// is a freeze error naming the schema and the band.
+/// CONSUMED by the flavor-scan filter in
+/// `storage-pg/src/verbs/query/search.rs`: a non-core projection may enter
+/// core's merge only if its flavor declares [`Self::CoreBands`], so the
+/// exclusion is the declaration doing its job rather than an accident of a
+/// missing `tag_column`. Freeze earns the declaration: a flavor claiming
+/// `CoreBands` whose schemas declare a band outside `[0.0, 1.0]` is a
+/// freeze error naming the schema and the band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BandComparability {
     /// Every projected surface scores inside flavor #0's `BAND_*` windows,
@@ -1272,13 +1246,12 @@ pub struct ProjectionSpec {
     /// CONSUMED. The candidate budget ONE statement over this flavor's
     /// projection may fetch before the merge trims to the caller's limit.
     ///
-    /// It used to be a per-schema window (`SIDECAR_OVERFETCH_CAP`, in
-    /// `storage-pg`), so a flavor's four statements could hand the merge
-    /// four times this number. One statement per flavor hands it at most
-    /// this. The request-scaling rule — a caller asking for `n` rows
-    /// overfetches `n * 20` — has no contract home and stays in code; this
-    /// is the CAP that rule is clamped to, which is a shard-level property
-    /// and therefore the flavor's to declare.
+    /// Per flavor, not per schema: one statement serves the flavor, so the
+    /// merge is handed at most this many rows however many schemas project
+    /// into the table. The request-scaling rule — a caller asking for `n`
+    /// rows overfetches `n * 20` — has no contract home and stays in code;
+    /// this is the CAP that rule is clamped to, which is a shard-level
+    /// property and therefore the flavor's to declare.
     pub overfetch_k: u32,
     /// CONSUMED. See [`BandComparability`].
     pub band_comparability: BandComparability,
@@ -1299,14 +1272,6 @@ impl ProjectionSpec {
     pub const fn surface(&self) -> Surface {
         Surface {
             table: self.table,
-            // CORRECTED in Phase 4. It said `column: "t"`, and no projection
-            // table has a `t`: the memory column is `memory_id`, in the
-            // migration (`projection.memory_id REFERENCES memory (t)`) and
-            // in the generated statements alike. The wrong name survived
-            // because nothing read it — the surface is `Cascade` on erase
-            // and `Excluded` on export, the two lanes that consume
-            // `KeyShape`, so neither ever asked. Phase 4's transfer
-            // generator does ask, which is what turned it up.
             key: KeyShape::MemoryT {
                 column: PROJECTION_MEMORY_COLUMN,
             },
@@ -1342,8 +1307,8 @@ impl ProjectionSpec {
 ///
 /// Identical for every flavor because the table is always named
 /// `projection` and the column is always `memory_id`, and constraint names
-/// are per-schema. That is the slimness rule in §2.0.1 made checkable: two
-/// flavors' emitted DDL differ only in the schema name and the index name.
+/// are per-schema. Two flavors' emitted DDL therefore differ only in the
+/// schema name and the index name.
 pub const PROJECTION_MEMORY_FK: &str = "projection_memory_id_fkey";
 
 /// The bare relation name every flavor's projection table carries.
@@ -1351,27 +1316,23 @@ pub const PROJECTION_TABLE_NAME: &str = "projection";
 
 /// The column every flavor's projection table keys its memory on.
 ///
-/// ONE READER: [`ProjectionSpec::surface`]'s `KeyShape::MemoryT`. That is
-/// the drift this constant was minted for — the surface spent three phases
-/// claiming a column called `t`, which no projection table has — and it is
-/// the whole of what naming it fixes.
+/// ONE READER: [`ProjectionSpec::surface`]'s `KeyShape::MemoryT`. Naming it
+/// is what keeps that surface from claiming a column no projection table
+/// has.
 ///
-/// It is NOT the single source of the column name, and an earlier draft of
-/// this doc said it was ("named once, beside the FK whose name is derived
-/// from it, so the surface declaration and the generated statements cannot
-/// drift again"). Both halves were wrong. [`PROJECTION_MEMORY_FK`] is a
-/// separate literal, not derived from anything. And the generator spells
+/// It is NOT the single source of the column name. [`PROJECTION_MEMORY_FK`]
+/// is a separate literal, derived from nothing, and the generator spells
 /// `memory_id` inline four more times — in the `CREATE TABLE` column list,
 /// in its `PRIMARY KEY`, in the projection `INSERT`'s column list, and in
 /// `PROJECTION_COLUMNS`, the catalog check's expected list. Those are fixed
 /// SQL text by design; interpolating a constant into them would move four
 /// spellings into four `format!` holes and buy nothing.
 ///
-/// What makes "cannot drift" true is a test rather than a definition:
+/// What keeps the spellings agreeing is a test rather than a definition:
 /// `the_projection_column_name_has_one_spelling` in `storage-pg`'s
 /// projection module asserts this constant against the FK name and against
 /// the generator's own emitted DDL. A constant plus a check is honest; a
-/// constant plus a claim is what this was.
+/// constant plus a claim is not.
 pub const PROJECTION_MEMORY_COLUMN: &str = "memory_id";
 
 /// Whether a flavor has a projection table — and, when it does not, why.
@@ -1421,8 +1382,8 @@ pub struct ToolContract {
 /// `read_resource` funnels through the same flat-string gate with the
 /// resource's scope key standing in for a tool name. So resources are
 /// first-class contract entries — and they carry a **typed** `read_only`,
-/// which replaces the `tool.starts_with("resource:")` string test the
-/// owner-role gate performs today.
+/// so the owner-role gate does not have to infer a read from a
+/// `tool.starts_with("resource:")` string test.
 ///
 /// Only flavor #0 may declare resources; the registry rejects a non-empty
 /// list from any other ordinal.
@@ -1635,10 +1596,10 @@ impl FlavorContract {
 
     /// Whether `table` is one of this flavor's schema sidecars.
     ///
-    /// Unscoped `core_search_memories` stays on flavor #0's sidecars. That
-    /// used to be a `starts_with("proxima_core.")` test, which is a schema
-    /// name standing in for an ordinal: it happens to be true today and
-    /// says nothing a flavor could not accidentally satisfy.
+    /// Unscoped `core_search_memories` stays on flavor #0's sidecars, asked
+    /// of the declaration rather than of a `starts_with("proxima_core.")`
+    /// prefix: a schema name standing in for an ordinal says nothing another
+    /// flavor could not accidentally satisfy.
     #[must_use]
     pub fn declares_sidecar_table(&self, table: &str) -> bool {
         self.schemas
@@ -1721,7 +1682,7 @@ mod tests {
     /// The identity claim, at the level the contract can state it: a
     /// uniform unit has ONE level, so every lexeme is class `D` — which is
     /// what an unweighted `to_tsvector` already produces — and no weight
-    /// array is passed, so `ts_rank_cd` scores exactly what it scores today.
+    /// array is passed, so `ts_rank_cd` scores the unweighted case exactly.
     #[test]
     fn uniform_weights_are_the_unweighted_case() {
         let decl = projected(&[WEIGHT_UNIFORM, WEIGHT_UNIFORM, WEIGHT_UNIFORM]);
@@ -1757,9 +1718,8 @@ mod tests {
     }
 
     /// The width is RENDERED, not printed: `0.45f32 - 0.25f32` is
-    /// `0.19999999`, a different number from the `0.2` the shipped SQL
-    /// carried. One author for this arithmetic, in the crate that owns
-    /// `Band` — there used to be two byte-identical copies.
+    /// `0.19999999`, a different number from the `0.2` the SQL carries. One
+    /// author for this arithmetic, in the crate that owns `Band`.
     #[test]
     fn a_band_renders_the_arithmetic_the_sql_already_had() {
         let exact = Band {
@@ -1808,8 +1768,8 @@ mod tests {
         );
     }
 
-    /// R1's lookup, and the reason the arm-typed struct was rejected: the
-    /// NAME is the contract.
+    /// The NAME is the contract, which is why the band set is not an
+    /// arm-typed struct.
     #[test]
     fn a_band_resolves_by_name() {
         const BANDS: &[Band] = &[

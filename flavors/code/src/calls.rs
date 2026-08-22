@@ -1,15 +1,12 @@
 //! Tree-sitter call-graph extraction (definitions + call sites).
 //!
-//! Idiomatic tree-sitter usage: declarative `Query` patterns over the
-//! parsed `Tree`. Field-name captures (`function:`, `name:`, `field:`,
-//! `property:`) read directly from the grammar's named fields, so
-//! there's no hand-rolled child walking and no string-shape dispatch
-//! on node kinds.
+//! Field-name captures (`function:`, `name:`, `field:`, `property:`) read
+//! directly from the grammar's named fields.
 //!
-//! Languages, queries, and parsers are cached in `OnceLock`s — query
-//! compilation is the expensive part (rule compilation + state
-//! machine), so we pay it once per language for the lifetime of the
-//! process.
+//! Languages and compiled `Query` patterns are cached in `OnceLock`s —
+//! query compilation is the expensive part (rule compilation + state
+//! machine), so it is paid once per language for the lifetime of the
+//! process. A `Parser` is built per extraction.
 //!
 //! [`extract_blob_callgraph`] parses a blob once and runs both queries
 //! against the same `Tree`. The single-fn `extract_definitions` and
@@ -410,7 +407,6 @@ mod tests {
         let code = b"interface I { run(): void; }\nclass C implements I { run() {} }\n";
         let defs = extract_definitions(Some("typescript"), code);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-        // Only the class method survives as a definition.
         assert_eq!(names.iter().filter(|n| **n == "run").count(), 1);
     }
 

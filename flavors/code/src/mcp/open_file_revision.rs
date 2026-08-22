@@ -66,11 +66,11 @@ pub struct ChunkSummary {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_line_range: Option<(i64, i64)>,
-    /// `true` when `max_text_bytes` cut this chunk's text. Its two siblings
-    /// have always said so — `core_search_memories` with `body_truncated`,
-    /// `proxima-code_search_chunks` with `snippet_truncated` — and without
-    /// it a caller cannot tell a chunk that ends there from one that was
-    /// cut off mid-statement.
+    /// `true` when `max_text_bytes` cut this chunk's text. Without it a
+    /// caller cannot tell a chunk that ends there from one cut off
+    /// mid-statement; `core_search_memories` says the same with
+    /// `body_truncated`, `proxima-code_search_chunks` with
+    /// `snippet_truncated`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub text_truncated: bool,
 }

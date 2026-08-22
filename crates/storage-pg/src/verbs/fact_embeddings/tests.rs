@@ -992,9 +992,9 @@ mod pg_tests {
         result
     }
 
-    /// A provider that rejects an input will reject it again. Requeueing such
-    /// a job spins claim → reject → requeue forever, which is what a shared
-    /// `failed` status for both failure causes produced.
+    /// A provider that rejects an input will reject it again. Requeueing such a
+    /// job spins claim → reject → requeue forever, which is why the two failure
+    /// causes need separate statuses.
     #[tokio::test]
     async fn permanently_failed_job_is_never_requeued() -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;

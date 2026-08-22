@@ -62,7 +62,7 @@ pub fn streamable_http_service(
 /// Returns loopback validation, TCP bind, or HTTP server failures.
 ///
 /// `auth` is required so each MCP request can be matched against the
-/// host bearer path; retired local-token prefixes fail closed before host auth.
+/// host bearer path; unrecognized token prefixes fail closed before host auth.
 pub async fn serve_streamable_http(
     addr: SocketAddr,
     server: McpToolHost,

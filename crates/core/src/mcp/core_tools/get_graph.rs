@@ -1,9 +1,9 @@
 //! `core/get_graph` — single-shot read of owner graph metadata plus
 //! static catalogs.
 //!
-//! There is no edge-type catalog here any more: the edge vocabulary is
-//! closed at two kinds and lives in docs/16, not in a registry a client
-//! has to enumerate.
+//! There is no edge-type catalog here: the edge vocabulary is closed at
+//! two kinds and lives in docs/16, not in a registry a client has to
+//! enumerate.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

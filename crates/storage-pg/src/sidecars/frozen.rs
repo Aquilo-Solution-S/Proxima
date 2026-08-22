@@ -170,18 +170,16 @@ impl PgSidecarRegistryFrozen {
 
     /// Insert a typed sidecar row for an already-created Memory row.
     ///
+    /// `lexical_language` is the resolved text-search configuration the
+    /// caller asked for, or `None` for the deployment default. It is stamped
+    /// on the projection row, which is where a memory's language lives.
+    ///
     /// # Errors
     ///
     /// Returns `ConstraintViolation` when no PG memory sidecar is
     /// registered for the payload schema or when the erased payload type
     /// does not match the registered Rust type. Returns storage errors
     /// from the concrete inserter.
-    /// `lexical_language` is the resolved text-search configuration the
-    /// caller asked for, or `None` for the deployment default. This is the
-    /// first write path that has both the value and the column in scope:
-    /// the projection row is where a memory's language is now stamped, so
-    /// the `language` parameter three MCP tools advertise finally lands
-    /// somewhere a reader consults (R12).
     pub async fn insert_memory_sidecar(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -231,18 +229,15 @@ impl PgSidecarRegistryFrozen {
     /// projection from the restored row instead — the same statement, run
     /// against a row that is already there.
     ///
-    /// `schema_id` is the RESTORED ROW's, and it selects the entry as well
-    /// as filling the bind. Looking up by TABLE alone was wrong twice over:
-    /// `entries` is keyed by `(schema_id, version, kind)`, so `find`
-    /// returned whichever entry for that table came first, and it ran for
-    /// EVERY dumped table — including the extra sidecars a memory may be
-    /// stamped with. A memory has one `schema_id` and `projection` is keyed
-    /// `(memory_id, schema_id)`, so at most one of those tables can produce
-    /// a row: the one belonging to the memory's own schema, which is exactly
-    /// what the write path does. The others produced rows claiming a schema
-    /// the memory is not — and once the generator required
-    /// `memory.schema_id = $3`, produced nothing while reporting success.
-    /// Selecting on both leaves no accident in either direction.
+    /// `schema_id` is the RESTORED ROW's, and it selects the entry as well as
+    /// filling the bind. `entries` is keyed by `(schema_id, version, kind)`, so
+    /// selecting by table alone matches whichever entry for that table comes
+    /// first and runs for every dumped table, including the extra sidecars a
+    /// memory may be stamped with. A memory has one `schema_id` and
+    /// `projection` is keyed `(memory_id, schema_id)`, so at most one of those
+    /// tables can produce a row: the one belonging to the memory's own schema,
+    /// which is what the write path does. Selecting on both leaves no accident
+    /// in either direction.
     ///
     /// # Errors
     ///

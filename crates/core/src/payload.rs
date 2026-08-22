@@ -42,8 +42,7 @@ pub struct PayloadReference {
     /// Payload field the reference was read from. Not persisted: a field
     /// name is schema detail and the index carries no content.
     ///
-    /// NO LONGER DIAGNOSTICS ONLY, which is what this said until the
-    /// lineage walk started keying on it. `Provenance::PayloadOnly`
+    /// LOAD-BEARING BEYOND DIAGNOSTICS. `Provenance::PayloadOnly`
     /// declares `subject_columns`, and `core_think`'s `payload_subjects`
     /// picks the grounding references out of the rest by matching those
     /// declared names against THIS string. A rename here is a silent
@@ -552,7 +551,7 @@ pub trait FactPayload:
     fn receipt_key(&self) -> Vec<u8>;
     fn render(&self) -> String;
     /// Node references this payload's fields carry (docs/16
-    /// §Reference). Ingest derives one `Reference` index entry per
+    /// §The Model). Ingest derives one `Reference` index entry per
     /// declaration, in the node write's own transaction, so the edge set
     /// stays a function of node content and re-deriving it from payloads
     /// reproduces it exactly. Default: none.
@@ -602,7 +601,7 @@ pub trait AbstractionPayload:
     const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
     /// Node references this payload's fields carry (docs/16
-    /// §Reference). Ingest derives one `Reference` index entry per
+    /// §The Model). Ingest derives one `Reference` index entry per
     /// declaration, in the node write's own transaction, so the edge set
     /// stays a function of node content and re-deriving it from payloads
     /// reproduces it exactly. Default: none.
@@ -629,7 +628,7 @@ pub trait PerspectivePayload:
     const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
     /// Node references this payload's fields carry (docs/16
-    /// §Reference). Ingest derives one `Reference` index entry per
+    /// §The Model). Ingest derives one `Reference` index entry per
     /// declaration, in the node write's own transaction, so the edge set
     /// stays a function of node content and re-deriving it from payloads
     /// reproduces it exactly. Default: none.
@@ -663,7 +662,7 @@ pub trait GoalPayload:
     #[must_use]
     fn goal_key(&self) -> Vec<u8>;
     /// Node references this payload's fields carry (docs/16
-    /// §Reference). Ingest derives one `Reference` index entry per
+    /// §The Model). Ingest derives one `Reference` index entry per
     /// declaration, in the node write's own transaction, so the edge set
     /// stays a function of node content and re-deriving it from payloads
     /// reproduces it exactly. Default: none.

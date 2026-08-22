@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Detect dynamic SQL sites that need an explicit PR9 safety proof.
+"""Detect dynamic SQL sites that need an explicit safety proof.
 
 Final mode fails every dynamic SQL site without a nearby `SQL-POLICY:` proof.
 Inventory mode prints sites and exits zero so implementation tasks can triage.
@@ -20,7 +20,7 @@ VALID_PROOFS = (
     "SQL-POLICY: PgIdent",
     "SQL-POLICY: fixed-fragment",
     "SQL-POLICY: QueryBuilder-bound-values",
-    # v0.0.8: the projection generator. `crates/storage-pg/src/projection.rs`
+    # The projection generator. `crates/storage-pg/src/projection.rs`
     # builds one statement per projected schema out of `FlavorContract`
     # declarations — every spliced name goes through `PgIdent` INSIDE the
     # generator, and every value is a bind ($1 memory id, $2 language, $3
@@ -35,13 +35,12 @@ VALID_PROOFS = (
 # Every reviewed dynamic-SQL site proves itself with an inline
 # `SQL-POLICY:` comment (see VALID_PROOFS) within four lines of the call.
 #
-# This used to be a `(path, line, kind) -> proof` allowlist, and it rotted:
-# by v0.0.7, 16 of its 23 entries matched no site at all. A stale pin is not
-# inert — `intrinsic_proof` returns True on a pin match *before* inspecting
-# any content, so a stale entry silently vouches for whatever dynamic SQL
-# later lands on that line number. The live entries were no better: any
-# insertion above them shifted the line and failed CI for an unrelated
-# change. Proofs are content-addressed now. Do not reintroduce line pins.
+# Proofs are content-addressed. Do not reintroduce a `(path, line, kind) ->
+# proof` allowlist: a line pin is not inert — `intrinsic_proof` returns True
+# on a pin match *before* inspecting any content, so a pin that has drifted
+# off its site silently vouches for whatever dynamic SQL later lands on that
+# line number, and any insertion above a live pin shifts the line and fails
+# CI for an unrelated change.
 
 
 @dataclass(frozen=True)
@@ -300,9 +299,9 @@ def run_fixture(path: Path) -> int:
 # with an ASCII letter or `_`, and contains nothing but ASCII alphanumerics
 # and `_`. Nothing that passes that filter can close a quote, open a comment
 # or introduce a statement, which is what makes a `PgIdent` substitution
-# `%I`-equivalent. Every identifier spliced by the four generators added in
-# Phase 4 — `series_leg_sql`, `dedupe_lookup_sql`, `remap_sql`,
-# `forget_leg_sql` — routes through it, and the identifiers themselves come
+# `%I`-equivalent. Every identifier spliced by the four generators —
+# `series_leg_sql`, `dedupe_lookup_sql`, `remap_sql`, `forget_leg_sql` —
+# routes through it, and the identifiers themselves come
 # from `const` contracts that `try_freeze` validated and that
 # `every_column_a_declaration_names_is_a_column_the_catalog_has` resolved
 # against `information_schema`.
@@ -311,9 +310,9 @@ def run_fixture(path: Path) -> int:
 # below is where someone has to write down what they did and why. It is not
 # evidence that dynamic SQL in this tree is bounded at 76 places. Making the
 # detector see wrapped `format!` and `raw_sql` would re-baseline roughly 120
-# sites and is a declared follow-up, not this wave's work.
+# sites.
 #
-# Exact current PR9 dynamic SQL inventory count (see `--inventory`). This is a
+# Exact current dynamic SQL inventory count (see `--inventory`). This is a
 # ratchet, not a ceiling that only grows: the ratchet mode below fails when the
 # count changes in *either* direction so a shrink still requires the PR that
 # earned it to update this constant, keeping the two in lockstep.
@@ -368,7 +367,7 @@ def run_fixture(path: Path) -> int:
 # (uncounted) to sql.push_str (counted). Nothing is interpolated: the read set
 # arrives as the bound arrays $1/$2. A counted site with a fixed fragment is a
 # smaller surface than the interpolating write! it replaced, not a larger one.
-# 2026-08-01 analysis: -5 — the v0.0.7 edge reset. An edge has no id and no
+# 2026-08-01 analysis: -5 — the edge reset. An edge has no id and no
 # payload, so the sidecar-driven edge read (whose statement text grew with the
 # registered payload specs) is gone, and the edge write, lineage walk and
 # owner erase now assemble fixed fragments instead of per-request column
@@ -388,7 +387,7 @@ def run_fixture(path: Path) -> int:
 # alternative is twelve independent spellings of the ownership model, which
 # `check_entity_owner_union` in check-architecture-guardrails.py now forbids.
 # The union text is byte-identical at every site, so no statement changed.
-# 2026-08-14 analysis: +8 — the v0.0.8 search-path work builds its SQL. The
+# 2026-08-14 analysis: +8 — the search-path work builds its SQL. The
 # index-first / window-dedup builders in verbs/query/search.rs compose the
 # candidate CTE and the vector scan from fixed fragments behind
 # `sql.push_str` (seven sites landed with that wave; the count was not
@@ -408,7 +407,7 @@ def run_fixture(path: Path) -> int:
 # `push_str` with a next-line literal does — so exactly those two `sql.push_str`
 # sites disappear and nothing is added (verified by diffing `--inventory`
 # against 19f63010: two removals, zero additions). The remaining push_str sites
-# in that function (the `m2.memory_id IS NULL` anti-join tail and the legacy
+# in that function (the `m2.memory_id IS NULL` anti-join tail and the
 # `NOT EXISTS` spelling) are untouched and keep their inline fixed-fragment
 # proofs; the two that moved to `write!` interpolate one crate-private
 # `&'static str` with no path from any caller, exactly as they did as literals,
@@ -485,9 +484,12 @@ def run_fixture(path: Path) -> int:
 # the frozen sidecar registry through `PgIdent::table`, exactly as the
 # memory-keyed sidecar sweeps beside them already do — every value is bound.
 #
-# `owner_erase::delete_owner_pinned_sidecars` and
-# `owner_export::owner_pinned_sidecar_rows` replace what used to be a
-# single hardcoded `proxima_core.mcp_call_logged_v1` statement each, so the
+# `owner_erase::delete_owned_surfaces` renders one `DELETE` per declared
+# `EraseLeg::Owned` surface, filtered on that surface's own `owner_id`.
+# `owner_export::export_statement`'s owner-pinned arm — the one taken when
+# `owner_columns` is non-empty — renders the matching `SELECT ... WHERE
+# s.owner_id`. Each stands where a single hardcoded
+# `proxima_core.mcp_call_logged_v1` statement would otherwise be, so the
 # count rises while the hardcoded table name disappears. The third,
 # `sidecars::read_ctx::fetch_all_by_memory_ids_owner_pinned`, is the read
 # half: backend-generated SQL from `memory_select_batch_owner_pinned_sql`,
@@ -503,7 +505,7 @@ def run_fixture(path: Path) -> int:
 # thing the recipe exists to stop hand-writing, so it would pass while the
 # recipe pointed somewhere else. Both fragments are `&'static str` off the
 # compiled-in contract; the id is bound.
-# 56 -> 66 with the projection (v0.0.8). Ten sites, six of them the
+# 56 -> 66 with the projection. Ten sites, six of them the
 # generator's own statements and their two DROP inverses:
 #
 # - `projection.rs` x2: the `DROP TABLE` / `DROP INDEX` inverses every
@@ -537,18 +539,16 @@ def run_fixture(path: Path) -> int:
 # their projection with the generator's own statement, because a test that
 # proved the projection returns the pre-projection results while writing
 # its vector by hand would have proved nothing about production.
-# 67 -> 73 with the Phase 3 search collapse. Six sites, none of them a new
+# 67 -> 73 with the search collapse. Six sites, none of them a new
 # mechanism:
 #
-#   +1 `verbs/query/search.rs` — the single `SidecarScanRow` statement became
-#      `RankedRow` and `SubstringRow`. That is the phase: the ranked arm and
-#      the substring arm are two statements now, not one statement whose
-#      shape a `like_only` flag switched. Both carry the proofs the one they
-#      replace carried.
+#   +1 `verbs/query/search.rs` — the ranked arm and the substring arm are two
+#      statements, `RankedRow` and `SubstringRow`, rather than one statement
+#      whose shape a flag switched. Both carry fixed-fragment proofs.
 #   +3 `flavors/code/src/mcp/search_chunks.rs` (1) and `search_commits.rs`
-#      (2) — the three `LIKE` arms stopped being `&'static str` literals.
-#      Each now renders part of itself from the flavor's DECLARATION (plan
-#      §4.8 R3/R6/R7), and the two arms differ in WHICH part:
+#      (2) — the three `LIKE` arms are `LazyLock<String>` rather than
+#      `&'static str`, because each renders part of itself from the flavor's
+#      DECLARATION, and the two arms differ in WHICH part:
 #        * `COMMIT_LIKE_SQL` / `SUMMARY_LIKE_SQL` interpolate the declared
 #          band floor as well as the schema id, and a band floor is a
 #          `format!("{:.2}", ..)` no `const` can produce.
@@ -563,19 +563,19 @@ def run_fixture(path: Path) -> int:
 #      from data with no caller text in it, and carries a
 #      `PgIdent`/fixed-fragment proof.
 #   +2 test-only plan pins: `storage-pg/tests/hot_path_plans.rs` EXPLAINs the
-#      new substring statement and `flavors/code/tests/hot_path_plans_pg.rs`
-#      EXPLAINs the three `LIKE` arms to pin the R6 owner predicate on the
+#      substring statement and `flavors/code/tests/hot_path_plans_pg.rs`
+#      EXPLAINs the three `LIKE` arms to pin the owner predicate on the
 #      flavor's own projection. Both EXPLAIN the audited production builders'
 #      output, which is the same shape as the 2026-07-16 HNSW pin above.
 #
-# 73 -> 74 in the same PR's fix wave. One more test-only EXPLAIN in
-# `flavors/code/tests/hot_path_plans_pg.rs`: R6 discharges the owner-blind
-# candidate follow-up for the whole flavor, but only the chunk RANKED arm
-# and the three `LIKE` arms were plan-proved — the commit and
-# commit-summary ranked arms bound `p.owner_id` with nothing reading it
-# back, so `AND $4::uuid[] IS NOT NULL` passed the entire workspace.
+# 73 -> 74. One more test-only EXPLAIN in
+# `flavors/code/tests/hot_path_plans_pg.rs`, covering the commit and
+# commit-summary ranked arms: each bound `p.owner_id` with nothing reading it
+# back, so `AND $4::uuid[] IS NOT NULL` passed the entire workspace. The
+# owner predicate is pinned on every arm, not only on the chunk ranked arm
+# and the three `LIKE` arms.
 #
-# 74 -> 76 in the same PR's third fix wave. Two test-only sites in
+# 74 -> 76. Two test-only sites in
 # `crates/storage-pg/tests/projection_maintenance.rs`, running the
 # GENERATOR's own statement twice against one seeded memory: once with a
 # schema id the memory does not carry, which must write nothing, and once
@@ -586,21 +586,20 @@ def run_fixture(path: Path) -> int:
 # prove nothing about it. Both carry `SQL-POLICY: generated`, whose meaning
 # is exactly this: the string has one producer and that producer is audited.
 #
-# 76 -> 75 in the Phase C compliance clean. Net of a bigger reshuffle than
+# 76 -> 75 with the compliance clean. Net of a bigger reshuffle than
 # the number suggests. The owner export lost NINE hand-written SQL constants
 # and four dynamic sidecar builders and gained ONE generator
 # (`export_statement`), and the owner erase lost five hand-assembled table
 # sweeps for two generic loops. Generating a statement per DECLARED surface
 # instead of writing one per remembered table is not more dynamic SQL — it
 # is the same statement shapes with one producer each, which is what this
-# ratchet was built to reward. The differential harness added in the same
-# phase contributes ZERO sites on purpose: it dumps every base relation
+# ratchet was built to reward. The differential harness contributes ZERO
+# sites on purpose: it dumps every base relation
 # through one constant statement that lets Postgres assemble the per-relation
 # query with `format(..., %I)` inside `query_to_xml`, so the obvious spelling
 # — a `format!` per name read from `information_schema` — never enters the
 # tree. A harness should cost nothing to keep.
-# 75 -> 76 in Phase 4, "policy onto the contract". Operator-ruled (plan
-# §4.12 R8, which sanctioned up to 77), and the arithmetic is stated rather
+# 75 -> 76, policy landing on the contract. The arithmetic is stated rather
 # than absorbed, because the standing rule is that this number should not
 # rise.
 #
@@ -632,10 +631,9 @@ def run_fixture(path: Path) -> int:
 #       `TransferRule::FollowOrDedupe { remaps }` executed" above two
 #       hardcoded UPDATEs, while the declaration named three columns. Prose
 #       claiming a declaration drives code that it does not drive is the
-#       exact defect the whole phase exists to remove.
+#       exact defect this removes.
 #   -1  crates/storage-pg/src/verbs/forget.rs, and this one is a DETECTOR
-#       ARTEFACT, not a reduction. Say it plainly, because the earlier
-#       wording of this entry did not.
+#       ARTEFACT, not a reduction.
 #
 #       At the base commit the file held four counted sites; it now holds
 #       three. The site that left is the stamped-sidecar delete's
@@ -644,30 +642,28 @@ def run_fixture(path: Path) -> int:
 #       `collect_sites`. Its replacement, `forget_leg_sql`, builds the same
 #       class of statement with a `format!(` whose template string sits on
 #       the NEXT line. The regex is applied per line, so it matches nothing.
-#       The execution site survived the move (base :782 -> :893 as of the
-#       Keep-refusal commit), and the two unrelated sites in the file are
-#       untouched.
+#       The execution site is intact and the two unrelated sites in the file
+#       are untouched.
 #
-#       So the minus one is bought by wrapping a macro call, and nothing
-#       about the tree got safer or smaller when it was earned.
+#       So the minus one is bought by wrapping a macro call. Nothing about
+#       the tree is safer or smaller for it.
 #
-#       An earlier draft of this entry credited the minus one to "the four
-#       hand-written `DELETE`s over `embedding_jobs`, `embedding_heads`,
-#       `embeddings` and `sketch` being absorbed". That is false arithmetic.
-#       Those four were plain string literals — `sqlx::query("DELETE FROM
-#       proxima_core.embeddings WHERE entity_id = $1")` — which this
-#       detector has never counted and never should. Absorbing them into
-#       the declared-leg loop is a real win in the code and worth exactly
-#       zero sites. Folding it into the ratchet's arithmetic made a
-#       mechanical accident read as an earned improvement.
+#       The four hand-written `DELETE`s over `embedding_jobs`,
+#       `embedding_heads`, `embeddings` and `sketch` are NOT part of this
+#       minus one. They are plain string literals — `sqlx::query("DELETE
+#       FROM proxima_core.embeddings WHERE entity_id = $1")` — which this
+#       detector does not count and should not. Absorbing them into the
+#       declared-leg loop is a real win in the code and worth exactly zero
+#       sites; folding it into the arithmetic would make a mechanical
+#       accident read as an earned improvement.
 #
 # Net +1, and the trade is thirteen static statements over remembered tables
 # for three generated ones over declared surfaces. That is the ratchet's
 # purpose, not a concession to it: dynamic SQL should be DELIBERATE, and a
 # statement whose only variable is an identifier from a frozen, freeze-
 # validated, catalog-checked contract is the most deliberate SQL in the
-# tree. What the trade buys is that a flavor adding a `Follow` surface can
-# no longer be silently not-followed — `FlavorRegistryError::UnmovableSurface`
+# tree. What the trade buys is that a flavor adding a `Follow` surface
+# cannot be silently not-followed — `FlavorRegistryError::UnmovableSurface`
 # refuses it at boot, and `UnforgettableSurface` does the same for a surface
 # that claims forget destroys its rows.
 EXPECTED_DYNAMIC_SQL_SITES = 76

@@ -729,7 +729,7 @@ mod tests {
         let reload = format!("{}{}", "load_required_memory_", "kind");
         assert!(
             !rest[..end].contains(&reload),
-            "D7: evidence kind is the in-tx TOCTOU, not a second pre-tx walk"
+            "evidence kind is the in-tx TOCTOU, not a second pre-tx walk"
         );
         assert!(
             rest[..end].contains("authorize_entry_read"),

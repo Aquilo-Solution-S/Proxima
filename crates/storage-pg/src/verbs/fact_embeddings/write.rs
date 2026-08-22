@@ -119,9 +119,8 @@ pub(crate) async fn insert_memory_embedding(
 /// writers go through `EmbeddingWritePort`, which requires an
 /// `EmbeddingWriteProof` only `proxima-core` can construct.
 ///
-/// Returns version `0` when the entity is not currently eligible for
-/// embedding, preserving the existing best-effort no-op behavior for deleted
-/// or textless entities.
+/// Returns version `0` when the entity is not eligible for embedding: a
+/// deleted or textless entity is a best-effort no-op, not an error.
 ///
 /// # Errors
 ///
@@ -148,9 +147,8 @@ pub(crate) async fn insert_embedding(
 /// writers go through `EmbeddingWritePort`, which requires an
 /// `EmbeddingWriteProof` only `proxima-core` can construct.
 ///
-/// Returns version `0` when the entity is not currently eligible for
-/// embedding, preserving the existing best-effort no-op behavior for deleted
-/// or textless entities.
+/// Returns version `0` when the entity is not eligible for embedding: a
+/// deleted or textless entity is a best-effort no-op, not an error.
 ///
 /// # Errors
 ///
@@ -203,7 +201,7 @@ pub(crate) async fn insert_embedding_chunks(
     .await
     .map_err(map_err)?;
 
-    // 0008 embeddings have no chunk_index: one vec per version.
+    // The embeddings table has no chunk_index: one vec per version.
     let vec_literal = crate::pgvector::literal(chunks[0]);
     sqlx::query(
         "INSERT INTO proxima_core.embeddings

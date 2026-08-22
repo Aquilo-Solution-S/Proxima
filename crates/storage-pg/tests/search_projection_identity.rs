@@ -15,15 +15,13 @@
 //! pin computed by the code under test proves only that it agrees with
 //! itself.
 //!
-//! Capturing them is the harness in reverse: a worktree at `b5fe11ad`, a
-//! copy of this file with `project()` removed (there the sidecar's
-//! generated `search_tsv` did the work), and the printed `CASE` blocks
-//! pasted into [`EXPECTED`]. The first capture used the pre-existing
-//! `search_sidecar.rs` fixture's hand-restated projection, which omitted
-//! `agent_note_v1.tags` from `fields` — so it pinned snippets production
-//! never produced, and this test failed against a baseline that was
-//! itself wrong. Read the pins off the shipped declaration, never off a
-//! fixture's copy of it.
+//! Capturing them is the harness in reverse: a worktree at `b5fe11ad`, a copy
+//! of this file with `project()` removed (there the sidecar's generated
+//! `search_tsv` did the work), and the printed `CASE` blocks pasted into
+//! [`EXPECTED`]. Read the pins off the shipped declaration, never off a
+//! fixture's restatement of it: a fixture that omits a field — say
+//! `agent_note_v1.tags` — pins snippets production never produced, against a
+//! baseline that is itself wrong.
 //!
 //! Four owners, because a shared index is exactly where a multi-owner
 //! deployment can leak: the corpus is built so every query has hits under
@@ -32,16 +30,16 @@
 //! extra result rather than as a missing one.
 //!
 //! Scale: [`corpus`] takes the per-owner note count. CI runs it at
-//! [`CI_NOTES_PER_OWNER`]; the 500k re-proof on the bench cluster calls the
-//! same function with a larger number and compares two builds against each
-//! other rather than against these literals.
+//! [`CI_NOTES_PER_OWNER`]; a large-corpus re-proof calls the same function with
+//! a larger number and compares two builds against each other rather than
+//! against these literals.
 //!
-//! # What the Phase 3 cases add, and why
+//! # The two-schema cases, and why they exist
 //!
-//! The eight original cases are one schema, which cannot see the two
-//! changes that matter most when the per-schema fan-out collapses into one
-//! statement per flavor. The corpus therefore carries `core/agent-derivation-v1`
-//! rows as well, and the cases below it exercise:
+//! The eight single-schema cases cannot see the two changes that matter most
+//! when the per-schema fan-out collapses into one statement per flavor. The
+//! corpus therefore carries `core/agent-derivation-v1` rows as well, and the
+//! cases below it exercise:
 //!
 //! - **hits in two schemas** — the single flavor-wide overfetch window
 //!   replaces the union of per-schema windows.
@@ -54,16 +52,16 @@
 //! - **a tag filter** — the `p.tag` predicate across two schemas.
 //! - **a schema-scoped request** — `schema_id = ANY(..)` with one member.
 //!
-//! The second schema is `core/agent-derivation-v1`, an ABSTRACTION. The
-//! eight original cases all pass `kind: Some(Fact)`, so the new rows are
-//! structurally invisible to them and the original literals stay valid
-//! without a re-capture — which is what makes them a pin rather than a
-//! snapshot. The new cases pass `kind: None`, which is how they see both.
+//! The second schema is `core/agent-derivation-v1`, an ABSTRACTION. The eight
+//! single-schema cases all pass `kind: Some(Fact)`, so the derivation rows are
+//! structurally invisible to them and their literals hold without re-capture —
+//! which is what makes them a pin rather than a snapshot. The two-schema cases
+//! pass `kind: None`, which is how they see both.
 //!
-//! `Hybrid` is deliberately NOT pinned. One global top-k per flavor can
-//! move a hybrid page — a row with weak lexical rank but strong similarity
-//! could previously ride in on its own schema's window — and that movement
-//! is a documented v0.0.8 breaking change, not an identity claim.
+//! `Hybrid` is deliberately NOT pinned. One global top-k per flavor can move a
+//! hybrid page — a row with weak lexical rank but strong similarity does not
+//! ride in on its own schema's window — and that movement is a documented
+//! breaking change, not an identity claim.
 //!
 //! Language variation gets its own database
 //! ([`a_second_lexical_configuration_scores_what_it_scored`]): registering
@@ -93,9 +91,9 @@ use uuid::Uuid;
 /// break and the rescue band all have something to do.
 const CI_NOTES_PER_OWNER: usize = 6;
 
-/// Two per owner: enough that a two-schema query has hits under more than
-/// one owner in both schemas, which is what makes the multi-owner claim
-/// testable in the schema the Phase 2 corpus did not have.
+/// Two per owner: enough that a two-schema query has hits under more than one
+/// owner in both schemas, which is what makes the multi-owner claim testable in
+/// the derivation schema as well as the note schema.
 const CI_DERIVATIONS_PER_OWNER: usize = 2;
 
 const OWNERS: usize = 4;
@@ -178,7 +176,7 @@ struct Derivation {
 /// `OWNERS * per_owner` derivations, deterministic in every field.
 ///
 /// `seq` starts at 1_000 so no derivation can collide with a note's `t` at
-/// any corpus size CI or the bench cluster runs.
+/// any corpus size this file is run at.
 fn derivations(per_owner: usize) -> Vec<(OwnerRef, Derivation)> {
     let mut out = Vec::with_capacity(OWNERS * per_owner);
     let mut seq = 1_000_u64;
@@ -244,9 +242,9 @@ fn corpus(notes_per_owner: usize) -> Vec<(OwnerRef, Note)> {
 const NOTE_SCHEMA: &str = "core/agent-note-v1";
 const DERIVATION_SCHEMA: &str = "core/agent-derivation-v1";
 
-/// EVERY projected schema the frozen registry declares, which is exactly
-/// what `Engine::search` passes. The fixture used to hand-pick one, so the
-/// projection-selection gates were never exercised by this test at all.
+/// EVERY projected schema the frozen registry declares, which is exactly what
+/// `Engine::search` passes. Hand-picking one here would leave the
+/// projection-selection gates unexercised.
 fn projections() -> Vec<MemorySearchProjection> {
     proxima_core::FlavorRegistry::new()
         .freeze_or_panic_for_tests()
@@ -521,11 +519,10 @@ fn cases() -> Vec<(&'static str, MemorySearchRequest)> {
                 SearchOrder::Recency,
             ),
         ),
-        // ── Phase 3: the cases one schema cannot see ──────────────────
+        // ── The cases one schema cannot see ───────────────────────────
         (
-            // Both schemas match by lexeme. Before the collapse this was
-            // two statements with two overfetch windows; after, it is one
-            // statement with one.
+            // Both schemas match by lexeme, so one statement and one
+            // overfetch window answer for both.
             "all-owners/relevance/two-schemas/vector",
             any_kind(request(
                 (0..OWNERS).map(owner_at).collect(),
@@ -567,8 +564,8 @@ fn cases() -> Vec<(&'static str, MemorySearchRequest)> {
             ))),
         ),
         (
-            // `schema_id = ANY(..)` with one member: the narrowing that
-            // used to be projection selection is a row predicate now.
+            // `schema_id = ANY(..)` with one member: the narrowing is a row
+            // predicate, not projection selection.
             "all-owners/relevance/schema-scoped/derivation",
             scoped(any_kind(request(
                 (0..OWNERS).map(owner_at).collect(),
@@ -723,7 +720,7 @@ const EXPECTED: &[(&str, &[&str])] = &[
         ],
     ),
     ("one-owner/relevance/miss", &["has_more=false"]),
-    // ── Phase 3 cases, captured from `e7c3c83f` by the same method ───
+    // ── Two-schema cases, captured from `e7c3c83f` by the same method ───
     (
         "all-owners/relevance/two-schemas/vector",
         &[
@@ -1116,19 +1113,17 @@ const STARVATION_EXPECTED: &[(&str, &[&str])] = &[
 /// worktree at that commit. They are the answers the PER-SCHEMA fan-out
 /// gave.
 ///
-/// **What this corpus deliberately does NOT contain, and why.** An earlier
-/// version added a live note matching weakly, expecting it on the page
-/// beside the derivation. It is not pinnable: the backlog is in the note
-/// schema, so a live note is starved out of the note schema's window on the
-/// BASELINE tree as well — the per-schema window has the same defect, at
+/// **What this corpus deliberately does NOT contain, and why.** No live note
+/// matching weakly beside the derivation. It is not pinnable: the backlog is in
+/// the note schema, so a live note is starved out of the note schema's window
+/// on the BASELINE tree as well — the per-schema window has the same defect, at
 /// five times the budget. Measured on both trees with 25 handles and
-/// `limit = 1`: `e7c3c83f` returned the derivation at `0.545455` and
-/// dropped the live note entirely; this tree returns the live note at
-/// `0.583333`, which is the higher-scoring admissible row and the answer
-/// the corpus actually justifies. That is a page MOVE against the baseline,
-/// in the correct direction, and it is not something a fix to this tree can
-/// avoid — so the pinned corpus stays inside the region where the baseline
-/// was itself right.
+/// `limit = 1`: `e7c3c83f` returned the derivation at `0.545455` and dropped
+/// the live note entirely; this tree returns the live note at `0.583333`, which
+/// is the higher-scoring admissible row and the answer the corpus actually
+/// justifies. That is a page MOVE against the baseline, in the correct
+/// direction, and no fix to this tree avoids it — so the pinned corpus stays
+/// inside the region where the baseline was itself right.
 #[tokio::test]
 async fn a_superseded_backlog_does_not_starve_the_page() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -1176,10 +1171,10 @@ async fn a_superseded_backlog_does_not_starve_the_page() {
 /// A second registered `lexical_languages` row does not move a score.
 ///
 /// `LanguagePolicy::PerRow` is the whole reason the query side ORs one
-/// `websearch_to_tsquery` per registered configuration, and the collapse
-/// computes that CTE once per flavor where it used to be computed once per
-/// schema. If one statement over four schemas got the multilingual query
-/// side wrong, this is the case that says so.
+/// `websearch_to_tsquery` per registered configuration, and that CTE is
+/// computed once per flavor rather than once per schema. If one statement over
+/// four schemas got the multilingual query side wrong, this is the case that
+/// says so.
 #[tokio::test]
 async fn a_second_lexical_configuration_scores_what_it_scored() {
     run_identity(language_cases(), LANGUAGE_EXPECTED, alternating_language).await;

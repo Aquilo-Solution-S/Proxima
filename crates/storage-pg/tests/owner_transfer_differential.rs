@@ -1,24 +1,18 @@
-//! The Phase 4 equivalence gate: the owner transfer, before and after.
+//! The equivalence gate for the owner transfer, against a pinned baseline.
 //!
-//! What this pins is not "the transfer works" — `owner_transfer.rs` does
-//! that, case by case. It pins that the DECLARATION-DRIVEN transfer does
-//! exactly what the hand-written one did — every relation holding the same
-//! multiset of rows, every column of every row equal — over a corpus that
-//! touches every table `owner_columns.rs`'s transfer path names.
+//! What this pins is not "the transfer works" — `owner_transfer.rs` does that,
+//! case by case. It pins that the declaration-driven transfer agrees with the
+//! pinned baseline — every relation holding the same multiset of rows, every
+//! column of every row equal — over a corpus that touches every table
+//! `owner_columns.rs`'s transfer path names.
 //!
-//! NOT byte for byte, which is what this paragraph used to claim and what
-//! the sibling `owner_erase_differential` really does. The comparison here
-//! is per-relation order-independent, for the reason set out under
-//! "Determinism" below. Saying "byte for byte" in the opening line and
-//! "multiset" thirty lines down left the file contradicting itself about
-//! the strength of its own gate.
-//!
-//! The goldens were produced by running this file verbatim against the tree
-//! at `eef54c8e` — the commit this phase branches from, with the
-//! hand-written per-table transfer still in place — before a line of it was
-//! changed. So a failure here is not "the golden is stale": it is a
-//! statement that the new implementation and the old one disagree about
-//! what a transfer leaves behind, on either side of the move.
+//! The goldens were produced by running the shared half of this file verbatim
+//! against a worktree at `eef54c8e`, where a hand-written per-table transfer
+//! served this path, with an adapter that differs only in that tree's
+//! vocabulary. So a failure here is not "the golden is stale": it is a
+//! statement that this
+//! implementation and the baseline disagree about what a transfer leaves
+//! behind, on either side of the move.
 //!
 //! Transfer is the verb whose failure mode is cross-tenant visibility. A
 //! partially-transferred series is not merely incomplete — it leaves rows
@@ -26,39 +20,30 @@
 //! source is entitled to keep. Both halves are dumped: the whole database,
 //! every owner in it.
 //!
-//! Determinism comes from two choices, and the SECOND one is where this
-//! file departs from `owner_erase_differential` — deliberately, and with a
-//! cost worth stating.
+//! Determinism comes from two choices. The second is where this file departs
+//! from `owner_erase_differential`, at a cost stated below.
 //!
 //! Every uuid and timestamp is replaced by an order-of-first-appearance
 //! token, so values freshly generated on every run still compare. That is
 //! the same.
 //!
-//! The dump is still `ORDER BY ctid`, but the COMPARISON is per-relation
-//! order-independent: two dumps are equal when every relation holds the
-//! same multiset of rows. The erase differential could demand byte-order
-//! equality because it changed which statements ran, not the predicates
-//! they ran with. This phase changes the predicates — `memory`'s re-home
-//! goes from `WHERE handle = $1 AND owner_id = $2` to the generated
-//! `WHERE t = ANY($1::uuid[])` — and `ctid` is where MVCC happened to put
-//! the new tuple, which is a function of scan order and free space. When
-//! the goldens were first compared, three `proxima_core.memory` rows
-//! differed in position and in nothing else: same values, same tokens, same
-//! relation.
+//! The dump is `ORDER BY ctid`, but the COMPARISON is per-relation
+//! order-independent: two dumps are equal when every relation holds the same
+//! multiset of rows. The erase differential can demand byte-order equality
+//! because it changes which statements run, not the predicates they run with.
+//! This path's predicates differ from the baseline's — `memory`'s re-home is
+//! the generated `WHERE t = ANY($1::uuid[])` where the baseline matched on
+//! `handle` and `owner_id` — and `ctid` is where MVCC put the tuple, which is a
+//! function of scan order and free space.
 //!
-//! **What that gives up, precisely:** this file can no longer see a change
+//! **What that gives up, precisely:** this file cannot see a change
 //! that reorders rows within one relation while preserving their contents.
 //! Nothing reads physical order — no query in the tree orders by `ctid`,
 //! and the export bundle's row order comes off `KeyShape::columns()` — so
-//! the property was a proxy for determinism rather than a claim about
+//! the property is a proxy for determinism rather than a claim about
 //! behaviour. What is NOT given up is the whole of the claim that matters:
 //! every relation, every row, every column, every owner, on both sides of
 //! the move.
-//!
-//! The golden file itself is untouched. It is still the bytes the
-//! hand-written transfer produced at `eef54c8e`; only the equality
-//! relation applied to it is weaker, and this paragraph is the record of by
-//! how much.
 //!
 //! ## What this does NOT cover
 //!
@@ -575,9 +560,9 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
 /// spelling — a `format!` per table name from `information_schema` — would
 /// have put a dynamic-SQL site in the tree for a harness.
 ///
-/// `embeddings.vec` is dropped: a 1024-dimension vector renders as 8 KB of
-/// zeroes per row and says nothing a transfer could get wrong that
-/// `owner_id` does not already say.
+/// `embeddings.vec` is dropped: a 1024-dimension vector renders as
+/// kilobytes of text per row and says nothing a transfer could get wrong
+/// that `owner_id` does not already say.
 pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::Error>> {
     let relations: Vec<(String, Vec<String>)> = sqlx::query_as(
         "SELECT t.table_name::text,
@@ -747,7 +732,7 @@ pub async fn teardown(db_name: &str) {
     let _ = drop_db(db_name).await;
 }
 
-// ── ADAPTER (phase branch vocabulary) ───────────────────────────────────
+// ── ADAPTER (the only half that may differ from the baseline) ───────────
 //
 // The only text that differs from the baseline tree's copy of this file.
 // That is the point of the split: if the shared half were allowed to drift,

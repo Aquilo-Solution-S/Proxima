@@ -1,23 +1,22 @@
 //! Secret resolution — `secret_ref` strings to opaque bytes.
 //!
-//! Embedding model registration (docs/10 §Embedding model: one per binary)
-//! stores optional credentials as `secret_ref` URIs of shape
-//! `<scheme>:<body>`.
-//! Schemes for v1:
+//! Embedding model registration stores optional credentials as
+//! `secret_ref` URIs of shape `<scheme>:<body>`. The first colon
+//! separates scheme from body; later colons belong to the body.
 //!
-//! - `env:NAME` — process environment variable lookup
-//! - `keychain:service:account` — OS keychain (impl deferred)
-//! - `file:path` — local file read (impl deferred)
-//! - `aws-sm:arn` — AWS Secrets Manager (impl deferred)
-//!
-//! v1 ships the trait + `EnvResolver` + a `ResolverRegistry` keyed
-//! by scheme prefix. Other resolvers register against the same trait.
+//! `env:NAME` is the only scheme core resolves — `EnvResolver` reads
+//! the process environment. `ResolverRegistry` special-cases no other
+//! name: it dispatches on `SecretResolver::scheme`, so a `secret_ref`
+//! whose scheme has no registered resolver fails with
+//! `SecretError::UnknownScheme`. A host that needs `keychain:`,
+//! `file:` or `aws-sm:` implements `SecretResolver` for that scheme
+//! and registers it against the same registry.
 
 use std::fmt;
 
-/// Opaque secret payload. v1 is a thin `Vec<u8>` wrapper — no
-/// zero-on-drop yet, no constant-time compare. The `Debug` impl
-/// elides the contents so accidental logging cannot leak.
+/// Opaque secret payload. A thin `Vec<u8>` wrapper: no zero-on-drop,
+/// no constant-time compare. The `Debug` impl elides the contents so
+/// accidental logging cannot leak.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SecretBytes(Vec<u8>);
 
@@ -32,8 +31,8 @@ impl SecretBytes {
         &self.0
     }
 
-    /// UTF-8 view of the payload, if valid. Most v1 secrets are
-    /// API-key strings, so this is the common access path.
+    /// UTF-8 view of the payload, if valid. Most secrets are API-key
+    /// strings, so this is the common access path.
     #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         std::str::from_utf8(&self.0).ok()
@@ -168,8 +167,8 @@ impl ResolverRegistry {
         r.resolve(body)
     }
 
-    /// Convenience: registry pre-populated with `EnvResolver`.
-    /// Composite binaries add `KeychainResolver` etc. on top.
+    /// Convenience: registry pre-populated with `EnvResolver`. A host
+    /// registers its own resolvers on top.
     #[must_use]
     pub fn default_with_env() -> Self {
         let mut r = Self::new();

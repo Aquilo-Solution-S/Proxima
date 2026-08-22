@@ -541,7 +541,7 @@ impl PgFactSidecar for AcceptanceCriteriaV1 {
 }
 
 impl PgMemoryPayload for AcceptanceCriteriaV1 {
-    // N+1: low-cardinality work-item aggregate; batched load is a follow-up.
+    // N+1 per work item; acceptable at this cardinality.
     fn load_memory_payload(
         ctx: PgSidecarReadCtx<'_>,
         memory_id: MemoryId,
@@ -613,7 +613,7 @@ impl PgFactSidecar for TestRequestV1 {
 }
 
 impl PgMemoryPayload for TestRequestV1 {
-    // N+1: low-cardinality work-item aggregate; batched load is a follow-up.
+    // N+1 per work item; acceptable at this cardinality.
     fn load_memory_payload(
         ctx: PgSidecarReadCtx<'_>,
         memory_id: MemoryId,
@@ -707,7 +707,7 @@ struct ExecutionPlanItemPayloadRow {
 }
 
 impl PgMemoryPayload for CodeExecutionPlanV1 {
-    // N+1: low-cardinality work-item aggregate; batched load is a follow-up.
+    // N+1 per work item; acceptable at this cardinality.
     fn load_memory_payload(
         ctx: PgSidecarReadCtx<'_>,
         memory_id: MemoryId,

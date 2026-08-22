@@ -6,7 +6,7 @@
 //!
 //! `Engine` mints a fresh `operation_id = Uuid::now_v7()` for every erase
 //! attempt, derives requester/auth path/request time from [`crate::AuthzContext`],
-//! creates [`EraseAuthorization`], and `PG` still rechecks abandonment in the
+//! creates [`EraseAuthorization`], and `PG` rechecks abandonment in the
 //! delete transaction.
 
 use std::collections::BTreeMap;
@@ -17,13 +17,10 @@ use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 /// Every relation an owner-scoped erase or export has to answer for, read
 /// off the frozen flavor contracts.
 ///
-/// This replaces five hand-assembled `Vec<String>` name lists. Those were
-/// built from the schema registry — `PayloadKind` plus `sidecar_table` — and
-/// from `pg_sidecar!(owner_pinned: true)`, which are two projections of the
-/// contract rather than the contract. What a surface's inverse is,
-/// `Surface::erase` already says; what it is keyed on, `Surface::key`
-/// already says; which counter it feeds, `Surface::counter` already says.
-/// The lanes now read those instead of a list written to agree with them.
+/// What a surface's inverse is, `Surface::erase` says; what it is keyed on,
+/// `Surface::key` says; which counter it feeds, `Surface::counter` says. The
+/// lanes read those rather than a parallel name list written to agree with
+/// them.
 ///
 /// The set is deduplicated by table: two schemas may share one sidecar, and
 /// a table appears in the sweep once.
@@ -39,7 +36,7 @@ impl OwnerSurfaces {
     /// Read every flavor's declared surfaces off one frozen registry.
     ///
     /// The engine calls this; so should anything else that needs the set,
-    /// because assembling the legs by hand is what let them disagree.
+    /// because legs assembled by hand are legs that can disagree.
     ///
     /// Each surface's [`EraseLeg`] is resolved HERE, where the surface and
     /// the flavor that declared it are both in scope, because a bespoke leg
@@ -284,14 +281,11 @@ pub struct OwnerExportRequest {
 
 /// Owner-scoped export bundle: one entry per declared exportable surface.
 ///
-/// It used to be eleven typed `Vec<Value>` fields plus a twelve-field counts
-/// struct, each of which had to be added by hand when a table joined the
-/// export — which is how `cooled`, `sketches` and `blobs` arrived three
-/// separate times, and how the code flavor's four detail tables never
-/// arrived at all. The shape is now derived: `tables` has exactly the
-/// surfaces whose [`ExportRule`](crate::flavor::ExportRule) is `Rows` or
-/// `Allowlist`, and `counts` is a projection of `tables`, so a new surface
-/// joins the bundle by declaring itself and nothing else.
+/// The shape is DERIVED: `tables` has exactly the surfaces whose
+/// [`ExportRule`](crate::flavor::ExportRule) is `Rows` or `Allowlist`, and
+/// `counts` is a projection of `tables`, so a new surface joins the bundle
+/// by declaring itself and nothing else. A typed field per table would put
+/// every new surface behind a hand edit here.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OwnerExportBundle {
     pub operation_id: uuid::Uuid,
@@ -341,16 +335,7 @@ impl OwnerExportBundle {
 
 /// The receipt of one erase: what it destroyed, per declared counter.
 ///
-/// It used to be seventeen `u64` fields, and the fixed shape was the defect.
-/// A surface declaring a NEW counter had nowhere to put it — the code
-/// flavor's `repo_rows` and `ingestion_run_rows` were tallied into a temp
-/// table and dropped on the floor — while four fields (`edges`,
-/// `source_batches`, `redacted_edge_targets`, `suppressed_keys`) counted
-/// things v0.0.8 does not have and reported a structural zero forever.
-/// `sketches` was recorded and then not read back, so an erase that
-/// destroyed a hundred one-liners said nothing about them.
-///
-/// The key set is now DERIVED: exactly the `counter` names the frozen
+/// The key set is DERIVED: exactly the `counter` names the frozen
 /// contracts declare, seeded to zero before the first delete so a declared
 /// counter is present whether or not its leg ran. That is what makes the
 /// receipt COMPLETE — the host that must answer for the erase gets the

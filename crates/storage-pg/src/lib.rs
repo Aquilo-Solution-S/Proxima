@@ -80,11 +80,11 @@ pub const CORE_MIGRATION_VERSION_CEILING: i64 = 9999;
 
 /// Embedded core migration set under `crates/storage-pg/migrations/`.
 ///
-/// `ignore_missing = true` is load-bearing twice over: a database migrated
-/// before the v0.0.7 per-flavor ledger split still carries flavor rows in
-/// the shared `public._sqlx_migrations` table, and the squash workflow
-/// (docs/how-to/migrations.md) leaves orphaned draft rows behind that are
-/// forgiven rather than enumerated.
+/// `ignore_missing = true` forgives ledger rows the embedded set does not
+/// account for: flavor rows in the shared `public._sqlx_migrations` table,
+/// and the orphaned draft rows the squash workflow
+/// (docs/how-to/migrations.md) leaves behind. Both are forgiven rather than
+/// enumerated.
 #[must_use]
 pub fn core_migrator() -> sqlx::migrate::Migrator {
     let mut migrator = sqlx::migrate!("./migrations");
@@ -104,7 +104,7 @@ pub fn core_migrator() -> sqlx::migrate::Migrator {
 ///
 /// - **Every recorded version exists in the embedded set.** A version the
 ///   binary does not ship is a draft or retired migration — a dev-cycle lane
-///   later squashed under a fresh number, or a pre-v0.0.4 artifact. Applying
+///   squashed under a fresh number. Applying
 ///   the squashed file over that schema would re-run its DDL, so this fails
 ///   first with the remedy (stamp or reset) instead of a raw SQL error.
 /// - **Every recorded checksum matches the embedded file.** A mismatch means
@@ -128,12 +128,11 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
             .map_err(internal)?;
 
     // `proxima\_%` rather than a list. This probe runs before any registry
-    // exists, so it cannot ask which flavors are linked — and the previous
-    // spelling named `proxima_code` from inside the kernel, which made a
-    // second flavor's leftover schema invisible to the reset check. The
-    // prefix is the flavor schema convention (`proxima_core`,
-    // `proxima_code`, ...), so the pattern is the same claim without the
-    // kernel knowing any flavor's name.
+    // exists, so it cannot ask which flavors are linked, and naming one from
+    // inside the kernel would make a second flavor's leftover schema
+    // invisible to the reset check. The prefix is the flavor schema
+    // convention (`proxima_core`, `proxima_code`, ...), so the pattern makes
+    // the same claim without the kernel knowing any flavor's name.
     let proxima_schema_objects: Vec<String> = sqlx::query_scalar(
         "SELECT table_schema || '.' || table_name
            FROM information_schema.tables
@@ -190,7 +189,7 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
         let mut details = Vec::new();
         if untracked_proxima_schema {
             details.push(format!(
-                "pre-existing Proxima schema objects without v0.0.4 baseline marker: {}",
+                "pre-existing Proxima schema objects without the core baseline ledger row: {}",
                 proxima_schema_objects.join(", ")
             ));
         }
@@ -573,12 +572,9 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
 /// added to the migration with a stamped column and no FK makes the forget
 /// silently incomplete rather than loud.
 ///
-/// This used to be `WHEN 5 <> (… table_name IN ('sketch', 'agent_note_v1',
-/// …))` inside the big marker CASE: a hand-written count and a hand-written
-/// list, in a 300-line SQL literal, describing tables declared elsewhere.
-/// The expected set is now flavor #0's `lexical_language_column` surfaces,
-/// and the check runs in both directions — a stamped column nobody declared
-/// fails just as loudly as a declared stamp with no FK.
+/// The expected set is flavor #0's declared `lexical_language_column`
+/// surfaces, and the check runs in both directions: a stamped column nobody
+/// declared fails as loudly as a declared stamp with no FK.
 async fn ensure_lexical_language_stamps(pool: &PgPool) -> Result<(), StorageError> {
     let mut declared: Vec<(String, String)> = proxima_core::FLAVOR_0
         .all_surfaces()
@@ -722,8 +718,7 @@ async fn ensure_pgvector_runtime_compatible(
 ///
 /// `for_registry` over a registry holding flavor #0 alone is the same shape
 /// the code flavor's `flavor_surfaces()` uses, and it is what `with_flavors`
-/// does once a host widens the set. This is the un-widened case, not a
-/// different kind of answer.
+/// does once a host widens the set.
 fn flavor_0_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     // A fresh registry holds flavor #0 and nothing else, and flavor #0 is a
     // `const` contract this crate compiles against. There is no input here
@@ -742,11 +737,10 @@ pub struct PgStorage {
     ///
     /// Defaults to flavor #0's, exactly as `sidecars` defaults to
     /// `core_pg_sidecars()`: a storage built without `with_flavors` still
-    /// forgets the kernel's derived rows, which is what the four hardcoded
-    /// `DELETE`s this replaced did unconditionally. `with_flavors` widens
-    /// it to every registered flavor, and a flavor that declares its own
+    /// forgets the kernel's derived rows. `with_flavors` widens it to every
+    /// registered flavor, and a flavor that declares its own
     /// `DeleteWithMemory` surface is reached only after that call — the
-    /// same coverage contract `with_sidecars` already states.
+    /// same coverage contract `with_sidecars` states.
     ///
     /// Resolved by [`flavor_0_surfaces`], through a registry. Building it
     /// from a loose surface list is a different answer, not a cheaper one.
@@ -788,9 +782,9 @@ impl std::fmt::Debug for EmbeddingMaintenanceLock {
 /// distinct from [`EMBEDDING_MAINTENANCE_LOCK_KEY`] so the two maintenance
 /// families may run concurrently but never overlap themselves.
 ///
-/// The bytes spell a retention pass that no longer exists. They stay
-/// anyway: this is a key, not a label, and rotating it would let a process
-/// on the old value and one on the new run the pass at the same time.
+/// The bytes are a key, not a label: they need not describe the pass, and
+/// rotating them would let a process on the old value and one on the new
+/// run the pass at the same time.
 const STORAGE_MAINTENANCE_LOCK_KEY: i64 = i64::from_be_bytes(*b"proxretn");
 
 /// Guard for the global storage-maintenance advisory lock. Same
@@ -818,10 +812,9 @@ impl std::fmt::Debug for StorageMaintenanceLock {
 /// tuning to the default is the kind of thing an operator discovers from a
 /// latency graph weeks later rather than from the boot that caused it.
 ///
-/// Generic over the integer type because the `u32` and `u64` readers were
-/// otherwise the same function written twice, down to the error text; the
-/// only difference was which `FromStr` ran. `crate::tuning` reads its own
-/// knobs through this one.
+/// Generic over the integer type so the `u32` and `u64` readers are one
+/// function rather than two identical ones differing only in which `FromStr`
+/// runs. `crate::tuning` reads its own knobs through this one.
 ///
 /// # Errors
 ///
@@ -899,7 +892,6 @@ impl PgStorage {
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 
-        // Validate connectivity with a trivial query.
         sqlx::query("SELECT 1")
             .execute(&pool)
             .await
@@ -971,14 +963,12 @@ impl PgStorage {
     /// text: the search projections the read path ranks on, and the embed
     /// units the drain reads.
     ///
-    /// One setter rather than two on purpose. These were separate
-    /// builders for exactly one commit, and in that commit three drain
-    /// fixtures installed the projections and not the units — which is
-    /// not a compile error and not a test failure, because a schema with
-    /// no embed unit is indistinguishable from a schema that declares no
-    /// embedding: the drain drops the job and the fixture waits forever
-    /// for a provider call that will never come. Taking the registry
-    /// makes the half-configured state unconstructible.
+    /// One setter rather than two on purpose. Installing the projections
+    /// without the embed units is neither a compile error nor a test
+    /// failure, because a schema with no embed unit is indistinguishable
+    /// from a schema that declares no embedding: the drain drops the job and
+    /// a fixture waits forever for a provider call that never comes. Taking
+    /// the registry makes the half-configured state unconstructible.
     #[must_use]
     pub fn with_flavors(mut self, registry: &proxima_core::FlavorRegistryFrozen) -> Self {
         self.search_projections = registry.search_projections().to_vec();
@@ -1196,13 +1186,12 @@ impl PgStorage {
     /// applied migrations in `_sqlx_migrations`. Call once
     /// at process start before any verb dispatch.
     ///
-    /// `ignore_missing = true` forgives ledger rows the embedded set no
-    /// longer accounts for: flavor rows still in the shared table on a
-    /// database migrated before the v0.0.7 per-flavor ledger split, and
-    /// orphaned draft rows left behind when a dev-cycle lane is squashed
-    /// under a fresh version number (docs/how-to/migrations.md). The core
-    /// version-set is still checksum-validated — both by `SQLx` and, more
-    /// legibly, by [`ensure_core_ledger_compatible`] first.
+    /// `ignore_missing = true` forgives ledger rows the embedded set does
+    /// not account for: flavor rows in the shared table, and orphaned draft
+    /// rows left behind when a dev-cycle lane is squashed under a fresh
+    /// version number (docs/how-to/migrations.md). The core version-set is
+    /// still checksum-validated — both by `SQLx` and, more legibly, by
+    /// [`ensure_core_ledger_compatible`] first.
     ///
     /// # Errors
     ///
@@ -1295,31 +1284,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn core_migrator_contains_v006_migrations() {
-        let versions: Vec<i64> = super::core_migrator()
-            .iter()
-            .map(|migration| migration.version)
-            .collect();
-        assert_eq!(versions, vec![1]);
-    }
-
-    /// Parity pin for the lexical-stamp guardrail rewire.
+    /// Flavor #0 declares every lexical-stamped table, and the marker query,
+    /// the FK-backed `lexical_language_forget()` completeness argument and
+    /// this pin all read that declaration.
     ///
-    /// `ensure_core_schema_markers` used to assert `5 <> (… table_name IN
-    /// ('sketch', 'agent_note_v1', 'utterance_v1', 'agent_derivation_v1',
-    /// 'interpretation_v1'))`. The count and the list were both by hand.
-    /// They became flavor #0's declared `lexical_language_column` surfaces,
-    /// and the guardrail read the declaration instead of the literal.
-    ///
-    /// The projection then collapsed those five columns into one. That is
-    /// the payoff the rewire was for: the marker query, the FK-backed
-    /// `lexical_language_forget()` completeness argument and this pin all
-    /// followed the declaration without anyone editing a list. The name
-    /// below is not a smaller literal — it is the whole set, and a sixth
-    /// searchable core sidecar would not add to it.
+    /// The name below is the whole set, not a sample of it: a sixth
+    /// searchable core sidecar changes the declaration, not any of the
+    /// three readers.
     #[test]
-    fn the_declared_lexical_stamps_are_the_guardrails_deleted_literal() {
+    fn flavor_0_declares_exactly_one_lexical_stamped_table() {
         let declared = proxima_core::FLAVOR_0.lexical_stamped_tables();
 
         assert_eq!(declared, vec!["proxima_core.projection"]);

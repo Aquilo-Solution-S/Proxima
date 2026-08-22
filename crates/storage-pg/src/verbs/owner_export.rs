@@ -13,16 +13,9 @@ use crate::pg_ident::PgIdent;
 /// One owner's bundle: every surface the contract declares exportable, as
 /// table name → rows, plus the pins projected from those rows.
 ///
-/// There used to be nine hand-written SQL constants and five hand-assembled
-/// table-name lists here, each a second spelling of an `ExportRule` the
-/// flavor had already declared. Two of the nine were dead (`source_batches`
-/// selected `WHERE FALSE` from a surface declared `Excluded`; the audit
-/// query read a journal that no longer exists), and one had gone stale
-/// without failing anything: `SKETCH_ROWS_SQL` subtracted a `search_tsv`
-/// column Phase 2 deleted, so the bundle matched the declaration by
-/// accident. Generating the statement from the declaration removes the
-/// class — a surface is in the bundle iff it declares `Rows` or `Allowlist`,
-/// with exactly the fields it names, ordered by the key it names.
+/// The statement is generated from the declaration, so a surface is in the
+/// bundle iff it declares `Rows` or `Allowlist`, with exactly the fields it
+/// names, ordered by the key it names.
 pub async fn export_owner_bundle(
     pool: &PgPool,
     auth: &ExportAuthorization,
@@ -145,12 +138,9 @@ fn export_statement(surface: &Surface) -> Result<Option<String>, StorageError> {
 }
 
 /// Row order is part of the bundle's bytes, so it comes off the declared
-/// key rather than off whichever column a hand-written statement happened
-/// to name.
+/// key.
 ///
-/// THE ORDER IS NOT ALWAYS TOTAL, and this comment claimed it was ("every
-/// declared key is unique, so every generated order is total"). Measured
-/// against a migrated catalog, five of flavor #0's twenty-eight declared
+/// THE ORDER IS NOT ALWAYS TOTAL. Five of flavor #0's twenty-eight declared
 /// keys are backed by no unique index — `embeddings`, `embedding_heads` and
 /// `embedding_jobs` on `entity_id`, `projection` on `memory_id`, and
 /// `ingest_keys` on `t`, whose primary key is
@@ -159,27 +149,19 @@ fn export_statement(surface: &Surface) -> Result<Option<String>, StorageError> {
 /// Four of the five are `ExportRule::Excluded`, so they never reach this
 /// function. `ingest_keys` is `ExportRule::Rows`, and it is the one that
 /// matters: one memory may hold several admission receipts — a different
-/// `(source_id, ingest_key)` pair each — and for those rows
-/// `ORDER BY s.t` leaves the bundle's byte order to whatever the executor
-/// returns. `every_declared_key_that_is_unique_is_unique_in_the_catalog`
-/// pins that set, so this stops being a claim and starts being a fact with
-/// a recorded exception.
+/// `(source_id, ingest_key)` pair each — and for those rows `ORDER BY s.t`
+/// leaves the bundle's byte order to whatever the executor returns.
+/// `every_declared_key_that_is_unique_is_unique_in_the_catalog` pins that
+/// set, so the exception is recorded rather than assumed away.
 ///
-/// THE ERASE IS UNAFFECTED and is not the defect here. `WHERE t = ANY(...)`
-/// destroys every receipt of an erased memory, which is what an erase owes,
-/// and it does not care what order it finds them in.
+/// THE ERASE IS UNAFFECTED. `WHERE t = ANY(...)` destroys every receipt of
+/// an erased memory, which is what an erase owes, and it does not care what
+/// order it finds them in. That predicate is a `Seq Scan`: `ingest_keys`
+/// carries one index and it is the primary key.
 ///
-/// DECLARED FOLLOW-UP, not fixed here. Making the export order total needs
-/// the surface to carry a tiebreak the erase does not use, because the two
-/// verbs want different things from one `key`: the erase wants the memory
-/// column, the export wants a unique row identity. Appending the remaining
-/// primary key columns after `t` was tried and is byte-preserving wherever
-/// the order was already defined — the whole suite passes and no golden
-/// moves — but a generator that reaches for a table's primary key is a
-/// generator that has to be told the primary key, and inventing the
-/// declaration for it is design work rather than a fix. Also unresolved:
-/// that erase predicate is a `Seq Scan`, since `ingest_keys` carries one
-/// index and it is the primary key.
+/// A total export order needs the surface to carry a tiebreak the erase does
+/// not use, because the two verbs want different things from one `key`: the
+/// erase wants the memory column, the export wants a unique row identity.
 fn order_by(surface: &Surface) -> Result<String, StorageError> {
     let mut parts = Vec::new();
     for column in surface.key.columns() {
@@ -273,7 +255,6 @@ mod tests {
         assert!(pin_sort_key(&edges[0]) < pin_sort_key(&edges[1]));
     }
 
-    /// The blob statement, previously the hand-written `BLOB_ROWS_SQL`.
     /// Pinning the generated text is what keeps an allowlist an allowlist
     /// rather than a comment.
     #[test]
@@ -340,7 +321,7 @@ mod tests {
     }
 
     /// The collision-safety rule, as a property of every generated
-    /// statement rather than of the two that happened to be written by hand.
+    /// statement.
     #[test]
     fn no_generated_statement_aliases_a_table_t() {
         for surface in FLAVOR_0.all_surfaces() {

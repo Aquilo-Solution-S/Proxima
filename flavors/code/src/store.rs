@@ -319,8 +319,7 @@ impl CodeFlavorStore {
     /// Active Goal heads that assign or evidence any of `targets`.
     ///
     /// One row per target that matches, Goal `t` chosen as
-    /// `max(newest assignment, newest evidence)` — same as the old
-    /// two `limit = 1` queries plus `.max()`.
+    /// `max(newest assignment, newest evidence)`.
     pub(crate) async fn active_goal_activations(
         &self,
         owner: Owner,
@@ -358,9 +357,9 @@ impl CodeFlavorStore {
 /// Core's surfaces plus this flavor's, resolved once. See the field.
 ///
 /// NOT test-only, unlike [`test_sidecars`] below: the host constructor needs
-/// it too, and a `#[cfg(any(test, debug_assertions))]` gate on it compiled in
-/// dev and vanished under `--release`, which is the same trap the erase
-/// exports fell into. The gate is therefore the UNION of its callers' gates,
+/// it too, and a `#[cfg(any(test, debug_assertions))]` gate on it compiles in
+/// dev and vanishes under `--release`. The gate is therefore the UNION of its
+/// callers' gates,
 /// not either one of them: `from_backend_pool_for_host` is `host-api` and the
 /// two fixture constructors are `test, debug_assertions`, so a release build
 /// of this crate WITHOUT `host-api` has no caller at all and the function is

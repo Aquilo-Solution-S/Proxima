@@ -83,7 +83,7 @@ pub struct AcceptanceCriterionV1 {
 /// replaced the `proxima-code/has-acceptance-criteria` relation: the
 /// criteria Fact is the node that owns the statement "these are the
 /// criteria for that request", so the index row is derived from it and
-/// nobody writes an edge (docs/16 §Flavor Migration).
+/// nobody writes an edge (docs/16 §The Model).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcceptanceCriteriaV1 {
     pub work_item_memory_id: uuid::Uuid,

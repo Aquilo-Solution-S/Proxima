@@ -1,4 +1,4 @@
-//! P2: an owner-to-owner transfer is an in-place series transfer.
+//! An owner-to-owner transfer is an in-place series transfer.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use std::sync::Arc;
@@ -176,10 +176,10 @@ async fn export_bundle(
 /// The exported `mcp_call_logged_v1` rows, whole.
 ///
 /// Returning the rows rather than a count is deliberate. Counting them cannot
-/// tell a row from a scalar, and the owner-pinned export once emitted the
-/// primary key where the row belonged (`to_jsonb(t)` resolves to the column
-/// named `t`, not the range table, when only one table is in scope). The
-/// cardinality was right and the bundle was empty of content.
+/// tell a row from a scalar: `to_jsonb(t)` resolves to the column named `t`,
+/// not the range table, when only one table is in scope, so an export emitting
+/// the primary key where the row belongs has the right cardinality and a bundle
+/// empty of content.
 fn mcp_rows_in(bundle: &proxima_core::owner_inverse::OwnerExportBundle) -> Vec<&serde_json::Value> {
     bundle
         .table("proxima_core.mcp_call_logged_v1")
@@ -500,12 +500,12 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             "the reminted cold record must hydrate under the destination"
         );
 
-        // The `memory` row was already right, because the INSERT reads the
-        // owner off `cooled`. Everything ELSE the hydrate writes used to read
-        // it off the cold record's embedded `row.owner_id`, which a transfer
-        // never rewrites — the bytes keep naming the giver forever. Each of
-        // these three surfaces is owner-scoped on read, so a giver-owned row
-        // here is a memory the giver gave away and can still reach.
+        // The `memory` row is right because the INSERT reads the owner off
+        // `cooled`. Everything ELSE the hydrate writes must too: the cold
+        // record's embedded `row.owner_id` is never rewritten by a transfer, so
+        // the bytes keep naming the giver forever. Each of these three surfaces
+        // is owner-scoped on read, so a giver-owned row here is a memory the
+        // giver gave away and can still reach.
         let sketch_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.sketch WHERE t = $1")
                 .bind(first.memory_id.into_inner())
@@ -1126,16 +1126,16 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
     result.expect("blob transfer failed");
 }
 
-/// Retain-at-source for the audit sidecar, and what "retain" now means.
+/// Retain-at-source for the audit sidecar, and what "retain" means.
 ///
 /// `mcp_call_logged_v1` describes the ACTOR of a tool call (`actor_upn`),
 /// not the memory, and it carries its own `owner_id` stamped with the owner
 /// that made the call. A transfer moves the memory and leaves the row
 /// exactly where it is: it stays reachable by the source (history, export,
 /// Art. 17 erase) and unreachable by the destination (its payload hydrate
-/// joins the memory's owner to the row's). This replaced a DELETE, which
-/// kept the destination out but destroyed history the source was entitled
-/// to. Every other sidecar (here: `agent_note_v1`) still follows the memory.
+/// joins the memory's owner to the row's). Deleting the row instead would keep
+/// the destination out at the cost of history the source is entitled to. Every
+/// other sidecar (here: `agent_note_v1`) follows the memory.
 #[tokio::test]
 async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() {
     let (db_name, pg) = fresh_pg().await;
@@ -1400,8 +1400,8 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
     result.expect("destination lifecycle must not reach the source audit trail");
 }
 
-/// The FK safety that used to lean on World's migration-seeded `owners` row.
-/// The destination here has never been written to, so the transfer transaction
+/// FK safety with no migration-seeded `owners` row to lean on. The destination
+/// here has never been written to, so the transfer transaction
 /// must mint its `owners` row before any `owner_id` FK binds — including the
 /// destination's own announce lane.
 #[tokio::test]
@@ -1570,21 +1570,17 @@ async fn cite_from(
     ingest_fact_atomic(pool, permit, &cited, None).await
 }
 
-/// The refusal that the dedupe arm replaced.
+/// The dedupe arm, in place of a refusal.
 ///
 /// One owner cites the same uploaded document from two series and then
-/// transfers one of them away. Before the arm this was
-/// `Conflict("cited blob is still referenced by another live series under
-/// a different owner")` — and note what the predicate behind that message
-/// actually asked: `owner_id <> <destination>`, which the SOURCE owner
-/// satisfies. So the refusal fired for an owner citing its own document
-/// twice, which is not an exotic case at all; it is what happens the
-/// second time anyone cites a PDF they already uploaded.
+/// transfers one of them away. A refcount predicate spelled
+/// `owner_id <> <destination>` is satisfied by the SOURCE owner, so it refuses
+/// an owner citing its own document twice — which is what happens the second
+/// time anyone cites a PDF they already uploaded.
 ///
-/// Now the destination gets a `blob` row of its own and an upload row that
-/// MOUNTS the source's object: same key, no bytes read or written. The
-/// source keeps everything it had, because its other series still cites
-/// it.
+/// Instead the destination gets a `blob` row of its own and an upload row that
+/// MOUNTS the source's object: same key, no bytes read or written. The source
+/// keeps everything it had, because its other series still cites it.
 #[tokio::test]
 async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
     let (db_name, pg) = fresh_pg().await;
@@ -1617,7 +1613,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
                 &contract_sidecar_tables()
             )
             .await?,
-            "a shared cited blob must no longer refuse the transfer"
+            "a shared cited blob must not refuse the transfer"
         );
 
         let moved_to: Uuid =
@@ -1757,11 +1753,11 @@ async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
 /// The UNIQUE violation the arm also closes.
 ///
 /// `blob` is unique on `(owner_id, schema_id, content_hash)`. If the
-/// destination already uploaded the same bytes, the old in-place move
-/// `UPDATE blob SET owner_id = <dest>` collided with the row already
-/// sitting there and the whole transfer failed on a constraint the caller
-/// could do nothing about. Now the destination's own row wins and this
-/// series' citation is repointed at it.
+/// destination already uploaded the same bytes, an in-place
+/// `UPDATE blob SET owner_id = <dest>` collides with the row already sitting
+/// there and fails the whole transfer on a constraint the caller can do nothing
+/// about. The destination's own row wins instead, and this series' citation is
+/// repointed at it.
 #[tokio::test]
 async fn a_destination_that_already_holds_the_bytes_keeps_its_own_row() {
     let (db_name, pg) = fresh_pg().await;
@@ -2008,13 +2004,13 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
 
 /// The same guarantee, on the source-scope arm.
 ///
-/// `enqueue_blob_object_keys` has two arms and they refcount differently:
-/// the owner arm asks whether another OWNER names the key, the source arm
-/// asks whether another upload row outside the selected blob set does. Only
-/// the owner arm was pinned, so deleting the source arm's whole
-/// `NOT EXISTS` left the suite green while a source-scope erase enqueued the
-/// object key of a blob another owner had mounted — and the retention lane
-/// would then destroy bytes that owner still reads. This is that arm.
+/// `enqueue_blob_object_keys` has two arms and they refcount differently: the
+/// owner arm asks whether another OWNER names the key, the source arm asks
+/// whether another upload row outside the selected blob set does. The source
+/// arm needs its own pin — without one, dropping its whole `NOT EXISTS` leaves
+/// the suite green while a source-scope erase enqueues the object key of a blob
+/// another owner has mounted, and the retention lane then destroys bytes that
+/// owner still reads. This is that arm.
 ///
 /// The shape is the one a mount actually produces: one owner cites an
 /// upload from two sources, hands one series to a group (which mounts

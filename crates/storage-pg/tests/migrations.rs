@@ -1,4 +1,4 @@
-//! Fresh v0.0.8 CREATE set. Requires local PG.
+//! The fresh CREATE set of the core migration. Requires local PG.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -127,11 +127,9 @@ fn collect_relations_in_source(source: &str, found: &mut BTreeSet<String>) {
     }
 }
 
-/// A relation this crate's SQL names but the migration does not create fails
-/// at run time with 42P01 and nowhere else. `owner_fact_retention` spent the
-/// whole v0.0.8 cut in that state: the table was dropped from the squashed
-/// migration, the Rust surface survived, and `get_graph` read it on every
-/// call.
+/// A relation this crate's SQL names but the migration does not create fails at
+/// run time with 42P01 and nowhere else: the Rust surface compiles, and the
+/// first caller to reach it is the one that finds out.
 #[tokio::test]
 async fn every_core_relation_named_in_storage_sql_exists() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -226,7 +224,7 @@ async fn migrations_apply_to_fresh_db() {
         ] {
             assert!(
                 !table_exists(&pg, dead).await,
-                "v0.0.8 must not create dead table {dead}"
+                "the migration must not create dead table {dead}"
             );
         }
 
@@ -291,11 +289,11 @@ async fn migrations_apply_to_fresh_db() {
         );
         assert!(
             column_exists(&pg, "memory", "sidecar_tables").await,
-            "W4: forget dumps the per-t stamp, not the registry"
+            "forget dumps the per-t stamp, not the registry"
         );
         assert!(
             column_exists(&pg, "agent_note_v1", "embed_text").await,
-            "W6: drain reads stored sidecar embed_text"
+            "drain reads stored sidecar embed_text"
         );
         assert!(
             !column_exists(&pg, "memory", "schema_version").await,
@@ -327,13 +325,12 @@ async fn migrations_apply_to_fresh_db() {
             "embeddings_owner_model_idx",
             "goal_owner_state_t_idx",
             "sketch_owner_t_idx",
-            // ONE composite GIN for the whole flavor, where four per-sidecar
-            // ones used to be.
+            // ONE composite GIN for the whole flavor, not one per sidecar.
             "core_projection_owner_tsv_gin",
         ] {
             assert!(
                 index_exists(&pg, index).await,
-                "missing UML §7 index {index}"
+                "missing declared index {index}"
             );
         }
 
@@ -391,7 +388,7 @@ async fn migrations_apply_to_fresh_db() {
         )
         .fetch_one(pg.pool_for_tests())
         .await?;
-        assert_eq!(core_versions, 1, "v0.0.8 is one core migration");
+        assert_eq!(core_versions, 1, "core ships exactly one migration");
 
         let grounding_vol: String = sqlx::query_scalar(
             "SELECT provolatile::text
@@ -791,7 +788,7 @@ async fn schema_markers_reject_damaged_lexical_default() {
         .execute(pool)
         .await?;
 
-        // The stamp moved to the projection with the vector.
+        // The lexical stamp lives on the projection, beside the vector.
         sqlx::query(
             "ALTER TABLE proxima_core.projection
              DROP CONSTRAINT projection_lexical_language_fkey",

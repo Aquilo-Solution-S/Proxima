@@ -58,17 +58,17 @@ pub struct Chunk {
 /// - blob is empty.
 ///
 /// `NUL` is checked separately from the UTF-8 test because `U+0000` *is*
-/// valid UTF-8. A file holding one therefore passed the binary heuristic,
-/// was chunked, and its text reached Postgres — which cannot store `NUL` in
-/// a `text` column and fails the statement:
+/// valid UTF-8. Postgres cannot store `NUL` in a `text` column and fails the
+/// statement:
 ///
 /// ```text
 /// invalid byte sequence for encoding "UTF8": 0x00
 /// ```
 ///
-/// That killed the **whole HEAD snapshot**, not just the offending file.
-/// Treating it as binary is the rule `git` itself uses, and it keeps a
-/// value Postgres cannot store from being constructed at all.
+/// That failure takes the **whole HEAD snapshot**, not just the offending
+/// file. Treating a `NUL`-bearing blob as binary is the rule `git` itself
+/// uses, and it keeps a value Postgres cannot store from being constructed
+/// at all.
 #[must_use]
 pub fn chunk_blob(file_path: &str, content: &[u8]) -> Vec<Chunk> {
     if content.len() > MAX_BLOB_BYTES {
@@ -612,8 +612,8 @@ pub fn parse() {}
         assert!(chunks[0].text.contains("pub fn parse"));
     }
 
-    /// Comment-dense sources are the ones that lost the most: this shape
-    /// scored 0.33 coverage while comments were skipped.
+    /// Comment-dense sources are the worst case for coverage: comments must
+    /// count toward the covered span, not be skipped.
     #[test]
     fn comment_dense_source_is_almost_fully_covered() {
         let src = "\

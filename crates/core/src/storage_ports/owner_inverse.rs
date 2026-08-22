@@ -7,8 +7,8 @@ use crate::{GroupId, SourceId, UserId};
 /// serialize them.
 ///
 /// Core performs these; it does not decide when they are owed. There is no
-/// retention window here, no legal hold, no journal of who asked — v0.0.8
-/// carried all three and they are gone. A hosting application that promises
+/// retention window here, no legal hold, and no journal of who asked. A
+/// hosting application that promises
 /// its users a right to erasure or a right to a copy calls these verbs at
 /// the moment its own rules say to, and records the receipt they hand back
 /// if its own rules say to. Core's contribution is that the inverse is

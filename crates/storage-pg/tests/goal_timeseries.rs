@@ -1,4 +1,4 @@
-//! Slice 4: GoalWrite + write-act Fact.
+//! GoalWrite + write-act Fact.
 #![allow(
     clippy::missing_errors_doc,
     clippy::doc_markdown,

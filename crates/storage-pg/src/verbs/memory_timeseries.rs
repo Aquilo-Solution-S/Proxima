@@ -1,4 +1,4 @@
-//! Timeseries Fact write/read (v0.0.8). UML §8.
+//! Timeseries Fact write/read.
 #![allow(
     clippy::missing_errors_doc,
     clippy::doc_markdown,
@@ -123,8 +123,8 @@ pub async fn ingest_fact_timeseries(
             .await
             .map_err(map_err)?;
             // Forget keeps the `ingest_keys` row and moves the handle to the
-            // `cooled` stub, so a source re-delivering a cooled admission
-            // still replays. Reading `memory` alone answered `Internal`.
+            // `cooled` stub, so a source re-delivering a cooled admission still
+            // replays. Reading `memory` alone misses the stub.
             let replay_handle: Uuid = sqlx::query_scalar(
                 "SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
                  UNION ALL

@@ -1,7 +1,7 @@
 //! `core_interpret` — author an interpretation Perspective.
 //!
 //! A claim with a reason and a confidence is a judgment (docs/16
-//! §Motivation). Connections to the subjects are index rows derived from
+//! §The Model). Connections to the subjects are index rows derived from
 //! the Perspective payload — nobody writes them except by writing the node.
 
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};

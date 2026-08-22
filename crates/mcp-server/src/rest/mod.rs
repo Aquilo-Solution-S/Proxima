@@ -271,7 +271,7 @@ async fn action_route(
     dispatch(&state, &auth, &headers, descriptor.name, args, &instance).await
 }
 
-/// The one place a REST request becomes a tool call. R1: no route reaches
+/// The one place a REST request becomes a tool call: no route reaches
 /// `Engine` or storage directly.
 async fn dispatch(
     state: &RestState,
@@ -439,7 +439,7 @@ fn tool_json(
         "annotations": annotations_for_auth(auth, descriptor),
         // Narrowed per action by the same projection `tools/list` applies, so
         // a palette that permits one leaf of a dispatcher advertises one leaf
-        // on both surfaces (R6).
+        // on both surfaces.
         "args_schema": project_dispatcher_actions_for_auth(descriptor, auth),
     })
 }

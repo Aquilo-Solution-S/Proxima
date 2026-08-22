@@ -1,7 +1,6 @@
 //! Pins — `memory.origins` / `memory.refs`. There is no edge table.
 //!
-//! See docs/16-edges.md, which supersedes docs/02 §Edges, §Relation
-//! Registry and §The Directionality Rule.
+//! docs/16-edges.md is the reference.
 //!
 //! > Edges are fundamental, non-extensible connection patterns. An edge
 //! > carries no information beyond its existence: its endpoints, its
@@ -248,7 +247,7 @@ pub fn project_listed_edge<S: std::hash::BuildHasher>(
 
 /// Enforce the layering rule for a proposed edge: `ℓ(source) ≥
 /// ℓ(target)` for memory endpoints, with Goal endpoints outside the
-/// comparison (docs/16 §Direction and layering).
+/// comparison (docs/16 §The Model).
 ///
 /// This is what keeps a Fact from being an interpretation *source*: a
 /// Fact asserts no judgment, and every interpretation is a Perspective
@@ -304,7 +303,7 @@ mod tests {
     }
 
     /// The vocabulary is closed at two. A third variant is a design
-    /// change (docs/16 §Kinds are closed), not a patch, and this is the
+    /// change (docs/16 §The Model), not a patch, and this is the
     /// test that says so out loud.
     #[test]
     fn the_vocabulary_is_exactly_two_kinds() {

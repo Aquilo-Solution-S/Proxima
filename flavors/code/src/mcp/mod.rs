@@ -9,8 +9,8 @@ use proxima_core::{ToolCtx, ToolError};
 pub(crate) const REPO_HANDLE_KIND: &str = "proxima-code/repo";
 pub(crate) const REPO_HANDLE_PREFIX: char = 'R';
 
-/// MCP behaviour hints, one set so eleven tools cannot drift on the same
-/// four booleans. `ScopeGateBehavior` demands WRITE when it cannot tell
+/// MCP behaviour hints, one set so this flavor's tools cannot drift on the
+/// same four booleans. `ScopeGateBehavior` demands WRITE when it cannot tell
 /// read-only. `open_world(false)`: every tool here reads or writes this
 /// deployment's own Postgres and reaches nothing else.
 pub(crate) const READ_ONLY: McpToolAnnotations =

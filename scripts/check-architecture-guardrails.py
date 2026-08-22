@@ -15,7 +15,7 @@ from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ALLOW = "PR9-RATCHET-ALLOW"
+ALLOW = "ARCH-GUARDRAIL-ALLOW"
 OWNER_WRITE_PERMIT = "OwnerWritePermit"
 
 # Dated exemptions for flavor code that still reads `proxima_core.*` tables
@@ -24,11 +24,9 @@ OWNER_WRITE_PERMIT = "OwnerWritePermit"
 # stops suppressing findings and the failure renders the expiration date so
 # reviewers see why it started failing.
 #
-# The authorized-read helpers migrated the three prior entries here (search_chunks.rs,
-# open_file_revision.rs, local_git_source.rs) onto
-# `proxima::flavor::authorized_*` — production `flavors/code/src` now holds
-# zero raw `proxima_core.*` SQL, so this allowlist is empty until the next
-# dated exemption is actually needed.
+# Production `flavors/code/src` holds zero raw `proxima_core.*` SQL — every
+# flavor read goes through `proxima::flavor::authorized_*` — so the allowlist
+# is empty.
 ALLOWLISTED_FLAVOR_CORE_SQL: dict[str, dict[str, str]] = {}
 
 
@@ -316,10 +314,10 @@ def flavor_core_sql_hits(text: str) -> list[tuple[int, int, str]]:
 
 
 def allow_marker_lines(text: str) -> set[int]:
-    """Line numbers carrying a PR9-RATCHET-ALLOW marker outside every string
-    literal.
+    """Line numbers carrying an ARCH-GUARDRAIL-ALLOW marker outside every
+    string literal.
 
-    Marker text INSIDE a literal (e.g. a `-- PR9-RATCHET-ALLOW` SQL comment
+    Marker text INSIDE a literal (e.g. a `-- ARCH-GUARDRAIL-ALLOW` SQL comment
     within a flagged raw string) must never suppress the finding on that
     literal, otherwise the scanned content could self-authorize.
     """

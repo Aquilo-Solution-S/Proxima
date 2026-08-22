@@ -425,8 +425,7 @@ mod tests {
             panic!("ctx_with_principals requires a personal owner");
         };
         // Server-resolved: the caller manages (admin) every group it can
-        // reach, plus its own personal owner. Faithful to the old
-        // unrestricted-over-accessible semantics for these membership tests.
+        // reach, plus its own personal owner.
         let group_roles = accessible
             .into_iter()
             .filter_map(|principal| match principal {

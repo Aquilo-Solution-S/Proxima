@@ -13,9 +13,9 @@
 //! anything. A forged row can only ever vouch for its own object, because
 //! the key is derived from its primary key.
 //!
-//! There is no legacy branch. Keys written by the retired owner-scoped
-//! scheme are not readable and are not meant to be; v0.0.8 is a breaking
-//! release and existing deployments re-ingest.
+//! Every key is owner-free and derived from the row's primary key. There is
+//! no second branch to fall back to: a key that does not derive this way is
+//! not readable, by design.
 
 use uuid::Uuid;
 

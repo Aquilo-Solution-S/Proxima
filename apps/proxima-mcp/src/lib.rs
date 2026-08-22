@@ -43,9 +43,9 @@ const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
 /// reference the owning tool's `McpTool::NAME`; grouped tools contribute
 /// action leaf keys from their manifest.
 ///
-/// This one keeps reading `all_core_actions()` on purpose. It is a curated
-/// allow-list — a deployment decision about which substrate actions the
-/// memory profile advertises — not an enumeration of what exists; that is
+/// Reads `all_core_actions()` because it is a curated allow-list — a
+/// deployment decision about which substrate actions the memory profile
+/// advertises — not an enumeration of what exists; that is
 /// [`registered_tool_ids`], which reads the descriptors. The two agreeing on
 /// the substrate actions they both name is pinned by
 /// `core_action_meta_decorates_only_declared_actions` in
@@ -239,8 +239,8 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
         .is_some_and(|arg| arg == "reconcile-embeddings")
     {
         return Err(CliError::Args(ArgsError::Invalid(
-            "reconcile-embeddings was renamed to maintain-embeddings in v0.0.7; \
-             the pass now also sweeps orphans and prints a health report"
+            "use maintain-embeddings: it sweeps orphan embedding rows, enqueues \
+             missing embeddings, and prints a health report"
                 .into(),
         )));
     }
@@ -251,10 +251,9 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
         ArgsError::Help => CliError::Help(USAGE),
         other @ ArgsError::Invalid(_) => CliError::Args(other),
     })?;
-    // rmcp 3.x still logs idle-session keep-alive expiry and the resulting
+    // rmcp 3.x logs idle-session keep-alive expiry and the resulting
     // session-cleanup race at ERROR; both are clean lifecycle events
-    // (`quit_reason=Closed`). Pin those targets to `warn` until rmcp
-    // upstream lowers them.
+    // (`quit_reason=Closed`), so those targets are pinned to `warn`.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -288,10 +287,6 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
     Ok(())
 }
 
-/// One embedding self-healing pass: orphan sweep, reconcile enqueue,
-/// optional inline drain, health report. Serialized across processes by a
-/// Postgres advisory lock — an overlapping pass skips with exit 0 so cron
-/// overlap is harmless by construction, not by scheduling discipline.
 /// Reconcile the blob store against the rows that name it, and print what
 /// disagrees.
 ///
@@ -357,6 +352,10 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
     Ok(())
 }
 
+/// One embedding self-healing pass: orphan sweep, reconcile enqueue,
+/// optional inline drain, health report. Serialized across processes by a
+/// Postgres advisory lock — an overlapping pass skips with exit 0 so cron
+/// overlap is harmless by construction, not by scheduling discipline.
 async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     let model = maintenance_embedding_model(config.model, proxima_core::process_env)?;
     let embedding_policy = embedding_runtime_policy_from_lookup(&proxima_core::process_env)?;
@@ -388,12 +387,11 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     );
 
     // This pass runs against a bare `PgStorage` with no flavor app booted,
-    // so the only declarations it can see are core's own — which is where
-    // `core/upload-v1` lives, and it is the schema that motivated the
-    // exclusion. A host whose FLAVORS declare non-embeddable schemas must
-    // reconcile through its own binary, where the full registry exists;
-    // this pass would re-enqueue those. Printed below rather than left
-    // implicit, so the scope of the pass is visible in its own output.
+    // so the only declarations it can see are core's own, which is where
+    // `core/upload-v1` lives. A host whose FLAVORS declare non-embeddable
+    // schemas must reconcile through its own binary, where the full
+    // registry exists; this pass would re-enqueue those. Printed below, so
+    // the scope of the pass is visible in its own output.
     let core_registry = proxima_core::FlavorRegistry::new()
         .try_freeze()
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
@@ -630,12 +628,11 @@ enum ToolProfile {
 /// Every scope key a token may name: one id per flat tool, one `tool:action`
 /// leaf per dispatcher action, plus the resource keys.
 ///
-/// The descriptor's `action_arg_specs` are the enumeration. Reading the
-/// substrate `CoreActionMeta` tables here meant a flavor dispatcher
-/// contributed exactly one bare id, so `PROXIMA_TOOL_ALLOW` could not name
-/// one of its leaves (`reject_unknown_tool_ids` refused the leaf as unknown)
-/// and `PROXIMA_TOOL_PROFILE=full` granted the whole tool where every
-/// substrate dispatcher was granted leaf by leaf.
+/// The descriptor's `action_arg_specs` are the enumeration, so a flavor
+/// dispatcher contributes one leaf per action rather than a single bare id.
+/// That is what lets `PROXIMA_TOOL_ALLOW` name one of its leaves and
+/// `PROXIMA_TOOL_PROFILE=full` grant it leaf by leaf, exactly as it does for
+/// a substrate dispatcher.
 fn registered_tool_ids() -> Result<Vec<String>, CliError> {
     let mut registry = FlavorRegistry::new();
     <ProximaMcpApp as FlavorBundle>::register(&mut registry)
@@ -966,12 +963,10 @@ mod tests {
     /// least one — so a dispatcher is named by its leaves and a flat tool by
     /// its bare id, whoever registered it.
     ///
-    /// The claim underneath is that the descriptor is the enumeration.
-    /// Reading the substrate `CoreActionMeta` tables here made a *flavor*
-    /// dispatcher exactly one bare id: `PROXIMA_TOOL_ALLOW=flavor:action`
-    /// was refused as an unknown id, and `PROXIMA_TOOL_PROFILE=full` handed
-    /// out the whole tool where every substrate dispatcher was granted leaf
-    /// by leaf.
+    /// The claim underneath is that the descriptor is the enumeration: a
+    /// *flavor* dispatcher must contribute its leaves, so
+    /// `PROXIMA_TOOL_ALLOW=flavor:action` resolves and
+    /// `PROXIMA_TOOL_PROFILE=full` grants it leaf by leaf.
     #[test]
     fn registered_ids_carry_a_flavor_dispatchers_leaves() {
         use std::collections::BTreeSet;
@@ -1074,10 +1069,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn old_reconcile_subcommand_names_the_rename() {
+    async fn reconcile_embeddings_subcommand_points_at_maintain_embeddings() {
         let err = run(["reconcile-embeddings".to_string()])
             .await
-            .expect_err("renamed subcommand must fail with guidance");
+            .expect_err("an unserved subcommand must fail with guidance");
         assert!(
             err.to_string().contains("maintain-embeddings"),
             "message: {err}"
@@ -1434,8 +1429,7 @@ mod tests {
         }
     }
 
-    /// The cap is opt-in: a deployment that says nothing keeps sending every
-    /// input, exactly as before.
+    /// The cap is opt-in: a deployment that says nothing sends every input.
     #[test]
     fn no_input_cap_is_configured_by_default() {
         let client = embedding_client_from_env(

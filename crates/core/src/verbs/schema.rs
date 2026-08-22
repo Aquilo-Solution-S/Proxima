@@ -117,7 +117,7 @@ impl SchemaInfo {
     /// registry enforces: `FlavorRegistry::try_freeze` asserts every schema
     /// either has a protocol-ingress parser or is an opaque `CitedObject` /
     /// `CitationMapping` schema.
-    /// See docs/03 §Registry rules.
+    /// See docs/03-schema-registry.md.
     #[must_use]
     pub(crate) fn opaque(
         schema_id: SchemaId,
@@ -158,17 +158,14 @@ pub fn sidecar_tables(schemas: &[SchemaInfo], kind: PayloadKind) -> Vec<String> 
 pub struct MemorySearchProjectionField {
     pub column: String,
     pub kind: SearchProjectionColumnKind,
-    /// The declared relative weight. Uniform across a unit in v0.0.8.
+    /// The declared relative weight.
     pub weight: f32,
 }
 
 /// One search surface, as the SQL builders need it — the runtime reading of
 /// a `SchemaContract` whose `search` is `Projected`.
 ///
-/// Built from the flavor contracts at freeze. There used to be a second
-/// source, `FactPayload::search_projection()`, which the contract's
-/// declaration shadowed without governing; a projection nothing enforced is
-/// exactly the drift the contract exists to remove.
+/// Built from the flavor contracts at freeze.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemorySearchProjection {
     pub schema_id: SchemaId,
@@ -219,11 +216,10 @@ pub struct MemorySearchProjection {
 
 /// One `(sidecar table, column)` the embedding drain reads text from.
 ///
-/// Split out of `MemorySearchProjection`, which used to carry
-/// `embed_text_column` inside a *search* declaration. That conflation made
-/// a schema that embeds but does not search — `proxima-code/file-revision-v1`
-/// is exactly one — unstateable: it had to declare a search projection it
-/// did not have in order to be embedded at all.
+/// Separate from `MemorySearchProjection`: a schema may embed without
+/// searching (`proxima-code/file-revision-v1` is exactly one), so embed
+/// text cannot live inside a search declaration without making such a
+/// schema unstateable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryEmbedUnit {
     pub schema_id: SchemaId,
@@ -325,9 +321,8 @@ pub struct FlavorRegistryFrozen {
 
 /// Every search surface the linked contracts declare, in contract order.
 ///
-/// This is the collapse: one vocabulary, read once, at freeze. A schema
-/// whose contract says `SearchProjectionDecl::None` contributes nothing —
-/// and, unlike the old `search_projection() -> None`, it said why.
+/// One vocabulary, read once, at freeze. A schema whose contract says
+/// `SearchProjectionDecl::None` contributes nothing, and says why.
 fn contract_search_projections(
     contracts: &[&'static FlavorContract],
 ) -> Vec<MemorySearchProjection> {
@@ -337,10 +332,9 @@ fn contract_search_projections(
             continue;
         };
         for (schema, sidecar_table) in contract.projected_schemas() {
-            // Nothing is discarded here any more. `bands` and `substring`
-            // used to fall into the `..`, which is what made a declared
-            // band a value no reader could reach and the substring arm a
-            // blanket retry rather than an opt-in.
+            // Destructured exhaustively rather than with `..`: a declared
+            // field that falls into a rest pattern is a value no reader can
+            // reach.
             let SearchProjectionDecl::Projected {
                 fields,
                 tag_column,

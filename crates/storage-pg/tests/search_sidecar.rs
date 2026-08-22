@@ -239,9 +239,9 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
             "the snippet is hydrated for the page whichever arm found the row"
         );
 
-        // Mutation target: turn the arm off and the row disappears. This
-        // is the whole price of deleting the blanket retry, stated as a
-        // test rather than as a claim.
+        // Mutation target: turn the arm off and the row disappears. With no
+        // blanket retry behind it, the arm is the only thing that finds this
+        // row.
         let arm_off = MemorySearchProjection {
             substring: proxima_core::flavor::SubstringArm::Off,
             ..note_projection()
@@ -480,8 +480,8 @@ async fn tagged_search_scans_flavor_sidecars() {
             bands: DOCS_BANDS,
             substring: SubstringArm::MemoryFirstNestedLoop,
             overfetch_k: 1_000,
-            // Both new gates, satisfied. Flip either and the tagged search
-            // below returns nothing.
+            // Both gates, satisfied. Flip either and the tagged search below
+            // returns nothing.
             band_comparability: BandComparability::CoreBands,
             rank_source: RankSource::Projection,
         };
@@ -768,13 +768,11 @@ async fn semantic_search_respects_until() {
 /// not by the shape of the string.
 ///
 /// The two binds have the same type and the same cast, so exchanging their
-/// comparisons (`>= $5` / `<= $4`) is a mutation nothing in the workspace
-/// caught: no lexical-path test bound a non-null window at all, and the one
-/// test that set `until` set it on the SEMANTIC arm, which does not render
-/// these predicates.
+/// comparisons (`>= $5` / `<= $4`) is a mutation only a test that binds a
+/// non-null window on the LEXICAL arm can catch — the semantic arm does not
+/// render these predicates.
 ///
-/// Two things make this test actually kill that mutant, and both were
-/// learned by running it:
+/// Two things make this test kill that mutant:
 ///
 /// - The window must be ASYMMETRIC. A symmetric `since == until` asks for
 ///   `t >= x AND t <= x` either way round and survives the exchange.
@@ -1084,14 +1082,14 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
 /// its restriction has a different shape from the ranked arm's — the leg
 /// already drives `proxima_core.memory m`, so it probes `memory_head`
 /// directly instead of through a second `memory` lookup. That shape was
-/// pinned by a string assertion only, and a string assertion cannot see a
-/// join that is present but wrong.
+/// pinned by a string assertion only, and a string assertion cannot see a join
+/// that is present but wrong.
 ///
-/// A first attempt at this test seeded one superseded substring match and
-/// asserted it did not come back. It passed with the restriction REMOVED:
-/// `search_admit_sql` drops the row either way, so the candidate-side
-/// predicate changes nothing until the window is the scarce thing. This
-/// corpus makes it scarce — [`SUBSTRING_BACKLOG`] superseded matches against
+/// The corpus has to make the overfetch window scarce. With one superseded
+/// substring match the test passes with the restriction REMOVED:
+/// `search_admit_sql` drops the row either way, so the candidate-side predicate
+/// changes nothing until the window is the scarce thing. This corpus makes it
+/// scarce — [`SUBSTRING_BACKLOG`] superseded matches against
 /// a `limit = 1` window of twenty — and puts the live row FIRST, because the
 /// substring arm scores everything at one flat floor and breaks the tie on
 /// `t DESC`, so the oldest row is the one a spent window loses.

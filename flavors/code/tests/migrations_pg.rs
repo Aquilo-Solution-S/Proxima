@@ -33,8 +33,8 @@ async fn flavor_migrations_apply_to_fresh_db() {
             "test_result_v1",
             "acceptance_verification_v1",
             "acceptance_summary_v1",
-            // Retired: call sites live on the chunk payload; work
-            // assignment is a node.
+            // Call sites live on the chunk payload; work assignment is a
+            // node.
             "code_chunk_call_v1",
             "work_assignment_v1",
         ] {
@@ -113,11 +113,10 @@ async fn flavor_migrations_apply_to_fresh_db() {
             .bind(table)
             .fetch_one(pg.pool_for_tests())
             .await?;
-            assert!(present, "W6: {table}.embed_text must exist");
+            assert!(present, "{table}.embed_text must exist");
         }
 
-        // After the Owner = OwnerRef collapse, the full-collapse decision
-        // removes the legacy owner org column from proxima_code too. Keystone gate for the
+        // `proxima_code` carries no owner org column. Keystone gate for the
         // flavor DDL-drop migration — a missed column would silently keep org
         // in the flavor schema and pass every check above.
         let org_cols: (i64,) = sqlx::query_as(
@@ -231,7 +230,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
 }
 
 /// `OwnerRef` has no id-less kind, so the flavor's owner columns carry the
-/// invariant as plain NOT NULL rather than the old shape/world CHECK pair.
+/// invariant as plain NOT NULL rather than a shape/world CHECK pair.
 async fn assert_owner_ref_constraints(
     pool: &sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {

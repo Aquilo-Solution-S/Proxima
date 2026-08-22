@@ -241,11 +241,11 @@ async fn export_carries_cooled_locators_and_sketches() {
     result.expect("cooled/sketch export test failed");
 }
 
-/// A v0.0.8 citation is the `proxima_core.blob` row a Fact names, so both
-/// citation sidecar families key on `blob_id` and are owner-filtered through
-/// `blob.owner_id`. Export used to receive the registered table lists and throw
-/// them away, so a flavor's typed cited-object and citation-mapping payloads
-/// were absent from the bundle.
+/// A citation is the `proxima_core.blob` row a Fact names, so both citation
+/// sidecar families key on `blob_id` and are owner-filtered through
+/// `blob.owner_id`. Export must act on the registered table lists it receives:
+/// discarding them drops a flavor's typed cited-object and citation-mapping
+/// payloads from the bundle.
 #[tokio::test]
 async fn export_carries_registered_citation_sidecar_rows() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -434,14 +434,13 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
 /// The bundle carries EXACTLY the surfaces the contracts declare
 /// exportable — including the ones that came back empty.
 ///
-/// `OwnerExportBundle`'s own doc states that invariant, and until this test
-/// nothing checked it. The differential harness could not: it strips empty
-/// sections before comparing, deliberately, because its goldens were
-/// captured from a corpus and a corpus writes what it writes. So a mutation
-/// that dropped one surface from the generator's loop passed the entire
-/// workspace, and the surface simply stopped being exported — the exact
-/// failure the whole "declaration generates the statement" argument was
-/// supposed to have made impossible.
+/// `OwnerExportBundle`'s own doc states that invariant, and the differential
+/// harness cannot check it: it strips empty sections before comparing,
+/// deliberately, because its goldens were captured from a corpus and a corpus
+/// writes what it writes. So a surface dropped from the generator's loop simply
+/// stops being exported, with nothing in the workspace failing — the exact
+/// failure the "declaration generates the statement" argument is supposed to
+/// make impossible.
 ///
 /// A FRESH owner is the right subject. Every table is empty, so the only
 /// thing the assertion can be measuring is which surfaces the generator

@@ -145,7 +145,7 @@ async fn self_ingestion_streams_proxima_main() {
 
         let main_count_before = count_branch_commits(&clone_path, &ingest_ref);
 
-        // Phase 1 — historical ingestion.
+        // Historical ingestion.
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, clone_path.clone(), owner);
         let cursor = Cursor::empty();
@@ -165,7 +165,7 @@ async fn self_ingestion_streams_proxima_main() {
              ref_count={main_count_before}, facts={facts_after_initial}"
         );
 
-        // Phase 1.5 — payload projection check. Query for commit-v1 facts
+        // Payload projection check. Query for commit-v1 facts
         // and verify the typed sidecar projects back to CommitV1.
         let commit_schema = proxima_core::SchemaId::new("proxima-code/commit-v1".into());
         let query_resp = engine
@@ -215,7 +215,7 @@ async fn self_ingestion_streams_proxima_main() {
             "expected non-empty SHA in decoded commit-v1 payload"
         );
 
-        // Phase 1.6 — multi-schema payload dispatch. Query without a
+        // Multi-schema payload dispatch. Query without a
         // schema_id filter so the SQL exercises the CASE-per-schema
         // dispatch end-to-end. Every commit-v1 row in the unfiltered
         // result must still decode to CommitV1; mis-dispatched rows
@@ -270,7 +270,7 @@ async fn self_ingestion_streams_proxima_main() {
                 })?;
         }
 
-        // Phase 2 — live append. A new commit on the clone surfaces as a
+        // Live append. A new commit on the clone surfaces as a
         // new commit-v1 Fact on the next poll.
         run(Command::new("git").arg("-C").arg(&clone_path).args([
             "commit",
@@ -295,7 +295,7 @@ async fn self_ingestion_streams_proxima_main() {
             "live commit should have added exactly one new commit-v1 Fact"
         );
 
-        // Phase 3 — idempotency. Third poll, no new commits.
+        // Idempotency. Third poll, no new commits.
         let (r3, _cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
         assert_eq!(r3.commits_emitted, 0);
         assert_eq!(r3.files_present_emitted, 0);

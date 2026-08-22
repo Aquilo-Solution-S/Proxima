@@ -1121,18 +1121,14 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
 }
 
 /// The `PayloadOnly` arm, end to end: an interpretation's ancestors are its
-/// SUBJECTS, and until Phase 4 they were nothing at all.
+/// SUBJECTS.
 ///
 /// `core/interpretation-v1` writes `derived_from: &[]` on both of its ingest
 /// paths — an interpretation is not made FROM its subjects, it is made ABOUT
-/// them — so `memory.origins` is empty and the walk, which expanded
-/// `origins[]` and nothing else, stopped dead at every interpretation. The
-/// subjects were never unreachable; they were in
-/// `interpretation_v1.subject_memory_ids`, which is exactly what
-/// `Provenance::PayloadOnly { subject_columns }` has declared since Phase 1
-/// and what nothing read.
-///
-/// This is the plan's checkpoint 9 in one assertion.
+/// them — so `memory.origins` is empty and a walk that expanded `origins[]`
+/// and nothing else would stop dead at every interpretation. The subjects
+/// live in `interpretation_v1.subject_memory_ids`, which is exactly what
+/// `Provenance::PayloadOnly { subject_columns }` declares.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_core_think_reaches_an_interpretations_subject_through_its_payload() {
@@ -2376,14 +2372,13 @@ async fn remember_lands_a_20k_body_and_replays_by_digest() {
     result.expect("20k-body remember must land and replay by digest");
 }
 
-/// R12: `language` reaches the index, not just the argument parser.
+/// `language` reaches the index, not just the argument parser.
 ///
-/// Three MCP tools have advertised a `language` parameter since v0.0.6.
-/// `resolve_lexical_language` validated it, `FactWriteCommand` carried it,
-/// and storage dropped it: the sidecars' `search_tsv` was a GENERATED
-/// column at a fixed configuration, so there was no column to put it in and
-/// no expression that could have read it. `FactWriteCommand`'s doc claimed
-/// a memory-row stamp that did not exist.
+/// Three MCP tools advertise a `language` parameter.
+/// `resolve_lexical_language` validates it and `FactWriteCommand` carries
+/// it; storage must not drop it. A sidecar `search_tsv` GENERATED at a fixed
+/// configuration is where it would be dropped: such a column offers nowhere
+/// to put the value and no expression that could read it.
 ///
 /// The projection row is the first place that has both. This asserts the
 /// value lands, and then asserts it MATTERS: `Häuser` is only findable by

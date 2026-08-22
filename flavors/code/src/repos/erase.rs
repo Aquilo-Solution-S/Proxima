@@ -1,16 +1,24 @@
 //! Erase one registered repository.
 //!
-//! This used to live in `crates/storage-pg/src/verbs/code_repo_erase.rs`:
-//! the core spine held a hardcoded list of nine `proxima_code` tables (five
-//! of the flavor's sixteen sidecars) and a hand-written duplicate of the
-//! kernel's own erase that reached seven `proxima_core` tables and stopped
-//! there. Both halves were wrong in the same way — a table added to either
-//! side was silently not erased — and the flavor is the only place that
-//! knows what "one repository's rows" means.
+//! The flavor is the only place that knows what "one repository's rows"
+//! means, so the split is: the flavor deletes the flavor's rows and names
+//! the admissions behind them; [`erase_memory_series`] deletes the
+//! substrate. Neither half enumerates the other's tables.
 //!
-//! The split is now: the flavor deletes the flavor's rows and names the
-//! admissions behind them; [`erase_memory_series`] deletes the substrate.
-//! Neither half enumerates the other's tables.
+//! The two halves reach their tables differently, and the difference is the
+//! point. [`erase_memory_series`] iterates the declared surfaces it is
+//! handed, so a surface added to the declaration is reached without
+//! touching it. This file is the flavor's own inverse and names its tables
+//! by hand: the statements below are `&'static str` constants spelling every
+//! `proxima_code` relation a repo's rows live in.
+//!
+//! A hand-written inverse is only as good as what checks it, so both
+//! directions are pinned against the contract:
+//! `every_declared_surface_is_reached_by_the_repo_erase_or_named_as_an_exemption`
+//! fails on a surface the contract declares and these statements miss,
+//! unless it is listed as an exemption with a reason, and
+//! `the_erase_names_no_table_the_contract_does_not_declare` fails on a table
+//! these statements name and the contract does not.
 
 use proxima_core::{Owner, StorageError};
 use proxima_storage_pg::verbs::forget::{
@@ -64,10 +72,9 @@ use crate::store::CodeFlavorStore;
 /// finds to the whole series (that is what
 /// [`expand_series_for_erase`] is for), because keeping one version of a
 /// series and erasing another is not a state the substrate can be left in —
-/// the head would point at a row that no longer exists. Saying "a NULL
-/// `repo_id` survives" full stop would therefore have been a promise about
-/// rows, made in the language of series, and false in exactly the case
-/// where it mattered.
+/// the head would point at a missing row. Saying "a NULL `repo_id`
+/// survives" full stop would therefore be a promise about rows, made in the
+/// language of series, and false in exactly the case where it matters.
 /// `a_perspective_about_no_particular_repo_survives_a_repo_erase` pins the
 /// first half and
 /// `a_perspective_that_dropped_its_repo_id_still_goes_with_the_repo` pins
@@ -592,10 +599,10 @@ pub async fn erase_footprint(
     // transferred memory keeps the `repo_id` it was written with — nothing
     // in the transfer touches flavor columns, only `owner_id` — so
     // `repo_id = $1` still finds it under the source owner's repo while the
-    // admission itself now belongs to someone else. Erasing then destroyed
-    // the destination's sidecar row on the source's authority and left
-    // their `memory` row stamping a table it was no longer in. Silently:
-    // the row was in the footprint, so nothing else complained.
+    // admission itself belongs to someone else. Erasing it would destroy the
+    // destination's sidecar row on the source's authority and leave their
+    // `memory` row stamping a table it is absent from — silently, because
+    // the row is in the footprint, so nothing else complains.
     let footprint: Vec<Uuid> = seen.into_iter().collect();
     let foreign = admissions_outside_owner(tx, owner, &footprint).await?;
     if !foreign.is_empty() {

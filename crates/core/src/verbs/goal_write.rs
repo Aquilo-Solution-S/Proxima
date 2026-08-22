@@ -284,7 +284,7 @@ impl GoalDependencyRef {
 /// for — the Goal knows the Perspective it inspires, the Goals it waits
 /// on, and the evidence it rests on — so storage derives one
 /// [`crate::EdgeKind::Reference`] index row per entry inside the goal
-/// write's own transaction (docs/16 §Flavor Migration). No relation is
+/// write's own transaction (docs/16-edges.md). No relation is
 /// named and no kind is chosen: the declaration is the whole statement.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalTopologyWrite {
@@ -374,9 +374,9 @@ impl GoalWakeToolId {
         registry: &FlavorRegistryFrozen,
     ) -> Result<Self, ProtocolError> {
         let raw = raw.into();
-        // `value.len() > 200` counted bytes while the message said
-        // "characters", so a 120-character non-ASCII id was refused for
-        // being over 200 of something the caller could not measure.
+        // The cap counts characters, matching the message the caller sees.
+        // A byte count would refuse a short non-ASCII id for exceeding
+        // something the caller cannot measure.
         let value = check_trimmed_len(&raw, MAX_WAKE_TOOL_ID_CHARS)
             .map_err(|violation| {
                 ProtocolError::invalid_argument("tool_id", violation.reason("tool id"))
@@ -390,8 +390,7 @@ impl GoalWakeToolId {
         }
         // Both halves resolve through the descriptor's own `action_arg_specs`
         // rather than the substrate `CoreActionMeta` tables, so a flavor
-        // dispatcher's leaf is nameable in a wake config — and the old
-        // `HashSet<String>` of every registered id, built per call, is gone.
+        // dispatcher's leaf is nameable in a wake config.
         if let Some((tool, action)) = value.split_once(':') {
             if value.matches(':').count() == 1
                 && crate::provider_safe_tool_name(tool) == tool

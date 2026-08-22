@@ -1,4 +1,4 @@
-//! Forget / hydrate / erase. UML §5c.
+//! Forget / hydrate / erase.
 #![allow(
     clippy::missing_errors_doc,
     clippy::doc_markdown,
@@ -17,8 +17,8 @@ use crate::sidecars::PgSidecarRegistryFrozen;
 
 pub const COLD_FORMAT_VERSION: u8 = 4;
 
-// Keep the historical storage-path exports while routing the persisted key
-// derivation through core, the lowest crate shared by storage-pg and blob-s3.
+// The persisted key derivation lives in core, the lowest crate shared by
+// storage-pg and blob-s3; re-exported here so the storage path names it.
 pub use proxima_core::cold_object_key;
 
 #[derive(Default)]
@@ -78,8 +78,8 @@ pub struct ColdRecord {
     row: HotRow,
     schema_id: String,
     sidecar_dumps: Vec<(String, String)>,
-    /// Model ids that had vectors. UML §5c: vectors stay out of the object;
-    /// hydrate enqueues embed jobs for these ids.
+    /// Model ids that had vectors. Vectors stay out of the object; hydrate
+    /// enqueues embed jobs for these ids.
     embed_models: Vec<String>,
     /// Exact persisted one-liner. v4+; older cold objects restore from sidecar/kind.
     sketch: Option<String>,
@@ -643,13 +643,9 @@ pub async fn purge_cold_objects_after_commit(
 
 /// The object is gone, so its debt is gone: one statement, no second write.
 ///
-/// It used to be two, in a transaction — delete the queue row, then reconcile
-/// a `cold_object_purge_pending` flag on the journal row the erase had
-/// stamped, but only once no OTHER queue row still named that operation. The
-/// journal is gone and the debt is the queue itself, which is where it was
-/// always durable: `pending_cold_purge_count` answers "is anything owed" by
-/// counting rows, not by trusting a flag that a crash between the two writes
-/// could leave set forever.
+/// The queue IS the debt. `pending_cold_purge_count` answers "is anything
+/// owed" by counting rows, not by trusting a flag that a crash between two
+/// writes could leave set forever.
 async fn clear_cold_purge_pending(pool: &PgPool, object_key: &str) -> Result<(), StorageError> {
     sqlx::query("DELETE FROM proxima_core.cold_purge_pending WHERE object_key = $1")
         .bind(object_key)
@@ -819,11 +815,11 @@ async fn enqueue_embed_jobs(
 /// Every row one forgotten `t` takes with it, from two iteration sources
 /// and through one statement shape.
 ///
-/// **The stamp, for the `Dumped` legs.** `memory.sidecar_tables` is the
-/// historical record of what the dump actually read, and that is why forget
-/// walks it rather than the registry: a registry that gained a sidecar after
-/// this row was written must not delete from a table the row never touched,
-/// and one that LOST a table must still forget rows written before it went.
+/// **The stamp, for the `Dumped` legs.** `memory.sidecar_tables` records
+/// what THIS row actually wrote, and that is why forget walks it rather than
+/// the registry: a registry that gained a sidecar after this row was written
+/// must not delete from a table the row never touched, and one that LOST a
+/// table must still forget rows written before it went.
 /// `forget_dumps_only_stamped_tables_and_skips_unregistered_scan` pins that
 /// property by stamping a registered-but-nonexistent table and requiring the
 /// forget to succeed. The PG registry is the veto (a stamp naming an
@@ -833,12 +829,10 @@ async fn enqueue_embed_jobs(
 /// **The contract, for the `Deleted` legs.** The embedding triple and the
 /// sketch are derived rows nothing stamps — no lane records them on the
 /// memory — so there is no stamp to walk and the declaration is the only
-/// list. These were four hand-written statements naming four
-/// `proxima_core.*` literals, and `ForgetRule::DeleteWithMemory` sat beside
-/// them declaring exactly the same thing, read by nothing.
+/// list.
 ///
-/// The two are ordered stamp-then-declaration, which is the order the four
-/// statements ran in. Neither set has a foreign key into the other.
+/// Stamp legs run before declaration legs. Neither set holds a foreign key
+/// into the other.
 async fn delete_memory_dependents(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -1116,13 +1110,12 @@ pub async fn hydrate_memory(
     .await
     .map_err(map_err)?;
     restore_registered_sidecars(tx, sidecars, &rec.sidecar_dumps).await?;
-    // DEFERRED (v0.0.8): the cold dump predates the projection and carries
-    // no `lexical_language` — the sidecars stopped stamping one when the
-    // projection took the column over. A hydrated row therefore re-derives
-    // its vector at the DEPLOYMENT default rather than at the language the
-    // original write asked for. `hydrate_memory` has no production caller
-    // at this commit; restoring language fidelity means putting the stamp
-    // in the cold record, which is a cold-format change.
+    // The cold record carries no `lexical_language`: the stamp lives on the
+    // projection row, and the projection is rebuilt here rather than
+    // restored. A hydrated row therefore re-derives its vector at the
+    // DEPLOYMENT default rather than at the language the original write
+    // asked for. Carrying the language through a forget/hydrate cycle means
+    // putting the stamp in the cold record, which is a cold-format change.
     for (table, _) in &rec.sidecar_dumps {
         // `rec.schema_id`, NOT `rec.row.schema_id`. `HotRow` carries a
         // `schema_id` field that `decode_record` leaves EMPTY — the cold
@@ -1307,14 +1300,6 @@ pub async fn erase_memory(
 /// this is the other half, and it is deliberately flavor-agnostic so the
 /// flavor never writes a `proxima_core` statement to get it.
 ///
-/// It replaced a hand-written duplicate that deleted `announce`,
-/// `embedding_jobs`, `embedding_heads`, `embeddings`, `sketch`, `memory`
-/// and `memory_head` and stopped there: no sidecar rows beyond the five
-/// tables its caller had listed, no `cooled`, no `ingest_keys`, no content
-/// GC, no head resync, no cold-object plan, and an erase announce it never
-/// wrote. [`erase_memory`] does all of that from the sidecar registry, so
-/// the duplicate was both shorter and wrong.
-///
 /// Expansion to the whole series matters: a superseded version that was
 /// cooled has no sidecar row left to be found by, so a caller that
 /// collected ids from its own tables would erase the live versions and
@@ -1334,13 +1319,12 @@ pub async fn erase_memory(
 /// `goal.assignment_t`, `goal.write_act_t`, `goal.dependency_t[]`,
 /// `goal.evidence_t[]`, `wake_config.trigger_t` and
 /// `wake_config.hard_memory_t[]` name memories without a foreign key, so an
-/// erase here can leave them pointing at nothing. That is deliberate and
-/// not new: [`erase_memory`] has always left them, and the owner-erase
-/// erase's own partial arm (source scope) leaves `goal` and `wake_config`
-/// untouched too — it deletes them only in the owner arm, where the whole
-/// row goes rather than one column of it. Nulling them here would make the
-/// set-erase do something the single-memory erase does not, which is
-/// exactly the divergence this function exists to end. A goal whose
+/// erase here can leave them pointing at nothing. That is deliberate:
+/// [`erase_memory`] leaves them too, and the owner-erase source-scope arm
+/// leaves `goal` and `wake_config` untouched — they go only in the owner
+/// arm, where the whole row goes rather than one column of it. Nulling them
+/// here would make the set-erase do something the single-memory erase does
+/// not. A goal whose
 /// evidence was erased is a goal with a dangling pointer either way; the
 /// reader resolves it to nothing, which is what "erased" should look like.
 ///
@@ -1599,8 +1583,8 @@ SELECT b.blob_id FROM proxima_core.blob b
 /// rows, and enqueue the objects that no other upload row names.
 ///
 /// `gc_unreferenced_content`'s idiom, at the blob level, plus the refcount
-/// `enqueue_blob_object_keys` had to learn when the dedupe arm made one
-/// object reachable from several upload rows. `proxima_core.blob` is
+/// a shared object needs when several upload rows name it.
+/// `proxima_core.blob` is
 /// referenced by exactly three columns — `memory.blob_id`,
 /// `cooled.blob_id`, `blob_uploads.blob_id`, all `NO ACTION` — so "no
 /// admission cites it" is the whole reference question. Citation sidecars
@@ -1695,22 +1679,16 @@ mod tests {
         )
     }
 
-    /// Parity pin for the four hand-written `DELETE`s this replaced.
+    /// The declared walk reaches exactly the four derived-row tables and
+    /// nothing else.
     ///
-    /// `embedding_jobs`, `embedding_heads`, `embeddings` and `sketch` were
-    /// named as literals in `delete_memory_dependents`, and all four already
-    /// declared `ForgetRule::DeleteWithMemory` beside them. The assertion is
-    /// that the declared walk reaches exactly those four and nothing else,
-    /// so removing the literals removed duplicate statements and not
-    /// coverage.
-    ///
-    /// The key column is asserted too. Three of the four are keyed on
-    /// `entity_id`, not `t` — a walk that assumed `t` because the sidecar
-    /// half does would have deleted nothing from any of them, and the two
-    /// lanes now share `forget_leg_sql` precisely so that assumption cannot
-    /// be made in one place and not the other.
+    /// The key column is pinned too: three of the four are keyed on
+    /// `entity_id`, not `t`. A walk that assumed `t` because the sidecar
+    /// half does would delete nothing from any of them, and both lanes share
+    /// `forget_leg_sql` precisely so that assumption cannot be made in one
+    /// place and not the other.
     #[test]
-    fn the_declared_forget_walk_is_the_four_statements_it_replaced() {
+    fn the_declared_forget_walk_is_exactly_the_derived_row_tables() {
         assert_eq!(
             shipped().generated_forget_legs(),
             vec![

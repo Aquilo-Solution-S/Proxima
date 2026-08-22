@@ -121,9 +121,8 @@ impl FlavorRegistry {
             if contract.is_core() {
                 has_core = true;
             } else if !contract.resources.is_empty() {
-                // Narrow reading of the resource checkpoint: resources are
-                // flavor #0's. A flavor resource would need its own
-                // scope-key namespace, a URI-template parser for its
+                // Resources are flavor #0's. A flavor resource would need
+                // its own scope-key namespace, a URI-template parser for its
                 // parameters and a pagination contract — a feature with its
                 // own design, not a forwarding line.
                 return Err(FlavorRegistryError::ResourcesNotPermitted {
@@ -133,11 +132,10 @@ impl FlavorRegistry {
             // Registrations first, declarations second, and deliberately
             // so. A contract entry with no registration is the defect that
             // makes every OTHER reading of that entry meaningless, so it is
-            // the one to report. Reordering these two to make a test fixture
-            // reachable was the wrong fix: it changed which error a
-            // genuinely broken contract reports at boot in order to spare a
-            // fixture two lines of registration. The fixture registers now
-            // (see `register_fixture_schema`).
+            // the one to report. This order decides which error a broken
+            // contract reports at boot, so a fixture that needs a later
+            // validator registers rather than asking for a reorder (see
+            // `register_fixture_schema`).
             self.validate_contract_schemas(contract)?;
             Self::validate_contract_projection(contract)?;
             Self::validate_contract_surfaces(contract)?;
@@ -155,14 +153,12 @@ impl FlavorRegistry {
     /// the owner, and the check is here because the answer never depends on
     /// the request.
     ///
-    /// The owner export no longer keeps a hand-written statement per table;
-    /// it generates one per declared surface. That generator has exactly two
-    /// shapes — filter the surface's own `owner_id`, or join the home table
-    /// of its key and filter there — so a surface that declares `Rows` or
-    /// `Allowlist` while carrying neither an owner column nor a key with a
-    /// home is a bundle leg nothing can emit. Before the generator, such a
-    /// surface simply went missing from every bundle, silently, which is the
-    /// class of defect this refuses at boot.
+    /// The owner export generates one statement per declared surface, and
+    /// that generator has exactly two shapes — filter the surface's own
+    /// `owner_id`, or join the home table of its key and filter there. A
+    /// surface that declares `Rows` or `Allowlist` while carrying neither an
+    /// owner column nor a key with a home is a bundle leg nothing can emit,
+    /// and unrefused it would go missing from every bundle in silence.
     ///
     /// It is deliberately not a check on ERASE. An unreachable surface that
     /// declares `Excluded` is a stated non-export; one that cascades is
@@ -192,19 +188,19 @@ impl FlavorRegistry {
     /// The erase partitions every declared surface into exactly one of five
     /// answers — a generated keyed leg, a generated owned leg, a named
     /// hand-written leg, a constraint, or a declared non-erase with a
-    /// reason. There is no sixth answer, and the sixth that kept appearing
-    /// was silence: `ByKey` on a key the erase builds no selection set for
-    /// fell through both generic loops, and only an exemption list nobody
-    /// had updated stood between that and a table nothing ever deletes.
+    /// reason. There is no sixth answer; the sixth shape is silence —
+    /// `ByKey` on a key the erase builds no selection set for falls through
+    /// both generic loops, leaving only an exemption list between that and a
+    /// table nothing ever deletes.
     ///
-    /// This was a unit test in `proxima-storage-pg` until it wasn't enough.
-    /// That crate does not depend on any flavor, so the test could only ever
-    /// see flavor #0; an out-of-tree flavor declaring `ByKey` on a
-    /// `Custom` key froze cleanly, booted cleanly, and its erase reported
-    /// `Completed` over rows that outlived their owner. Under a model where
-    /// the host owns every promise about erasure, a substrate that quietly
-    /// keeps rows is the one failure it must not have. So the partition is
-    /// here, where every flavor passes through, in-tree or not.
+    /// The partition lives here rather than in `proxima-storage-pg` because
+    /// that crate depends on no flavor and can only ever see flavor #0. An
+    /// out-of-tree flavor declaring `ByKey` on a `Custom` key would freeze
+    /// cleanly, boot cleanly, and report `Completed` over rows that outlived
+    /// their owner. Under a model where the host owns every promise about
+    /// erasure, a substrate that quietly keeps rows is the one failure it
+    /// must not have, so the check sits where every flavor passes through,
+    /// in-tree or not.
     ///
     /// [`FlavorContract::erase_leg`] is the classifier both this and the
     /// erase itself call, so this is a check on the code that runs rather
@@ -223,10 +219,9 @@ impl FlavorRegistry {
             }
         }
 
-        // A stale name is how the hand-written lists rotted in the first
-        // place, and an exemption that claims a `Cascade` or `Never`
-        // surface is a flavor arguing with itself about whether a statement
-        // runs.
+        // A stale name is what rots an exemption list, and an exemption that
+        // claims a `Cascade` or `Never` surface is a flavor arguing with
+        // itself about whether a statement runs.
         for table in contract.bespoke_erase_legs {
             let why = match contract
                 .all_surfaces()
@@ -260,14 +255,13 @@ impl FlavorRegistry {
     /// The transfer partitions every declared surface into exactly one of
     /// seven answers — a generated re-home, a generated drop, a generated
     /// dedupe, a named hand-written leg, a key-owned non-move, a deliberate
-    /// retention at the source, or a refusal. There is no eighth, and the
-    /// eighth that was there until Phase 4 was silence: `owner_columns.rs`
-    /// named its fourteen tables as string literals and referenced no
-    /// contract type at all, so a flavor adding a `Follow` surface got no
+    /// retention at the source, or a refusal. There is no eighth answer; the
+    /// eighth shape is silence — a table list of string literals naming no
+    /// contract type would give a flavor adding a `Follow` surface no
     /// statement, no error, and no way to find out.
     ///
-    /// That silence is worse here than on the erase side, which is why the
-    /// partition was worth its lines. An unerased row outlives its owner
+    /// That silence is worse here than on the erase side, which is what the
+    /// partition is worth its lines for. An unerased row outlives its owner
     /// and is found by reconcile. An unmoved row is readable by the SOURCE
     /// owner after the memory became the destination's — a cross-tenant
     /// read under the multi-owner design centre, produced by nobody
@@ -290,10 +284,9 @@ impl FlavorRegistry {
             }
         }
 
-        // A stale name is how the hand-written lists rotted in the first
-        // place, and an exemption claiming a surface whose rule says NO
-        // statement runs is a flavor arguing with itself about whether one
-        // does.
+        // A stale name is what rots an exemption list, and an exemption
+        // claiming a surface whose rule says NO statement runs is a flavor
+        // arguing with itself about whether one does.
         for table in contract.bespoke_transfer_legs {
             let why = match contract
                 .all_surfaces()
@@ -356,12 +349,11 @@ impl FlavorRegistry {
     ///    it on a hot path would be a `StorageError` where a boot refusal
     ///    belongs.
     ///
-    ///    The weight array joined this list late. The renderer reads it off
-    ///    the flavor's FIRST participating schema, like the other two, but
-    ///    only language and bands were checked — so a flavor whose schemas
-    ///    declared different weight LEVELS would have had one schema's
-    ///    array applied to every schema's vector, silently, and the doc
-    ///    claiming freeze guaranteed otherwise would have been wrong.
+    ///    The weight array is checked alongside language and bands because
+    ///    the renderer reads all three off the flavor's FIRST participating
+    ///    schema. Unchecked, a flavor whose schemas declare different weight
+    ///    LEVELS would have one schema's array applied to every schema's
+    ///    vector, silently.
     /// 2. `BandComparability::CoreBands` is the claim a cross-flavor merge
     ///    compares scores on. A flavor whose bands leave flavor #0's
     ///    `[0, 1]` window cannot make it.
@@ -437,9 +429,8 @@ impl FlavorRegistry {
     /// Where a contract declaration and the registration it describes are
     /// checked for being ONE fact rather than two copies.
     ///
-    /// Both fields here were second descriptions of something the registry
-    /// already held, with no mechanism keeping them equal — the
-    /// `compliance_audit_log` counter-literal pattern one layer up.
+    /// Both fields here are declared twice — once on the contract, once on
+    /// the registration — and nothing but this check keeps the two equal.
     fn validate_registration_agreement(
         contract: &crate::flavor::contract::FlavorContract,
         schema: &crate::flavor::contract::SchemaContract,
@@ -450,17 +441,13 @@ impl FlavorRegistry {
         // have to be one answer.
         //
         // `EmbeddingRecipe::Never { why }` is the reasoned form of
-        // `FactPayload::EMBEDDABLE = false` and its doc has always said
-        // it feeds `non_embeddable_schema_ids`. It did not: that list
-        // is built from the trait constant, and the two disagreed for
-        // SEVEN Fact schemas — `core/mcp-call-logged-v1` and six code
-        // ones — every one of them in the same direction. The contract
-        // said "never embed, and here is why"; the trait said
-        // "embeddable"; the enqueue lane believed the trait and filed
-        // embedding jobs for rows whose recipe yields zero units, so
-        // the drain had nothing to send and dropped them. A declaration
-        // that costs work and produces nothing is worse than an inert
-        // one.
+        // `FactPayload::EMBEDDABLE = false`, but `non_embeddable_schema_ids`
+        // is built from the trait constant, and the enqueue lane believes
+        // the trait. A contract saying "never embed, and here is why"
+        // against a trait saying "embeddable" files embedding jobs for rows
+        // whose recipe yields zero units, so the drain has nothing to send
+        // and drops them. A declaration that costs work and produces
+        // nothing is worse than an inert one.
         //
         // WHY THIS STOPS AT `Fact`, and why extending it would be wrong.
         // The check compares two DECLARATIONS. `FactPayload::EMBEDDABLE` is
@@ -473,10 +460,9 @@ impl FlavorRegistry {
         // same reason). Comparing a declaration against a literal that
         // nobody wrote is not an agreement check; it is an assertion that
         // every non-Fact schema embeds. The code flavor declares six
-        // Abstraction/Perspective schemas as `Never { why }` — an execution
-        // plan, an acceptance summary and four self-perspectives — and
-        // widening this gate would refuse all six at boot for disagreeing
-        // with a constant that was never a claim.
+        // Abstraction/Perspective schemas as `Never { why }`, and widening
+        // this gate would refuse all six at boot for disagreeing with a
+        // constant that is not a claim.
         //
         // The comparison is not well-defined off `Fact`, so it is not made.
         // What DOES cover every kind is the `Units(&[])` refusal in
@@ -498,9 +484,9 @@ impl FlavorRegistry {
         }
         // Same shape, one field over: `natural_key_columns` is declared
         // twice — on the contract and on the payload trait — and the
-        // ingest reads the trait's copy. Nothing compared them, so the
-        // contract's copy was a description of the ingest that could
-        // stop being true without any test noticing.
+        // ingest reads the trait's copy, so without this check the
+        // contract's copy is a description of the ingest that can stop
+        // being true with no test noticing.
         if schema.natural_key_columns.len() != info.natural_key_columns.len()
             || !schema
                 .natural_key_columns
@@ -518,9 +504,10 @@ impl FlavorRegistry {
 
     /// A tool's contract entry against the descriptor the registry holds.
     ///
-    /// `actions` and `idempotent` were both second descriptions of facts
-    /// the registry already carried — the dispatcher's `action_arg_specs`
-    /// and the wire's `McpToolAnnotations` — and nothing kept either equal.
+    /// `actions` and `idempotent` are both second descriptions of facts the
+    /// registry already carries — the dispatcher's `action_arg_specs` and
+    /// the wire's `McpToolAnnotations` — and nothing but this check keeps
+    /// either equal.
     fn validate_contract_tools(
         &self,
         contract: &crate::flavor::contract::FlavorContract,
@@ -537,13 +524,11 @@ impl FlavorRegistry {
                 });
             };
             // `actions` and `idempotent` are a SECOND description of facts
-            // the registry already holds, and until this check nothing kept
+            // the registry already holds, and nothing but this check keeps
             // the two equal. The dispatcher's truth is
             // `McpToolDescriptor::action_arg_specs`, validated against the
             // JSON schema and never against this list; the wire's truth is
-            // `McpToolAnnotations::idempotent`. Flavor #0 declared five
-            // non-empty action lists that nothing read, and the code
-            // flavor's own doc admitted the duplication in prose.
+            // `McpToolAnnotations::idempotent`.
             //
             // The list is compared in ORDER, not as a set. A palette scope
             // key is `"<wire_name>:<action>"`, so the declaration is read by
@@ -637,9 +622,9 @@ impl FlavorRegistry {
             // embedding arm: `resolve()` yields zero units, so the drain
             // gets no text, while `is_never()` answers `false`, so the
             // agreement check below classifies it as "embeds" and the
-            // enqueue lane files jobs the drain can only drop. That is
-            // precisely the failure `EmbeddabilityDisagreement` was written
-            // to end, reachable through the arm it was not watching.
+            // enqueue lane files jobs the drain can only drop — the same
+            // failure `EmbeddabilityDisagreement` refuses, reached through
+            // an arm that check does not watch.
             //
             // Refused here rather than folded into that check, because it
             // is wrong on its own: a `Units` arm with nothing in it is not
@@ -654,22 +639,22 @@ impl FlavorRegistry {
                     schema_id,
                 });
             }
-            // The shared-blob dedupe arm's blind spot, made loud.
+            // The shared-blob dedupe arm's blind spot, refused.
             //
-            // A cross-owner transfer of a shared blob now gives the
-            // destination a NEW `blob` row and repoints the columns that
-            // reference it. Those columns are enumerable exactly because
-            // they are foreign keys. A cited-object or citation-mapping
-            // sidecar references a blob by convention — `cited_object_id`
-            // holds a `blob_id` with nothing in the catalog saying so — and
-            // the remap would walk straight past it, leaving the rows
-            // pointing at the source owner's row after the citation moved.
+            // A cross-owner transfer of a shared blob gives the destination
+            // a NEW `blob` row and repoints the columns that reference it.
+            // Those columns are enumerable exactly because they are foreign
+            // keys. A cited-object or citation-mapping sidecar references a
+            // blob by convention — `cited_object_id` holds a `blob_id` with
+            // nothing in the catalog saying so — and the remap would walk
+            // straight past it, leaving the rows pointing at the source
+            // owner's row after the citation moved.
             //
-            // Today every such schema is opaque (`sidecar_table: None`),
-            // which is why the arm is safe to land. Declaring one is the
-            // moment the remap needs designing, so that is the moment this
-            // refuses, rather than the moment a transfer silently splits a
-            // citation from its bytes.
+            // Every such schema is opaque (`sidecar_table: None`), so the
+            // remap has nothing to miss. Declaring one is the moment the
+            // remap needs designing, so that is the moment this refuses,
+            // rather than the moment a transfer silently splits a citation
+            // from its bytes.
             if matches!(
                 schema.kind,
                 crate::verbs::schema::PayloadKind::CitedObject
@@ -682,9 +667,10 @@ impl FlavorRegistry {
                     table,
                 });
             }
-            // `PerRow { column }` carried a column name nothing read: the
-            // generator emits one language column per projection table and
-            // names it itself. Left unchecked, a flavor could declare
+            // `PerRow { column }` names a column the generator does not
+            // read: the generator emits one language column per projection
+            // table and names it itself. Left unchecked, a flavor could
+            // declare
             // `PerRow { column: "row_config" }`, see no error, and get rows
             // stamped and ranked under a column its contract never named.
             // Consuming the payload as a constraint is the smallest honest
@@ -796,7 +782,7 @@ impl FlavorRegistry {
     fn validate_dispatcher_action_specs(&self) -> Result<(), FlavorRegistryError> {
         for tool in &self.mcp_tools {
             // Absent and malformed are different answers. Reading them as one
-            // — `.and_then(Value::as_object)` — let a schema that *carries*
+            // — `.and_then(Value::as_object)` — lets a schema that *carries*
             // the extension, and so may well be read as a dispatcher by
             // anything less forgiving, pass here as a flat tool. The derive
             // always writes an object; a hand-written `JsonSchema` need not.
@@ -1186,10 +1172,10 @@ mod tests {
     /// reason the transfer partition exists.
     ///
     /// Keyed on a `Custom` column the transfer builds no `t` set for, and
-    /// claimed by no bespoke leg. Before Phase 4 this froze cleanly, booted
-    /// cleanly, and its rows stayed with the SOURCE owner after every
-    /// memory that referenced them moved — which is not a stale row, it is
-    /// a cross-tenant read arrived at by silence.
+    /// claimed by no bespoke leg. Unrefused it would freeze cleanly, boot
+    /// cleanly, and leave its rows with the SOURCE owner after every memory
+    /// that referenced them moved — which is not a stale row, it is a
+    /// cross-tenant read arrived at by silence.
     static UNMOVABLE_SURFACE: FlavorContract = transfer_fixture(
         &[Surface {
             table: "test_flavor.thing_v1",
@@ -1455,16 +1441,13 @@ mod tests {
         natural_key_columns: &[],
     }]);
 
-    /// THE DIRECTION THAT ACTUALLY SHIPPED BROKEN, and the one the fixture
-    /// above did not cover.
+    /// The costly direction, and the mirror of the fixture above.
     ///
     /// The recipe says "never embed, and here is why" while the
     /// registration says the enqueue lane should embed it. The enqueue lane
     /// reads the REGISTRATION, so the reason is stated and ignored and the
     /// jobs filed for these rows can only be dropped: the recipe yields no
-    /// units, so the drain has no text to send. Seven Fact schemas were in
-    /// exactly this state before the check existed — `core/mcp-call-logged-v1`
-    /// and six code ones — every one of them this way round.
+    /// units, so the drain has no text to send.
     ///
     /// Paired with `register_fixture_schema_embeddable`, which registers
     /// `embeddable: true`; the normal helper hardcodes `false` precisely so
@@ -1809,9 +1792,8 @@ mod tests {
     /// `validate_contract_schemas` runs BEFORE
     /// `validate_contract_projection`, so a fixture whose subject is a
     /// PROJECTION rule has to be registered to reach it. Registering is two
-    /// lines; the alternative — reordering the two validators — changes
-    /// which error every genuinely broken contract reports at boot, which is
-    /// a production behaviour change bought for a test's convenience.
+    /// lines; reordering the two validators instead would change which error
+    /// every genuinely broken contract reports at boot.
     ///
     /// A typed registration needs its ingress entry too, or
     /// `SchemaIngressMismatch` fires first and the fixture proves that
@@ -1828,9 +1810,9 @@ mod tests {
     /// schema.
     ///
     /// `FactPayload::EMBEDDABLE` defaults to `true`, so this is what a
-    /// schema author gets by not thinking about it — which is how seven
-    /// shipped Facts ended up declaring `Never { why }` against a
-    /// registration that said "embed me".
+    /// schema author gets by not thinking about it — and therefore the way
+    /// a `Never { why }` declaration ends up facing a registration that
+    /// says "embed me".
     fn register_fixture_schema_embeddable(registry: &mut FlavorRegistry, name: &str, table: &str) {
         register_fixture_schema_with(registry, name, table, true);
     }
@@ -1895,8 +1877,8 @@ mod tests {
     ///
     /// These are the checks that make "everything is a flavor" structural.
     /// An unpinned check is one a refactor can delete without a single test
-    /// going red — and the resource rejection in particular is the whole of
-    /// the resources-are-substrate ruling, enforced in five lines.
+    /// going red — and the resource rejection in particular is five lines
+    /// standing for the whole resources-are-substrate rule.
     #[test]
     // One line per cross-check plus its fixture reference. Splitting it
     // would put half the checks in a second function to forget one in.
@@ -2188,8 +2170,7 @@ mod tests {
                 },
             ),
             (
-                // The direction seven shipped Facts were actually in. The
-                // case above is its mirror, and only the mirror was covered.
+                // The costly direction; the case above is its mirror.
                 "a Fact's recipe says Never and its registration says embed it",
                 |registry| {
                     register_fixture_schema_embeddable(registry, "thing", "test_flavor.thing_v1");

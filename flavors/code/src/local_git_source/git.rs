@@ -136,10 +136,8 @@ pub(super) struct TreeEntry {
 
 /// Every blob reachable from `rev`, with sizes, in one `git` invocation.
 ///
-/// `-l` puts the object size in the listing. Without it the only way to learn
-/// a blob's size was `git cat-file -s` per blob, which — together with the
-/// `git cat-file blob` that followed — meant two process spawns for every
-/// file in the tree.
+/// `-l` puts the object size in the listing, so a blob's size costs no extra
+/// process.
 pub(super) fn ls_tree(repo: &Path, rev: &str) -> Result<Vec<TreeEntry>, IndexError> {
     parse_ls_tree(&run_git(repo, &["ls-tree", "-r", "-l", "-z", rev])?)
 }

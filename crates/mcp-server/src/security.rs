@@ -509,7 +509,7 @@ pub struct McpAuthLayerState {
 /// Bearer-token middleware that resolves `Authorization: Bearer
 /// <wire-token>` via MCP edge auth and injects the resolved context into
 /// request extensions. Accepted bearer material is host-authenticated;
-/// reserved legacy local-token prefixes fail closed.
+/// reserved local-token prefixes fail closed.
 /// Missing or unknown tokens short-circuit with HTTP 401. Browser Origin and
 /// preflight handling belongs to the listener-wide [`cors_layer`].
 ///
