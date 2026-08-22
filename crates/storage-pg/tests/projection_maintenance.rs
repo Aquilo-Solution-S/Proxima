@@ -30,6 +30,15 @@ use proxima_storage_pg::verbs::forget::{
 use proxima_storage_pg::verbs::memory_timeseries::ingest_fact_timeseries;
 use uuid::Uuid;
 
+/// The transfer's registry-resolved legs, exactly as the engine assembles
+/// them. Passing a hand-built set here would test a registry production
+/// never sees.
+fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+    )
+}
+
 const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
 
 fn draft() -> FactWriteCommand {
@@ -161,7 +170,7 @@ async fn a_transfer_moves_the_projection_row_with_the_admission() {
         let t = write_note(pool, owner, None).await?;
 
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(t), dest)
+            pg.transfer_to_owner(&permit, EntityId::Memory(t), dest, &transfer_surfaces())
                 .await?
         );
 
@@ -199,6 +208,7 @@ async fn forgetting_to_cold_takes_the_projection_row_with_the_sidecar_row() {
         forget_memory_oneshot(
             pool,
             &core_pg_sidecars(),
+            &transfer_surfaces(),
             &cold,
             &cold_object_key(t.into_inner()),
             t.into_inner(),
@@ -236,7 +246,14 @@ async fn erasing_an_admission_takes_its_projection_row() {
         let erased = write_note(pool, owner, None).await?;
 
         let mut tx = pool.begin().await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &owner, erased.into_inner()).await?;
+        erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &transfer_surfaces(),
+            &owner,
+            erased.into_inner(),
+        )
+        .await?;
         tx.commit().await?;
 
         assert_eq!(projection_of(pool, erased).await?, None);

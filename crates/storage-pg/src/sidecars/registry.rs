@@ -333,6 +333,7 @@ impl PgSidecarRegistry {
         }
 
         self.check_owner_pinned_against_contracts(registry)?;
+        self.check_keep_is_owner_pinned(registry)?;
         self.attach_projections(registry)?;
 
         Ok(PgSidecarRegistryFrozen {
@@ -441,6 +442,84 @@ impl PgSidecarRegistry {
                         "TransferRule::RetainAtSource"
                     } else {
                         "a transfer rule that follows the memory"
+                    },
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// `ForgetRule::Keep` on a memory sidecar and
+    /// `pg_sidecar!(owner_pinned: true)` are the same fact, because
+    /// owner-pinning is the ONLY mechanism by which the forget can honour
+    /// the declaration.
+    ///
+    /// The forget touches a stamped memory sidecar twice — `dump_stamped_
+    /// sidecars` reads its row into the cold record, and
+    /// `delete_memory_dependents` deletes it — and the single test either
+    /// walk applies is `is_owner_pinned`. Nothing in either one reads
+    /// `ForgetRule`. So a surface that declared `Keep` without the flag had
+    /// its rows dumped and deleted like any other, and the declaration was
+    /// prose. Core ships exactly one `Keep` memory sidecar,
+    /// `mcp_call_logged_v1`, and its rows survive because it is ALSO
+    /// `RetainAtSource` and therefore owner-pinned — an unrelated property
+    /// that happens to imply the right behaviour.
+    ///
+    /// WHY A REFUSAL AND NOT A SKIP IN THE WALK. Teaching
+    /// `delete_memory_dependents` to skip `Kept` fixes half of it and breaks
+    /// the other half: the dump walk would still copy the row into the cold
+    /// record, the rows would still be sitting in the hot table, and
+    /// `restore_registered_sidecars` INSERTs without `ON CONFLICT` — so the
+    /// next hydrate dies on a primary key. Honouring `Keep` properly means
+    /// exempting the table from the forget/hydrate cycle in both walks,
+    /// which is precisely and entirely what `owner_pinned` already means
+    /// ("Owner-pinned sidecars do not take part in forget/hydrate at all").
+    /// Building a second mechanism for it would be the two-descriptions-of-
+    /// one-fact defect this whole phase exists to remove.
+    ///
+    /// Checked in BOTH directions, like its sibling above. An owner-pinned
+    /// sidecar's rows are kept whatever its `ForgetRule` says, so declaring
+    /// `DumpThenDelete` there is equally a claim the substrate does not
+    /// honour.
+    ///
+    /// `ForgetLeg::derive` is the classifier — the same one freeze and the
+    /// forget read — rather than a second reading of `ForgetRule` here.
+    fn check_keep_is_owner_pinned(
+        &self,
+        registry: &proxima_core::FlavorRegistryFrozen,
+    ) -> Result<(), StorageError> {
+        let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(registry);
+        for entry in self.entries.values() {
+            if !matches!(
+                entry.key.kind,
+                PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
+            ) {
+                continue;
+            }
+            let Some((flavor_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
+                continue;
+            };
+            if registry.flavor_contract(flavor_id).is_none() {
+                continue;
+            }
+            let kept = matches!(
+                surfaces.forget_leg(&entry.sidecar_table),
+                proxima_core::flavor::ForgetLeg::Kept { .. }
+            );
+            if kept != entry.owner_pinned {
+                return Err(StorageError::ConstraintViolation(format!(
+                    "PG sidecar {} registers owner_pinned={} but {} v{} declares {}; \
+                     the forget exempts a memory sidecar from dump and delete on the \
+                     owner_pinned flag alone, so these two must agree or the \
+                     declaration is prose",
+                    entry.sidecar_table,
+                    entry.owner_pinned,
+                    entry.key.schema_id.as_str(),
+                    entry.key.schema_version.into_inner(),
+                    if kept {
+                        "ForgetRule::Keep"
+                    } else {
+                        "a forget rule that destroys or dumps its rows"
                     },
                 )));
             }

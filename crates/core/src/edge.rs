@@ -22,7 +22,7 @@
 //!   projection of those columns, not a table.
 
 use crate::change_event::EntityRef;
-use crate::{EntityKind, GoalId, MemoryId};
+use crate::{EntityKind, GoalId, MemoryId, SchemaId};
 
 /// Closed substrate vocabulary for what an edge *is*. Two variants, not
 /// extensible — not by flavors, not by core features. A feature that
@@ -153,6 +153,13 @@ pub struct Edge {
 pub struct PinNode {
     pub id: MemoryId,
     pub kind: EntityKind,
+    /// Which schema wrote this row, and therefore which `Provenance` the
+    /// lineage walk must consult before treating `origins` as lineage.
+    ///
+    /// Carried on the node rather than looked up by the walk because the
+    /// walk has no owner-scoped read of its own: the node is the only thing
+    /// that crossed the authorization boundary.
+    pub schema_id: SchemaId,
     pub origins: Vec<MemoryId>,
     pub refs: Vec<MemoryId>,
 }
@@ -373,12 +380,14 @@ mod tests {
             PinNode {
                 id: leaf,
                 kind: EntityKind::Fact,
+                schema_id: crate::SchemaId::new("test/pin-v1".into()),
                 origins: Vec::new(),
                 refs: Vec::new(),
             },
             PinNode {
                 id: hub,
                 kind: EntityKind::Abstraction,
+                schema_id: crate::SchemaId::new("test/pin-v1".into()),
                 origins: vec![leaf],
                 refs: vec![outside],
             },

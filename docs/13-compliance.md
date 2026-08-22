@@ -201,16 +201,22 @@ The inverses are substrate-local.
 
 ## Declared metadata
 
-What remains of the old vocabulary table is the one field a flavor actually
-declares and core actually reads.
+There is none. Lawful basis, collection purpose, retention policy, data
+residency and recipient inventories were a vocabulary no code path read, and
+so was the last survivor: `SchemaContract::special_category` was a per-schema
+`bool` that every schema declared, nothing branched on, and no verb, erase
+leg, export leg or projection consulted. It is deleted rather than kept as a
+marker "a host may key off", because a declaration a host cannot see the
+substrate honour is a claim about behaviour that does not exist — and the
+kernel deliberately never reasons over special-category
+(`docs/lean/COVERAGE.md`, SR-30..33, D16).
 
-| Metadata | Home | Contract |
-|---|---|---|
-| `special_category` | [03](03-schema-registry.md#special-category-declaration), `SchemaContract::special_category` | a per-schema marker a host may key heightened handling off |
-
-The rest — lawful basis, collection purpose, retention policy, data
-residency, recipient inventories — was a vocabulary no code path read. A host
-that needs those keeps them where it keeps its other obligations.
+A host with Art. 9 obligations keeps the classification where it keeps its
+other obligations, and enforces it where it can act on it: at its own ingress
+and its own disclosure boundary. What the substrate offers instead is the
+mechanism, not the label — a schema whose rows need different handling is a
+different schema, with its own surfaces, its own `EraseRule` and its own
+`ExportRule`, and those three ARE read.
 
 ## Owner policy
 

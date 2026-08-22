@@ -10,6 +10,20 @@ use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::MAX_TRANSACTION_ATTEMPTS;
 use uuid::Uuid;
 
+/// The transfer's registry-resolved legs, over BOTH flavors.
+///
+/// The code flavor's own projection table is a `Follow` surface, so a
+/// core-only registry would leave its rows behind — which is exactly the
+/// class the partition exists to refuse, and exactly why the engine builds
+/// this from the composed registry.
+fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    let mut registry = proxima_core::FlavorRegistry::new();
+    proxima_code::register(&mut registry).expect("code schema registration");
+    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &registry.try_freeze().expect("core + code freeze"),
+    )
+}
+
 async fn insert_repo_commit_with_test_request(
     pool: &sqlx::PgPool,
     owner: &Owner,
@@ -900,6 +914,96 @@ async fn every_cascade_the_contract_declares_is_a_cascade_the_schema_enforces() 
     result.expect("every_cascade_the_contract_declares_is_a_cascade_the_schema_enforces failed");
 }
 
+/// `Provenance::PayloadOnly { subject_columns }` names columns the lineage
+/// walk reads, and until Phase 4 nothing dereferenced them.
+///
+/// The walk reaches an interpretation's subjects by matching the DECLARED
+/// column names against the field names `SidecarPayload::references()`
+/// reports, so a name that resolves to no column is a lineage dead end
+/// that reports success — precisely the pre-phase behaviour, one layer
+/// down. Core's own declaration named `subject_kinds` alongside
+/// `subject_memory_ids` until this gate existed, and `subject_kinds`
+/// carries no memory id at all.
+///
+/// Both flavors, one registry: the code flavor's `work-assignment-v1`
+/// grounds through two scalar columns and core's `interpretation-v1`
+/// through one array, and a gate that saw only one of them would have
+/// missed the shape it does not handle.
+#[tokio::test]
+async fn every_declared_subject_column_is_a_column_the_catalog_has() {
+    let (db_name, pg) = migrated_db().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let mut registry = proxima_core::FlavorRegistry::new();
+        proxima_code::register(&mut registry).expect("the code flavor registers");
+        let registry = registry
+            .try_freeze()
+            .expect("core plus the code flavor freeze");
+
+        let mut tables = Vec::new();
+        let mut columns = Vec::new();
+        let mut schemas = Vec::new();
+        for contract in registry.contracts() {
+            for schema in contract.schemas {
+                let proxima_core::flavor::Provenance::PayloadOnly { subject_columns } =
+                    schema.provenance
+                else {
+                    continue;
+                };
+                let table = schema.sidecar_table.unwrap_or_else(|| {
+                    panic!(
+                        "{} grounds in payload columns and must have a sidecar to hold them",
+                        schema.schema_id()
+                    )
+                });
+                for column in subject_columns {
+                    tables.push(table.to_owned());
+                    columns.push((*column).to_owned());
+                    schemas.push(schema.schema_id().to_string());
+                }
+            }
+        }
+        let missing: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT d.schema_id, d.table_name, d.column_name
+               FROM unnest($1::text[], $2::text[], $3::text[])
+                    AS d(schema_id, table_name, column_name)
+              WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM information_schema.columns c
+                     WHERE c.table_schema || '.' || c.table_name = d.table_name
+                       AND c.column_name = d.column_name
+                       -- A subject column holds memory ids, so it is a uuid
+                       -- or an array of them. `subject_kinds` is neither,
+                       -- which is how the over-declaration was found.
+                       AND (c.data_type = 'uuid'
+                            OR (c.data_type = 'ARRAY' AND c.udt_name = '_uuid'))
+              )",
+        )
+        .bind(&schemas)
+        .bind(&tables)
+        .bind(&columns)
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        assert!(
+            missing.is_empty(),
+            "these schemas declare subject columns that are not uuid-bearing columns \
+             of their own sidecar, so the lineage walk would reach nothing through \
+             them and say so to nobody: {missing:?}"
+        );
+        // Coverage, asserted AFTER the catalog so a wrong column fails on
+        // being wrong rather than on being counted.
+        assert_eq!(
+            schemas.len(),
+            3,
+            "core's interpretation names one subject column and the code flavor's \
+             work assignment names two; found {schemas:?}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("every_declared_subject_column_is_a_column_the_catalog_has failed");
+}
+
 /// The version the sweep never saw.
 ///
 /// Reproduces the abort that survived the first repo-erase fix. A work item
@@ -1482,6 +1586,7 @@ async fn a_transferred_admission_stops_the_erase_instead_of_being_swept() {
             &permit,
             proxima_core::EntityId::Memory(proxima_core::MemoryId::new(work_item)),
             stranger,
+            &transfer_surfaces(),
         )
         .await?;
         assert!(moved, "the transfer verb must move the work item");
@@ -1609,4 +1714,110 @@ async fn a_lock_the_erase_cannot_get_is_bounded_and_retried_not_waited_out() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("a_lock_the_erase_cannot_get_is_bounded_and_retried_not_waited_out failed");
+}
+
+/// The catalog gate above and the walk key on DIFFERENT namespaces, and
+/// nothing related them.
+///
+/// `every_declared_subject_column_is_a_column_the_catalog_has` proves each
+/// `subject_columns` entry is a uuid-bearing SQL column of the schema's own
+/// sidecar. The walk never looks at SQL columns: `payload_subjects` matches
+/// the declared names against `PayloadReference::field`, a `&'static str`
+/// baked into the payload's `references()` impl. A field name and a column
+/// name are two different things that happen to be spelled the same today.
+///
+/// Rename a `field` literal in `references()` — leaving the SQL column
+/// alone, which no migration forces you to touch — and the catalog gate
+/// stays green while the walk silently returns no subjects. That is exactly
+/// the pre-Phase-4 failure this whole area exists to remove: a lineage dead
+/// end that reports success.
+///
+/// So: every `subject_columns` entry must ALSO be a field name that schema's
+/// `references()` emits. `PayloadReference::field`'s own doc still calls
+/// itself "diagnostics only", which stopped being true when the walk started
+/// keying on it.
+///
+/// `references()` needs an INSTANCE — the erased dispatch is
+/// `fn(&dyn Any) -> Vec<PayloadReference>` and no static list of reference
+/// fields exists anywhere — so the payloads are constructed here. The
+/// coverage assertion is what stops that from being a place to forget: a new
+/// `PayloadOnly` schema that does not add itself below fails on being
+/// unlisted, by name.
+#[test]
+fn every_declared_subject_column_is_a_reference_field_the_payload_emits() {
+    use proxima_core::{PayloadReference, PerspectivePayload};
+
+    let mut registry = proxima_core::FlavorRegistry::new();
+    proxima_code::register(&mut registry).expect("the code flavor registers");
+    let registry = registry
+        .try_freeze()
+        .expect("core plus the code flavor freeze");
+
+    // One instance per `PayloadOnly` schema. Values are arbitrary: only the
+    // FIELD NAMES each `references()` reports are under test, and a
+    // `references()` whose field names depended on its values would be its
+    // own defect.
+    let subject = uuid::Uuid::now_v7();
+    let interpretation = proxima_core::InterpretationV1 {
+        claim: "a fixture".to_owned(),
+        confidence: 50,
+        subject_memory_ids: vec![subject],
+        subject_kinds: vec![proxima_core::InterpretationSubjectKind::Fact],
+        model_id: "test/0".to_owned(),
+        client_name: "test".to_owned(),
+        client_version: "0".to_owned(),
+    };
+    let assignment = proxima_code::CodeWorkAssignmentV1 {
+        repo_id: uuid::Uuid::now_v7(),
+        target_perspective_memory_id: uuid::Uuid::now_v7(),
+        work_item_memory_id: uuid::Uuid::now_v7(),
+        reason: "a fixture".to_owned(),
+    };
+    let emitted: Vec<(&str, Vec<PayloadReference>)> = vec![
+        (
+            <proxima_core::InterpretationV1 as PerspectivePayload>::SCHEMA_ID,
+            interpretation.references(),
+        ),
+        (
+            <proxima_code::CodeWorkAssignmentV1 as PerspectivePayload>::SCHEMA_ID,
+            assignment.references(),
+        ),
+    ];
+
+    let mut checked = 0;
+    for contract in registry.contracts() {
+        for schema in contract.schemas {
+            let proxima_core::flavor::Provenance::PayloadOnly { subject_columns } =
+                schema.provenance
+            else {
+                continue;
+            };
+            let schema_id = schema.schema_id();
+            let Some((_, references)) = emitted.iter().find(|(id, _)| *id == schema_id.as_str())
+            else {
+                panic!(
+                    "{schema_id} declares Provenance::PayloadOnly, so the lineage walk \
+                     matches its subject_columns against the field names its references() \
+                     emits — add an instance of its payload to this test, or the two \
+                     namespaces can drift with nothing to notice"
+                );
+            };
+            let fields: Vec<&str> = references.iter().map(|reference| reference.field).collect();
+            for column in subject_columns {
+                assert!(
+                    fields.contains(column),
+                    "{schema_id} declares subject column {column:?}, and the walk looks \
+                     for it among the field names references() emits: {fields:?}. It is \
+                     not there, so the walk reaches nothing through it and says so to \
+                     nobody"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(
+        checked, 3,
+        "core's interpretation names one subject column and the code flavor's work \
+         assignment names two; the catalog gate counts the same three"
+    );
 }

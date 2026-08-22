@@ -109,6 +109,68 @@ pub enum FlavorRegistryError {
         table: &'static str,
         why: &'static str,
     },
+    /// A surface declares a transfer no leg can perform: keyed on
+    /// something the transfer builds no statement for, and claimed by no
+    /// bespoke leg. The transfer would skip it in silence and report
+    /// success, leaving rows the SOURCE owner can still read after the
+    /// memory they belong to became someone else's.
+    UnmovableSurface {
+        flavor_id: &'static str,
+        table: &'static str,
+    },
+    /// A declared bespoke transfer leg that names nothing it could own — a
+    /// table the flavor does not declare, or one whose declaration says no
+    /// statement runs at all.
+    BespokeTransferLegMismatch {
+        flavor_id: &'static str,
+        table: &'static str,
+        why: &'static str,
+    },
+    /// A surface declares that forget destroys its rows and the forget
+    /// reaches none of them: `DeleteWithMemory` over a key it builds no
+    /// `t` for, with no constraint claiming completeness either. The rows
+    /// would outlive the memory that declared them gone.
+    UnforgettableSurface {
+        flavor_id: &'static str,
+        table: &'static str,
+    },
+    /// A Fact schema's `EmbeddingRecipe` and its `FactPayload::EMBEDDABLE`
+    /// constant disagree about whether it embeds. One of them drives the
+    /// enqueue lane and the other is read by nobody, which is exactly why
+    /// they were allowed to drift.
+    EmbeddabilityDisagreement {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        recipe_is_never: bool,
+        trait_says_embeddable: bool,
+    },
+    /// A schema declares `EmbeddingRecipe::Units(&[])` — the claim
+    /// `Never { why }` exists to carry, with the reason deleted, and wearing
+    /// the arm that means "embeds".
+    EmptyEmbeddingUnits {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+    },
+    /// A schema's contract names different natural key columns than the
+    /// payload trait the ingest actually reads.
+    NaturalKeyDisagreement {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+    },
+    /// A tool's contract names different dispatcher actions, or names them
+    /// in a different order, than the descriptor the registry holds.
+    ToolActionsDisagreement {
+        flavor_id: &'static str,
+        name: &'static str,
+    },
+    /// A tool's contract and its resolved MCP annotations disagree about
+    /// whether calling it twice is the same as calling it once.
+    ToolIdempotenceDisagreement {
+        flavor_id: &'static str,
+        name: &'static str,
+        declared: bool,
+        resolved: bool,
+    },
     /// A schema declared `NotTransferable` without naming where the refusal
     /// is enforced. A refusal nothing backs is a comment.
     UnenforcedTransferRefusal {
@@ -317,6 +379,72 @@ impl std::fmt::Display for FlavorRegistryError {
             } => write!(
                 f,
                 "flavor {flavor_id} declares a bespoke erase leg for {table}, which {why}"
+            ),
+            Self::UnmovableSurface { flavor_id, table } => write!(
+                f,
+                "flavor {flavor_id} declares a transfer for {table} that no leg can perform: it \
+                 is keyed on neither a memory nor an entity t, and no bespoke transfer leg \
+                 claims it, so a transfer would skip it and still report success — leaving rows \
+                 the source owner can read after the memory became someone else's"
+            ),
+            Self::BespokeTransferLegMismatch {
+                flavor_id,
+                table,
+                why,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares a bespoke transfer leg for {table}, which {why}"
+            ),
+            Self::EmbeddabilityDisagreement {
+                flavor_id,
+                schema_id,
+                recipe_is_never,
+                trait_says_embeddable,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares {schema_id} with EmbeddingRecipe::Never = \
+                 {recipe_is_never} and FactPayload::EMBEDDABLE = {trait_says_embeddable}; \
+                 the enqueue lane reads the constant and the reason lives on the recipe, \
+                 so a disagreement files embedding jobs the drain can only drop"
+            ),
+            Self::EmptyEmbeddingUnits {
+                flavor_id,
+                schema_id,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares {schema_id} with EmbeddingRecipe::Units(&[]); \
+                 an empty unit list yields the drain no text, which is what \
+                 EmbeddingRecipe::Never says — declare Never and state why, because \
+                 Units answers `false` to is_never() and the enqueue lane believes it"
+            ),
+            Self::NaturalKeyDisagreement {
+                flavor_id,
+                schema_id,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares natural key columns for {schema_id} that are \
+                 not the ones the ingest reads off the payload trait"
+            ),
+            Self::ToolActionsDisagreement { flavor_id, name } => write!(
+                f,
+                "flavor {flavor_id} declares actions for {name} that are not, in order, \
+                 the actions its registered dispatcher accepts"
+            ),
+            Self::ToolIdempotenceDisagreement {
+                flavor_id,
+                name,
+                declared,
+                resolved,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares {name} idempotent = {declared}; its resolved \
+                 MCP annotations say {resolved}, and the wire believes the annotations"
+            ),
+            Self::UnforgettableSurface { flavor_id, table } => write!(
+                f,
+                "flavor {flavor_id} declares that forget deletes {table} with the memory, and \
+                 the forget reaches none of its rows: the key is neither a memory nor an entity \
+                 t, and no completeness constraint claims them either"
             ),
             Self::UnenforcedTransferRefusal {
                 flavor_id,

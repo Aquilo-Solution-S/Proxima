@@ -39,6 +39,11 @@ pub struct ExecutionResultV1 {
 }
 
 impl FactPayload for ExecutionResultV1 {
+    /// Matches this schema's `EmbeddingRecipe::Never`, which carries the
+    /// reason. Freeze refuses the two disagreeing; they did, and the
+    /// enqueue lane filed jobs the drain could only drop.
+    const EMBEDDABLE: bool = false;
+
     const SCHEMA_ID: &'static str = proxima_schema_id!("execution-result-v1");
     const SCHEMA_VERSION: u32 = 1;
 
@@ -80,6 +85,11 @@ pub struct TestResultV1 {
 }
 
 impl FactPayload for TestResultV1 {
+    /// Matches this schema's `EmbeddingRecipe::Never`, which carries the
+    /// reason. Freeze refuses the two disagreeing; they did, and the
+    /// enqueue lane filed jobs the drain could only drop.
+    const EMBEDDABLE: bool = false;
+
     const SCHEMA_ID: &'static str = proxima_schema_id!("test-result-v1");
     const SCHEMA_VERSION: u32 = 1;
 
@@ -121,6 +131,11 @@ pub struct AcceptanceVerificationV1 {
 }
 
 impl FactPayload for AcceptanceVerificationV1 {
+    /// Matches this schema's `EmbeddingRecipe::Never`, which carries the
+    /// reason. Freeze refuses the two disagreeing; they did, and the
+    /// enqueue lane filed jobs the drain could only drop.
+    const EMBEDDABLE: bool = false;
+
     const SCHEMA_ID: &'static str = proxima_schema_id!("acceptance-verification-v1");
     const SCHEMA_VERSION: u32 = 1;
 

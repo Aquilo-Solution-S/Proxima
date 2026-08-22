@@ -5,7 +5,7 @@
 //! the declaration matches the behaviour. Requires local PG.
 
 use proxima_core::flavor::{
-    EmbedText, EmbeddingRecipe, Enforcement, SLOT_DEFAULT, SearchProjectionDecl, TransferRule,
+    EmbeddingRecipe, Enforcement, EraseLeg, SLOT_DEFAULT, SearchProjectionDecl, TransferRule,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{FLAVOR_0, FlavorRegistry};
@@ -127,37 +127,56 @@ fn impl_target(line: &str) -> Option<&str> {
     (!ident.is_empty()).then_some(ident)
 }
 
-/// The whole `CREATE TRIGGER` statement for `name`, so the relation it
-/// fires on can be checked too.
+/// Whether the migrated catalog carries a non-internal trigger `name` on
+/// `relation`.
 ///
-/// The name is matched as an exact TOKEN. `goal_head_t_only_v2` is a
-/// different trigger and must not satisfy a citation of
-/// `goal_head_t_only`; a `contains` test cannot say so.
+/// Not `tgisinternal`: a constraint's own internal trigger is the
+/// constraint's enforcement, and a `Trigger` citation claims a trigger of
+/// its own.
+async fn trigger_exists(
+    pool: &sqlx::PgPool,
+    relation: &str,
+    name: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+           SELECT 1
+             FROM pg_trigger g
+             JOIN pg_class t ON t.oid = g.tgrelid
+            WHERE NOT g.tgisinternal
+              AND g.tgname = $2
+              AND (t.relnamespace::regnamespace)::text || '.' || t.relname = $1
+         )",
+    )
+    .bind(relation)
+    .bind(name)
+    .fetch_one(pool)
+    .await
+}
+
+/// Whether the migrated catalog carries constraint `name` on `relation`.
 ///
-/// Read line-wise rather than by composing a `CREATE TRIGGER ...` needle:
-/// this test reads SQL and never runs any, and assembling that string would
-/// look exactly like a dynamic statement to the SQL-policy guardrail.
-fn create_trigger_statement(migration: &str, name: &str) -> Option<String> {
-    let mut lines = migration.lines();
-    while let Some(line) = lines.next() {
-        let mut tokens = line.split_whitespace();
-        if tokens.next() != Some("CREATE")
-            || tokens.next() != Some("TRIGGER")
-            || tokens.next() != Some(name)
-        {
-            continue;
-        }
-        let mut statement = line.to_owned();
-        for tail in lines.by_ref() {
-            statement.push('\n');
-            statement.push_str(tail);
-            if tail.contains(';') {
-                break;
-            }
-        }
-        return Some(statement);
-    }
-    None
+/// A separate statement rather than a union with the trigger one: the two
+/// catalogs have different columns, and a citation of a constraint must not
+/// be satisfied by a trigger that happens to share its name.
+async fn constraint_exists(
+    pool: &sqlx::PgPool,
+    relation: &str,
+    name: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+           SELECT 1
+             FROM pg_constraint c
+             JOIN pg_class t ON t.oid = c.conrelid
+            WHERE c.conname = $2
+              AND (t.relnamespace::regnamespace)::text || '.' || t.relname = $1
+         )",
+    )
+    .bind(relation)
+    .bind(name)
+    .fetch_one(pool)
+    .await
 }
 
 /// Every cited enforcement site resolves to something that exists.
@@ -167,20 +186,27 @@ fn create_trigger_statement(migration: &str, name: &str) -> Option<String> {
 /// the contract goes on claiming a refusal at an address nothing answers.
 /// The citation format is `<crate-dir>/<path>::<symbol path>`, so both
 /// halves are resolvable — the file relative to the workspace root, and the
-/// symbol as an item declared in it under the right `impl`. Triggers
-/// resolve against the migration that creates them, name AND relation.
-#[test]
-fn every_cited_enforcement_site_resolves() {
+/// symbol as an item declared in it under the right `impl`.
+///
+/// The two DDL arms are resolved against the CATALOG of a migrated
+/// database, not against the migration's source text. What a `CREATE
+/// TRIGGER` line says and what the server ended up with are different
+/// claims: a later `DROP TRIGGER`, a rename, a relation that the statement
+/// names through a search path, or a trigger created inside a `DO` block
+/// all separate them, and only one of the two is what a transfer attempt
+/// actually meets. `pg_trigger`/`pg_constraint` answer the question the
+/// declaration is making — *this relation is guarded by this thing* —
+/// including the relation, which the source-text version could only check
+/// for `Trigger` and not for `Constraint`.
+#[tokio::test]
+async fn every_cited_enforcement_site_resolves() {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(std::path::Path::parent)
         .expect("crates/storage-pg sits two levels under the workspace root")
         .to_owned();
-    let migration = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations/0001_v008.sql"),
-    )
-    .expect("the v0.0.8 migration is readable");
 
+    let mut ddl: Vec<Enforcement> = Vec::new();
     let mut checked = 0_usize;
     let rules = FLAVOR_0
         .schemas
@@ -208,34 +234,7 @@ fn every_cited_enforcement_site_resolves() {
                         file.display()
                     );
                 }
-                Enforcement::Trigger(trigger) => {
-                    let statement = create_trigger_statement(&migration, trigger.name)
-                        .unwrap_or_else(|| {
-                            panic!("the migration creates no trigger named {}", trigger.name)
-                        });
-                    let fires_on = statement
-                        .split_whitespace()
-                        .skip_while(|token| *token != "ON")
-                        .nth(1)
-                        .map(|token| token.trim_end_matches(';'));
-                    assert_eq!(
-                        fires_on,
-                        Some(trigger.relation),
-                        "{} fires on a different relation than the contract claims",
-                        trigger.name
-                    );
-                }
-                // Exact token, for the same reason the trigger name is. No
-                // member today (map RA-6: the goals CHECK constraints went
-                // with the World owner), so the relation is not cross-checked
-                // here — the first `Constraint` citation should add that.
-                Enforcement::Constraint(constraint) => assert!(
-                    migration
-                        .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
-                        .any(|token| token == constraint.name),
-                    "the migration names no constraint {}",
-                    constraint.name
-                ),
+                Enforcement::Trigger(_) | Enforcement::Constraint(_) => ddl.push(*site),
             }
         }
     }
@@ -243,6 +242,49 @@ fn every_cited_enforcement_site_resolves() {
         checked >= 3,
         "goals alone cite three sites; found {checked}"
     );
+    assert!(
+        !ddl.is_empty(),
+        "goals cite a DDL backstop; the catalog half of this test must have something to ask about"
+    );
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        for site in ddl {
+            let pool = pg.pool_for_tests();
+            let (kind, relation, name, exists) = match site {
+                Enforcement::Trigger(t) => (
+                    "trigger",
+                    t.relation,
+                    t.name,
+                    trigger_exists(pool, t.relation, t.name).await?,
+                ),
+                Enforcement::Constraint(c) => (
+                    "constraint",
+                    c.relation,
+                    c.name,
+                    constraint_exists(pool, c.relation, c.name).await?,
+                ),
+                Enforcement::EngineRefusal { .. } | Enforcement::StorageBackstop { .. } => {
+                    unreachable!("the source-text arms were resolved above")
+                }
+            };
+            assert!(
+                exists,
+                "the contract cites {kind} {name} on {relation}, and the migrated catalog has \
+                 no such {kind} on that relation"
+            );
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("every_cited_enforcement_site_resolves failed");
 }
 
 // ── §2.5 (2): declared absence ──────────────────────────────────────────
@@ -302,6 +344,50 @@ fn declared_absence_is_a_value_with_a_reason() {
     assert!(
         matches!(call_log.embedding, EmbeddingRecipe::Never { .. }),
         "and it is not embeddable either — both absences are declared"
+    );
+}
+
+/// Every declared non-count states a reason, in every registered flavor.
+///
+/// `Surface::counter` was `Option<&'static str>` and `None` was the last
+/// declared absence in the contract with nothing attached — "feeds no
+/// counter" and "nobody said" were the same value. The seven `None`s in the
+/// shipped tree turned out to have six DIFFERENT reasons: a pointer into a
+/// counted table, a refcounted shared row, a work queue counted after the
+/// commit, a derived index with no `rows_affected`, a detail table already
+/// counted under its parent, and two surfaces the erase never touches at
+/// all. None of that was recoverable from the word `None`.
+#[test]
+fn every_declared_non_count_says_why() {
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let mut uncounted = 0;
+    let mut counted = 0;
+    for contract in registry.contracts() {
+        for surface in contract.all_surfaces() {
+            match surface.counter {
+                proxima_core::flavor::CounterRule::Counted(key) => {
+                    assert!(
+                        !key.is_empty(),
+                        "{} names an empty counter key",
+                        surface.table
+                    );
+                    counted += 1;
+                }
+                proxima_core::flavor::CounterRule::Uncounted { why } => {
+                    assert!(
+                        why.len() > 40,
+                        "{} contributes to no count and must say why, not \
+                         gesture at it: {why:?}",
+                        surface.table
+                    );
+                    uncounted += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        counted > 10 && uncounted >= 7,
+        "{counted} counted, {uncounted} uncounted"
     );
 }
 
@@ -433,7 +519,7 @@ fn every_recipe_resolves_to_the_pair_the_shipped_drain_reads() {
             assert_eq!(resolved[0].table, schema.sidecar_table);
             assert_eq!(
                 resolved[0].column,
-                Some(column.as_str()),
+                column.as_str(),
                 "{}: the recipe must resolve to the shipped column",
                 schema_id.as_str()
             );
@@ -605,13 +691,10 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
                 unit.slot, SLOT_DEFAULT,
                 "{schema_id}: only `default` is wired"
             );
-            let (Some(table), Some(column)) = (unit.table, unit.column) else {
-                panic!("{schema_id}: the recipe must resolve to a stored column")
+            let Some(table) = unit.table else {
+                panic!("{schema_id}: the recipe must resolve against a sidecar table")
             };
-            assert!(
-                matches!(schema.embedding.units()[0].text, EmbedText::StoredColumn(_)),
-                "{schema_id}: the shipped idiom is a stored column"
-            );
+            let column = unit.column;
 
             // What the recipe says to read, read literally.
             // SQL-POLICY: fixed-fragment — `table` and `column` are
@@ -739,4 +822,404 @@ async fn every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces failed");
+}
+
+/// Every column a declaration NAMES is a column the catalog HAS.
+///
+/// `KeyShape` and `FollowOrDedupe { dedupe_key, remaps }` spell column
+/// names as `&'static str`, which the compiler cannot check against a
+/// table it has never seen. Three phases of evidence say the compiler not
+/// checking them is not a theoretical worry:
+///
+/// - four code-flavor detail tables declared `Custom(&["memory_id"])`, a
+///   column none of them has, and it went unnoticed for as long as nothing
+///   read the field for a `Cascade` surface;
+/// - `proxima_core.projection` declared its memory key as `t` until Phase
+///   4, and the column is `memory_id` — again unread, again untrue;
+/// - `blob`'s `remaps` named three columns where the shipped SQL touched
+///   two.
+///
+/// All three are the same defect: a string nothing resolves. This resolves
+/// every one of them against `information_schema`, so the next one fails a
+/// test instead of reaching a generator.
+///
+/// `owner_columns` is deliberately in scope too. It is genuinely consumed
+/// by the export generator, but only for surfaces the bundle carries — an
+/// `Excluded` surface's owner column has the same unread-string shape as
+/// the two above.
+#[tokio::test]
+async fn every_column_a_declaration_names_is_a_column_the_catalog_has() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+
+        // (schema-qualified table, column, what named it) — flattened so
+        // one round trip answers for the whole contract.
+        let mut cited: Vec<(String, String, String)> = Vec::new();
+        for surface in FLAVOR_0.all_surfaces() {
+            for column in surface.key.columns() {
+                cited.push((surface.table.to_owned(), column.to_owned(), "key".into()));
+            }
+            for column in surface.owner_columns {
+                cited.push((
+                    surface.table.to_owned(),
+                    (*column).to_owned(),
+                    "owner_columns".into(),
+                ));
+            }
+            if let Some(column) = surface.lexical_language_column {
+                cited.push((
+                    surface.table.to_owned(),
+                    column.to_owned(),
+                    "lexical_language_column".into(),
+                ));
+            }
+            if let TransferRule::FollowOrDedupe { dedupe_key, remaps } = surface.transfer {
+                for column in dedupe_key {
+                    cited.push((
+                        surface.table.to_owned(),
+                        (*column).to_owned(),
+                        "dedupe_key".into(),
+                    ));
+                }
+                // A remap names the REFERRING table, not this surface:
+                // `blob`'s remaps are columns on `memory` and `cooled`.
+                for entry in remaps {
+                    let (table, column) = entry
+                        .split_once('.')
+                        .unwrap_or_else(|| panic!("{entry} must be <table>.<column>"));
+                    cited.push((
+                        format!("proxima_core.{table}"),
+                        column.to_owned(),
+                        "remaps".into(),
+                    ));
+                }
+            }
+        }
+        assert!(
+            cited.len() > 40,
+            "flavor #0 names columns on the kernel spine as well as its own sidecars; \
+             found {}",
+            cited.len()
+        );
+
+        let tables: Vec<String> = cited.iter().map(|(table, ..)| table.clone()).collect();
+        let columns: Vec<String> = cited.iter().map(|(_, column, _)| column.clone()).collect();
+        let sources: Vec<String> = cited.iter().map(|(.., source)| source.clone()).collect();
+        let missing: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT d.table_name, d.column_name, d.source
+               FROM unnest($1::text[], $2::text[], $3::text[])
+                    AS d(table_name, column_name, source)
+              WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM information_schema.columns c
+                     WHERE c.table_schema || '.' || c.table_name = d.table_name
+                       AND c.column_name = d.column_name
+              )",
+        )
+        .bind(&tables)
+        .bind(&columns)
+        .bind(&sources)
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        assert!(
+            missing.is_empty(),
+            "these declarations name columns no relation has, which is a string the \
+             compiler cannot check and the catalog can: {missing:?}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("every_column_a_declaration_names_is_a_column_the_catalog_has failed");
+}
+
+/// Every `dedupe_key` is a key the schema actually enforces as unique.
+///
+/// `FollowOrDedupe`'s generated half asks the destination owner "do you
+/// already hold this row?" and repoints the referring columns at whatever
+/// comes back. That question has ONE answer only if the declared columns
+/// are unique on the destination. If they are not, the lookup picks an
+/// arbitrary row out of several and the transfer silently rehomes a
+/// memory onto a body it did not have — a corruption no error reports.
+///
+/// So the declaration is not free to name any tuple it likes: it must name
+/// a tuple `pg_constraint` agrees is unique. This is the `dedupe_key`
+/// counterpart of the `Cascade`/`confdeltype` gate above, and the reason it
+/// is a catalog question rather than a code review one is that the SQL is
+/// generated from the string — nothing in Rust can see the constraint.
+#[tokio::test]
+async fn every_dedupe_key_is_a_uniqueness_the_schema_enforces() {
+    let declared: Vec<(&'static str, &'static [&'static str])> = FLAVOR_0
+        .all_surfaces()
+        .filter_map(|surface| match surface.transfer {
+            TransferRule::FollowOrDedupe { dedupe_key, .. } => Some((surface.table, dedupe_key)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        declared.len(),
+        2,
+        "blob and content are flavor #0's dedupe surfaces; found {declared:?}"
+    );
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        for (table, dedupe_key) in declared {
+            let columns: Vec<String> = dedupe_key.iter().map(|c| (*c).to_owned()).collect();
+            // Both a UNIQUE constraint and a bare unique index enforce the
+            // same thing; `pg_index` sees both, so ask it rather than
+            // `pg_constraint`, and compare the column SET (order is the
+            // index's business, not the declaration's).
+            let enforced: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                   SELECT 1
+                     FROM pg_index i
+                     JOIN pg_class t ON t.oid = i.indrelid
+                    WHERE i.indisunique
+                      AND NOT i.indisexclusion
+                      AND i.indpred IS NULL
+                      AND (t.relnamespace::regnamespace)::text || '.' || t.relname = $1
+                      AND (
+                            SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+                              FROM unnest(i.indkey::int[]) AS k(attnum)
+                              JOIN pg_attribute a
+                                ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+                          ) = (SELECT array_agg(x ORDER BY x) FROM unnest($2::text[]) AS x)
+                 )",
+            )
+            .bind(table)
+            .bind(&columns)
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+            assert!(
+                enforced,
+                "{table} declares TransferRule::FollowOrDedupe with dedupe_key \
+                 {dedupe_key:?}, and the transfer generator trusts that tuple to \
+                 identify at most one destination-owned row, but no unique index \
+                 over exactly those columns exists"
+            );
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("every_dedupe_key_is_a_uniqueness_the_schema_enforces failed");
+}
+
+// ── the connect default resolves through a registry, not the test seam ──
+
+/// A `PgStorage` built by the production constructor classifies flavor #0's
+/// surfaces the way flavor #0 declared them.
+///
+/// `connect_with_config` used to fill `surfaces` with
+/// `OwnerSurfaces::from_surfaces(FLAVOR_0.all_surfaces())`. That constructor
+/// is a test seam — its own doc says "Production reaches for
+/// `for_registry`" — and it classifies every surface handed to it against an
+/// EMPTY bespoke list, because a surface arriving loose has no contract to
+/// have exempted it. Flavor #0's surfaces are not loose. Sixteen of its
+/// twenty-eight came back with the wrong leg: `memory` and `cooled` as
+/// `Keyed` rather than `Bespoke`, `announce`, `content`, `sketch` and the
+/// three embedding tables as `Unreachable` — the value that is supposed to
+/// be a freeze error and never a runtime state.
+///
+/// Nothing consumed it yet, which is why nothing failed. `surfaces()` is
+/// public and `mcp-server` connects without `with_flavors`, so "nothing
+/// consumes it" was a property of the current call graph rather than of the
+/// design.
+///
+/// The assertion is on the real constructor, not on the helper it calls, so
+/// it survives someone reintroducing the seam at the call site.
+#[tokio::test]
+async fn the_connect_default_resolves_surfaces_through_the_registry() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        let surfaces = pg.surfaces();
+
+        // The named case: `memory` is on flavor #0's bespoke erase list, and
+        // the seam cannot see a bespoke list at all.
+        assert_eq!(
+            surfaces.erase_leg("proxima_core.memory"),
+            EraseLeg::Bespoke,
+            "the connect default must classify against flavor #0's declared \
+             bespoke legs; `Keyed` here means it was built from a loose \
+             surface list"
+        );
+        assert_eq!(
+            surfaces.erase_leg("proxima_core.cooled"),
+            EraseLeg::Bespoke,
+            "same list, second entry"
+        );
+
+        // The class, not just the two examples: `Unreachable` is documented
+        // as "always a freeze error, never a runtime state", so a storage
+        // that reports it for a surface flavor #0 declares is reporting
+        // something that cannot be true.
+        let unreachable: Vec<&str> = surfaces
+            .surfaces()
+            .iter()
+            .filter(|surface| surfaces.erase_leg(surface.table) == EraseLeg::Unreachable)
+            .map(|surface| surface.table)
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "a surface flavor #0 declares cannot be Unreachable in a storage \
+             flavor #0 built: {unreachable:?}"
+        );
+
+        // And it agrees with what `with_flavors` would install for the same
+        // registry, so the un-widened default is the same KIND of answer as
+        // the widened one rather than a second, cheaper one.
+        let frozen = FlavorRegistry::new().try_freeze()?;
+        let widened = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&frozen);
+        for surface in widened.surfaces() {
+            assert_eq!(
+                surfaces.erase_leg(surface.table),
+                widened.erase_leg(surface.table),
+                "{} resolves differently in the connect default than through \
+                 with_flavors over the same registry",
+                surface.table
+            );
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("the_connect_default_resolves_surfaces_through_the_registry failed");
+}
+
+// ── which declared keys are actually unique ─────────────────────────────
+
+/// `KeyShape` names the columns the erase joins on and the export orders
+/// by. Whether those columns identify ONE row is a property of the schema,
+/// and until this test nothing asked.
+///
+/// `owner_export::order_by` claimed they always do — "every declared key is
+/// unique, so every generated order is total". Five of flavor #0's
+/// twenty-eight are not, and the list below is the measurement rather than
+/// a guess.
+///
+/// Four of the five are `ExportRule::Excluded`, so a non-total order costs
+/// nothing: no bundle orders by them. `ingest_keys` is `ExportRule::Rows`
+/// and its key is `t` while its primary key is
+/// `(owner_id, source_id, ingest_key)` — one memory can hold several
+/// admission receipts, and their order in a bundle is whatever the executor
+/// returns. That is the live one, recorded as a declared follow-up on
+/// `order_by` because fixing it needs the surface to carry a tiebreak the
+/// erase does not use.
+///
+/// The assertion is EQUALITY, not containment, so both directions are
+/// pinned: a new non-unique key has to be added here deliberately, and a
+/// schema change that makes one of these unique has to remove it. Either
+/// way somebody has to look at the export order.
+#[tokio::test]
+async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
+    /// Declared keys with no unique index behind them, and why each is
+    /// tolerable. Alphabetical.
+    const NOT_UNIQUE: [&str; 5] = [
+        // One row per (entity, model, version); the key names the entity.
+        "proxima_core.embedding_heads",
+        // One job per (owner, entity, model).
+        "proxima_core.embedding_jobs",
+        // One vector per (entity, model, version).
+        "proxima_core.embeddings",
+        // THE LIVE ONE: PK is (owner_id, source_id, ingest_key), and this
+        // surface is the only ExportRule::Rows member of the list.
+        "proxima_core.ingest_keys",
+        // PK is (memory_id, schema_id): one memory projects per schema.
+        "proxima_core.projection",
+    ];
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let surfaces = pg.surfaces();
+
+        let mut not_unique = Vec::new();
+        for surface in surfaces.surfaces() {
+            let columns: Vec<String> = surface
+                .key
+                .columns()
+                .iter()
+                .map(|column| (*column).to_owned())
+                .collect();
+            // Column-set equality, not prefix: an index over a SUPERSET of
+            // the declared key does not make the key unique.
+            let unique: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1
+                       FROM pg_index i
+                      WHERE i.indrelid = $1::regclass
+                        AND i.indisunique
+                        AND (
+                            SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+                              FROM unnest(i.indkey::int[]) AS k(attnum)
+                              JOIN pg_attribute a
+                                ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+                          ) = (SELECT array_agg(x ORDER BY x) FROM unnest($2::text[]) AS x)
+                 )",
+            )
+            .bind(surface.table)
+            .bind(&columns)
+            .fetch_one(pool)
+            .await?;
+            if !unique {
+                not_unique.push(surface.table);
+            }
+        }
+        not_unique.sort_unstable();
+
+        assert_eq!(
+            not_unique,
+            NOT_UNIQUE.to_vec(),
+            "the set of declared keys with no unique index behind them has \
+             changed. The export orders rows by the declared key, so a new \
+             entry means a bundle whose row order is undefined wherever that \
+             key repeats; a departure means one fewer place to think about"
+        );
+
+        // The one that reaches the export generator, named separately so
+        // the reason this list matters is not buried in it.
+        let exported_and_not_unique: Vec<&str> = surfaces
+            .surfaces()
+            .iter()
+            .filter(|surface| {
+                NOT_UNIQUE.contains(&surface.table)
+                    && matches!(surface.export, proxima_core::flavor::ExportRule::Rows)
+            })
+            .map(|surface| surface.table)
+            .collect();
+        assert_eq!(
+            exported_and_not_unique,
+            vec!["proxima_core.ingest_keys"],
+            "a second exported surface with a non-unique key is a second \
+             place the bundle's bytes stop being a function of its contents"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("every_declared_key_that_is_unique_is_unique_in_the_catalog failed");
 }

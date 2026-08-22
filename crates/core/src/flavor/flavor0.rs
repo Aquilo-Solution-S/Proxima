@@ -22,13 +22,13 @@
 
 use crate::SearchProjectionColumnKind as ColumnKind;
 use crate::flavor::contract::{
-    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability,
-    BespokeEraseLeg, CORE_ORDINAL, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe,
-    Enforcement, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape, LanguagePolicy,
-    ProjectionDecl, ProjectionSpec, Provenance, RankSource, ResourceContract, SLOT_DEFAULT,
-    SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm, Surface,
-    TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
-    TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule, WEIGHT_UNIFORM, WeightedField,
+    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
+    CounterRule, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, Enforcement, EraseRule,
+    ExportRule, FlavorContract, ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl,
+    ProjectionSpec, Provenance, RankSource, ResourceContract, SLOT_DEFAULT, SchemaContract,
+    SchemaRef, SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule,
+    WEIGHT_UNIFORM, WeightedField,
 };
 use crate::protocol::resource as scope;
 use crate::protocol::tool;
@@ -128,7 +128,7 @@ const fn memory_sidecar(
         export: ExportRule::Rows,
         forget: ForgetRule::DumpThenDelete,
         lexical_language_column,
-        counter: Some("sidecar_rows"),
+        counter: CounterRule::Counted("sidecar_rows"),
         completeness,
     }
 }
@@ -157,7 +157,6 @@ const WRITE_ACT_V1: SchemaContract = SchemaContract {
         Some(t_fkey("proxima_core.write_act_v1", "write_act_v1_t_fkey")),
     )],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const AGENT_NOTE_V1: SchemaContract = SchemaContract {
@@ -198,7 +197,6 @@ const AGENT_NOTE_V1: SchemaContract = SchemaContract {
         Some(t_fkey("proxima_core.agent_note_v1", "agent_note_v1_t_fkey")),
     )],
     natural_key_columns: &["note_id"],
-    special_category: false,
 };
 
 /// Utterances ARE searchable in this tree, with their own band set. The
@@ -232,7 +230,6 @@ const UTTERANCE_V1: SchemaContract = SchemaContract {
         Some(t_fkey("proxima_core.utterance_v1", "utterance_v1_t_fkey")),
     )],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const UPLOAD_V1: SchemaContract = SchemaContract {
@@ -252,7 +249,6 @@ const UPLOAD_V1: SchemaContract = SchemaContract {
     provenance: Provenance::None,
     surfaces: &[],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 /// The one owner-pinned sidecar. Its `owner_id` is the owner that MADE the
@@ -290,7 +286,7 @@ const MCP_CALL_LOGGED_V1: SchemaContract = SchemaContract {
                   simply stay in the hot table",
         },
         lexical_language_column: None,
-        counter: Some("mcp_call_rows"),
+        counter: CounterRule::Counted("mcp_call_rows"),
         // Deliberately NO FK to memory: the row must outlive the Memory.
         // Completeness rests on owner_id -> owners instead.
         completeness: Some(DbConstraint {
@@ -299,7 +295,6 @@ const MCP_CALL_LOGGED_V1: SchemaContract = SchemaContract {
         }),
     }],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const AGENT_DERIVATION_SEARCH: SearchProjectionDecl = SearchProjectionDecl::Projected {
@@ -350,7 +345,6 @@ const AGENT_DERIVATION_V1_A: SchemaContract = SchemaContract {
     provenance: Provenance::OriginEdges,
     surfaces: &[AGENT_DERIVATION_SURFACE],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const AGENT_DERIVATION_V1_P: SchemaContract = SchemaContract {
@@ -365,7 +359,6 @@ const AGENT_DERIVATION_V1_P: SchemaContract = SchemaContract {
     // once, so erase and forget cannot delete it twice.
     surfaces: &[],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 /// Checkpoint 9: an interpretation grounds through payload columns and
@@ -390,8 +383,13 @@ const INTERPRETATION_V1: SchemaContract = SchemaContract {
     },
     embedding: EmbeddingRecipe::Units(&[EmbedUnit::stored("embed_text", SLOT_DEFAULT)]),
     transfer: TransferRule::StaysOnKey,
+    // The columns that carry SUBJECT IDS, which is one column and not two.
+    // `subject_kinds` was declared here too and holds no id — it is the
+    // positionally-aligned kind vector — so a walk that took the field at
+    // its word would look for memory references in an enum array. Nothing
+    // read it, so nothing found out.
     provenance: Provenance::PayloadOnly {
-        subject_columns: &["subject_memory_ids", "subject_kinds"],
+        subject_columns: &["subject_memory_ids"],
     },
     surfaces: &[memory_sidecar(
         "proxima_core.interpretation_v1",
@@ -402,7 +400,6 @@ const INTERPRETATION_V1: SchemaContract = SchemaContract {
         )),
     )],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const SIMPLE_TEXT_GOAL_V1: SchemaContract = SchemaContract {
@@ -420,7 +417,6 @@ const SIMPLE_TEXT_GOAL_V1: SchemaContract = SchemaContract {
     provenance: Provenance::None,
     surfaces: &[],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const TASK_GOAL_V1: SchemaContract = SchemaContract {
@@ -447,11 +443,10 @@ const TASK_GOAL_V1: SchemaContract = SchemaContract {
                   Only owner erase ever removes a goal",
         },
         lexical_language_column: None,
-        counter: Some("sidecar_rows"),
+        counter: CounterRule::Counted("sidecar_rows"),
         completeness: Some(t_fkey("proxima_core.task_goal_v1", "task_goal_v1_t_fkey")),
     }],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 /// Cited objects and citation mappings carry no sidecar of their own in
@@ -472,7 +467,6 @@ const fn citation_schema(
         provenance: Provenance::None,
         surfaces: &[],
         natural_key_columns: &[],
-        special_category: false,
     }
 }
 
@@ -516,7 +510,7 @@ const STATE_SURFACES: &[Surface] = &[
             why: "no goal-forget verb exists; Abandoned is an append, not a delete",
         },
         lexical_language_column: None,
-        counter: Some("goals"),
+        counter: CounterRule::Counted("goals"),
         // WAS goal_not_world_owner_chk. That CHECK went with the World
         // owner; the DDL backstop is now the goal_head_t_only trigger, which
         // TransferRule::NotTransferable names directly.
@@ -535,7 +529,10 @@ const STATE_SURFACES: &[Surface] = &[
             why: "see proxima_core.goal",
         },
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "the head is a POINTER into `goal`, not a row of its own: \
+                  counting it would report every goal twice on one receipt",
+        },
         completeness: None,
     },
     Surface {
@@ -545,15 +542,15 @@ const STATE_SURFACES: &[Surface] = &[
         transfer: GOAL_NOT_TRANSFERABLE,
         erase: EraseRule::ByOwner,
         export: ExportRule::Excluded {
-            why: "DECLARED GAP — wake_config is erased (delete_wake_configs) and never \
-                  exported, so a portability bundle omits the owner's own prompt text. \
-                  Stated rather than left to be discovered",
+            why: "DECLARED GAP — an owner erase destroys these rows and no export \
+                  emits them, so a portability bundle omits the owner's own prompt \
+                  text. Stated rather than left to be discovered",
         },
         forget: ForgetRule::Keep {
             why: "the goal lifecycle owns it",
         },
         lexical_language_column: None,
-        counter: Some("wake_configs"),
+        counter: CounterRule::Counted("wake_configs"),
         completeness: None,
     },
 ];
@@ -577,7 +574,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         // The Memory row itself carries no text and no `lexical_language`:
         // ranking happens in the sidecars and in `sketch`.
         lexical_language_column: None,
-        counter: Some("memories"),
+        counter: CounterRule::Counted("memories"),
         completeness: None,
     },
     Surface {
@@ -595,9 +592,25 @@ const KERNEL_SURFACES: &[Surface] = &[
         export: ExportRule::Excluded {
             why: "the head is derivable from the memory series",
         },
-        forget: ForgetRule::DeleteWithMemory,
+        // CORRECTED in Phase 4 (plan §4.12 R2). `DeleteWithMemory` was true
+        // for the last revision of a series and false for every other one:
+        // forgetting a revision REWINDS the head to the surviving newest
+        // `t` and deletes the head only when the series empties. The
+        // vocabulary gets no one-member `Rewind` arm for it — §4.6.1
+        // forbids vocabulary with a single speaker — because `Keep`
+        // already means "the generated forget leg does not destroy this",
+        // and this table is on the bespoke erase list, so the erase reaches
+        // it through a hand-written statement rather than a generated one.
+        forget: ForgetRule::Keep {
+            why: "the head is rewound to the surviving newest t and deleted only when \
+                  the series empties, which no generated leg can express; the erase \
+                  reaches this table through its bespoke leg",
+        },
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "the head is a POINTER into `memory`, and the erase deletes it \
+                  through the same statement that takes the series it names",
+        },
         completeness: None,
     },
     Surface {
@@ -611,12 +624,16 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "cooled IS the forgotten form; forget writes it rather than deleting it",
         },
         lexical_language_column: None,
-        counter: Some("memories"),
+        counter: CounterRule::Counted("memories"),
         completeness: None,
     },
     Surface {
         table: "proxima_core.sketch",
-        key: KeyShape::Custom(&["t"]),
+        // A memory t OR a goal t, in one column, with no discriminator —
+        // which is exactly what `EntityT` names. It said `Custom` until
+        // Phase 4, and `Custom` is the arm for a key this crate cannot
+        // reason about at all.
+        key: KeyShape::EntityT { column: "t" },
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
@@ -630,14 +647,16 @@ const KERNEL_SURFACES: &[Surface] = &[
         // Recorded by erase today and dropped on the floor: there is no
         // `sketches` key in the final counts and no audit-log column.
         // Declaring it is what makes the gap addressable.
-        counter: Some("sketches"),
+        counter: CounterRule::Counted("sketches"),
         // No FK: `t` is a Memory t OR a Goal t, and there is no constraint
         // that can span two home tables.
         completeness: None,
     },
     Surface {
         table: "proxima_core.embeddings",
-        key: KeyShape::Custom(&["entity_id"]),
+        key: KeyShape::EntityT {
+            column: "entity_id",
+        },
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
@@ -646,12 +665,14 @@ const KERNEL_SURFACES: &[Surface] = &[
         },
         forget: ForgetRule::DeleteWithMemory,
         lexical_language_column: None,
-        counter: Some("embeddings"),
+        counter: CounterRule::Counted("embeddings"),
         completeness: None,
     },
     Surface {
         table: "proxima_core.embedding_heads",
-        key: KeyShape::Custom(&["entity_id"]),
+        key: KeyShape::EntityT {
+            column: "entity_id",
+        },
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
@@ -660,12 +681,14 @@ const KERNEL_SURFACES: &[Surface] = &[
         },
         forget: ForgetRule::DeleteWithMemory,
         lexical_language_column: None,
-        counter: Some("embeddings"),
+        counter: CounterRule::Counted("embeddings"),
         completeness: None,
     },
     Surface {
         table: "proxima_core.embedding_jobs",
-        key: KeyShape::Custom(&["entity_id"]),
+        key: KeyShape::EntityT {
+            column: "entity_id",
+        },
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
@@ -674,7 +697,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         },
         forget: ForgetRule::DeleteWithMemory,
         lexical_language_column: None,
-        counter: Some("embedding_jobs"),
+        counter: CounterRule::Counted("embedding_jobs"),
         completeness: None,
     },
     Surface {
@@ -688,9 +711,22 @@ const KERNEL_SURFACES: &[Surface] = &[
         },
         erase: EraseRule::ByKey,
         export: ExportRule::Rows,
-        forget: ForgetRule::DeleteWithMemory,
+        // CORRECTED in Phase 4. It declared `DeleteWithMemory` and the
+        // shipped verb has never done that: `core_forget` cools a version
+        // and leaves the receipt, and says so on the wire — its own tool
+        // description reads "…delete hot row, announce.forget. ingest_keys
+        // stay." The only statement that removes one is `erase_memory`'s,
+        // a different verb with a different promise. Generating a forget
+        // leg from the declaration as written would have destroyed an
+        // admission receipt on every cool.
+        forget: ForgetRule::Keep {
+            why: "cooling a version does not un-admit it: the receipt proves this owner \
+                  accepted this (source, ingest_key) and stays until the version is \
+                  erased, which is what keeps a re-ingest of the same key idempotent \
+                  across a cool",
+        },
         lexical_language_column: None,
-        counter: Some("receipts"),
+        counter: CounterRule::Counted("receipts"),
         completeness: None,
     },
     Surface {
@@ -718,7 +754,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "forget APPENDS an announce row; it never removes one",
         },
         lexical_language_column: None,
-        counter: Some("change_events"),
+        counter: CounterRule::Counted("change_events"),
         completeness: None,
     },
     Surface {
@@ -727,13 +763,20 @@ const KERNEL_SURFACES: &[Surface] = &[
         owner_columns: &["owner_id"],
         // The dedupe arm. A blob shared across owners used to refuse the
         // transfer outright; now the destination gets its own row over the
-        // same object. `blob_uploads.blob_id` is in the remap list because
-        // the read path requires the blob row and the upload row to name
-        // the same owner — an upload row left pointing at the source's
-        // blob would locate bytes for whoever now holds it.
+        // same object.
+        //
+        // CORRECTED in Phase 4. `remaps` named three columns and the
+        // shipped SQL performed two. `blob_uploads.blob_id` is never
+        // repointed at another blob row: the in-place case moves the upload
+        // row's OWNER and leaves its `blob_id` alone, and the dedupe case
+        // INSERTs a fresh mounted row already naming the destination's new
+        // blob. Declaration and behaviour agreed only by coincidence, which
+        // is the whole defect an unread declaration has. `remaps` is the
+        // list of referring columns a generated UPDATE repoints, and there
+        // are two.
         transfer: TransferRule::FollowOrDedupe {
             dedupe_key: &["owner_id", "schema_id", "content_hash"],
-            remaps: &["memory.blob_id", "cooled.blob_id", "blob_uploads.blob_id"],
+            remaps: &["memory.blob_id", "cooled.blob_id"],
         },
         erase: EraseRule::ByOwner,
         export: ExportRule::Allowlist(&["blob_id", "schema_id", "content_hash"]),
@@ -741,7 +784,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "the citation outlives the cooling of the Fact that names it",
         },
         lexical_language_column: None,
-        counter: Some("blobs"),
+        counter: CounterRule::Counted("blobs"),
         completeness: None,
     },
     Surface {
@@ -760,7 +803,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "upload coordination outlives the Fact",
         },
         lexical_language_column: None,
-        counter: Some("blob_uploads"),
+        counter: CounterRule::Counted("blob_uploads"),
         completeness: None,
     },
     Surface {
@@ -790,7 +833,12 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "many admissions may share one ContentId",
         },
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "content is refcounted and shared: the rows an owner erase \
+                  destroys here are the ones NO surviving owner still cites, \
+                  which is a number about the deployment's deduplication and \
+                  not about this owner",
+        },
         completeness: None,
     },
     Surface {
@@ -804,7 +852,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "external ingest cursors are owner policy, not memory content",
         },
         lexical_language_column: None,
-        counter: Some("source_cursors"),
+        counter: CounterRule::Counted("source_cursors"),
         completeness: None,
     },
     Surface {
@@ -831,7 +879,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "owner-level authority, never memory content",
         },
         lexical_language_column: None,
-        counter: Some("delegated_authority_grants"),
+        counter: CounterRule::Counted("delegated_authority_grants"),
         completeness: None,
     },
     Surface {
@@ -856,7 +904,13 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "the purge queue outlives the transaction that enqueued it",
         },
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "a work queue, not owned rows. Its entries are enqueued BY the \
+                  erase and drained after it commits, so a count taken \
+                  inside the transaction would report intent rather than \
+                  destruction — `cold_object_purge_pending` on the outcome \
+                  is where that number belongs",
+        },
         completeness: None,
     },
     Surface {
@@ -875,7 +929,45 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "the star centre",
         },
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "the erase never deletes the owners row, so there is nothing to \
+                  count; `EraseRule::Never` already says why",
+        },
+        completeness: None,
+    },
+    // A membership names TWO owners and belongs to neither exclusively, so
+    // `owner_columns` is EMPTY and means it: there is no column here whose
+    // value makes the row somebody's to erase. That is the whole content of
+    // the declaration, and stating it is what turns a recorded follow-up
+    // into a position.
+    Surface {
+        table: "proxima_core.group_memberships",
+        key: KeyShape::Custom(&["group_id", "member_user_id", "relation"]),
+        owner_columns: &[],
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::Never {
+            why: "a membership is a relation between two owners, not a row about \
+                  one. Erasing a personal owner does not shrink the groups it \
+                  belonged to: a host that must remove a departed user calls \
+                  remove_group_member before erase, which is the same division of \
+                  labour retention and legal holds already take. Erase READS this \
+                  table — the abandonment precondition counts a group's remaining \
+                  members — and writes to it never",
+        },
+        export: ExportRule::Excluded {
+            why: "a membership is the group's row as much as the member's; \
+                  exporting a personal owner's bundle would hand out the \
+                  membership list of every group they belong to",
+        },
+        forget: ForgetRule::Keep {
+            why: "an access relation, not a memory: no forget reaches it and no \
+                  cold record carries it",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "the erase never deletes a membership, so there is nothing to \
+                  count; `EraseRule::Never` already says why",
+        },
         completeness: None,
     },
 ];
@@ -1106,8 +1198,18 @@ const RESOURCES: &[ResourceContract] = &[
 ];
 
 /// The kernel surfaces the owner erase reaches with a hand-written
-/// statement instead of a generated one, each naming the function that owns
-/// it.
+/// statement instead of a generated one.
+///
+/// A bare table list, and deliberately so (plan §4.11). Each entry used to
+/// carry the NAME of the storage-pg function that deletes it, kept honest
+/// by a test that grepped that crate's own source for `fn <name>(`. The
+/// operator ruled the names ceremony: both freeze checks work on table
+/// names alone, the behaviour is already pinned by the differential
+/// goldens, and a string-level proof that a string names a function
+/// verifies documentation rather than behaviour. What the list must say is
+/// WHICH tables the generator does not reach; who reaches them is a fact
+/// about `proxima-storage-pg`'s code, and the place to read it is
+/// `proxima-storage-pg`.
 ///
 /// Sixteen entries, and every one of them earns the exemption by needing
 /// something a generated `DELETE ... USING <selection set>` cannot express:
@@ -1125,31 +1227,56 @@ const RESOURCES: &[ResourceContract] = &[
 /// never heard of.
 ///
 /// [`FlavorRegistryError::UndeletableSurface`]: crate::flavor::FlavorRegistryError::UndeletableSurface
-const BESPOKE_ERASE_LEGS: &[BespokeEraseLeg] = &[
-    leg("proxima_core.announce", "delete_change_events"),
-    leg("proxima_core.blob", "delete_blobs"),
-    leg("proxima_core.blob_uploads", "delete_blobs"),
-    leg("proxima_core.content", "gc_unreferenced_content_batch"),
-    leg("proxima_core.cooled", "delete_selected_cooled"),
-    leg(
-        "proxima_core.delegated_authority_grants",
-        "delete_delegated_authority_grants",
-    ),
-    leg("proxima_core.embedding_heads", "delete_embeddings"),
-    leg("proxima_core.embedding_jobs", "delete_embeddings"),
-    leg("proxima_core.embeddings", "delete_embeddings"),
-    leg("proxima_core.goal", "delete_selected_table"),
-    leg("proxima_core.goal_head", "sync_selected_heads"),
-    leg("proxima_core.memory", "delete_selected_table"),
-    leg("proxima_core.memory_head", "sync_selected_heads"),
-    leg("proxima_core.sketch", "delete_selected_sketches"),
-    leg("proxima_core.source_cursors", "delete_source_cursors"),
-    leg("proxima_core.wake_config", "delete_wake_configs"),
+const BESPOKE_ERASE_LEGS: &[&str] = &[
+    "proxima_core.announce",
+    "proxima_core.blob",
+    "proxima_core.blob_uploads",
+    "proxima_core.content",
+    "proxima_core.cooled",
+    "proxima_core.delegated_authority_grants",
+    "proxima_core.embedding_heads",
+    "proxima_core.embedding_jobs",
+    "proxima_core.embeddings",
+    "proxima_core.goal",
+    "proxima_core.goal_head",
+    "proxima_core.memory",
+    "proxima_core.memory_head",
+    "proxima_core.sketch",
+    "proxima_core.source_cursors",
+    "proxima_core.wake_config",
 ];
 
-const fn leg(table: &'static str, leg: &'static str) -> BespokeEraseLeg {
-    BespokeEraseLeg { table, leg }
-}
+/// The kernel surfaces a transfer moves with a hand-written statement
+/// instead of a generated one.
+///
+/// Four entries, each earning the exemption for a reason a generated
+/// `UPDATE <table> SET owner_id = $2 WHERE <key> = ANY($1)` cannot express:
+///
+/// - `memory_head` is a compare-and-set, not a move. Its statement carries
+///   the head `t` the series was read at and its `rows_affected` is what
+///   DECIDES whether the transfer happened; the two head-advanced races
+///   hang off that answer.
+/// - `blob_uploads` moves with the blob row it describes, one blob at a
+///   time — the read path requires both to name the same owner — and in
+///   the dedupe case it is not moved at all but re-minted as a mount.
+/// - `blob` and `content` are the two `FollowOrDedupe` surfaces. Their
+///   generated halves come off the declaration (`dedupe_key` finds the
+///   destination-owned row, `remaps` repoints the referring columns); what
+///   sits between those halves — a refcount probe, an OCI-style object
+///   mount, an orphan GC — does not.
+///
+/// `memory_head` and `blob_uploads` are the two that would otherwise be
+/// SILENTLY wrong rather than absent: both are keyed on a single column
+/// (`handle`, `upload_id`) that is not an entity `t`, so a generated
+/// `WHERE <column> = ANY($1)` would run cleanly and match nothing. That is
+/// the class `TransferLeg::Unreachable` exists to refuse, and the list is
+/// what tells freeze the statement is elsewhere.
+const BESPOKE_TRANSFER_LEGS: &[&str] = &[
+    "proxima_core.blob",
+    "proxima_core.blob_uploads",
+    "proxima_core.content",
+    "proxima_core.memory_head",
+];
 
 /// Core's contract. Fifteen schema registrations over fourteen distinct
 /// schema ids (`core/agent-derivation-v1` registers as both Abstraction and
@@ -1180,6 +1307,7 @@ pub const FLAVOR_0: FlavorContract = FlavorContract {
     resources: RESOURCES,
     projection: ProjectionDecl::Table(CORE_PROJECTION),
     bespoke_erase_legs: BESPOKE_ERASE_LEGS,
+    bespoke_transfer_legs: BESPOKE_TRANSFER_LEGS,
 };
 
 /// Look up a flavor-#0 resource by its palette scope key.

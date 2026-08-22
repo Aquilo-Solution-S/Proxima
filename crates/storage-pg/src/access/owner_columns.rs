@@ -1,5 +1,7 @@
 //! Direct `OwnerRef` column helpers.
 
+use proxima_core::flavor::TransferLeg;
+use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::{
     EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation, StorageError, UserId,
 };
@@ -401,37 +403,38 @@ pub(crate) async fn visible_home_owner(
 /// check violations.
 pub(crate) async fn transfer_to_owner(
     pool: &PgPool,
-    sidecars: &crate::sidecars::PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
     entity: EntityId,
     from_owner: OwnerRef,
     to_owner: OwnerRef,
 ) -> Result<bool, StorageError> {
+    // The backstop, DRIVEN by the declaration rather than agreeing with
+    // it. This was `matches!(entity, EntityId::Goal(_))` — a hardcoded
+    // refusal that `TransferRule::NotTransferable` NAMED as one of its
+    // three enforcement sites and did not cause. Now the entity picks the
+    // surface that speaks for it and the surface's resolved leg decides:
+    // re-declare `proxima_core.goal` as anything that moves rows and goals
+    // start transferring, which is what "enforced by the declaration"
+    // has to mean if it is to mean anything.
     let memory_id = match entity {
         EntityId::Memory(memory_id) => memory_id,
         EntityId::Goal(_) => {
-            return Err(StorageError::ConstraintViolation(
-                "goals do not transfer: a goal series cannot change owner".into(),
-            ));
+            return Err(refuse_untransferable_entity(surfaces, GOAL_SPINE));
         }
     };
+    if let TransferLeg::Refused { .. } = surfaces.transfer_leg(MEMORY_SPINE) {
+        return Err(refuse_untransferable_entity(surfaces, MEMORY_SPINE));
+    }
     if from_owner == to_owner {
         return Err(StorageError::ConstraintViolation(
             "transfer destination is the current owner".into(),
         ));
     }
     let from_id = from_owner.stored_owner_id();
-    let projection_tables = sidecars.projection_tables();
-    let projection_tables = &projection_tables;
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
-        let transferred = transfer_memory_t(
-            &mut tx,
-            projection_tables,
-            memory_id.into_inner(),
-            from_id,
-            to_owner,
-        )
-        .await?;
+        let transferred =
+            transfer_memory_t(&mut tx, surfaces, memory_id.into_inner(), from_id, to_owner).await?;
         if !transferred {
             // A false persist can follow real writes: when the head is gone
             // or changed owner after the series reads, cooled/blob/content
@@ -447,9 +450,44 @@ pub(crate) async fn transfer_to_owner(
     .await
 }
 
+/// The kernel spine tables the two [`EntityId`] arms name. A transfer asks
+/// the contract what it may do to an entity by asking about the surface
+/// that IS the entity's series.
+const MEMORY_SPINE: &str = "proxima_core.memory";
+const GOAL_SPINE: &str = "proxima_core.goal";
+
+/// The refusal a `NotTransferable` surface earns, with the reason its own
+/// declaration gave.
+///
+/// A surface the registry does not carry resolves to
+/// [`TransferLeg::Unreachable`], which freeze refuses at boot — so reaching
+/// the fallback here means the registry was assembled by hand, and the
+/// honest answer is still a refusal.
+fn refuse_untransferable_entity(surfaces: &OwnerSurfaces, table: &str) -> StorageError {
+    let entity = match table {
+        GOAL_SPINE => "goals",
+        _ => "these entities",
+    };
+    match surfaces.transfer_leg(table) {
+        // The declared `why` is written headline-first — the sentence a
+        // caller needs, a colon, then the rationale an operator needs. The
+        // wire refusal carries the headline, so the message is GENERATED
+        // from `NotTransferable { why }` rather than restated beside it:
+        // rewording the declaration moves this error, which is what the
+        // transfer differential golden is for.
+        TransferLeg::Refused { why } => {
+            let headline = why.split_once(':').map_or(why, |(head, _)| head);
+            StorageError::ConstraintViolation(format!("{entity} do not transfer: {headline}"))
+        }
+        _ => StorageError::Internal(format!(
+            "{table} declares no transfer leg this substrate can perform"
+        )),
+    }
+}
+
 async fn transfer_memory_t(
     tx: &mut Transaction<'_, Postgres>,
-    projection_tables: &[String],
+    surfaces: &OwnerSurfaces,
     t: uuid::Uuid,
     from_id: uuid::Uuid,
     to_owner: OwnerRef,
@@ -466,7 +504,7 @@ async fn transfer_memory_t(
     let Some(handle) = handle else {
         return Ok(false);
     };
-    transfer_memory_handle(tx, projection_tables, handle, from_id, to_owner).await
+    transfer_memory_handle(tx, surfaces, handle, from_id, to_owner).await
 }
 
 const SERIES_TS_SQL: &str = "SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2
@@ -531,7 +569,7 @@ async fn lock_series_ts(
 
 async fn transfer_memory_handle(
     tx: &mut Transaction<'_, Postgres>,
-    projection_tables: &[String],
+    surfaces: &OwnerSurfaces,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     to_owner: OwnerRef,
@@ -572,62 +610,80 @@ async fn transfer_memory_handle(
             "series head advanced after transfer locked its version set".into(),
         ));
     }
-    transfer_cited_blobs(tx, handle, from_id, to_id).await?;
-    transfer_content_for_handle(tx, handle, from_id, to_id).await?;
-    rehome_cooled_for_handle(tx, handle, from_id, to_id).await?;
-    if persist_hot_series_transfer(
-        tx,
-        projection_tables,
-        handle,
-        from_id,
-        to_id,
-        expected_head_t,
-        &ts,
-    )
-    .await?
-    {
+    // Order, and all of it load-bearing.
+    //
+    // The two dedupe surfaces run FIRST because both read the series' hot
+    // and cooled rows under the SOURCE owner to find what the series
+    // cites, and the generated re-home is what stops those reads from
+    // matching.
+    //
+    // The generated legs run SECOND, and — this is the part that is a
+    // property rather than a habit — BEFORE the head compare-and-set. A
+    // transfer that took the head row first would hold that lock across
+    // every remaining statement, and `memory_head` is the row a same-series
+    // ingest has to read: the transfer would be serializing ordinary writes
+    // behind its own row work. `transfer_retries_when_ingest_advances_the_captured_head`
+    // pins exactly that, and pins it as a liveness property ("without
+    // adding a lock to normal ingest") rather than as an outcome.
+    //
+    // Doing real writes before the decision is already this transaction's
+    // shape: a false persist rolls the whole thing back, which is why
+    // `transfer_to_owner` rolls back rather than committing a `false`.
+    transfer_cited_blobs(tx, surfaces, handle, from_id, to_id).await?;
+    transfer_content_for_handle(tx, surfaces, handle, from_id, to_id).await?;
+    run_generated_transfer_legs(tx, surfaces, to_id, &ts).await?;
+    if persist_series_head_transfer(tx, handle, from_id, to_id, expected_head_t).await? {
         announce_series_transfer(tx, handle, from_id, to_id).await?;
         return Ok(true);
     }
     Ok(false)
 }
 
-/// Cooled stubs change owner and nothing else.
+/// The head compare-and-set, then ONE loop over the declarations.
 ///
-/// Object keys are owner-free (`cold/<t>`), so the bytes a cooled row
-/// points at are already correct for whoever holds the row — the transfer
-/// performs no object-store work at all. This replaced a re-mint that
-/// GET+PUT each cold object to a destination-derived key and then deleted
-/// the source copy, which made an owner move O(bytes), non-atomic with the
-/// row write, and dependent on the object store being up.
-async fn rehome_cooled_for_handle(
+/// The CAS is the reason `memory_head` is a declared bespoke transfer leg
+/// and not a generated one: its `rows_affected` is what DECIDES whether the
+/// transfer happened. Zero means either the head advanced under us — a
+/// retryable race — or the series left the owner entirely, which is the
+/// clean `false`. No generated `UPDATE ... WHERE key = ANY($1)` can carry
+/// that question, and the two races that hang off the answer are the ones
+/// `owner_transfer.rs` exists to pin.
+///
+/// Everything after it used to be eight hand-written statements over eight
+/// remembered tables: `memory`, `sketch`, a registry walk for projections,
+/// three identical embedding UPDATEs differing only in a table name, and a
+/// `DELETE FROM ingest_keys`. `cooled` was a ninth, run earlier still.
+/// They are now one loop over `OwnerSurfaces::generated_transfer_legs()`,
+/// in table order, and the tables come from the contract:
+///
+/// - [`TransferLeg::Rehomed`] sets every declared owner column of the
+///   surface, selecting on the column the key names against the series' `t`
+///   set. That is `Follow` × `MemoryT`/`EntityT`, and it covers `cooled`,
+///   `memory`, `sketch`, the three embedding tables and EVERY flavor's
+///   projection with one statement shape.
+/// - [`TransferLeg::Dropped`] deletes them, which is `Drop` — one member,
+///   `ingest_keys`, whose receipt proves admission by the SOURCE and does
+///   not travel.
+///
+/// What this stops being able to happen: a flavor adding a `Follow` surface
+/// and it silently not following. The surface is in the loop because it is
+/// in the contract; a surface the loop cannot reach is
+/// `FlavorRegistryError::UnmovableSurface` at boot.
+///
+/// Owner-pinned sidecars are still deliberately untouched — but now by
+/// their DECLARATION rather than by a comment. `mcp_call_logged_v1` carries
+/// `actor_upn` and its own `owner_id`, stamped with the owner that made the
+/// call; `TransferRule::RetainAtSource` resolves to `TransferLeg::Retained`,
+/// which is not in `generated_transfer_legs()`, so no statement reaches it.
+/// The source keeps answering "what did my agents do" after giving the
+/// memory away. The eight-line comment that used to be the only thing
+/// standing here is now a value freeze can refuse.
+async fn persist_series_head_transfer(
     tx: &mut Transaction<'_, Postgres>,
-    handle: uuid::Uuid,
-    from_id: uuid::Uuid,
-    to_id: uuid::Uuid,
-) -> Result<(), StorageError> {
-    sqlx::query(
-        "UPDATE proxima_core.cooled
-            SET owner_id = $3
-          WHERE handle = $1 AND owner_id = $2",
-    )
-    .bind(handle)
-    .bind(from_id)
-    .bind(to_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(())
-}
-
-async fn persist_hot_series_transfer(
-    tx: &mut Transaction<'_, Postgres>,
-    projection_tables: &[String],
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     to_id: uuid::Uuid,
     expected_head_t: uuid::Uuid,
-    ts: &[uuid::Uuid],
 ) -> Result<bool, StorageError> {
     let head = sqlx::query(
         "UPDATE proxima_core.memory_head
@@ -660,53 +716,99 @@ async fn persist_hot_series_transfer(
         }
         return Ok(false);
     }
-    sqlx::query(
-        "UPDATE proxima_core.memory
-            SET owner_id = $3
-          WHERE handle = $1 AND owner_id = $2",
-    )
-    .bind(handle)
-    .bind(from_id)
-    .bind(to_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    sqlx::query("UPDATE proxima_core.sketch SET owner_id = $2 WHERE t = ANY($1::uuid[])")
-        .bind(ts)
-        .bind(to_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    // The projection is the first memory-keyed surface with its own
-    // `owner_id`, so it is the first that does not follow implicitly. The
-    // list is the frozen sidecar registry's, never a literal: a flavor that
-    // declares a projection follows for free.
-    for table in projection_tables {
-        // SQL-POLICY: generated
-        sqlx::query(sqlx::AssertSqlSafe(
-            crate::projection::projection_transfer_sql(table)?,
-        ))
-        .bind(ts)
-        .bind(to_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    }
-    follow_embedding_owners(tx, ts, to_id).await?;
-    // NOTE: owner-pinned sidecars are deliberately untouched here.
-    // `mcp_call_logged_v1` carries `actor_upn` and its own `owner_id`,
-    // stamped with the owner that made the call. It stays where it is: the
-    // source keeps answering "what did my agents do" after giving the
-    // Memory away, and the destination never sees it, because every read of
-    // it filters on the sidecar's own owner. Deleting the rows here — the
-    // shape this replaced — destroyed history that both the source's own
-    // erase and its own export are entitled to reach.
-    sqlx::query("DELETE FROM proxima_core.ingest_keys WHERE t = ANY($1::uuid[])")
-        .bind(ts)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
     Ok(true)
+}
+
+/// ONE loop over the declarations, in table order.
+///
+/// This was nine hand-written statements over nine remembered tables:
+/// `cooled`, `memory`, `sketch`, three embedding UPDATEs differing only in
+/// a table name, a registry walk for projections, and a `DELETE FROM
+/// ingest_keys`. Every one of them is now a `TransferLeg` the flavor that
+/// declared the surface resolved at registry time.
+///
+/// What stops being able to happen: a flavor adding a `Follow` surface and
+/// it silently not following. The surface is in this loop because it is in
+/// the contract, and a surface this loop cannot reach is
+/// `FlavorRegistryError::UnmovableSurface` at boot rather than a row the
+/// source owner can still read after the memory became someone else's.
+///
+/// Owner-pinned sidecars are still untouched — but now BY THEIR
+/// DECLARATION rather than by a comment. `mcp_call_logged_v1` carries
+/// `actor_upn` and its own `owner_id`, stamped with the owner that made the
+/// call; `RetainAtSource` resolves to `TransferLeg::Retained`, which is not
+/// in `generated_transfer_legs()`, so no statement reaches it. The source
+/// keeps answering "what did my agents do" after giving the memory away.
+/// The eight-line comment that used to be the only thing standing here is a
+/// value freeze can refuse.
+async fn run_generated_transfer_legs(
+    tx: &mut Transaction<'_, Postgres>,
+    surfaces: &OwnerSurfaces,
+    to_id: uuid::Uuid,
+    ts: &[uuid::Uuid],
+) -> Result<(), StorageError> {
+    for (table, leg) in surfaces.generated_transfer_legs() {
+        // SQL-POLICY: generated
+        sqlx::query(sqlx::AssertSqlSafe(series_leg_sql(table, leg)?))
+            .bind(ts)
+            .bind(to_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
+    }
+    Ok(())
+}
+
+/// The statement one generated transfer leg runs, over the series' `t` set.
+///
+/// Two shapes, both `$1` = the `t` array and `$2` = the destination owner.
+/// `Dropped` binds `$2` and never reads it, which costs a bind and buys one
+/// call site instead of two — the alternative was a second loop whose only
+/// difference is a verb.
+///
+/// Every identifier substituted here is a `&'static str` from a `const`
+/// contract that `try_freeze` has already validated, and every one is
+/// additionally checked against `information_schema` by
+/// `flavor_contract_acceptance::every_column_a_declaration_names_is_a_column_the_catalog_has`.
+/// `PgIdent` is the belt to that suspenders: it is what makes the
+/// substitution `%I`-equivalent rather than merely well-intentioned.
+fn series_leg_sql(table: &str, leg: TransferLeg) -> Result<String, StorageError> {
+    let table = crate::pg_ident::PgIdent::table(table)?;
+    match leg {
+        TransferLeg::Rehomed {
+            key_column,
+            owner_columns,
+        } => {
+            let mut sets = Vec::with_capacity(owner_columns.len());
+            for column in owner_columns {
+                sets.push(format!(
+                    "{} = $2",
+                    crate::pg_ident::PgIdent::column(column)?.as_str()
+                ));
+            }
+            let key = crate::pg_ident::PgIdent::column(key_column)?;
+            // SQL-POLICY: PgIdent
+            Ok(format!(
+                "UPDATE {} SET {} WHERE {} = ANY($1::uuid[])",
+                table.as_str(),
+                sets.join(", "),
+                key.as_str()
+            ))
+        }
+        TransferLeg::Dropped { key_column, .. } => {
+            let key = crate::pg_ident::PgIdent::column(key_column)?;
+            // SQL-POLICY: PgIdent
+            Ok(format!(
+                "DELETE FROM {} WHERE {} = ANY($1::uuid[]) AND $2::uuid IS NOT NULL",
+                table.as_str(),
+                key.as_str()
+            ))
+        }
+        other => Err(StorageError::Internal(format!(
+            "{} resolved to {other:?}, which is not a generated transfer leg",
+            table.as_str()
+        ))),
+    }
 }
 
 /// One `'transfer'` announce row per lane, same series `(handle, head t)`:
@@ -776,10 +878,12 @@ async fn announce_series_transfer(
 /// reconcile.
 async fn transfer_cited_blobs(
     tx: &mut Transaction<'_, Postgres>,
+    surfaces: &OwnerSurfaces,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     to_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
+    let leg = dedupe_leg(surfaces, BLOB_SURFACE)?;
     let blob_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
         "SELECT blob_id
            FROM proxima_core.memory
@@ -795,18 +899,104 @@ async fn transfer_cited_blobs(
     .await
     .map_err(map_err)?;
     for blob_id in blob_ids {
-        transfer_one_cited_blob(tx, handle, to_id, blob_id).await?;
+        transfer_one_cited_blob(tx, leg, handle, to_id, blob_id).await?;
     }
     Ok(())
+}
+
+/// The tables whose transfer is `FollowOrDedupe`, named where the
+/// orchestration lives rather than inside it.
+const BLOB_SURFACE: &str = "proxima_core.blob";
+const CONTENT_SURFACE: &str = "proxima_core.content";
+
+/// The registry-resolved dedupe leg for one surface, or a typed refusal.
+///
+/// `freeze` has already proved this resolves — a `FollowOrDedupe` surface
+/// that is not in the flavor's bespoke list is `UnmovableSurface` at boot —
+/// so the error arm is reachable only from a hand-assembled registry, and
+/// refusing is the honest answer there.
+fn dedupe_leg(surfaces: &OwnerSurfaces, table: &str) -> Result<TransferLeg, StorageError> {
+    match surfaces.transfer_leg(table) {
+        leg @ TransferLeg::Deduped { .. } => Ok(leg),
+        other => Err(StorageError::Internal(format!(
+            "{table} resolved to {other:?}; this statement serves the dedupe arm"
+        ))),
+    }
+}
+
+/// The `SELECT` that answers "does the destination already hold these
+/// bytes", generated from the surface's declared `dedupe_key`.
+///
+/// The key is not decoration: it is the UNIQUE constraint the move would
+/// collide with, which is exactly why the arm exists. Declaring it and then
+/// hardcoding the same three columns in SQL is how the two drift, and
+/// `every_dedupe_key_is_a_uniqueness_the_schema_enforces` now asks
+/// `pg_constraint` whether each declared key really is one.
+///
+/// The bind order is the declared column order, and the caller binds
+/// exactly `dedupe_key.len()` values — a key of a different length is a
+/// contract change that fails here rather than silently matching the wrong
+/// row.
+fn dedupe_lookup_sql(
+    table: &str,
+    key_column: &str,
+    dedupe_key: &[&'static str],
+) -> Result<String, StorageError> {
+    let table = crate::pg_ident::PgIdent::table(table)?;
+    let key = crate::pg_ident::PgIdent::column(key_column)?;
+    let mut predicates = Vec::with_capacity(dedupe_key.len());
+    for (n, column) in dedupe_key.iter().enumerate() {
+        predicates.push(format!(
+            "{} = ${}",
+            crate::pg_ident::PgIdent::column(column)?.as_str(),
+            n + 1
+        ));
+    }
+    // SQL-POLICY: PgIdent
+    Ok(format!(
+        "SELECT {} FROM {} WHERE {}",
+        key.as_str(),
+        table.as_str(),
+        predicates.join(" AND ")
+    ))
+}
+
+/// One referring column repointed from the old row to the new one,
+/// generated from the surface's declared `remaps`.
+///
+/// Scoped by `handle` and not by owner: the hot rows have not changed hands
+/// at this point in the transfer, and the cooled rows change hands in the
+/// generated re-home later in the same transaction. Scoping by owner here
+/// would remap nothing or everything depending on the order.
+fn remap_sql(entry: &str) -> Result<String, StorageError> {
+    let (table, column) = entry
+        .split_once('.')
+        .ok_or_else(|| StorageError::Internal(format!("remap {entry} is not <table>.<column>")))?;
+    let qualified = format!("proxima_core.{table}");
+    let table = crate::pg_ident::PgIdent::table(&qualified)?;
+    let column = crate::pg_ident::PgIdent::column(column)?;
+    // SQL-POLICY: PgIdent
+    Ok(format!(
+        "UPDATE {} SET {} = $3 WHERE handle = $1 AND {} = $2",
+        table.as_str(),
+        column.as_str(),
+        column.as_str()
+    ))
 }
 
 /// One cited blob, one of the three cases.
 async fn transfer_one_cited_blob(
     tx: &mut Transaction<'_, Postgres>,
+    leg: TransferLeg,
     handle: uuid::Uuid,
     to_id: uuid::Uuid,
     blob_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
+    let TransferLeg::Deduped { dedupe_key, remaps } = leg else {
+        return Err(StorageError::Internal(
+            "the cited-blob statement serves the dedupe arm".into(),
+        ));
+    };
     let Some((schema_id, content_hash)) = sqlx::query_as::<_, (String, Vec<u8>)>(
         "SELECT schema_id, content_hash FROM proxima_core.blob WHERE blob_id = $1",
     )
@@ -818,12 +1008,15 @@ async fn transfer_one_cited_blob(
         return Ok(());
     };
 
-    // Case 1: the destination already owns an identical row.
-    let existing: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT blob_id
-           FROM proxima_core.blob
-          WHERE owner_id = $1 AND schema_id = $2 AND content_hash = $3",
-    )
+    // Case 1: the destination already owns an identical row. The three
+    // columns compared are `blob`'s declared `dedupe_key`, read off the
+    // contract rather than restated here.
+    // SQL-POLICY: generated
+    let existing: Option<uuid::Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(dedupe_lookup_sql(
+        BLOB_SURFACE,
+        "blob_id",
+        dedupe_key,
+    )?))
     .bind(to_id)
     .bind(&schema_id)
     .bind(&content_hash)
@@ -832,7 +1025,7 @@ async fn transfer_one_cited_blob(
     .map_err(map_err)?;
     if let Some(dest_blob_id) = existing {
         if dest_blob_id != blob_id {
-            remap_handle_blob_refs(tx, handle, blob_id, dest_blob_id).await?;
+            remap_handle_refs(tx, remaps, handle, blob_id, dest_blob_id).await?;
         }
         return Ok(());
     }
@@ -867,7 +1060,16 @@ async fn transfer_one_cited_blob(
         return move_blob_rows_in_place(tx, blob_id, to_id).await;
     }
 
-    mount_blob_for_destination(tx, handle, to_id, blob_id, &schema_id, &content_hash).await
+    mount_blob_for_destination(
+        tx,
+        remaps,
+        handle,
+        to_id,
+        blob_id,
+        &schema_id,
+        &content_hash,
+    )
+    .await
 }
 
 /// Case 2: the rows change hands, the object does not move, nothing is
@@ -901,6 +1103,7 @@ async fn move_blob_rows_in_place(
 /// Case 3: the destination gets its own row over the source's object.
 async fn mount_blob_for_destination(
     tx: &mut Transaction<'_, Postgres>,
+    remaps: &'static [&'static str],
     handle: uuid::Uuid,
     to_id: uuid::Uuid,
     blob_id: uuid::Uuid,
@@ -946,49 +1149,41 @@ async fn mount_blob_for_destination(
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
-    remap_handle_blob_refs(tx, handle, blob_id, dest_blob_id).await
+    remap_handle_refs(tx, remaps, handle, blob_id, dest_blob_id).await
 }
 
-/// Repoint this series' citations from one blob row to another.
+/// Repoint this series' referring columns from one row to another.
 ///
-/// Scoped by `handle` and not by owner: the hot rows have not changed
-/// hands yet at this point in the transfer, and the cooled rows change
-/// hands later in the same transaction. Scoping by owner here would remap
-/// nothing or everything depending on the order.
+/// This used to be `remap_handle_blob_refs`, two hand-written `UPDATE`s
+/// over `memory` and `cooled`, under a doc comment that said "This is
+/// `TransferRule::FollowOrDedupe { remaps }` executed" — prose above a
+/// function that executed nothing of the sort. The declaration named three
+/// columns and the function performed two, and they agreed about the other
+/// two only by coincidence, because nothing connected them.
 ///
-/// This is `TransferRule::FollowOrDedupe { remaps }` executed. The
-/// declaration lists the columns this crate can see; the citation sidecars
-/// that point at a blob by convention rather than by constraint are
-/// checked at freeze instead, because a flavor that declared one would
-/// need a remap this function cannot write.
-async fn remap_handle_blob_refs(
+/// Now `remaps` IS the loop. The declaration lists the referring columns
+/// this crate can see; columns that point at the row by convention rather
+/// than by constraint — every flavor's cited-object and citation-mapping
+/// sidecars point at a `blob_id` with no SQL FK — cannot be listed there,
+/// because the flavor declaring them is not the flavor declaring this
+/// surface, and the freeze check for citation sidecars covers those.
+async fn remap_handle_refs(
     tx: &mut Transaction<'_, Postgres>,
+    remaps: &'static [&'static str],
     handle: uuid::Uuid,
-    from_blob_id: uuid::Uuid,
-    to_blob_id: uuid::Uuid,
+    from_id: uuid::Uuid,
+    to_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    sqlx::query(
-        "UPDATE proxima_core.memory
-            SET blob_id = $3
-          WHERE handle = $1 AND blob_id = $2",
-    )
-    .bind(handle)
-    .bind(from_blob_id)
-    .bind(to_blob_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    sqlx::query(
-        "UPDATE proxima_core.cooled
-            SET blob_id = $3
-          WHERE handle = $1 AND blob_id = $2",
-    )
-    .bind(handle)
-    .bind(from_blob_id)
-    .bind(to_blob_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
+    for entry in remaps {
+        // SQL-POLICY: generated
+        sqlx::query(sqlx::AssertSqlSafe(remap_sql(entry)?))
+            .bind(handle)
+            .bind(from_id)
+            .bind(to_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
+    }
     Ok(())
 }
 
@@ -997,10 +1192,14 @@ async fn remap_handle_blob_refs(
 /// series is remapped.
 async fn transfer_content_for_handle(
     tx: &mut Transaction<'_, Postgres>,
+    surfaces: &OwnerSurfaces,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     to_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
+    let TransferLeg::Deduped { remaps, .. } = dedupe_leg(surfaces, CONTENT_SURFACE)? else {
+        unreachable!("dedupe_leg returns only the Deduped arm");
+    };
     let rows: Vec<(uuid::Uuid, String, Vec<u8>)> = sqlx::query_as(
         "SELECT DISTINCT c.content_id, c.schema_id, c.content_hash
            FROM proxima_core.content c
@@ -1032,65 +1231,16 @@ async fn transfer_content_for_handle(
                 .await
                 .map_err(map_err)?;
         } else {
-            sqlx::query(
-                "UPDATE proxima_core.memory
-                    SET content_id = $3
-                  WHERE handle = $1 AND owner_id = $2 AND content_id = $4",
-            )
-            .bind(handle)
-            .bind(from_id)
-            .bind(new_id)
-            .bind(old_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-            sqlx::query(
-                "UPDATE proxima_core.cooled
-                    SET content_id = $3
-                  WHERE handle = $1 AND owner_id = $2 AND content_id = $4",
-            )
-            .bind(handle)
-            .bind(from_id)
-            .bind(new_id)
-            .bind(old_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
+            // The same generated remap the blob arm runs, off `content`'s
+            // own declared `remaps`. It was two hand-written UPDATEs that
+            // also filtered `owner_id = from`; dropping that filter changes
+            // nothing, because this runs BEFORE the generated re-home, so
+            // every row of the handle is still the source's — and the
+            // differential is what proves it rather than this comment.
+            remap_handle_refs(tx, remaps, handle, old_id, new_id).await?;
             crate::verbs::content::gc_unreferenced_content(tx, old_id).await?;
         }
     }
-    Ok(())
-}
-
-async fn follow_embedding_owners(
-    tx: &mut Transaction<'_, Postgres>,
-    ts: &[uuid::Uuid],
-    to_id: uuid::Uuid,
-) -> Result<(), StorageError> {
-    sqlx::query(
-        "UPDATE proxima_core.embeddings SET owner_id = $2 WHERE entity_id = ANY($1::uuid[])",
-    )
-    .bind(ts)
-    .bind(to_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    sqlx::query(
-        "UPDATE proxima_core.embedding_heads SET owner_id = $2 WHERE entity_id = ANY($1::uuid[])",
-    )
-    .bind(ts)
-    .bind(to_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    sqlx::query(
-        "UPDATE proxima_core.embedding_jobs SET owner_id = $2 WHERE entity_id = ANY($1::uuid[])",
-    )
-    .bind(ts)
-    .bind(to_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
     Ok(())
 }
 
@@ -1119,4 +1269,241 @@ pub(crate) async fn home_owner(
     .map_err(map_err)?;
 
     Ok(row.map(|(kind, id)| kind.with_uuid(id)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proxima_core::flavor::TransferRule;
+
+    fn shipped() -> OwnerSurfaces {
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        OwnerSurfaces::for_registry(&registry)
+    }
+
+    /// The substrate half of the transfer partition's completeness, and the
+    /// exact counterpart of `owner_erase`'s
+    /// `every_declared_surface_has_a_leg_this_crate_can_run`.
+    ///
+    /// Freeze decides in core that every surface reaches SOME leg. What core
+    /// cannot know is whether THIS crate can execute the answer: a `Rehomed`
+    /// leg whose SQL this file declines to build would be skipped in exactly
+    /// the way freeze now prevents flavor-side. So every generated leg is
+    /// asked for its statement here, and every non-generated one must be a
+    /// table a named site in this file claims.
+    #[test]
+    fn every_declared_surface_has_a_transfer_leg_this_crate_can_run() {
+        let surfaces = shipped();
+        assert!(
+            surfaces.surfaces().len() > 20,
+            "the registry should carry the whole core contract, got {}",
+            surfaces.surfaces().len()
+        );
+        for surface in surfaces.surfaces() {
+            match surfaces.transfer_leg(surface.table) {
+                TransferLeg::Unreachable => panic!(
+                    "{} resolves to Unreachable, which freeze should have refused",
+                    surface.table
+                ),
+                leg @ (TransferLeg::Rehomed { .. } | TransferLeg::Dropped { .. }) => {
+                    series_leg_sql(surface.table, leg).unwrap_or_else(|e| {
+                        panic!(
+                            "{} is a generated leg this crate cannot build: {e}",
+                            surface.table
+                        )
+                    });
+                }
+                TransferLeg::Deduped { .. } => assert!(
+                    [BLOB_SURFACE, CONTENT_SURFACE].contains(&surface.table),
+                    "{} is a dedupe leg no site in this file orchestrates",
+                    surface.table
+                ),
+                TransferLeg::Bespoke => assert!(
+                    ["proxima_core.memory_head", "proxima_core.blob_uploads"]
+                        .contains(&surface.table),
+                    "{} claims a bespoke transfer leg this file does not write",
+                    surface.table
+                ),
+                TransferLeg::StaysOnKey
+                | TransferLeg::Retained { .. }
+                | TransferLeg::Refused { .. } => {}
+            }
+        }
+    }
+
+    /// The generated set only ever contains the two legs that are statements.
+    /// A `StaysOnKey` surface appearing here would run an `UPDATE` over rows
+    /// whose owner is already correct by construction.
+    #[test]
+    fn the_generated_set_is_exactly_the_legs_that_are_statements() {
+        let surfaces = shipped();
+        let generated = surfaces.generated_transfer_legs();
+        assert!(!generated.is_empty(), "the core spine has rows that move");
+        for (table, leg) in &generated {
+            assert!(
+                matches!(
+                    leg,
+                    TransferLeg::Rehomed { .. } | TransferLeg::Dropped { .. }
+                ),
+                "{table} is in the generated set as {leg:?}"
+            );
+        }
+        let mut tables: Vec<&str> = generated.iter().map(|(table, _)| *table).collect();
+        let sorted = {
+            let mut copy = tables.clone();
+            copy.sort_unstable();
+            copy
+        };
+        assert_eq!(tables, sorted, "the generated legs run in table order");
+        tables.dedup();
+        assert_eq!(tables.len(), generated.len(), "one leg per table");
+    }
+
+    /// A rehome sets EVERY declared owner column, not just the first.
+    ///
+    /// `announce` and `receipt` carry one; the surface type permits more, and
+    /// a generator that quietly used `owner_columns[0]` would leave the rest
+    /// pointing at the source owner.
+    #[test]
+    fn a_rehomed_leg_sets_every_owner_column_the_surface_declares() {
+        let sql = series_leg_sql(
+            "test_flavor.thing",
+            TransferLeg::Rehomed {
+                key_column: "t",
+                owner_columns: &["owner_id", "custodian_id"],
+            },
+        )
+        .expect("a rehome is generated");
+        assert_eq!(
+            sql,
+            "UPDATE test_flavor.thing SET owner_id = $2, custodian_id = $2 \
+             WHERE t = ANY($1::uuid[])"
+        );
+    }
+
+    /// Both generated shapes bind the same two parameters in the same order,
+    /// which is what lets `run_generated_transfer_legs` be one loop.
+    #[test]
+    fn a_dropped_leg_binds_the_same_two_parameters_as_a_rehome() {
+        let sql = series_leg_sql(
+            "test_flavor.thing",
+            TransferLeg::Dropped {
+                key_column: "t",
+                why: "unused here",
+            },
+        )
+        .expect("a drop is generated");
+        assert_eq!(
+            sql,
+            "DELETE FROM test_flavor.thing WHERE t = ANY($1::uuid[]) \
+             AND $2::uuid IS NOT NULL"
+        );
+    }
+
+    /// The legs that are not statements are refused rather than approximated.
+    #[test]
+    fn a_leg_that_is_not_a_statement_is_refused_not_guessed() {
+        for leg in [
+            TransferLeg::StaysOnKey,
+            TransferLeg::Bespoke,
+            TransferLeg::Unreachable,
+            TransferLeg::Retained { why: "x" },
+            TransferLeg::Refused { why: "x" },
+        ] {
+            assert!(
+                series_leg_sql("test_flavor.thing", leg).is_err(),
+                "{leg:?} produced a statement"
+            );
+        }
+    }
+
+    /// The lookup's placeholders follow the DECLARED column order, because
+    /// that is the order the caller binds in.
+    #[test]
+    fn the_dedupe_lookup_numbers_placeholders_in_declared_order() {
+        let sql = dedupe_lookup_sql(
+            "proxima_core.blob",
+            "blob_id",
+            &["owner_id", "schema_id", "content_hash"],
+        )
+        .expect("the declared key generates");
+        assert_eq!(
+            sql,
+            "SELECT blob_id FROM proxima_core.blob WHERE owner_id = $1 \
+             AND schema_id = $2 AND content_hash = $3"
+        );
+    }
+
+    /// A remap names the REFERRING table, which is not the surface being
+    /// deduped: `blob`'s remaps are columns on `memory` and `cooled`.
+    #[test]
+    fn a_remap_repoints_the_referring_table_not_the_surface() {
+        assert_eq!(
+            remap_sql("cooled.blob_id").expect("a remap generates"),
+            "UPDATE proxima_core.cooled SET blob_id = $3 \
+             WHERE handle = $1 AND blob_id = $2"
+        );
+        assert!(
+            remap_sql("blob_id").is_err(),
+            "a remap without a table half is not a remap"
+        );
+    }
+
+    /// Every `remaps` entry flavor #0 declares generates, and every one names
+    /// a table other than its own surface.
+    #[test]
+    fn every_declared_remap_generates_a_statement() {
+        let mut seen = 0;
+        for surface in shipped().surfaces() {
+            let TransferRule::FollowOrDedupe { remaps, .. } = surface.transfer else {
+                continue;
+            };
+            for entry in remaps {
+                remap_sql(entry)
+                    .unwrap_or_else(|e| panic!("{} declares remap {entry}: {e}", surface.table));
+                let (table, _) = entry.split_once('.').expect("checked by remap_sql");
+                assert_ne!(
+                    format!("proxima_core.{table}"),
+                    surface.table,
+                    "a remap repoints a REFERRING column, not the surface's own"
+                );
+                seen += 1;
+            }
+        }
+        assert_eq!(
+            seen, 4,
+            "blob and content each declare two referring columns"
+        );
+    }
+
+    /// Goals refuse by DECLARATION, and the refusal quotes the declared
+    /// reason rather than a message written next to the `if`.
+    #[test]
+    fn the_goal_refusal_carries_the_declared_reason() {
+        let surfaces = shipped();
+        let TransferLeg::Refused { why } = surfaces.transfer_leg(GOAL_SPINE) else {
+            panic!("the goal spine declares NotTransferable");
+        };
+        let StorageError::ConstraintViolation(message) =
+            refuse_untransferable_entity(&surfaces, GOAL_SPINE)
+        else {
+            panic!("an untransferable entity is a constraint the substrate holds");
+        };
+        let headline = why.split_once(':').map_or(why, |(head, _)| head);
+        assert!(
+            message.ends_with(headline),
+            "the refusal ({message}) should carry the declaration's headline ({headline})"
+        );
+        assert_eq!(
+            message, "goals do not transfer: a goal series cannot change owner",
+            "and the wire text is pinned, because the differential golden reads it"
+        );
+
+        // A table nothing declares untransferable falls to Internal rather
+        // than borrowing the goal wording.
+        assert!(matches!(
+            refuse_untransferable_entity(&surfaces, MEMORY_SPINE),
+            StorageError::Internal(_)
+        ));
+    }
 }

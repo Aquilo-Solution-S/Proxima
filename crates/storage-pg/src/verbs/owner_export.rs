@@ -145,8 +145,41 @@ fn export_statement(surface: &Surface) -> Result<Option<String>, StorageError> {
 }
 
 /// Row order is part of the bundle's bytes, so it comes off the declared
-/// key rather than off whichever column a hand-written statement happened to
-/// name. Every declared key is unique, so every generated order is total.
+/// key rather than off whichever column a hand-written statement happened
+/// to name.
+///
+/// THE ORDER IS NOT ALWAYS TOTAL, and this comment claimed it was ("every
+/// declared key is unique, so every generated order is total"). Measured
+/// against a migrated catalog, five of flavor #0's twenty-eight declared
+/// keys are backed by no unique index — `embeddings`, `embedding_heads` and
+/// `embedding_jobs` on `entity_id`, `projection` on `memory_id`, and
+/// `ingest_keys` on `t`, whose primary key is
+/// `(owner_id, source_id, ingest_key)`.
+///
+/// Four of the five are `ExportRule::Excluded`, so they never reach this
+/// function. `ingest_keys` is `ExportRule::Rows`, and it is the one that
+/// matters: one memory may hold several admission receipts — a different
+/// `(source_id, ingest_key)` pair each — and for those rows
+/// `ORDER BY s.t` leaves the bundle's byte order to whatever the executor
+/// returns. `every_declared_key_that_is_unique_is_unique_in_the_catalog`
+/// pins that set, so this stops being a claim and starts being a fact with
+/// a recorded exception.
+///
+/// THE ERASE IS UNAFFECTED and is not the defect here. `WHERE t = ANY(...)`
+/// destroys every receipt of an erased memory, which is what an erase owes,
+/// and it does not care what order it finds them in.
+///
+/// DECLARED FOLLOW-UP, not fixed here. Making the export order total needs
+/// the surface to carry a tiebreak the erase does not use, because the two
+/// verbs want different things from one `key`: the erase wants the memory
+/// column, the export wants a unique row identity. Appending the remaining
+/// primary key columns after `t` was tried and is byte-preserving wherever
+/// the order was already defined — the whole suite passes and no golden
+/// moves — but a generator that reaches for a table's primary key is a
+/// generator that has to be told the primary key, and inventing the
+/// declaration for it is design work rather than a fix. Also unresolved:
+/// that erase predicate is a `Seq Scan`, since `ingest_keys` carries one
+/// index and it is the primary key.
 fn order_by(surface: &Surface) -> Result<String, StorageError> {
     let mut parts = Vec::new();
     for column in surface.key.columns() {

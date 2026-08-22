@@ -401,3 +401,50 @@ fn the_owner_pinned_set_is_the_contracts_retain_at_source_set() {
         "the pg_sidecar! flag and the contract are two statements of one fact"
     );
 }
+
+/// The second half of the same unification, for the forget.
+///
+/// `ForgetRule::Keep` on a memory sidecar says the forget leaves its rows
+/// alone. Nothing in the forget reads it: both walks — the dump and the
+/// delete — test `is_owner_pinned` and nothing else. So `Keep` is honoured
+/// exactly when the sidecar is also owner-pinned, and `freeze_against`'s
+/// `check_keep_is_owner_pinned` now refuses any registry where the two
+/// disagree in either direction.
+///
+/// This is the literal set as of v0.0.8, and it is the same one line for
+/// line as the transfer sibling above — which is the point.
+/// `mcp_call_logged_v1` is `RetainAtSource` AND `Keep` AND owner-pinned
+/// because all three are the same fact about an audit row: it belongs to the
+/// owner that acted, not to the memory.
+#[test]
+fn the_kept_memory_sidecar_set_is_the_owner_pinned_set() {
+    let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+    let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
+    let sidecars = crate::sidecars::core_pg_sidecars();
+
+    let expected = vec!["proxima_core.mcp_call_logged_v1".to_owned()];
+
+    let kept = sidecars
+        .memory_sidecar_tables()
+        .into_iter()
+        .filter(|table| {
+            matches!(
+                surfaces.forget_leg(table),
+                proxima_core::flavor::ForgetLeg::Kept { .. }
+            )
+        })
+        .map(ToOwned::to_owned)
+        .collect::<Vec<String>>();
+
+    assert_eq!(
+        kept, expected,
+        "core/mcp-call-logged-v1 is the only memory sidecar the forget is \
+         declared to leave alone"
+    );
+    assert_eq!(
+        sidecars.owner_pinned_memory_sidecar_tables(),
+        expected,
+        "and owner-pinning is the only mechanism by which the forget can \
+         honour that declaration"
+    );
+}

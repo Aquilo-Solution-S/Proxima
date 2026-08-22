@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::flavor::{EraseLeg, Surface};
+use crate::flavor::{EraseLeg, ForgetLeg, Surface, TransferLeg};
 use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 
 /// Every relation an owner-scoped erase or export has to answer for, read
@@ -31,6 +31,8 @@ use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 pub struct OwnerSurfaces {
     surfaces: Vec<Surface>,
     legs: BTreeMap<&'static str, EraseLeg>,
+    transfer_legs: BTreeMap<&'static str, TransferLeg>,
+    forget_legs: BTreeMap<&'static str, ForgetLeg>,
 }
 
 impl OwnerSurfaces {
@@ -47,15 +49,24 @@ impl OwnerSurfaces {
     pub fn for_registry(registry: &crate::FlavorRegistryFrozen) -> Self {
         let mut surfaces = Vec::new();
         let mut legs = BTreeMap::new();
+        let mut transfer_legs = BTreeMap::new();
+        let mut forget_legs = BTreeMap::new();
         for contract in registry.contracts() {
             for surface in contract.all_surfaces() {
                 legs.insert(surface.table, contract.erase_leg(&surface));
+                transfer_legs.insert(surface.table, contract.transfer_leg(&surface));
+                forget_legs.insert(surface.table, ForgetLeg::derive(&surface));
                 surfaces.push(surface);
             }
         }
         surfaces.sort_by_key(|surface| surface.table);
         surfaces.dedup_by_key(|surface| surface.table);
-        Self { surfaces, legs }
+        Self {
+            surfaces,
+            legs,
+            transfer_legs,
+            forget_legs,
+        }
     }
 
     /// Build a set from surfaces given directly, with no bespoke legs.
@@ -74,7 +85,20 @@ impl OwnerSurfaces {
             .iter()
             .map(|surface| (surface.table, EraseLeg::derive(surface, &[])))
             .collect();
-        Self { surfaces, legs }
+        let transfer_legs = surfaces
+            .iter()
+            .map(|surface| (surface.table, TransferLeg::derive(surface, &[])))
+            .collect();
+        let forget_legs = surfaces
+            .iter()
+            .map(|surface| (surface.table, ForgetLeg::derive(surface)))
+            .collect();
+        Self {
+            surfaces,
+            legs,
+            transfer_legs,
+            forget_legs,
+        }
     }
 
     /// Every declared surface, ordered by table name.
@@ -97,6 +121,75 @@ impl OwnerSurfaces {
             .unwrap_or(EraseLeg::Unreachable)
     }
 
+    /// Which leg moves `table`'s rows on a transfer, as its declaring
+    /// flavor resolved it at registry time.
+    ///
+    /// [`TransferLeg::Unreachable`] for a table this set does not carry —
+    /// the same answer as a surface nothing moves, because to this set they
+    /// are the same thing. The transfer reads this and never re-derives:
+    /// the whole point of resolving once, where the surface and the flavor
+    /// that declared it are both in scope, is that the boot check and the
+    /// verb cannot disagree.
+    #[must_use]
+    pub fn transfer_leg(&self, table: &str) -> TransferLeg {
+        self.transfer_legs
+            .get(table)
+            .copied()
+            .unwrap_or(TransferLeg::Unreachable)
+    }
+
+    /// What the forget does to `table`, as resolved at registry time.
+    ///
+    /// [`ForgetLeg::Unreachable`] for a table this set does not carry.
+    #[must_use]
+    pub fn forget_leg(&self, table: &str) -> ForgetLeg {
+        self.forget_legs
+            .get(table)
+            .copied()
+            .unwrap_or(ForgetLeg::Unreachable)
+    }
+
+    /// Every surface the forget deletes with a GENERATED statement, in table
+    /// order, paired with the key column it deletes on.
+    ///
+    /// The `Dumped` legs are deliberately NOT here: the row stamp drives
+    /// those, and the stamp is the historical record of what the dump read.
+    /// What is left is the derived rows nothing stamps — the embedding
+    /// triple and the sketch — which were four hand-written statements over
+    /// four `proxima_core.*` literals.
+    #[must_use]
+    pub fn generated_forget_legs(&self) -> Vec<(&'static str, &'static str)> {
+        self.surfaces
+            .iter()
+            .filter_map(|surface| match self.forget_leg(surface.table) {
+                ForgetLeg::Deleted { key_column } => Some((surface.table, key_column)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every surface a transfer moves with a GENERATED statement, in table
+    /// order, paired with the leg that moves it.
+    ///
+    /// The transfer's whole generic input. Ordered by table name so the
+    /// statements a transfer runs are a function of the declarations and
+    /// nothing else — not of hash iteration, not of declaration order
+    /// inside a flavor.
+    #[must_use]
+    pub fn generated_transfer_legs(&self) -> Vec<(&'static str, TransferLeg)> {
+        self.surfaces
+            .iter()
+            .filter_map(|surface| {
+                let leg = self.transfer_leg(surface.table);
+                matches!(
+                    leg,
+                    TransferLeg::Rehomed { .. } | TransferLeg::Dropped { .. }
+                )
+                .then_some((surface.table, leg))
+            })
+            .collect()
+    }
+
     /// Every counter any declared surface contributes to, deduplicated and
     /// ordered. This is the receipt's key set: a count the declarations do
     /// not name cannot appear, and a counter they do name cannot be missing.
@@ -105,7 +198,7 @@ impl OwnerSurfaces {
         let mut counters = self
             .surfaces
             .iter()
-            .filter_map(|surface| surface.counter)
+            .filter_map(|surface| surface.counter.key())
             .collect::<Vec<_>>();
         counters.sort_unstable();
         counters.dedup();

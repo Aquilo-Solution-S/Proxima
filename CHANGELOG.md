@@ -6,21 +6,6 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 
 ## [Unreleased]
 
-### Declared follow-ups
-
-Stated here rather than fixed, because closing either changes behaviour a
-pinned equivalence gate currently proves unchanged.
-
-- **`proxima_core.group_memberships` outlives a personal-owner erase.** Rows
-  naming the erased `member_user_id` survive; they are removed only by
-  `remove_group_member`. Pre-v0.0.8 code behaved identically, so the
-  differential proves parity rather than correctness. Recorded with its
-  reason in `owner_inverse_reach_pg::UNDECLARED_BUT_INTENTIONAL`.
-- **`Surface::counter: None` carries no `why`.** Every other declared
-  absence in the contract states a reason and this one does not, so "feeds
-  no counter" and "nobody said" are the same value — the exact shape the
-  contract's first rule exists to forbid.
-
 ### Features
 - **breaking:** **core**: An undeletable surface is a boot refusal, not a silent skip ([`437593c`](https://github.com/Aquilo-Solution-S/Proxima/commit/437593c2db5f0a499ca0d3ece92297301316620f)). `EraseRule::ByKey` on a key with no home fell through both generic erase loops; the only thing standing between that and a table nothing ever deletes was an exemption list in `proxima-storage-pg`, checked by a test that — because the substrate crate depends on no flavor — could only ever see flavor #0. An out-of-tree flavor could freeze, boot, and report `Completed` over rows that outlived their owner. The five-way partition now lives in freeze, over one classifier (`EraseLeg::derive`) that the boot check and the erase both call, with the bespoke list moved into `FlavorContract` where freeze can read it.
 - **breaking:** **core**: The journal leaves; the erase hands back a receipt ([`879db79`](https://github.com/Aquilo-Solution-S/Proxima/commit/879db79bbba9a7ca7992a697f7b03deb3caaff57)). `compliance_audit_log` and its seventeen counters are gone. An erase returns a map of table to rows destroyed, derived from the same `counter` declarations the surfaces already carried; a declared counter with no derivation is a freeze error. A host that must be able to show what it did records the receipt, which is a promise about its users and therefore theirs to keep.

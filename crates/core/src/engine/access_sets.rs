@@ -781,6 +781,7 @@ pub(in crate::engine) mod tests {
             _permit: &crate::storage_ports::OwnerWritePermit,
             _entity: EntityId,
             _to_owner: OwnerRef,
+            _surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
         ) -> Result<bool, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),

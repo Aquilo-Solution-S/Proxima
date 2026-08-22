@@ -16,6 +16,7 @@ use crate::{PgStorage, verbs};
 struct PgWriteSession {
     tx: Transaction<'static, Postgres>,
     sidecars: PgSidecarRegistryFrozen,
+    surfaces: proxima_core::owner_inverse::OwnerSurfaces,
     cold: Arc<dyn ColdObjectStore>,
 }
 
@@ -26,6 +27,7 @@ impl WriteSessionFactory for PgStorage {
         Ok(Box::new(PgWriteSession {
             tx,
             sidecars: self.sidecars.clone(),
+            surfaces: self.surfaces.clone(),
             cold: Arc::clone(&self.cold),
         }))
     }
@@ -230,6 +232,7 @@ impl WriteSession for PgWriteSession {
         verbs::forget::forget_memory(
             &mut self.tx,
             &self.sidecars,
+            &self.surfaces,
             self.cold.as_ref(),
             &key,
             t,

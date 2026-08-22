@@ -81,18 +81,6 @@ pub async fn upsert_sketch(
     Ok(())
 }
 
-pub async fn delete_sketch(
-    tx: &mut Transaction<'_, Postgres>,
-    t: Uuid,
-) -> Result<(), StorageError> {
-    sqlx::query("DELETE FROM proxima_core.sketch WHERE t = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    Ok(())
-}
-
 pub async fn load_sketches(
     pool: &sqlx::PgPool,
     read_owners: &[OwnerRef],

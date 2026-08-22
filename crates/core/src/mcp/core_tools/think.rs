@@ -4,10 +4,11 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::flavor::Provenance;
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
-use crate::{EdgeKind, InboundPinQuery, MemoryHandleClass, MemoryId};
+use crate::{EdgeKind, GetMemoriesReadRequest, InboundPinQuery, MemoryHandleClass, MemoryId};
 
 const MAX_SEEDS: usize = 8;
 const MAX_DEPTH: u32 = 8;
@@ -273,6 +274,42 @@ fn page_complete(ordered_len: usize, start: usize, limit: u32) -> bool {
     ordered_len > start.saturating_add(usize::try_from(limit).unwrap_or(usize::MAX))
 }
 
+/// One hop of the lineage walk, and the place `Provenance` is spent.
+///
+/// The declaration answers "how is this node's provenance REACHABLE", and
+/// until Phase 4 the walk did not ask: `Ancestors` expanded `origins[]` for
+/// every node, which is right for the two thirds of the vocabulary that
+/// write origins and wrong for the third that does not. A
+/// `PayloadOnly` node has an EMPTY `origins[]` by construction — its
+/// subjects live in payload columns the array never sees — so an
+/// interpretation was a lineage dead end, which is exactly the defect plan
+/// checkpoint 9 named: *"`core_think`'s edge-walk never traverses
+/// interpretation→subject"*.
+///
+/// The three arms, and what each costs:
+///
+/// - `OriginEdges` — expand `origins[]`. Today's behaviour, unchanged.
+/// - `PayloadOnly { subject_columns }` — load the node's payload and take
+///   the references whose declared FIELD is one of the named columns. No
+///   new statement and no new port: `SidecarPayload::references()` already
+///   carries the field name each reference came from, and
+///   `subject_columns` is what picks the grounding ones out of the rest.
+/// - `None` — nothing. The row cannot have origins anyway when it is a
+///   Fact (`memory_fact_origins_chk`), and when it is not, the declaration
+///   is the claim that it derives from nothing.
+///
+/// A schema no contract declares is treated as `OriginEdges`. That is a
+/// deliberate fail-OPEN: a registration without a contract must not make
+/// its memories invisible to the walk, and showing a pin whose declaration
+/// nobody wrote is a smaller wrong than hiding one.
+///
+/// `Descendants` is deliberately NOT symmetric under the gate. Its inverse
+/// question — "which nodes name me in a declared subject column" — has no
+/// index to answer it: `_references` is discarded at ingest
+/// (`storage-pg/src/verbs/fact_ingest.rs`), so there is no reference table,
+/// and `interpretation_v1.subject_memory_ids` carries no GIN index. It
+/// would be a sequential scan per hop. The asymmetry is stated here rather
+/// than hidden: descendants find what pinned you, not what named you.
 async fn next_hop(
     engine: &crate::Engine,
     ctx: &McpToolCtx,
@@ -282,7 +319,19 @@ async fn next_hop(
     match direction {
         ThinkDirection::Ancestors => {
             let pins = engine.pin_nodes(&ctx.authz, frontier).await?;
-            Ok(pins.into_iter().flat_map(|node| node.origins).collect())
+            let mut ancestors = Vec::new();
+            let mut grounded: Vec<(MemoryId, &'static [&'static str])> = Vec::new();
+            for node in pins {
+                match ctx.registry.provenance_of(&node.schema_id, node.kind) {
+                    None | Some(Provenance::OriginEdges) => ancestors.extend(node.origins),
+                    Some(Provenance::PayloadOnly { subject_columns }) => {
+                        grounded.push((node.id, subject_columns));
+                    }
+                    Some(Provenance::None) => {}
+                }
+            }
+            ancestors.extend(payload_subjects(engine, ctx, &grounded).await?);
+            Ok(ancestors)
         }
         ThinkDirection::Descendants => {
             let inbound = engine
@@ -301,6 +350,48 @@ async fn next_hop(
         }
         ThinkDirection::EpisodeSiblings => Ok(Vec::new()),
     }
+}
+
+/// The subjects a `PayloadOnly` node grounds in, read through the payload
+/// fields its schema declares.
+///
+/// `get_memories` is the same owner-scoped read `core_get_memories` uses,
+/// so a subject the caller may not see is not returned and the walk simply
+/// does not reach it — the ordinary shape of an absent node, not a redaction.
+async fn payload_subjects(
+    engine: &crate::Engine,
+    ctx: &McpToolCtx,
+    grounded: &[(MemoryId, &'static [&'static str])],
+) -> Result<Vec<MemoryId>, McpToolError> {
+    if grounded.is_empty() {
+        return Ok(Vec::new());
+    }
+    let response = engine
+        .get_memories(
+            &ctx.authz,
+            &GetMemoriesReadRequest {
+                memory_ids: grounded.iter().map(|(id, _)| *id).collect(),
+            },
+        )
+        .await?;
+    let declared: std::collections::HashMap<MemoryId, &'static [&'static str]> =
+        grounded.iter().copied().collect();
+    let mut subjects = Vec::new();
+    for snapshot in response.memories {
+        let (Some(columns), Some(payload)) =
+            (declared.get(&snapshot.memory_id), snapshot.payload.as_ref())
+        else {
+            continue;
+        };
+        for reference in payload.references() {
+            if columns.contains(&reference.field)
+                && let Some(id) = reference.target.memory_id()
+            {
+                subjects.push(id);
+            }
+        }
+    }
+    Ok(subjects)
 }
 
 async fn hydrate_sketches(

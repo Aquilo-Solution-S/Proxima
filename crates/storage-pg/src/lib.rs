@@ -708,10 +708,49 @@ async fn ensure_pgvector_runtime_compatible(
     Ok(())
 }
 
+/// Flavor #0's surfaces resolved THROUGH A REGISTRY, which is the only way
+/// they resolve correctly.
+///
+/// `OwnerSurfaces::from_surfaces` is a test seam, and says so on itself: it
+/// classifies every surface against an EMPTY bespoke list, because a surface
+/// handed over loose has no contract to have exempted it. Flavor #0's
+/// surfaces are not loose — they belong to a contract with a bespoke list —
+/// so classifying them that way gets the legs wrong, silently. `memory` and
+/// `cooled` come back `Keyed` instead of `Bespoke`, and `blob` and `content`
+/// come back `Unreachable` instead of `Deduped`; the freeze-time validation
+/// that a bespoke leg has a home never runs against them.
+///
+/// `for_registry` over a registry holding flavor #0 alone is the same shape
+/// the code flavor's `flavor_surfaces()` uses, and it is what `with_flavors`
+/// does once a host widens the set. This is the un-widened case, not a
+/// different kind of answer.
+fn flavor_0_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    // A fresh registry holds flavor #0 and nothing else, and flavor #0 is a
+    // `const` contract this crate compiles against. There is no input here
+    // for a freeze to reject.
+    let registry = proxima_core::FlavorRegistry::new()
+        .try_freeze()
+        .expect("flavor #0 alone freezes: it is the only contract in a fresh registry");
+    proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry)
+}
+
 #[derive(Clone)]
 pub struct PgStorage {
     pool: PgPool,
     sidecars: PgSidecarRegistryFrozen,
+    /// The declared surfaces, resolved into legs once.
+    ///
+    /// Defaults to flavor #0's, exactly as `sidecars` defaults to
+    /// `core_pg_sidecars()`: a storage built without `with_flavors` still
+    /// forgets the kernel's derived rows, which is what the four hardcoded
+    /// `DELETE`s this replaced did unconditionally. `with_flavors` widens
+    /// it to every registered flavor, and a flavor that declares its own
+    /// `DeleteWithMemory` surface is reached only after that call — the
+    /// same coverage contract `with_sidecars` already states.
+    ///
+    /// Resolved by [`flavor_0_surfaces`], through a registry. Building it
+    /// from a loose surface list is a different answer, not a cheaper one.
+    surfaces: proxima_core::owner_inverse::OwnerSurfaces,
     search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
     embed_units: Vec<proxima_core::verbs::schema::MemoryEmbedUnit>,
     tuning: PgTuning,
@@ -869,6 +908,7 @@ impl PgStorage {
         Ok(Self {
             pool,
             sidecars: core_pg_sidecars(),
+            surfaces: flavor_0_surfaces(),
             search_projections: Vec::new(),
             embed_units: Vec::new(),
             tuning,
@@ -908,6 +948,14 @@ impl PgStorage {
         &self.sidecars
     }
 
+    /// The declared surfaces this storage resolves its legs from.
+    ///
+    /// Flavor #0's until [`Self::with_flavors`] widens it; see the field.
+    #[must_use]
+    pub fn surfaces(&self) -> &proxima_core::owner_inverse::OwnerSurfaces {
+        &self.surfaces
+    }
+
     /// Replace the entire sidecar registry.
     ///
     /// The caller must include the core sidecars. The boot/facade path
@@ -935,6 +983,7 @@ impl PgStorage {
     pub fn with_flavors(mut self, registry: &proxima_core::FlavorRegistryFrozen) -> Self {
         self.search_projections = registry.search_projections().to_vec();
         self.embed_units = registry.embed_units().to_vec();
+        self.surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(registry);
         self
     }
 

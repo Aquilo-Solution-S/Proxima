@@ -253,6 +253,29 @@ writes use the same tool with the matching action key.
    schema nothing registered, a schema registered under a flavor whose
    contract does not declare it, and a contract naming an unregistered MCP
    tool.
+9. A declaration that disagrees with the registration it duplicates. Four,
+   all of the same shape — the contract says one thing, something else in the
+   binary already said another, and until these checks nothing kept the two
+   equal:
+   - `EmbeddingRecipe::Never` on a schema whose payload type declares
+     `EMBEDDABLE = true`, or a recipe with units on one that declares
+     `false`. The disagreement is not symmetric in cost: the `Never`-plus-
+     `true` direction files embedding jobs the drain can only drop.
+   - `natural_key_columns` that are not the columns the registration carries.
+   - A `ToolContract::actions` list that is not the registered
+     `ACTION_ARG_SPECS` action list, compared IN ORDER — palette scope keys
+     are `"<wire_name>:<action>"`, so the list is read by people, and one
+     that agrees on membership while disagreeing on order has stopped being
+     a copy of the thing it describes.
+   - A `ToolContract::idempotent` that is not what the tool's resolved
+     annotations say. Read-only resolves as idempotent: calling a read twice
+     is calling it once, and MCP's `readOnlyHint` carries that.
+10. A surface whose declared rule names no leg the generator can run:
+    `UndeletableSurface`, `UnmovableSurface`, `UnforgettableSurface`.
+    Each of the three partitions (`EraseLeg`, `TransferLeg`, `ForgetLeg`) has
+    an `Unreachable` arm, and freeze refuses a registry that produces one —
+    which is how a rule/`KeyShape` pair that no statement could be generated
+    for becomes a boot failure instead of a silently skipped table.
 
 Prefixes in macro-registered schemas and MCP tools are `const` assertions, so
 a misprefixed id fails the build rather than the first boot.
@@ -296,6 +319,19 @@ checked for being inside core's window, not for meaning what core's mean.
 Both are declarations on trust, in the same sense as the per-`Surface` rule
 arms below — the difference is that these two have a consumer.
 
+`SubstringArm` is the third of them, and the boundary runs *inside* the
+type. The core renderer discriminates `Off` from not-`Off` and nothing
+finer: every schema it serves gets the memory-first nested loop, so a
+core-served schema declaring `SameTableLike` would be believed and rendered
+as `MemoryFirstNestedLoop`. The distinction is real where it is read — the
+code flavor's chunk and commit search each gate their own `LIKE` lane on
+`matches!(…, SameTableLike)`, which is what keeps that lane a declared arm
+rather than an undeclared third mechanism — and no schema in the tree is
+both `SameTableLike` and core-served. A branch discriminating the two arms
+inside the core renderer would therefore have no reachable input, so the
+boundary is recorded here instead of built: the same treatment
+`RankSource::Projection` gets, for the same reason.
+
 **The per-`Surface` rule arms are the erase and the export.**
 `EraseRule`, `ExportRule` and `KeyShape` are no longer vocabulary. The owner
 erase generates a statement per `ByKey` / `ByOwner` surface and emits none
@@ -309,8 +345,50 @@ exists. The three `DECLARED GAP` exclusions (`wake_config`, `blob_uploads`,
 `content` — erased but never exported) are still gaps; they are now gaps the
 declaration causes rather than gaps it merely describes.
 
-`ForgetRule` remains vocabulary: the forget lane walks the sidecar registry,
-not the contract.
+`ForgetRule` is consumed, and by two iteration sources rather than one. The
+`Dumped` legs are still walked from the ROW STAMP (`memory.sidecar_tables`),
+deliberately: the stamp is the historical record of what the dump actually
+read, so a registry that gained a sidecar after a row was written cannot
+delete from a table that row never touched, and one that lost a table can
+still forget rows written before it went. The `Deleted` legs — the embedding
+triple and the sketch, derived rows nothing stamps — come off the
+declaration, and a `DeleteWithMemory` surface the forget cannot reach is
+`FlavorRegistryError::UnforgettableSurface` at boot. `Surface::completeness`
+is what separates the two: a `DeleteWithMemory` surface whose parent FK
+already cascades generates no statement, because the constraint is the list.
+
+**`Provenance` is the lineage walk.** `core_think`'s `ancestors` direction
+expanded `memory.origins` for every node, which is right for the schemas
+that write origins and silent for the ones that do not. `Provenance` says
+which is which, and the walk now asks: `OriginEdges` expands the array,
+`None` expands nothing, and `PayloadOnly { subject_columns }` loads the
+node's payload and takes the references whose declared FIELD is one of the
+named columns. That last arm is plan checkpoint 9 — an interpretation is
+made ABOUT its subjects and not FROM them, so its `origins` are empty by
+construction and it was a lineage dead end. No new statement was needed:
+`SidecarPayload::references()` already carries the field each reference came
+from, and `subject_columns` is what picks the grounding ones out of the rest.
+
+The `descendants` direction is deliberately NOT symmetric. Its inverse
+question — which nodes name me in a declared subject column — has no index
+to answer it, so it would be a sequential scan per hop. Descendants find
+what pinned you, not what named you.
+
+Three declarations were wrong when the field was first read, all in the code
+flavor and all in the same direction: `code-chunk-v1` and `execution-plan-v1`
+write an origin on every ingest and said `None`, and `work-assignment-v1`
+grounds through two payload columns and said `None` while the comment at its
+write site said `PayloadOnly` in prose. A fourth was over-declared: core's
+`interpretation-v1` named `subject_kinds` as a subject column, and it holds
+no memory id.
+
+Two declarations were wrong when the field was first read, and neither could
+have been found by reading: `ingest_keys` said `DeleteWithMemory` while the
+shipped forget kept the rows (as `core_forget`'s own wire description
+promises), and `memory_head` said it while the shipped forget rewinds. Both
+are `Keep { why }` now, and
+`cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both` fails
+if either is restored.
 
 Two places are worth knowing about individually, because each looks like it
 reads the contract and does not:
@@ -319,11 +397,16 @@ reads the contract and does not:
    are a hand-written list. It names `proxima_core.agent_note_v1`, which is a
    flavor-#0 declared sidecar, and `proxima_code.code_chunk_v1`, which is
    another flavor's sidecar named in kernel code.
-2. `storage-pg/src/access/owner_columns.rs` — the transfer chain never reads
-   `TransferRule`. *Which columns move on a transfer* is still code. The
-   contract's transfer arms describe that behaviour and do not yet drive it;
-   the goals refusal is the exception, and it is enforced at the three sites
-   its declaration cites.
+One more used to be on that list, and Phase 4 removed it:
+`storage-pg/src/access/owner_columns.rs` did not read `TransferRule` at all —
+*which columns move on a transfer* was code, and the declaration merely
+described it. It is a `TransferLeg` partition now, resolved once by
+`OwnerSurfaces::for_registry` and read by the verb: `Rehomed` and `Dropped`
+generate their statements from the declared key and owner columns,
+`FollowOrDedupe`'s `dedupe_key` and `remaps` generate the dedupe probe and
+the repointing updates, and a `Follow` surface no leg reaches is
+`FlavorRegistryError::UnmovableSurface` at boot rather than a row that stays
+readable by the source owner after the memory moved.
 
 Two more used to be on that list, and both were symptoms of the code flavor
 shipping no `FlavorContract`: nothing existed for those lanes to iterate, and
@@ -347,13 +430,17 @@ it declares one:
   read them from, deliberately, so "comparable with core" cannot be claimed
   by copying a number.
 
-**Not every kernel relation is a declared `Surface`.** Three carry
-owner-scoped state and appear in no contract: `group_memberships`
-(boot-probed and swept by erase) and `lexical_languages` /
-`lexical_default` (boot-probed by the stamp guardrail). There were six —
+**Not every kernel relation is a declared `Surface`.** Two carry
+owner-scoped state and appear in no contract: `lexical_languages` and
+`lexical_default`, both boot-probed by the stamp guardrail. There were six —
 `owner_fact_retention`, `owner_legal_holds` and `compliance_audit_log` were
-the other three, and Phase C deleted all three tables.
-Two of them are named in a `ResourceContract`'s `reads`, which is a different
+three of the others, and Phase C deleted all three tables;
+`group_memberships` was the fourth, and Phase 4 declared it rather than
+deleting it, with `EraseRule::Never { why }` saying in the contract what
+`UNDECLARED_BUT_INTENTIONAL` used to say in a test. A membership names two
+owners and belongs to neither exclusively, which is what its EMPTY
+`owner_columns` claims.
+Both are named in a `ResourceContract`'s `reads`, which is a different
 claim — what a handler touches, not a surface with erase/export/forget rules.
 
 **`flavor_surface` enforces one direction, not both.** The database trigger

@@ -249,6 +249,70 @@ def run_fixture(path: Path) -> int:
     return 1
 
 
+# WHAT THIS NUMBER IS NOT
+# =======================
+# Read the ratchet as a review tripwire on a SAMPLE of the tree's dynamic SQL,
+# not as a census of it. `collect_sites` scans line by line, so two large
+# classes of macro-built statement are structurally invisible to it, and the
+# arithmetic in the log below moves for reasons that are sometimes about
+# formatting rather than about safety. The 2026-08-1x entry for
+# `verbs/forget.rs` is a worked example of exactly that, kept in place.
+#
+#   1. WRAPPED `format!`. The detector's rule requires `format!(` and the
+#      opening quote of its template to be on the SAME line. Measured at this
+#      commit against the detector's own keyword set (SELECT/INSERT/UPDATE/
+#      DELETE/WITH/CREATE/ALTER/DROP), the tree holds 53 `format!` calls whose
+#      template begins with one of those verbs. The per-line rule can see 4
+#      (and `safe_format_sql` then vouches two of those away, so only 2 stand
+#      in the 76). Forty-nine are invisible for no reason but line breaks —
+#      and rustfmt, not the author, decides where most of those breaks fall.
+#      Widen the verb set to include SET/TRUNCATE/EXPLAIN/ANALYZE and it is
+#      67 statements against 17 visible — widening the verb set widens the
+#      rule too, and most of the newly visible ones are the single-line
+#      EXPLAIN templates in the plan-pin tests. (Reproduce: whole-file regex
+#      with re.DOTALL, comment lines stripped. The exact figures are
+#      sensitive to the verb set, which is the point.)
+#
+#   2. `sqlx::raw_sql`. Not a pattern `collect_sites` looks for at all. There
+#      are 14 call sites. The clearest one is `pgvector.rs`'s
+#      `set_hnsw_search_sql`, which assembles `SET LOCAL hnsw.ef_search = {};
+#      SET LOCAL hnsw.iterative_scan = {}` with `format!` and `write!`, and is
+#      handed to `raw_sql` at `lib.rs:699` and two other reads. That statement
+#      is safe — the interpolated values are integers and a closed enum off
+#      `PgTuning` — but it is safe because of what it interpolates, not
+#      because this script noticed it. And the stakes at a `raw_sql` site are
+#      HIGHER than at a `query()` site, which is why the class matters: that
+#      two-statement payload is possible at all because `raw_sql` runs the
+#      SIMPLE query protocol, which permits `;`-chained statements. An
+#      injection there escalates to arbitrary extra statements; the extended
+#      protocol behind `query()`/`query_as` forbids chaining outright.
+#
+#   3. `push_str` assembly the receiver-name heuristic misses. The
+#      `sql-push-str` rule fires only when the receiver's name matches
+#      `\w*sql\w*`, and `intrinsic_proof` blanket-vouches every such site in
+#      `sidecars/sql.rs`. A builder named anything else assembles statements
+#      under both radars.
+#
+# WHERE THE SAFETY ACTUALLY COMES FROM
+# ====================================
+# The real boundary is `crates/storage-pg/src/pg_ident.rs`. `is_ident_part`
+# (:50-58) admits a string only if it is non-empty, at most 63 bytes, starts
+# with an ASCII letter or `_`, and contains nothing but ASCII alphanumerics
+# and `_`. Nothing that passes that filter can close a quote, open a comment
+# or introduce a statement, which is what makes a `PgIdent` substitution
+# `%I`-equivalent. Every identifier spliced by the four generators added in
+# Phase 4 — `series_leg_sql`, `dedupe_lookup_sql`, `remap_sql`,
+# `forget_leg_sql` — routes through it, and the identifiers themselves come
+# from `const` contracts that `try_freeze` validated and that
+# `every_column_a_declaration_names_is_a_column_the_catalog_has` resolved
+# against `information_schema`.
+#
+# So: this constant is worth keeping and worth arguing over, because the log
+# below is where someone has to write down what they did and why. It is not
+# evidence that dynamic SQL in this tree is bounded at 76 places. Making the
+# detector see wrapped `format!` and `raw_sql` would re-baseline roughly 120
+# sites and is a declared follow-up, not this wave's work.
+#
 # Exact current PR9 dynamic SQL inventory count (see `--inventory`). This is a
 # ratchet, not a ceiling that only grows: the ratchet mode below fails when the
 # count changes in *either* direction so a shrink still requires the PR that
@@ -535,7 +599,78 @@ def run_fixture(path: Path) -> int:
 # query with `format(..., %I)` inside `query_to_xml`, so the obvious spelling
 # — a `format!` per name read from `information_schema` — never enters the
 # tree. A harness should cost nothing to keep.
-EXPECTED_DYNAMIC_SQL_SITES = 75
+# 75 -> 76 in Phase 4, "policy onto the contract". Operator-ruled (plan
+# §4.12 R8, which sanctioned up to 77), and the arithmetic is stated rather
+# than absorbed, because the standing rule is that this number should not
+# rise.
+#
+#   -1  crates/storage-pg/src/access/owner_columns.rs, the projection
+#       registry walk. It was the transfer path's ONLY registry-derived
+#       statement — one generated UPDATE over the frozen sidecar
+#       registry's projection tables — and it is subsumed by the leg loop
+#       below, which reaches the projection because the projection is a
+#       declared `Follow` surface like any other.
+#   +1  the same file, `series_leg_sql` under the generated-leg loop. ONE
+#       call site that replaces NINE hand-written statements over nine
+#       remembered tables: `cooled`, `memory`, `sketch`, three embedding
+#       tables differing only in a name, every flavor's projection, and the
+#       `DELETE FROM ingest_keys`. The statement is chosen by the surface's
+#       resolved `TransferLeg` and the only values substituted into it are
+#       the table name, the key column and the owner columns — all
+#       `&'static str` from a `const` contract that `try_freeze` validated
+#       and that `every_column_a_declaration_names_is_a_column_the_catalog_has`
+#       resolved against `information_schema`. %I-equivalent substitution.
+#   +1  `dedupe_lookup_sql`, the "does the destination already hold these
+#       bytes" probe, generated from `blob`'s declared `dedupe_key` instead
+#       of restating its three columns in SQL. Same substitution class, and
+#       `every_dedupe_key_is_a_uniqueness_the_schema_enforces` asks
+#       `pg_index` whether the declared key is the constraint the arm
+#       exists to avoid colliding with.
+#   +1  `remap_sql` under `remap_handle_refs`, generated from the declared
+#       `remaps`. This is the site that pays for itself twice: the function
+#       it replaces carried a doc comment reading "This is
+#       `TransferRule::FollowOrDedupe { remaps }` executed" above two
+#       hardcoded UPDATEs, while the declaration named three columns. Prose
+#       claiming a declaration drives code that it does not drive is the
+#       exact defect the whole phase exists to remove.
+#   -1  crates/storage-pg/src/verbs/forget.rs, and this one is a DETECTOR
+#       ARTEFACT, not a reduction. Say it plainly, because the earlier
+#       wording of this entry did not.
+#
+#       At the base commit the file held four counted sites; it now holds
+#       three. The site that left is the stamped-sidecar delete's
+#       `let sql = format!("DELETE FROM {tbl} WHERE t = $1", ...)` — a
+#       SINGLE-LINE `format!`, and therefore visible to the per-line rule in
+#       `collect_sites`. Its replacement, `forget_leg_sql`, builds the same
+#       class of statement with a `format!(` whose template string sits on
+#       the NEXT line. The regex is applied per line, so it matches nothing.
+#       The execution site survived the move (base :782 -> :893 as of the
+#       Keep-refusal commit), and the two unrelated sites in the file are
+#       untouched.
+#
+#       So the minus one is bought by wrapping a macro call, and nothing
+#       about the tree got safer or smaller when it was earned.
+#
+#       An earlier draft of this entry credited the minus one to "the four
+#       hand-written `DELETE`s over `embedding_jobs`, `embedding_heads`,
+#       `embeddings` and `sketch` being absorbed". That is false arithmetic.
+#       Those four were plain string literals — `sqlx::query("DELETE FROM
+#       proxima_core.embeddings WHERE entity_id = $1")` — which this
+#       detector has never counted and never should. Absorbing them into
+#       the declared-leg loop is a real win in the code and worth exactly
+#       zero sites. Folding it into the ratchet's arithmetic made a
+#       mechanical accident read as an earned improvement.
+#
+# Net +1, and the trade is thirteen static statements over remembered tables
+# for three generated ones over declared surfaces. That is the ratchet's
+# purpose, not a concession to it: dynamic SQL should be DELIBERATE, and a
+# statement whose only variable is an identifier from a frozen, freeze-
+# validated, catalog-checked contract is the most deliberate SQL in the
+# tree. What the trade buys is that a flavor adding a `Follow` surface can
+# no longer be silently not-followed — `FlavorRegistryError::UnmovableSurface`
+# refuses it at boot, and `UnforgettableSurface` does the same for a surface
+# that claims forget destroys its rows.
+EXPECTED_DYNAMIC_SQL_SITES = 76
 
 
 def run_self_test() -> int:

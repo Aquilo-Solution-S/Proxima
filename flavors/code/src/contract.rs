@@ -18,11 +18,12 @@
 
 use proxima_core::SearchProjectionColumnKind as ColumnKind;
 use proxima_core::flavor::{
-    Band, BandComparability, DbConstraint, EmbedUnit, EmbeddingRecipe, EraseRule, ExportRule,
-    FlavorContract, ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec,
-    Provenance, RankSource, SLOT_DEFAULT, SchemaContract, SchemaRef, SearchProjectionDecl,
-    SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
-    TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule, WEIGHT_UNIFORM, WeightedField,
+    Band, BandComparability, CounterRule, DbConstraint, EmbedUnit, EmbeddingRecipe, EraseRule,
+    ExportRule, FlavorContract, ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl,
+    ProjectionSpec, Provenance, RankSource, SLOT_DEFAULT, SchemaContract, SchemaRef,
+    SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule,
+    WEIGHT_UNIFORM, WeightedField,
 };
 use proxima_core::flavor0::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING};
 use proxima_core::verbs::schema::PayloadKind;
@@ -164,7 +165,7 @@ const fn memory_sidecar(table: &'static str, t_fkey: &'static str) -> Surface {
         export: ExportRule::Rows,
         forget: ForgetRule::DumpThenDelete,
         lexical_language_column: None,
-        counter: Some("sidecar_rows"),
+        counter: CounterRule::Counted("sidecar_rows"),
         completeness: Some(DbConstraint {
             relation: table,
             name: t_fkey,
@@ -206,7 +207,13 @@ const fn detail_table(
         export: ExportRule::Rows,
         forget: ForgetRule::DeleteWithMemory,
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "a detail table's rows go with the parent sidecar row, and the \
+                  parent is already counted under `sidecar_rows`. Counting both \
+                  would report one memory's destruction twice, at a ratio that \
+                  varies with how many criteria or call edges it happened to \
+                  have",
+        },
         completeness: Some(DbConstraint {
             relation: table,
             name: parent_fkey,
@@ -216,12 +223,19 @@ const fn detail_table(
 
 /// A typed sidecar that is neither a search surface nor embeddable: the
 /// bulk of this flavor's schemas are structured records read by key.
+///
+/// `provenance` is a PARAMETER and not a default. It was `Provenance::None`
+/// for all twelve, which was false for two of them — `execution-plan-v1`
+/// writes an origin on every ingest, and `work-assignment-v1` grounds
+/// through two payload columns — and the reason nobody noticed is that a
+/// helper is exactly where a declaration goes to stop being a declaration.
 const fn record_schema(
     name: &'static str,
     kind: PayloadKind,
     table: &'static str,
     surfaces: &'static [Surface],
     why: &'static str,
+    provenance: Provenance,
 ) -> SchemaContract {
     SchemaContract {
         id: SchemaRef::new(FLAVOR_ID, name, 1),
@@ -230,10 +244,9 @@ const fn record_schema(
         search: SearchProjectionDecl::None { why },
         embedding: EmbeddingRecipe::Never { why },
         transfer: TransferRule::StaysOnKey,
-        provenance: Provenance::None,
+        provenance,
         surfaces,
         natural_key_columns: &[],
-        special_category: false,
     }
 }
 
@@ -254,7 +267,6 @@ const fn opaque_schema(name: &'static str, kind: PayloadKind) -> SchemaContract 
         provenance: Provenance::None,
         surfaces: &[],
         natural_key_columns: &[],
-        special_category: false,
     }
 }
 
@@ -302,7 +314,6 @@ const COMMIT_V1: SchemaContract = SchemaContract {
     provenance: Provenance::None,
     surfaces: &[memory_sidecar("proxima_code.commit_v1", "commit_v1_t_fkey")],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const COMMIT_SUMMARY_V1: SchemaContract = SchemaContract {
@@ -340,7 +351,6 @@ const COMMIT_SUMMARY_V1: SchemaContract = SchemaContract {
         "commit_summary_v1_t_fkey",
     )],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const CODE_CHUNK_V1: SchemaContract = SchemaContract {
@@ -371,7 +381,12 @@ const CODE_CHUNK_V1: SchemaContract = SchemaContract {
     },
     embedding: EmbeddingRecipe::Units(&[EmbedUnit::stored("embed_text", SLOT_DEFAULT)]),
     transfer: TransferRule::StaysOnKey,
-    provenance: Provenance::None,
+    // Every chunk is derived from the file revision it was cut out of, and
+    // from the commit when one is known (`ingest/blobs.rs` builds that list
+    // unconditionally). Declared `None` until Phase 4 read the field, which
+    // made the largest Abstraction population in the tree a lineage dead
+    // end: a chunk's `origins` were written and never walked.
+    provenance: Provenance::OriginEdges,
     surfaces: &[
         memory_sidecar("proxima_code.code_chunk_v1", "code_chunk_v1_t_fkey"),
         detail_table(
@@ -381,7 +396,6 @@ const CODE_CHUNK_V1: SchemaContract = SchemaContract {
         ),
     ],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 /// A file revision is a *path* surface, not a lexical projection: its index
@@ -407,7 +421,6 @@ const FILE_REVISION_V1: SchemaContract = SchemaContract {
         "file_revision_v1_t_fkey",
     )],
     natural_key_columns: &["repo_id", "file_path"],
-    special_category: false,
 };
 
 // ── Record surfaces ─────────────────────────────────────────────────────
@@ -424,6 +437,7 @@ const WORK_REQUESTED_V1: SchemaContract = record_schema(
         "work_requested_v1_t_fkey",
     )],
     RECORD_WHY,
+    Provenance::None,
 );
 
 const TEST_REQUESTED_V1: SchemaContract = record_schema(
@@ -439,6 +453,7 @@ const TEST_REQUESTED_V1: SchemaContract = record_schema(
         ),
     ],
     RECORD_WHY,
+    Provenance::None,
 );
 
 const ACCEPTANCE_CRITERIA_V1: SchemaContract = record_schema(
@@ -457,6 +472,7 @@ const ACCEPTANCE_CRITERIA_V1: SchemaContract = record_schema(
         ),
     ],
     RECORD_WHY,
+    Provenance::None,
 );
 
 const EXECUTION_RESULT_V1: SchemaContract = record_schema(
@@ -468,6 +484,7 @@ const EXECUTION_RESULT_V1: SchemaContract = record_schema(
         "execution_result_v1_t_fkey",
     )],
     RECORD_WHY,
+    Provenance::None,
 );
 
 const TEST_RESULT_V1: SchemaContract = record_schema(
@@ -479,6 +496,7 @@ const TEST_RESULT_V1: SchemaContract = record_schema(
         "test_result_v1_t_fkey",
     )],
     RECORD_WHY,
+    Provenance::None,
 );
 
 const ACCEPTANCE_VERIFICATION_V1: SchemaContract = record_schema(
@@ -490,6 +508,7 @@ const ACCEPTANCE_VERIFICATION_V1: SchemaContract = record_schema(
         "acceptance_verification_v1_t_fkey",
     )],
     RECORD_WHY,
+    Provenance::None,
 );
 
 const EXECUTION_PLAN_V1: SchemaContract = record_schema(
@@ -505,6 +524,11 @@ const EXECUTION_PLAN_V1: SchemaContract = record_schema(
         ),
     ],
     RECORD_WHY,
+    // Every plan is authored from the perspective it was planned against:
+    // `plan_persistence.rs` builds a one-element origin list and there is
+    // no branch that leaves it empty. Declared `None` until Phase 4 read
+    // the field, which would have made every plan a lineage dead end.
+    Provenance::OriginEdges,
 );
 
 const ACCEPTANCE_SUMMARY_V1: SchemaContract = record_schema(
@@ -516,6 +540,7 @@ const ACCEPTANCE_SUMMARY_V1: SchemaContract = record_schema(
         "acceptance_summary_v1_t_fkey",
     )],
     RECORD_WHY,
+    Provenance::None,
 );
 
 const SELF_WHY: &str =
@@ -530,6 +555,7 @@ const DEVELOPMENT_PERSPECTIVE_V1: SchemaContract = record_schema(
         "development_perspective_v1_t_fkey",
     )],
     "a repo-level judgement surfaced by the bundle tool for its repo, not by content search",
+    Provenance::None,
 );
 
 const COMMIT_SUMMARIZER_SELF_V1: SchemaContract = record_schema(
@@ -541,6 +567,7 @@ const COMMIT_SUMMARIZER_SELF_V1: SchemaContract = record_schema(
         "commit_summarizer_self_v1_t_fkey",
     )],
     SELF_WHY,
+    Provenance::None,
 );
 
 const ENGINEER_SELF_V1: SchemaContract = record_schema(
@@ -552,6 +579,7 @@ const ENGINEER_SELF_V1: SchemaContract = record_schema(
         "engineer_self_v1_t_fkey",
     )],
     SELF_WHY,
+    Provenance::None,
 );
 
 const WORK_ASSIGNMENT_V1: SchemaContract = record_schema(
@@ -563,6 +591,14 @@ const WORK_ASSIGNMENT_V1: SchemaContract = record_schema(
         "work_assignment_v1_t_fkey",
     )],
     "an assignment claim is walked from the work item it names, never searched",
+    // "An assignment consumes nothing. It grounds through the references
+    // its payload carries" — the comment at the write site (`retry.rs`),
+    // which is precisely `PayloadOnly` and was declared `None`. Both
+    // columns hold a memory id; `references()` names them, and the walk
+    // reaches them through those names.
+    Provenance::PayloadOnly {
+        subject_columns: &["target_perspective_memory_id", "work_item_memory_id"],
+    },
 );
 
 // ── Flavor state ────────────────────────────────────────────────────────
@@ -596,7 +632,7 @@ const STATE_SURFACES: &[Surface] = &[
                   from; the row holds no foreign key into memory",
         },
         lexical_language_column: None,
-        counter: Some("repo_rows"),
+        counter: CounterRule::Counted("repo_rows"),
         completeness: None,
     },
     Surface {
@@ -614,7 +650,7 @@ const STATE_SURFACES: &[Surface] = &[
                   ingest_keys does in the kernel",
         },
         lexical_language_column: None,
-        counter: Some("ingestion_run_rows"),
+        counter: CounterRule::Counted("ingestion_run_rows"),
         completeness: None,
     },
 ];
@@ -740,6 +776,7 @@ pub static CODE_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
     // hand-written statement, and freeze now proves that rather than the
     // flavor asserting it.
     bespoke_erase_legs: &[],
+    bespoke_transfer_legs: &[],
 };
 
 /// The code flavor's projection: three search surfaces, one table, one

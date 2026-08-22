@@ -5,6 +5,8 @@
     clippy::too_many_lines
 )]
 
+use proxima_core::flavor::ForgetLeg;
+use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::{ColdObjectStore, Owner, StorageError};
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -417,6 +419,7 @@ pub async fn snapshot_hot(
 pub async fn commit_forget(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
     cold: &dyn ColdObjectStore,
     object_key: &str,
     snapshot: &ColdRecord,
@@ -445,8 +448,15 @@ pub async fn commit_forget(
     if current != *snapshot {
         cold.put(object_key, &encode_record(&current)?).await?;
     }
-    let persist =
-        persist_cooled_after_put(tx, sidecars, object_key, &current, expected_owner_id).await;
+    let persist = persist_cooled_after_put(
+        tx,
+        sidecars,
+        surfaces,
+        object_key,
+        &current,
+        expected_owner_id,
+    )
+    .await;
     if persist.is_err() {
         delete_cold_object(cold, object_key).await;
     }
@@ -456,6 +466,7 @@ pub async fn commit_forget(
 async fn persist_cooled_after_put(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
     object_key: &str,
     current: &ColdRecord,
     expected_owner_id: Uuid,
@@ -479,7 +490,7 @@ async fn persist_cooled_after_put(
     .await
     .map_err(map_err)?;
 
-    delete_memory_dependents(tx, sidecars, &current.row.sidecar_tables, t).await?;
+    delete_memory_dependents(tx, sidecars, surfaces, &current.row.sidecar_tables, t).await?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
         .bind(t)
         .bind(expected_owner_id)
@@ -759,38 +770,19 @@ async fn restore_registered_sidecars(
     Ok(())
 }
 
-async fn delete_stamped_sidecars(
-    tx: &mut Transaction<'_, Postgres>,
-    sidecars: &PgSidecarRegistryFrozen,
-    tables: &[String],
-    t: Uuid,
-) -> Result<(), StorageError> {
-    for table in tables {
-        if !sidecars.is_memory_sidecar_table(table) {
-            return Err(StorageError::ConstraintViolation(format!(
-                "stamped sidecar table {table} is not registered"
-            )));
-        }
-        // See [`is_owner_pinned`]: forgetting a Memory must not delete
-        // somebody else's audit rows.
-        if is_owner_pinned(sidecars, table) {
-            continue;
-        }
-        let ident = PgIdent::table(table)?;
-        // SQL-POLICY: PgIdent
-        let sql = format!("DELETE FROM {tbl} WHERE t = $1", tbl = ident.as_str());
-        sqlx::query(sqlx::AssertSqlSafe(sql))
-            .bind(t)
-            .execute(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-    }
-    Ok(())
-}
-
+/// `owner_id` is the CALLER's, never `rec.row.owner_id`.
+///
+/// The cold record's embedded owner is the owner at dump time. A transfer
+/// rewrites `cooled.owner_id` and leaves the bytes alone, so the two diverge
+/// permanently for any series that changed hands while cold. Filing the
+/// embedding job under the dumped owner would hand the giver a job for a
+/// memory it no longer has — and, if the giver was since erased, the `owners`
+/// lookup below is a `fetch_one` against a row that is gone, which fails the
+/// whole hydrate.
 async fn enqueue_embed_jobs(
     tx: &mut Transaction<'_, Postgres>,
     rec: &ColdRecord,
+    owner_id: Uuid,
 ) -> Result<(), StorageError> {
     if rec.embed_models.is_empty() {
         return Ok(());
@@ -802,7 +794,7 @@ async fn enqueue_embed_jobs(
     };
     let owner_kind: String =
         sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
-            .bind(rec.row.owner_id)
+            .bind(owner_id)
             .fetch_one(tx.as_mut())
             .await
             .map_err(map_err)?;
@@ -814,7 +806,7 @@ async fn enqueue_embed_jobs(
         crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
             tx,
             owner_kind,
-            Some(rec.row.owner_id),
+            Some(owner_id),
             kind,
             rec.row.t,
             model_id,
@@ -824,30 +816,105 @@ async fn enqueue_embed_jobs(
     Ok(())
 }
 
+/// Every row one forgotten `t` takes with it, from two iteration sources
+/// and through one statement shape.
+///
+/// **The stamp, for the `Dumped` legs.** `memory.sidecar_tables` is the
+/// historical record of what the dump actually read, and that is why forget
+/// walks it rather than the registry: a registry that gained a sidecar after
+/// this row was written must not delete from a table the row never touched,
+/// and one that LOST a table must still forget rows written before it went.
+/// `forget_dumps_only_stamped_tables_and_skips_unregistered_scan` pins that
+/// property by stamping a registered-but-nonexistent table and requiring the
+/// forget to succeed. The PG registry is the veto (a stamp naming an
+/// unregistered table is a constraint violation) and the owner-pin filter;
+/// the DB backs the other direction with `assert_sidecar_stamp_declared`.
+///
+/// **The contract, for the `Deleted` legs.** The embedding triple and the
+/// sketch are derived rows nothing stamps — no lane records them on the
+/// memory — so there is no stamp to walk and the declaration is the only
+/// list. These were four hand-written statements naming four
+/// `proxima_core.*` literals, and `ForgetRule::DeleteWithMemory` sat beside
+/// them declaring exactly the same thing, read by nothing.
+///
+/// The two are ordered stamp-then-declaration, which is the order the four
+/// statements ran in. Neither set has a foreign key into the other.
 async fn delete_memory_dependents(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
     sidecar_tables: &[String],
     t: Uuid,
 ) -> Result<(), StorageError> {
-    delete_stamped_sidecars(tx, sidecars, sidecar_tables, t).await?;
-    sqlx::query("DELETE FROM proxima_core.embedding_jobs WHERE entity_id = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.embedding_heads WHERE entity_id = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.embeddings WHERE entity_id = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    super::sketch::delete_sketch(tx, t).await?;
+    let mut legs: Vec<(&str, &str)> = Vec::with_capacity(sidecar_tables.len() + 4);
+    for table in sidecar_tables {
+        if !sidecars.is_memory_sidecar_table(table) {
+            return Err(StorageError::ConstraintViolation(format!(
+                "stamped sidecar table {table} is not registered"
+            )));
+        }
+        // See [`is_owner_pinned`]: forgetting a Memory must not delete
+        // somebody else's audit rows.
+        if is_owner_pinned(sidecars, table) {
+            continue;
+        }
+        // The declaration names the column when it has an opinion. It does
+        // not always: a stamp may name a table the PG registry knows and no
+        // contract declares, which arrives here as `Unreachable` and is the
+        // case the skip-unregistered-scan test installs deliberately. `t` is
+        // the fallback because it is what `pg_sidecar!` requires of every
+        // memory sidecar it registers.
+        //
+        // `Kept` is spelled out rather than folded into that fallback, and
+        // the fallback DELETES. A `Keep` declaration reaching a delete is
+        // the failure this arm exists to make loud instead of silent: the
+        // table was declared as one the forget does not touch, and the walk
+        // is about to destroy it. `freeze_against`'s
+        // `check_keep_is_owner_pinned` makes that unreachable — `Keep`
+        // requires `owner_pinned`, and owner-pinned tables were skipped
+        // above — so this is the assertion that the boot check ran, not a
+        // second policy.
+        let key_column = match surfaces.forget_leg(table) {
+            ForgetLeg::Dumped { key_column } => key_column,
+            ForgetLeg::Kept { why } => {
+                return Err(StorageError::Internal(format!(
+                    "{table} declares ForgetRule::Keep ({why}) and is not owner-pinned, \
+                     so the forget cannot honour it; freeze_against must refuse this registry"
+                )));
+            }
+            ForgetLeg::Deleted { .. } | ForgetLeg::Cascaded { .. } | ForgetLeg::Unreachable => "t",
+        };
+        legs.push((table.as_str(), key_column));
+    }
+    legs.extend(surfaces.generated_forget_legs());
+    for (table, key_column) in legs {
+        let sql = forget_leg_sql(table, key_column)?;
+        // SQL-POLICY: generated
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(t)
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+    }
     Ok(())
+}
+
+/// The one statement a forget leg runs, over the forgotten `t`.
+///
+/// Every identifier here is a `&'static str` from a `const` contract or a
+/// `pg_sidecar!` registration, both freeze-validated, and every contract one
+/// is additionally resolved against `information_schema` by
+/// `flavor_contract_acceptance::every_column_a_declaration_names_is_a_column_the_catalog_has`.
+/// `PgIdent`'s whitelist is what makes the substitution `%I`-equivalent.
+fn forget_leg_sql(table: &str, key_column: &str) -> Result<String, StorageError> {
+    let table = PgIdent::table(table)?;
+    let key = PgIdent::column(key_column)?;
+    // SQL-POLICY: PgIdent
+    Ok(format!(
+        "DELETE FROM {tbl} WHERE {col} = $1",
+        tbl = table.as_str(),
+        col = key.as_str()
+    ))
 }
 
 /// Rewind `memory_head.t` to the latest remaining hot row, or delete the
@@ -920,6 +987,7 @@ async fn ensure_memory_head(
 pub async fn forget_memory(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
     cold: &dyn ColdObjectStore,
     object_key: &str,
     t: Uuid,
@@ -931,7 +999,17 @@ pub async fn forget_memory(
         return Err(StorageError::NotFound);
     }
     cold.put(object_key, &encode_record(&rec)?).await?;
-    match commit_forget(tx, sidecars, cold, object_key, &rec, expected_owner_id).await {
+    match commit_forget(
+        tx,
+        sidecars,
+        surfaces,
+        cold,
+        object_key,
+        &rec,
+        expected_owner_id,
+    )
+    .await
+    {
         Ok(()) => Ok(()),
         Err(err) => {
             compensate_forget_put(tx, cold, object_key, t, &err).await;
@@ -944,6 +1022,7 @@ pub async fn forget_memory(
 pub async fn forget_memory_oneshot(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
     cold: &dyn ColdObjectStore,
     object_key: &str,
     t: Uuid,
@@ -956,8 +1035,16 @@ pub async fn forget_memory_oneshot(
         return Err(StorageError::NotFound);
     }
     cold.put(object_key, &encode_record(&rec)?).await?;
-    if let Err(err) =
-        commit_forget(&mut tx, sidecars, cold, object_key, &rec, expected_owner_id).await
+    if let Err(err) = commit_forget(
+        &mut tx,
+        sidecars,
+        surfaces,
+        cold,
+        object_key,
+        &rec,
+        expected_owner_id,
+    )
+    .await
     {
         compensate_forget_put(&mut tx, cold, object_key, t, &err).await;
         let _ = tx.rollback().await;
@@ -1070,15 +1157,12 @@ pub async fn hydrate_memory(
             })
             .unwrap_or_else(|| rec.row.kind.clone())
     });
-    super::sketch::upsert_sketch(
-        tx,
-        rec.row.owner_id,
-        rec.row.t,
-        &rec.row.kind,
-        &hydrate_line,
-    )
-    .await?;
-    enqueue_embed_jobs(tx, &rec).await?;
+    // `owner_id` from `cooled`, not `rec.row.owner_id`: same reason as the
+    // memory INSERT above. The sketch is READ owner-scoped, so a sketch
+    // written under the dumped owner would let the owner that gave this
+    // series away go on recalling it.
+    super::sketch::upsert_sketch(tx, owner_id, rec.row.t, &rec.row.kind, &hydrate_line).await?;
+    enqueue_embed_jobs(tx, &rec, owner_id).await?;
 
     sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1")
         .bind(t)
@@ -1093,11 +1177,14 @@ pub async fn hydrate_memory(
         .await
         .map_err(map_err)?;
 
+    // Likewise owner-scoped: the announce feed a client tails is its own.
+    // Announcing a hydrate to the pre-transfer owner tells the wrong party
+    // that a memory it does not have came back.
     sqlx::query(
         "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
          VALUES ($1, 'append', 'memory', $2, $3)",
     )
-    .bind(rec.row.owner_id)
+    .bind(owner_id)
     .bind(rec.row.handle)
     .bind(t)
     .execute(tx.as_mut())
@@ -1116,6 +1203,7 @@ pub async fn hydrate_memory(
 pub async fn erase_memory(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
     owner: &Owner,
     t: Uuid,
 ) -> Result<ColdPurgePlan, StorageError> {
@@ -1176,7 +1264,7 @@ pub async fn erase_memory(
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
-    delete_memory_dependents(tx, sidecars, &stamped, t).await?;
+    delete_memory_dependents(tx, sidecars, surfaces, &stamped, t).await?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
         .bind(t)
         .bind(owner.stored_owner_id())
@@ -1266,6 +1354,7 @@ pub async fn erase_memory(
 pub async fn erase_memory_series(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
     owner: &Owner,
     ts: &[Uuid],
 ) -> Result<(u64, ColdPurgePlan), StorageError> {
@@ -1282,7 +1371,7 @@ pub async fn erase_memory_series(
     let mut keys = Vec::new();
     let mut erased = 0_u64;
     for t in versions {
-        let plan = erase_memory(tx, sidecars, owner, t).await?;
+        let plan = erase_memory(tx, sidecars, surfaces, owner, t).await?;
         keys.extend_from_slice(plan.object_keys());
         erased += 1;
     }
@@ -1598,7 +1687,76 @@ SELECT object_key FROM enqueued";
 
 #[cfg(test)]
 mod tests {
-    use super::{StorageError, write_bytes};
+    use super::{ForgetLeg, OwnerSurfaces, StorageError, forget_leg_sql, write_bytes};
+
+    fn shipped() -> OwnerSurfaces {
+        OwnerSurfaces::for_registry(
+            &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+        )
+    }
+
+    /// Parity pin for the four hand-written `DELETE`s this replaced.
+    ///
+    /// `embedding_jobs`, `embedding_heads`, `embeddings` and `sketch` were
+    /// named as literals in `delete_memory_dependents`, and all four already
+    /// declared `ForgetRule::DeleteWithMemory` beside them. The assertion is
+    /// that the declared walk reaches exactly those four and nothing else,
+    /// so removing the literals removed duplicate statements and not
+    /// coverage.
+    ///
+    /// The key column is asserted too. Three of the four are keyed on
+    /// `entity_id`, not `t` — a walk that assumed `t` because the sidecar
+    /// half does would have deleted nothing from any of them, and the two
+    /// lanes now share `forget_leg_sql` precisely so that assumption cannot
+    /// be made in one place and not the other.
+    #[test]
+    fn the_declared_forget_walk_is_the_four_statements_it_replaced() {
+        assert_eq!(
+            shipped().generated_forget_legs(),
+            vec![
+                ("proxima_core.embedding_heads", "entity_id"),
+                ("proxima_core.embedding_jobs", "entity_id"),
+                ("proxima_core.embeddings", "entity_id"),
+                ("proxima_core.sketch", "t"),
+            ]
+        );
+    }
+
+    /// No surface resolves to `Unreachable`, and every leg this crate must
+    /// execute is one it can build. The forget counterpart of
+    /// `owner_erase`'s `every_declared_surface_has_a_leg_this_crate_can_run`.
+    #[test]
+    fn every_declared_surface_has_a_forget_leg_this_crate_can_run() {
+        let surfaces = shipped();
+        assert!(surfaces.surfaces().len() > 20);
+        for surface in surfaces.surfaces() {
+            match surfaces.forget_leg(surface.table) {
+                ForgetLeg::Unreachable => panic!(
+                    "{} resolves to Unreachable, which freeze should have refused",
+                    surface.table
+                ),
+                ForgetLeg::Dumped { key_column } | ForgetLeg::Deleted { key_column } => {
+                    forget_leg_sql(surface.table, key_column).unwrap_or_else(|e| {
+                        panic!("{} is a leg this crate cannot build: {e}", surface.table)
+                    });
+                }
+                ForgetLeg::Cascaded { .. } | ForgetLeg::Kept { .. } => {}
+            }
+        }
+    }
+
+    /// The statement, pinned. One shape serves both iteration sources.
+    #[test]
+    fn a_forget_leg_deletes_the_declared_key_column() {
+        assert_eq!(
+            forget_leg_sql("proxima_core.embeddings", "entity_id").expect("generates"),
+            "DELETE FROM proxima_core.embeddings WHERE entity_id = $1"
+        );
+        assert!(
+            forget_leg_sql("proxima_core.embeddings", "entity_id; DROP TABLE x").is_err(),
+            "the identifier whitelist is what makes this %I-equivalent"
+        );
+    }
 
     #[test]
     fn cold_field_over_u16_fails_closed() {

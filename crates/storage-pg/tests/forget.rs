@@ -21,6 +21,23 @@ use proxima_storage_pg::verbs::forget::{
 use proxima_storage_pg::verbs::memory_timeseries::ingest_fact_timeseries;
 use uuid::Uuid;
 
+/// The forget's registry-resolved legs, exactly as `PgStorage` assembles
+/// them. An alias for [`transfer_surfaces`]: both verbs read the same set,
+/// and calling it by the verb under test is what keeps a reader from
+/// wondering whether they differ.
+fn surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    transfer_surfaces()
+}
+
+/// The transfer's registry-resolved legs, exactly as the engine assembles
+/// them. Passing a hand-built set here would test a registry production
+/// never sees.
+fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+    )
+}
+
 const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
 const UTTERANCE: &str = "proxima_core.utterance_v1";
 const GHOST_TABLE: &str = "proxima_core.w4_does_not_exist_v1";
@@ -106,6 +123,7 @@ async fn forget_hydrate_and_erase() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             t,
@@ -188,13 +206,14 @@ async fn forget_hydrate_and_erase() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             t,
             owner.stored_owner_id(),
         )
         .await?;
-        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &owner, t).await?;
+        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
         tx.commit().await?;
         assert_eq!(
             plan.object_keys(),
@@ -256,7 +275,7 @@ async fn erase_announce_carries_the_series_handle() {
         assert_ne!(t, second.handle, "the erased t is not its own handle");
 
         let mut tx = pool.begin().await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &owner, t).await?;
+        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
         tx.commit().await?;
 
         let announced: Uuid = sqlx::query_scalar(
@@ -414,6 +433,7 @@ async fn forget_non_last_t_rewinds_memory_head() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             second.memory_id.into_inner(),
@@ -550,6 +570,7 @@ async fn concurrent_forget_serializes_before_cold_put() {
                 forget_memory_oneshot(
                     &pool,
                     &sidecars,
+                    &surfaces(),
                     cold.as_ref(),
                     &key,
                     t,
@@ -569,6 +590,7 @@ async fn concurrent_forget_serializes_before_cold_put() {
                 forget_memory_oneshot(
                     &pool,
                     &sidecars,
+                    &surfaces(),
                     cold.as_ref(),
                     &key,
                     t,
@@ -689,6 +711,7 @@ async fn commit_forget_reputs_when_a_sidecar_row_lands_after_the_snapshot() {
         commit_forget(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             &snapshot,
@@ -748,7 +771,16 @@ async fn forget_dumps_only_stamped_tables_and_skips_unregistered_scan() {
         let cold = MemoryColdStore::default();
         let key = cold_object_key(t);
         let mut tx = pool.begin().await?;
-        forget_memory(&mut tx, &sidecars, &cold, &key, t, owner.stored_owner_id()).await?;
+        forget_memory(
+            &mut tx,
+            &sidecars,
+            &surfaces(),
+            &cold,
+            &key,
+            t,
+            owner.stored_owner_id(),
+        )
+        .await?;
         tx.commit().await?;
 
         let notes: i64 = sqlx::query_scalar(
@@ -815,6 +847,7 @@ async fn forget_dumps_every_stamped_extra() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             t,
@@ -929,6 +962,7 @@ async fn forget_and_admit_preserve_grounding_support() {
         let err = forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             "cold/refuse-a",
             abs.memory_id.into_inner(),
@@ -952,6 +986,7 @@ async fn forget_and_admit_preserve_grounding_support() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             "cold/fact",
             fact.memory_id.into_inner(),
@@ -975,6 +1010,7 @@ async fn forget_and_admit_preserve_grounding_support() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             "cold/mixed-src",
             abs.memory_id.into_inner(),
@@ -988,6 +1024,7 @@ async fn forget_and_admit_preserve_grounding_support() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             "cold/a2",
             abs2.memory_id.into_inner(),
@@ -1001,6 +1038,7 @@ async fn forget_and_admit_preserve_grounding_support() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             "cold/a-after-a2",
             abs.memory_id.into_inner(),
@@ -1074,6 +1112,7 @@ async fn refused_forget_does_not_leave_untracked_cold_object() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             key,
             abs.memory_id.into_inner(),
@@ -1125,14 +1164,22 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
             let cold = Arc::clone(&cold);
             let key = key.clone();
             tokio::spawn(async move {
-                forget_memory_oneshot(&pool, &core_pg_sidecars(), cold.as_ref(), &key, t, owner_id)
-                    .await
+                forget_memory_oneshot(
+                    &pool,
+                    &core_pg_sidecars(),
+                    &surfaces(),
+                    cold.as_ref(),
+                    &key,
+                    t,
+                    owner_id,
+                )
+                .await
             })
         };
         cold.first_put_entered.acquire().await?.forget();
 
         let mut erase_tx = pool.begin().await?;
-        erase_memory(&mut erase_tx, &core_pg_sidecars(), &owner, t).await?;
+        erase_memory(&mut erase_tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
         erase_tx.commit().await?;
 
         // The PUT completes only after erase committed. The forget reread is
@@ -1198,6 +1245,7 @@ async fn forget_of_an_already_cooled_t_reports_not_found() {
         let err = forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             cold.as_ref(),
             &key,
             t,
@@ -1258,6 +1306,7 @@ async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             t,
@@ -1434,6 +1483,7 @@ async fn concurrent_forget_keeps_one_grounding_support() {
             let r = forget_memory(
                 &mut tx,
                 &core_pg_sidecars(),
+                &surfaces(),
                 &MemoryColdStore::default(),
                 "cold/conc-a1",
                 a1_t,
@@ -1451,6 +1501,7 @@ async fn concurrent_forget_keeps_one_grounding_support() {
             let r = forget_memory(
                 &mut tx,
                 &core_pg_sidecars(),
+                &surfaces(),
                 &MemoryColdStore::default(),
                 "cold/conc-a2",
                 a2_t,
@@ -1600,6 +1651,7 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
         forget_memory(
             &mut tx_f,
             &core_pg_sidecars(),
+            &surfaces(),
             &MemoryColdStore::default(),
             "cold/admit-race",
             a_t,
@@ -1657,8 +1709,13 @@ async fn commit_forget_aborts_when_owner_transferred() {
         drop(conn);
         let dest = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
-                .await?
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                dest,
+                &transfer_surfaces()
+            )
+            .await?
         );
 
         let cold = MemoryColdStore::default();
@@ -1667,6 +1724,7 @@ async fn commit_forget_aborts_when_owner_transferred() {
         let err = commit_forget(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             &snapshot,
@@ -1721,6 +1779,7 @@ async fn a_rolled_back_erase_keeps_the_cold_object_and_its_locator() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             t,
@@ -1730,7 +1789,7 @@ async fn a_rolled_back_erase_keeps_the_cold_object_and_its_locator() {
         tx.commit().await?;
 
         let mut tx = pool.begin().await?;
-        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &owner, t).await?;
+        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
         assert_eq!(plan.object_keys(), std::slice::from_ref(&key));
         tx.rollback().await?;
 
@@ -1785,6 +1844,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &ok_cold,
             &key,
             t,
@@ -1794,7 +1854,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         tx.commit().await?;
 
         let mut tx = pool.begin().await?;
-        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &owner, t).await?;
+        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
         tx.commit().await?;
 
         let purged = purge_cold_objects_after_commit(pool, &FailDeleteCold, &plan).await;
@@ -1816,4 +1876,232 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("erase fail-closed test failed");
+}
+
+/// The two corrected `ForgetRule` declarations, pinned as BEHAVIOUR.
+///
+/// `ingest_keys` declared `DeleteWithMemory` and `memory_head` declared it
+/// too; neither was true, and neither could have been found by reading,
+/// because nothing consumed the field. Phase 4 corrects both to
+/// `Keep { why }` — and a correction that only changes a string is worth
+/// nothing, so this asserts the shipped behaviour the new declarations
+/// claim, in both directions:
+///
+/// - a cool leaves the receipt and REWINDS the head to the surviving
+///   newest `t`;
+/// - an erase of the last version removes the receipt and takes the head
+///   with it.
+///
+/// Restoring either declaration to `DeleteWithMemory` after Phase 4's
+/// forget leg reads the contract makes this fail, which is the point: the
+/// declaration is now falsifiable.
+#[tokio::test]
+async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests().clone();
+        let cold = MemoryColdStore::default();
+
+        // Two versions on one handle, each with its own receipt.
+        let first = ingest_fact_atomic(&pool, &permit, &draft(Some(("src", "k1"))), None).await?;
+        let mut later = draft(Some(("src", "k2")));
+        later.handle = Some(first.handle);
+        let second = ingest_fact_atomic(&pool, &permit, &later, None).await?;
+        let (t1, t2) = (first.memory_id.into_inner(), second.memory_id.into_inner());
+
+        let receipts = |t: Uuid| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE t = $1",
+                )
+                .bind(t)
+                .fetch_one(&pool)
+                .await
+            }
+        };
+        let head_t = || {
+            let pool = pool.clone();
+            let handle = first.handle;
+            async move {
+                sqlx::query_scalar::<_, Option<Uuid>>(
+                    "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
+                )
+                .bind(handle)
+                .fetch_optional(&pool)
+                .await
+                .map(Option::flatten)
+            }
+        };
+
+        assert_eq!(
+            head_t().await?,
+            Some(t2),
+            "the head names the newest version"
+        );
+
+        // ── `ForgetRule::Keep` on ingest_keys: cooling the NEWEST version
+        // leaves its receipt behind. ────────────────────────────────────
+        forget_memory_oneshot(
+            &pool,
+            &core_pg_sidecars(),
+            &surfaces(),
+            &cold,
+            &cold_object_key(t2),
+            t2,
+            owner.stored_owner_id(),
+        )
+        .await?;
+        assert_eq!(
+            receipts(t2).await?,
+            1,
+            "cooling a version does not un-admit it: `ingest_keys` stay, exactly as \
+             core_forget's own wire description says"
+        );
+
+        // ── `ForgetRule::Keep` on memory_head: the head REWINDS rather
+        // than being deleted with the memory. ───────────────────────────
+        assert_eq!(
+            head_t().await?,
+            Some(t1),
+            "the head is rewound to the surviving newest t, not deleted — which is why \
+             `DeleteWithMemory` was true for exactly one revision of a series"
+        );
+
+        // ── Erase is the verb that takes them. ──────────────────────────
+        let mut tx = pool.begin().await?;
+        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t1).await?;
+        tx.commit().await?;
+        assert_eq!(
+            receipts(t1).await?,
+            0,
+            "erase_memory is the only statement that removes a receipt"
+        );
+        assert_eq!(
+            receipts(t2).await?,
+            1,
+            "erasing one version does not touch another's receipt"
+        );
+        assert_eq!(
+            head_t().await?,
+            None,
+            "the head is deleted only when the hot series empties"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("the corrected forget declarations must match shipped behaviour");
+}
+
+/// A `ForgetRule::Keep` sidecar that is not owner-pinned stops the forget
+/// instead of being deleted by it.
+///
+/// The stamp walk in `delete_memory_dependents` used to read
+/// `surfaces.forget_leg(table)` and map everything that was not `Dumped` to
+/// the key column `"t"` — including `Kept`. So a surface declared as one the
+/// forget does not touch was deleted by the forget, silently, with the
+/// declaration sitting three files away saying otherwise.
+///
+/// Core ships one `Keep` memory sidecar, `mcp_call_logged_v1`, and its rows
+/// survive today only because it is ALSO `TransferRule::RetainAtSource` and
+/// therefore `pg_sidecar!(owner_pinned: true)`, which the walk skips a few
+/// lines earlier for an entirely different reason. Remove the pinning and the
+/// `Keep` bought nothing.
+///
+/// `freeze_against` now refuses that combination outright (see
+/// `check_keep_is_owner_pinned`), so this state is unreachable through a
+/// registry. It is reachable through `OwnerSurfaces::from_surfaces`, the
+/// public test seam, which is what this test uses: `agent_note_v1` is a real
+/// registered non-owner-pinned memory sidecar, re-declared here as `Keep`.
+///
+/// The assertion is that the forget REFUSES and the rows survive. Before the
+/// change it returned `Ok` and the row was gone.
+#[tokio::test]
+async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
+    use proxima_core::flavor::{ForgetRule, Surface};
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+
+        // Flavor #0's surfaces with exactly one field changed: the note
+        // sidecar now declares that the forget leaves it alone.
+        let mut declared: Vec<Surface> = proxima_core::FLAVOR_0.all_surfaces().collect();
+        let mut rewritten = 0;
+        for surface in &mut declared {
+            if surface.table == AGENT_NOTE {
+                surface.forget = ForgetRule::Keep {
+                    why: "a fixture: the declaration the walk used to ignore",
+                };
+                rewritten += 1;
+            }
+        }
+        assert_eq!(rewritten, 1, "the note sidecar is a declared surface");
+        let kept_surfaces = proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(declared);
+
+        let written = ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
+        let t = written.memory_id.into_inner();
+        sqlx::query(
+            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             VALUES ($1, $1, 'n', 'kept', ARRAY['tag'])",
+        )
+        .bind(t)
+        .execute(pool)
+        .await?;
+
+        let cold = MemoryColdStore::default();
+        let key = cold_object_key(t);
+        let mut tx = pool.begin().await?;
+        let outcome = forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &kept_surfaces,
+            &cold,
+            &key,
+            t,
+            owner.stored_owner_id(),
+        )
+        .await;
+        tx.rollback().await?;
+
+        let err = outcome.expect_err(
+            "a Keep declaration the substrate cannot honour must stop the forget, \
+             not be quietly overridden by it",
+        );
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains(AGENT_NOTE) && rendered.contains("ForgetRule::Keep"),
+            "the refusal must name the table and the declaration it could not \
+             honour; got {rendered}"
+        );
+
+        let notes: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.agent_note_v1 WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(notes, 1, "the rows the declaration keeps are still there");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget failed");
 }

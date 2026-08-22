@@ -298,7 +298,12 @@ impl Engine {
             .storage()
             .access_admin
             .owner_transfer
-            .transfer_to_owner(permit.owner_write_permit(), entity, to_owner)
+            .transfer_to_owner(
+                permit.owner_write_permit(),
+                entity,
+                to_owner,
+                &self.owner_surfaces(),
+            )
             .await
             .map_err(|err| storage_error("transfer_to_owner", &err))?;
 

@@ -525,6 +525,7 @@ mod tests {
         let mut nodes = vec![PinNode {
             id: hub,
             kind: EntityKind::Fact,
+            schema_id: crate::SchemaId::new("test/pin-v1".into()),
             origins: Vec::new(),
             refs: Vec::new(),
         }];
@@ -532,6 +533,7 @@ mod tests {
             nodes.push(PinNode {
                 id: MemoryId::new(uuid::Uuid::now_v7()),
                 kind: EntityKind::Abstraction,
+                schema_id: crate::SchemaId::new("test/pin-v1".into()),
                 origins: vec![hub],
                 refs: Vec::new(),
             });

@@ -449,6 +449,7 @@ impl From<&MemoryRow> for crate::PinNode {
         Self {
             id: row.id,
             kind: row.kind,
+            schema_id: row.schema_id.clone(),
             origins: row.origins.clone(),
             refs: row.refs.clone(),
         }

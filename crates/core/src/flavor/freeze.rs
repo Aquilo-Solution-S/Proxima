@@ -142,6 +142,8 @@ impl FlavorRegistry {
             Self::validate_contract_projection(contract)?;
             Self::validate_contract_surfaces(contract)?;
             Self::validate_erase_legs(contract)?;
+            Self::validate_transfer_legs(contract)?;
+            Self::validate_forget_legs(contract)?;
         }
         if !self.contracts.is_empty() && !has_core {
             return Err(FlavorRegistryError::MissingCoreContract);
@@ -225,10 +227,10 @@ impl FlavorRegistry {
         // place, and an exemption that claims a `Cascade` or `Never`
         // surface is a flavor arguing with itself about whether a statement
         // runs.
-        for entry in contract.bespoke_erase_legs {
+        for table in contract.bespoke_erase_legs {
             let why = match contract
                 .all_surfaces()
-                .find(|surface| surface.table == entry.table)
+                .find(|surface| surface.table == *table)
             {
                 None => "this flavor does not declare",
                 Some(surface) => match surface.erase {
@@ -243,9 +245,98 @@ impl FlavorRegistry {
             };
             return Err(FlavorRegistryError::BespokeEraseLegMismatch {
                 flavor_id: contract.flavor_id,
-                table: entry.table,
+                table,
                 why,
             });
+        }
+        Ok(())
+    }
+
+    /// Every surface must have a leg that MOVES it, or a declaration
+    /// saying it deliberately does not move, and the check is at boot for
+    /// the same reason the erase's is: a missing one is discovered nowhere
+    /// else.
+    ///
+    /// The transfer partitions every declared surface into exactly one of
+    /// seven answers — a generated re-home, a generated drop, a generated
+    /// dedupe, a named hand-written leg, a key-owned non-move, a deliberate
+    /// retention at the source, or a refusal. There is no eighth, and the
+    /// eighth that was there until Phase 4 was silence: `owner_columns.rs`
+    /// named its fourteen tables as string literals and referenced no
+    /// contract type at all, so a flavor adding a `Follow` surface got no
+    /// statement, no error, and no way to find out.
+    ///
+    /// That silence is worse here than on the erase side, which is why the
+    /// partition was worth its lines. An unerased row outlives its owner
+    /// and is found by reconcile. An unmoved row is readable by the SOURCE
+    /// owner after the memory became the destination's — a cross-tenant
+    /// read under the multi-owner design centre, produced by nobody
+    /// deciding anything.
+    ///
+    /// [`FlavorContract::transfer_leg`] is the classifier both this and the
+    /// transfer itself call, so this is a check on the code that runs
+    /// rather than on a second description of it.
+    fn validate_transfer_legs(
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        use crate::flavor::contract::TransferLeg;
+
+        for surface in contract.all_surfaces() {
+            if contract.transfer_leg(&surface) == TransferLeg::Unreachable {
+                return Err(FlavorRegistryError::UnmovableSurface {
+                    flavor_id: contract.flavor_id,
+                    table: surface.table,
+                });
+            }
+        }
+
+        // A stale name is how the hand-written lists rotted in the first
+        // place, and an exemption claiming a surface whose rule says NO
+        // statement runs is a flavor arguing with itself about whether one
+        // does.
+        for table in contract.bespoke_transfer_legs {
+            let why = match contract
+                .all_surfaces()
+                .find(|surface| surface.table == *table)
+            {
+                None => "this flavor does not declare",
+                Some(surface) => {
+                    if contract.transfer_leg(&surface).moves_rows() {
+                        continue;
+                    }
+                    "declares a transfer that moves no rows, so no hand-written statement \
+                     should touch it"
+                }
+            };
+            return Err(FlavorRegistryError::BespokeTransferLegMismatch {
+                flavor_id: contract.flavor_id,
+                table,
+                why,
+            });
+        }
+        Ok(())
+    }
+
+    /// Every surface says what forget does to it, and every answer is one
+    /// the forget can carry out.
+    ///
+    /// The arm this closes is `DeleteWithMemory` over a key shaped like
+    /// nothing the forget builds a `t` for — an owner-scoped `Custom` key,
+    /// say. Such a surface declared that forgetting a memory destroys its
+    /// rows, and no statement anywhere would have. Same shape as
+    /// `UndeletableSurface` and `UnmovableSurface`, one verb over.
+    fn validate_forget_legs(
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        use crate::flavor::contract::ForgetLeg;
+
+        for surface in contract.all_surfaces() {
+            if ForgetLeg::derive(&surface) == ForgetLeg::Unreachable {
+                return Err(FlavorRegistryError::UnforgettableSurface {
+                    flavor_id: contract.flavor_id,
+                    table: surface.table,
+                });
+            }
         }
         Ok(())
     }
@@ -343,6 +434,160 @@ impl FlavorRegistry {
         Ok(())
     }
 
+    /// Where a contract declaration and the registration it describes are
+    /// checked for being ONE fact rather than two copies.
+    ///
+    /// Both fields here were second descriptions of something the registry
+    /// already held, with no mechanism keeping them equal — the
+    /// `compliance_audit_log` counter-literal pattern one layer up.
+    fn validate_registration_agreement(
+        contract: &crate::flavor::contract::FlavorContract,
+        schema: &crate::flavor::contract::SchemaContract,
+        info: &crate::verbs::schema::SchemaInfo,
+    ) -> Result<(), FlavorRegistryError> {
+        let schema_id = schema.schema_id();
+        // The contract and the trait constant are one fact, so they
+        // have to be one answer.
+        //
+        // `EmbeddingRecipe::Never { why }` is the reasoned form of
+        // `FactPayload::EMBEDDABLE = false` and its doc has always said
+        // it feeds `non_embeddable_schema_ids`. It did not: that list
+        // is built from the trait constant, and the two disagreed for
+        // SEVEN Fact schemas — `core/mcp-call-logged-v1` and six code
+        // ones — every one of them in the same direction. The contract
+        // said "never embed, and here is why"; the trait said
+        // "embeddable"; the enqueue lane believed the trait and filed
+        // embedding jobs for rows whose recipe yields zero units, so
+        // the drain had nothing to send and dropped them. A declaration
+        // that costs work and produces nothing is worse than an inert
+        // one.
+        //
+        // WHY THIS STOPS AT `Fact`, and why extending it would be wrong.
+        // The check compares two DECLARATIONS. `FactPayload::EMBEDDABLE` is
+        // one — a trait constant a schema author writes, defaulting to
+        // `true`. For every other kind there is no such constant, and
+        // `schema_registration.rs` hardcodes `embeddable: true` on the way
+        // into `SchemaInfo` because the flag has nothing to gate there
+        // (`SchemaInfo::embeddable`'s own doc says so, and
+        // `non_embeddable_schema_ids` filters on `kind == Fact` for the
+        // same reason). Comparing a declaration against a literal that
+        // nobody wrote is not an agreement check; it is an assertion that
+        // every non-Fact schema embeds. The code flavor declares six
+        // Abstraction/Perspective schemas as `Never { why }` — an execution
+        // plan, an acceptance summary and four self-perspectives — and
+        // widening this gate would refuse all six at boot for disagreeing
+        // with a constant that was never a claim.
+        //
+        // The comparison is not well-defined off `Fact`, so it is not made.
+        // What DOES cover every kind is the `Units(&[])` refusal in
+        // `validate_contract_schemas`, which needs no second declaration to
+        // compare against.
+        if schema.kind == crate::verbs::schema::PayloadKind::Fact {
+            let never = matches!(
+                schema.embedding,
+                crate::flavor::contract::EmbeddingRecipe::Never { .. }
+            );
+            if never == info.embeddable {
+                return Err(FlavorRegistryError::EmbeddabilityDisagreement {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
+                    recipe_is_never: never,
+                    trait_says_embeddable: info.embeddable,
+                });
+            }
+        }
+        // Same shape, one field over: `natural_key_columns` is declared
+        // twice — on the contract and on the payload trait — and the
+        // ingest reads the trait's copy. Nothing compared them, so the
+        // contract's copy was a description of the ingest that could
+        // stop being true without any test noticing.
+        if schema.natural_key_columns.len() != info.natural_key_columns.len()
+            || !schema
+                .natural_key_columns
+                .iter()
+                .zip(&info.natural_key_columns)
+                .all(|(declared, registered)| *declared == registered.as_str())
+        {
+            return Err(FlavorRegistryError::NaturalKeyDisagreement {
+                flavor_id: contract.flavor_id,
+                schema_id,
+            });
+        }
+        Ok(())
+    }
+
+    /// A tool's contract entry against the descriptor the registry holds.
+    ///
+    /// `actions` and `idempotent` were both second descriptions of facts
+    /// the registry already carried — the dispatcher's `action_arg_specs`
+    /// and the wire's `McpToolAnnotations` — and nothing kept either equal.
+    fn validate_contract_tools(
+        &self,
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        for tool in contract.tools {
+            let Some(entry) = self
+                .mcp_tools
+                .iter()
+                .find(|entry| entry.name == tool.wire_name)
+            else {
+                return Err(FlavorRegistryError::ContractToolNotRegistered {
+                    flavor_id: contract.flavor_id,
+                    name: tool.wire_name,
+                });
+            };
+            // `actions` and `idempotent` are a SECOND description of facts
+            // the registry already holds, and until this check nothing kept
+            // the two equal. The dispatcher's truth is
+            // `McpToolDescriptor::action_arg_specs`, validated against the
+            // JSON schema and never against this list; the wire's truth is
+            // `McpToolAnnotations::idempotent`. Flavor #0 declared five
+            // non-empty action lists that nothing read, and the code
+            // flavor's own doc admitted the duplication in prose.
+            //
+            // The list is compared in ORDER, not as a set. A palette scope
+            // key is `"<wire_name>:<action>"`, so the declaration is read by
+            // people composing palettes; a list that agrees on membership
+            // and disagrees on order is still a list that has stopped being
+            // a copy of the thing it describes.
+            let registered_actions = entry
+                .action_arg_specs
+                .iter()
+                .map(|spec| spec.action)
+                .collect::<Vec<_>>();
+            if registered_actions != tool.actions {
+                return Err(FlavorRegistryError::ToolActionsDisagreement {
+                    flavor_id: contract.flavor_id,
+                    name: tool.wire_name,
+                });
+            }
+            let annotations = entry.resolved_annotations();
+            let resolved = annotations
+                .and_then(|value| value.idempotent)
+                // A read-only tool is idempotent by construction — calling
+                // it twice is calling it once — and MCP's `readOnlyHint`
+                // carries that, which is why the substrate annotations do
+                // not restate it. Reading the implication here is what lets
+                // the contract's `idempotent` stay a claim about BEHAVIOUR
+                // rather than a copy of one optional field.
+                .or_else(|| {
+                    annotations
+                        .and_then(|value| value.read_only)
+                        .filter(|ro| *ro)
+                })
+                .unwrap_or(false);
+            if resolved != tool.idempotent {
+                return Err(FlavorRegistryError::ToolIdempotenceDisagreement {
+                    flavor_id: contract.flavor_id,
+                    name: tool.wire_name,
+                    declared: tool.idempotent,
+                    resolved,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn validate_contract_schemas(
         &self,
         contract: &crate::flavor::contract::FlavorContract,
@@ -380,6 +625,33 @@ impl FlavorRegistry {
                     schema_id,
                     levels,
                     classes: crate::flavor::contract::TSVECTOR_WEIGHT_CLASSES.len(),
+                });
+            }
+            // `Units(&[])` is `Never` with the reason deleted.
+            //
+            // The whole point of the `Never { why }` arm is that "this does
+            // not embed" carries its reason instead of being a naked
+            // `false` — that is what the arm's own doc claims for it. An
+            // empty unit list makes the identical claim and states nothing,
+            // and it is worse than a naked `false` because it reads as the
+            // embedding arm: `resolve()` yields zero units, so the drain
+            // gets no text, while `is_never()` answers `false`, so the
+            // agreement check below classifies it as "embeds" and the
+            // enqueue lane files jobs the drain can only drop. That is
+            // precisely the failure `EmbeddabilityDisagreement` was written
+            // to end, reachable through the arm it was not watching.
+            //
+            // Refused here rather than folded into that check, because it
+            // is wrong on its own: a `Units` arm with nothing in it is not
+            // a disagreement between two declarations, it is one
+            // declaration that declines to say anything. Every kind, not
+            // just Fact — an empty list is empty whoever wrote it.
+            if let crate::flavor::contract::EmbeddingRecipe::Units(units) = schema.embedding
+                && units.is_empty()
+            {
+                return Err(FlavorRegistryError::EmptyEmbeddingUnits {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
                 });
             }
             // The shared-blob dedupe arm's blind spot, made loud.
@@ -434,19 +706,20 @@ impl FlavorRegistry {
                     });
                 }
             }
-            let registered = self.schemas.iter().any(|info| {
+            let registered = self.schemas.iter().find(|info| {
                 info.schema_id == schema_id
                     && info.schema_version == schema.schema_version()
                     && info.kind == schema.kind
             });
-            if !registered {
+            let Some(info) = registered else {
                 return Err(FlavorRegistryError::ContractSchemaNotRegistered {
                     flavor_id: contract.flavor_id,
                     schema_id,
                     schema_version: schema.schema_version(),
                     kind: schema.kind,
                 });
-            }
+            };
+            Self::validate_registration_agreement(contract, schema, info)?;
         }
         for info in &self.schemas {
             if !info.schema_id.as_str().starts_with(&prefix) {
@@ -466,18 +739,7 @@ impl FlavorRegistry {
                 });
             }
         }
-        for tool in contract.tools {
-            if !self
-                .mcp_tools
-                .iter()
-                .any(|entry| entry.name == tool.wire_name)
-            {
-                return Err(FlavorRegistryError::ContractToolNotRegistered {
-                    flavor_id: contract.flavor_id,
-                    name: tool.wire_name,
-                });
-            }
-        }
+        self.validate_contract_tools(contract)?;
         Ok(())
     }
 
@@ -700,7 +962,7 @@ pub(crate) fn schema_capability_map(
 mod tests {
     use crate::SearchProjectionColumnKind;
     use crate::flavor::contract::{
-        BespokeEraseLeg, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract,
+        CounterRule, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract,
         ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, Provenance, ResourceContract,
         SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm, Surface, ToolContract,
         TransferRule, WeightedField,
@@ -725,6 +987,7 @@ mod tests {
             tools,
             resources,
             bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
             projection: ProjectionDecl::None {
                 why: "a fixture registry has no schema that is a search surface",
             },
@@ -746,7 +1009,6 @@ mod tests {
             provenance: Provenance::None,
             surfaces: &[],
             natural_key_columns: &[],
-            special_category: false,
         }
     }
 
@@ -820,7 +1082,6 @@ mod tests {
             provenance: Provenance::None,
             surfaces: &[],
             natural_key_columns: &[],
-            special_category: false,
         }],
         &[],
         &[],
@@ -845,14 +1106,39 @@ mod tests {
                 why: "a fixture, not a memory",
             },
             lexical_language_column: None,
-            counter: None,
+            counter: CounterRule::Uncounted {
+                why: "a fixture contributes to no receipt",
+            },
             completeness: None,
+        }
+    }
+
+    /// `erase_fixture`'s twin for the transfer partition: the surfaces are
+    /// declared non-erasing so the erase check cannot fire first and mask
+    /// the case under test.
+    const fn transfer_fixture(
+        surfaces: &'static [Surface],
+        bespoke: &'static [&'static str],
+    ) -> FlavorContract {
+        FlavorContract {
+            flavor_id: FIXTURE_FLAVOR,
+            ordinal: 7,
+            schemas: &[],
+            state_surfaces: surfaces,
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: bespoke,
+            projection: ProjectionDecl::None {
+                why: "a fixture registry has no schema that is a search surface",
+            },
         }
     }
 
     const fn erase_fixture(
         surfaces: &'static [Surface],
-        bespoke: &'static [BespokeEraseLeg],
+        bespoke: &'static [&'static str],
     ) -> FlavorContract {
         FlavorContract {
             flavor_id: FIXTURE_FLAVOR,
@@ -863,6 +1149,7 @@ mod tests {
             tools: &[],
             resources: &[],
             bespoke_erase_legs: bespoke,
+            bespoke_transfer_legs: &[],
             projection: ProjectionDecl::None {
                 why: "a fixture registry has no schema that is a search surface",
             },
@@ -892,10 +1179,123 @@ mod tests {
             EraseRule::ByKey,
             ExportRule::Rows,
         )],
-        &[BespokeEraseLeg {
-            table: "test_flavor.gone_v1",
-            leg: "delete_things",
+        &["test_flavor.gone_v1"],
+    );
+
+    /// A `Follow` surface whose transfer no leg can perform, and the whole
+    /// reason the transfer partition exists.
+    ///
+    /// Keyed on a `Custom` column the transfer builds no `t` set for, and
+    /// claimed by no bespoke leg. Before Phase 4 this froze cleanly, booted
+    /// cleanly, and its rows stayed with the SOURCE owner after every
+    /// memory that referenced them moved — which is not a stale row, it is
+    /// a cross-tenant read arrived at by silence.
+    static UNMOVABLE_SURFACE: FlavorContract = transfer_fixture(
+        &[Surface {
+            table: "test_flavor.thing_v1",
+            key: KeyShape::Custom(&["thing_id"]),
+            owner_columns: &["owner_id"],
+            transfer: TransferRule::Follow,
+            erase: EraseRule::Never {
+                why: "the transfer rule is what this fixture is about",
+            },
+            export: ExportRule::Excluded {
+                why: "the transfer rule is what this fixture is about",
+            },
+            forget: ForgetRule::Keep {
+                why: "a fixture, not a memory",
+            },
+            lexical_language_column: None,
+            counter: CounterRule::Uncounted {
+                why: "a fixture contributes to no receipt",
+            },
+            completeness: None,
         }],
+        &[],
+    );
+
+    /// `Follow` with no owner column to set. The rows are reached through
+    /// their key's owner, which is what `StaysOnKey` says and what an empty
+    /// `owner_columns` claims; declaring `Follow` over it asks for an
+    /// `UPDATE` with an empty `SET`.
+    static FOLLOW_WITH_NOTHING_TO_SET: FlavorContract = transfer_fixture(
+        &[Surface {
+            table: "test_flavor.thing_v1",
+            key: KeyShape::MemoryT { column: "t" },
+            owner_columns: &[],
+            transfer: TransferRule::Follow,
+            erase: EraseRule::Never {
+                why: "the transfer rule is what this fixture is about",
+            },
+            export: ExportRule::Excluded {
+                why: "the transfer rule is what this fixture is about",
+            },
+            forget: ForgetRule::Keep {
+                why: "a fixture, not a memory",
+            },
+            lexical_language_column: None,
+            counter: CounterRule::Uncounted {
+                why: "a fixture contributes to no receipt",
+            },
+            completeness: None,
+        }],
+        &[],
+    );
+
+    /// A surface claiming forget destroys its rows over a key the forget
+    /// builds no `t` for, and no constraint to claim completeness either.
+    /// The rows outlive the memory that declared them gone.
+    static UNFORGETTABLE_SURFACE: FlavorContract = transfer_fixture(
+        &[Surface {
+            table: "test_flavor.thing_v1",
+            key: KeyShape::Custom(&["thing_id"]),
+            owner_columns: &[],
+            transfer: TransferRule::StaysOnKey,
+            erase: EraseRule::Never {
+                why: "the forget rule is what this fixture is about",
+            },
+            export: ExportRule::Excluded {
+                why: "the forget rule is what this fixture is about",
+            },
+            forget: ForgetRule::DeleteWithMemory,
+            lexical_language_column: None,
+            counter: CounterRule::Uncounted {
+                why: "a fixture contributes to no receipt",
+            },
+            completeness: None,
+        }],
+        &[],
+    );
+
+    /// A bespoke transfer leg naming a table the flavor does not declare.
+    static BESPOKE_TRANSFER_LEG_FOR_NOTHING: FlavorContract = transfer_fixture(
+        &[state_surface(
+            "test_flavor.thing_v1",
+            KeyShape::MemoryT { column: "t" },
+            EraseRule::Never {
+                why: "the transfer rule is what this fixture is about",
+            },
+            ExportRule::Excluded {
+                why: "the transfer rule is what this fixture is about",
+            },
+        )],
+        &["test_flavor.gone_v1"],
+    );
+
+    /// A flavor arguing with itself: `StaysOnKey` says nothing moves, and
+    /// the exemption list says a hand-written statement moves it.
+    static BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE: FlavorContract = transfer_fixture(
+        &[state_surface(
+            "test_flavor.thing_v1",
+            KeyShape::MemoryT { column: "t" },
+            EraseRule::Never {
+                why: "the transfer rule is what this fixture is about",
+            },
+            ExportRule::Excluded {
+                why: "the transfer rule is what this fixture is about",
+            },
+        )],
+        &["test_flavor.thing_v1"],
     );
 
     /// A flavor arguing with itself: the declaration says a constraint
@@ -913,10 +1313,7 @@ mod tests {
             },
             ExportRule::Rows,
         )],
-        &[BespokeEraseLeg {
-            table: "test_flavor.thing_v1",
-            leg: "delete_things",
-        }],
+        &["test_flavor.thing_v1"],
     );
 
     /// Exportable while carrying neither an owner column nor a key with a
@@ -936,7 +1333,9 @@ mod tests {
                 why: "a fixture, not a memory",
             },
             lexical_language_column: None,
-            counter: None,
+            counter: CounterRule::Uncounted {
+                why: "a fixture contributes to no receipt",
+            },
             completeness: None,
         }],
         &[],
@@ -976,13 +1375,13 @@ mod tests {
             provenance: Provenance::None,
             surfaces: &[],
             natural_key_columns: &[],
-            special_category: false,
         }],
         state_surfaces: &[],
         kernel_surfaces: &[],
         tools: &[],
         resources: &[],
         bespoke_erase_legs: &[],
+        bespoke_transfer_legs: &[],
         projection: ProjectionDecl::Table(crate::flavor::contract::ProjectionSpec {
             table: "test_flavor.projection",
             index: "test_flavor_projection_owner_tsv_gin",
@@ -1030,9 +1429,103 @@ mod tests {
             provenance: Provenance::None,
             surfaces: &[],
             natural_key_columns: &[],
-            special_category: false,
         }
     }
+
+    /// A Fact whose recipe names a unit while its registration says the
+    /// schema does not embed. The recipe is the one with the text in it, so
+    /// this direction loses embeddings that were declared.
+    ///
+    /// `register_fixture_schema` registers `embeddable: false`, which is
+    /// what makes this the disagreement.
+    static EMBEDDING_DISAGREEMENT: FlavorContract = uniformity_contract(&[SchemaContract {
+        id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+        kind: PayloadKind::Fact,
+        sidecar_table: Some("test_flavor.thing_v1"),
+        search: SearchProjectionDecl::None {
+            why: "the embedding recipe is what this fixture is about",
+        },
+        embedding: EmbeddingRecipe::Units(&[crate::flavor::contract::EmbedUnit::stored(
+            "embed_text",
+            crate::flavor::contract::SLOT_DEFAULT,
+        )]),
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[],
+        natural_key_columns: &[],
+    }]);
+
+    /// THE DIRECTION THAT ACTUALLY SHIPPED BROKEN, and the one the fixture
+    /// above did not cover.
+    ///
+    /// The recipe says "never embed, and here is why" while the
+    /// registration says the enqueue lane should embed it. The enqueue lane
+    /// reads the REGISTRATION, so the reason is stated and ignored and the
+    /// jobs filed for these rows can only be dropped: the recipe yields no
+    /// units, so the drain has no text to send. Seven Fact schemas were in
+    /// exactly this state before the check existed — `core/mcp-call-logged-v1`
+    /// and six code ones — every one of them this way round.
+    ///
+    /// Paired with `register_fixture_schema_embeddable`, which registers
+    /// `embeddable: true`; the normal helper hardcodes `false` precisely so
+    /// that every OTHER fixture's `Never` declaration agrees with it.
+    static EMBEDDING_DISAGREEMENT_NEVER_BUT_EMBEDDABLE: FlavorContract =
+        uniformity_contract(&[SchemaContract {
+            id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+            kind: PayloadKind::Fact,
+            sidecar_table: Some("test_flavor.thing_v1"),
+            search: SearchProjectionDecl::None {
+                why: "the embedding recipe is what this fixture is about",
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "the reason the enqueue lane never read",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[],
+            natural_key_columns: &[],
+        }]);
+
+    /// `Never` with the reason deleted, wearing the arm that means "embeds".
+    ///
+    /// `resolve()` yields zero units, so the drain gets nothing — the same
+    /// outcome as `Never`. But `is_never()` answers `false`, so the
+    /// agreement check reads it as "this embeds" and the enqueue lane files
+    /// jobs against it. Registered `embeddable: true` here so that the
+    /// agreement check would be SATISFIED: this fixture proves the empty
+    /// list is refused on its own account, not caught in passing by the
+    /// disagreement it slips past.
+    static EMPTY_EMBEDDING_UNITS: FlavorContract = uniformity_contract(&[SchemaContract {
+        id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+        kind: PayloadKind::Fact,
+        sidecar_table: Some("test_flavor.thing_v1"),
+        search: SearchProjectionDecl::None {
+            why: "the embedding recipe is what this fixture is about",
+        },
+        embedding: EmbeddingRecipe::Units(&[]),
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[],
+        natural_key_columns: &[],
+    }]);
+
+    /// A contract naming natural key columns the ingest does not read: the
+    /// registration's list is empty, and the ingest reads the registration.
+    static NATURAL_KEY_DISAGREEMENT: FlavorContract = uniformity_contract(&[SchemaContract {
+        id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+        kind: PayloadKind::Fact,
+        sidecar_table: Some("test_flavor.thing_v1"),
+        search: SearchProjectionDecl::None {
+            why: "the natural key is what this fixture is about",
+        },
+        embedding: EmbeddingRecipe::Never {
+            why: "a fixture, not a memory",
+        },
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[],
+        natural_key_columns: &["thing_key"],
+    }]);
 
     /// The `RankSource::Projection` wrapper the three uniformity fixtures
     /// share: one statement serves the whole flavor, which is what makes
@@ -1047,6 +1540,7 @@ mod tests {
             tools: &[],
             resources: &[],
             bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
             projection: ProjectionDecl::Table(crate::flavor::contract::ProjectionSpec {
                 table: "test_flavor.projection",
                 index: "test_flavor_projection_owner_tsv_gin",
@@ -1219,7 +1713,6 @@ mod tests {
             provenance: Provenance::None,
             surfaces: &[],
             natural_key_columns: &[],
-            special_category: false,
         }],
         &[],
         &[],
@@ -1235,6 +1728,72 @@ mod tests {
         }],
         &[],
     );
+
+    /// The registration says nothing dispatches; the declaration names an
+    /// action. `actions` is a copy of `McpActionArgSpec::action`, and a copy
+    /// that has drifted is worse than no copy: palette scope keys are
+    /// `"<wire_name>:<action>"`, so the drifted list is read by people
+    /// composing palettes against actions the dispatcher will not route.
+    static TOOL_ACTIONS_DISAGREE: FlavorContract = contract(
+        8,
+        &[],
+        &[ToolContract {
+            wire_name: "test_flavor_flat",
+            actions: &["compose"],
+            idempotent: false,
+        }],
+        &[],
+    );
+
+    /// The registration's annotations say a second call is a second write;
+    /// the declaration claims idempotence.
+    static TOOL_IDEMPOTENCE_DISAGREES: FlavorContract = contract(
+        9,
+        &[],
+        &[ToolContract {
+            wire_name: "test_flavor_flat",
+            actions: &[],
+            idempotent: true,
+        }],
+        &[],
+    );
+
+    /// A flat MCP tool registration, so a contract's tool declaration has a
+    /// registration to disagree with.
+    ///
+    /// Flat, not a dispatcher: a dispatcher fixture would have to carry a
+    /// hand-written `x-proxima-actions` extension agreeing with its specs
+    /// field-set for field-set, which is a different validator's subject.
+    /// Empty `action_arg_specs` against a declared action is the same
+    /// disagreement with none of that machinery.
+    fn register_fixture_tool(registry: &mut FlavorRegistry, idempotent: bool) {
+        // Registrations live for the process; a leaked closure gives the
+        // descriptor the `'static` call handle its field type demands.
+        let call: crate::mcp::McpCallFn = Box::leak(Box::new(
+            |_ctx: crate::mcp::McpToolCtx, _args: serde_json::Value| {
+                Box::pin(async { Err(crate::mcp::McpToolError::Other("a fixture".to_owned())) })
+                    as futures::future::BoxFuture<'static, _>
+            },
+        ));
+        registry.mcp_tools.push(crate::mcp::McpToolDescriptor {
+            name: "test_flavor_flat",
+            description: "a fixture's flat tool",
+            origin: crate::mcp::McpToolOrigin::Flavor(FIXTURE_FLAVOR.to_owned()),
+            produces_schema_ids: &[],
+            args_schema: serde_json::json!({ "type": "object" }),
+            output_schema: serde_json::json!({ "type": "object" }),
+            action_arg_specs: &[],
+            // Declared, or `validate_tools_declare_behavior` refuses the
+            // fixture for saying nothing at all and the contract check is
+            // never reached.
+            annotations: Some(
+                crate::mcp::McpToolAnnotations::new()
+                    .read_only(false)
+                    .idempotent(idempotent),
+            ),
+            call,
+        });
+    }
 
     /// A fixture's ingress. Never called: the registries below are built to
     /// be REFUSED, so nothing reaches a payload parser.
@@ -1258,6 +1817,30 @@ mod tests {
     /// `SchemaIngressMismatch` fires first and the fixture proves that
     /// instead.
     fn register_fixture_schema(registry: &mut FlavorRegistry, name: &str, table: &str) {
+        // Every fixture contract declares `EmbeddingRecipe::Never`, and
+        // freeze refuses a Fact whose trait constant disagrees — so a
+        // registration that said `true` here would make every fixture report
+        // the embeddability error instead of its own subject.
+        register_fixture_schema_with(registry, name, table, false);
+    }
+
+    /// The same registration, saying the enqueue lane SHOULD embed this
+    /// schema.
+    ///
+    /// `FactPayload::EMBEDDABLE` defaults to `true`, so this is what a
+    /// schema author gets by not thinking about it — which is how seven
+    /// shipped Facts ended up declaring `Never { why }` against a
+    /// registration that said "embed me".
+    fn register_fixture_schema_embeddable(registry: &mut FlavorRegistry, name: &str, table: &str) {
+        register_fixture_schema_with(registry, name, table, true);
+    }
+
+    fn register_fixture_schema_with(
+        registry: &mut FlavorRegistry,
+        name: &str,
+        table: &str,
+        embeddable: bool,
+    ) {
         let schema_id = SchemaId::new(format!("{FIXTURE_FLAVOR}/{name}-v1"));
         let schema_version = SchemaVersion::new(1);
         registry.schemas.push(SchemaInfo {
@@ -1270,7 +1853,7 @@ mod tests {
             tombstone: None,
             has_typed_ingress: true,
             cited_object_schema: None,
-            embeddable: true,
+            embeddable,
         });
         registry
             .protocol_ingress
@@ -1480,6 +2063,75 @@ mod tests {
                 },
             ),
             (
+                "a surface declares a transfer no leg can perform",
+                |registry| registry.contracts.push(&UNMOVABLE_SURFACE),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::UnmovableSurface {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a surface declares Follow with no owner column to set",
+                |registry| registry.contracts.push(&FOLLOW_WITH_NOTHING_TO_SET),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::UnmovableSurface {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a bespoke transfer leg names a table the flavor does not declare",
+                |registry| registry.contracts.push(&BESPOKE_TRANSFER_LEG_FOR_NOTHING),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::BespokeTransferLegMismatch {
+                            table: "test_flavor.gone_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a bespoke transfer leg claims a surface nothing moves",
+                |registry| {
+                    registry
+                        .contracts
+                        .push(&BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::BespokeTransferLegMismatch {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a surface declares a forget that reaches none of its rows",
+                |registry| registry.contracts.push(&UNFORGETTABLE_SURFACE),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::UnforgettableSurface {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
                 "a bespoke erase leg names a table the flavor does not declare",
                 |registry| registry.contracts.push(&BESPOKE_LEG_FOR_NOTHING),
                 |err| {
@@ -1519,6 +2171,62 @@ mod tests {
                 },
             ),
             (
+                "a Fact's embedding recipe names units and its registration says it does not embed",
+                |registry| {
+                    register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
+                    registry.contracts.push(&EMBEDDING_DISAGREEMENT);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::EmbeddabilityDisagreement {
+                            recipe_is_never: false,
+                            trait_says_embeddable: false,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                // The direction seven shipped Facts were actually in. The
+                // case above is its mirror, and only the mirror was covered.
+                "a Fact's recipe says Never and its registration says embed it",
+                |registry| {
+                    register_fixture_schema_embeddable(registry, "thing", "test_flavor.thing_v1");
+                    registry
+                        .contracts
+                        .push(&EMBEDDING_DISAGREEMENT_NEVER_BUT_EMBEDDABLE);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::EmbeddabilityDisagreement {
+                            recipe_is_never: true,
+                            trait_says_embeddable: true,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                // Registered `embeddable: true`, so the disagreement check
+                // is SATISFIED and this has to be refused on its own.
+                "a recipe declares an empty unit list, which is Never without the reason",
+                |registry| {
+                    register_fixture_schema_embeddable(registry, "thing", "test_flavor.thing_v1");
+                    registry.contracts.push(&EMPTY_EMBEDDING_UNITS);
+                },
+                |err| matches!(err, FlavorRegistryError::EmptyEmbeddingUnits { .. }),
+            ),
+            (
+                "a contract names natural key columns the ingest does not read",
+                |registry| {
+                    register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
+                    registry.contracts.push(&NATURAL_KEY_DISAGREEMENT);
+                },
+                |err| matches!(err, FlavorRegistryError::NaturalKeyDisagreement { .. }),
+            ),
+            (
                 "the contract names an MCP tool nothing registered",
                 |registry| registry.contracts.push(&UNREGISTERED_TOOL),
                 |err| {
@@ -1526,6 +2234,37 @@ mod tests {
                         err,
                         FlavorRegistryError::ContractToolNotRegistered { name, .. }
                             if *name == "test_flavor_absent"
+                    )
+                },
+            ),
+            (
+                "the contract's action list is not the dispatcher's",
+                |registry| {
+                    register_fixture_tool(registry, false);
+                    registry.contracts.push(&TOOL_ACTIONS_DISAGREE);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ToolActionsDisagreement { name, .. }
+                            if *name == "test_flavor_flat"
+                    )
+                },
+            ),
+            (
+                "the contract claims an idempotence the registration denies",
+                |registry| {
+                    register_fixture_tool(registry, false);
+                    registry.contracts.push(&TOOL_IDEMPOTENCE_DISAGREES);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ToolIdempotenceDisagreement {
+                            declared: true,
+                            resolved: false,
+                            ..
+                        }
                     )
                 },
             ),
@@ -1543,8 +2282,16 @@ mod tests {
 
     /// The counterpart: the registry as the binary actually composes it,
     /// with core's contract in place, freezes.
+    ///
+    /// The failure surfaces the error. Every case in the table above is a
+    /// contract cross-check with its own message, and this is the test that
+    /// fires when one of them fires on the SHIPPED registry — the single
+    /// most useful moment to be told which. A bare `assert!(..is_ok())`
+    /// reports "assertion failed" and throws the reason away.
     #[test]
     fn the_shipped_registry_freezes() {
-        assert!(FlavorRegistry::new().try_freeze().is_ok());
+        if let Err(err) = FlavorRegistry::new().try_freeze() {
+            panic!("the registry the binary composes must freeze: {err}");
+        }
     }
 }

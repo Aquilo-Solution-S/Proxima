@@ -1151,6 +1151,9 @@ mod pg_tests {
             forget_memory(
                 &mut forget_tx,
                 &core_pg_sidecars(),
+                &proxima_core::owner_inverse::OwnerSurfaces::for_registry(
+                    &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+                ),
                 &cold,
                 &object_key,
                 t,

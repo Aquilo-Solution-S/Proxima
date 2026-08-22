@@ -29,7 +29,7 @@ impl Engine {
     /// could not see. It now comes off the same flavor contracts as the
     /// other four, via `TransferRule::RetainAtSource`, and the adapter's
     /// macro flag is checked against it when the sidecar registry freezes.
-    fn owner_surfaces(&self) -> OwnerSurfaces {
+    pub(crate) fn owner_surfaces(&self) -> OwnerSurfaces {
         OwnerSurfaces::for_registry(&self.registry)
     }
 

@@ -27,7 +27,7 @@ fn contract_sidecar_tables() -> OwnerSurfaces {
 /// `proxima_core.blob`.
 fn citation_surfaces() -> OwnerSurfaces {
     use proxima_core::flavor::{
-        EraseRule, ExportRule, ForgetRule, KeyShape, Surface, TransferRule,
+        CounterRule, EraseRule, ExportRule, ForgetRule, KeyShape, Surface, TransferRule,
     };
     const fn citation(table: &'static str, column: &'static str) -> Surface {
         Surface {
@@ -41,7 +41,7 @@ fn citation_surfaces() -> OwnerSurfaces {
                 why: "a citation outlives the Fact that made it",
             },
             lexical_language_column: None,
-            counter: Some("sidecar_rows"),
+            counter: CounterRule::Counted("sidecar_rows"),
             completeness: None,
         }
     }
@@ -163,6 +163,7 @@ async fn export_carries_cooled_locators_and_sketches() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &contract_sidecar_tables(),
             &cold,
             &key,
             cooled_t,
@@ -182,6 +183,7 @@ async fn export_carries_cooled_locators_and_sketches() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &contract_sidecar_tables(),
             &cold,
             &neighbour_key,
             neighbour_t,

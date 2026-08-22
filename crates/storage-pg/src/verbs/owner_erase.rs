@@ -213,7 +213,12 @@ const fn keyed_set(key: KeyShape) -> Option<(KeyedSet, &'static str)> {
         KeyShape::MemoryT { column } => Some((KeyedSet::Memories, column)),
         KeyShape::GoalT { column } => Some((KeyedSet::Goals, column)),
         KeyShape::BlobId { column } => Some((KeyedSet::Blobs, column)),
-        KeyShape::OwnerId | KeyShape::Custom(_) => None,
+        // An entity `t` has two home tables and therefore two selection
+        // sets; the erase fills one per home and can join neither
+        // unambiguously. All four such surfaces are declared bespoke erase
+        // legs, and a flavor that forgets the exemption gets
+        // `UndeletableSurface` rather than this returning a guess.
+        KeyShape::EntityT { .. } | KeyShape::OwnerId | KeyShape::Custom(_) => None,
     }
 }
 
@@ -237,7 +242,7 @@ async fn delete_keyed_surfaces(
         }
         let rows =
             delete_fixed_by_selected(tx, surface.table, column, set.table(), set.column()).await?;
-        if let Some(counter) = surface.counter {
+        if let Some(counter) = surface.counter.key() {
             record_count(tx, counter, rows).await?;
         }
         total += rows;
@@ -306,7 +311,7 @@ async fn delete_owned_surfaces(
             .await
             .map_err(map_err)?
             .rows_affected();
-        if let Some(counter) = surface.counter {
+        if let Some(counter) = surface.counter.key() {
             record_count(tx, counter, rows).await?;
         }
         total += rows;
@@ -1178,50 +1183,10 @@ mod tests {
                     surface.table
                 ),
                 EraseLeg::Owned { .. }
-                | EraseLeg::Bespoke { .. }
+                | EraseLeg::Bespoke
                 | EraseLeg::Cascade
                 | EraseLeg::Never { .. } => {}
             }
-        }
-    }
-
-    /// Every declared bespoke leg names a function this crate defines.
-    ///
-    /// The name is a claim about `proxima-storage-pg`, made in
-    /// `proxima-core` where nothing can check it: the contract says
-    /// "`proxima_core.blob` is deleted by `delete_blobs`" and a reader
-    /// follows that name here. Core's freeze proves the TABLE half of the
-    /// claim — it is a surface the flavor declares, and one whose
-    /// declaration runs a statement — and this proves the FUNCTION half.
-    ///
-    /// A stale name is how the hand-written lists rotted in the first
-    /// place, and a name pointing at a function that was renamed away is
-    /// the same rot one indirection further out.
-    #[test]
-    fn every_bespoke_leg_names_a_function_this_crate_defines() {
-        fn rust_sources(dir: &std::path::Path, into: &mut String) {
-            for entry in std::fs::read_dir(dir).expect("read src") {
-                let path = entry.expect("dir entry").path();
-                if path.is_dir() {
-                    rust_sources(&path, into);
-                } else if path.extension().is_some_and(|ext| ext == "rs") {
-                    into.push_str(&std::fs::read_to_string(&path).expect("read source"));
-                }
-            }
-        }
-
-        let mut src = String::new();
-        rust_sources(
-            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
-            &mut src,
-        );
-        for entry in proxima_core::flavor::FLAVOR_0.bespoke_erase_legs {
-            assert!(
-                src.contains(&format!("fn {}(", entry.leg)),
-                "{} claims {} deletes it, but this crate defines no such function",
-                entry.table,
-                entry.leg
-            );
         }
     }
 
@@ -1229,12 +1194,8 @@ mod tests {
     /// nobody prunes, and this one is now read by two crates.
     #[test]
     fn the_bespoke_leg_list_is_sorted_by_table() {
-        let tables: Vec<&str> = proxima_core::flavor::FLAVOR_0
-            .bespoke_erase_legs
-            .iter()
-            .map(|entry| entry.table)
-            .collect();
-        let mut sorted = tables.clone();
+        let tables = proxima_core::flavor::FLAVOR_0.bespoke_erase_legs;
+        let mut sorted = tables.to_vec();
         sorted.sort_unstable();
         assert_eq!(sorted, tables, "keep the exemption list sorted by table");
     }

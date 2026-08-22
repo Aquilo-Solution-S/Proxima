@@ -30,6 +30,15 @@ use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
+/// The transfer's registry-resolved legs, exactly as the engine assembles
+/// them. Passing a hand-built set here would test a registry production
+/// never sees.
+fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+    )
+}
+
 async fn fresh_storage() -> (PgStorage, String) {
     let db_name = unique_db_name("proxima_blob_s3_test");
     if let Err(e) = create_db(&db_name).await {
@@ -922,9 +931,14 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
 
     let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
     assert!(
-        pg.transfer_to_owner(&permit, EntityId::Memory(completed.memory_id), destination)
-            .await
-            .expect("transfer"),
+        pg.transfer_to_owner(
+            &permit,
+            EntityId::Memory(completed.memory_id),
+            destination,
+            &transfer_surfaces()
+        )
+        .await
+        .expect("transfer"),
         "the cited series transfers"
     );
 
@@ -1020,9 +1034,14 @@ async fn erase_follows_the_transfer_rather_than_the_key() {
 
     let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
     assert!(
-        pg.transfer_to_owner(&permit, EntityId::Memory(completed.memory_id), destination)
-            .await
-            .expect("transfer"),
+        pg.transfer_to_owner(
+            &permit,
+            EntityId::Memory(completed.memory_id),
+            destination,
+            &transfer_surfaces()
+        )
+        .await
+        .expect("transfer"),
         "the cited series transfers"
     );
 

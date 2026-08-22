@@ -30,6 +30,14 @@ pub struct CodeFlavorStore {
     pool: PgPool,
     tuning: PgTuning,
     sidecars: PgSidecarRegistryFrozen,
+    /// The declared surfaces of core plus this flavor, resolved into legs.
+    ///
+    /// The forget reads its `Deleted` legs off this. Composed from the two
+    /// contracts rather than handed in, exactly as `test_sidecars` composes
+    /// the PG registry: both are a function of `const` declarations, so a
+    /// store that saw a different set would be a store built against a
+    /// registry that cannot exist.
+    surfaces: proxima_core::owner_inverse::OwnerSurfaces,
 }
 
 impl std::fmt::Debug for CodeFlavorStore {
@@ -51,6 +59,7 @@ impl CodeFlavorStore {
             pool,
             tuning,
             sidecars,
+            surfaces: flavor_surfaces(),
         }
     }
 
@@ -69,6 +78,7 @@ impl CodeFlavorStore {
             pool,
             tuning,
             sidecars: test_sidecars(),
+            surfaces: flavor_surfaces(),
         }
     }
 
@@ -78,6 +88,10 @@ impl CodeFlavorStore {
 
     pub(crate) fn sidecars(&self) -> &PgSidecarRegistryFrozen {
         &self.sidecars
+    }
+
+    pub(crate) fn surfaces(&self) -> &proxima_core::owner_inverse::OwnerSurfaces {
+        &self.surfaces
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -339,6 +353,27 @@ impl CodeFlavorStore {
         }
         Ok(out)
     }
+}
+
+/// Core's surfaces plus this flavor's, resolved once. See the field.
+///
+/// NOT test-only, unlike [`test_sidecars`] below: the host constructor needs
+/// it too, and a `#[cfg(any(test, debug_assertions))]` gate on it compiled in
+/// dev and vanished under `--release`, which is the same trap the erase
+/// exports fell into. The gate is therefore the UNION of its callers' gates,
+/// not either one of them: `from_backend_pool_for_host` is `host-api` and the
+/// two fixture constructors are `test, debug_assertions`, so a release build
+/// of this crate WITHOUT `host-api` has no caller at all and the function is
+/// dead. A workspace build hides that — `proxima-mcp` unifies `host-api` on —
+/// which is why `cargo build --release -p proxima-code` is its own gate.
+#[cfg(any(feature = "host-api", test, debug_assertions))]
+fn flavor_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    let mut registry = proxima_core::FlavorRegistry::new();
+    crate::register(&mut registry).expect("the code flavor registers against a fresh registry");
+    let registry = registry
+        .try_freeze()
+        .expect("core plus the code flavor freeze");
+    proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry)
 }
 
 /// The host's boot composition, repeated for a store built without a host.

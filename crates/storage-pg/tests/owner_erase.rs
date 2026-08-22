@@ -69,7 +69,7 @@ impl ColdObjectStore for RefusingDeleteCold {
 /// `owner_id` of their own, and tallying into `sidecar_rows`.
 fn citation_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     use proxima_core::flavor::{
-        EraseRule, ExportRule, ForgetRule, KeyShape, Surface, TransferRule,
+        CounterRule, EraseRule, ExportRule, ForgetRule, KeyShape, Surface, TransferRule,
     };
     const fn citation(table: &'static str, column: &'static str) -> Surface {
         Surface {
@@ -83,7 +83,7 @@ fn citation_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
                 why: "a citation outlives the Fact that made it",
             },
             lexical_language_column: None,
-            counter: Some("sidecar_rows"),
+            counter: CounterRule::Counted("sidecar_rows"),
             completeness: None,
         }
     }
@@ -324,7 +324,7 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         };
         assert_eq!(counts.get("memories"), 1);
         assert_eq!(counts.get("embeddings"), 2);
-        // `ingest_keys` declares `counter: Some("receipts")`, and the
+        // `ingest_keys` declares `counter: CounterRule::Counted("receipts")`, and the
         // generated leg tallies whatever its surface declares. The
         // hand-written leg it replaced deleted the same row and counted it
         // nowhere, so `receipts` was structurally zero: a field on the
@@ -1322,4 +1322,122 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("source-scope cooled erase failed");
+}
+
+/// R4, witnessed: erasing a member does not shrink the groups it belonged
+/// to.
+///
+/// `group_memberships` was a recorded gap in an `UNDECLARED_BUT_INTENTIONAL`
+/// list and a changelog follow-up before it became a `Surface` with
+/// `EraseRule::Never { why }`. The commit that declared it argued zero
+/// behaviour change and zero golden churn, correctly — the erase never
+/// deleted from this table, and the differential harness enumerates
+/// relations from `information_schema` rather than from the contract, so it
+/// would report a row here as present either way.
+///
+/// Which means nothing in the tree asserts the position the declaration
+/// takes. The differential proves the erase's output is unchanged; it does
+/// not prove that a membership naming an erased member survives, because
+/// its corpus never writes one. That is the difference between "we did not
+/// change this" and "this is what we hold".
+///
+/// Two halves, because `EraseRule::Never` makes two claims. The row is still
+/// there — a group does not silently lose a member row when the member is
+/// dropped, and a host that must remove a departed user calls
+/// `remove_group_member` first, deliberately. And the receipt says nothing
+/// about it: the surface declares `CounterRule::Uncounted`, so the erase
+/// reports no counter for this table at all rather than reporting zero.
+#[tokio::test]
+async fn erasing_a_member_leaves_the_memberships_that_name_it() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+
+        let user = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(user);
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        // A memory, so the erase has something of its own to do and the
+        // survival below is not the survival of an empty operation.
+        ingest_fact_atomic(pool, &permit, &draft(Some(("src", "k1"))), None).await?;
+
+        let group_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'group'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+        )
+        .bind(group_id)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation)
+             VALUES ($1, $2, 'editor'::proxima_core.membership_relation)",
+        )
+        .bind(group_id)
+        .bind(user.into_inner())
+        .execute(pool)
+        .await?;
+
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+            user_id: user,
+            drop_event_id: "test-drop".into(),
+        });
+        let outcome = pg
+            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
+            .await?;
+        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
+            panic!("expected completed erase, got {outcome:?}");
+        };
+
+        let surviving: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.group_memberships
+              WHERE group_id = $1 AND member_user_id = $2",
+        )
+        .bind(group_id)
+        .bind(user.into_inner())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            surviving, 1,
+            "a membership is a relation between two owners; erasing one of \
+             them does not make it the other's to lose"
+        );
+
+        assert!(
+            counts.get("memories") >= 1,
+            "the erase did its own work, so the survival above is not the \
+             survival of a no-op"
+        );
+
+        // Tie the behaviour back to the declaration it witnesses, so that
+        // changing the position without changing this test is a failure
+        // rather than a silently stale assertion. `Uncounted` is why the
+        // receipt above names no counter for this table: the erase's only
+        // interaction with it is the abandonment precondition's COUNT.
+        let surface = proxima_core::FLAVOR_0
+            .all_surfaces()
+            .find(|surface| surface.table == "proxima_core.group_memberships")
+            .expect("flavor #0 declares the membership surface");
+        assert!(
+            matches!(surface.erase, proxima_core::flavor::EraseRule::Never { .. }),
+            "the row survived because the declaration says it must, not by \
+             accident of which statements the erase happens to run"
+        );
+        assert!(
+            matches!(
+                surface.counter,
+                proxima_core::flavor::CounterRule::Uncounted { .. }
+            ),
+            "and nothing is destroyed here, so there is no counter to carry"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("erasing_a_member_leaves_the_memberships_that_name_it failed");
 }

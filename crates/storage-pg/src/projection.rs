@@ -400,26 +400,6 @@ SELECT c.t,
     ))
 }
 
-/// `UPDATE <flavor>.projection SET owner_id = ...` for a transferred series.
-///
-/// The projection is the first memory-keyed surface that carries an
-/// `owner_id`, so it is the first that does not follow implicitly. It is an
-/// index accelerator, not the authorization source of truth — the search
-/// scan keeps its `memory` join and `admit_hits` re-checks the owner — so a
-/// stale value can cost a plan, never a disclosure.
-///
-/// # Errors
-///
-/// `StorageError::Internal` when the projection table name is invalid.
-pub fn projection_transfer_sql(table: &str) -> Result<String, StorageError> {
-    let table = PgIdent::table(table)?;
-    // SQL-POLICY: PgIdent
-    Ok(format!(
-        "UPDATE {} SET owner_id = $2 WHERE memory_id = ANY($1::uuid[])",
-        table.as_str()
-    ))
-}
-
 /// Every projection table a composed binary declares, in name order.
 #[must_use]
 pub fn projection_tables(contracts: &[&'static FlavorContract]) -> Vec<String> {
@@ -562,9 +542,82 @@ const PROJECTION_COLUMNS: [&str; 6] = [
 
 #[cfg(test)]
 mod tests {
-    use super::{projection_artifacts, projection_insert_sql, projection_vector_sql};
+    use super::{
+        PROJECTION_COLUMNS, projection_artifacts, projection_insert_sql, projection_vector_sql,
+    };
     use proxima_core::FLAVOR_0;
     use proxima_core::flavor::SearchProjectionDecl;
+
+    /// `PROJECTION_MEMORY_COLUMN` names one thing, and everything that
+    /// spells that thing agrees with it.
+    ///
+    /// The constant's doc used to CLAIM this — "the surface declaration and
+    /// the generated statements cannot drift again" — on the strength of
+    /// being a constant. It is read in exactly one place
+    /// (`ProjectionSpec::surface`). The FK name is an independent literal,
+    /// and the generator writes `memory_id` inline in the `CREATE TABLE`
+    /// column list, in its `PRIMARY KEY`, in the projection `INSERT`, and in
+    /// `PROJECTION_COLUMNS`. Interpolating the constant into fixed SQL text
+    /// would trade four spellings for four `format!` holes and buy nothing,
+    /// so the agreement is asserted instead of engineered.
+    ///
+    /// The DDL is read out of the generator's own emitted artifact rather
+    /// than restated here, so this cannot pass against text nobody emits.
+    #[test]
+    fn the_projection_column_name_has_one_spelling() {
+        use proxima_core::flavor::{
+            PROJECTION_MEMORY_COLUMN, PROJECTION_MEMORY_FK, PROJECTION_TABLE_NAME,
+        };
+
+        assert_eq!(
+            PROJECTION_MEMORY_FK,
+            format!("{PROJECTION_TABLE_NAME}_{PROJECTION_MEMORY_COLUMN}_fkey"),
+            "PostgreSQL mints an FK name as <table>_<column>_fkey, so these two \
+             constants are one fact; they are separate literals, which is why this \
+             is checked"
+        );
+        assert!(
+            PROJECTION_COLUMNS.contains(&PROJECTION_MEMORY_COLUMN),
+            "the catalog boot check compares against PROJECTION_COLUMNS, so a \
+             renamed column that missed that list would pass boot and fail the \
+             surface"
+        );
+
+        let artifacts = projection_artifacts(&FLAVOR_0)
+            .expect("core artifacts")
+            .expect("core declares a projection");
+        let ddl = &artifacts.table.forward;
+        assert!(
+            ddl.contains(&format!("{PROJECTION_MEMORY_COLUMN} ")),
+            "the emitted CREATE TABLE declares the column this constant names: {ddl}"
+        );
+        assert!(
+            ddl.contains(&format!(
+                "PRIMARY KEY ({PROJECTION_MEMORY_COLUMN}, schema_id)"
+            )),
+            "and keys on it: {ddl}"
+        );
+
+        let schema = FLAVOR_0
+            .schemas
+            .iter()
+            .find(|schema| schema.search.is_projected())
+            .expect("core projects at least one schema");
+        let spec = FLAVOR_0.projection.spec().expect("core declares a spec");
+        let insert = projection_insert_sql(spec, schema).expect("the insert generates");
+        assert!(
+            insert.contains(&format!("({PROJECTION_MEMORY_COLUMN}, schema_id,")),
+            "and the projection INSERT writes it: {insert}"
+        );
+
+        assert_eq!(
+            spec.surface().key,
+            proxima_core::flavor::KeyShape::MemoryT {
+                column: PROJECTION_MEMORY_COLUMN,
+            },
+            "the one reader agrees with all of the above"
+        );
+    }
 
     /// The slimness rule, as a test: two flavors' DDL differs in the schema
     /// name and the index name and nowhere else. If it ever differs
