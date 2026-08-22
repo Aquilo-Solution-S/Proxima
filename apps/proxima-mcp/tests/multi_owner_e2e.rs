@@ -183,7 +183,7 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     )
     .await?;
     // Membership is re-checked on the next request. A session whose bound
-    // owner the principal can no longer narrow to answers the same 404 as an
+    // owner the principal has lost access to answers the same 404 as an
     // unknown session (no cross-owner session-existence oracle); the client
     // re-initializes and owner selection then fails with 401.
     assert_eq!(
@@ -209,12 +209,10 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
 /// `mcp_auth` narrows each authenticated request with
 /// `AuthzContext::narrowed_to_owner(selected_owner)`, whose role map holds
 /// exactly the one owner the caller selected. A transfer needs authority on
-/// TWO owners, so the request context can never carry both: before the
-/// destination was resolved out of band, whichever side the caller
-/// selected, the other answered `Forbidden` and the verb 403'd on every
-/// possible invocation. Every transfer test that passed anyway called
-/// `Engine::transfer_to_owner` directly with an un-narrowed context, which
-/// no listener can produce. This test only speaks HTTP.
+/// TWO owners, so the request context can never carry both: the caller
+/// selects the source, and the destination is re-resolved out of band from
+/// its membership row. This test only speaks HTTP, which is the only
+/// surface that narrowing is reachable on.
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // linear e2e: boot + three authorization phases read best in one flow
 async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrowing_edge()

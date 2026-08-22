@@ -804,9 +804,9 @@ fn strip_call_context_args(args: &mut serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The lib no longer reaches the core manifest directly — every gate
-    // goes through `McpToolDescriptor::resolved_annotations`. These tests
-    // still assert the manifest's own contents.
+    // The lib reaches every gate through
+    // `McpToolDescriptor::resolved_annotations`, not the core manifest
+    // directly. These tests assert the manifest's own contents.
     use proxima_core::mcp::core_tool_annotations;
     use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
 

@@ -1356,7 +1356,7 @@ mod tests {
     fn resolve_host_allowlist_includes_public_url_host_distinct_from_origins() {
         // Split deployment: browser app origin differs from the MCP host.
         // Deriving from origins alone would miss the real Host; the
-        // public_url host (the bug's `proxima.aqs-dev.cloud`) must be in.
+        // public_url host must be in the allowlist.
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
@@ -1367,7 +1367,7 @@ mod tests {
             .expose_network(true)
             .allowed_origins(vec!["https://app.example.com".to_string()])
             .resource_metadata(proxima_mcp_server::ResourceServerMetadata {
-                public_url: "https://proxima.aqs-dev.cloud".to_string(),
+                public_url: "https://proxima.example.com".to_string(),
                 authorization_servers: vec!["https://idp.test".to_string()],
             })
             .authenticator(Arc::new(StubAuth { owner }))
@@ -1376,7 +1376,7 @@ mod tests {
 
         let allowlist = resolve_host_allowlist(&config);
         let hosts = allowlist.hosts();
-        assert!(hosts.iter().any(|host| host == "proxima.aqs-dev.cloud"));
+        assert!(hosts.iter().any(|host| host == "proxima.example.com"));
         assert!(hosts.iter().any(|host| host == "app.example.com"));
     }
 
@@ -1568,7 +1568,7 @@ mod tests {
     async fn build_refuses_missing_tool_scope_with_config_error() {
         // Fail-closed default: an embedding host that never calls
         // `.tool_scope(...)` gets a config error instead of silently
-        // advertising `ToolScope::All` (the retired implicit default).
+        // advertising `ToolScope::All`.
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
             .owner(owner())

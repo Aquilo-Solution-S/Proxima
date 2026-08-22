@@ -17,9 +17,9 @@ impl CitedObjectErasePort for CitedBlobStore {
     /// Purge every S3 object this owner's rows point at.
     ///
     /// Enumerated from Postgres, not from a key prefix. Keys carry no owner
-    /// any more — that is what lets a transfer move a series without
-    /// touching S3 — so `objects/<owner_hash>/` is no longer a thing to
-    /// list. The rows are the index: `blob_uploads` for cited blobs at
+    /// — that is what lets a transfer move a series without touching S3 —
+    /// so there is no owner-scoped prefix to list. The rows are the index:
+    /// `blob_uploads` for cited blobs at
     /// every status (pending bytes are as PII-bearing as committed ones)
     /// and `cooled` for cold Memory objects.
     ///

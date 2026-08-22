@@ -334,7 +334,7 @@ mod tests {
         assert!(auth.resolve("host-token", owner).await.is_none());
     }
 
-    /// Task-3 host-resolved boundary: a subject with no role at all on the
+    /// Host-resolved boundary: a subject with no role at all on the
     /// deployment-configured owner is rejected at resolve, not later at an
     /// engine call. Same fail-closed shape as
     /// `host_context_without_configured_owner_role_is_rejected`, restated

@@ -115,7 +115,7 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     Ok(())
 }
 
-/// Slice E surface: the batch `proxima://memories` read, typed resource
+/// The batch `proxima://memories` read, typed resource
 /// errors (unknown path vs bad/missing parameter vs missing entity), and
 /// lineage keyset pagination through the resource.
 #[tokio::test]
@@ -497,8 +497,8 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
 }
 
 /// An interpretation Perspective's implied connections show up as
-/// `reference` `neighbor_edges` on `proxima://memory`. `proxima://edges`
-/// is retired.
+/// `reference` `neighbor_edges` on `proxima://memory`. There is no
+/// `proxima://edges` resource.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn edge_resources_read_back_interpretation_references()
@@ -611,7 +611,7 @@ async fn edge_resources_read_back_interpretation_references()
             Some(auth.clone()),
         )
         .await
-        .expect_err("proxima://edges is retired");
+        .expect_err("proxima://edges is not a resource");
     assert!(
         matches!(
             &retired,

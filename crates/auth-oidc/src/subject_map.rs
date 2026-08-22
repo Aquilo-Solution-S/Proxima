@@ -1,11 +1,11 @@
 //! Issuer-aware `(iss, sub) -> UserId` identity map for the default
 //! Proxima MCP group-auth path.
 //!
-//! `OidcAuthConfig` no longer carries an identity mapping (see
-//! `config.rs`): the default [`crate::OidcAuthenticator::new`] path
-//! resolves the validated `(iss, sub)` pair through this map instead. The
-//! map has two textual encodings: an issuer-aware JSON array (the primary,
-//! unambiguous format) and a legacy `sub:uuid` shorthand that is valid only
+//! `OidcAuthConfig` carries no identity mapping (see `config.rs`): the
+//! default [`crate::OidcAuthenticator::new`] path resolves the validated
+//! `(iss, sub)` pair through this map instead. The map has two textual
+//! encodings: an issuer-aware JSON array (the primary, unambiguous format)
+//! and a `sub:uuid` shorthand that is valid only
 //! when exactly one issuer can ever be accepted — with more than one issuer
 //! accepted, a bare `sub` cannot disambiguate which issuer's token it
 //! belongs to, so the shorthand is rejected at parse time rather than
@@ -33,7 +33,7 @@ pub enum OidcSubjectMapError {
         "legacy sub-only subject map shorthand requires exactly one accepted issuer, got {count}"
     )]
     AmbiguousIssuerForShorthand { count: usize },
-    #[error("legacy subject map entry {index} is not \"sub:uuid\": {raw:?}")]
+    #[error("shorthand subject map entry {index} is not \"sub:uuid\": {raw:?}")]
     MalformedShorthandEntry { index: usize, raw: String },
 }
 
@@ -145,7 +145,7 @@ impl OidcSubjectMap {
         Ok(map)
     }
 
-    /// Parse the legacy `sub:uuid,sub2:uuid2` shorthand. Every entry binds
+    /// Parse the `sub:uuid,sub2:uuid2` shorthand. Every entry binds
     /// to `accepted_issuers[0]`.
     ///
     /// # Errors

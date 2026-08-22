@@ -602,7 +602,7 @@ mod tests {
             parse_resource_uri("nothing://schemas").unwrap_err(),
             ResourceUriError::UnknownPath
         );
-        // depth=300 no longer collapses into "unknown resource": it parses
+        // depth=300 does not collapse into "unknown resource": it parses
         // as a wide integer and the tool clamps it to the documented 1..=8.
         let lineage = parse_resource_uri(
             "proxima://memory/F:018f0000-0000-7000-8000-000000000001/lineage?depth=300",

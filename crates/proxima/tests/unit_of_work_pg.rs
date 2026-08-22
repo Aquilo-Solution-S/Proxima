@@ -1,4 +1,4 @@
-//! S2: Engine `UnitOfWork` — one-shot ingest, multi-write rollback, advisory lock.
+//! Engine `UnitOfWork` — one-shot ingest, multi-write rollback, advisory lock.
 #![allow(clippy::too_many_lines)]
 
 use proxima::flavor::{FlavorBundle, NamedMigrator};

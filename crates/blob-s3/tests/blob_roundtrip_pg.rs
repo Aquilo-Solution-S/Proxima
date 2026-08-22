@@ -57,8 +57,8 @@ async fn fresh_storage() -> (PgStorage, String) {
 
 /// Completion as production runs it: the store stages the bytes, then ONE
 /// transaction records the artefact and the `core/upload-v1` Fact that
-/// cites it. `CitedBlobStore` no longer persists anything by itself, so a
-/// test that only called it would be testing half a completion.
+/// cites it. `CitedBlobStore` persists nothing by itself, so a test that
+/// only called it would be testing half a completion.
 async fn complete_via_engine(
     pg: &PgStorage,
     store: &CitedBlobStore,
@@ -962,9 +962,9 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
         "same etag and last-modified: nothing was rewritten"
     );
 
-    // And there is exactly one version of it: the retired re-mint path
-    // GET+PUT the bytes to a destination-derived key and deleted the
-    // source copy, so a second version (or a second key) is the signature
+    // And there is exactly one version of it: a re-mint path would GET+PUT
+    // the bytes to a destination-derived key and delete the source copy, so
+    // a second version (or a second key) is the signature
     // of the work this scheme exists to avoid.
     let versions = client
         .list_object_versions()
@@ -980,7 +980,7 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
     );
     assert!(versions.delete_markers().is_empty());
 
-    // The destination reads the citation; the source no longer can.
+    // The destination reads the citation; the source cannot.
     dest_ctx_reads(&store, &dest_ctx, destination, completed.cited_object_id)
         .await
         .expect("destination reads the transferred citation");
@@ -1004,9 +1004,9 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
 /// The purge enumerates keys from the OWNER'S ROWS, so after a transfer the
 /// object is reachable from the destination's rows and from nobody else's.
 /// A source erase must therefore leave the destination's bytes standing —
-/// the old prefix purge would have deleted them, because the key still
-/// spelled the source's hash — and the destination's own erase must still
-/// remove them, so the object never becomes un-erasable.
+/// a prefix purge would delete them, because the key still spells the
+/// source's hash — and the destination's own erase must still remove them,
+/// so the object never becomes un-erasable.
 #[tokio::test]
 async fn erase_follows_the_transfer_rather_than_the_key() {
     if !S3RuntimeConfig::present_in_env() {
@@ -1773,7 +1773,7 @@ async fn reconcile_with_bound_authority(store: &CitedBlobStore) -> CitedBlobReco
 /// object must be; an object nobody claims must be reported as a DIFFERENT
 /// thing, because it costs money rather than breaking a citation; and a row
 /// naming somewhere this store never wrote must be a third thing again,
-/// because reporting a forged or legacy locator as data loss would send an
+/// because reporting a forged or hand-written locator as data loss would send an
 /// operator hunting for bytes that were never there.
 ///
 /// THE BUCKET IS SHARED WITH EVERY OTHER TEST in this file and with the dev

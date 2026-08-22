@@ -957,7 +957,7 @@ mod tests {
         config.expose_network = true;
         config.allowed_origins = vec!["http://localhost:8080".to_string()];
         config.resource_metadata = Some(ResourceServerMetadata {
-            public_url: "https://proxima.aqs-dev.cloud".to_string(),
+            public_url: "https://proxima.example.com".to_string(),
             authorization_servers: vec!["https://idp.test".to_string()],
         });
 
@@ -967,8 +967,8 @@ mod tests {
     #[test]
     fn host_of_url_extracts_bare_lowercased_host() {
         assert_eq!(
-            host_of_url("https://proxima.aqs-dev.cloud").as_deref(),
-            Some("proxima.aqs-dev.cloud")
+            host_of_url("https://proxima.example.com").as_deref(),
+            Some("proxima.example.com")
         );
         assert_eq!(
             host_of_url("https://Example.COM:8443/mcp").as_deref(),
@@ -991,7 +991,7 @@ mod tests {
         assert!(is_loopback_host("localhost"));
         assert!(is_loopback_host("127.0.0.1"));
         assert!(is_loopback_host("::1"));
-        assert!(!is_loopback_host("proxima.aqs-dev.cloud"));
+        assert!(!is_loopback_host("proxima.example.com"));
         assert!(!is_loopback_host("10.0.0.5"));
     }
 
@@ -999,7 +999,7 @@ mod tests {
     fn public_allowed_hosts_derives_from_public_url_and_origins() {
         let mut config = base_config(Some(addr([127, 0, 0, 1])));
         config.resource_metadata = Some(ResourceServerMetadata {
-            public_url: "https://proxima.aqs-dev.cloud".to_string(),
+            public_url: "https://proxima.example.com".to_string(),
             authorization_servers: vec![],
         });
         config.allowed_origins = vec![
@@ -1010,7 +1010,7 @@ mod tests {
         // public_url host first, then non-loopback origin hosts; loopback dropped.
         assert_eq!(
             config.public_allowed_hosts(),
-            vec!["proxima.aqs-dev.cloud".to_string(), "app.test".to_string()]
+            vec!["proxima.example.com".to_string(), "app.test".to_string()]
         );
     }
 
