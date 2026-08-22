@@ -19,7 +19,7 @@
 -- tree. `migrator()` sets `ignore_missing`, so a database that already ran
 -- them tolerates their absence and applies this one.
 --
--- What changed with the edge model (docs/16-edges.md §Flavor Migration):
+-- What changed with the edge model (docs/16-edges.md §The Model):
 --
 --   * `code_calls_v1` is GONE. It was an edge sidecar holding one call site
 --     per edge, which is why a second call to the same callee needed a second

@@ -210,5 +210,5 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("D2 stored-kind origin proof failed");
+    result.expect("stored-kind origin proof failed");
 }

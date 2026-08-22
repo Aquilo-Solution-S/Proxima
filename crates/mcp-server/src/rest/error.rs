@@ -391,7 +391,7 @@ mod tests {
         }
     }
 
-    /// R4. An internal fault must not leak its message into `detail`, and a
+    /// An internal fault must not leak its message into `detail`, and a
     /// caller-actionable precondition must reach the caller verbatim.
     #[test]
     fn detail_is_client_message_not_display() {

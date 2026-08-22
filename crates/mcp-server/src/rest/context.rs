@@ -57,7 +57,7 @@ pub const RESERVED_ARGUMENTS: &[(&str, &str)] = &[
 /// `AuthzContext` alone: the dispatch seam needs the bound `Owner` to build
 /// an `McpToolCtx`, and the token's model id is the fallback when the caller
 /// sends no `X-Proxima-Model-Id`. Nothing here authenticates — the layer
-/// already did, and re-implementing it is exactly what R3 forbids.
+/// already did, and re-implementing authentication here is forbidden.
 #[derive(Debug, Clone)]
 pub struct RestAuth(pub McpAuthContext);
 

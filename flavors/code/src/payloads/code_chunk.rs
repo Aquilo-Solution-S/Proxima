@@ -19,8 +19,7 @@ pub const CODE_LEXICAL_LANGUAGE: &str = "english";
 ///
 /// A site is not a connection. Ten sites pointing at the same callee are
 /// ten entries here and exactly one row in the index — the index answers
-/// "is there a connection", this answers "what is it" (docs/16 §The edge
-/// table is an index).
+/// "is there a connection", this answers "what is it" (docs/16 §The Model).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeCallSiteV1 {
     #[schemars(description = "File-level byte offset where the call expression starts.")]

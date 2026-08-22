@@ -609,7 +609,7 @@ The outcome reports an `edge_count`, not a list of handles: pins are column
 values on the row, so re-running the write re-asserts the same values and
 there is no pin id to hand back.
 
-Four contract points that are easy to get wrong:
+Contract points that are easy to get wrong:
 
 - **The sidecar is mandatory.** `AbstractionPayload::sidecar_table()`
   returns `&'static str`, not `Option` — unlike a Fact, a derived memory

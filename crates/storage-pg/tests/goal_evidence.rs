@@ -105,5 +105,5 @@ async fn perspective_evidence_is_rejected_in_tx() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("D7 evidence kind TOCTOU failed");
+    result.expect("evidence kind TOCTOU failed");
 }

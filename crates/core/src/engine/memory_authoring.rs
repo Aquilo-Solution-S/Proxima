@@ -685,7 +685,7 @@ mod tests {
         let reload = format!("{}{}", "load_required_memory_", "kind");
         assert!(
             !body.contains(&reload),
-            "D2: stored kind is the in-tx TOCTOU SELECT, not a second pre-tx fanout"
+            "stored kind is the in-tx TOCTOU SELECT, not a second pre-tx fanout"
         );
         assert!(
             body.contains("authorize_entry_read"),

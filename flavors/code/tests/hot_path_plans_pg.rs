@@ -133,7 +133,7 @@ async fn code_hot_path_plans_use_expected_indexes() {
              index cond was `{index_cond}`; plan:\n{chunk_plan}"
         );
 
-        // The R6 fix, plan-proved: every substring arm reaches the owner
+        // Plan-proved: every substring arm reaches the owner
         // through THIS FLAVOR's own projection.
         //
         // Without an owner bind these three arms leave candidate generation
@@ -221,8 +221,7 @@ async fn code_hot_path_plans_use_expected_indexes() {
             );
         }
 
-        // The RANKED commit arms, same claim. R6 discharges the
-        // owner-blindness follow-up for this flavor, and that is a claim
+        // The RANKED commit arms, same claim. The owner predicate is a claim
         // about all four arms — but only the chunk ranked arm and the three
         // `LIKE` arms were plan-proved. These two bound the owner and
         // nothing read it back, so `AND $4::uuid[] IS NOT NULL` would have
@@ -298,7 +297,7 @@ struct LikeBinds {
 }
 
 /// Every predicate the plan puts on a scan of `projection`, whichever way
-/// the planner spelled it. R6's claim is that the owner narrows candidates
+/// the planner spelled it. The claim is that the owner narrows candidates
 /// at all; which access path serves it is the planner's business and a cost
 /// question, not a contract one.
 fn projection_predicates(plan: &serde_json::Value) -> String {

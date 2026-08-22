@@ -113,7 +113,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
             .bind(table)
             .fetch_one(pg.pool_for_tests())
             .await?;
-            assert!(present, "W6: {table}.embed_text must exist");
+            assert!(present, "{table}.embed_text must exist");
         }
 
         // `proxima_code` carries no owner org column. Keystone gate for the

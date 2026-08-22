@@ -322,7 +322,7 @@ async fn lineage_redacts_foreign_origin_instead_of_dropping() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("D8 lineage redaction failed");
+    result.expect("lineage redaction failed");
 }
 
 #[tokio::test]
