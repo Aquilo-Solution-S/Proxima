@@ -21,7 +21,7 @@ use crate::{MemoryId, Owner, OwnerRef};
 /// Node writes that also assert index rows.
 ///
 /// There is deliberately no edge-append method. An edge is never a
-/// free-standing act (docs/16 §Kernel Invariants, E4): every index row
+/// free-standing act (docs/16 §Kernel, E4): every index row
 /// this port writes is a consequence of the node write carrying it, in
 /// that write's own transaction, and the row's kind follows the
 /// declaration it came from — `origins` produce

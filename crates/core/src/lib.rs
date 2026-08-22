@@ -123,7 +123,7 @@ macro_rules! proxima_schema_id {
 /// that adds each schema.
 ///
 /// There is no `relations` or `edge_schemas` arm: edge kinds are a
-/// closed core vocabulary (docs/16 §Kinds are closed) and edges carry no
+/// closed core vocabulary (docs/16 §The Model) and edges carry no
 /// payload. A flavor connects nodes by declaring reference fields on its
 /// payloads, or by authoring an interpretation node.
 ///

@@ -284,7 +284,7 @@ impl GoalDependencyRef {
 /// for — the Goal knows the Perspective it inspires, the Goals it waits
 /// on, and the evidence it rests on — so storage derives one
 /// [`crate::EdgeKind::Reference`] index row per entry inside the goal
-/// write's own transaction (docs/16 §Flavor Migration). No relation is
+/// write's own transaction (docs/16-edges.md). No relation is
 /// named and no kind is chosen: the declaration is the whole statement.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalTopologyWrite {
