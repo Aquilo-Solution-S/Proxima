@@ -336,11 +336,9 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         );
 
         // The receipt is COMPLETE: exactly the counters the frozen contracts
-        // declare, no more and no fewer. Fewer is what shipped — `sketches`
-        // was tallied and then never read back — and more is what the old
-        // struct had, with four fields (`edges`, `source_batches`,
-        // `redacted_edge_targets`, `suppressed_keys`) reporting a structural
-        // zero for things v0.0.8 does not have.
+        // declare, no more and no fewer. A counter that is tallied and never
+        // read back, or one reporting a structural zero for a thing this
+        // version does not have, are both failures.
         let declared = contract_sidecar_tables().counters();
         let reported: Vec<&str> = counts.iter().map(|(name, _)| name).collect();
         assert_eq!(
@@ -408,7 +406,7 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         .bind(written.handle)
         .fetch_one(pool)
         .await?;
-        assert_eq!(erased_heads, 0, "P3: owner erase deletes empty heads");
+        assert_eq!(erased_heads, 0, "owner erase deletes empty heads");
         let other_heads: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
         )
@@ -647,9 +645,9 @@ async fn erase_source_scope_keeps_all_wake_configs() {
     result.expect("source-scope wake_config erase failed");
 }
 
-/// The bulk erase used to `cold.delete` inside its own transaction: a rollback
-/// after that point left `cooled` rows naming destroyed objects. The keys are
-/// marked pending in-transaction and destroyed after the commit.
+/// A `cold.delete` inside the erase transaction leaves `cooled` rows naming
+/// destroyed objects when the transaction rolls back. The keys are marked
+/// pending in-transaction and destroyed after the commit.
 #[tokio::test]
 async fn erase_personal_owner_purges_cold_objects_after_commit() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -738,11 +736,9 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
                 ..
             }
         ));
-        // The queue IS the debt. It used to also stamp the operation that
-        // enqueued the row and mirror a `cold_object_purge_pending` boolean
-        // onto a journal row, so two writes had to agree about one fact;
-        // now the outstanding debt is a row count, which cannot disagree
-        // with itself.
+        // The queue IS the debt: outstanding debt is a row count, which cannot
+        // disagree with itself the way a queue row and a mirrored boolean on a
+        // journal row can.
         assert_eq!(pending_debts(pool).await?, 1);
         sqlx::query(
             "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
@@ -1181,7 +1177,7 @@ async fn erase_group_owner_completes_when_abandoned() {
         .bind(goal.handle)
         .fetch_one(pool)
         .await?;
-        assert_eq!(goal_heads, 0, "P3: owner erase deletes empty goal heads");
+        assert_eq!(goal_heads, 0, "owner erase deletes empty goal heads");
         let heads: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
         )
@@ -1324,22 +1320,15 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
     result.expect("source-scope cooled erase failed");
 }
 
-/// R4, witnessed: erasing a member does not shrink the groups it belonged
-/// to.
+/// Erasing a member does not shrink the groups it belonged to.
 ///
-/// `group_memberships` was a recorded gap in an `UNDECLARED_BUT_INTENTIONAL`
-/// list and a changelog follow-up before it became a `Surface` with
-/// `EraseRule::Never { why }`. The commit that declared it argued zero
-/// behaviour change and zero golden churn, correctly — the erase never
-/// deleted from this table, and the differential harness enumerates
-/// relations from `information_schema` rather than from the contract, so it
-/// would report a row here as present either way.
-///
-/// Which means nothing in the tree asserts the position the declaration
-/// takes. The differential proves the erase's output is unchanged; it does
-/// not prove that a membership naming an erased member survives, because
-/// its corpus never writes one. That is the difference between "we did not
-/// change this" and "this is what we hold".
+/// `group_memberships` is a `Surface` with `EraseRule::Never { why }`, and
+/// nothing else in the tree asserts the position that declaration takes. The
+/// differential harness cannot: it enumerates relations from
+/// `information_schema` rather than from the contract, and its corpus never
+/// writes a membership naming an erased member, so it reports a row here as
+/// present either way. That is the difference between "we did not change this"
+/// and "this is what we hold".
 ///
 /// Two halves, because `EraseRule::Never` makes two claims. The row is still
 /// there — a group does not silently lose a member row when the member is

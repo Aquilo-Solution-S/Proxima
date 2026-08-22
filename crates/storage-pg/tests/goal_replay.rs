@@ -1,4 +1,4 @@
-//! P5: replay must not mint a second wake_config or close-fact write-act.
+//! Replay must not mint a second wake_config or close-fact write-act.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::storage_ports::{GoalWritePort, OwnerWritePermit};

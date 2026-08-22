@@ -1,4 +1,4 @@
-//! P1: pins on the node, PK outbound, GIN inbound, lineage by t.
+//! Pins on the node, PK outbound, GIN inbound, lineage by t.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::storage_ports::{InboundPinQuery, MemoryReadPort, OwnerWritePermit};
@@ -234,8 +234,7 @@ async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
     result.expect("owner-scoped pin loads failed");
 }
 
-/// Old SQL `JOIN tgt AND tgt.owner_id = ANY` dropped the hop. The pin
-/// is on the source; a foreign origin must redact.
+/// The pin is on the source; a foreign origin must redact.
 #[tokio::test]
 async fn lineage_redacts_foreign_origin_instead_of_dropping() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());

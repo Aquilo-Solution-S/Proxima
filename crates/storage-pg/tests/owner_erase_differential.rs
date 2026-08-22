@@ -1,24 +1,23 @@
-//! The Phase C equivalence gate: the owner inverse, before and after.
+//! The equivalence gate for the owner inverse: erase and export, against a
+//! pinned baseline.
 //!
 //! What this pins is not "the erase works" — the lanes beside it do that. It
-//! pins that the DECLARATION-DRIVEN erase and export do exactly what the
-//! hand-written ones did, on a corpus that touches all twelve genuinely
-//! owner-scope legs plus a neighbour owner and a cross-owner mounted object.
+//! pins that the declaration-driven erase and export agree with the pinned
+//! baseline, on a corpus that touches all twelve genuinely owner-scope legs
+//! plus a neighbour owner and a cross-owner mounted object.
 //!
-//! The goldens were produced by running the shared half of this file
-//! verbatim against a worktree at `fd362509`, the commit before this phase,
-//! with an adapter that differs only in the old vocabulary. So a failure
-//! here is not "the golden is stale": it is a statement that the new
-//! implementation and the old one disagree about what an owner erase leaves
-//! behind, or about what an owner's bundle contains.
+//! The goldens were produced by running the shared half of this file verbatim
+//! against a worktree at `fd362509`, with an adapter that differs only in that
+//! tree's vocabulary. So a failure here is not "the golden is stale": it is a
+//! statement that this implementation and the baseline disagree about what an
+//! owner erase leaves behind, or about what an owner's bundle contains.
 //!
-//! Two deliberate exclusions, held out of BOTH sides: the three relations
-//! this phase deletes outright (`compliance_audit_log`,
-//! `owner_fact_retention`, `owner_legal_holds`) and the one column it drops
-//! (`cold_purge_pending.compliance_operation_id`). A table that no longer
-//! exists cannot be compared to one that does. Everything else is compared,
-//! including every row of the neighbour owner that both erases must leave
-//! untouched.
+//! Two deliberate exclusions, held out of BOTH sides: three relations the
+//! baseline has and this schema does not (`compliance_audit_log`,
+//! `owner_fact_retention`, `owner_legal_holds`) and one column
+//! (`cold_purge_pending.compliance_operation_id`). A table that does not exist
+//! cannot be compared to one that does. Everything else is compared, including
+//! every row of the neighbour owner that both erases must leave untouched.
 //!
 //! Determinism comes from two choices. `ORDER BY ctid` is physical insertion
 //! order, which is identical across two runs executing the same statements
@@ -501,14 +500,10 @@ fn embed_literal() -> String {
     )
 }
 
-/// Every base relation of `proxima_core`, dumped in physical insertion order
-/// and normalized: identifiers and timestamps become order-of-appearance
-/// tokens, so two runs that did the same thing to the same logical corpus
-/// produce the same bytes.
-/// Relations Phase C deletes outright, and columns it drops. They are held
-/// out of BOTH sides of the differential: the question this harness answers
-/// is whether the surviving rows are the same, and a table that no longer
-/// exists cannot be compared to one that does. Every other difference is a
+/// Relations and columns the baseline has and this schema does not. They are
+/// held out of BOTH sides of the differential: the question this harness
+/// answers is whether the surviving rows are the same, and a table that does
+/// not exist cannot be compared to one that does. Every other difference is a
 /// failure.
 pub const DROPPED_TABLES: &[&str] = &[
     "compliance_audit_log",
@@ -517,6 +512,11 @@ pub const DROPPED_TABLES: &[&str] = &[
 ];
 pub const DROPPED_COLUMNS: &[(&str, &str)] = &[("cold_purge_pending", "compliance_operation_id")];
 
+/// Every base relation of `proxima_core`, dumped in physical insertion order
+/// and normalized: identifiers and timestamps become order-of-appearance
+/// tokens, so two runs that did the same thing to the same logical corpus
+/// produce the same bytes.
+///
 /// ONE statement, and no SQL built in Rust. The per-relation query is
 /// assembled by `format(..., %I)` INSIDE Postgres, where `%I` is the
 /// server's own identifier quoting, and `query_to_xml` runs it; `xpath`
@@ -664,7 +664,7 @@ pub async fn teardown(db_name: &str) {
     let _ = drop_db(db_name).await;
 }
 
-// ── ADAPTER (phase branch vocabulary) ───────────────────────────────────
+// ── ADAPTER (the only half that may differ from the baseline) ───────────
 //
 // The only text that differs from the baseline worktree's copy of this
 // file. That is the point of the split: if the shared half were allowed to

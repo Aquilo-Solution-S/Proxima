@@ -1,4 +1,5 @@
-//! UML §10 walk + query / ChangeHistory / owner transfer.
+//! The end-to-end walk: query, ChangeHistory and owner transfer over one
+//! corpus.
 #![allow(
     clippy::doc_markdown,
     clippy::too_many_lines,
@@ -55,7 +56,7 @@ fn fact(schema: &str, refs: Vec<Uuid>, origins: Vec<Uuid>, kind: &str) -> FactWr
 }
 
 #[tokio::test]
-async fn uml_section_10_walk_query_history_transfer() {
+async fn walk_query_history_and_transfer_over_one_corpus() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -216,5 +217,5 @@ async fn uml_section_10_walk_query_history_transfer() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("UML §10 walk failed");
+    result.expect("end-to-end walk failed");
 }

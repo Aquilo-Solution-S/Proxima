@@ -1,4 +1,5 @@
-//! D7: evidence kind ∈ {F, A} is in-tx TOCTOU, not an engine pre-tx walk.
+//! Evidence kind ∈ {F, A} is enforced in-tx against TOCTOU, not by an engine
+//! pre-tx walk.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::storage_ports::{GoalWritePort, OwnerWritePermit};
@@ -95,7 +96,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
             StorageError::ConstraintViolation(msg) => {
                 assert!(
                     msg.contains("Fact or Abstraction"),
-                    "D7: storage kind TOCTOU, got {msg}"
+                    "storage kind TOCTOU, got {msg}"
                 );
             }
             other => panic!("expected ConstraintViolation, got {other:?}"),

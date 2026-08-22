@@ -1,4 +1,4 @@
-//! EXPLAIN plan-shape guards for v0.0.8 hot reads.
+//! EXPLAIN plan-shape guards for the hot reads.
 //!
 //! Capability check: `enable_seqscan = off` so a tiny template DB still
 //! has to pick the shipped index. Not a cost/latency bench.
@@ -22,9 +22,8 @@ use proxima_storage_pg::verbs::query::{
 use uuid::Uuid;
 
 fn note_projection() -> MemorySearchProjection {
-    // The shipped declaration, not a second copy of it. This fixture used
-    // to restate `core/agent-note-v1`'s columns by hand, which meant the
-    // test agreed with the contract only by coincidence.
+    // The shipped declaration, not a second copy of it: a hand-restated column
+    // list agrees with the contract only by coincidence.
     proxima_core::FlavorRegistry::new()
         .freeze_or_panic_for_tests()
         .search_projections()
@@ -381,9 +380,8 @@ async fn hot_path_plans_use_expected_indexes() {
         // The composite `gin(owner_id, search_tsv)` is the whole reason the
         // projection carries `owner_id`: both halves of the predicate are on
         // one relation, so one index scan answers "this owner's rows that
-        // match this query". The previous shape scanned the sidecar's own
-        // tsvector GIN and reached the owner through a join to `memory`,
-        // which is what the projection replaced.
+        // match this query" — where a sidecar-local tsvector GIN would have to
+        // reach the owner through a join to `memory`.
         // Naming the index is not enough. A multicolumn GIN is searchable
         // on any SUBSET of its columns, so `core_projection_owner_tsv_gin`
         // shows up in the plan even with no owner predicate at all — as a
@@ -410,19 +408,17 @@ async fn hot_path_plans_use_expected_indexes() {
         // restriction on the candidate side is only worth doing if reaching
         // the head is cheap.
         //
-        // What this pin does NOT assert is the join STRATEGY, and that is a
-        // correction. An earlier version rejected `Hash Join` outright, on
-        // the stated ground that it "would build over every head in the
-        // deployment". Measured, that ground is false at scale: at 25 000
-        // heads the hash join ran in 51.5 ms against the nested loop's
-        // 85.8 ms, so the pin forbade the plan that wins. The nested loop is
-        // right for the small corpus here and for the sparse case the
-        // overfetch window is designed around; the hash join is right once
-        // the candidate set is large. Both are correct plans over the same
-        // indexes, and choosing between them is the planner's job with
-        // statistics this test does not have. So: assert the index names
-        // when the shape IS a nested loop, and let the planner have the
-        // other shape.
+        // What this pin does NOT assert is the join STRATEGY. Rejecting
+        // `Hash Join` outright, on the ground that it "would build over every
+        // head in the deployment", forbids the plan that wins at scale: at
+        // 25 000 heads the hash join runs in 51.5 ms against the nested loop's
+        // 85.8 ms. The nested loop is right for the small corpus here and for
+        // the sparse case the overfetch window is designed around; the hash
+        // join is right once the candidate set is large. Both are correct plans
+        // over the same indexes, and choosing between them is the planner's job
+        // with statistics this test does not have. So: assert the index names
+        // when the shape IS a nested loop, and let the planner have the other
+        // shape.
         //
         // The cost the restriction actually adds is documented on
         // `admit_side_restriction`: one probe per MATCHING row rather than
@@ -444,17 +440,15 @@ async fn hot_path_plans_use_expected_indexes() {
                 "…and reaches the memory row on its unique `t`; plan:\n{lexical_plan}"
             );
         }
-        // There is deliberately no `else` arm, and the first draft of this
-        // correction had one: "neither table may be read by a sequential
-        // scan under any join strategy". That is false too, and by the same
+        // There is deliberately no `else` arm. "Neither table may be read by a
+        // sequential scan under any join strategy" is false by the same
         // measurement — the hash plan reads BOTH by seq scan (Hash Join over
         // Seq Scan memory + Seq Scan memory_head, with the projection on a
-        // bitmap scan; that plan was measured at 55.1 ms). It was green
-        // only because this corpus plans
-        // a nested loop, so the arm was dead code asserting something the
-        // plan it permits would fail. Two tables in the plan and the index
-        // names when the shape is a nested loop is what this test actually
-        // knows.
+        // bitmap scan; measured at 55.1 ms). Such an arm would be green only
+        // because this corpus plans a nested loop, and dead code asserting
+        // something the plan it permits would fail. Two tables in the plan, and
+        // the index names when the shape is a nested loop, is what this test
+        // actually knows.
 
         // The substring arm plans as the nested loop it DECLARES.
         //
@@ -464,9 +458,8 @@ async fn hot_path_plans_use_expected_indexes() {
         // sidecar-first scan — is what the declaration's `why` records as a
         // probe-measured regression, and it is what a missing owner
         // predicate would silently produce. No trigram index exists on a
-        // core sidecar, deliberately: an indexed sidecar-first scan would
-        // be a candidate source carrying no `owner_id`, which is the defect
-        // this phase discharges three instances of.
+        // core sidecar, deliberately: an indexed sidecar-first scan would be a
+        // candidate source carrying no `owner_id`.
         let substring = substring_sql_for_tests(&[&projection], &req)?;
         let substring_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {substring}");
         // SQL-POLICY: PgIdent — production substring builder
@@ -566,9 +559,8 @@ async fn hot_path_plans_use_expected_indexes() {
         // `memory_head_owner_schema_idx`, `memory_head_owner_kind_idx` and
         // `memory_head_pkey` the planner picks is a function of the
         // corpus's shape, and this assertion is about the access path, not
-        // about the planner's choice among equally indexed ones. Naming two
-        // of the three made the pin fail the moment the fixture stopped
-        // being two rows.
+        // about the planner's choice among equally indexed ones. Naming a
+        // subset makes the pin fail as soon as the fixture grows.
         assert!(
             heads_plan.contains("\"Index Name\":\"memory_head"),
             "heads page must index memory_head; plan:\n{heads_plan}"

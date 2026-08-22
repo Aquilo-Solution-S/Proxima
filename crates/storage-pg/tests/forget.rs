@@ -157,7 +157,7 @@ async fn forget_hydrate_and_erase() {
         .bind(written.handle)
         .fetch_one(pool)
         .await?;
-        assert_eq!(heads, 0, "P3: last-t forget deletes the head");
+        assert_eq!(heads, 0, "last-t forget deletes the head");
         let keys: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k1'",
         )
@@ -179,7 +179,7 @@ async fn forget_hydrate_and_erase() {
                 .bind(written.handle)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(head_t, t, "P3: hydrate recreates head at the same t");
+        assert_eq!(head_t, t, "hydrate recreates head at the same t");
         let sketch_after: String =
             sqlx::query_scalar("SELECT text FROM proxima_core.sketch WHERE t = $1")
                 .bind(t)
@@ -666,13 +666,12 @@ async fn oneshot_forget_put_does_not_hold_row_lock() {
 
 /// `commit_forget` re-PUTs when the locked dump differs from the snapshot.
 ///
-/// This used to make them differ with an `UPDATE` of the sidecar's `body`.
-/// It cannot any more: `agent_note_v1` is append-only WITH the projection,
-/// because the projection row is derived once and an in-place text edit
-/// would leave the vector describing text that is gone. A row that lands
-/// BETWEEN the snapshot and the lock is the remaining — and the only real
-/// — way for the dump to move, and it is the case the function's doc
-/// comment names ("late sidecar").
+/// The dump cannot be made to differ with an `UPDATE` of the sidecar's `body`:
+/// `agent_note_v1` is append-only WITH the projection, because the projection
+/// row is derived once and an in-place text edit would leave the vector
+/// describing text that is gone. A row that lands BETWEEN the snapshot and the
+/// lock is the only real way for the dump to move, and it is the case the
+/// function's doc comment names ("late sidecar").
 #[tokio::test]
 async fn commit_forget_reputs_when_a_sidecar_row_lands_after_the_snapshot() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -889,8 +888,8 @@ async fn forget_dumps_every_stamped_extra() {
         // A memory has ONE schema id and `projection` is keyed
         // `(memory_id, schema_id)`, so hydrate rebuilds at most one row: the
         // one for the memory's OWN schema. The rebuild loop runs per DUMPED
-        // TABLE, and selecting the statement by table alone made it write a
-        // row per stamped extra, each claiming a schema this memory is not.
+        // TABLE, so selecting the statement by table alone writes a row per
+        // stamped extra, each claiming a schema this memory is not.
         //
         // Here the answer is none of them. This fixture's memory is
         // `core/test-fact-v1`, which declares no projection over either
@@ -1878,23 +1877,20 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
     result.expect("erase fail-closed test failed");
 }
 
-/// The two corrected `ForgetRule` declarations, pinned as BEHAVIOUR.
+/// The `ForgetRule` declarations on `ingest_keys` and `memory_head`, pinned as
+/// BEHAVIOUR.
 ///
-/// `ingest_keys` declared `DeleteWithMemory` and `memory_head` declared it
-/// too; neither was true, and neither could have been found by reading,
-/// because nothing consumed the field. Phase 4 corrects both to
-/// `Keep { why }` — and a correction that only changes a string is worth
-/// nothing, so this asserts the shipped behaviour the new declarations
-/// claim, in both directions:
+/// Both declare `Keep { why }`, and a declaration that only changes a string is
+/// worth nothing, so this asserts the shipped behaviour they claim, in both
+/// directions:
 ///
 /// - a cool leaves the receipt and REWINDS the head to the surviving
 ///   newest `t`;
 /// - an erase of the last version removes the receipt and takes the head
 ///   with it.
 ///
-/// Restoring either declaration to `DeleteWithMemory` after Phase 4's
-/// forget leg reads the contract makes this fail, which is the point: the
-/// declaration is now falsifiable.
+/// Setting either to `DeleteWithMemory` makes this fail, which is the point:
+/// the forget leg reads the contract, so the declaration is falsifiable.
 #[tokio::test]
 async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -1999,20 +1995,19 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("the corrected forget declarations must match shipped behaviour");
+    result.expect("the forget declarations must match shipped behaviour");
 }
 
 /// A `ForgetRule::Keep` sidecar that is not owner-pinned stops the forget
 /// instead of being deleted by it.
 ///
-/// The stamp walk in `delete_memory_dependents` used to read
-/// `surfaces.forget_leg(table)` and map everything that was not `Dumped` to
-/// the key column `"t"` — including `Kept`. So a surface declared as one the
-/// forget does not touch was deleted by the forget, silently, with the
+/// The stamp walk in `delete_memory_dependents` must not map `Kept` onto the
+/// key column `"t"` the way it maps `Dumped`: a surface declared as one the
+/// forget does not touch would be deleted by the forget, silently, with the
 /// declaration sitting three files away saying otherwise.
 ///
 /// Core ships one `Keep` memory sidecar, `mcp_call_logged_v1`, and its rows
-/// survive today only because it is ALSO `TransferRule::RetainAtSource` and
+/// survive only because it is ALSO `TransferRule::RetainAtSource` and
 /// therefore `pg_sidecar!(owner_pinned: true)`, which the walk skips a few
 /// lines earlier for an entirely different reason. Remove the pinning and the
 /// `Keep` bought nothing.
@@ -2023,8 +2018,7 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
 /// public test seam, which is what this test uses: `agent_note_v1` is a real
 /// registered non-owner-pinned memory sidecar, re-declared here as `Keep`.
 ///
-/// The assertion is that the forget REFUSES and the rows survive. Before the
-/// change it returned `Ok` and the row was gone.
+/// The assertion is that the forget REFUSES and the rows survive.
 #[tokio::test]
 async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
     use proxima_core::flavor::{ForgetRule, Surface};
@@ -2048,7 +2042,7 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
         for surface in &mut declared {
             if surface.table == AGENT_NOTE {
                 surface.forget = ForgetRule::Keep {
-                    why: "a fixture: the declaration the walk used to ignore",
+                    why: "a fixture: a declaration the walk must not ignore",
                 };
                 rewritten += 1;
             }

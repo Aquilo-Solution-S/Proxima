@@ -1,4 +1,4 @@
-//! P6: derived replay compares origins and refs; ref mismatch is Conflict.
+//! Derived replay compares origins and refs; a ref mismatch is Conflict.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::storage_ports::OwnerWritePermit;

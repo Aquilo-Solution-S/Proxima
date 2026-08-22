@@ -1,4 +1,4 @@
-//! `list_group_members` against the v0.0.8 table (no `created_at`).
+//! `list_group_members` against the shipped table (no `created_at`).
 
 use proxima_core::storage_ports::{OwnerMembershipAdminPort, OwnerWritePermit};
 use proxima_core::{AccessKind, GroupId, OwnerRef, Relation, UserId};
@@ -39,5 +39,5 @@ async fn list_group_members_runs_against_v008_schema() {
     .await;
 
     drop_db(&db_name).await.ok();
-    result.expect("list_group_members must run against v0.0.8 group_memberships");
+    result.expect("list_group_members must run against the shipped group_memberships");
 }
