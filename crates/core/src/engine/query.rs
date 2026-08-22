@@ -149,10 +149,10 @@ impl Engine {
         change_history_authorized(&self.storage.query, &read_owners, req).await
     }
 
-    /// docs/14 §protocol surface — bounded MCP-call activity read for ONE owner
-    /// the caller selects via `req.owner` and the context can access (gated
-    /// by `authorize_request`; single-owner, not `S_read`-spanning like
-    /// `Query`). Server clamps `limit` to `MAX_MCP_CALL_HISTORY_LIMIT`.
+    /// docs/14-protocol-surface.md — bounded MCP-call activity read for ONE
+    /// owner the caller selects via `req.owner` and the context can access
+    /// (gated by `authorize_request`; single-owner, not `S_read`-spanning
+    /// like `Query`). Server clamps `limit` to `MAX_MCP_CALL_HISTORY_LIMIT`.
     ///
     /// # Errors
     ///

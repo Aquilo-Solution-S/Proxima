@@ -1,8 +1,8 @@
 //! `FactIngest` verb — typed surface only.
 //!
-//! See docs/14-protocol-surface.md §"Fact write" and
-//! docs/01-event-source.md §"Fact membrane". The storage-side body
-//! lives in `proxima-storage-pg`.
+//! See docs/14-protocol-surface.md §`FactIngest` and
+//! docs/01-event-source.md. The storage-side body lives in
+//! `proxima-storage-pg`.
 
 use uuid::Uuid;
 

@@ -117,7 +117,7 @@ impl SchemaInfo {
     /// registry enforces: `FlavorRegistry::try_freeze` asserts every schema
     /// either has a protocol-ingress parser or is an opaque `CitedObject` /
     /// `CitationMapping` schema.
-    /// See docs/03 §Registry rules.
+    /// See docs/03-schema-registry.md.
     #[must_use]
     pub(crate) fn opaque(
         schema_id: SchemaId,

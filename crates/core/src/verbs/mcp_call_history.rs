@@ -1,6 +1,6 @@
 //! `read_mcp_call_history` verb — bounded newest-first read of one Owner's
 //! MCP-call activity log, optionally scoped to a single actor. Read-side
-//! counterpart to `persist_mcp_call`. See docs/14 §protocol surface.
+//! counterpart to `persist_mcp_call`. See docs/14-protocol-surface.md.
 
 use crate::{MemoryId, OwnerRef};
 

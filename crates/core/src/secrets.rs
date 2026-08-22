@@ -1,8 +1,7 @@
 //! Secret resolution — `secret_ref` strings to opaque bytes.
 //!
-//! Embedding model registration (docs/10 §Embedding model: one per binary)
-//! stores optional credentials as `secret_ref` URIs of shape
-//! `<scheme>:<body>`.
+//! Embedding model registration stores optional credentials as
+//! `secret_ref` URIs of shape `<scheme>:<body>`.
 //! Schemes for v1:
 //!
 //! - `env:NAME` — process environment variable lookup
