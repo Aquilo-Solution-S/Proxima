@@ -1101,9 +1101,8 @@ async fn the_connect_default_resolves_surfaces_through_the_registry() {
 /// and its key is `t` while its primary key is
 /// `(owner_id, source_id, ingest_key)` — one memory can hold several
 /// admission receipts, and their order in a bundle is whatever the executor
-/// returns. That is the live one, recorded as a declared follow-up on
-/// `order_by` because fixing it needs the surface to carry a tiebreak the
-/// erase does not use.
+/// returns. That is the live one, and `order_by` states it: a total export
+/// order needs the surface to carry a tiebreak the erase does not use.
 ///
 /// The assertion is EQUALITY, not containment, so both directions are
 /// pinned: a new non-unique key has to be added here deliberately, and a

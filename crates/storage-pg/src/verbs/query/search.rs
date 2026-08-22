@@ -1328,8 +1328,8 @@ mod tests {
         );
         // By COMPARISON, not by cast. `>= $4` / `<= $5` and `>= $5` /
         // `<= $4` cast identically and bind identically; only the direction
-        // tells `since` from `until`, and swapping them left every test in
-        // the workspace green before this line existed.
+        // tells `since` from `until`, and swapping them leaves every other
+        // test in the workspace green.
         assert!(
             ranked.contains("TIMESTAMPTZ '1970-01-01') >= $4"),
             "$4 is `since` — a LOWER bound"

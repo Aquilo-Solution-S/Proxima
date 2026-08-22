@@ -330,7 +330,7 @@ async fn hot_path_plans_use_expected_indexes() {
         // The situation the composite index exists for: a NEIGHBOUR owner
         // whose whole corpus matches the same query word. Without it the
         // table is two rows, every access path costs the same, and the
-        // plan says nothing about the index this release added.
+        // plan says nothing about the composite index at all.
         let neighbour = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         seed_projection_corpus(pool, neighbour).await?;
         // SQL-POLICY: fixed-fragment

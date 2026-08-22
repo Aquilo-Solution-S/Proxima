@@ -180,7 +180,7 @@ impl PgTuning {
 /// unset, like every other variable here). The error names the removal, so
 /// a deployment carrying a dead knob learns at boot — where the variable is
 /// still in hand — rather than by silently running the shipped path under a
-/// configuration banner it no longer honours.
+/// configuration banner nothing reads.
 fn refuse_removed_vars(lookup: &impl Fn(&str) -> Option<String>) -> Result<(), StorageError> {
     for key in REMOVED_TUNING_VARS {
         if let Some(value) = env_value(lookup, key) {
