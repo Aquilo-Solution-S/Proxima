@@ -775,12 +775,20 @@ async fn restore_registered_sidecars(
 /// memory it no longer has — and, if the giver was since erased, the `owners`
 /// lookup below is a `fetch_one` against a row that is gone, which fails the
 /// whole hydrate.
+///
+/// `non_embeddable_schemas` is the registry's answer, a parameter because
+/// storage does not hold the registry. It is consulted instead of trusting
+/// `embed_models` alone: that list records the models this `t` HAD vectors
+/// under, so a row under a `Never` schema that carries one — from any write
+/// that did not ask the registry — would have the job re-filed here on every
+/// hydrate, for a drain that can only drop it.
 async fn enqueue_embed_jobs(
     tx: &mut Transaction<'_, Postgres>,
     rec: &ColdRecord,
     owner_id: Uuid,
+    non_embeddable_schemas: &[String],
 ) -> Result<(), StorageError> {
-    if rec.embed_models.is_empty() {
+    if rec.embed_models.is_empty() || non_embeddable_schemas.contains(&rec.schema_id) {
         return Ok(());
     }
     let kind = match rec.row.kind.as_str() {
@@ -1060,6 +1068,7 @@ pub async fn hydrate_memory(
     sidecars: &PgSidecarRegistryFrozen,
     cold: &dyn ColdObjectStore,
     t: Uuid,
+    non_embeddable_schemas: &[String],
 ) -> Result<(), StorageError> {
     // The row is the authority on WHO owns this series; the object is the
     // authority on WHAT it contains. An owner transfer updates
@@ -1155,7 +1164,7 @@ pub async fn hydrate_memory(
     // written under the dumped owner would let the owner that gave this
     // series away go on recalling it.
     super::sketch::upsert_sketch(tx, owner_id, rec.row.t, &rec.row.kind, &hydrate_line).await?;
-    enqueue_embed_jobs(tx, &rec, owner_id).await?;
+    enqueue_embed_jobs(tx, &rec, owner_id, non_embeddable_schemas).await?;
 
     sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1")
         .bind(t)

@@ -38,6 +38,14 @@ fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     )
 }
 
+/// The hydrate's registry-resolved embedding answer, same reason.
+fn non_embeddable_schemas() -> Vec<String> {
+    proxima_core::FlavorRegistry::new()
+        .freeze_or_panic_for_tests()
+        .non_embeddable_schema_ids()
+        .to_vec()
+}
+
 const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
 const UTTERANCE: &str = "proxima_core.utterance_v1";
 const GHOST_TABLE: &str = "proxima_core.w4_does_not_exist_v1";
@@ -166,7 +174,14 @@ async fn forget_hydrate_and_erase() {
         assert_eq!(keys, 1, "forget does not touch ingest_keys");
 
         let mut tx = pool.begin().await?;
-        hydrate_memory(&mut tx, &core_pg_sidecars(), &cold, t).await?;
+        hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            t,
+            &non_embeddable_schemas(),
+        )
+        .await?;
         tx.commit().await?;
         let hot: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
@@ -376,7 +391,14 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         assert_eq!(embed_hot, 0, "forget drops vectors");
 
         let mut tx = pool.begin().await?;
-        hydrate_memory(&mut tx, pg.sidecars(), cold.as_ref(), t).await?;
+        hydrate_memory(
+            &mut tx,
+            pg.sidecars(),
+            cold.as_ref(),
+            t,
+            &non_embeddable_schemas(),
+        )
+        .await?;
         tx.commit().await?;
 
         let restored: (Uuid, Vec<Uuid>, Vec<Uuid>) =
@@ -724,7 +746,14 @@ async fn commit_forget_reputs_when_a_sidecar_row_lands_after_the_snapshot() {
         );
 
         let mut tx = pool.begin().await?;
-        hydrate_memory(&mut tx, &core_pg_sidecars(), &cold, t).await?;
+        hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            t,
+            &non_embeddable_schemas(),
+        )
+        .await?;
         tx.commit().await?;
         let note: String =
             sqlx::query_scalar("SELECT body FROM proxima_core.agent_note_v1 WHERE t = $1")
@@ -791,7 +820,7 @@ async fn forget_dumps_only_stamped_tables_and_skips_unregistered_scan() {
         assert_eq!(notes, 0, "stamped sidecar is dumped and deleted");
 
         let mut tx = pool.begin().await?;
-        hydrate_memory(&mut tx, &sidecars, &cold, t).await?;
+        hydrate_memory(&mut tx, &sidecars, &cold, t, &non_embeddable_schemas()).await?;
         tx.commit().await?;
         let note: String =
             sqlx::query_scalar("SELECT body FROM proxima_core.agent_note_v1 WHERE t = $1")
@@ -870,7 +899,14 @@ async fn forget_dumps_every_stamped_extra() {
         assert_eq!(leftover_u, 0);
 
         let mut tx = pool.begin().await?;
-        hydrate_memory(&mut tx, &core_pg_sidecars(), &cold, t).await?;
+        hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            t,
+            &non_embeddable_schemas(),
+        )
+        .await?;
         tx.commit().await?;
         assert_eq!(sidecar_tables_for(pool, t).await?, tables);
         let note: String =
@@ -1259,7 +1295,14 @@ async fn forget_of_an_already_cooled_t_reports_not_found() {
             .await
             .expect("a refused re-forget must not delete the cooled object");
         let mut tx = pool.begin().await?;
-        hydrate_memory(&mut tx, &core_pg_sidecars(), cold.as_ref(), t).await?;
+        hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            cold.as_ref(),
+            t,
+            &non_embeddable_schemas(),
+        )
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -2098,4 +2141,97 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget failed");
+}
+
+/// A rehydrate re-files the embedding jobs the dump recorded, and the dump
+/// records what the row HAD: the models it held vectors under. A row written
+/// under a `Never` schema before the recipe was honoured has one, so the
+/// models alone would restore the job the recipe exists to prevent — once
+/// per hydrate, forever.
+#[tokio::test]
+async fn hydrate_files_no_embedding_job_for_a_never_schema() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let cold = MemoryColdStore::default();
+
+        // `core/write-act-v1` declares `Never`; `core/agent-note-v1` declares
+        // a unit. One flow, opposite answers — the control is what makes the
+        // zero mean the gate rather than an empty table.
+        let never = cool_then_hydrate(pool, &owner, &permit, &cold, "core/write-act-v1").await?;
+        let embeds = cool_then_hydrate(pool, &owner, &permit, &cold, "core/agent-note-v1").await?;
+        assert_eq!(never, 0, "a Never schema files no embedding job on hydrate");
+        assert_eq!(embeds, 1, "an embeddable schema still restores its job");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("hydrate_files_no_embedding_job_for_a_never_schema failed");
+}
+
+/// Ingest one Fact under `schema_id`, give it the vector a write that ignored
+/// the recipe would have left behind, cool it, hydrate it, count the jobs.
+async fn cool_then_hydrate(
+    pool: &sqlx::PgPool,
+    owner: &OwnerRef,
+    permit: &OwnerWritePermit,
+    cold: &MemoryColdStore,
+    schema_id: &str,
+) -> Result<i64, Box<dyn std::error::Error>> {
+    let mut sourced = draft(None);
+    sourced.schema_id = SchemaId::new(schema_id.to_owned());
+    sourced.rendered_text = Some("a line".into());
+    let written = ingest_fact_atomic(pool, permit, &sourced, None).await?;
+    let t = written.memory_id.into_inner();
+    let zeroes = format!("[{}]", vec!["0"; 1024].join(","));
+    sqlx::query(
+        "INSERT INTO proxima_core.embeddings
+            (entity_id, model_id, embedding_version, vec, owner_id)
+         VALUES ($1, 'test-model', 1, $2::vector, $3)",
+    )
+    .bind(t)
+    .bind(&zeroes)
+    .bind(owner.stored_owner_id())
+    .execute(pool)
+    .await?;
+
+    let key = cold_object_key(t);
+    let mut tx = pool.begin().await?;
+    forget_memory(
+        &mut tx,
+        &core_pg_sidecars(),
+        &surfaces(),
+        cold,
+        &key,
+        t,
+        owner.stored_owner_id(),
+    )
+    .await?;
+    tx.commit().await?;
+
+    let mut tx = pool.begin().await?;
+    hydrate_memory(
+        &mut tx,
+        &core_pg_sidecars(),
+        cold,
+        t,
+        &non_embeddable_schemas(),
+    )
+    .await?;
+    tx.commit().await?;
+
+    Ok(sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+    )
+    .bind(t)
+    .fetch_one(pool)
+    .await?)
 }

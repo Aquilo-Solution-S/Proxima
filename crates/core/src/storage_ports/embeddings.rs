@@ -11,7 +11,7 @@ pub trait EmbeddingTextPort: Send + Sync {
     ///
     /// `non_embeddable_schemas` are excluded exactly as in
     /// [`Self::list_facts_missing_embedding`]: a row whose schema declared
-    /// [`crate::FactPayload::EMBEDDABLE`] `= false` has no text to embed,
+    /// [`crate::flavor::EmbeddingRecipe::Never`] has no text to embed,
     /// however it is reached. The exclusion lives here, not only at the
     /// enqueue sites, because a caller holding a `MemoryId` can ask to
     /// embed one row directly and never passes through a job queue.
@@ -38,7 +38,7 @@ pub trait EmbeddingTextPort: Send + Sync {
     /// Facts with text but no vector under `model_id`.
     ///
     /// `non_embeddable_schemas` are excluded — they are not missing a
-    /// vector, they declined one ([`crate::FactPayload::EMBEDDABLE`]).
+    /// vector, they declined one ([`crate::flavor::EmbeddingRecipe::Never`]).
     /// Without the exclusion this reports a backlog that no drain can
     /// ever clear, which is the same shape of lie as a queue that never
     /// empties. Empty slice = exclude nothing.
@@ -330,8 +330,8 @@ pub struct EmbeddingReconcileOptions<'a> {
     /// Required at the storage boundary. `None` is a constraint error.
     /// Engine `None` becomes [`EMBEDDING_RECONCILE_DEFAULT_LIMIT`].
     pub limit: Option<i64>,
-    /// Fact schema ids that declined a vector
-    /// ([`crate::FactPayload::EMBEDDABLE`]), excluded from the scan.
+    /// Schema ids that declined a vector
+    /// ([`crate::flavor::EmbeddingRecipe::Never`]), excluded from the scan.
     ///
     /// Reconcile is the global counterpart to the owner-scoped backfill,
     /// and it heals "no job exists" — precisely the state a

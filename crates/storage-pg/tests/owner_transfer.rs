@@ -41,6 +41,14 @@ fn contract_sidecar_tables() -> OwnerSurfaces {
     OwnerSurfaces::for_registry(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
 }
 
+/// The hydrate's registry-resolved embedding answer, same reason.
+fn non_embeddable_schemas() -> Vec<String> {
+    proxima_core::FlavorRegistry::new()
+        .freeze_or_panic_for_tests()
+        .non_embeddable_schema_ids()
+        .to_vec()
+}
+
 fn draft() -> FactWriteCommand {
     FactWriteCommand {
         schema_id: SchemaId::new("core/test-fact-v1".to_string()),
@@ -486,6 +494,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             &core_pg_sidecars(),
             cold.as_ref(),
             first.memory_id.into_inner(),
+            &non_embeddable_schemas(),
         )
         .await?;
         tx.commit().await?;
@@ -1346,6 +1355,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
             &core_pg_sidecars(),
             cold.as_ref(),
             first.memory_id.into_inner(),
+            &non_embeddable_schemas(),
         )
         .await?;
         tx.commit().await?;

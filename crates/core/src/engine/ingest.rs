@@ -82,7 +82,7 @@ impl Engine {
     /// citation) surface as `InvalidArgument`; infrastructure faults as
     /// `Internal`.
     ///
-    /// A schema that declared `EMBEDDABLE = false` is written without a
+    /// A schema whose recipe resolves to no embed unit is written without a
     /// vector even when the host has an embedder configured.
     pub async fn fact_ingest<A>(
         &self,
@@ -393,8 +393,8 @@ impl Engine {
     }
 
     /// The model a Fact of `schema_id` should be embedded under, given
-    /// what the caller asked for: the caller's answer, unless the schema
-    /// declared `EMBEDDABLE = false`.
+    /// what the caller asked for: the caller's answer, unless the schema's
+    /// recipe resolves to no embed unit.
     ///
     /// APPLIED HERE, NOT AT THE CALL SITES, because every typed Fact
     /// write in the process funnels through one of the four verbs that
@@ -419,7 +419,7 @@ impl Engine {
     /// Persist an already-authorized typed-sidecar Fact ingest.
     ///
     /// `embedding_model_id` is a request, not an instruction: a schema
-    /// that declared `EMBEDDABLE = false` is written without a vector
+    /// whose recipe resolves to no embed unit is written without a vector
     /// whatever the caller passes.
     ///
     /// # Errors
@@ -700,7 +700,7 @@ impl Engine {
     /// Returns storage errors from text load/upsert, `Internal` for
     /// embedding client failures, and `ConstraintViolation` when the
     /// client returns a vector whose length differs from `dim()`.
-    /// A Fact whose schema declared `EMBEDDABLE = false` is left alone:
+    /// A Fact whose schema resolves to no embed unit is left alone:
     /// this is a no-op for it, not a forced vector.
     pub async fn ensure_fact_embedding(
         &self,
@@ -880,7 +880,7 @@ impl Engine {
             // Jobs whose memory no longer yields embeddable text are
             // complete as-is; only texted jobs go to the provider.
             // Also excluded here, not just at enqueue: a job queued
-            // before its schema declared `EMBEDDABLE = false` completes
+            // before its schema stopped resolving an embed unit completes
             // as a no-op instead of embedding what now declines a vector.
             let items: Vec<(Owner, EntityKind, MemoryId)> = claims
                 .iter()
