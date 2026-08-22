@@ -437,11 +437,14 @@ impl FlavorRegistry {
     /// recipe govern rather than describe — a second declaration to compare
     /// against would only have to be kept equal in its turn.
     ///
-    /// Two divergences this reaches. A `Units` arm on a schema with no
-    /// sidecar table resolves to nothing, so the drain is handed no text
-    /// while the lane keeps filing jobs. A `Never` arm on an id another
-    /// registration embeds cannot take effect at all: the list is keyed by
-    /// schema id, because the column it is bound against carries no kind.
+    /// Both sides are judged per SCHEMA ID, not per registration, because
+    /// the exclusion list is: the column it is bound against carries no
+    /// kind. So a `Never` arm on an id any registration resolves a unit for
+    /// is refused — the reason could never be applied — while a `Units` arm
+    /// that resolves to nothing is refused only when no registration of that
+    /// id resolves one either. A no-table `Units` arm shadowed by a sibling
+    /// registration that does resolve a unit is ACCEPTED, and correctly: the
+    /// drain matches units by id, so it finds the sibling's and has text.
     fn validate_embedding_recipes_match_behavior(&self) -> Result<(), FlavorRegistryError> {
         let units = crate::verbs::schema::contract_embed_units(&self.contracts);
         let non_embeddable =

@@ -253,14 +253,10 @@ writes use the same tool with the matching action key.
    schema nothing registered, a schema registered under a flavor whose
    contract does not declare it, and a contract naming an unregistered MCP
    tool.
-9. A declaration that disagrees with the registration it duplicates. Four,
+9. A declaration that disagrees with the registration it duplicates. Three,
    all of the same shape — the contract says one thing, something else in the
    binary already said another, and until these checks nothing kept the two
    equal:
-   - `EmbeddingRecipe::Never` on a schema whose payload type declares
-     `EMBEDDABLE = true`, or a recipe with units on one that declares
-     `false`. The disagreement is not symmetric in cost: the `Never`-plus-
-     `true` direction files embedding jobs the drain can only drop.
    - `natural_key_columns` that are not the columns the registration carries.
    - A `ToolContract::actions` list that is not the registered
      `ACTION_ARG_SPECS` action list, compared IN ORDER — palette scope keys
@@ -276,6 +272,16 @@ writes use the same tool with the matching action key.
     an `Unreachable` arm, and freeze refuses a registry that produces one —
     which is how a rule/`KeyShape` pair that no statement could be generated
     for becomes a boot failure instead of a silently skipped table.
+11. An `EmbeddingRecipe` that disagrees with what the embedding lane will do
+    with it. Not a declaration pair: the recipe is compared against the
+    resolved embed units and the enqueue exclusion list built from them —
+    the behaviour, and for every kind. A `Never` arm on a schema id that
+    resolves a unit is refused, because the exclusion list is keyed by id
+    alone (the column it is bound against carries no kind) and the reason
+    could never be applied. So is a recipe naming units that resolve to
+    nothing at all — a `Units` arm on a schema with no sidecar table, where
+    no registration of that id resolves one either — because the drain would
+    be handed no text while the lane went on filing jobs for it.
 
 Prefixes in macro-registered schemas and MCP tools are `const` assertions, so
 a misprefixed id fails the build rather than the first boot.
