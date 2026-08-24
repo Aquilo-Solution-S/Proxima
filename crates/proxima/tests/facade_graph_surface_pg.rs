@@ -111,6 +111,7 @@ impl PgMemoryPayload for FacadeFact {
     // The column this table stores its memory `t` under, spelled by
     // every statement below. Freeze holds it equal to the contract
     // `Surface`'s `KeyShape::MemoryT { column }` for public.facade_surface_fact_v1.
+    const OWNER_PINNED: bool = false;
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
     fn load_memory_payload(
@@ -198,6 +199,7 @@ impl PgMemoryPayload for FacadeAbstraction {
     // The column this table stores its memory `t` under, spelled by
     // every statement below. Freeze holds it equal to the contract
     // `Surface`'s `KeyShape::MemoryT { column }` for public.facade_surface_abstraction_v1.
+    const OWNER_PINNED: bool = false;
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
     fn load_memory_payload(
