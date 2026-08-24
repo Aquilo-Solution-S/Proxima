@@ -131,7 +131,12 @@ fn draft(
         ingest_key: source.map(|(_, k)| k.to_owned()),
         payload: Vec::new(),
         rendered_text: None,
-        lexical_language: None,
+        // `agent-note-v1` is `LanguagePolicy::PerRow`: the write names a
+        // language. These fixtures do not care which, so they ask for the
+        // deployment configuration.
+        lexical_language: Some(
+            proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
+        ),
         receipt: None,
         citation: None,
         derived_from: Vec::new(),
@@ -164,16 +169,12 @@ async fn write_note(
     title: &str,
 ) -> Result<(MemoryId, Uuid), Box<dyn std::error::Error>> {
     let mut tx = pool.begin().await?;
-    let outcome = ingest_fact_timeseries(
-        &mut tx,
-        &owner,
-        &draft(source, handle, blob_id),
-        &[AGENT_NOTE.to_owned()],
-        None,
-    )
-    .await?;
+    let write = draft(source, handle, blob_id);
+    let outcome =
+        ingest_fact_timeseries(&mut tx, &owner, &write, &[AGENT_NOTE.to_owned()], None).await?;
     core_pg_sidecars()
-        .insert_memory_sidecar(&mut tx, outcome.memory_id, &note(title), None)
+        .writing(&write)
+        .insert_memory_sidecar(&mut tx, outcome.memory_id, &note(title))
         .await?;
     tx.commit().await?;
     Ok((outcome.memory_id, outcome.handle))

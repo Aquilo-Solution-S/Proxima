@@ -34,12 +34,11 @@ impl FactIngestPort for PgStorage {
         // attempt re-clones it and rebuilds the insert closure — unlike an
         // `FnOnce` closure, this is safely re-runnable.
         with_bounded_retry(move || {
-            let fact_sidecars = self.sidecars.clone();
+            let fact_sidecars = self.sidecars.writing(authorized.draft());
             let payloads = sidecar_payloads.to_vec();
-            let language = authorized.draft().lexical_language.clone();
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
-                let tables = fact_sidecars.tables_for_payloads(&payloads)?;
+                let tables = self.sidecars.tables_for_payloads(&payloads)?;
                 let owner = authorized.owner_write_permit().owner();
                 let owner_id =
                     crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
@@ -60,12 +59,7 @@ impl FactIngestPort for PgStorage {
                         Box::pin(async move {
                             for payload in &payloads {
                                 fact_sidecars
-                                    .insert_memory_sidecar(
-                                        tx,
-                                        outcome.memory_id,
-                                        payload,
-                                        language.as_deref(),
-                                    )
+                                    .insert_memory_sidecar(tx, outcome.memory_id, payload)
                                     .await?;
                             }
 
@@ -91,12 +85,11 @@ impl FactIngestPort for PgStorage {
         // serialization; re-clone the citation sidecar payload per attempt.
         with_bounded_retry(move || {
             let sidecars = self.sidecars.clone();
-            let fact_sidecars = sidecars.clone();
+            let fact_sidecars = sidecars.writing(authorized.draft());
             let payloads = sidecar_payloads.to_vec();
-            let language = authorized.draft().lexical_language.clone();
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
-                let tables = fact_sidecars.tables_for_payloads(&payloads)?;
+                let tables = self.sidecars.tables_for_payloads(&payloads)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_citation_in_tx(
                     &mut tx,
                     &sidecars,
@@ -107,12 +100,7 @@ impl FactIngestPort for PgStorage {
                         Box::pin(async move {
                             for payload in &payloads {
                                 fact_sidecars
-                                    .insert_memory_sidecar(
-                                        tx,
-                                        outcome.memory_id,
-                                        payload,
-                                        language.as_deref(),
-                                    )
+                                    .insert_memory_sidecar(tx, outcome.memory_id, payload)
                                     .await?;
                             }
 
@@ -139,12 +127,11 @@ impl FactIngestPort for PgStorage {
         // the inline-citation path above.
         with_bounded_retry(move || {
             let sidecars = self.sidecars.clone();
-            let fact_sidecars = sidecars.clone();
+            let fact_sidecars = sidecars.writing(authorized.draft());
             let payloads = sidecar_payloads.to_vec();
-            let language = authorized.draft().lexical_language.clone();
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
-                let tables = fact_sidecars.tables_for_payloads(&payloads)?;
+                let tables = self.sidecars.tables_for_payloads(&payloads)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_citation_ref_in_tx(
                     &mut tx,
                     &sidecars,
@@ -155,12 +142,7 @@ impl FactIngestPort for PgStorage {
                         Box::pin(async move {
                             for payload in &payloads {
                                 fact_sidecars
-                                    .insert_memory_sidecar(
-                                        tx,
-                                        outcome.memory_id,
-                                        payload,
-                                        language.as_deref(),
-                                    )
+                                    .insert_memory_sidecar(tx, outcome.memory_id, payload)
                                     .await?;
                             }
 

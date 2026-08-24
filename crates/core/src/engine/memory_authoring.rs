@@ -39,8 +39,10 @@ pub struct AuthorDerivedRequestInput<'a> {
     /// later `t` on the same series is what supersession is.
     pub supersedes: Option<MemoryId>,
     /// Text-search configuration to stamp on the derived row, resolved
-    /// by [`crate::lexical_language::resolve_lexical_language`]; `None`
-    /// applies the database default.
+    /// by [`crate::lexical_language::resolve_lexical_language`].
+    /// [`crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT`]
+    /// asks for the deployment's configuration; `None` states no
+    /// language, which a `LanguagePolicy::PerRow` schema refuses.
     pub lexical_language: Option<&'a str>,
 }
 

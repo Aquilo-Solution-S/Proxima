@@ -87,6 +87,14 @@ impl<P: FactPayload> std::fmt::Debug for TypedFactIngest<'_, P> {
 impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
     /// Typed sidecar Fact from `source_id`. Mint a batch id and observe
     /// now unless the caller overrides.
+    ///
+    /// The lexical language starts as
+    /// [`crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT`]:
+    /// a write built here has NAMED the deployment's configuration, which
+    /// is a choice, where a draft carrying no language has made none.
+    /// A schema whose contract declares `LanguagePolicy::PerRow` accepts
+    /// the first and refuses the second, so this builder cannot produce
+    /// the refusable state — [`Self::lexical_language`] overrides it.
     #[must_use]
     pub fn new(source_id: &'a str, payload: &'a P) -> Self {
         Self {
@@ -97,7 +105,9 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
             citation: None,
             derived_from: Vec::new(),
             handle: None,
-            lexical_language: None,
+            lexical_language: Some(
+                crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
+            ),
             refs: Vec::new(),
         }
     }

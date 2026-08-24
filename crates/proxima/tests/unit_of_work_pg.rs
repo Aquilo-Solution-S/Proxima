@@ -81,7 +81,10 @@ fn derived_abstraction<'a>(
         derived_from: origin,
         extra_refs: &[],
         supersedes: None,
-        lexical_language: None,
+        // `agent-derivation-v1` declares `LanguagePolicy::PerRow`, so the
+        // write names a configuration. This fixture does not care which,
+        // and asks for the deployment's.
+        lexical_language: Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT),
     }
 }
 
@@ -136,7 +139,9 @@ async fn unit_of_work_one_shot_and_rollback_and_lock() {
                 derived_from: std::slice::from_ref(&origin),
                 extra_refs: &[],
                 supersedes: None,
-                lexical_language: None,
+                lexical_language: Some(
+                    proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT,
+                ),
             };
             uow.author_derived(derived).await?;
         }

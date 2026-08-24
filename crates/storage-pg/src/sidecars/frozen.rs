@@ -1,3 +1,7 @@
+use proxima_core::flavor::LanguagePolicy;
+use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
+use proxima_core::verbs::fact_ingest::FactWriteCommand;
+
 use super::{
     Arc, GoalId, HashMap, HashSet, MemoryId, PgSidecarEntry, PgSidecarKey, PgSidecarReadCtx,
     Postgres, SchemaInfo, SidecarPayload, StorageError, Transaction,
@@ -5,9 +9,10 @@ use super::{
 
 // The two suites that write a sidecar row through the registry deliberately —
 // to prove the projection row follows it, and that a transfer moves both.
-// `insert_memory_sidecar` is `pub(crate)`, so they live beside it. Their
-// goldens stay in `tests/golden/` with the erase differential's; three pinned
-// baselines in one place beat three beside three readers.
+// `PgSidecarWriter::insert_memory_sidecar` is `pub(crate)`, so they live
+// beside it. Their goldens stay in `tests/golden/` with the erase
+// differential's; three pinned baselines in one place beat three beside
+// three readers.
 #[cfg(test)]
 #[path = "projection_maintenance_pg_tests.rs"]
 mod projection_maintenance_pg_tests;
@@ -122,6 +127,7 @@ impl PgSidecarRegistryFrozen {
                 goal_copy: None,
                 projection_insert: None,
                 projection_table: None,
+                projection_language: None,
             },
         );
         Self {
@@ -181,63 +187,29 @@ impl PgSidecarRegistryFrozen {
         missing
     }
 
-    /// Insert a typed sidecar row for an already-created Memory row.
+    /// This registry bound to ONE authorized write.
     ///
-    /// Crate-private: this is the one write that maintains the projection
-    /// row alongside the sidecar row, and a public door onto it — even the
-    /// CORRECT door — is a second write path. Callers reach it through
-    /// `Engine`/`UnitOfWork` and the write ports.
-    ///
-    /// `lexical_language` is the resolved text-search configuration the
-    /// caller asked for, or `None` for the deployment default. It is stamped
-    /// on the projection row, which is where a memory's language lives.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ConstraintViolation` when no PG memory sidecar is
-    /// registered for the payload schema or when the erased payload type
-    /// does not match the registered Rust type. Returns storage errors
-    /// from the concrete inserter.
-    pub(crate) async fn insert_memory_sidecar(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        memory_id: MemoryId,
-        payload: &SidecarPayload,
-        lexical_language: Option<&str>,
-    ) -> Result<(), StorageError> {
-        let key = PgSidecarKey::new(
-            payload.kind,
-            payload.schema_id.clone(),
-            payload.schema_version,
-        );
-        let entry = self.entries.get(&key).ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "no PG sidecar registered for {} v{} {:?}",
-                key.schema_id.as_str(),
-                key.schema_version.into_inner(),
-                key.kind,
-            ))
-        })?;
-        let insert = entry.memory_insert.ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "PG sidecar for {} v{} {:?} is not a memory sidecar",
-                key.schema_id.as_str(),
-                key.schema_version.into_inner(),
-                key.kind,
-            ))
-        })?;
-        insert(tx, memory_id, payload, super::SidecarInsertPermit::new()).await?;
-        if let Some(sql) = entry.projection_insert.as_deref() {
-            // SQL-POLICY: generated
-            sqlx::query(sqlx::AssertSqlSafe(sql))
-                .bind(memory_id.into_inner())
-                .bind(lexical_language)
-                .bind(key.schema_id.as_str())
-                .execute(tx.as_mut())
-                .await
-                .map_err(crate::error::map_err)?;
+    /// The language stamped on a projection row is the WRITE's, so it is
+    /// taken off the authorized draft here rather than travelling as its
+    /// own argument through the verbs and closures between the port and
+    /// the insert. See [`PgSidecarWriter`].
+    pub(crate) fn writing(&self, draft: &FactWriteCommand) -> PgSidecarWriter {
+        PgSidecarWriter {
+            registry: self.clone(),
+            draft_language: draft.lexical_language.clone(),
         }
-        Ok(())
+    }
+
+    /// This registry bound to one authorized DERIVED write — the same
+    /// binding as [`Self::writing`], for the draft the derived path carries.
+    pub(crate) fn writing_derived(
+        &self,
+        draft: &crate::verbs::derive_append::DerivedDraft<'_>,
+    ) -> PgSidecarWriter {
+        PgSidecarWriter {
+            registry: self.clone(),
+            draft_language: draft.lexical_language.map(str::to_owned),
+        }
     }
 
     /// Rebuild the projection row for one already-restored sidecar row.
@@ -252,9 +224,16 @@ impl PgSidecarRegistryFrozen {
     /// behind a registry handle only the host context holds.
     ///
     /// Hydrate restores sidecar rows generically from the cold dump, so it
-    /// cannot go through `insert_memory_sidecar`. It re-derives the
-    /// projection from the restored row instead — the same statement, run
-    /// against a row that is already there.
+    /// cannot go through `PgSidecarWriter::insert_memory_sidecar`. It
+    /// re-derives the projection from the restored row instead — the same
+    /// statement, run against a row that is already there.
+    ///
+    /// `lexical_language` is a RESTORE input, not a write's declaration,
+    /// which is why this path takes one where the write path does not and
+    /// why `None` here is the deployment default rather than a refusal:
+    /// the cold record carries no stamp, so there is no writer's choice
+    /// left to honour or to refuse for. Carrying it through a
+    /// forget/hydrate cycle is a cold-format change.
     ///
     /// `schema_id` is the RESTORED ROW's, and it selects the entry as well as
     /// filling the bind. `entries` is keyed by `(schema_id, version, kind)`, so
@@ -441,5 +420,244 @@ impl PgSidecarRegistryFrozen {
             ))
         })?;
         copy(tx, goal_id, source_goal_id).await
+    }
+}
+
+/// The frozen registry bound to one authorized write's lexical language.
+///
+/// A projection row's `lexical_language` is a property of the WRITE, not of
+/// the caller that happens to be holding the registry, so it is read off
+/// the authorized draft once — [`PgSidecarRegistryFrozen::writing`] — and
+/// the insert takes no language argument at all. What each schema does with
+/// it is then a property of its CONTRACT rather than of the call site:
+/// a pinned policy's statement inlines its configuration and reads no bind,
+/// so the draft's value is never consulted; `PerRow` declares that the row's
+/// language IS the writer's, so the draft must carry one.
+///
+/// Bound rather than borrowed because the sidecar closures the write verbs
+/// invoke outlive the call frame; the registry itself is an `Arc` clone.
+#[derive(Debug, Clone)]
+pub(crate) struct PgSidecarWriter {
+    registry: PgSidecarRegistryFrozen,
+    draft_language: Option<String>,
+}
+
+impl PgSidecarWriter {
+    /// Insert a typed sidecar row for an already-created Memory row, and
+    /// the projection row that follows it.
+    ///
+    /// Crate-private: this is the one write that maintains the projection
+    /// row alongside the sidecar row, and a public door onto it — even the
+    /// CORRECT door — is a second write path. Callers reach it through
+    /// `Engine`/`UnitOfWork` and the write ports.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConstraintViolation` when no PG memory sidecar is
+    /// registered for the payload schema, when the erased payload type does
+    /// not match the registered Rust type, or when the schema declares
+    /// `LanguagePolicy::PerRow` and the write declares no language. Returns
+    /// storage errors from the concrete inserter.
+    pub(crate) async fn insert_memory_sidecar(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        memory_id: MemoryId,
+        payload: &SidecarPayload,
+    ) -> Result<(), StorageError> {
+        let key = PgSidecarKey::new(
+            payload.kind,
+            payload.schema_id.clone(),
+            payload.schema_version,
+        );
+        let entry = self.registry.entries.get(&key).ok_or_else(|| {
+            StorageError::ConstraintViolation(format!(
+                "no PG sidecar registered for {} v{} {:?}",
+                key.schema_id.as_str(),
+                key.schema_version.into_inner(),
+                key.kind,
+            ))
+        })?;
+        let insert = entry.memory_insert.ok_or_else(|| {
+            StorageError::ConstraintViolation(format!(
+                "PG sidecar for {} v{} {:?} is not a memory sidecar",
+                key.schema_id.as_str(),
+                key.schema_version.into_inner(),
+                key.kind,
+            ))
+        })?;
+        insert(tx, memory_id, payload, super::SidecarInsertPermit::new()).await?;
+        if let Some(sql) = entry.projection_insert.as_deref() {
+            let language = self.language_bind(entry, &key)?;
+            // SQL-POLICY: generated
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(memory_id.into_inner())
+                .bind(language)
+                .bind(key.schema_id.as_str())
+                .execute(tx.as_mut())
+                .await
+                .map_err(crate::error::map_err)?;
+        }
+        Ok(())
+    }
+
+    /// What the generated statement's language bind carries, decided by the
+    /// schema's declared policy.
+    ///
+    /// `None` means "the statement does not read it": a pinned policy's
+    /// configuration is a literal in the SQL, and the deployment default is
+    /// what an explicit [`LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT`] request
+    /// resolves to through the statement's own `COALESCE`.
+    fn language_bind(
+        &self,
+        entry: &PgSidecarEntry,
+        key: &PgSidecarKey,
+    ) -> Result<Option<&str>, StorageError> {
+        match entry.projection_language {
+            // Not a projected schema, or a policy that fixes the
+            // configuration: the statement has no language bind to read.
+            None | Some(LanguagePolicy::Pinned(_) | LanguagePolicy::PinnedUnion(_)) => Ok(None),
+            Some(LanguagePolicy::PerRow { .. }) => match self.draft_language.as_deref() {
+                Some(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT) => Ok(None),
+                Some(config) => Ok(Some(config)),
+                // Explicit over implicit: the schema says the row's
+                // language is the writer's, so a writer that named none
+                // made no choice, and stamping the deployment default here
+                // would make its own row unmatchable by its own words
+                // without anyone having decided that.
+                None => Err(StorageError::ConstraintViolation(format!(
+                    "{} declares LanguagePolicy::PerRow, so its projection row is stamped with \
+                     the writing draft's lexical language, and this draft carries none: resolve \
+                     the write's language with proxima_core::lexical_language::\
+                     resolve_lexical_language (an omitted argument asks for the deployment \
+                     configuration), or declare a pinned language policy on the schema",
+                    key.schema_id.as_str()
+                ))),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod language_bind_tests {
+    use super::{LanguagePolicy, PgSidecarEntry, PgSidecarKey, PgSidecarWriter};
+    use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
+    use proxima_core::verbs::schema::PayloadKind;
+    use proxima_core::{SchemaId, SchemaVersion};
+
+    fn key() -> PgSidecarKey {
+        PgSidecarKey::new(
+            PayloadKind::Fact,
+            SchemaId::new("core/agent-note".to_owned()),
+            SchemaVersion::new(1),
+        )
+    }
+
+    fn entry(language: Option<LanguagePolicy>) -> PgSidecarEntry {
+        PgSidecarEntry {
+            key: key(),
+            sidecar_table: "proxima_core.agent_note_v1".to_owned(),
+            owner_pinned: false,
+            memory_insert: None,
+            memory_load: None,
+            memory_load_batch: None,
+            cited_object_insert: None,
+            citation_mapping_insert: None,
+            goal_insert: None,
+            goal_copy: None,
+            projection_insert: language.map(|_| "INSERT".to_owned()),
+            projection_table: language.map(|_| "proxima_core.projection".to_owned()),
+            projection_language: language,
+        }
+    }
+
+    fn writer(draft_language: Option<&str>) -> PgSidecarWriter {
+        PgSidecarWriter {
+            registry: super::PgSidecarRegistryFrozen::default(),
+            draft_language: draft_language.map(str::to_owned),
+        }
+    }
+
+    /// A pinned policy's configuration is a literal in the generated
+    /// statement, so there is no bind to fill and nothing the write could
+    /// say that would change the row — including a value that disagrees
+    /// with the pin.
+    #[test]
+    fn a_pinned_policy_reads_nothing_off_the_write() {
+        for policy in [
+            LanguagePolicy::Pinned("english"),
+            LanguagePolicy::PinnedUnion(&["simple", "english"]),
+        ] {
+            for draft in [
+                None,
+                Some("german"),
+                Some(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT),
+            ] {
+                assert_eq!(
+                    writer(draft)
+                        .language_bind(&entry(Some(policy)), &key())
+                        .expect("a pinned policy never refuses"),
+                    None,
+                    "{policy:?} with draft {draft:?}"
+                );
+            }
+        }
+    }
+
+    /// A schema that writes no projection row has no language question.
+    #[test]
+    fn an_unprojected_schema_reads_nothing_off_the_write() {
+        assert_eq!(
+            writer(None)
+                .language_bind(&entry(None), &key())
+                .expect("an unprojected schema never refuses"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_per_row_policy_binds_the_drafts_configuration() {
+        let per_row = LanguagePolicy::PerRow {
+            column: "lexical_language",
+        };
+        assert_eq!(
+            writer(Some("german"))
+                .language_bind(&entry(Some(per_row)), &key())
+                .expect("a named configuration is bound"),
+            Some("german")
+        );
+        // The deployment-default REQUEST is a choice the write made, and
+        // the statement's own COALESCE is where it resolves.
+        assert_eq!(
+            writer(Some(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT))
+                .language_bind(&entry(Some(per_row)), &key())
+                .expect("an explicit deployment-default request is not a refusal"),
+            None
+        );
+    }
+
+    /// Explicit over implicit: no language at all is not a request for the
+    /// deployment default, and the error says how to make it one.
+    #[test]
+    fn a_per_row_policy_refuses_a_write_that_named_no_language() {
+        let per_row = LanguagePolicy::PerRow {
+            column: "lexical_language",
+        };
+        let err = writer(None)
+            .language_bind(&entry(Some(per_row)), &key())
+            .expect_err("a PerRow schema refuses a write that named no language");
+        let message = err.to_string();
+        assert!(
+            message.contains("core/agent-note"),
+            "the refusal names the schema: {message}"
+        );
+        assert!(
+            message.contains("declares LanguagePolicy::PerRow"),
+            "the refusal names the policy: {message}"
+        );
+        assert!(
+            message.contains("resolve_lexical_language")
+                && message.contains("declare a pinned language policy"),
+            "the refusal names both fixes: {message}"
+        );
     }
 }

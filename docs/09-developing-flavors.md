@@ -619,7 +619,12 @@ ctx.engine.author_derived_authorized(&authz, AuthorDerivedRequestInput {
     derived_from: &derived_from,
     extra_refs: &[],
     supersedes: None,
-    lexical_language: None,
+    // A schema declaring `LanguagePolicy::PerRow` stamps THIS value on the
+    // projection row, so the write has to name one: a configuration name,
+    // or `LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT` for the deployment's.
+    // `None` names nothing and is refused. A pinned schema reads it not at
+    // all — pass `None` there.
+    lexical_language: Some(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT),
 }).await?;
 ```
 
@@ -677,8 +682,10 @@ Contract points that are easy to get wrong:
       // tag-scoped search.
       tag_column: Some("tags"),
       // Which configuration tokenises and ranks the row. `PerRow` names
-      // the projection's language column (the caller's language);
-      // `Pinned`/`PinnedUnion` fix it for the whole surface.
+      // the projection's language column, and the row's configuration is
+      // then the WRITE's: a write that names none is refused rather than
+      // stamped with the deployment default. `Pinned`/`PinnedUnion` fix it
+      // for the whole surface and read nothing off the write.
       language: LanguagePolicy::PerRow { column: "lexical_language" },
       // The score windows every arm over this schema renders, resolved
       // by name (`BAND_NAME_EXACT` / `_RESCUE` / `_SUBSTRING`). Reuse

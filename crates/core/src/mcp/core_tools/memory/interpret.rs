@@ -172,7 +172,15 @@ impl McpTool for InterpretTool {
                         derived_from: &[],
                         extra_refs: &[],
                         supersedes: None,
-                        lexical_language: None,
+                        // This surface takes no `language` argument, and
+                        // the interpretation schema's language policy is
+                        // `PerRow` — the row's configuration is the
+                        // writer's. So the write says which one it means
+                        // instead of leaving the draft silent and having
+                        // storage guess.
+                        lexical_language: Some(
+                            crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT,
+                        ),
                     },
                 )
                 .await?;

@@ -39,7 +39,11 @@ fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
 
 const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
 
-fn draft() -> FactWriteCommand {
+/// `language` is the write's own: `agent-note-v1` declares
+/// `LanguagePolicy::PerRow`, so the draft has to name one. A fixture that
+/// does not care which asks for the deployment configuration, exactly as an
+/// omitted `language` argument resolves on the tool surfaces.
+fn draft(language: Option<&str>) -> FactWriteCommand {
     FactWriteCommand {
         schema_id: SchemaId::new(AgentNoteV1::SCHEMA_ID.to_string()),
         schema_version: SchemaVersion::new(1),
@@ -48,7 +52,11 @@ fn draft() -> FactWriteCommand {
         ingest_key: None,
         payload: Vec::new(),
         rendered_text: None,
-        lexical_language: None,
+        lexical_language: Some(
+            language
+                .unwrap_or(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT)
+                .to_owned(),
+        ),
         receipt: None,
         citation: None,
         derived_from: Vec::new(),
@@ -81,10 +89,12 @@ async fn write_note(
         .begin()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
+    let write = draft(language);
     let outcome =
-        ingest_fact_timeseries(&mut tx, &owner, &draft(), &[AGENT_NOTE.to_owned()], None).await?;
+        ingest_fact_timeseries(&mut tx, &owner, &write, &[AGENT_NOTE.to_owned()], None).await?;
     core_pg_sidecars()
-        .insert_memory_sidecar(&mut tx, outcome.memory_id, &note(), language)
+        .writing(&write)
+        .insert_memory_sidecar(&mut tx, outcome.memory_id, &note())
         .await?;
     tx.commit()
         .await
@@ -152,6 +162,49 @@ async fn a_write_files_one_projection_row_carrying_the_owner_the_tag_and_the_lan
                 has_vector: true,
             }),
             "the projection row is the write path's, not the reader's"
+        );
+        Ok(())
+    })
+    .await;
+}
+
+/// A `PerRow` schema whose write named no language is refused, not
+/// projected at the deployment default.
+///
+/// `PerRow` means the row's configuration IS the writer's, so a write that
+/// named none made no choice, and stamping one silently would decide how
+/// its own words are tokenised — the row can end up unmatchable by them —
+/// with nobody having chosen. The refusal is here rather than one layer up
+/// because this is the only place that holds both the write and the
+/// schema's declared policy.
+#[tokio::test]
+async fn a_per_row_schema_refuses_a_write_that_named_no_language() {
+    with_db("proxima_proj_no_language", async |pg| {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let pool = pg.pool_for_tests();
+        let mut write = draft(None);
+        write.lexical_language = None;
+
+        let mut tx = pool.begin().await?;
+        let outcome =
+            ingest_fact_timeseries(&mut tx, &owner, &write, &[AGENT_NOTE.to_owned()], None).await?;
+        let err = core_pg_sidecars()
+            .writing(&write)
+            .insert_memory_sidecar(&mut tx, outcome.memory_id, &note())
+            .await
+            .expect_err("a PerRow schema refuses a write that named no language");
+        tx.rollback().await?;
+
+        let message = err.to_string();
+        assert!(
+            message.contains(AgentNoteV1::SCHEMA_ID)
+                && message.contains("declares LanguagePolicy::PerRow"),
+            "the refusal names the schema and its policy: {message}"
+        );
+        assert!(
+            message.contains("resolve_lexical_language")
+                && message.contains("declare a pinned language policy"),
+            "the refusal names the fix: {message}"
         );
         Ok(())
     })
