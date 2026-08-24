@@ -65,6 +65,13 @@ pub enum FlavorRegistryError {
         name: &'static str,
         message: String,
     },
+    /// A tool declared both `ACTION_ARG_SPECS` and `ARGV_ACTION_SPECS`.
+    /// Each is THE enumeration of the tool's action set under its own
+    /// dispatch shape; with both live, the scope gate, the catalog, and the
+    /// validator would each have to pick which vocabulary names an action.
+    ConflictingActionVocabularies {
+        name: &'static str,
+    },
     /// Two flavors claim the same ordinal. Ordinals are load-bearing at
     /// runtime (unscoped search is `ordinal == 0`), so they cannot collide.
     DuplicateFlavorOrdinal {
@@ -363,6 +370,12 @@ impl std::fmt::Display for FlavorRegistryError {
                     "tool {name} has inconsistent ACTION_ARG_SPECS: {message}"
                 )
             }
+            Self::ConflictingActionVocabularies { name } => write!(
+                f,
+                "tool {name} declares both ACTION_ARG_SPECS and ARGV_ACTION_SPECS; each is the \
+                 single enumeration of the tool's actions under its own dispatch shape, so \
+                 declare exactly one"
+            ),
             Self::DuplicateFlavorOrdinal { ordinal, flavor_id } => write!(
                 f,
                 "flavor {flavor_id} claims ordinal {ordinal}, which another flavor already holds; \

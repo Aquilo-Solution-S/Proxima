@@ -89,11 +89,9 @@ impl ScopeGateBehavior {
         // action would sail past this gate into the tool.
         let descriptor = ctx.registry.mcp_tool(tool);
         let specs = descriptor.map_or(&[] as &[McpActionArgSpec], |d| d.action_arg_specs);
-        if specs.is_empty() {
-            if !scope.allows(tool) {
-                return Err(McpToolError::NotAuthorized(tool.to_string()));
-            }
-        } else {
+        let argv_specs =
+            descriptor.map_or(&[] as &[super::McpArgvActionSpec], |d| d.argv_action_specs);
+        if !specs.is_empty() {
             if !scope.allows_group_advertisement(tool) {
                 return Err(McpToolError::NotAuthorized(tool.to_string()));
             }
@@ -110,6 +108,20 @@ impl ScopeGateBehavior {
             if !scope.allows_action(tool, action) {
                 return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
             }
+        } else if !argv_specs.is_empty() {
+            if !scope.allows_group_advertisement(tool) {
+                return Err(McpToolError::NotAuthorized(tool.to_string()));
+            }
+            // The same resolution the terminal dispatch runs, so the gate
+            // and the call share one vocabulary: the derived key is what
+            // `allows_action` judges, and argv matching no declared prefix
+            // is refused here rather than sailing past into the tool.
+            let action = super::resolve_argv_action(tool, argv_specs, args)?;
+            if !scope.allows_action(tool, action) {
+                return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
+            }
+        } else if !scope.allows(tool) {
+            return Err(McpToolError::NotAuthorized(tool.to_string()));
         }
         Self::enforce_owner_role(tool, args, descriptor, ctx)?;
         Ok(())
@@ -421,6 +433,136 @@ mod tests {
             services: FlavorServices::default(),
             engine: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod argv_scope_tests {
+    use std::sync::Arc;
+
+    use futures::future::BoxFuture;
+
+    use super::ScopeGateBehavior;
+    use crate::mcp::{
+        McpArgvActionSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolAudience,
+        McpToolCtx, McpToolError, McpToolErrorKind,
+    };
+    use crate::{
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, ToolScope, UserId,
+    };
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct ArgvArgs {
+        #[schemars(description = "command words followed by flags")]
+        _argv: Vec<String>,
+    }
+
+    /// An argv-keyed dispatcher with two commands sharing a first word, so
+    /// the gate's derivation has to pick by longest prefix.
+    struct ArgvTool;
+
+    impl McpTool for ArgvTool {
+        const NAME: &'static str = "proxima-stub_cli";
+        const DESCRIPTION: &'static str = "An argv-keyed fixture dispatcher.";
+        const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = &[
+            McpArgvActionSpec {
+                action: "approval",
+                argv_prefix: &["approval"],
+                audience: McpToolAudience::Shared,
+            },
+            McpArgvActionSpec {
+                action: "approval-decide",
+                argv_prefix: &["approval", "decide"],
+                audience: McpToolAudience::Shared,
+            },
+        ];
+        const ANNOTATIONS: Option<McpToolAnnotations> =
+            Some(McpToolAnnotations::new().read_only(false).open_world(false));
+        type Args = ArgvArgs;
+        type Output = ();
+        fn call(_: McpToolCtx, _: Self::Args) -> BoxFuture<'static, Result<(), McpToolError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn argv_ctx(tool_scope: ToolScope) -> McpToolCtx {
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let mut registry = FlavorRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<ArgvTool>("proxima-stub");
+        McpToolCtx {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+                .with_tool_scope(tool_scope),
+            registry: Arc::new(registry.freeze_or_panic_for_tests()),
+            author: McpAuthorContext {
+                model_id: "test".into(),
+                client_name: "test".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            services: FlavorServices::default(),
+            engine: None,
+        }
+    }
+
+    /// The gate judges the DERIVED key, so `tools/list` (which advertises
+    /// leaves from the same specs) and `tools/call` share one vocabulary: a
+    /// palette holding the leaf admits the call, and the same palette
+    /// without it denies the same argv.
+    #[test]
+    fn enforce_scope_gates_the_derived_argv_action() {
+        let args = serde_json::json!({ "argv": ["approval", "decide", "--id", "7"] });
+
+        // Positive control: the leaf in the palette admits the call.
+        ScopeGateBehavior::enforce_scope(
+            ArgvTool::NAME,
+            &args,
+            &argv_ctx(ToolScope::Palette(vec![format!(
+                "{}:approval-decide",
+                ArgvTool::NAME
+            )])),
+        )
+        .expect("a palette holding the derived leaf admits the call");
+
+        // A palette holding only the SIBLING command's leaf denies this
+        // one — proof the gate derived `approval-decide` by longest prefix
+        // rather than settling for the one-word match.
+        let err = ScopeGateBehavior::enforce_scope(
+            ArgvTool::NAME,
+            &args,
+            &argv_ctx(ToolScope::Palette(vec![format!(
+                "{}:approval",
+                ArgvTool::NAME
+            )])),
+        )
+        .expect_err("the sibling leaf must not admit the longer command");
+        assert!(
+            matches!(err, McpToolError::NotAuthorized(ref key)
+                if key == &format!("{}:approval-decide", ArgvTool::NAME)),
+            "got {err:?}",
+        );
+    }
+
+    /// The closed set holds at the gate too: argv outside the declared
+    /// commands is a validation error, never a pass-through to the tool.
+    #[test]
+    fn enforce_scope_refuses_argv_outside_the_vocabulary() {
+        let err = ScopeGateBehavior::enforce_scope(
+            ArgvTool::NAME,
+            &serde_json::json!({ "argv": ["unknown", "verb"] }),
+            &argv_ctx(ToolScope::All),
+        )
+        .expect_err("unmatched argv is refused");
+        assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
+
+        // Positive control: the same scope serves a declared command.
+        ScopeGateBehavior::enforce_scope(
+            ArgvTool::NAME,
+            &serde_json::json!({ "argv": ["approval"] }),
+            &argv_ctx(ToolScope::All),
+        )
+        .expect("a declared command passes under All");
     }
 }
 

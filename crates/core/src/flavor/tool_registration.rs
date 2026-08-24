@@ -68,6 +68,14 @@ impl FlavorRegistry {
         let slash = format!("{expected_prefix}/");
         let under = format!("{expected_prefix}_");
         validate_tool_name(T::NAME, expected_prefix, &slash, &under)?;
+        // One action vocabulary per tool, decided here rather than at the
+        // first call: were both spec kinds live, the scope gate, the
+        // catalog, and the validator would each have to pick which one
+        // names an action, and any disagreement would be a runtime
+        // surprise instead of a registration error.
+        if !T::ACTION_ARG_SPECS.is_empty() && !T::ARGV_ACTION_SPECS.is_empty() {
+            return Err(FlavorRegistryError::ConflictingActionVocabularies { name: T::NAME });
+        }
         let args_schema = mcp_tool_schema::<T::Args>();
         let output_schema = mcp_output_schema::<T::Output>();
         warn_undescribed_properties(T::NAME, &args_schema);
@@ -78,12 +86,17 @@ impl FlavorRegistry {
             let properties = properties.clone();
             Box::pin(async move {
                 // Dispatcher tools (non-empty specs) run per-action validation;
-                // flat McpTools run the flat unknown-field + space-alias guard
-                // instead of silently accepting unknown fields.
-                if T::ACTION_ARG_SPECS.is_empty() {
-                    prepare_flat_tool_args(T::NAME, &properties, &mut args)?;
-                } else {
+                // argv-keyed tools resolve the action key (closed set — argv
+                // matching no declared prefix is refused here) and leave flag
+                // validation to their own dispatch; flat McpTools run the flat
+                // unknown-field + space-alias guard instead of silently
+                // accepting unknown fields.
+                if !T::ACTION_ARG_SPECS.is_empty() {
                     validate_action_args(T::NAME, T::ACTION_ARG_SPECS, &args)?;
+                } else if !T::ARGV_ACTION_SPECS.is_empty() {
+                    crate::mcp::resolve_argv_action(T::NAME, T::ARGV_ACTION_SPECS, &args)?;
+                } else {
+                    prepare_flat_tool_args(T::NAME, &properties, &mut args)?;
                 }
                 let typed: T::Args = serde_json::from_value(args)
                     .map_err(|e| McpToolError::InvalidInput(e.to_string()))?;
@@ -103,7 +116,9 @@ impl FlavorRegistry {
             args_schema,
             output_schema,
             action_arg_specs: T::ACTION_ARG_SPECS,
+            argv_action_specs: T::ARGV_ACTION_SPECS,
             annotations: <T as McpTool>::ANNOTATIONS,
+            audience: <T as McpTool>::AUDIENCE,
             call,
         });
         Ok(())
@@ -176,5 +191,231 @@ mod tests {
         );
         assert_eq!(err.kind(), McpToolErrorKind::Internal);
         assert_eq!(err.client_message(), "internal server error");
+    }
+}
+
+#[cfg(test)]
+mod action_vocabulary_tests {
+    use std::sync::Arc;
+
+    use futures::future::BoxFuture;
+
+    use crate::mcp::{
+        McpActionArgSpec, McpArgvActionSpec, McpAuthorContext, McpTool, McpToolAnnotations,
+        McpToolAudience, McpToolCtx, McpToolError, McpToolErrorKind,
+    };
+    use crate::{
+        AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryError, FlavorServices, OwnerRef,
+        UserId,
+    };
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct ArgvArgs {
+        #[schemars(description = "command words followed by flags")]
+        argv: Vec<String>,
+    }
+
+    const ARGV_SPECS: &[McpArgvActionSpec] = &[
+        McpArgvActionSpec {
+            action: "approval",
+            argv_prefix: &["approval"],
+            audience: McpToolAudience::Shared,
+        },
+        McpArgvActionSpec {
+            action: "approval-decide",
+            argv_prefix: &["approval", "decide"],
+            audience: McpToolAudience::Owner,
+        },
+    ];
+
+    /// An argv-keyed dispatcher: CLI-grammar args, actions derived from
+    /// `argv` by longest-prefix match.
+    struct ArgvTool;
+
+    impl McpTool for ArgvTool {
+        const NAME: &'static str = "proxima-stub_cli";
+        const DESCRIPTION: &'static str = "An argv-keyed fixture dispatcher.";
+        const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = ARGV_SPECS;
+        const ANNOTATIONS: Option<McpToolAnnotations> =
+            Some(McpToolAnnotations::new().read_only(false).open_world(false));
+        type Args = ArgvArgs;
+        type Output = Vec<String>;
+        fn call(
+            _ctx: McpToolCtx,
+            args: Self::Args,
+        ) -> BoxFuture<'static, Result<Vec<String>, McpToolError>> {
+            Box::pin(async move { Ok(args.argv) })
+        }
+    }
+
+    /// A tool claiming both vocabularies at once.
+    struct BothVocabularies;
+
+    impl McpTool for BothVocabularies {
+        const NAME: &'static str = "proxima-stub_both";
+        const DESCRIPTION: &'static str = "A fixture declaring both spec kinds.";
+        const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[McpActionArgSpec {
+            action: "look",
+            allowed_fields: &["id"],
+            required_fields: &["id"],
+            annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+            audience: McpToolAudience::Shared,
+        }];
+        const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = &[McpArgvActionSpec {
+            action: "look",
+            argv_prefix: &["look"],
+            audience: McpToolAudience::Shared,
+        }];
+        type Args = ArgvArgs;
+        type Output = ();
+        fn call(_: McpToolCtx, _: Self::Args) -> BoxFuture<'static, Result<(), McpToolError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// A flat tool declaring the tool-level owner-only class. Written
+    /// against `Tool`, not `McpTool`, so the round-trip below also proves
+    /// the blanket impl forwards the new consts the way it forwards
+    /// `ACTION_ARG_SPECS`.
+    struct OwnerOnlyFlatTool;
+
+    impl crate::Tool for OwnerOnlyFlatTool {
+        const NAME: &'static str = "proxima-stub_admin";
+        const DESCRIPTION: &'static str = "A flat fixture in the owner-only class.";
+        const AUDIENCE: McpToolAudience = McpToolAudience::Owner;
+        const ANNOTATIONS: Option<McpToolAnnotations> =
+            Some(McpToolAnnotations::new().read_only(false).open_world(false));
+        type Args = ArgvArgs;
+        type Output = ();
+        fn call(
+            _: crate::ToolCtx,
+            _: Self::Args,
+        ) -> BoxFuture<'static, Result<(), crate::ToolError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// Declaring both spec kinds is refused at registration, where the
+    /// author reads the error — not at the first call that has to guess
+    /// which vocabulary names an action.
+    #[test]
+    fn registration_rejects_a_tool_declaring_both_spec_kinds() {
+        let mut registry = FlavorRegistry::new();
+        let err = registry
+            .try_add_mcp_tool::<BothVocabularies>("proxima-stub")
+            .expect_err("both vocabularies must not register");
+        assert!(
+            matches!(
+                err,
+                FlavorRegistryError::ConflictingActionVocabularies {
+                    name: "proxima-stub_both"
+                }
+            ),
+            "got {err:?}",
+        );
+        // Positive control: the same grammar under one vocabulary registers.
+        registry
+            .try_add_mcp_tool::<ArgvTool>("proxima-stub")
+            .expect("an argv-only tool registers");
+    }
+
+    /// The descriptor is the one artifact every seam reads, so the audience
+    /// has to survive registration at both levels: per argv action and on
+    /// the tool.
+    #[test]
+    fn descriptor_carries_the_audience_at_both_levels() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<ArgvTool>("proxima-stub");
+        registry.add_mcp_tool_or_panic_for_tests::<OwnerOnlyFlatTool>("proxima-stub");
+        let frozen = registry.freeze_or_panic_for_tests();
+
+        let argv_tool = frozen
+            .mcp_tool(ArgvTool::NAME)
+            .expect("argv tool registered");
+        assert_eq!(argv_tool.argv_action_specs, ARGV_SPECS);
+        assert_eq!(
+            argv_tool.audience,
+            McpToolAudience::Shared,
+            "an undeclared tool-level audience stays Shared"
+        );
+        let by_action = |action: &str| {
+            argv_tool
+                .argv_action_specs
+                .iter()
+                .find(|spec| spec.action == action)
+                .expect("declared action present")
+                .audience
+        };
+        // Positive control and subject side by side: one action owner-only,
+        // its sibling shared, so an audience that leaked tool-wide fails.
+        assert_eq!(by_action("approval"), McpToolAudience::Shared);
+        assert_eq!(by_action("approval-decide"), McpToolAudience::Owner);
+
+        let flat = frozen
+            .mcp_tool(OwnerOnlyFlatTool::NAME)
+            .expect("flat tool registered");
+        assert_eq!(
+            flat.audience,
+            McpToolAudience::Owner,
+            "a flat tool's AUDIENCE declaration round-trips"
+        );
+        assert!(flat.argv_action_specs.is_empty());
+    }
+
+    /// The substrate's own membership dispatcher declares the owner
+    /// audience — the descriptor statement hosts partition on instead of
+    /// hardcoding the tool's name.
+    #[test]
+    fn core_membership_declares_the_owner_audience() {
+        let frozen = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let membership = frozen
+            .mcp_tool(crate::protocol::tool::CORE_MEMBERSHIP)
+            .expect("core_membership is registered");
+        assert_eq!(membership.audience, McpToolAudience::Owner);
+    }
+
+    fn test_ctx() -> McpToolCtx {
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        McpToolCtx {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            author: McpAuthorContext {
+                model_id: "test".into(),
+                client_name: "test".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            services: FlavorServices::default(),
+            engine: None,
+        }
+    }
+
+    /// The registered call handle runs the same closed-set resolution the
+    /// scope gate does: matched argv reaches the tool, unmatched argv is a
+    /// validation error before decode.
+    #[tokio::test]
+    async fn dispatch_validates_argv_against_the_declared_commands() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<ArgvTool>("proxima-stub");
+        let frozen = registry.freeze_or_panic_for_tests();
+        let descriptor = frozen.mcp_tool(ArgvTool::NAME).expect("registered");
+
+        let output = (descriptor.call)(
+            test_ctx(),
+            serde_json::json!({ "argv": ["approval", "decide", "--id", "7"] }),
+        )
+        .await
+        .expect("declared command dispatches");
+        assert_eq!(
+            output,
+            serde_json::json!(["approval", "decide", "--id", "7"])
+        );
+
+        let err = (descriptor.call)(test_ctx(), serde_json::json!({ "argv": ["unknown"] }))
+            .await
+            .expect_err("unmatched argv is refused before the tool runs");
+        assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
     }
 }

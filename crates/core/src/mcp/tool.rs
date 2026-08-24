@@ -10,6 +10,25 @@ pub enum McpToolOrigin {
     Flavor(String),
 }
 
+/// Who a tool or action is for.
+///
+/// Descriptor data, not a gate: Proxima stays audience-agnostic, and
+/// `ToolScope` semantics do not change. Hosts that compute separate tool
+/// surfaces per audience partition on this declaration instead of
+/// hardcoding tool names. An enum rather than a flag so the declaration
+/// site names its meaning, and a future audience is a new variant instead
+/// of a second bool that has to be read together with the first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum McpToolAudience {
+    /// Eligible for every surface a host computes. The default: saying
+    /// nothing does not narrow anything.
+    #[default]
+    Shared,
+    /// Belongs to the owner alone; a host computing a surface for any
+    /// non-owner audience leaves this key out.
+    Owner,
+}
+
 #[derive(Clone)]
 pub struct McpToolDescriptor {
     pub name: &'static str,
@@ -21,11 +40,20 @@ pub struct McpToolDescriptor {
     /// the registry payloads it writes — a different thing.
     pub output_schema: serde_json::Value,
     pub action_arg_specs: &'static [McpActionArgSpec],
+    /// The actions of an argv-keyed dispatcher, or `&[]`. Mutually exclusive
+    /// with `action_arg_specs`: registration refuses a tool declaring both,
+    /// so nothing downstream has to decide which vocabulary wins.
+    pub argv_action_specs: &'static [McpArgvActionSpec],
     /// What a flat tool declared about its own behaviour, or `None` when it
     /// declared nothing. Substrate flat tools may still resolve through
     /// `core_tool_annotations`. Dispatcher behavior lives on
     /// `action_arg_specs`; this field is not an action fallback.
     pub annotations: Option<crate::mcp::McpToolAnnotations>,
+    /// Tool-level audience: [`McpToolAudience::Owner`] means every key of
+    /// this tool — the bare name and each `tool:action` leaf — belongs to
+    /// the owner alone. See [`McpToolAudience`] for what the declaration is
+    /// and is not.
+    pub audience: McpToolAudience,
     pub call: McpCallFn,
 }
 
@@ -141,7 +169,9 @@ impl std::fmt::Debug for McpToolDescriptor {
             .field("args_schema", &self.args_schema)
             .field("output_schema", &self.output_schema)
             .field("action_arg_specs", &self.action_arg_specs)
+            .field("argv_action_specs", &self.argv_action_specs)
             .field("annotations", &self.annotations)
+            .field("audience", &self.audience)
             .field("call", &"<callable>")
             .finish()
     }
@@ -155,6 +185,89 @@ pub struct McpActionArgSpec {
     /// Behaviour of this action. `None` is deliberately a write: callers
     /// must opt into read authorization and retry-safe `QUERY` exposure.
     pub annotations: Option<crate::mcp::McpToolAnnotations>,
+    /// Who this action is for. See [`McpToolAudience`].
+    pub audience: McpToolAudience,
+}
+
+/// One action of an argv-keyed dispatcher: a tool whose arguments are a CLI
+/// grammar (`{argv, flags}`) rather than an internally tagged enum.
+///
+/// The action key is derived at dispatch by longest-prefix match of
+/// `args["argv"]` against `argv_prefix`, and that derived key is what
+/// [`crate::ToolScope::allows_action`] gates — the same `tool:action`
+/// vocabulary an `action`-tagged dispatcher uses. The set is closed: argv
+/// that matches no declared prefix is a validation error, never a
+/// pass-through.
+///
+/// There is deliberately no field list here. Flag validation for an argv
+/// grammar belongs to the tool's own dispatch, which owns the grammar; this
+/// spec only names the scope key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpArgvActionSpec {
+    pub action: &'static str,
+    pub argv_prefix: &'static [&'static str],
+    /// Who this action is for. See [`McpToolAudience`].
+    pub audience: McpToolAudience,
+}
+
+/// Derive the action key of an argv-keyed dispatcher from `args["argv"]` by
+/// longest-prefix match against the declared specs.
+///
+/// The set is closed: argv matching no declared prefix is a validation
+/// error, mirroring how an unknown `action` is refused on a tagged
+/// dispatcher — the gate never serves a key the vocabulary does not emit.
+/// Longest prefix wins so `["approval"]` and `["approval", "decide"]` can
+/// coexist as distinct actions, with the more specific spelling taking the
+/// call.
+///
+/// No flag validation happens here; the tool's own dispatch owns the
+/// grammar past the action key.
+pub(crate) fn resolve_argv_action(
+    tool_name: &str,
+    specs: &[McpArgvActionSpec],
+    args: &serde_json::Value,
+) -> Result<&'static str, McpToolError> {
+    let words = args
+        .get("argv")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            McpToolError::InvalidInput(format!(
+                "{tool_name} arguments must include array field `argv`"
+            ))
+        })?;
+    let words: Vec<&str> = words
+        .iter()
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                McpToolError::InvalidInput(format!(
+                    "{tool_name} `argv` must be an array of strings"
+                ))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    specs
+        .iter()
+        .filter(|spec| {
+            words.len() >= spec.argv_prefix.len()
+                && spec
+                    .argv_prefix
+                    .iter()
+                    .zip(&words)
+                    .all(|(expected, actual)| expected == actual)
+        })
+        .max_by_key(|spec| spec.argv_prefix.len())
+        .map(|spec| spec.action)
+        .ok_or_else(|| {
+            let supported = specs
+                .iter()
+                .map(|spec| spec.argv_prefix.join(" "))
+                .collect::<Vec<_>>()
+                .join(", ");
+            McpToolError::InvalidInput(format!(
+                "{tool_name} argv {words:?} matches no declared command; expected one of: \
+                 {supported}"
+            ))
+        })
 }
 
 pub(crate) fn validate_action_args(
@@ -316,10 +429,19 @@ pub trait McpTool: Send + Sync + 'static {
     /// a dispatcher's action set, and the blanket impl below forwards it
     /// from `Tool` so a flavor dispatcher declares it in exactly one place.
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[];
+    /// The actions of an argv-keyed dispatcher, or `&[]`. See
+    /// [`crate::Tool::ARGV_ACTION_SPECS`] — the single enumeration for a
+    /// CLI-grammar tool, forwarded from `Tool` by the blanket impl below.
+    /// A tool declares this or [`Self::ACTION_ARG_SPECS`], never both;
+    /// registration refuses the pair.
+    const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = &[];
     /// MCP behaviour hints for a flat tool. See [`crate::Tool::ANNOTATIONS`].
     /// Dispatchers ignore this parent declaration and resolve only from their
     /// action specs. Forwarded from `Tool` by the blanket impl below.
     const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = None;
+    /// Tool-level audience. See [`McpToolDescriptor::audience`]; forwarded
+    /// from `Tool` by the blanket impl below.
+    const AUDIENCE: McpToolAudience = McpToolAudience::Shared;
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
     /// See [`crate::Tool::Output`] — the manifest derives an output schema
@@ -340,7 +462,9 @@ where
     const DESCRIPTION: &'static str = T::DESCRIPTION;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = T::PRODUCES_SCHEMA_IDS;
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = <T as crate::Tool>::ACTION_ARG_SPECS;
+    const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = <T as crate::Tool>::ARGV_ACTION_SPECS;
     const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = <T as crate::Tool>::ANNOTATIONS;
+    const AUDIENCE: McpToolAudience = <T as crate::Tool>::AUDIENCE;
 
     type Args = T::Args;
     type Output = T::Output;
@@ -367,6 +491,75 @@ where
             ctx.engine,
         );
         Box::pin(async move { T::call(tool_ctx, args).await.map_err(Into::into) })
+    }
+}
+
+#[cfg(test)]
+mod argv_action_tests {
+    use super::{McpArgvActionSpec, McpToolAudience, resolve_argv_action};
+    use crate::mcp::{McpToolError, McpToolErrorKind};
+
+    /// Two commands sharing a first word, so only longest-prefix matching
+    /// can tell them apart.
+    const SPECS: &[McpArgvActionSpec] = &[
+        McpArgvActionSpec {
+            action: "approval",
+            argv_prefix: &["approval"],
+            audience: McpToolAudience::Shared,
+        },
+        McpArgvActionSpec {
+            action: "approval-decide",
+            argv_prefix: &["approval", "decide"],
+            audience: McpToolAudience::Shared,
+        },
+    ];
+
+    #[test]
+    fn longest_matching_prefix_wins() {
+        let args = serde_json::json!({ "argv": ["approval", "decide", "--id", "7"] });
+        assert_eq!(
+            resolve_argv_action("stub_cli", SPECS, &args).expect("two-word command resolves"),
+            "approval-decide",
+        );
+    }
+
+    /// Positive control: the shorter command still resolves to its own key,
+    /// so the longest-prefix rule narrows rather than shadowing.
+    #[test]
+    fn shorter_command_keeps_its_own_key() {
+        let args = serde_json::json!({ "argv": ["approval", "--list"] });
+        assert_eq!(
+            resolve_argv_action("stub_cli", SPECS, &args).expect("one-word command resolves"),
+            "approval",
+        );
+    }
+
+    /// The set is closed: argv the vocabulary does not emit is refused, not
+    /// dispatched under some nearest key.
+    #[test]
+    fn unmatched_argv_is_rejected() {
+        let args = serde_json::json!({ "argv": ["unknown", "verb"] });
+        let err = resolve_argv_action("stub_cli", SPECS, &args)
+            .expect_err("argv outside the declared commands is refused");
+        assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
+        assert!(
+            matches!(err, McpToolError::InvalidInput(ref message)
+                if message.contains("matches no declared command")),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn missing_or_malformed_argv_is_rejected() {
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({ "argv": "approval" }),
+            serde_json::json!({ "argv": ["approval", 7] }),
+        ] {
+            let err = resolve_argv_action("stub_cli", SPECS, &args)
+                .expect_err("argv must be an array of strings");
+            assert_eq!(err.kind(), McpToolErrorKind::InvalidInput, "for {args}");
+        }
     }
 }
 

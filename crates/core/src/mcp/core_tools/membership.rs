@@ -7,7 +7,9 @@ use crate::authz::AuthzContext;
 use crate::engine::GroupMemberPage;
 use crate::error::ProtocolError;
 use crate::mcp::cursor as wire_cursor;
-use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{
+    CoreActionMeta, McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError,
+};
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::{GroupId, OwnerRef, UserId};
 
@@ -133,24 +135,32 @@ impl McpTool for CoreMembershipTool {
     const NAME: &'static str = protocol_tool::CORE_MEMBERSHIP;
     const DESCRIPTION: &'static str =
         "Membership dispatcher — add_member/remove_member/list_members.";
+    /// Membership governs who can reach the owner's memory at all, so every
+    /// key of this tool belongs to the owner alone. Declared on the
+    /// descriptor rather than hardcoded by name in each host that computes
+    /// a non-owner tool surface.
+    const AUDIENCE: McpToolAudience = McpToolAudience::Owner;
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "add_member",
             allowed_fields: &["group", "member", "relation"],
             required_fields: &["group", "member", "relation"],
             annotations: Some(WRITE_NON_IDEMPOTENT),
+            audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "remove_member",
             allowed_fields: &["group", "member"],
             required_fields: &["group", "member"],
             annotations: Some(DESTRUCTIVE_NON_IDEMPOTENT),
+            audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "list_members",
             allowed_fields: &["group", "limit", "cursor"],
             required_fields: &["group"],
             annotations: Some(READ_ONLY),
+            audience: McpToolAudience::Shared,
         },
     ];
     type Args = CoreMembershipArgs;

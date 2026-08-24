@@ -392,6 +392,7 @@ fn not_authorized_message(
                 .action_arg_specs
                 .iter()
                 .map(|spec| spec.action)
+                .chain(descriptor.argv_action_specs.iter().map(|spec| spec.action))
                 .filter(|action| action_allowed_for_auth(Some(auth), descriptor, action))
                 .collect()
         })
@@ -638,8 +639,14 @@ fn auth_context(context: &RequestContext<RoleServer>) -> Option<McpAuthContext> 
 
 fn scope_allows(scope: Option<&ToolScope>, descriptor: &McpToolDescriptor) -> bool {
     match scope {
-        Some(scope) => scope
-            .allows_tool_advertisement(descriptor.name, !descriptor.action_arg_specs.is_empty()),
+        Some(scope) => {
+            // Argv-keyed dispatchers advertise through `tool:action` leaves
+            // exactly like `action`-tagged ones — the derived key is the
+            // same vocabulary the invocation gate judges.
+            let has_actions =
+                !descriptor.action_arg_specs.is_empty() || !descriptor.argv_action_specs.is_empty();
+            scope.allows_tool_advertisement(descriptor.name, has_actions)
+        }
         // No auth context bound to the request. In release builds this
         // means the request bypassed `mcp_auth_layer` (which 401s before
         // dispatch) — fail closed rather than expose the full tool
@@ -662,13 +669,18 @@ pub(crate) fn tool_allowed_for_auth(
     if !scope_allows(scope, descriptor) {
         return false;
     }
-    if descriptor.action_arg_specs.is_empty() {
-        owner_role_allows(auth, descriptor.is_read_only())
-    } else {
+    if !descriptor.action_arg_specs.is_empty() {
         descriptor
             .action_arg_specs
             .iter()
             .any(|spec| action_allowed_for_auth(auth, descriptor, spec.action))
+    } else if !descriptor.argv_action_specs.is_empty() {
+        descriptor
+            .argv_action_specs
+            .iter()
+            .any(|spec| action_allowed_for_auth(auth, descriptor, spec.action))
+    } else {
+        owner_role_allows(auth, descriptor.is_read_only())
     }
 }
 
@@ -680,7 +692,16 @@ pub(crate) fn action_allowed_for_auth(
 ) -> bool {
     let scope_allowed = auth
         .is_none_or(|ctx| scope_permits_action(ctx.authz.tool_scope(), descriptor.name, action));
-    scope_allowed && owner_role_allows(auth, descriptor.action_is_read_only(action))
+    // Argv specs carry no per-action annotations — flag semantics belong to
+    // the tool's own dispatch — so an argv action classifies read/write from
+    // the tool-level declaration, matching what the owner-role gate enforces
+    // at call time.
+    let read_only = if descriptor.action_arg_specs.is_empty() {
+        descriptor.is_read_only()
+    } else {
+        descriptor.action_is_read_only(action)
+    };
+    scope_allowed && owner_role_allows(auth, read_only)
 }
 
 fn owner_role_allows(auth: Option<&McpAuthContext>, read_only: bool) -> bool {
@@ -822,7 +843,9 @@ mod tests {
             args_schema: serde_json::json!({"type": "object"}),
             output_schema: serde_json::json!({"type": "object"}),
             action_arg_specs: &[],
+            argv_action_specs: &[],
             annotations,
+            audience: proxima_core::mcp::McpToolAudience::Shared,
             call: &|_, _| Box::pin(async { Ok(serde_json::Value::Null) }),
         }
     }
@@ -833,12 +856,14 @@ mod tests {
             allowed_fields: &["id"],
             required_fields: &["id"],
             annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+            audience: proxima_core::mcp::McpToolAudience::Shared,
         },
         proxima_core::mcp::McpActionArgSpec {
             action: "touch",
             allowed_fields: &["id"],
             required_fields: &["id"],
             annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+            audience: proxima_core::mcp::McpToolAudience::Shared,
         },
     ];
 
@@ -1029,12 +1054,14 @@ mod tests {
                     allowed_fields: &["id"],
                     required_fields: &["id"],
                     annotations: None,
+                    audience: proxima_core::mcp::McpToolAudience::Shared,
                 },
                 McpActionArgSpec {
                     action: "touch",
                     allowed_fields: &["id"],
                     required_fields: &["id"],
                     annotations: None,
+                    audience: proxima_core::mcp::McpToolAudience::Shared,
                 },
             ];
             type Args = StubArgs;
