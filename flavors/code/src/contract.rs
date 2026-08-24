@@ -147,15 +147,15 @@ pub fn substring_arm(schema_id: &str) -> Option<SubstringArm> {
 }
 
 /// Every code sidecar is keyed on `memory.t` and carries no `owner_id`, so
-/// it reaches its owner through the Memory and follows it. EMPTY
-/// `owner_columns` is that claim, and it is what
+/// it reaches its owner through the Memory and follows it. A `None`
+/// `owner_column` is that claim, and it is what
 /// `check_owner_pinned_against_contracts` compares against
 /// `pg_sidecar!`'s `owner_pinned` flag — none of the sixteen sets it.
 const fn memory_sidecar(table: &'static str, t_fkey: &'static str) -> Surface {
     Surface {
         table,
         key: KeyShape::MemoryT { column: "t" },
-        owner_columns: &[],
+        owner_column: None,
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::ByKey,
         export: ExportRule::Rows,
@@ -190,7 +190,7 @@ const fn detail_table(
         // `proxima_core.memory` t — so this column holds a memory key under
         // a different name, which is exactly what `MemoryT { column }` says.
         key: KeyShape::MemoryT { column: key_column },
-        owner_columns: &[],
+        owner_column: None,
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::Cascade {
             via: DbConstraint {
@@ -608,7 +608,7 @@ const STATE_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_code.repos",
         key: KeyShape::Custom(&["owner_kind", "owner_id", "repo_id"]),
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::RetainAtSource {
             why: "a repo registration is a path on the host that registered it, plus that \
                   host's ingestion cursor. Transferring memories does not give the \
@@ -628,7 +628,7 @@ const STATE_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_code.repo_ingestion_runs",
         key: KeyShape::Custom(&["run_id"]),
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::RetainAtSource {
             why: "an ingestion run is a receipt for work this owner's host did; it proves \
                   admission by that owner and does not travel",

@@ -19,50 +19,6 @@ pub fn owner_arrays(owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>)
     owners.iter().map(owner_binds).unzip()
 }
 
-/// The one column a surface's own owner predicate filters on, as DECLARED.
-///
-/// The erase and export legs each render `WHERE <owner column> = $1` over a
-/// surface that carries its own owner, and both used to spell that column
-/// `owner_id`. Every shipped declaration happens to say `owner_id`, which
-/// is precisely what makes the literal invisible: the statement claimed to
-/// be a function of the declaration and was a function of the declaration
-/// plus a naming convention.
-///
-/// The transfer leg reads the WHOLE list — [`TransferLeg::Rehomed`] sets
-/// every declared owner column on the destination — and these two do not,
-/// because "which columns does a move rewrite" and "which column decides
-/// whose row this is" are different questions and only the first has an
-/// answer for a list. A surface declaring two owner columns is therefore
-/// refused here by name rather than filtered on the first: filtering on one
-/// silently under-erases and under-exports (today's behaviour), and
-/// `OR`-ing them is a scope decision nothing in the kernel has made.
-///
-/// # Errors
-///
-/// `Internal` when the surface declares no owner column — its caller is
-/// meant to have taken the through-the-key branch — or more than one, or
-/// when the declared name is not a legal identifier.
-pub(crate) fn sole_owner_column(
-    surface: &proxima_core::flavor::Surface,
-) -> Result<crate::pg_ident::PgIdent<'_>, StorageError> {
-    match surface.owner_columns {
-        [column] => crate::pg_ident::PgIdent::column(column),
-        [] => Err(StorageError::Internal(format!(
-            "{} declares no owner column, so it has no owner predicate of its own; \
-             its rows are reached through the owner of their key",
-            surface.table
-        ))),
-        columns => Err(StorageError::Internal(format!(
-            "{} declares {} owner columns ({columns:?}); the erase and export legs filter on \
-             ONE, and which of several decides whose row this is -- or whether they are \
-             disjunctive -- is not something the surface declaration says. Declare a single \
-             owner column, or decide that scope in the kernel first",
-            surface.table,
-            columns.len(),
-        ))),
-    }
-}
-
 /// Insert `proxima_core.owners` or confirm the stored kind matches `owner`.
 ///
 /// The only production owners upsert. Memory / goal / wake / citation /
@@ -728,8 +684,8 @@ async fn persist_series_head_transfer(
 /// Every statement here is a `TransferLeg` the flavor that declared the
 /// surface resolved at registry time:
 ///
-/// - [`TransferLeg::Rehomed`] sets every declared owner column of the
-///   surface, selecting on the column the key names against the series' `t`
+/// - [`TransferLeg::Rehomed`] sets the surface's declared owner column,
+///   selecting on the column the key names against the series' `t`
 ///   set. That covers `cooled`, `memory`, `sketch`, the three embedding
 ///   tables and EVERY flavor's projection with one statement shape.
 /// - [`TransferLeg::Dropped`] deletes them — one member, `ingest_keys`,
@@ -783,21 +739,15 @@ fn series_leg_sql(table: &str, leg: TransferLeg) -> Result<String, StorageError>
     match leg {
         TransferLeg::Rehomed {
             key_column,
-            owner_columns,
+            owner_column,
         } => {
-            let mut sets = Vec::with_capacity(owner_columns.len());
-            for column in owner_columns {
-                sets.push(format!(
-                    "{} = $2",
-                    crate::pg_ident::PgIdent::column(column)?.as_str()
-                ));
-            }
+            let owner = crate::pg_ident::PgIdent::column(owner_column)?;
             let key = crate::pg_ident::PgIdent::column(key_column)?;
             // SQL-POLICY: PgIdent
             Ok(format!(
-                "UPDATE {} SET {} WHERE {} = ANY($1::uuid[])",
+                "UPDATE {} SET {} = $2 WHERE {} = ANY($1::uuid[])",
                 table.as_str(),
-                sets.join(", "),
+                owner.as_str(),
                 key.as_str()
             ))
         }
@@ -1351,25 +1301,21 @@ mod tests {
         assert_eq!(tables.len(), generated.len(), "one leg per table");
     }
 
-    /// A rehome sets EVERY declared owner column, not just the first.
-    ///
-    /// `announce` and `receipt` carry one; the surface type permits more, and
-    /// a generator that quietly used `owner_columns[0]` would leave the rest
-    /// pointing at the source owner.
+    /// A rehome sets the surface's ONE declared owner column, named as the
+    /// declaration names it rather than as `owner_id` by convention.
     #[test]
-    fn a_rehomed_leg_sets_every_owner_column_the_surface_declares() {
+    fn a_rehomed_leg_sets_the_owner_column_the_surface_declares() {
         let sql = series_leg_sql(
             "test_flavor.thing",
             TransferLeg::Rehomed {
                 key_column: "t",
-                owner_columns: &["owner_id", "custodian_id"],
+                owner_column: "custodian_id",
             },
         )
         .expect("a rehome is generated");
         assert_eq!(
             sql,
-            "UPDATE test_flavor.thing SET owner_id = $2, custodian_id = $2 \
-             WHERE t = ANY($1::uuid[])"
+            "UPDATE test_flavor.thing SET custodian_id = $2 WHERE t = ANY($1::uuid[])"
         );
     }
 

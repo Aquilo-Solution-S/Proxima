@@ -11,7 +11,7 @@ use proxima_core::owner_inverse::{
 use proxima_core::{ColdObjectStore, GroupId, OwnerRef, SourceId, StorageError, UserId};
 use sqlx::{PgPool, Postgres, Transaction};
 
-use crate::access::owner_columns::{lock_group_membership_tx, owner_binds, sole_owner_column};
+use crate::access::owner_columns::{lock_group_membership_tx, owner_binds};
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::verbs::forget::ColdPurgePlan;
@@ -282,7 +282,15 @@ async fn delete_owned_surfaces(
         // `EraseLeg::Owned` is the arm for a surface that carries its OWN
         // owner, so the predicate reads the column it declares. `m.t` and
         // `c.t` below are the kernel tables' own keys and are fixed.
-        let owner_column = sole_owner_column(surface)?;
+        let Some(declared_owner) = surface.owner_column else {
+            return Err(StorageError::Internal(format!(
+                "{} resolved to an owned erase leg while declaring no owner column, so it \
+                 has no owner predicate of its own; its rows are reached through the owner \
+                 of their key",
+                surface.table
+            )));
+        };
+        let owner_column = PgIdent::column(declared_owner)?;
         // SQL-POLICY: PgIdent
         let sql = match scope {
             SelectionScope::Owner => {

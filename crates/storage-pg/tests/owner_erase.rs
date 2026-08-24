@@ -75,7 +75,7 @@ fn citation_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
         Surface {
             table,
             key: KeyShape::BlobId { column },
-            owner_columns: &[],
+            owner_column: None,
             transfer: TransferRule::StaysOnKey,
             erase: EraseRule::ByKey,
             export: ExportRule::Rows,

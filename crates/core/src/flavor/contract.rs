@@ -607,7 +607,7 @@ pub enum Enforcement {
 /// is not carried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransferRule {
-    /// `UPDATE` every `owner_columns` to the destination.
+    /// `UPDATE` the surface's `owner_column` to the destination.
     Follow,
     /// Move, or — when the destination already owns an identical row —
     /// remap the referring columns and GC the orphan.
@@ -638,8 +638,8 @@ pub enum TransferRule {
         why: &'static str,
         enforced_by: &'static [Enforcement],
     },
-    /// Reached through its key's owner; there is nothing to move. EMPTY
-    /// `owner_columns` is the matching claim.
+    /// Reached through its key's owner; there is nothing to move. A `None`
+    /// `owner_column` is the matching claim.
     StaysOnKey,
 }
 
@@ -741,7 +741,7 @@ impl KeyShape {
     /// The table this key lives in and the column it is stored under there,
     /// for the three keys that name a core entity.
     ///
-    /// This is what makes EMPTY `owner_columns` a checkable claim rather
+    /// This is what makes a `None` `owner_column` a checkable claim rather
     /// than a hope: a surface that carries no owner asserts it is reached
     /// through its key's owner, and the pair returned here is the join that
     /// reaches it.
@@ -893,11 +893,11 @@ impl EraseLeg {
 /// refuse it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransferLeg {
-    /// Generated: set every one of `owner_columns` to the destination, for
+    /// Generated: set the surface's `owner_column` to the destination, for
     /// the rows whose `key_column` is in the transferred series' `t` set.
     Rehomed {
         key_column: &'static str,
-        owner_columns: &'static [&'static str],
+        owner_column: &'static str,
     },
     /// Generated: delete the surface's rows for the transferred series,
     /// with the reason the declaration gave.
@@ -960,19 +960,18 @@ impl TransferLeg {
             {
                 Self::Bespoke
             }
-            TransferRule::Follow => match surface.key {
+            TransferRule::Follow => match (surface.key, surface.owner_column) {
                 // The two keys that name a memory version. A `Follow` with
                 // no owner column to set is a contradiction, not a leg:
                 // `StaysOnKey` is the arm for "reached through the key's
-                // owner", and it is what an empty `owner_columns` claims.
-                KeyShape::MemoryT { column } | KeyShape::EntityT { column }
-                    if !surface.owner_columns.is_empty() =>
-                {
-                    Self::Rehomed {
-                        key_column: column,
-                        owner_columns: surface.owner_columns,
-                    }
-                }
+                // owner", and it is what a `None` `owner_column` claims.
+                (
+                    KeyShape::MemoryT { column } | KeyShape::EntityT { column },
+                    Some(owner_column),
+                ) => Self::Rehomed {
+                    key_column: column,
+                    owner_column,
+                },
                 _ => Self::Unreachable,
             },
             TransferRule::Drop { why } => match surface.key {
@@ -1137,9 +1136,18 @@ impl ForgetLeg {
 pub struct Surface {
     pub table: &'static str,
     pub key: KeyShape,
-    /// Columns carrying an owner. EMPTY IS A CLAIM, not an omission: it
-    /// asserts the row is reached through its key's owner.
-    pub owner_columns: &'static [&'static str],
+    /// The one column carrying this surface's owner. `None` IS A CLAIM, not
+    /// an omission: it asserts the row is reached through its key's owner.
+    ///
+    /// AN OWNER IS ONE COLUMN. "Which column decides whose row this is" has
+    /// a single answer or none; a second answer is not a wider claim but an
+    /// undecided one — erase and export would have to pick, and whether the
+    /// two are conjunctive or disjunctive is a scope decision no surface
+    /// declaration makes. A flavor that needs several owner relationships on
+    /// one table models each as a mapping surface of its own: its own table,
+    /// its own single owner column, keyed to the parent. `Option` is what
+    /// makes the alternative unrepresentable rather than merely refused.
+    pub owner_column: Option<&'static str>,
     pub transfer: TransferRule,
     pub erase: EraseRule,
     pub export: ExportRule,
@@ -1280,7 +1288,7 @@ impl ProjectionSpec {
             key: KeyShape::MemoryT {
                 column: PROJECTION_MEMORY_COLUMN,
             },
-            owner_columns: &["owner_id"],
+            owner_column: Some("owner_id"),
             transfer: TransferRule::Follow,
             erase: EraseRule::Cascade {
                 via: DbConstraint {

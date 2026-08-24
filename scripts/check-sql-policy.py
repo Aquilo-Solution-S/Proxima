@@ -487,7 +487,7 @@ def run_fixture(path: Path) -> int:
 # `owner_erase::delete_owned_surfaces` renders one `DELETE` per declared
 # `EraseLeg::Owned` surface, filtered on that surface's own `owner_id`.
 # `owner_export::export_statement`'s owner-pinned arm — the one taken when
-# `owner_columns` is non-empty — renders the matching `SELECT ... WHERE
+# `owner_column` is `Some` — renders the matching `SELECT ... WHERE
 # s.owner_id`. Each stands where a single hardcoded
 # `proxima_core.mcp_call_logged_v1` statement would otherwise be, so the
 # count rises while the hardcoded table name disappears. The third,
@@ -615,7 +615,7 @@ def run_fixture(path: Path) -> int:
 #       tables differing only in a name, every flavor's projection, and the
 #       `DELETE FROM ingest_keys`. The statement is chosen by the surface's
 #       resolved `TransferLeg` and the only values substituted into it are
-#       the table name, the key column and the owner columns — all
+#       the table name, the key column and the owner column — all
 #       `&'static str` from a `const` contract that `try_freeze` validated
 #       and that `every_column_a_declaration_names_is_a_column_the_catalog_has`
 #       resolved against `information_schema`. %I-equivalent substitution.
@@ -714,7 +714,7 @@ def run_fixture(path: Path) -> int:
 # `verbs/forget.rs`'s stamped-sidecar dump (now keyed off the frozen
 # registry's declared column instead of `s.t`), and the `owner_id` literals
 # in `verbs/owner_erase.rs` / `verbs/owner_export.rs` (now
-# `Surface::owner_columns`) all interpolate one more validated identifier
+# `Surface::owner_column`) all interpolate one more validated identifier
 # into a `format!` the per-line rule already counted. Replacing a literal
 # name with a declared one is invisible to this detector by construction,
 # which is worth stating: the number moves for the shape of the assembly,

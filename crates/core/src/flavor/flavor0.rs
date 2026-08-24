@@ -105,7 +105,7 @@ const GOAL_NOT_TRANSFERABLE: TransferRule = TransferRule::NotTransferable {
 };
 
 /// A memory sidecar keyed on `memory.t`: nothing to re-home, because the
-/// Memory carries the owner. EMPTY `owner_columns` is the claim.
+/// Memory carries the owner. A `None` `owner_column` is the claim.
 const fn memory_sidecar(
     table: &'static str,
     lexical_language_column: Option<&'static str>,
@@ -114,7 +114,7 @@ const fn memory_sidecar(
     Surface {
         table,
         key: KeyShape::MemoryT { column: "t" },
-        owner_columns: &[],
+        owner_column: None,
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::ByKey,
         export: ExportRule::Rows,
@@ -264,7 +264,7 @@ const MCP_CALL_LOGGED_V1: SchemaContract = SchemaContract {
     surfaces: &[Surface {
         table: "proxima_core.mcp_call_logged_v1",
         key: KeyShape::MemoryT { column: "t" },
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::RetainAtSource {
             why: "see the schema declaration",
         },
@@ -423,7 +423,7 @@ const TASK_GOAL_V1: SchemaContract = SchemaContract {
     surfaces: &[Surface {
         table: "proxima_core.task_goal_v1",
         key: KeyShape::GoalT { column: "t" },
-        owner_columns: &[],
+        owner_column: None,
         transfer: GOAL_NOT_TRANSFERABLE,
         erase: EraseRule::ByKey,
         export: ExportRule::Rows,
@@ -491,7 +491,7 @@ const STATE_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.goal",
         key: KeyShape::GoalT { column: "t" },
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: GOAL_NOT_TRANSFERABLE,
         erase: EraseRule::ByOwner,
         export: ExportRule::Rows,
@@ -507,7 +507,7 @@ const STATE_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.goal_head",
         key: KeyShape::Custom(&["handle"]),
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: GOAL_NOT_TRANSFERABLE,
         erase: EraseRule::ByOwner,
         export: ExportRule::Excluded {
@@ -526,7 +526,7 @@ const STATE_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.wake_config",
         key: KeyShape::Custom(&["wake_id"]),
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: GOAL_NOT_TRANSFERABLE,
         erase: EraseRule::ByOwner,
         export: ExportRule::Excluded {
@@ -554,7 +554,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.memory",
         key: KeyShape::MemoryT { column: "t" },
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
         export: ExportRule::Rows,
@@ -568,7 +568,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.memory_head",
         key: KeyShape::Custom(&["handle"]),
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::Follow,
         // NOT a cascade: the constraint `memory.handle ->
         // memory_head.handle` points the OTHER way and is `NO ACTION`, so it
@@ -595,7 +595,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.cooled",
         key: KeyShape::MemoryT { column: "t" },
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
         export: ExportRule::Rows,
@@ -612,7 +612,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         // which is exactly what `EntityT` names, and what `Custom` (the arm
         // for a key this crate cannot reason about at all) does not.
         key: KeyShape::EntityT { column: "t" },
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
         export: ExportRule::Allowlist(&["t", "owner_id", "kind", "text"]),
@@ -633,7 +633,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         key: KeyShape::EntityT {
             column: "entity_id",
         },
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
         export: ExportRule::Excluded {
@@ -649,7 +649,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         key: KeyShape::EntityT {
             column: "entity_id",
         },
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
         export: ExportRule::Excluded {
@@ -665,7 +665,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         key: KeyShape::EntityT {
             column: "entity_id",
         },
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
         export: ExportRule::Excluded {
@@ -679,7 +679,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.ingest_keys",
         key: KeyShape::MemoryT { column: "t" },
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::Drop {
             why: "a receipt proves admission by THIS owner. It does not travel, so a \
                   received series has structurally zero receipts and 'receipts' is not \
@@ -700,7 +700,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.announce",
         key: KeyShape::Custom(&["seq"]),
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         // The log is append-only (`announce_append_only`), so no existing
         // row is ever re-homed: what the transfer does is APPEND two rows
         // in the same transaction, one under the prior owner's lane and one
@@ -728,7 +728,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.blob",
         key: KeyShape::BlobId { column: "blob_id" },
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         // The dedupe arm: a blob shared across owners gives the destination
         // its own row over the same object.
         //
@@ -754,7 +754,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.blob_uploads",
         key: KeyShape::Custom(&["upload_id"]),
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         // Moves with the blob row it describes: the read path requires both
         // to name the same owner.
         transfer: TransferRule::Follow,
@@ -773,7 +773,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.content",
         key: KeyShape::Custom(&["content_id"]),
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         // Ensure a destination-owned row, remap the referring columns, GC
         // the orphan. `content` has an orphan and nothing else, while `blob`
         // also has an object in S3 that two owners may now name.
@@ -805,7 +805,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.source_cursors",
         key: KeyShape::Custom(&["owner_kind", "owner_id", "source"]),
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::ByOwner,
         export: ExportRule::Rows,
@@ -819,7 +819,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.delegated_authority_grants",
         key: KeyShape::Custom(&["delegation_id"]),
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::ByOwner,
         export: ExportRule::Allowlist(&[
@@ -846,7 +846,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.cold_purge_pending",
         key: KeyShape::Custom(&["object_key"]),
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::StaysOnKey,
         // The debt outlives the transaction that recorded it BY
         // CONSTRUCTION: the row is what survives a crash between commit and
@@ -876,7 +876,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.owners",
         key: KeyShape::OwnerId,
-        owner_columns: &["owner_id"],
+        owner_column: Some("owner_id"),
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::Never {
             why: "erase never deletes the owners row: 17 FKs point at it and the \
@@ -896,12 +896,14 @@ const KERNEL_SURFACES: &[Surface] = &[
         completeness: None,
     },
     // A membership names TWO owners and belongs to neither exclusively, so
-    // `owner_columns` is EMPTY and means it: there is no column here whose
-    // value makes the row somebody's to erase.
+    // `owner_column` is `None` and means it: there is no column here whose
+    // value makes the row somebody's to erase. This is the shape the
+    // one-owner-one-column rule leaves for a many-to-many relation — its own
+    // table, no owner of its own — not a surface with two owner columns.
     Surface {
         table: "proxima_core.group_memberships",
         key: KeyShape::Custom(&["group_id", "member_user_id", "relation"]),
-        owner_columns: &[],
+        owner_column: None,
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::Never {
             why: "a membership is a relation between two owners, not a row about \
