@@ -1,9 +1,82 @@
 //! Smoke test for `proxima_flavor!` and `proxima_schema_id!` macros.
 
+use proxima_core::flavor::{
+    EmbeddingRecipe, FlavorContract, ProjectionDecl, Provenance, SchemaContract, SchemaRef,
+    SearchProjectionDecl, TransferRule,
+};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     CitationMappingPayload, CitedObjectPayload, FactPayload, FlavorRegistry, GoalPayload,
     PayloadKeyBuilder, SchemaId, proxima_flavor, proxima_schema_id,
+};
+
+/// The fixture flavor's ordinal. Any non-zero value: zero is core's, and
+/// freeze refuses a second claim on it.
+const FIXTURE_ORDINAL: u16 = 7;
+
+/// A fixture schema declaration. Every field but the identity is the
+/// "declares nothing" value, because the subject of this file is what the
+/// MACRO registers, not what a contract can say about it.
+const fn fixture_schema(
+    name: &'static str,
+    kind: PayloadKind,
+    sidecar_table: Option<&'static str>,
+) -> SchemaContract {
+    SchemaContract {
+        id: SchemaRef::new("proxima-core", name, 1),
+        kind,
+        sidecar_table,
+        search: SearchProjectionDecl::None {
+            why: "a macro fixture, not a search surface",
+        },
+        embedding: EmbeddingRecipe::Never {
+            why: "a macro fixture, not a memory",
+        },
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[],
+        natural_key_columns: &[],
+    }
+}
+
+/// The declaration for the flavor below. `proxima_flavor!` accepts
+/// `contract =` optionally, and freeze refuses a flavor that omits it, so
+/// every fixture flavor that reaches a freeze carries one.
+static MACRO_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
+    flavor_id: "proxima-core",
+    ordinal: FIXTURE_ORDINAL,
+    schemas: &[
+        fixture_schema("test-fact", PayloadKind::Fact, Some("fact_test_fact_v1")),
+        fixture_schema("test-goal", PayloadKind::Goal, Some("goal_test_goal_v1")),
+        fixture_schema("test-cited-object", PayloadKind::CitedObject, None),
+        fixture_schema("test-citation-mapping", PayloadKind::CitationMapping, None),
+    ],
+    state_surfaces: &[],
+    kernel_surfaces: &[],
+    tools: &[],
+    resources: &[],
+    bespoke_erase_legs: &[],
+    bespoke_transfer_legs: &[],
+    projection: ProjectionDecl::None {
+        why: "a macro fixture registers no search surface",
+    },
+};
+
+/// The twin for the schema-less flavor below: same id, nothing declared,
+/// because that module registers nothing.
+static EMPTY_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
+    flavor_id: "proxima-core",
+    ordinal: FIXTURE_ORDINAL,
+    schemas: &[],
+    state_surfaces: &[],
+    kernel_surfaces: &[],
+    tools: &[],
+    resources: &[],
+    bespoke_erase_legs: &[],
+    bespoke_transfer_legs: &[],
+    projection: ProjectionDecl::None {
+        why: "a macro fixture registers no search surface",
+    },
 };
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -14,8 +87,9 @@ struct TestFactV1 {
 impl FactPayload for TestFactV1 {
     // CARGO_PKG_NAME is `proxima-core` here (we're inside the
     // `core` crate's tests/), so the macro produces
-    // "proxima-core/test-fact".
-    const SCHEMA_ID: &'static str = proxima_schema_id!("test-fact");
+    // "proxima-core/test-fact-v1". The `-v1` tail is the shape
+    // `SchemaRef` renders, so the contract below can name this schema.
+    const SCHEMA_ID: &'static str = proxima_schema_id!("test-fact-v1");
     const SCHEMA_VERSION: u32 = 1;
     fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
@@ -36,7 +110,7 @@ struct TestGoalV1 {
 }
 
 impl GoalPayload for TestGoalV1 {
-    const SCHEMA_ID: &'static str = proxima_schema_id!("test-goal");
+    const SCHEMA_ID: &'static str = proxima_schema_id!("test-goal-v1");
     const SCHEMA_VERSION: u32 = 1;
 
     fn goal_key(&self) -> Vec<u8> {
@@ -56,7 +130,7 @@ struct TestCitedObjectV1 {
 }
 
 impl CitedObjectPayload for TestCitedObjectV1 {
-    const SCHEMA_ID: &'static str = proxima_schema_id!("test-cited-object");
+    const SCHEMA_ID: &'static str = proxima_schema_id!("test-cited-object-v1");
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
@@ -75,11 +149,15 @@ struct TestCitationMappingV1 {
 }
 
 impl CitationMappingPayload for TestCitationMappingV1 {
-    const SCHEMA_ID: &'static str = proxima_schema_id!("test-citation-mapping");
+    const SCHEMA_ID: &'static str = proxima_schema_id!("test-citation-mapping-v1");
     const SCHEMA_VERSION: u32 = 1;
 
+    // A citation mapping declares no sidecar: the shared-blob dedupe arm
+    // repoints citations by following foreign keys, and a sidecar naming a
+    // blob by convention would be walked past. Freeze refuses a contract
+    // that declares one.
     fn sidecar_table() -> Option<&'static str> {
-        Some("citation_mapping_test_v1")
+        None
     }
 
     fn cited_object_schema() -> SchemaId {
@@ -97,6 +175,7 @@ proxima_flavor! {
         (Fact, TestFactV1) => ["actor", "shared-vocab"],
         (Goal, TestGoalV1) => ["task"],
     ],
+    contract = &MACRO_FLAVOR_CONTRACT,
 }
 
 #[test]
@@ -115,13 +194,13 @@ fn flavor_macro_registers_fact_schema() {
     assert_eq!(macro_schemas.len(), 2);
     assert_eq!(
         macro_schemas[0].schema_id.as_str(),
-        "proxima-core/test-fact"
+        "proxima-core/test-fact-v1"
     );
     assert_eq!(macro_schemas[0].schema_version.into_inner(), 1);
     assert_eq!(macro_schemas[0].kind, PayloadKind::Fact);
     assert_eq!(
         macro_schemas[1].schema_id.as_str(),
-        "proxima-core/test-goal"
+        "proxima-core/test-goal-v1"
     );
     assert_eq!(macro_schemas[1].schema_version.into_inner(), 1);
     assert_eq!(macro_schemas[1].kind, PayloadKind::Goal);
@@ -172,14 +251,14 @@ fn flavor_macro_registers_citation_schemas() {
     let schemas = frozen.list();
     let cited_schema = schemas
         .iter()
-        .find(|s| s.schema_id.as_str() == "proxima-core/test-cited-object")
+        .find(|s| s.schema_id.as_str() == "proxima-core/test-cited-object-v1")
         .expect("cited object schema registered");
     assert_eq!(cited_schema.schema_version.into_inner(), 1);
     assert_eq!(cited_schema.kind, PayloadKind::CitedObject);
 
     let citation_mapping_schema = schemas
         .iter()
-        .find(|s| s.schema_id.as_str() == "proxima-core/test-citation-mapping")
+        .find(|s| s.schema_id.as_str() == "proxima-core/test-citation-mapping-v1")
         .expect("citation mapping schema registered");
     assert_eq!(citation_mapping_schema.schema_version.into_inner(), 1);
     assert_eq!(citation_mapping_schema.kind, PayloadKind::CitationMapping);
@@ -191,6 +270,7 @@ mod empty_goal_schemas {
     proxima_flavor! {
         name = "proxima-core",
         goal_schemas = [],
+        contract = &super::EMPTY_FLAVOR_CONTRACT,
     }
 }
 

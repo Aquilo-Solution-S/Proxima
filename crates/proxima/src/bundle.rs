@@ -161,6 +161,36 @@ mod tests {
     use crate::NamedMigrator;
     use crate::workers::{FlavorWorker, FlavorWorkerContext};
 
+    /// A declaration for a flavor that registers nothing. Freeze refuses a
+    /// linked flavor without one, and the subject of these tests is bundle
+    /// composition, so every field but the identity is empty.
+    const fn empty_contract(
+        flavor_id: &'static str,
+        ordinal: u16,
+    ) -> proxima_core::flavor::FlavorContract {
+        proxima_core::flavor::FlavorContract {
+            flavor_id,
+            ordinal,
+            schemas: &[],
+            state_surfaces: &[],
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
+            projection: proxima_core::flavor::ProjectionDecl::None {
+                why: "a bundle fixture registers no search surface",
+            },
+        }
+    }
+
+    // Distinct non-zero ordinals: 0 is core's, and two claims on one
+    // ordinal are a freeze error.
+    static ALPHA_CONTRACT: proxima_core::flavor::FlavorContract =
+        empty_contract("proxima-test-alpha", 7);
+    static BETA_CONTRACT: proxima_core::flavor::FlavorContract =
+        empty_contract("proxima-test-beta", 8);
+
     mod alpha {
         proxima_core::proxima_flavor! {
             name = "proxima-test-alpha",
@@ -169,6 +199,7 @@ mod tests {
             perspective_schemas = [],
             goal_schemas = [],
             mcp_tools = [],
+            contract = &super::ALPHA_CONTRACT,
         }
     }
 
@@ -180,6 +211,7 @@ mod tests {
             perspective_schemas = [],
             goal_schemas = [],
             mcp_tools = [],
+            contract = &super::BETA_CONTRACT,
         }
     }
 

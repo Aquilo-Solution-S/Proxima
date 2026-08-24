@@ -109,6 +109,14 @@ impl FlavorRegistry {
     /// rather than aspirational: a schema registered without a contract
     /// entry, or a contract entry with no registration, fails the build of
     /// the composed binary rather than going missing from an erase sweep.
+    ///
+    /// It takes two checks to close the first of those, because a schema
+    /// carries its flavor in a PREFIX and a prefix nothing declares names
+    /// nothing to accuse. `SchemaWithoutContract` sweeps the registrations
+    /// under a declared flavor's prefix; `UnclaimedRegistration` holds the
+    /// flavor itself — the `FlavorDescriptor` every composed flavor
+    /// registers — to declaring one. A registration made under neither a
+    /// descriptor nor a contract is a registry no binary composes.
     fn validate_contracts(&self) -> Result<(), FlavorRegistryError> {
         let mut seen_ordinals = std::collections::HashSet::new();
         let mut has_core = false;
@@ -139,13 +147,121 @@ impl FlavorRegistry {
             // `register_fixture_schema`).
             self.validate_contract_schemas(contract)?;
             Self::validate_contract_projection(contract)?;
+            // After the uniformity rules, deliberately. Both read the same
+            // declaration, and a flavor whose schemas cannot agree on what
+            // one statement spells is broken whether or not a query would
+            // ever have reached that statement.
+            Self::validate_projection_is_reachable(contract)?;
             Self::validate_contract_surfaces(contract)?;
             Self::validate_erase_legs(contract)?;
             Self::validate_transfer_legs(contract)?;
             Self::validate_forget_legs(contract)?;
         }
-        if !self.contracts.is_empty() && !has_core {
+        // An empty contracts list is the same defect at full width, not an
+        // exemption from it. Core is non-removable, so any registry that
+        // registered ANYTHING has a flavor #0 to declare — and reading an
+        // empty list as "nothing to disagree with" is what let a registry
+        // whose every schema is undeclared freeze clean. The registration
+        // conjunct is what keeps a registry holding nothing at all (no
+        // flavor, no schema, no tool) from being accused of losing core.
+        let registers_nothing =
+            self.contracts.is_empty() && self.schemas.is_empty() && self.mcp_tools.is_empty();
+        if !has_core && !registers_nothing {
             return Err(FlavorRegistryError::MissingCoreContract);
+        }
+        self.validate_registrations_are_claimed()?;
+        Ok(())
+    }
+
+    /// Every LINKED flavor declares a contract.
+    ///
+    /// [`Self::validate_contract_schemas`] sweeps both directions inside a
+    /// flavor that HAS a contract — declarations against registrations, and
+    /// registrations carrying its `{flavor_id}/` prefix against its
+    /// declarations. Neither loop runs for a flavor that registered and
+    /// declared nothing, and this is the check that reaches that one.
+    ///
+    /// The [`FlavorDescriptor`] is what is swept, because it is the flavor
+    /// SAYING it is in this binary: `proxima_flavor!` emits it before every
+    /// schema and tool it registers, and that macro's `contract =` is
+    /// optional. A flavor that omits it registers a corpus that goes
+    /// missing from every registry walk (erase, export, forget, transfer)
+    /// and whose Memory writes are refused later by a `flavor_surface`
+    /// constraint naming none of the cause. With the descriptor held to a
+    /// contract, `SchemaWithoutContract` then covers each of that flavor's
+    /// schemas in turn, so the pair is complete for every flavor composed
+    /// the sanctioned way (docs/09 §Registration).
+    ///
+    /// [`FlavorDescriptor`]: crate::flavor::FlavorDescriptor
+    fn validate_registrations_are_claimed(&self) -> Result<(), FlavorRegistryError> {
+        for flavor in &self.flavors {
+            if self
+                .contracts
+                .iter()
+                .any(|contract| contract.flavor_id == flavor.flavor_id)
+            {
+                continue;
+            }
+            return Err(FlavorRegistryError::UnclaimedRegistration {
+                flavor_id: flavor.flavor_id.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    /// A non-core search projection against the query shapes that can
+    /// reach it.
+    ///
+    /// A projection is not free: every write to the schema pays a
+    /// projection row and a GIN index entry. `core_search_flavors`
+    /// (`storage-pg/src/verbs/query/search.rs`) admits a NON-core
+    /// projection only through a tag-filtered request — an unscoped search
+    /// stays on flavor #0's sidecars — and only when the projection
+    /// declares a `tag_column`, its flavor declares
+    /// [`BandComparability::CoreBands`], and its flavor declares
+    /// [`RankSource::Projection`]. Fail any of those and no request shape
+    /// reaches the rows: the corpus is written, indexed, and unscannable.
+    ///
+    /// The `RankSource` gate is what makes this checkable rather than
+    /// presumptuous. `SidecarWithProjectionOwner` is the declared statement
+    /// that core's renderer does NOT serve this flavor — it ships its own
+    /// tools, which reach the projection themselves — so its declaration
+    /// says nothing about reachability and nothing here may judge it. Only
+    /// a flavor that claimed core's renderer is held to what core's
+    /// renderer will scan.
+    ///
+    /// Flavor #0 is exempt because it is the corpus every unscoped search
+    /// already scans; a `tag_column` narrows its rows rather than admitting
+    /// them.
+    fn validate_projection_is_reachable(
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        use crate::flavor::contract::BandComparability;
+
+        if contract.is_core() {
+            return Ok(());
+        }
+        let Some(spec) = contract.projection.spec() else {
+            return Ok(());
+        };
+        if !spec.rank_source.is_projection() {
+            return Ok(());
+        }
+        for (schema, _) in contract.projected_schemas() {
+            let why = if matches!(spec.band_comparability, BandComparability::Divergent { .. }) {
+                "its flavor claims BandComparability::Divergent, and the merge admits a \
+                 non-core projection only under CoreBands"
+            } else if schema.search.tag_column().is_none() {
+                "it declares no tag_column, and a non-core projection is reached only by a \
+                 tag-filtered request — an unscoped search scans flavor #0's sidecars alone"
+            } else {
+                continue;
+            };
+            return Err(FlavorRegistryError::UnreachableSearchProjection {
+                flavor_id: contract.flavor_id,
+                schema_id: schema.schema_id(),
+                why,
+            });
         }
         Ok(())
     }
@@ -358,11 +474,15 @@ impl FlavorRegistry {
     /// 2. `BandComparability::CoreBands` is the claim a cross-flavor merge
     ///    compares scores on. A flavor whose bands leave flavor #0's
     ///    `[0, 1]` window cannot make it.
+    /// 3. Every projected schema's sidecar declares a surface keyed on the
+    ///    memory `t`. The generator spells the projection's key from that
+    ///    column, so a sidecar that declares no surface — or one keyed on
+    ///    anything else — has no projection statement to generate.
     fn validate_contract_projection(
         contract: &crate::flavor::contract::FlavorContract,
     ) -> Result<(), FlavorRegistryError> {
         use crate::flavor::contract::{
-            BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, BandComparability,
+            BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, BandComparability, KeyShape,
         };
 
         let Some(spec) = contract.projection.spec() else {
@@ -421,6 +541,32 @@ impl FlavorRegistry {
                     flavor_id: contract.flavor_id,
                     schema_id,
                     property: "rank_weights",
+                });
+            }
+        }
+        // A projection row is keyed on the memory its sidecar row belongs
+        // to, and the generator reads that column off the sidecar's
+        // SURFACE — the one declaration that says how the table is keyed.
+        // A projected schema whose sidecar declares no surface, or one
+        // keyed on anything but the memory `t`, therefore has no statement
+        // to generate. Refused here rather than left to the generator,
+        // because there it is found twice and late: once on the write side
+        // when the DDL is emitted at boot, and again on the read side at
+        // the first query that expects rows.
+        //
+        // Read off `all_surfaces()` rather than the schema's own list: a
+        // flavor is free to declare its sidecar among the flavor's state
+        // surfaces, and where the declaration sits does not change which
+        // column the generator reads.
+        for (schema, sidecar_table) in contract.projected_schemas() {
+            let keyed_on_memory = contract.all_surfaces().any(|surface| {
+                surface.table == sidecar_table && matches!(surface.key, KeyShape::MemoryT { .. })
+            });
+            if !keyed_on_memory {
+                return Err(FlavorRegistryError::ProjectedSidecarNotMemoryKeyed {
+                    flavor_id: contract.flavor_id,
+                    schema_id: schema.schema_id(),
+                    table: sidecar_table,
                 });
             }
         }
@@ -1539,6 +1685,111 @@ mod tests {
         }
     }
 
+    /// The sidecar surface a projected schema needs: keyed on the memory
+    /// `t`, which is the column the projection generator reads.
+    static MEMORY_KEYED_SIDECAR: &[Surface] = &[state_surface(
+        "test_flavor.thing_v1",
+        KeyShape::MemoryT { column: "t" },
+        EraseRule::ByKey,
+        ExportRule::Rows,
+    )];
+
+    /// The same sidecar keyed on something the generator cannot spell.
+    static CUSTOM_KEYED_SIDECAR: &[Surface] = &[state_surface(
+        "test_flavor.thing_v1",
+        KeyShape::Custom(&["thing_id"]),
+        EraseRule::Never {
+            why: "the projection key is what this fixture is about",
+        },
+        ExportRule::Excluded {
+            why: "the projection key is what this fixture is about",
+        },
+    )];
+
+    /// [`uniformity_schema`]'s twin for the REACHABILITY fixtures: the tag
+    /// column and the sidecar's surfaces are the parameters, and everything
+    /// else is a shape the earlier projection rules accept, so only the arm
+    /// under test is left to fire.
+    const fn reachability_schema(
+        tag_column: Option<&'static str>,
+        surfaces: &'static [Surface],
+    ) -> SchemaContract {
+        SchemaContract {
+            id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+            kind: PayloadKind::Fact,
+            sidecar_table: Some("test_flavor.thing_v1"),
+            search: SearchProjectionDecl::Projected {
+                fields: ONE_LEVEL,
+                tag_column,
+                language: LanguagePolicy::Pinned("simple"),
+                bands: FIXTURE_BANDS,
+                substring: SubstringArm::Off,
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "a fixture, not a memory",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces,
+            natural_key_columns: &[],
+        }
+    }
+
+    /// [`uniformity_contract`]'s twin for the band-comparability arm: the
+    /// same `RankSource::Projection` claim, over bands the flavor says are
+    /// not core's.
+    const fn divergent_contract(schemas: &'static [SchemaContract]) -> FlavorContract {
+        FlavorContract {
+            flavor_id: FIXTURE_FLAVOR,
+            ordinal: 7,
+            schemas,
+            state_surfaces: &[],
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
+            projection: ProjectionDecl::Table(crate::flavor::contract::ProjectionSpec {
+                table: "test_flavor.projection",
+                index: "test_flavor_projection_owner_tsv_gin",
+                overfetch_k: 0,
+                band_comparability: crate::flavor::contract::BandComparability::Divergent {
+                    why: "the fixture's whole subject",
+                },
+                rank_source: crate::flavor::contract::RankSource::Projection,
+            }),
+        }
+    }
+
+    /// A non-core corpus that pays a projection row and a GIN entry per
+    /// write and that no request shape scans: unscoped search stays on
+    /// flavor #0's sidecars, and the tag-filtered query that would reach a
+    /// flavor skips a projection declaring no `tag_column`.
+    static PROJECTION_NO_QUERY_REACHES: FlavorContract =
+        uniformity_contract(&[reachability_schema(None, MEMORY_KEYED_SIDECAR)]);
+
+    /// The same corpus with the tag gate satisfied and the OTHER gate
+    /// closed: `RankSource::Projection` says core's renderer serves this
+    /// flavor, and `Divergent` says core's merge may not compare its
+    /// scores. Nothing is left to scan it.
+    static PROJECTION_OUTSIDE_THE_MERGE: FlavorContract =
+        divergent_contract(&[reachability_schema(Some("tags"), MEMORY_KEYED_SIDECAR)]);
+
+    /// The reachable declaration, which must freeze: a tag-filtered request
+    /// reaches it, and its flavor claims a score the merge can compare.
+    static PROJECTION_A_QUERY_REACHES: FlavorContract =
+        uniformity_contract(&[reachability_schema(Some("tags"), MEMORY_KEYED_SIDECAR)]);
+
+    /// A projected schema whose sidecar declares no surface at all: the
+    /// generator has no `MemoryT` column to key the projection row on.
+    static PROJECTED_SIDECAR_UNDECLARED: FlavorContract =
+        uniformity_contract(&[reachability_schema(Some("tags"), &[])]);
+
+    /// …and the same sidecar declared under a key the generator cannot
+    /// spell a projection statement from.
+    static PROJECTED_SIDECAR_WRONG_KEY: FlavorContract =
+        uniformity_contract(&[reachability_schema(Some("tags"), CUSTOM_KEYED_SIDECAR)]);
+
     /// One weight level: no array at all.
     static ONE_LEVEL: &[WeightedField] = &[WeightedField {
         column: "a",
@@ -2225,6 +2476,93 @@ mod tests {
                 },
             ),
             (
+                "a linked flavor declares no contract at all",
+                |registry| {
+                    registry.flavors.push(crate::flavor::FlavorDescriptor {
+                        flavor_id: FIXTURE_FLAVOR.to_owned(),
+                        display_name: "Fixture".to_owned(),
+                        package_version: "0.0.0".to_owned(),
+                        author: None,
+                        provenance: crate::flavor::FlavorProvenance::Builtin,
+                    });
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::UnclaimedRegistration { flavor_id }
+                            if flavor_id == FIXTURE_FLAVOR
+                    )
+                },
+            ),
+            (
+                // Not a skip. An empty contracts list is every registration
+                // undeclared, and core is the flavor that cannot be the
+                // missing one.
+                "nothing declares a contract, so the registry declares no core",
+                |registry| registry.contracts.clear(),
+                |err| matches!(err, FlavorRegistryError::MissingCoreContract),
+            ),
+            (
+                "a projected schema's sidecar declares no surface to key the projection on",
+                |registry| {
+                    register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
+                    registry.contracts.push(&PROJECTED_SIDECAR_UNDECLARED);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ProjectedSidecarNotMemoryKeyed {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a projected schema's sidecar is keyed on something the generator cannot spell",
+                |registry| {
+                    register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
+                    registry.contracts.push(&PROJECTED_SIDECAR_WRONG_KEY);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ProjectedSidecarNotMemoryKeyed {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a non-core projection declares no tag column, so no query shape reaches it",
+                |registry| {
+                    register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
+                    registry.contracts.push(&PROJECTION_NO_QUERY_REACHES);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::UnreachableSearchProjection { why, .. }
+                            if why.contains("tag_column")
+                    )
+                },
+            ),
+            (
+                "a non-core projection's flavor declares a score the merge cannot compare",
+                |registry| {
+                    register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
+                    registry.contracts.push(&PROJECTION_OUTSIDE_THE_MERGE);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::UnreachableSearchProjection { why, .. }
+                            if why.contains("CoreBands")
+                    )
+                },
+            ),
+            (
                 "the contract claims an idempotence the registration denies",
                 |registry| {
                     register_fixture_tool(registry, false);
@@ -2250,6 +2588,37 @@ mod tests {
                 panic!("freeze accepted a registry where {shape}");
             };
             assert!(expected(&err), "{shape}: freeze reported {err} instead");
+        }
+    }
+
+    /// The other half of each new refusal: the shape it must NOT refuse.
+    ///
+    /// A refusal with no accepted twin proves only that freeze can fail.
+    /// Both cases here are one edit away from the rejected fixtures above —
+    /// a contract registered beside the descriptor; a `tag_column` and a
+    /// memory-keyed sidecar surface declared beside the projection — so
+    /// what the checks cost a correct flavor is pinned alongside what they
+    /// catch.
+    #[test]
+    fn the_shapes_the_new_refusals_must_accept_freeze() {
+        let mut declared = FlavorRegistry::new();
+        declared.flavors.push(crate::flavor::FlavorDescriptor {
+            flavor_id: FIXTURE_FLAVOR.to_owned(),
+            display_name: "Fixture".to_owned(),
+            package_version: "0.0.0".to_owned(),
+            author: None,
+            provenance: crate::flavor::FlavorProvenance::Builtin,
+        });
+        declared.contracts.push(&EMPTY);
+        if let Err(err) = declared.try_freeze() {
+            panic!("a linked flavor that declares a contract must freeze: {err}");
+        }
+
+        let mut reachable = FlavorRegistry::new();
+        register_fixture_schema(&mut reachable, "thing", "test_flavor.thing_v1");
+        reachable.contracts.push(&PROJECTION_A_QUERY_REACHES);
+        if let Err(err) = reachable.try_freeze() {
+            panic!("a tag-filtered request reaches this projection: {err}");
         }
     }
 
