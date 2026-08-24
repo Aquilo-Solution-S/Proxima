@@ -15,7 +15,7 @@ use std::time::Duration;
 
 mod common;
 
-use common::{code_registry_with_test_citations, migrated_db};
+use common::{code_registry_with_test_citations, migrated_db, seed_memory_with_sidecars};
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 use proxima_core::engine::Engine;
 use proxima_core::verbs::fact_ingest::{
@@ -83,7 +83,6 @@ struct Seeded {
 
 async fn seed_file_revision(
     pool: &PgPool,
-    engine: &Engine,
     owner: Owner,
     repo_id: Uuid,
     file_path: &str,
@@ -92,7 +91,6 @@ async fn seed_file_revision(
 ) -> Result<Seeded, Box<dyn std::error::Error>> {
     seed_file_revision_state(
         pool,
-        engine,
         owner,
         repo_id,
         file_path,
@@ -103,9 +101,11 @@ async fn seed_file_revision(
     .await
 }
 
+/// The admission is seeded, not ingested: `Engine::fact_ingest` writes no
+/// flavor sidecar and so stamps none, and a hand-written
+/// `file_revision_v1` row under it is a row `sidecar_tables` cannot reach.
 async fn seed_file_revision_state(
     pool: &PgPool,
-    engine: &Engine,
     owner: Owner,
     repo_id: Uuid,
     file_path: &str,
@@ -113,12 +113,17 @@ async fn seed_file_revision_state(
     state: FileState,
     handle: Option<Uuid>,
 ) -> Result<Seeded, Box<dyn std::error::Error>> {
-    let authz =
-        proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer);
-    let mut draft = fresh_draft(owner, FileRevisionV1::SCHEMA_ID, seed);
-    draft.handle = handle;
-    let outcome = engine.fact_ingest(&authz, draft).await?;
-    let t = outcome.memory_id.into_inner();
+    let (handle, t) = seed_memory_with_sidecars(
+        pool,
+        &owner,
+        FileRevisionV1::SCHEMA_ID,
+        "fact",
+        None,
+        handle,
+        &[],
+        &["proxima_code.file_revision_v1"],
+    )
+    .await?;
 
     sqlx::query(
         "INSERT INTO proxima_code.file_revision_v1 \
@@ -137,10 +142,7 @@ async fn seed_file_revision_state(
     .execute(pool)
     .await?;
 
-    Ok(Seeded {
-        handle: outcome.handle,
-        t,
-    })
+    Ok(Seeded { handle, t })
 }
 
 #[tokio::test]
@@ -157,20 +159,11 @@ async fn heads_only_returns_latest_per_natural_key() {
         let repo_id = Uuid::now_v7();
 
         // 3 revisions of file_a — same handle, later t.
-        let r1 = seed_file_revision(
-            pg.pool_for_tests(),
-            &engine,
-            owner,
-            repo_id,
-            "src/a.rs",
-            b"v1",
-            None,
-        )
-        .await?;
+        let r1 = seed_file_revision(pg.pool_for_tests(), owner, repo_id, "src/a.rs", b"v1", None)
+            .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
         let _r2 = seed_file_revision(
             pg.pool_for_tests(),
-            &engine,
             owner,
             repo_id,
             "src/a.rs",
@@ -181,7 +174,6 @@ async fn heads_only_returns_latest_per_natural_key() {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let r3 = seed_file_revision(
             pg.pool_for_tests(),
-            &engine,
             owner,
             repo_id,
             "src/a.rs",
@@ -192,16 +184,8 @@ async fn heads_only_returns_latest_per_natural_key() {
 
         // 1 revision of file_b — distinct handle.
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let r_b = seed_file_revision(
-            pg.pool_for_tests(),
-            &engine,
-            owner,
-            repo_id,
-            "src/b.rs",
-            b"b1",
-            None,
-        )
-        .await?;
+        let r_b = seed_file_revision(pg.pool_for_tests(), owner, repo_id, "src/b.rs", b"b1", None)
+            .await?;
 
         // Heads-only query. FileRevisionV1's registered NK columns put
         // every revision of one path on one handle at ingest, so the head
@@ -368,7 +352,6 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
 
         let first_memory = seed_file_revision_state(
             pg.pool_for_tests(),
-            &engine,
             owner,
             repo_id,
             "src/shared.rs",
@@ -380,7 +363,6 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let second_memory = seed_file_revision_state(
             pg.pool_for_tests(),
-            &engine,
             owner,
             repo_id,
             "src/shared.rs",
@@ -449,7 +431,6 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
 
         let a_v1 = seed_file_revision_state(
             pg.pool_for_tests(),
-            &engine,
             owner,
             repo_id,
             "src/a.rs",
@@ -461,7 +442,6 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let a_v2 = seed_file_revision_state(
             pg.pool_for_tests(),
-            &engine,
             owner,
             repo_id,
             "src/a.rs",
@@ -510,7 +490,6 @@ async fn later_t_is_head_even_when_sidecar_state_is_tombstone() {
 
         let present = seed_file_revision_state(
             pg.pool_for_tests(),
-            &engine,
             owner,
             repo_id,
             "src/deleted.rs",
@@ -522,7 +501,6 @@ async fn later_t_is_head_even_when_sidecar_state_is_tombstone() {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let tombstone = seed_file_revision_state(
             pg.pool_for_tests(),
-            &engine,
             owner,
             repo_id,
             "src/deleted.rs",

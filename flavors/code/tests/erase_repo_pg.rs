@@ -49,14 +49,20 @@ async fn insert_repo_commit_with_test_request(
     .bind(memory_id)
     .execute(pool)
     .await?;
+    // One admission, two sidecars: `test_requested_criterion_v1` hangs off
+    // the test request, not off a memory, so it is not stamped.
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-         VALUES ($1, $2, 'fact', $3, $4)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, sidecar_tables)
+         VALUES ($1, $2, 'fact', $3, $4, $5)",
     )
     .bind(handle)
     .bind(memory_id)
     .bind(owner_id)
     .bind(CommitV1::SCHEMA_ID)
+    .bind(stamp(&[
+        "proxima_code.commit_v1",
+        "proxima_code.test_requested_v1",
+    ]))
     .execute(pool)
     .await?;
 
@@ -303,14 +309,20 @@ async fn erase_reaches_the_work_item_sidecars_and_spares_the_owner_self_model() 
     result.expect("erase_reaches_the_work_item_sidecars_and_spares_the_owner_self_model failed");
 }
 
-/// A bare admission for `t`.
+/// A single-version admission for `t`, stamping the sidecars the caller
+/// then writes under it.
 ///
 /// Every row is a Fact of `commit-v1`, including the ones whose sidecar is
 /// a Perspective table: this fixture is about which TABLES the erase
 /// reaches, and `memory_pin_checks` requires a non-Fact to pin something,
 /// which would add a second subject to the test.
-async fn insert_memory(pool: &sqlx::PgPool, owner: &Owner, t: Uuid) -> Result<(), sqlx::Error> {
-    insert_series(pool, owner, t, &[]).await.map(|_| ())
+async fn insert_memory(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    t: Uuid,
+    sidecars: &[&str],
+) -> Result<(), sqlx::Error> {
+    insert_series(pool, owner, t, sidecars).await.map(|_| ())
 }
 
 /// A second version of an existing series: same handle, new `t`, head
@@ -438,35 +450,27 @@ struct WorkItemFixture {
     perspective: Uuid,
 }
 
-async fn seed_work_item_fixture(
+/// The acceptance half of a work item: its criteria row, the one criterion
+/// hanging off that row, and a verification of it.
+///
+/// Split out of [`seed_work_item_fixture`] at the seam the erase itself
+/// uses — these three are reached THROUGH `work_item_memory_id`, where the
+/// assignment and the perspective are reached through `repo_id`.
+async fn seed_acceptance(
     pool: &sqlx::PgPool,
     owner: &Owner,
-    repo_id: Uuid,
-) -> Result<WorkItemFixture, Box<dyn std::error::Error>> {
-    register_repo(
+    work_item: Uuid,
+) -> Result<(Uuid, Uuid), Box<dyn std::error::Error>> {
+    // `acceptance_criterion_v1` hangs off the criteria row, not off a
+    // memory: it is not a sidecar and is not stamped.
+    let criteria = Uuid::now_v7();
+    insert_memory(
         pool,
         owner,
-        repo_id,
-        &format!("/tmp/proxima-erase-work-item-{repo_id}"),
-        "work item fixture",
-        &RepoScope::default(),
+        criteria,
+        &["proxima_code.acceptance_criteria_v1"],
     )
     .await?;
-
-    let work_item = Uuid::now_v7();
-    insert_memory(pool, owner, work_item).await?;
-    sqlx::query(
-        "INSERT INTO proxima_code.work_requested_v1
-            (t, repo_id, title, instructions, request_key)
-         VALUES ($1, $2, 'do the thing', 'instructions', 'req-1')",
-    )
-    .bind(work_item)
-    .bind(repo_id)
-    .execute(pool)
-    .await?;
-
-    let criteria = Uuid::now_v7();
-    insert_memory(pool, owner, criteria).await?;
     sqlx::query(
         "INSERT INTO proxima_code.acceptance_criteria_v1
             (t, work_item_memory_id, criteria_count)
@@ -487,7 +491,13 @@ async fn seed_work_item_fixture(
     .await?;
 
     let verification = Uuid::now_v7();
-    insert_memory(pool, owner, verification).await?;
+    insert_memory(
+        pool,
+        owner,
+        verification,
+        &["proxima_code.acceptance_verification_v1"],
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO proxima_code.acceptance_verification_v1
             (t, work_item_memory_id, criterion_key, status, summary, artifact_refs)
@@ -497,10 +507,41 @@ async fn seed_work_item_fixture(
     .bind(work_item)
     .execute(pool)
     .await?;
+    Ok((criteria, verification))
+}
+
+async fn seed_work_item_fixture(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<WorkItemFixture, Box<dyn std::error::Error>> {
+    register_repo(
+        pool,
+        owner,
+        repo_id,
+        &format!("/tmp/proxima-erase-work-item-{repo_id}"),
+        "work item fixture",
+        &RepoScope::default(),
+    )
+    .await?;
+
+    let work_item = Uuid::now_v7();
+    insert_memory(pool, owner, work_item, &["proxima_code.work_requested_v1"]).await?;
+    sqlx::query(
+        "INSERT INTO proxima_code.work_requested_v1
+            (t, repo_id, title, instructions, request_key)
+         VALUES ($1, $2, 'do the thing', 'instructions', 'req-1')",
+    )
+    .bind(work_item)
+    .bind(repo_id)
+    .execute(pool)
+    .await?;
+
+    let (criteria, verification) = seed_acceptance(pool, owner, work_item).await?;
 
     // No repo_id: the owner's engineer identity, which the erase must spare.
     let engineer = Uuid::now_v7();
-    insert_memory(pool, owner, engineer).await?;
+    insert_memory(pool, owner, engineer, &["proxima_code.engineer_self_v1"]).await?;
     sqlx::query(
         "INSERT INTO proxima_code.engineer_self_v1 (t, display_name, purpose)
          VALUES ($1, 'engineer', 'writes code')",
@@ -510,7 +551,13 @@ async fn seed_work_item_fixture(
     .await?;
 
     let assignment = Uuid::now_v7();
-    insert_memory(pool, owner, assignment).await?;
+    insert_memory(
+        pool,
+        owner,
+        assignment,
+        &["proxima_code.work_assignment_v1"],
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO proxima_code.work_assignment_v1
             (t, repo_id, work_item_memory_id, target_perspective_memory_id, reason)
@@ -524,7 +571,13 @@ async fn seed_work_item_fixture(
     .await?;
 
     let perspective = Uuid::now_v7();
-    insert_memory(pool, owner, perspective).await?;
+    insert_memory(
+        pool,
+        owner,
+        perspective,
+        &["proxima_code.development_perspective_v1"],
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO proxima_code.development_perspective_v1
             (t, repo_id, summary, pattern, risk, recommended_posture, confidence)
@@ -638,7 +691,13 @@ async fn exercise_cross_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
 
     // Filed under `other_repo`, reporting on `erased_repo`'s work item.
     let stray_result = Uuid::now_v7();
-    insert_memory(pool, &owner, stray_result).await?;
+    insert_memory(
+        pool,
+        &owner,
+        stray_result,
+        &["proxima_code.execution_result_v1"],
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO proxima_code.execution_result_v1
             (t, repo_id, work_requested_memory_id, status, summary, artifact_refs)
@@ -709,7 +768,13 @@ async fn a_perspective_about_no_particular_repo_survives_a_repo_erase() {
         let _ = seed_work_item_fixture(pool, &owner, repo_id).await?;
 
         let cross_repo = Uuid::now_v7();
-        insert_memory(pool, &owner, cross_repo).await?;
+        insert_memory(
+            pool,
+            &owner,
+            cross_repo,
+            &["proxima_code.development_perspective_v1"],
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO proxima_code.development_perspective_v1
                 (t, repo_id, summary, pattern, risk, recommended_posture, confidence)
@@ -1080,7 +1145,7 @@ async fn seed_superseded_series(
 
     // ... and a row in the other repo pointing at v2, not v1.
     let engineer = Uuid::now_v7();
-    insert_memory(pool, &owner, engineer).await?;
+    insert_memory(pool, &owner, engineer, &["proxima_code.engineer_self_v1"]).await?;
     sqlx::query(
         "INSERT INTO proxima_code.engineer_self_v1 (t, display_name, purpose)
          VALUES ($1, 'engineer', 'writes code')",
@@ -1089,7 +1154,13 @@ async fn seed_superseded_series(
     .execute(pool)
     .await?;
     let assignment = Uuid::now_v7();
-    insert_memory(pool, &owner, assignment).await?;
+    insert_memory(
+        pool,
+        &owner,
+        assignment,
+        &["proxima_code.work_assignment_v1"],
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO proxima_code.work_assignment_v1
             (t, repo_id, work_item_memory_id, target_perspective_memory_id, reason)
@@ -1264,7 +1335,13 @@ async fn a_reference_from_another_owner_stops_the_erase_and_names_it() {
         )
         .await?;
         let stray = Uuid::now_v7();
-        insert_memory(pool, &stranger, stray).await?;
+        insert_memory(
+            pool,
+            &stranger,
+            stray,
+            &["proxima_code.execution_result_v1"],
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO proxima_code.execution_result_v1
                 (t, repo_id, work_requested_memory_id, status, summary, artifact_refs)
@@ -1381,9 +1458,15 @@ async fn the_footprint_is_locked_against_a_concurrent_reference() {
 
         let writer = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let unblocked = Uuid::now_v7();
-        insert_memory(pool, &owner, unblocked).await?;
+        insert_memory(
+            pool,
+            &owner,
+            unblocked,
+            &["proxima_code.work_assignment_v1"],
+        )
+        .await?;
         let blocked = Uuid::now_v7();
-        insert_memory(pool, &owner, blocked).await?;
+        insert_memory(pool, &owner, blocked, &["proxima_code.work_assignment_v1"]).await?;
 
         // Nothing held: the write lands.
         insert_assignment_with_timeout(&writer, unblocked, repo_id, work_item, engineer)
@@ -1450,12 +1533,14 @@ async fn a_deadlock_against_a_concurrent_writer_is_classified_as_retryable() {
         if lo > hi {
             std::mem::swap(&mut lo, &mut hi);
         }
+        // `lo`/`hi` are only ever pointed AT, so they carry no sidecar of
+        // their own; `first`/`second` are the writer's assignment rows.
         for t in [lo, hi] {
-            insert_memory(pool, &owner, t).await?;
+            insert_memory(pool, &owner, t, &[]).await?;
         }
         let (first, second) = (Uuid::now_v7(), Uuid::now_v7());
         for t in [first, second] {
-            insert_memory(pool, &owner, t).await?;
+            insert_memory(pool, &owner, t, &["proxima_code.work_assignment_v1"]).await?;
         }
 
         // The erase, mid-lock: it holds the lower admission.
@@ -1662,7 +1747,13 @@ async fn a_lock_the_erase_cannot_get_is_bounded_and_retried_not_waited_out() {
 
         let holder_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let latecomer = Uuid::now_v7();
-        insert_memory(pool, &owner, latecomer).await?;
+        insert_memory(
+            pool,
+            &owner,
+            latecomer,
+            &["proxima_code.acceptance_criteria_v1"],
+        )
+        .await?;
         let mut holder = holder_pool.begin().await?;
         sqlx::query(
             "INSERT INTO proxima_code.acceptance_criteria_v1

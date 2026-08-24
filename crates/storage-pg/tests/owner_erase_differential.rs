@@ -25,6 +25,27 @@
 //! order-of-first-appearance token, so values that are freshly generated on
 //! every run still compare.
 //!
+//! ## The one regeneration, and what was checked before it
+//!
+//! The corpus used to admit with `ingest_fact_atomic` and then INSERT its
+//! sidecar rows by hand. `assert_memory_declares_sidecar` makes that corpus
+//! unwritable — a sidecar row whose memory does not declare the table is
+//! refused — so the four admissions that carry sidecar rows now go through
+//! `ingest_fact_with_typed_sidecar`, which writes the rows and the stamp as
+//! one act. A typed payload carries its own `note_id`, so four uuids that
+//! used to equal their memory's `t` are now distinct, and every
+//! order-of-first-appearance token after them shifts.
+//!
+//! The goldens were regenerated for that and nothing else, and the claim was
+//! checked rather than assumed. Against the pre-trigger baseline: the
+//! section list and every per-section row count are identical (no row
+//! appeared, none vanished), and once `note_id` is removed and
+//! `sidecar_tables` blanked, re-canonicalising the tokens reproduces the old
+//! file byte for byte — so every value and every id-ALIASING (which rows
+//! share a content row, which share a handle) is unchanged. The equivalence
+//! this file pins is therefore the same equivalence; only the corpus's
+//! spelling moved onto the port.
+//!
 //! ## What this does NOT cover
 //!
 //! Read the claim narrowly. This is an EQUIVALENCE gate over a corpus, and a
@@ -63,8 +84,11 @@ use std::collections::BTreeMap;
 
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{AccessKind, OwnerRef, SchemaId, SchemaVersion, UserId};
+use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
+use proxima_core::verbs::persist_mcp_call::McpCallLoggedV1;
+use proxima_core::{
+    AccessKind, AgentNoteV1, OwnerRef, SchemaId, SchemaVersion, SidecarPayload, UserId,
+};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use serde_json::Value;
@@ -100,6 +124,54 @@ fn draft(
     }
 }
 
+const TARGET_UPN: &str = "target@example.test";
+const NEIGHBOUR_UPN: &str = "neighbour@example.test";
+
+/// The corpus's admissions, as the write port takes them.
+///
+/// `lexical_language` is set here rather than in [`draft`]: `agent-note-v1`
+/// declares `LanguagePolicy::PerRow`, so a write carrying that payload has
+/// to name a configuration or the port refuses it. Nothing in this baseline
+/// reads it — the corpus writes under an unregistered `schema_id` and so
+/// projects nowhere (see the module docs) — but the port is entitled to ask.
+fn authorized(owner: OwnerRef, mut draft: FactWriteCommand) -> AuthorizedFactWrite {
+    draft.lexical_language =
+        Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
+    AuthorizedFactWrite::new_for_tests(
+        OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
+        draft,
+        None,
+        Vec::new(),
+    )
+}
+
+/// The memory-keyed sidecar row: one per admission that carries a note.
+fn note(title: &str) -> SidecarPayload {
+    SidecarPayload::fact(AgentNoteV1 {
+        note_id: Uuid::now_v7(),
+        title: title.to_owned(),
+        body: "body".to_owned(),
+        tags: Vec::new(),
+        idempotency_key: None,
+    })
+}
+
+/// The owner-pinned sidecar row: it carries its own `owner_id`, which the
+/// port takes from the writing permit rather than from an argument.
+fn call(actor_upn: &str) -> SidecarPayload {
+    SidecarPayload::fact(McpCallLoggedV1 {
+        tool_name: "core_remember".to_owned(),
+        actor_oid: "oid".to_owned(),
+        actor_upn: actor_upn.to_owned(),
+        ok: true,
+        error: None,
+        latency_ms: 7,
+        io_byte_len: 11,
+        io_truncated: false,
+        io_content_hash: [41u8; 32],
+    })
+}
+
 async fn owner_row(pool: &PgPool, owner: OwnerRef) -> Result<(), sqlx::Error> {
     let kind = match owner {
         OwnerRef::Personal(_) => "personal",
@@ -129,7 +201,6 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     owner_row(pool, other).await?;
 
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-    let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
 
     // Blobs: one cited by an admission, one mounted — the same object key
     // named by an upload row of each owner.
@@ -207,24 +278,43 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     }
     // A two-version series on source `src-a`, a single admission on `src-b`,
     // and one neighbour admission on `src-a`.
+    //
+    // Through the WRITE PORT, with the sidecar rows as typed payloads. The
+    // corpus used to admit with `ingest_fact_atomic` and then INSERT its
+    // sidecar rows by hand, which declares nothing: those rows are ones the
+    // sidecar sweep, forget and export all walk past, and
+    // `assert_memory_declares_sidecar` now refuses them outright. The port
+    // stamps `memory.sidecar_tables` from the payloads it routes, so the
+    // stamp and the rows are one statement of one fact rather than two.
     let first = pg
-        .ingest_fact_atomic(&permit, &draft(Some(("src-a", "k1")), None, None), None)
+        .ingest_fact_with_typed_sidecar(
+            &authorized(owner, draft(Some(("src-a", "k1")), None, None)),
+            &[note("one"), call(TARGET_UPN)],
+            None,
+        )
         .await?;
     let handle = first.handle;
     let second = pg
-        .ingest_fact_atomic(
-            &permit,
-            &draft(Some(("src-a", "k2")), Some(handle), Some(blob)),
+        .ingest_fact_with_typed_sidecar(
+            &authorized(
+                owner,
+                draft(Some(("src-a", "k2")), Some(handle), Some(blob)),
+            ),
+            &[note("two")],
             None,
         )
         .await?;
     let third = pg
-        .ingest_fact_atomic(&permit, &draft(Some(("src-b", "k3")), None, None), None)
+        .ingest_fact_with_typed_sidecar(
+            &authorized(owner, draft(Some(("src-b", "k3")), None, None)),
+            &[note("three"), call(TARGET_UPN)],
+            None,
+        )
         .await?;
     let neighbour_memory = pg
-        .ingest_fact_atomic(
-            &other_permit,
-            &draft(Some(("src-a", "n1")), None, None),
+        .ingest_fact_with_typed_sidecar(
+            &authorized(other, draft(Some(("src-a", "n1")), None, None)),
+            &[note("neighbour"), call(NEIGHBOUR_UPN)],
             None,
         )
         .await?;
@@ -242,6 +332,36 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     let t2 = second.memory_id.into_inner();
     let t3 = third.memory_id.into_inner();
     let tn = neighbour_memory.memory_id.into_inner();
+
+    // The write port mints one Content row per write, hashed over the
+    // payloads it just routed. That is correct and is not what this baseline
+    // is about: the corpus declares its OWN content graph below — one body
+    // shared by two admissions, one shared across sources, one held by the
+    // neighbour and named by nothing — because that graph is what the
+    // content-GC legs of an erase are tested against. Remember what the port
+    // minted so those four rows can be dropped once the memories are
+    // repointed off them; leaving them would compare the write path's
+    // bookkeeping instead of the corpus.
+    let minted_content: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT content_id FROM proxima_core.memory
+          WHERE t = ANY($1::uuid[]) AND content_id IS NOT NULL",
+    )
+    .bind(vec![t1, t2, t3, tn])
+    .fetch_all(pool)
+    .await?;
+
+    // The neighbour's admission names no content: its row exists and nothing
+    // points at it, which is the leg that proves an owner erase does not
+    // reach across owners to GC content it did not write.
+    //
+    // BEFORE the repointing below, deliberately. The dump is `ORDER BY
+    // ctid`, an UPDATE writes a new tuple at the end of the heap, and this
+    // row and `k3`'s are the two that survive a `src-a` source-scope erase —
+    // so which of them is updated first IS the order the baseline pins.
+    sqlx::query("UPDATE proxima_core.memory SET content_id = NULL WHERE t = $1")
+        .bind(tn)
+        .execute(pool)
+        .await?;
 
     // Content: one body shared by both `src-a` versions (owner erase GCs it,
     // source erase of `src-a` GCs it too), one shared across sources (source
@@ -288,44 +408,10 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .bind(cross_source)
         .execute(pool)
         .await?;
-
-    // Memory-keyed sidecar rows (the registry sweep) and owner-pinned rows
-    // (the sidecar's own owner_id).
-    for (t, note) in [(t1, "one"), (t2, "two"), (t3, "three")] {
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
-             VALUES ($1, $1, $2, 'body')",
-        )
-        .bind(t)
-        .bind(note)
+    sqlx::query("DELETE FROM proxima_core.content WHERE content_id = ANY($1::uuid[])")
+        .bind(&minted_content)
         .execute(pool)
         .await?;
-    }
-    sqlx::query(
-        "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
-         VALUES ($1, $1, 'neighbour', 'body')",
-    )
-    .bind(tn)
-    .execute(pool)
-    .await?;
-    for (t, owner_id, upn) in [
-        (t1, owner.stored_owner_id(), "target@example.test"),
-        (t3, owner.stored_owner_id(), "target@example.test"),
-        (tn, other.stored_owner_id(), "neighbour@example.test"),
-    ] {
-        sqlx::query(
-            "INSERT INTO proxima_core.mcp_call_logged_v1
-                 (t, owner_id, tool_name, actor_oid, actor_upn, ok, latency_ms,
-                  io_byte_len, io_truncated, io_content_hash)
-             VALUES ($1, $2, 'core_remember', 'oid', $3, true, 7, 11, false, $4)",
-        )
-        .bind(t)
-        .bind(owner_id)
-        .bind(upn)
-        .bind(vec![41u8; 32])
-        .execute(pool)
-        .await?;
-    }
 
     // Two cooled admissions — one per source — so both erase scopes carry the
     // locator manifest into the bundle and the cold-purge debt into the queue.
@@ -642,7 +728,11 @@ pub async fn fresh_db(prefix: &str) -> (String, String) {
 pub async fn boot(url: &str) -> Result<PgStorage, Box<dyn std::error::Error>> {
     let pg = PgStorage::connect(url).await?;
     pg.run_migrations().await?;
-    Ok(pg)
+    // The corpus writes its sidecar rows through the port, which routes each
+    // payload by its own `(kind, schema_id, version)` through this registry.
+    // Erase and export are unaffected: both are driven by `OwnerSurfaces`
+    // off the contract, and neither reads the PG sidecar registry.
+    Ok(pg.with_sidecars(proxima_storage_pg::core_pg_sidecars()))
 }
 
 pub async fn teardown(db_name: &str) {

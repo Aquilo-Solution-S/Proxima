@@ -62,10 +62,31 @@ role, with `PROXIMA_SKIP_MIGRATIONS=true` so the app never attempts DDL.
 Migrations run automatically on first boot when that variable is unset. Check
 [07](07-storage.md) / [how-to/migrations.md](how-to/migrations.md) before relying on that: a lane
 that rewrites tables holds `ACCESS EXCLUSIVE` for the duration and is not
-online-safe. The current v0.0.8 lane is one file, `0001_v008.sql`. It is a
-reset, not an online ALTER.
+online-safe. The v0.0.8 baseline, `0001_v008.sql`, is a reset, not an online
+ALTER.
+
+From v0.0.9 on the lane is **additive**: the frozen baseline is never edited,
+each release appends a migration (v0.0.9 is `0002_v009_declaration_triggers.sql`,
+and the code flavor's `20260824000020_v009_declaration_triggers.sql`), and an
+existing v0.0.8 database upgrades in place — no export, no reset. Editing a
+baseline instead would change the checksum of a version every deployed
+database has already recorded, which boot reports as `SchemaResetRequired`;
+`scripts/check-migration-ranges.py` content-pins both baselines so that cannot
+ship by accident.
 Boot migrations set `lock_timeout = 5s`, so a migration that cannot take the
 lock fails and retries on the next pod rather than queueing behind readers.
+
+Boot then reads the catalog back, under either role, and fails closed on a
+mismatch — it never issues the DDL it is checking for:
+
+| Check | Refuses |
+|---|---|
+| `ensure_projection_schema` | a linked flavor whose projection table or index is missing, or a projection table no linked flavor declares |
+| `ensure_declaration_triggers` | a registered memory sidecar with no `<relation>_declared_by_memory` trigger, one reading a column the registration does not declare, or such a trigger on a table no linked flavor registers |
+
+Both are DDL applied by the migrating role and verified by the serving one,
+so a flavor deployed without its baseline is a boot failure rather than a
+silently unguarded table (see [09](09-developing-flavors.md)).
 
 ## Environment contract
 

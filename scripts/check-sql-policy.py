@@ -29,6 +29,13 @@ VALID_PROOFS = (
     # the string has exactly one producer and that producer is audited. This
     # is deliberately narrower than `fixed-fragment`: it names the generator
     # as the thing to re-read, not the call site.
+    #
+    # `crates/storage-pg/src/integrity.rs` is the second producer under this
+    # proof, on the same terms: `unprojected_rows_sql` / `undeclared_rows_sql`
+    # splice only the sidecar table, its declared memory-key column and the
+    # projection table, each through `PgIdent`, and bind the schema id / table
+    # name. The proof is the same one — one audited producer per string — and
+    # the same file is the thing to re-read.
     "SQL-POLICY: generated",
 )
 
@@ -719,7 +726,33 @@ def run_fixture(path: Path) -> int:
 # name with a declared one is invisible to this detector by construction,
 # which is worth stating: the number moves for the shape of the assembly,
 # not for the fidelity of it.
-EXPECTED_DYNAMIC_SQL_SITES = 94
+#
+# 94 -> 96: the two execution sites of `PgSidecarRegistryFrozen::
+# integrity_check` (`sidecars/frozen.rs`), one per class it checks. Both run a
+# statement from `crates/storage-pg/src/integrity.rs`, both carry
+# `SQL-POLICY: generated`, and both bind the only value they compare against
+# ($1: the schema id, then the table name).
+#
+# The M4 half of the same slice adds ZERO sites, and for the reason the
+# `fact_embeddings/text.rs` note above gives rather than by luck: the trigger
+# generator is written in `projection.rs`'s own shape — a multi-line `format!`
+# whose template starts on the line after the macro — so the per-line rule does
+# not see it, exactly as it does not see `projection_artifacts`' `CREATE TABLE`.
+# The DDL it emits is executed by `sqlx migrate`, not by a call site in the
+# tree, so there is no execution site to count either. Two generators of DDL,
+# both audited the same way, both invisible here. That is a property of the
+# detector, not a claim about the code, and it is written down so nobody reads
+# the flat number as coverage.
+#
+# 96 -> 97: one test-only site in `storage-pg/tests/migrations.rs`, which
+# EXECUTES `declaration_trigger`'s output against a sidecar table keyed on
+# `note_memory_id` rather than `t`. The emitted text is asserted in unit
+# tests; only running it shows that `to_jsonb(NEW) ->> TG_ARGV[0]` reads the
+# DECLARED column out of the row — every sidecar core ships keys on `t`, so a
+# guard that hardcoded `NEW.t` would pass everything else in that file. Same
+# shape as the `projection_maintenance.rs` site at 82 -> 83, and it carries
+# the same `SQL-POLICY: generated` proof.
+EXPECTED_DYNAMIC_SQL_SITES = 97
 
 
 def run_self_test() -> int:

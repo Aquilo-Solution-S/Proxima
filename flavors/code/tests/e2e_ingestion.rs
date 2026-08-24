@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 mod common;
 
-use common::{git, migrated_db, test_owner, write_file};
+use common::{assert_no_declaration_drift, git, migrated_db, test_owner, write_file};
 use proxima_code::payloads::CODE_LEXICAL_LANGUAGE;
 use proxima_code::testkit::{
     advance_stage, begin_run, build_engine, get_active_run, mark_failed, mark_succeeded,
@@ -367,6 +367,12 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(facts, facts_after);
+
+        // The flavor's own CI gate. Everything above went through this
+        // flavor's write paths; this asks the substrate whether any of it
+        // left a sidecar row search cannot reach or a sidecar row forget,
+        // erase and export cannot reach.
+        assert_no_declaration_drift(&pg).await;
 
         Ok(())
     }

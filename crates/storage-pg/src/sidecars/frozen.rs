@@ -295,6 +295,183 @@ impl PgSidecarRegistryFrozen {
         Ok(())
     }
 
+    /// The declaration triggers ONE flavor's registered memory sidecars
+    /// need, in table order.
+    ///
+    /// Selected by flavor rather than emitted whole, because the DDL lands
+    /// in that flavor's own migration and a flavor's migration may only
+    /// create objects on tables its own migrations created. The flavor is
+    /// read off the schema id's prefix, which is where `attach_projections`
+    /// reads it too, so a table's migration and its trigger are chosen by
+    /// one rule.
+    ///
+    /// [`crate::integrity::DECLARATION_TRIGGER_FUNCTION`] is deliberately
+    /// NOT part of this list: it is one function for every flavor, so it
+    /// lives once, in core's `0002_v009_declaration_triggers.sql`, and a
+    /// flavor's migration carries only the triggers that call it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Internal` when a registered table, its declared memory-key
+    /// column or the trigger name derived from it is not a legal
+    /// `PostgreSQL` identifier, or when a registered memory sidecar
+    /// declares no memory-key column.
+    pub fn declaration_trigger_artifacts(
+        &self,
+        flavor_id: &str,
+    ) -> Result<Vec<crate::projection::Artifact>, StorageError> {
+        let mut tables: Vec<(&str, &'static str)> = self
+            .entries
+            .values()
+            .filter(|entry| entry.memory_insert.is_some() || entry.memory_load_batch.is_some())
+            .filter(|entry| {
+                entry
+                    .key
+                    .schema_id
+                    .as_str()
+                    .split_once('/')
+                    .is_some_and(|(prefix, _)| prefix == flavor_id)
+            })
+            .map(|entry| {
+                let column = entry.memory_key_column.ok_or_else(|| {
+                    StorageError::Internal(format!(
+                        "{} is a registered memory sidecar of flavor {flavor_id} with no \
+                         declared memory-key column",
+                        entry.sidecar_table
+                    ))
+                })?;
+                Ok((entry.sidecar_table.as_str(), column))
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        tables.sort_unstable();
+        tables.dedup();
+        tables
+            .into_iter()
+            .map(|(table, column)| crate::integrity::declaration_trigger(table, column))
+            .collect()
+    }
+
+    /// The sibling of [`Self::rebuild_projection_for_table`]: what rebuild
+    /// repairs, asked of every row already there.
+    ///
+    /// Two classes, both hard errors and never warnings, because both are
+    /// rows a lane is already walking past:
+    ///
+    /// 1. A projected schema's sidecar row with no projection row. Search
+    ///    ranks on the projection, so the row is not searchable. Repairable
+    ///    — [`Self::rebuild_projection_for_table`] re-derives the projection
+    ///    row from the sidecar row, and the finding names it.
+    /// 2. A row in a registered memory-sidecar table whose memory does not
+    ///    declare that table. Forget, owner erase and owner export all walk
+    ///    `memory.sidecar_tables`, so the row is reachable by none of them.
+    ///    NOT repairable, and the finding says so: the row is outside every
+    ///    declaration, so nothing records what it was meant to be part of.
+    ///    With the declaration trigger installed this class is unreachable
+    ///    through `INSERT`; the check exists for rows written before it, and
+    ///    for a database whose trigger someone dropped.
+    ///
+    /// Every registered flavor is checked, so a downstream flavor's CI can
+    /// run this once after its own ingest suite and assert zero drift.
+    /// Under the `proxima` crate's `testkit` feature that is one line:
+    ///
+    /// ```ignore
+    /// embedded.pg_sidecars.integrity_check(embedded.pool_for_tests()).await?;
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`IntegrityViolation::Drift`] listing every finding, or
+    /// [`IntegrityViolation::Storage`] when a statement could not run.
+    ///
+    /// [`IntegrityViolation::Drift`]: crate::integrity::IntegrityViolation::Drift
+    /// [`IntegrityViolation::Storage`]: crate::integrity::IntegrityViolation::Storage
+    pub async fn integrity_check(
+        &self,
+        pool: &sqlx::PgPool,
+    ) -> Result<crate::integrity::IntegrityReport, crate::integrity::IntegrityViolation> {
+        use crate::integrity::{IntegrityFinding, IntegrityReport, ProjectedSchema};
+
+        let mut findings = Vec::new();
+
+        // Class one. Keyed on `(table, schema)` rather than on the table:
+        // sibling registrations may share one sidecar table and the
+        // projection is keyed `(memory_id, schema_id)`.
+        let mut projected: Vec<(&str, &str, &str, &'static str)> = self
+            .entries
+            .values()
+            .filter_map(|entry| {
+                let table = entry.projection_table.as_deref()?;
+                entry.projection_insert.as_deref()?;
+                let key = entry.memory_key_column?;
+                Some((
+                    entry.sidecar_table.as_str(),
+                    entry.key.schema_id.as_str(),
+                    table,
+                    key,
+                ))
+            })
+            .collect();
+        projected.sort_unstable();
+        projected.dedup();
+
+        let mut projected_schemas = Vec::with_capacity(projected.len());
+        for (sidecar_table, schema_id, projection_table, key) in projected {
+            let sql = crate::integrity::unprojected_rows_sql(sidecar_table, key, projection_table)?;
+            // SQL-POLICY: generated
+            let rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                .bind(schema_id)
+                .fetch_one(pool)
+                .await
+                .map_err(crate::error::map_err)?;
+            projected_schemas.push(ProjectedSchema {
+                sidecar_table: sidecar_table.to_owned(),
+                schema_id: schema_id.to_owned(),
+                projection_table: projection_table.to_owned(),
+            });
+            if rows > 0 {
+                findings.push(IntegrityFinding::UnprojectedSidecarRows {
+                    sidecar_table: sidecar_table.to_owned(),
+                    schema_id: schema_id.to_owned(),
+                    projection_table: projection_table.to_owned(),
+                    rows,
+                });
+            }
+        }
+
+        // Class two. Per TABLE, not per schema: the stamp names a table.
+        let mut declared_tables = Vec::new();
+        for table in self.memory_sidecar_tables() {
+            let key = self.memory_key_column(table).ok_or_else(|| {
+                StorageError::Internal(format!(
+                    "{table} is a registered memory sidecar with no declared memory-key column"
+                ))
+            })?;
+            let sql = crate::integrity::undeclared_rows_sql(table, key)?;
+            // SQL-POLICY: generated
+            let rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                .bind(table)
+                .fetch_one(pool)
+                .await
+                .map_err(crate::error::map_err)?;
+            declared_tables.push(table.to_owned());
+            if rows > 0 {
+                findings.push(IntegrityFinding::UndeclaredSidecarRows {
+                    sidecar_table: table.to_owned(),
+                    rows,
+                });
+            }
+        }
+
+        if findings.is_empty() {
+            Ok(IntegrityReport {
+                declared_tables,
+                projected_schemas,
+            })
+        } else {
+            Err(crate::integrity::IntegrityViolation::Drift(findings))
+        }
+    }
+
     /// Every projection table the linked flavors maintain, in name order.
     ///
     /// Transfer walks this rather than a hardcoded list, so a flavor that

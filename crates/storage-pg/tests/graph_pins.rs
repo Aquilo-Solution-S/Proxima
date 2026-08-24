@@ -3,13 +3,13 @@
 
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{InboundPinQuery, MemoryReadPort, OwnerWritePermit};
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
+use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
 use proxima_core::verbs::query::{
     EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageRequest, QueryRequest,
 };
 use proxima_core::{
-    AccessKind, EdgeKind, EdgeTargetProjection, EntityRef, OwnerRef, SchemaId, SchemaVersion,
-    UserId, project_listed_edge, project_window_edges,
+    AccessKind, AgentNoteV1, EdgeKind, EdgeTargetProjection, EntityRef, FactPayload, OwnerRef,
+    SchemaId, SchemaVersion, SidecarPayload, UserId, project_listed_edge, project_window_edges,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -53,22 +53,38 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
 
         let leaf = pg
             .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
             .await?;
         let mut derived_cmd = draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]);
         derived_cmd.schema_id = SchemaId::new("core/agent-note-v1".into());
-        let derived = pg.ingest_fact_atomic(&permit, &derived_cmd, None).await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
-             VALUES ($1, $2, 'derived title', 'made from leaf', '{}')",
-        )
-        .bind(derived.memory_id.into_inner())
-        .bind(Uuid::now_v7())
-        .execute(pool)
-        .await?;
+        // `agent-note-v1` is `LanguagePolicy::PerRow`: the write names a
+        // language.
+        derived_cmd.lexical_language =
+            Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
+        // The typed write, not `ingest_fact_atomic` plus a hand-written row:
+        // it stamps `sidecar_tables`, without which the note row is one no
+        // forget, erase or export can reach.
+        let authorized = AuthorizedFactWrite::new_for_tests(
+            OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
+            derived_cmd,
+            AgentNoteV1::sidecar_table().map(str::to_owned),
+            Vec::new(),
+        );
+        let derived = pg
+            .ingest_fact_with_typed_sidecar(
+                &authorized,
+                &[SidecarPayload::fact(AgentNoteV1 {
+                    note_id: Uuid::now_v7(),
+                    title: "derived title".into(),
+                    body: "made from leaf".into(),
+                    tags: Vec::new(),
+                    idempotency_key: None,
+                })],
+                None,
+            )
+            .await?;
 
         let mut q = QueryRequest::for_owner(owner);
         q.include_payloads = false;

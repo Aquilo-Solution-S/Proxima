@@ -44,7 +44,7 @@ version/GUC preflight (see [15 §Runtime requirements](../15-deployment.md#runti
 |---|---|---|
 | `ProximaError::SchemaResetRequired` / `EmbedError::SchemaResetRequired` | ledger checksum or schema objects do not match `0001_v008.sql` | export if needed, then reset the DB. Never in-place ALTER |
 | `EmbedError::Storage(String)` containing `VersionMismatch` | a migration file changed after it was applied | reset. Not retryable |
-| `EmbedError::Storage(String)` containing `missing schema markers` | schema objects missing | apply `0001_v008.sql` on a fresh DB |
+| `EmbedError::Storage(String)` containing `missing schema markers` | schema objects missing | apply the pending migrations (a fresh DB starts at `0001_v008.sql`; an existing one appends) |
 | `EmbedError::Storage(String)` | connection / preflight | fix connectivity or pgvector, restart |
 
 ## Signal → action

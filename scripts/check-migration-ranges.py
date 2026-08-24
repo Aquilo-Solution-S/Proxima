@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
-"""Validate SQLx migration version reservations.
+"""Validate SQLx migration version reservations, and the frozen baselines.
 
 Core and flavors share SQLx's default `_sqlx_migrations` version namespace.
 Runtime boot rejects duplicate versions before applying migrations; this check
 keeps the documented source lanes honest at review time.
+
+It also pins the *content* of the frozen v0.0.8 baselines. SQLx checksums a
+migration's bytes: editing a file that live databases have already applied
+changes the checksum of an applied version, which `ensure_core_ledger_compatible`
+reports as `SchemaResetRequired` — a forced destructive reset with no schema
+reason behind it. From v0.0.9 on, releases are additive, so a baseline edit is
+never the right answer and this check says so before review has to notice.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 import tempfile
@@ -56,6 +64,41 @@ LANES = [
         suffix_max=39,
     ),
 ]
+
+
+# SHA-256 of every migration file that live databases have already applied and
+# that is therefore never edited again. A deliberate destructive release adds a
+# NEW baseline file under a NEW version and pins that one too; it does not
+# change a hash here to match an edit.
+FROZEN_BASELINES = {
+    "crates/storage-pg/migrations/0001_v008.sql": (
+        "01595628ed69be56949e63685f1d38eef9aca0519e540dcd1f6a639ad6f2d99b"
+    ),
+    "flavors/code/migrations/20260818000020_v008_baseline.sql": (
+        "f079e728210d099fe91322828b3ba8f104bf11c1a84cba986a1061f6857b8825"
+    ),
+}
+
+FROZEN_REMEDY = (
+    "a frozen baseline is never edited — add a new additive migration, or "
+    "(only for a deliberate destructive release) a new baseline file with a new version"
+)
+
+
+def check_frozen_baselines(root: Path, pinned: dict[str, str] = FROZEN_BASELINES) -> list[str]:
+    """Content-pin the migrations that existing databases have already applied."""
+    diagnostics: list[str] = []
+    for rel, expected in pinned.items():
+        path = root / rel
+        if not path.exists():
+            diagnostics.append(f"{rel}: frozen baseline is missing — {FROZEN_REMEDY}")
+            continue
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != expected:
+            diagnostics.append(
+                f"{rel}: content changed (sha256 {actual}, pinned {expected}) — {FROZEN_REMEDY}"
+            )
+    return diagnostics
 
 
 @dataclass(frozen=True)
@@ -109,7 +152,7 @@ def validate(root: Path, lanes: list[VersionLane] = LANES) -> list[str]:
 
 
 def run(root: Path) -> int:
-    diagnostics = validate(root)
+    diagnostics = validate(root) + check_frozen_baselines(root)
     if diagnostics:
         print("migration range check failed:", file=sys.stderr)
         for diagnostic in diagnostics:
@@ -118,6 +161,7 @@ def run(root: Path) -> int:
     versions, _ = collect(root)
     rendered = ", ".join(f"{item.source}:{item.version}" for item in sorted(versions, key=lambda v: v.version))
     print(f"migration range check OK: {rendered}")
+    print(f"frozen baselines unchanged: {', '.join(sorted(FROZEN_BASELINES))}")
     return 0
 
 
@@ -170,6 +214,27 @@ def self_test() -> int:
             failed = bool(validate(root))
             if failed != should_fail:
                 failures.append(f"{name}: expected fail={should_fail}")
+
+    # The frozen-baseline pin, against a fixture rather than the real tree, so
+    # the self-test proves the comparison actually fails on an edited byte.
+    frozen_cases = [
+        ("unchanged content passes", "-- fixture\n", False),
+        ("one edited byte fails", "-- fixture\n-- comment\n", True),
+    ]
+    for name, content, should_fail in frozen_cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rel = "migrations/0001_frozen.sql"
+            (root / "migrations").mkdir(parents=True)
+            (root / rel).write_text(content, encoding="utf-8")
+            pinned = {rel: hashlib.sha256(b"-- fixture\n").hexdigest()}
+            failed = bool(check_frozen_baselines(root, pinned))
+            if failed != should_fail:
+                failures.append(f"frozen baseline {name}: expected fail={should_fail}")
+    with tempfile.TemporaryDirectory() as tmp:
+        if not check_frozen_baselines(Path(tmp), {"missing.sql": "0" * 64}):
+            failures.append("frozen baseline missing file: expected fail=True")
+
     if failures:
         print("migration range self-test failed:", file=sys.stderr)
         for failure in failures:

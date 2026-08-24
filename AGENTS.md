@@ -79,6 +79,18 @@ kernel, **the kernel wins** until renegotiated in writing. Check it with
 3. Tag a new `v*` from `main` only after required slices merge and
    post-merge CI passes (release notes are git-cliff-generated on the tag).
 
+## Migration policy
+
+1. From v0.0.9 on, releases are non-breaking database-wise: a frozen baseline
+   (`*_v008*`) is never edited, existing databases upgrade in place, and a
+   release that needs schema work ships **one additive migration file per
+   version** (`000N_v0XY_<what>.sql` for core, one dated `_v0XY_` file per
+   flavor) — never several, never edited after the tag.
+2. A destructive new baseline is a deliberate, named release decision — never a
+   side effect of editing an applied file.
+3. Enforced by the content hashes in `scripts/check-migration-ranges.py`
+   (details: `docs/how-to/migrations.md`).
+
 Do not weaken the Lean guardrails: server-resolved `OwnerRef`,
 source-owned pins with target redaction, optional Memory/Goal sidecars,
 `MemoryGraphValid`, `OperatorInvocation` for writes that declare a

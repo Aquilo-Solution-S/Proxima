@@ -17,12 +17,9 @@ use proxima_code::{
 };
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError};
-use proxima_core::verbs::fact_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
-};
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    FlavorServices, MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    FlavorServices, MemoryId, Owner,
 };
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
@@ -786,13 +783,11 @@ async fn ingesting_a_previously_indexed_commit_again_succeeds()
 async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
     ingest_code_chunk(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -803,7 +798,6 @@ async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::err
     tokio::time::sleep(Duration::from_millis(20)).await;
     ingest_code_chunk(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -834,13 +828,11 @@ async fn search_chunks_excludes_chunk_when_head_is_tombstone()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
     ingest_code_chunk(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -851,7 +843,6 @@ async fn search_chunks_excludes_chunk_when_head_is_tombstone()
     tokio::time::sleep(Duration::from_millis(20)).await;
     ingest_code_chunk_tombstone(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -878,13 +869,11 @@ async fn search_chunks_excludes_chunk_when_tombstone_has_no_language_and_filter_
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
     ingest_code_chunk(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -895,7 +884,6 @@ async fn search_chunks_excludes_chunk_when_tombstone_has_no_language_and_filter_
     tokio::time::sleep(Duration::from_millis(20)).await;
     ingest_code_chunk_tombstone(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -922,13 +910,11 @@ async fn search_chunks_includes_calls_edges_when_present() -> Result<(), Box<dyn
 {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
     let source_chunk = ingest_code_chunk(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/a.rs",
@@ -938,7 +924,6 @@ async fn search_chunks_includes_calls_edges_when_present() -> Result<(), Box<dyn
     .await?;
     let target_chunk = ingest_code_chunk(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/b.rs",
@@ -984,13 +969,11 @@ async fn search_chunks_supports_exact_substring_and_chunk_type_filter()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
     ingest_code_chunk_with_type(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         ChunkFixture {
             repo_id,
@@ -1003,7 +986,6 @@ async fn search_chunks_supports_exact_substring_and_chunk_type_filter()
     .await?;
     ingest_code_chunk_with_type(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         ChunkFixture {
             repo_id,
@@ -1051,7 +1033,6 @@ async fn search_chunks_pages_with_cursor_not_raised_limit() -> Result<(), Box<dy
 {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
     for (index, (path, text)) in [
@@ -1064,7 +1045,6 @@ async fn search_chunks_pages_with_cursor_not_raised_limit() -> Result<(), Box<dy
     {
         ingest_code_chunk_with_type(
             fixture.pg.pool_for_tests(),
-            &engine,
             owner,
             ChunkFixture {
                 repo_id,
@@ -1142,13 +1122,11 @@ async fn search_chunks_pages_with_cursor_not_raised_limit() -> Result<(), Box<dy
 async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
     ingest_file_revision(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -1158,7 +1136,6 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     tokio::time::sleep(Duration::from_millis(20)).await;
     ingest_file_revision(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -1167,7 +1144,6 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     .await?;
     ingest_code_chunk(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -1177,7 +1153,6 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     .await?;
     ingest_code_chunk(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -1253,12 +1228,10 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
 async fn open_file_revision_flags_a_chunk_the_cap_cut() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let repo_id = Uuid::now_v7();
 
     ingest_file_revision(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -1267,7 +1240,6 @@ async fn open_file_revision_flags_a_chunk_the_cap_cut() -> Result<(), Box<dyn st
     .await?;
     ingest_code_chunk(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -1313,13 +1285,11 @@ async fn open_file_revision_returns_no_chunks_for_tombstone_head()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
     ingest_file_revision(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -1328,7 +1298,6 @@ async fn open_file_revision_returns_no_chunks_for_tombstone_head()
     .await?;
     ingest_code_chunk(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -1339,7 +1308,6 @@ async fn open_file_revision_returns_no_chunks_for_tombstone_head()
     tokio::time::sleep(Duration::from_millis(20)).await;
     ingest_file_revision_tombstone(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -1348,7 +1316,6 @@ async fn open_file_revision_returns_no_chunks_for_tombstone_head()
     .await?;
     ingest_code_chunk_tombstone(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -1377,13 +1344,11 @@ async fn open_file_revision_returns_no_chunks_for_tombstone_head()
 async fn open_file_revision_accepts_raw_repo_uuid() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
     ingest_file_revision(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/raw.rs",
@@ -1406,7 +1371,6 @@ async fn open_file_revision_accepts_unambiguous_repo_display_name()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
     register_repo(
@@ -1421,7 +1385,6 @@ async fn open_file_revision_accepts_unambiguous_repo_display_name()
 
     ingest_file_revision(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "src/atlas.rs",
@@ -1447,13 +1410,11 @@ async fn open_file_revision_accepts_unambiguous_repo_display_name()
 async fn search_commits_unions_commit_and_summary_legs() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
     ingest_commit(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "deadbeef",
@@ -1496,13 +1457,11 @@ async fn search_commits_stems_english_and_likes_sha_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
     ingest_commit(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "deadbeef",
@@ -1646,21 +1605,15 @@ async fn retry_execution_request_succeeds_with_target_perspective()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
 
     let shell_self = seed_perspective(&fixture.pg, &owner, "Shell author").await?;
 
     // A prior execution-request Fact + sidecar to retry.
     let repo_id = Uuid::now_v7();
-    let prior = ingest_execution_request_fixture(
-        fixture.pg.pool_for_tests(),
-        &engine,
-        owner,
-        repo_id,
-        "prior",
-    )
-    .await?;
+    let prior =
+        ingest_execution_request_fixture(fixture.pg.pool_for_tests(), owner, repo_id, "prior")
+            .await?;
 
     let target = seed_perspective(&fixture.pg, &owner, "Retry Worker").await?;
 
@@ -1738,14 +1691,12 @@ async fn retry_execution_request_uses_owner_write_authority()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
 
     let shell_self = seed_perspective(&fixture.pg, &owner, "Shell author").await?;
     let repo_id = Uuid::now_v7();
     let prior = ingest_execution_request_fixture(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         repo_id,
         "prior-no-master",
@@ -1880,20 +1831,14 @@ async fn retry_execution_request_rejects_unknown_target_perspective()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
 
     let shell_self = seed_perspective(&fixture.pg, &owner, "Shell author").await?;
 
     let repo_id = Uuid::now_v7();
-    let prior = ingest_execution_request_fixture(
-        fixture.pg.pool_for_tests(),
-        &engine,
-        owner,
-        repo_id,
-        "prior",
-    )
-    .await?;
+    let prior =
+        ingest_execution_request_fixture(fixture.pg.pool_for_tests(), owner, repo_id, "prior")
+            .await?;
 
     let ctx = shell_ctx(
         fixture.pg.clone(),
@@ -2135,17 +2080,15 @@ async fn seed_perspective(
 /// Mint a prior execution-request Fact + sidecar row that a retry targets.
 async fn ingest_execution_request_fixture(
     pool: &PgPool,
-    engine: &Engine,
     owner: Owner,
     repo_id: Uuid,
     request_key: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let payload = format!("execution-request:{repo_id}:{request_key}");
     let memory_id = fact_memory(
-        engine,
+        pool,
         owner,
         ExecutionRequestV1::SCHEMA_ID,
-        payload.as_bytes(),
+        &["proxima_code.work_requested_v1"],
     )
     .await?;
     sqlx::query(
@@ -2493,67 +2436,37 @@ async fn hybrid_without_an_embedding_model_answers_lexically_and_says_so()
     Ok(())
 }
 
-fn fact_draft(_owner: Owner, schema_id: &str, payload: &[u8]) -> FactWriteCommand {
-    let now = time::OffsetDateTime::now_utc();
-    FactWriteCommand {
-        schema_id: SchemaId::new(schema_id.into()),
-        schema_version: SchemaVersion::new(1),
-        handle: None,
-        source_id: None,
-        ingest_key: None,
-        payload: payload.to_vec(),
-        rendered_text: None,
-        lexical_language: None,
-        receipt: Some(FactReceiptDraft {
-            source_id: SourceId::new("test/source"),
-            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-            observed_at: now,
-            occurred_at: now,
-        }),
-        citation: Some(Citation {
-            object: CitedObjectHint {
-                schema_id: SchemaId::new("test/cited_blob".into()),
-                schema_version: SchemaVersion::new(1),
-                content_hash: blake3::hash(payload).into(),
-            },
-            mapping: CitationMappingHint {
-                schema_id: SchemaId::new("test/citation_blob".into()),
-                schema_version: SchemaVersion::new(1),
-            },
-        }),
-        derived_from: Vec::new(),
-        refs: Vec::new(),
-        blob_id: None,
-        kind: "fact".into(),
-    }
-}
-
 async fn fact_memory(
-    engine: &Engine,
+    pool: &PgPool,
     owner: Owner,
     schema_id: &str,
-    payload: &[u8],
+    sidecars: &[&str],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    fact_memory_on_handle(engine, owner, schema_id, payload, None).await
+    fact_memory_on_handle(pool, owner, schema_id, None, sidecars).await
 }
 
+/// Seeded, not ingested: `Engine::fact_ingest` writes no flavor sidecar and
+/// so stamps none, and these fixtures write theirs by hand — which without
+/// the stamp is a row `sidecar_tables` cannot reach.
 async fn fact_memory_on_handle(
-    engine: &Engine,
+    pool: &PgPool,
     owner: Owner,
     schema_id: &str,
-    payload: &[u8],
     handle: Option<Uuid>,
+    sidecars: &[&str],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let mut draft = fact_draft(owner, schema_id, payload);
-    draft.handle = handle;
-    Ok(engine
-        .fact_ingest(
-            &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer),
-            draft,
-        )
-        .await?
-        .memory_id
-        .into_inner())
+    let (_, t) = common::seed_memory_with_sidecars(
+        pool,
+        &owner,
+        schema_id,
+        "fact",
+        None,
+        handle,
+        &[],
+        sidecars,
+    )
+    .await?;
+    Ok(t)
 }
 
 async fn abstraction_memory(
@@ -2584,14 +2497,12 @@ async fn an_unknown_repo_handle_is_an_error_on_every_tool_that_takes_one()
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let registry = registry_for_mcp();
-    let engine = engine_for_test(fixture.pg.clone());
 
     // A real repository exists, so an empty answer would be about the
     // handle rather than about an empty index.
     let real_repo = Uuid::now_v7();
     ingest_file_revision(
         fixture.pg.pool_for_tests(),
-        &engine,
         owner,
         real_repo,
         "src/real.rs",
@@ -2684,7 +2595,6 @@ async fn register_repo_row(
 
 async fn ingest_file_revision(
     pool: &PgPool,
-    engine: &Engine,
     owner: Owner,
     repo_id: Uuid,
     file_path: &str,
@@ -2694,11 +2604,11 @@ async fn ingest_file_revision(
     register_repo_row(pool, owner, repo_id).await?;
     let handle = existing_file_revision_handle(pool, &owner, repo_id, file_path).await?;
     let memory_id = fact_memory_on_handle(
-        engine,
+        pool,
         owner,
         FileRevisionV1::SCHEMA_ID,
-        payload.as_bytes(),
         handle,
+        &["proxima_code.file_revision_v1"],
     )
     .await?;
     sqlx::query(
@@ -2720,20 +2630,18 @@ async fn ingest_file_revision(
 
 async fn ingest_file_revision_tombstone(
     pool: &PgPool,
-    engine: &Engine,
     owner: Owner,
     repo_id: Uuid,
     file_path: &str,
     indexed_commit_sha: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let payload = format!("{file_path}:{indexed_commit_sha}:tombstone");
     let handle = existing_file_revision_handle(pool, &owner, repo_id, file_path).await?;
     let memory_id = fact_memory_on_handle(
-        engine,
+        pool,
         owner,
         FileRevisionV1::SCHEMA_ID,
-        payload.as_bytes(),
         handle,
+        &["proxima_code.file_revision_v1"],
     )
     .await?;
     sqlx::query(
@@ -2754,7 +2662,6 @@ async fn ingest_file_revision_tombstone(
 
 async fn ingest_code_chunk(
     pool: &PgPool,
-    engine: &Engine,
     owner: Owner,
     repo_id: Uuid,
     file_path: &str,
@@ -2763,7 +2670,6 @@ async fn ingest_code_chunk(
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     ingest_code_chunk_with_type(
         pool,
-        engine,
         owner,
         ChunkFixture {
             repo_id,
@@ -2787,12 +2693,11 @@ struct ChunkFixture<'a> {
 
 async fn ingest_code_chunk_with_type(
     pool: &PgPool,
-    engine: &Engine,
     owner: Owner,
     chunk: ChunkFixture<'_>,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let file_revision =
-        ensure_present_file_revision(pool, engine, owner, chunk.repo_id, chunk.file_path).await?;
+        ensure_present_file_revision(pool, owner, chunk.repo_id, chunk.file_path).await?;
     let handle = Uuid::new_v5(
         &Uuid::NAMESPACE_OID,
         format!(
@@ -2838,14 +2743,12 @@ async fn ingest_code_chunk_with_type(
 
 async fn ingest_code_chunk_tombstone(
     pool: &PgPool,
-    engine: &Engine,
     owner: Owner,
     repo_id: Uuid,
     file_path: &str,
     chunk_index: i32,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let file_revision =
-        ensure_tombstone_file_revision(pool, engine, owner, repo_id, file_path).await?;
+    let file_revision = ensure_tombstone_file_revision(pool, owner, repo_id, file_path).await?;
     let handle = Uuid::new_v5(
         &Uuid::NAMESPACE_OID,
         format!("{repo_id}:{file_path}:{chunk_index}").as_bytes(),
@@ -2922,7 +2825,6 @@ async fn latest_file_revision(
 
 async fn ensure_present_file_revision(
     pool: &PgPool,
-    engine: &Engine,
     owner: Owner,
     repo_id: Uuid,
     file_path: &str,
@@ -2934,7 +2836,6 @@ async fn ensure_present_file_revision(
     }
     ingest_file_revision(
         pool,
-        engine,
         owner,
         repo_id,
         file_path,
@@ -2945,7 +2846,6 @@ async fn ensure_present_file_revision(
 
 async fn ensure_tombstone_file_revision(
     pool: &PgPool,
-    engine: &Engine,
     owner: Owner,
     repo_id: Uuid,
     file_path: &str,
@@ -2957,7 +2857,6 @@ async fn ensure_tombstone_file_revision(
     }
     ingest_file_revision_tombstone(
         pool,
-        engine,
         owner,
         repo_id,
         file_path,
@@ -2973,7 +2872,7 @@ async fn code_chunk_memory(
     origins: &[Uuid],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let t = Uuid::now_v7();
-    let _ = common::seed_memory(
+    let _ = common::seed_memory_with_sidecars(
         pool,
         owner,
         <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
@@ -2981,6 +2880,7 @@ async fn code_chunk_memory(
         Some(t),
         Some(handle),
         origins,
+        &[<CodeChunkV1 as AbstractionPayload>::sidecar_table()],
     )
     .await?;
     Ok(t)
@@ -3006,14 +2906,18 @@ async fn force_same_memory_created_at(
 
 async fn ingest_commit(
     pool: &PgPool,
-    engine: &Engine,
     owner: Owner,
     repo_id: Uuid,
     sha: &str,
     message: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let payload = format!("{sha}:{message}");
-    let memory_id = fact_memory(engine, owner, CommitV1::SCHEMA_ID, payload.as_bytes()).await?;
+    let memory_id = fact_memory(
+        pool,
+        owner,
+        CommitV1::SCHEMA_ID,
+        &["proxima_code.commit_v1"],
+    )
+    .await?;
     let now = time::OffsetDateTime::now_utc();
     sqlx::query(
         "INSERT INTO proxima_code.commit_v1
@@ -3048,7 +2952,7 @@ async fn ingest_commit_summary(
     key_files: &[&str],
     change_kind: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let (_, memory_id) = common::seed_memory(
+    let (_, memory_id) = common::seed_memory_with_sidecars(
         pool,
         owner,
         <proxima_code::CommitSummaryV1 as AbstractionPayload>::SCHEMA_ID,
@@ -3056,6 +2960,7 @@ async fn ingest_commit_summary(
         None,
         None,
         &[],
+        &[<proxima_code::CommitSummaryV1 as AbstractionPayload>::sidecar_table()],
     )
     .await?;
 

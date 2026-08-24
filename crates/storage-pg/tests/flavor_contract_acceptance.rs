@@ -617,10 +617,18 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
                 "perspective" => vec![seeds[2].2],
                 _ => Vec::new(),
             };
+            // The stamp comes off the contract, like the recipe below: each
+            // seed's sidecar row is inserted right after this loop.
+            let sidecar = FLAVOR_0
+                .schemas
+                .iter()
+                .find(|candidate| candidate.schema_id().as_str() == *schema_id)
+                .and_then(|schema| schema.sidecar_table)
+                .expect("seeded schema declares a sidecar table");
             sqlx::query(
                 "INSERT INTO proxima_core.memory
                      (handle, t, kind, owner_id, schema_id, content_id, origins, sidecar_tables)
-                 VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, '{}')",
+                 VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, ARRAY[$8])",
             )
             .bind(handle)
             .bind(t)
@@ -629,6 +637,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
             .bind(schema_id)
             .bind(content_id)
             .bind(&origins)
+            .bind(sidecar)
             .execute(pool)
             .await?;
         }

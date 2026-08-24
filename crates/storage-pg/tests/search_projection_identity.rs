@@ -289,6 +289,17 @@ fn handle_for(t: Uuid) -> Uuid {
     ))
 }
 
+/// The sidecar table each seeded schema writes. Every `admit` is followed by
+/// exactly one insert into it, so the memory stamps exactly this one.
+fn sidecar_of(schema_id: &str) -> &'static str {
+    match schema_id {
+        NOTE_SCHEMA => "proxima_core.agent_note_v1",
+        DERIVATION_SCHEMA => "proxima_core.agent_derivation_v1",
+        INTERPRETATION_SCHEMA => "proxima_core.interpretation_v1",
+        other => panic!("no sidecar seeded for {other}"),
+    }
+}
+
 /// `origins` is not decoration: `memory_pin_checks` refuses a non-Fact that
 /// pins no hot memory, so a derivation has to ground in a note. It
 /// grounds in its own owner's first one, which keeps the corpus
@@ -336,8 +347,9 @@ async fn admit(
         )
     };
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, content_id)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7)",
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, ARRAY[$8])",
     )
     .bind(handle)
     .bind(t)
@@ -346,6 +358,7 @@ async fn admit(
     .bind(schema_id)
     .bind(origins)
     .bind(content_id)
+    .bind(sidecar_of(schema_id))
     .execute(pool)
     .await?;
     Ok(())
@@ -942,13 +955,15 @@ async fn seed_note_revision(
     body: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-         VALUES ($1, $2, 'fact', $3, $4)",
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, sidecar_tables)
+         VALUES ($1, $2, 'fact', $3, $4, ARRAY[$5])",
     )
     .bind(handle)
     .bind(t)
     .bind(owner_id)
     .bind(NOTE_SCHEMA)
+    .bind(sidecar_of(NOTE_SCHEMA))
     .execute(pool)
     .await?;
     sqlx::query(

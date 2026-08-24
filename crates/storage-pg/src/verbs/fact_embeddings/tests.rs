@@ -262,6 +262,62 @@ mod pg_tests {
             .map_err(|err| StorageError::Internal(err.to_string()))
     }
 
+    const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
+
+    /// A note Fact and its sidecar row, in one admission that DECLARES the
+    /// table. `ingest_fact_atomic` declares none, so a note row hung off one
+    /// is a row `forget` and the owner inverse can never reach — which
+    /// `assert_memory_declares_sidecar` refuses.
+    async fn ingest_note_fact(
+        pg: &crate::PgStorage,
+        owner: &Owner,
+        draft: &FactWriteCommand,
+        embedding_model_id: Option<&str>,
+        title: &str,
+        body: &str,
+    ) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
+        let authorized = proxima_core::verbs::fact_ingest::AuthorizedFactWrite::new_for_tests(
+            OwnerWritePermit::new_for_tests(*owner, AccessKind::Fact),
+            draft.clone(),
+            Some(AGENT_NOTE.to_owned()),
+            Vec::new(),
+        );
+        // The sidecar closure may borrow nothing shorter than the
+        // transaction, so the row's text goes in owned.
+        let (title, body) = (title.to_owned(), body.to_owned());
+        let mut tx = pg
+            .pool_for_tests()
+            .begin()
+            .await
+            .map_err(crate::error::map_err)?;
+        let outcome = crate::verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
+            &mut tx,
+            &authorized,
+            embedding_model_id,
+            &[AGENT_NOTE.to_owned()],
+            None,
+            move |tx, outcome| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
+                         VALUES ($1, $2, $3, $4)",
+                    )
+                    .bind(outcome.memory_id.into_inner())
+                    .bind(Uuid::now_v7())
+                    .bind(title)
+                    .bind(body)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(crate::error::map_err)?;
+                    Ok(())
+                })
+            },
+        )
+        .await?;
+        tx.commit().await.map_err(crate::error::map_err)?;
+        Ok(outcome)
+    }
+
     async fn load_embedding_versions(
         pool: &sqlx::PgPool,
         entity_kind: EntityKind,
@@ -663,8 +719,10 @@ mod pg_tests {
             .execute(pg.pool_for_tests())
             .await?;
             sqlx::query(
-                "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-                 VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
+                "INSERT INTO proxima_core.memory
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables)
+                 VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
+                         ARRAY['proxima_core.agent_note_v1'])",
             )
             .bind(note_handle)
             .bind(note_t)
@@ -715,8 +773,10 @@ mod pg_tests {
             .execute(pg.pool_for_tests())
             .await?;
             sqlx::query(
-                "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-                 VALUES ($1, $2, 'fact', $3, 'core/utterance-v1')",
+                "INSERT INTO proxima_core.memory
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables)
+                 VALUES ($1, $2, 'fact', $3, 'core/utterance-v1',
+                         ARRAY['proxima_core.utterance_v1'])",
             )
             .bind(utter_handle)
             .bind(utter_t)
@@ -780,8 +840,10 @@ mod pg_tests {
             .execute(pg.pool_for_tests())
             .await?;
             sqlx::query(
-                "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-                 VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
+                "INSERT INTO proxima_core.memory
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables)
+                 VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
+                         ARRAY['proxima_core.agent_note_v1'])",
             )
             .bind(note_handle)
             .bind(note_t)
@@ -809,8 +871,10 @@ mod pg_tests {
             .execute(pg.pool_for_tests())
             .await?;
             sqlx::query(
-                "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-                 VALUES ($1, $2, 'fact', $3, 'core/utterance-v1')",
+                "INSERT INTO proxima_core.memory
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables)
+                 VALUES ($1, $2, 'fact', $3, 'core/utterance-v1',
+                         ARRAY['proxima_core.utterance_v1'])",
             )
             .bind(utter_handle)
             .bind(utter_t)
@@ -1234,22 +1298,11 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
-            let permit = owner_fact_write_permit(&owner).await?;
             for label in ["one", "two", "three", "four", "five"] {
                 let mut draft = fact_draft(label);
                 draft.schema_id = SchemaId::new("core/agent-note-v1".into());
-                let written = pg
-                    .ingest_fact_atomic(&permit, &draft, Some("stub-fact-embed"))
+                ingest_note_fact(&pg, &owner, &draft, Some("stub-fact-embed"), label, label)
                     .await?;
-                sqlx::query(
-                    "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
-                     VALUES ($1, $2, $3, $3)",
-                )
-                .bind(written.memory_id.into_inner())
-                .bind(Uuid::now_v7())
-                .bind(label)
-                .execute(pg.pool_for_tests())
-                .await?;
             }
 
             let widths = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1289,22 +1342,11 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
-            let permit = owner_fact_write_permit(&owner).await?;
             for label in ["one", "two", "three", "four", "five"] {
                 let mut draft = fact_draft(label);
                 draft.schema_id = SchemaId::new("core/agent-note-v1".into());
-                let written = pg
-                    .ingest_fact_atomic(&permit, &draft, Some("stub-fact-embed"))
+                ingest_note_fact(&pg, &owner, &draft, Some("stub-fact-embed"), label, label)
                     .await?;
-                sqlx::query(
-                    "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
-                     VALUES ($1, $2, $3, $3)",
-                )
-                .bind(written.memory_id.into_inner())
-                .bind(Uuid::now_v7())
-                .bind(label)
-                .execute(pg.pool_for_tests())
-                .await?;
             }
 
             let batch_widths = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1355,7 +1397,6 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
-            let permit = owner_fact_write_permit(&owner).await?;
             let mut ids = Vec::new();
             for (kind, text) in [
                 ("good", "ordinary text".to_owned()),
@@ -1363,18 +1404,9 @@ mod pg_tests {
             ] {
                 let mut draft = fact_draft(&text);
                 draft.schema_id = SchemaId::new("core/agent-note-v1".into());
-                let written = pg
-                    .ingest_fact_atomic(&permit, &draft, Some("stub-fact-embed"))
-                    .await?;
-                sqlx::query(
-                    "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
-                     VALUES ($1, $2, $3, $3)",
-                )
-                .bind(written.memory_id.into_inner())
-                .bind(Uuid::now_v7())
-                .bind(&text)
-                .execute(pg.pool_for_tests())
-                .await?;
+                let written =
+                    ingest_note_fact(&pg, &owner, &draft, Some("stub-fact-embed"), &text, &text)
+                        .await?;
                 ids.push((kind, written.memory_id));
             }
 
@@ -1430,20 +1462,16 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
-            let permit = owner_fact_write_permit(&owner).await?;
             let mut draft = fact_draft("provider-down input");
             draft.schema_id = SchemaId::new("core/agent-note-v1".into());
-            let written = pg
-                .ingest_fact_atomic(&permit, &draft, Some("stub-fact-embed"))
-                .await?;
-            sqlx::query(
-                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
-                 VALUES ($1, $2, $3, $3)",
+            let written = ingest_note_fact(
+                &pg,
+                &owner,
+                &draft,
+                Some("stub-fact-embed"),
+                "provider-down input",
+                "provider-down input",
             )
-            .bind(written.memory_id.into_inner())
-            .bind(Uuid::now_v7())
-            .bind("provider-down input")
-            .execute(pg.pool_for_tests())
             .await?;
 
             let policy = EmbeddingRuntimePolicy::new(
@@ -1495,23 +1523,13 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
-            let permit = owner_fact_write_permit(&owner).await?;
             let mut ids = Vec::new();
             for label in ["short-one", "short-two"] {
                 let mut draft = fact_draft(label);
                 draft.schema_id = SchemaId::new("core/agent-note-v1".into());
-                let written = pg
-                    .ingest_fact_atomic(&permit, &draft, Some("stub-fact-embed"))
-                    .await?;
-                sqlx::query(
-                    "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
-                     VALUES ($1, $2, $3, $3)",
-                )
-                .bind(written.memory_id.into_inner())
-                .bind(Uuid::now_v7())
-                .bind(label)
-                .execute(pg.pool_for_tests())
-                .await?;
+                let written =
+                    ingest_note_fact(&pg, &owner, &draft, Some("stub-fact-embed"), label, label)
+                        .await?;
                 ids.push(written.memory_id);
             }
 
@@ -1558,23 +1576,13 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
-            let permit = owner_fact_write_permit(&owner).await?;
             let mut ids = Vec::new();
             for label in ["extra-one", "extra-two"] {
                 let mut draft = fact_draft(label);
                 draft.schema_id = SchemaId::new("core/agent-note-v1".into());
-                let written = pg
-                    .ingest_fact_atomic(&permit, &draft, Some("stub-fact-embed"))
-                    .await?;
-                sqlx::query(
-                    "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
-                     VALUES ($1, $2, $3, $3)",
-                )
-                .bind(written.memory_id.into_inner())
-                .bind(Uuid::now_v7())
-                .bind(label)
-                .execute(pg.pool_for_tests())
-                .await?;
+                let written =
+                    ingest_note_fact(&pg, &owner, &draft, Some("stub-fact-embed"), label, label)
+                        .await?;
                 ids.push(written.memory_id);
             }
 
@@ -1621,19 +1629,16 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
-            let permit = owner_fact_write_permit(&owner).await?;
             let mut draft = fact_draft("heartbeat protected");
             draft.schema_id = SchemaId::new("core/agent-note-v1".into());
-            let written = pg
-                .ingest_fact_atomic(&permit, &draft, Some("stub-fact-embed"))
-                .await?;
-            sqlx::query(
-                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
-                 VALUES ($1, $2, 'heartbeat', 'heartbeat protected')",
+            let written = ingest_note_fact(
+                &pg,
+                &owner,
+                &draft,
+                Some("stub-fact-embed"),
+                "heartbeat",
+                "heartbeat protected",
             )
-            .bind(written.memory_id.into_inner())
-            .bind(Uuid::now_v7())
-            .execute(pg.pool_for_tests())
             .await?;
 
             let client = Arc::new(BlockingEmbedding {
@@ -1938,21 +1943,18 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
-            let permit = owner_fact_write_permit(&owner).await?;
             let mut draft = fact_draft("blocked inline drainer");
             draft.schema_id = SchemaId::new("core/agent-note-v1".into());
-            let written = pg
-                .ingest_fact_atomic(&permit, &draft, Some("stub-fact-embed"))
-                .await?;
-            let pool = pg.pool_for_tests();
-            sqlx::query(
-                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
-                 VALUES ($1, $2, 'blocked', 'inline drainer')",
+            let written = ingest_note_fact(
+                &pg,
+                &owner,
+                &draft,
+                Some("stub-fact-embed"),
+                "blocked",
+                "inline drainer",
             )
-            .bind(written.memory_id.into_inner())
-            .bind(Uuid::now_v7())
-            .execute(pool)
             .await?;
+            let pool = pg.pool_for_tests();
             let client = Arc::new(BlockingEmbedding {
                 entered: Arc::new(tokio::sync::Semaphore::new(0)),
                 release: Arc::new(tokio::sync::Semaphore::new(0)),

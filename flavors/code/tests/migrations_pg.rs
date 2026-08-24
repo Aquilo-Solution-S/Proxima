@@ -187,9 +187,14 @@ async fn flavor_migrations_apply_to_fresh_db() {
         .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(
+            // `sidecar_tables` is not decoration here: the chunk row below
+            // is only reachable by forget, erase and export through this
+            // stamp, and since the declaration trigger the database refuses
+            // the row without it.
             "INSERT INTO proxima_core.memory
-                (handle, t, kind, owner_id, schema_id, origins, content_id)
-             VALUES ($1, $2, 'abstraction', $3, 'proxima-code/code-chunk-v1', ARRAY[$4]::uuid[], $5)",
+                (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables)
+             VALUES ($1, $2, 'abstraction', $3, 'proxima-code/code-chunk-v1', ARRAY[$4]::uuid[], $5,
+                     ARRAY['proxima_code.code_chunk_v1'])",
         )
         .bind(handle)
         .bind(memory_id)
@@ -322,4 +327,200 @@ fn generator_output_is_the_code_baseline_text() {
             "the code baseline does not carry the generator's output verbatim:\n{statement}"
         );
     }
+}
+
+/// The code flavor's v0.0.9 migration carries every declaration trigger the
+/// generator emits for this flavor, verbatim.
+///
+/// The sibling of `generated_declaration_triggers_are_the_migration_text`
+/// on the other side of the flavor boundary. It is the whole reason the
+/// generator takes a flavor id: the DDL lands with the flavor whose
+/// migration created the table, and this is what holds that file to it.
+///
+/// It lands in the additive `20260824000020_v009_declaration_triggers.sql`
+/// rather than in the v008 baseline, for the reason the second assertion
+/// states: the baseline is frozen, and editing it resets every database that
+/// already applied it.
+///
+/// The shared function is deliberately NOT asserted here — it is core's,
+/// defined once in core's `0002`, and a flavor that restated it would be
+/// a second declaration of one thing.
+#[test]
+fn generated_declaration_triggers_are_the_code_migration_text() {
+    let registry = proxima_code::schema_registry();
+    let mut pg = proxima_storage_pg::PgSidecarRegistry::new();
+    proxima_storage_pg::register_core_pg_sidecars(&mut pg);
+    proxima_code::register_pg_sidecars(&mut pg);
+    let frozen = pg
+        .freeze_against(&registry)
+        .expect("the code registration freezes");
+    let artifacts = frozen
+        .declaration_trigger_artifacts(proxima_code::contract::FLAVOR_ID)
+        .expect("the code flavor's declaration triggers");
+    assert!(
+        !artifacts.is_empty(),
+        "the code flavor registers memory sidecars, so it has triggers to carry"
+    );
+    let migration = include_str!("../migrations/20260824000020_v009_declaration_triggers.sql");
+    let baseline = include_str!("../migrations/20260818000020_v008_baseline.sql");
+    assert!(
+        !baseline.contains("assert_memory_declares_sidecar"),
+        "the v008 baseline is frozen — declaration integrity ships as the additive \
+         20260824000020, never as an edit to a version live databases have already applied"
+    );
+    for artifact in &artifacts {
+        assert!(
+            migration.contains(&artifact.forward),
+            "the code v0.0.9 migration does not carry the generator's output verbatim:\n{}",
+            artifact.forward
+        );
+    }
+}
+
+/// Apply an already-shipped migration the way a live deployment carries it:
+/// the file's own bytes, and one ledger row whose checksum comes from the
+/// embedded migration rather than from a recomputation here, so this fixture
+/// can never disagree with what the compatibility checks compare against.
+///
+/// Core and the flavor get one function each rather than a parameterised one
+/// because the ledger table is not the same table: the flavor keeps its rows
+/// in `public._sqlx_migrations_proxima_code`, since a baseline that drops
+/// `proxima_code` must not take its own ledger with it. Passing the table in
+/// would make two literal statements into dynamic SQL for no gain.
+async fn seed_applied_core(
+    pool: &sqlx::PgPool,
+    migration: &sqlx::migrate::Migration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // SQL-POLICY: fixed-fragment — the migration's own embedded text, the
+    // same bytes the migrator would execute.
+    sqlx::raw_sql(migration.sql.clone()).execute(pool).await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS public._sqlx_migrations (
+             version bigint PRIMARY KEY,
+             description text NOT NULL,
+             installed_on timestamptz NOT NULL DEFAULT now(),
+             success boolean NOT NULL,
+             checksum bytea NOT NULL,
+             execution_time bigint NOT NULL
+         )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO public._sqlx_migrations
+             (version, description, success, checksum, execution_time)
+         VALUES ($1, $2, true, $3, 0)",
+    )
+    .bind(migration.version)
+    .bind(migration.description.as_ref())
+    .bind(migration.checksum.as_ref())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The flavor half of [`seed_applied_core`], against the flavor's own ledger.
+async fn seed_applied_code(
+    pool: &sqlx::PgPool,
+    migration: &sqlx::migrate::Migration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // SQL-POLICY: fixed-fragment — the migration's own embedded text, the
+    // same bytes the migrator would execute.
+    sqlx::raw_sql(migration.sql.clone()).execute(pool).await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS public._sqlx_migrations_proxima_code (
+             version bigint PRIMARY KEY,
+             description text NOT NULL,
+             installed_on timestamptz NOT NULL DEFAULT now(),
+             success boolean NOT NULL,
+             checksum bytea NOT NULL,
+             execution_time bigint NOT NULL
+         )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO public._sqlx_migrations_proxima_code
+             (version, description, success, checksum, execution_time)
+         VALUES ($1, $2, true, $3, 0)",
+    )
+    .bind(migration.version)
+    .bind(migration.description.as_ref())
+    .bind(migration.checksum.as_ref())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn only(migrator: &sqlx::migrate::Migrator, version: i64) -> &sqlx::migrate::Migration {
+    migrator
+        .iter()
+        .find(|migration| migration.version == version)
+        .expect("the embedded set carries this version")
+}
+
+/// A v0.0.8 database with the code flavor linked upgrades to v0.0.9 in
+/// place, on both sides of the flavor boundary.
+///
+/// The sibling of core's `a_v008_database_upgrades_to_v009_in_place`. It is
+/// asserted separately because the two ledgers are separate tables and the
+/// flavor's declaration triggers live in the flavor's own migration: core
+/// upgrading cleanly says nothing about whether this one does.
+#[tokio::test]
+async fn a_v008_code_database_upgrades_to_v009_in_place() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        let pool = pg.pool_for_tests();
+
+        let core_migrations = proxima_storage_pg::core_migrator();
+        let flavor_migrations = proxima_code::migrator();
+        seed_applied_core(pool, only(&core_migrations, 1)).await?;
+        seed_applied_code(pool, only(&flavor_migrations, 20_260_818_000_020)).await?;
+
+        pg.run_migrations().await.map_err(|err| {
+            format!("a live v0.0.8 database must upgrade in place, not reset: {err}")
+        })?;
+        flavor_migrations.run(pool).await?;
+
+        let core_versions: Vec<i64> = sqlx::query_scalar(
+            "SELECT version FROM public._sqlx_migrations
+              WHERE success AND version <= 9999 ORDER BY version",
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(core_versions, vec![1, 2], "core appends its v0.0.9");
+
+        let flavor_versions: Vec<i64> = sqlx::query_scalar(
+            "SELECT version FROM public._sqlx_migrations_proxima_code
+              WHERE success ORDER BY version",
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            flavor_versions,
+            vec![20_260_818_000_020, 20_260_824_000_020],
+            "the flavor appends its v0.0.9 rather than re-applying its baseline"
+        );
+
+        let registry = proxima_code::schema_registry();
+        let mut sidecars = proxima_storage_pg::PgSidecarRegistry::new();
+        proxima_storage_pg::register_core_pg_sidecars(&mut sidecars);
+        proxima_code::register_pg_sidecars(&mut sidecars);
+        let frozen = sidecars.freeze_against(&registry)?;
+        proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &frozen)
+            .await
+            .map_err(|err| {
+                format!("the upgraded database must satisfy the boot guardrail: {err}")
+            })?;
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("v0.0.8 -> v0.0.9 in-place upgrade failed for the code flavor");
 }
