@@ -107,7 +107,7 @@ impl McpTool for RecordUtteranceTool {
                 &payload,
                 observed_at,
             )
-            .with_lexical_language(lexical_language);
+            .with_lexical_language(Some(lexical_language));
 
             let engine = ctx.require_engine()?;
             let embedding_client = engine.embed_client();

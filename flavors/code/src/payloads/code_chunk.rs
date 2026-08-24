@@ -5,10 +5,13 @@ use serde::{Deserialize, Serialize};
 use crate::payloads::file_revision::FileState;
 
 /// The lexical language every code chunk is pinned to, on all three
-/// surfaces that must agree: the ingest draft (`append_code_slice`), the
-/// stored sidecar column (the flavor baseline migration), and the
-/// tsquery builders in `search_chunks.rs` (SQL literals — keep them equal
-/// to this). Code is not prose in the deployment's language: identifiers,
+/// surfaces that must agree: the schema contract's
+/// `LanguagePolicy::Pinned`, which is what the projection statement
+/// inlines, the stored sidecar column (the flavor baseline migration),
+/// and the tsquery builders in `search_chunks.rs` (SQL literals — keep
+/// them equal to this). The ingest draft is deliberately NOT one of them:
+/// a pinned schema reads no language off the write.
+/// Code is not prose in the deployment's language: identifiers,
 /// keywords, and comments are English-dominant, and following the
 /// database default would retokenise code search as collateral of a
 /// `set_lexical_config` switch.

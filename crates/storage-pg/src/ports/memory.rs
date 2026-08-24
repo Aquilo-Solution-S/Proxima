@@ -50,10 +50,11 @@ impl MemoryAuthoringPort for PgStorage {
                 .await?;
             verbs::derive_append::validate_derived_reference_kinds_in_tx(&mut tx, req.references)
                 .await?;
-            let sidecars = self.sidecars.clone();
+            let sidecars = self.sidecars.writing_derived(&draft);
             let sidecar_payload = req.sidecar_payload.clone();
-            let language = req.lexical_language.map(str::to_owned);
-            let tables = sidecars.tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
+            let tables = self
+                .sidecars
+                .tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
             let owner_id =
                 crate::access::owner_columns::ensure_owner_row(tx.as_mut(), permit.owner()).await?;
             let content_id = verbs::content::ensure_content_from_payloads(
@@ -74,12 +75,7 @@ impl MemoryAuthoringPort for PgStorage {
                 move |tx, outcome| {
                     Box::pin(async move {
                         sidecars
-                            .insert_memory_sidecar(
-                                tx,
-                                outcome.memory_id,
-                                &sidecar_payload,
-                                language.as_deref(),
-                            )
+                            .insert_memory_sidecar(tx, outcome.memory_id, &sidecar_payload)
                             .await
                     })
                 },

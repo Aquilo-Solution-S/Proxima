@@ -93,9 +93,8 @@ impl WriteSession for PgWriteSession {
         sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        let fact_sidecars = self.sidecars.clone();
+        let fact_sidecars = self.sidecars.writing(authorized.draft());
         let payloads = sidecar_payloads.to_vec();
-        let language = authorized.draft().lexical_language.clone();
         let tables = self.sidecars.tables_for_payloads(sidecar_payloads)?;
         let owner = authorized.owner_write_permit().owner();
         let owner_id =
@@ -117,12 +116,7 @@ impl WriteSession for PgWriteSession {
                 Box::pin(async move {
                     for payload in &payloads {
                         fact_sidecars
-                            .insert_memory_sidecar(
-                                tx,
-                                outcome.memory_id,
-                                payload,
-                                language.as_deref(),
-                            )
+                            .insert_memory_sidecar(tx, outcome.memory_id, payload)
                             .await?;
                     }
                     Ok(())
@@ -168,9 +162,8 @@ impl WriteSession for PgWriteSession {
             .await?;
         verbs::derive_append::validate_derived_reference_kinds_in_tx(&mut self.tx, req.references)
             .await?;
-        let sidecars = self.sidecars.clone();
+        let sidecars = self.sidecars.writing_derived(&draft);
         let sidecar_payload = req.sidecar_payload.clone();
-        let language = req.lexical_language.map(str::to_owned);
         let tables = self
             .sidecars
             .tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
@@ -195,12 +188,7 @@ impl WriteSession for PgWriteSession {
             move |tx, outcome| {
                 Box::pin(async move {
                     sidecars
-                        .insert_memory_sidecar(
-                            tx,
-                            outcome.memory_id,
-                            &sidecar_payload,
-                            language.as_deref(),
-                        )
+                        .insert_memory_sidecar(tx, outcome.memory_id, &sidecar_payload)
                         .await
                 })
             },

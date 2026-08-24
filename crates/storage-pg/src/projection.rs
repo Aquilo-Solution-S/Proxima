@@ -257,8 +257,16 @@ fn vector_expr(language: LanguagePolicy, text: &str) -> Result<String, StorageEr
     }
 }
 
-/// The caller's language, or the deployment default. `$2` on every
-/// generated maintenance statement.
+/// The write's language, or the deployment default. `$2`, and it appears
+/// ONLY in a `LanguagePolicy::PerRow` statement — a pinned policy renders
+/// its configuration as a literal, so its statement has no language bind
+/// and no caller can influence what it stamps.
+///
+/// The `COALESCE` arm is reached by two writers only: a write that asked
+/// for the deployment configuration by name, and a hydrate rebuild, whose
+/// cold record carries no stamp. A write that named no language at all
+/// never reaches this statement — see
+/// `PgSidecarWriter::insert_memory_sidecar`.
 const LANGUAGE_BIND: &str = "COALESCE($2::regconfig, proxima_core.lexical_config())";
 
 /// The row's `lexical_language` value.

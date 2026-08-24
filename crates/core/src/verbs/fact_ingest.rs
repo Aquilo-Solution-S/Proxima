@@ -135,8 +135,12 @@ pub struct FactWriteCommand {
     #[serde(default, skip)]
     pub rendered_text: Option<String>,
     /// Text-search configuration for this admission's lexical index,
-    /// resolved by [`crate::lexical_language::resolve_lexical_language`];
-    /// `None` applies the database default.
+    /// resolved by [`crate::lexical_language::resolve_lexical_language`].
+    /// [`crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT`]
+    /// asks for the deployment's configuration; `None` is not that
+    /// request but the ABSENCE of one, and a schema whose contract
+    /// declares `LanguagePolicy::PerRow` refuses it at the write port
+    /// rather than choosing on the writer's behalf.
     ///
     /// It lands on the PROJECTION row — `<flavor>.projection`'s
     /// `lexical_language` column — which is where the vector it governs is

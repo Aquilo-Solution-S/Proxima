@@ -346,7 +346,12 @@ pub async fn append_code_slices_with_handles(
             derived_from: &origins,
             extra_refs: &[],
             supersedes: None,
-            lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
+            // The chunk schema's contract PINS its configuration, so the
+            // projection statement carries it as a literal and reads no
+            // language from the write. A value here would be discarded,
+            // and a discarded value is a second place to keep the pin in
+            // sync with.
+            lexical_language: None,
         });
     let mut uow = engine.unit_of_work(authz).await?;
     let outcomes = uow.author_derived_all(reqs).await?;

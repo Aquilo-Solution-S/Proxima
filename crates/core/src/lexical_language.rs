@@ -6,8 +6,15 @@
 //!
 //! 1. an explicit configuration name from the caller,
 //! 2. `"auto"`: reliable detection from the content itself,
-//! 3. neither: `None`, and storage applies the database default
-//!    (`proxima_core.lexical_config()`).
+//! 3. neither: [`LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT`], which ASKS for the
+//!    database default (`proxima_core.lexical_config()`).
+//!
+//! Resolution is total: every write that runs through it names a choice,
+//! and asking for the deployment configuration is one of the choices. A
+//! draft that carries no language at all made no choice, and a schema
+//! whose contract declares `LanguagePolicy::PerRow` — the row's language
+//! IS the writer's — refuses such a write rather than stamping the
+//! deployment default behind the writer's back.
 //!
 //! Detection is gated on the detector's own reliability signal. Ungated
 //! detection on short text is worse than the database default: a wrongly
@@ -22,6 +29,20 @@
 
 /// Sentinel accepted by write surfaces to request content detection.
 pub const LEXICAL_LANGUAGE_AUTO: &str = "auto";
+
+/// The resolved value that asks storage for the deployment's configured
+/// text-search configuration (`proxima_core.lexical_config()`).
+///
+/// It is deliberately not a `PostgreSQL` identifier: `@` cannot open one,
+/// so no `CREATE TEXT SEARCH CONFIGURATION` can collide with it and
+/// [`resolve_lexical_language`] rejects a caller that types it. Storage
+/// resolves it to the deployment configuration; it never reaches a
+/// `regconfig` cast.
+///
+/// A write carrying this is DISTINCT from a write carrying nothing: this
+/// one asked for the deployment default, and that is the distinction a
+/// `LanguagePolicy::PerRow` schema refuses to guess at.
+pub const LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT: &str = "@deployment";
 
 /// Rejected `language` argument on a memory write surface.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -143,14 +164,19 @@ fn config_for_iso_code(code: &str) -> Option<&'static str> {
     })
 }
 
-/// Resolve a write surface's optional `language` argument to the
-/// configuration name storage should stamp, or `None` for the database
-/// default.
+/// Resolve a write surface's optional `language` argument to the value
+/// the write stamps: a configuration name, or
+/// [`LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT`].
 ///
 /// Accepted forms: a `PostgreSQL` text-search configuration name
 /// (`"german"`, optionally schema-qualified), an ISO 639 code or BCP-47
 /// tag (`"de"`, `"deu"`, `"de-DE"` — the primary subtag decides), or
 /// `"auto"`.
+///
+/// Total by construction: an omitted argument and an unreliable `"auto"`
+/// detection both resolve to the deployment-default request rather than
+/// to "no value". A write surface therefore cannot hand storage a draft
+/// with no language by forgetting to decide — only by not calling this.
 ///
 /// # Errors
 ///
@@ -162,22 +188,24 @@ fn config_for_iso_code(code: &str) -> Option<&'static str> {
 pub fn resolve_lexical_language(
     requested: Option<&str>,
     text: &str,
-) -> Result<Option<String>, InvalidLexicalLanguage> {
+) -> Result<String, InvalidLexicalLanguage> {
     let Some(requested) = requested.map(str::trim).filter(|r| !r.is_empty()) else {
-        return Ok(None);
+        return Ok(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_string());
     };
     if requested.eq_ignore_ascii_case(LEXICAL_LANGUAGE_AUTO) {
-        return Ok(detect_lexical_language(text).map(str::to_string));
+        return Ok(detect_lexical_language(text)
+            .unwrap_or(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT)
+            .to_string());
     }
     let normalized = requested.to_ascii_lowercase();
     // BCP-47: the primary subtag carries the language; region and script
     // subtags ("de-DE", "zh-Hans-CN") never change the stemmer.
     let primary_subtag = normalized.split('-').next().unwrap_or(&normalized);
     if let Some(config) = config_for_iso_code(primary_subtag) {
-        return Ok(Some(config.to_string()));
+        return Ok(config.to_string());
     }
     if is_plausible_config_name(&normalized) {
-        Ok(Some(normalized))
+        Ok(normalized)
     } else {
         Err(InvalidLexicalLanguage {
             supplied: requested.to_string(),
@@ -216,20 +244,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn absent_language_is_the_default() {
-        assert_eq!(resolve_lexical_language(None, "whatever"), Ok(None));
-        assert_eq!(resolve_lexical_language(Some("  "), "whatever"), Ok(None));
+    fn absent_language_asks_for_the_deployment_default() {
+        assert_eq!(
+            resolve_lexical_language(None, "whatever"),
+            Ok(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_string())
+        );
+        assert_eq!(
+            resolve_lexical_language(Some("  "), "whatever"),
+            Ok(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_string())
+        );
+    }
+
+    /// The sentinel is not a configuration name a caller can type: a
+    /// `PostgreSQL` identifier cannot start with `@`, so the request form
+    /// and the resolved form cannot be confused for one another.
+    #[test]
+    fn the_deployment_default_sentinel_is_not_a_typable_configuration() {
+        assert!(!is_plausible_config_name(
+            LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT
+        ));
+        assert!(
+            resolve_lexical_language(Some(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT), "").is_err(),
+            "a caller typing the sentinel gets the invalid-language error"
+        );
     }
 
     #[test]
     fn explicit_names_normalize_and_validate() {
         assert_eq!(
             resolve_lexical_language(Some("German"), ""),
-            Ok(Some("german".to_string()))
+            Ok("german".to_string())
         );
         assert_eq!(
             resolve_lexical_language(Some("public.german_hunspell"), ""),
-            Ok(Some("public.german_hunspell".to_string()))
+            Ok("public.german_hunspell".to_string())
         );
         for bad in ["ger man", "a.b.c", "1german", "gérman", "x'; DROP--"] {
             assert!(resolve_lexical_language(Some(bad), "").is_err(), "{bad}");
@@ -255,7 +303,7 @@ mod tests {
         ] {
             assert_eq!(
                 resolve_lexical_language(Some(code), ""),
-                Ok(Some(config.to_string())),
+                Ok(config.to_string()),
                 "{code}"
             );
         }
@@ -270,11 +318,14 @@ mod tests {
                       barrierefrei zu planen und die Türbreiten im Erdgeschoss zu prüfen.";
         assert_eq!(
             resolve_lexical_language(Some("auto"), german),
-            Ok(Some("german".to_string()))
+            Ok("german".to_string())
         );
         // A string with no language signal must not be guessed at: the
-        // resolution is None, storage applies the default.
-        assert_eq!(resolve_lexical_language(Some("auto"), "42"), Ok(None));
+        // resolution asks for the deployment configuration instead.
+        assert_eq!(
+            resolve_lexical_language(Some("auto"), "42"),
+            Ok(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_string())
+        );
     }
 
     #[test]

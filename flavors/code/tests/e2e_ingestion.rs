@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 mod common;
 
 use common::{git, migrated_db, test_owner, write_file};
+use proxima_code::payloads::CODE_LEXICAL_LANGUAGE;
 use proxima_code::testkit::{
     advance_stage, begin_run, build_engine, get_active_run, mark_failed, mark_succeeded,
     register_repo, start_run, sweep_orphaned_runs,
@@ -244,6 +245,25 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         assert!(facts.0 > 0, "expected commit facts");
         assert!(facts.1 > 0, "expected file facts");
         assert!(facts.2 > 0, "expected chunk facts");
+
+        // The chunk schema's contract PINS its configuration, so the
+        // ingest draft names no language at all and the row is still
+        // stamped: the pin is a literal inside the generated projection
+        // statement, not a value the write path carries and could forget.
+        let chunk_languages: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT p.lexical_language::text
+               FROM proxima_code.projection p
+               JOIN proxima_code.code_chunk_v1 c ON c.t = p.memory_id
+              WHERE c.repo_id = $1",
+        )
+        .bind(repo_id)
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        assert_eq!(
+            chunk_languages,
+            vec![CODE_LEXICAL_LANGUAGE.to_string()],
+            "a pinned schema stamps its declared configuration on every row"
+        );
 
         let (call_pairs, call_sites): (i64, i64) = sqlx::query_as(
             "SELECT \

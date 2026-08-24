@@ -37,7 +37,7 @@ fn adversarial_chunks() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-/// The Rust ingest path stamps `CODE_LEXICAL_LANGUAGE`; the database owns the
+/// The schema contract pins `CODE_LEXICAL_LANGUAGE`; the database owns the
 /// actual SQL configuration used by the default, generated vector, and query
 /// builders. Keep those authorities synchronized at the executable boundary.
 #[tokio::test]
