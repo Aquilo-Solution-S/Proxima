@@ -47,6 +47,12 @@ miss mints. Flavor code does not JOIN `memory_head`.
 `owners.kind` is stored once — `personal` or `group`, the whole vocabulary.
 Fact tables carry `owner_id NOT NULL` FK. No `owner_kind` on memory/goal.
 
+**One owner, one column.** `Surface::owner_column` is `Option<&'static str>`:
+a table declares one owner column or none (`None` = reached through the
+owner of its key). Several owner relationships on one table become a mapping
+table each — own table, own single owner column, keyed to the parent. See
+09 §Sidecar Tables.
+
 Access uses server-resolved `OwnerRef` → roles. No org column.
 
 `transfer_to_owner` is an in-place series transfer: `UPDATE owner_id` on

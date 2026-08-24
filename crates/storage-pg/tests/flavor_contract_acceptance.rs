@@ -837,7 +837,7 @@ async fn every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces() {
 /// against `information_schema`, so the next one fails a test instead of
 /// reaching a generator.
 ///
-/// `owner_columns` is deliberately in scope too. It is genuinely consumed
+/// `owner_column` is deliberately in scope too. It is genuinely consumed
 /// by the export generator, but only for surfaces the bundle carries — an
 /// `Excluded` surface's owner column has the same unread-string shape as
 /// the two above.
@@ -859,11 +859,11 @@ async fn every_column_a_declaration_names_is_a_column_the_catalog_has() {
             for column in surface.key.columns() {
                 cited.push((surface.table.to_owned(), column.to_owned(), "key".into()));
             }
-            for column in surface.owner_columns {
+            if let Some(column) = surface.owner_column {
                 cited.push((
                     surface.table.to_owned(),
-                    (*column).to_owned(),
-                    "owner_columns".into(),
+                    column.to_owned(),
+                    "owner_column".into(),
                 ));
             }
             if let Some(column) = surface.lexical_language_column {

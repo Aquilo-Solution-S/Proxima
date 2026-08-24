@@ -272,7 +272,8 @@ impl FlavorRegistry {
     ///
     /// The owner export generates one statement per declared surface, and
     /// that generator has exactly two shapes — filter the surface's own
-    /// `owner_id`, or join the home table of its key and filter there. A
+    /// declared `owner_column`, or join the home table of its key and filter
+    /// there. A
     /// surface that declares `Rows` or `Allowlist` while carrying neither an
     /// owner column nor a key with a home is a bundle leg nothing can emit,
     /// and unrefused it would go missing from every bundle in silence.
@@ -289,7 +290,7 @@ impl FlavorRegistry {
             if matches!(surface.export, ExportRule::Excluded { .. }) {
                 continue;
             }
-            if surface.owner_columns.is_empty() && surface.key.home().is_none() {
+            if surface.owner_column.is_none() && surface.key.home().is_none() {
                 return Err(FlavorRegistryError::UnreachableExportSurface {
                     flavor_id: contract.flavor_id,
                     table: surface.table,
@@ -1226,7 +1227,7 @@ mod tests {
         Surface {
             table,
             key,
-            owner_columns: &["owner_id"],
+            owner_column: Some("owner_id"),
             transfer: TransferRule::StaysOnKey,
             erase,
             export,
@@ -1322,7 +1323,7 @@ mod tests {
         &[Surface {
             table: "test_flavor.thing_v1",
             key: KeyShape::Custom(&["thing_id"]),
-            owner_columns: &["owner_id"],
+            owner_column: Some("owner_id"),
             transfer: TransferRule::Follow,
             erase: EraseRule::Never {
                 why: "the transfer rule is what this fixture is about",
@@ -1343,14 +1344,14 @@ mod tests {
     );
 
     /// `Follow` with no owner column to set. The rows are reached through
-    /// their key's owner, which is what `StaysOnKey` says and what an empty
-    /// `owner_columns` claims; declaring `Follow` over it asks for an
+    /// their key's owner, which is what `StaysOnKey` says and what a `None`
+    /// `owner_column` claims; declaring `Follow` over it asks for an
     /// `UPDATE` with an empty `SET`.
     static FOLLOW_WITH_NOTHING_TO_SET: FlavorContract = transfer_fixture(
         &[Surface {
             table: "test_flavor.thing_v1",
             key: KeyShape::MemoryT { column: "t" },
-            owner_columns: &[],
+            owner_column: None,
             transfer: TransferRule::Follow,
             erase: EraseRule::Never {
                 why: "the transfer rule is what this fixture is about",
@@ -1377,7 +1378,7 @@ mod tests {
         &[Surface {
             table: "test_flavor.thing_v1",
             key: KeyShape::Custom(&["thing_id"]),
-            owner_columns: &[],
+            owner_column: None,
             transfer: TransferRule::StaysOnKey,
             erase: EraseRule::Never {
                 why: "the forget rule is what this fixture is about",
@@ -1451,7 +1452,7 @@ mod tests {
         &[Surface {
             table: "test_flavor.thing_v1",
             key: KeyShape::Custom(&["thing_id"]),
-            owner_columns: &[],
+            owner_column: None,
             transfer: TransferRule::StaysOnKey,
             erase: EraseRule::Never {
                 why: "the export rule is what this fixture is about",

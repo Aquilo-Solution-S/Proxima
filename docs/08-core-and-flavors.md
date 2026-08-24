@@ -408,7 +408,7 @@ One more used to be on that list, and Phase 4 removed it:
 *which columns move on a transfer* was code, and the declaration merely
 described it. It is a `TransferLeg` partition now, resolved once by
 `OwnerSurfaces::for_registry` and read by the verb: `Rehomed` and `Dropped`
-generate their statements from the declared key and owner columns,
+generate their statements from the declared key and owner column,
 `FollowOrDedupe`'s `dedupe_key` and `remaps` generate the dedupe probe and
 the repointing updates, and a `Follow` surface no leg reaches is
 `FlavorRegistryError::UnmovableSurface` at boot rather than a row that stays
@@ -444,8 +444,9 @@ three of the others, and Phase C deleted all three tables;
 `group_memberships` was the fourth, and Phase 4 declared it rather than
 deleting it, with `EraseRule::Never { why }` saying in the contract what
 `UNDECLARED_BUT_INTENTIONAL` used to say in a test. A membership names two
-owners and belongs to neither exclusively, which is what its EMPTY
-`owner_columns` claims.
+owners and belongs to neither exclusively, which is what its `None`
+`owner_column` claims — a many-to-many relation is its own table with no
+owner of its own, never a surface carrying two owner columns.
 Both are named in a `ResourceContract`'s `reads`, which is a different
 claim — what a handler touches, not a surface with erase/export/forget rules.
 

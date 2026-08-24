@@ -238,7 +238,24 @@ Rules:
 | Closed vocabularies use SQL enums | 07 §Core tables |
 | No `extra json/jsonb` | 03 §Sidecar tables |
 | No sidecar-only identity | 07 §Identity rules |
+| An owner is ONE column | `Surface::owner_column: Option<&str>` |
 | Validate value-bearing integer widths | avoid silent `*_saturating` clamps |
+
+**An owner is one column.** `Surface::owner_column` is `Option<&'static str>`,
+so a table declares at most one. `None` is a claim, not an omission: the row
+is reached through the owner of its key (`TransferRule::StaysOnKey`,
+`EraseRule::ByKey`, and the export's join to the key's home table). `Some`
+means the row carries its own owner, and that column is what erase, export
+and the session sidecar read filter on, and what `TransferRule::Follow`
+rewrites.
+
+Several owner relationships on one table is not a wider declaration but an
+undecided one — nothing says which column decides whose row it is, nor
+whether they are conjunctive. Model each relationship as its own **mapping
+surface**: its own table, its own single `owner_column`, keyed to the parent.
+A relation between two owners that belongs to neither exclusively is that
+table with `owner_column: None` (`proxima_core.group_memberships` is the
+shipped example; see 08 §Contract Reach).
 
 ## PG Sidecars
 

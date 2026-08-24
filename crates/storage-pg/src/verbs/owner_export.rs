@@ -6,7 +6,7 @@ use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportBundle, OwnerS
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::access::owner_columns::{owner_binds, sole_owner_column};
+use crate::access::owner_columns::owner_binds;
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 
@@ -64,12 +64,12 @@ pub async fn export_owner_bundle(
 /// The statement one surface's declaration earns it, or `None` when the
 /// surface declares itself out of the bundle.
 ///
-/// Two shapes, decided by `owner_columns` — which is a claim, not an
+/// Two shapes, decided by `owner_column` — which is a claim, not an
 /// omission. A surface carrying its own owner is filtered on it directly:
 /// that is the transfer doctrine for owner-pinned rows, whose audit history
 /// stays in the bundle of the owner that wrote it after the Memory it
 /// describes has been transferred away, and out of the receiving owner's. A
-/// surface with EMPTY `owner_columns` asserts it is reached through its
+/// surface with a `None` `owner_column` asserts it is reached through its
 /// key's owner, so the statement joins that key's home table and filters
 /// there. `try_freeze` refuses a flavor that declares an exportable surface
 /// which is neither, so the `Internal` arm below is unreachable through a
@@ -102,7 +102,21 @@ fn export_statement(surface: &Surface) -> Result<Option<String>, StorageError> {
     let table = PgIdent::table(surface.table)?;
     let order = order_by(surface)?;
     // SQL-POLICY: PgIdent
-    let sql = if surface.owner_columns.is_empty() {
+    let sql = if let Some(owner_column) = surface.owner_column {
+        // `s.{owner}` is the surface's OWN owner column as it declares it.
+        // The branch below joins to the key's home table instead, and
+        // `base.owner_id` there is `proxima_core.memory`'s own column,
+        // which is fixed.
+        let owner = PgIdent::column(owner_column)?;
+        format!(
+            "SELECT {projection}
+               FROM {table} s
+              WHERE s.{owner} IS NOT DISTINCT FROM $1
+              ORDER BY {order}",
+            table = table.as_str(),
+            owner = owner.as_str(),
+        )
+    } else {
         let Some((base_table, base_column, key_column)) = surface.key.home() else {
             return Err(StorageError::Internal(format!(
                 "{} declares no owner column and a key with no home table, so no \
@@ -124,20 +138,6 @@ fn export_statement(surface: &Surface) -> Result<Option<String>, StorageError> {
             base = base_table.as_str(),
             base_column = base_column.as_str(),
             key_column = key_column.as_str(),
-        )
-    } else {
-        // `s.{owner}` is the surface's OWN owner column as it declares it.
-        // The branch above joins to the key's home table instead, and
-        // `base.owner_id` there is `proxima_core.memory`'s own column,
-        // which is fixed.
-        let owner = sole_owner_column(surface)?;
-        format!(
-            "SELECT {projection}
-               FROM {table} s
-              WHERE s.{owner} IS NOT DISTINCT FROM $1
-              ORDER BY {order}",
-            table = table.as_str(),
-            owner = owner.as_str(),
         )
     };
     Ok(Some(sql))
@@ -278,7 +278,7 @@ mod tests {
         assert!(sql.contains("ORDER BY s.blob_id"), "{sql}");
     }
 
-    /// A surface with EMPTY `owner_columns` claims it is reached through its
+    /// A surface with a `None` `owner_column` claims it is reached through its
     /// key's owner, and the generated join is what makes the claim true.
     #[test]
     fn a_keyed_sidecar_reaches_the_owner_through_its_home_table() {

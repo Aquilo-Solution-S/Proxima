@@ -23,10 +23,10 @@ use super::{FromRow, MemoryId, PgPool, PgRow, PgSidecarRegistryFrozen, Postgres,
 /// The owner predicate is the FIRST one and comes off the permit, not off
 /// `read`: a caller's predicates are `AND`-ed after it, so they can only
 /// narrow the owner's rows. The owner column is read from the table's
-/// declared `Surface` (`owner_columns`) — the same declaration the erase and
+/// declared `Surface` (`owner_column`) — the same declaration the erase and
 /// transfer legs key on, so "which column carries the owner" has one answer
 /// per table. A surface that declares none is refused rather than read
-/// unscoped: an empty `owner_columns` claims the row is reached through its
+/// unscoped: a `None` `owner_column` claims the row is reached through its
 /// key's owner, and joining through the Memory to prove that owner is a
 /// SECOND statement shape this builder does not emit. The declared
 /// memory-key column such a join would need is now on the frozen registry
@@ -106,9 +106,8 @@ pub(crate) async fn read_own_sidecar_in_tx(
 
 /// The column a session read scopes `table` by, off its declared `Surface`.
 ///
-/// First declared entry when a surface names several: they are the columns
-/// a transfer re-homes together, so they carry the same owner, and reading
-/// through any one of them selects the same rows.
+/// One column or none: a surface's owner relationship is singular, so there
+/// is no choosing to do here and no disjunction to decide.
 fn session_read_owner_column<'a>(
     surfaces: &'a OwnerSurfaces,
     table: &str,
@@ -123,7 +122,7 @@ fn session_read_owner_column<'a>(
              declare one on the flavor contract so the read can be owner-scoped"
         )));
     };
-    surface.owner_columns.first().copied().ok_or_else(|| {
+    surface.owner_column.ok_or_else(|| {
         StorageError::ConstraintViolation(format!(
             "session sidecar read of {table} cannot be owner-scoped: its Surface declares no \
              owner column. Declare an owner column on the surface, or resolve the row with \
