@@ -52,7 +52,12 @@ pub async fn load_embedding_text(
 /// Owner-scoped embed text for many memories, aligned with `items`.
 ///
 /// One `memory` lookup for the id set, then one sidecar `embed_text`
-/// SELECT per distinct `(table, column)` in that set.
+/// SELECT per distinct `(table, key column, column)` in that set.
+///
+/// The key column is part of the bucket key rather than assumed: two
+/// schemas may share a table and a text column and still be reached through
+/// the column their own `Surface` declares, so bucketing on the pair alone
+/// would emit one statement for two different keys.
 ///
 /// # Errors
 ///
@@ -85,7 +90,7 @@ pub async fn load_embedding_texts(
     }
 
     let mut out = vec![None; items.len()];
-    let mut buckets: HashMap<(String, String), Vec<(usize, Uuid)>> = HashMap::new();
+    let mut buckets: HashMap<(String, String, String), Vec<(usize, Uuid)>> = HashMap::new();
     for (index, (owner, _, memory_id)) in items.iter().enumerate() {
         let t = memory_id.into_inner();
         let Some(schema_id) = schema_by_key.get(&(t, owner.stored_owner_id())) else {
@@ -96,20 +101,30 @@ pub async fn load_embedding_texts(
             continue;
         };
         buckets
-            .entry((unit.sidecar_table.clone(), unit.column.clone()))
+            .entry((
+                unit.sidecar_table.clone(),
+                unit.key_column.clone(),
+                unit.column.clone(),
+            ))
             .or_default()
             .push((index, t));
     }
 
-    for ((table, column), members) in buckets {
+    for ((table, key, column), members) in buckets {
         let table = PgIdent::table(&table)?;
+        let key = PgIdent::column(&key)?;
         let column = PgIdent::column(&column)?;
         let member_ids: Vec<Uuid> = members.iter().map(|(_, t)| *t).collect();
+        // `c.{key}` is the sidecar's memory column as its `Surface`
+        // declares it; the alias back to `t` is this function's own row
+        // shape, which stays one spelling whatever a flavor names its
+        // column — the same rule the search legs keep.
         let sql = format!(
-            "SELECT c.t, c.{column}
+            "SELECT c.{key} AS t, c.{column}
                FROM {table} c
-              WHERE c.t = ANY($1::uuid[])",
+              WHERE c.{key} = ANY($1::uuid[])",
             table = table.as_str(),
+            key = key.as_str(),
             column = column.as_str(),
         );
         // SQL-POLICY: PgIdent
@@ -198,12 +213,16 @@ where
     E: Executor<'e, Database = Postgres>,
 {
     let table = PgIdent::table(&unit.sidecar_table)?;
+    let key = PgIdent::column(&unit.key_column)?;
     let column = PgIdent::column(&unit.column)?;
+    // The filter reads the DECLARED memory-key column, never `t`: the unit
+    // carries it off the schema's `Surface` for exactly this statement.
     let sql = format!(
         "SELECT c.{column}
            FROM {table} c
-          WHERE c.t = $1",
+          WHERE c.{key} = $1",
         table = table.as_str(),
+        key = key.as_str(),
         column = column.as_str(),
     );
     // SQL-POLICY: PgIdent

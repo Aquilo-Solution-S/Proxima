@@ -69,18 +69,21 @@ impl WriteSession for PgWriteSession {
         sidecar_table: &str,
         columns: &[(&str, SidecarAtom)],
     ) -> Result<Option<MemoryId>, StorageError> {
-        if !self.sidecars.is_memory_sidecar_table(sidecar_table) {
+        // The declared memory-key column IS the registration test: only a
+        // registered memory sidecar has one, and the lookup's join needs it.
+        let Some(key_column) = self.sidecars.memory_key_column(sidecar_table) else {
             return Err(StorageError::ConstraintViolation(format!(
                 "session series-head lookup names {sidecar_table}, which is not a registered \
                  memory sidecar table; register the payload with `pg_sidecar!` so the surface \
                  is declared"
             )));
-        }
+        };
         let head = verbs::query::owned_head_memory_id(
             &mut *self.tx,
             *permit.owner(),
             schema_id,
             sidecar_table,
+            key_column,
             columns,
         )
         .await?;

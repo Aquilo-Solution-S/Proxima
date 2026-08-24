@@ -11,7 +11,7 @@ use proxima_core::owner_inverse::{
 use proxima_core::{ColdObjectStore, GroupId, OwnerRef, SourceId, StorageError, UserId};
 use sqlx::{PgPool, Postgres, Transaction};
 
-use crate::access::owner_columns::{lock_group_membership_tx, owner_binds};
+use crate::access::owner_columns::{lock_group_membership_tx, owner_binds, sole_owner_column};
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::verbs::forget::ColdPurgePlan;
@@ -279,12 +279,17 @@ async fn delete_owned_surfaces(
             continue;
         };
         let ident = PgIdent::table(surface.table)?;
+        // `EraseLeg::Owned` is the arm for a surface that carries its OWN
+        // owner, so the predicate reads the column it declares. `m.t` and
+        // `c.t` below are the kernel tables' own keys and are fixed.
+        let owner_column = sole_owner_column(surface)?;
         // SQL-POLICY: PgIdent
         let sql = match scope {
             SelectionScope::Owner => {
                 format!(
-                    "DELETE FROM {tbl} WHERE owner_id = $1",
-                    tbl = ident.as_str()
+                    "DELETE FROM {tbl} WHERE {owner} = $1",
+                    tbl = ident.as_str(),
+                    owner = owner_column.as_str(),
                 )
             }
             SelectionScope::Source(_) => {
@@ -294,12 +299,13 @@ async fn delete_owned_surfaces(
                 let key = PgIdent::column(column)?;
                 format!(
                     "DELETE FROM {tbl} a
-                      WHERE a.owner_id = $1
+                      WHERE a.{owner} = $1
                         AND (EXISTS (SELECT 1 FROM proxima_core.memory m
                                       WHERE m.t = a.{key} AND m.source_id = $2)
                           OR EXISTS (SELECT 1 FROM proxima_core.cooled c
                                       WHERE c.t = a.{key} AND c.source_id = $2))",
                     tbl = ident.as_str(),
+                    owner = owner_column.as_str(),
                     key = key.as_str(),
                 )
             }

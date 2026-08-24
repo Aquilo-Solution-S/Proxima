@@ -693,12 +693,19 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
                 panic!("{schema_id}: the recipe must resolve against a sidecar table")
             };
             let column = unit.column;
+            // The memory-key column comes off the same contract, not off a
+            // spelling convention: a restated `c.t` here would agree with
+            // the pre-fix drain and re-freeze the defect this comparison
+            // exists to catch.
+            let key = FLAVOR_0
+                .sidecar_memory_key_column(table)
+                .unwrap_or_else(|| panic!("{schema_id}: {table} declares its memory key"));
 
             // What the recipe says to read, read literally.
-            // SQL-POLICY: fixed-fragment — `table` and `column` are
+            // SQL-POLICY: fixed-fragment — `table`, `key` and `column` are
             // `&'static str` off the compiled-in contract, not runtime input.
             let recipe_text: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-                "SELECT c.{column} FROM {table} c WHERE c.t = $1"
+                "SELECT c.{column} FROM {table} c WHERE c.{key} = $1"
             )))
             .bind(t)
             .fetch_one(pool)

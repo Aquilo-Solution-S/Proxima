@@ -108,6 +108,11 @@ impl PgMemorySidecar for FacadeFact {
 }
 
 impl PgMemoryPayload for FacadeFact {
+    // The column this table stores its memory `t` under, spelled by
+    // every statement below. Freeze holds it equal to the contract
+    // `Surface`'s `KeyShape::MemoryT { column }` for public.facade_surface_fact_v1.
+    const MEMORY_KEY_COLUMN: &'static str = "t";
+
     fn load_memory_payload(
         ctx: PgSidecarReadCtx<'_>,
         memory_id: MemoryId,
@@ -190,6 +195,11 @@ impl PgMemorySidecar for FacadeAbstraction {
 }
 
 impl PgMemoryPayload for FacadeAbstraction {
+    // The column this table stores its memory `t` under, spelled by
+    // every statement below. Freeze holds it equal to the contract
+    // `Surface`'s `KeyShape::MemoryT { column }` for public.facade_surface_abstraction_v1.
+    const MEMORY_KEY_COLUMN: &'static str = "t";
+
     fn load_memory_payload(
         ctx: PgSidecarReadCtx<'_>,
         memory_id: MemoryId,

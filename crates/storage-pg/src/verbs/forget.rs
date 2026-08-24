@@ -325,6 +325,22 @@ async fn dump_stamped_sidecars(
         if is_owner_pinned(sidecars, table) {
             continue;
         }
+        // The row is found on the column the table's registration declares,
+        // never on a literal `t`. The delete half below reads the same
+        // column off `ForgetLeg::Dumped { key_column }`, and
+        // `freeze_against`'s `check_memory_key_against_contracts` holds the
+        // two declarations equal — so a sidecar keyed on anything else is
+        // dumped and deleted, rather than deleted with an empty cold record.
+        // `is_memory_sidecar_table` above already refused an unregistered
+        // table, so the lookup cannot miss; the arm names what to fix if it
+        // ever does rather than falling back.
+        let key = PgIdent::column(sidecars.memory_key_column(table).ok_or_else(|| {
+            StorageError::ConstraintViolation(format!(
+                "stamped sidecar table {table} declares no memory-key column; register the \
+                 payload with `pg_sidecar!(key: …)` so the dump knows which column to find the \
+                 forgotten row on"
+            ))
+        })?)?;
         let ident = PgIdent::table(table)?;
         let sql = format!(
             "SELECT to_jsonb(s) - COALESCE((
@@ -337,8 +353,9 @@ async fn dump_stamped_sidecars(
                     AND a.attgenerated <> ''
               ), '{{}}'::text[])
                FROM {tbl} s
-              WHERE s.t = $1",
-            tbl = ident.as_str()
+              WHERE s.{key} = $1",
+            tbl = ident.as_str(),
+            key = key.as_str()
         );
         // SQL-POLICY: PgIdent
         let json: Option<serde_json::Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))

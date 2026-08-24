@@ -196,6 +196,11 @@ impl PgMemorySidecar for proxima_core::InterpretationV1 {
 }
 
 impl PgMemoryPayload for proxima_core::InterpretationV1 {
+    // The column this table stores its memory `t` under, spelled by
+    // every statement below. Freeze holds it equal to the contract
+    // `Surface`'s `KeyShape::MemoryT { column }` for proxima_core.interpretation_v1.
+    const MEMORY_KEY_COLUMN: &'static str = "t";
+
     fn load_batch<'t>(
         ctx: PgSidecarReadCtx<'t>,
         _kind: PayloadKind,

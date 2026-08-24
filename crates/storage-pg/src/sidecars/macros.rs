@@ -503,6 +503,12 @@ macro_rules! pg_sidecar {
         impl $crate::sidecars::PgMemoryPayload for $($payload_ty)::+ {
             const OWNER_PINNED: bool = false $(|| $owner_pinned)?;
 
+            // The same token the two statements above splice: one macro
+            // invocation emits the declaration and both readings of it, so
+            // they cannot drift. Freeze then compares it to the contract's
+            // `KeyShape::MemoryT { column }` for the same table.
+            const MEMORY_KEY_COLUMN: &'static str = ::std::stringify!($key_column);
+
             fn load_batch<'t>(
                 ctx: $crate::sidecars::PgSidecarReadCtx<'t>,
                 kind: $crate::core::verbs::schema::PayloadKind,

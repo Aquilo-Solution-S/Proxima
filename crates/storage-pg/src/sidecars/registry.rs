@@ -38,6 +38,7 @@ impl PgSidecarRegistry {
                     key,
                     sidecar_table: table.to_string(),
                     owner_pinned: <P as PgMemoryPayload>::OWNER_PINNED,
+                    memory_key_column: Some(<P as PgMemoryPayload>::MEMORY_KEY_COLUMN),
                     memory_insert: Some(insert_memory_sidecar::<P>),
                     memory_load: Some(load_memory_payload::<P>),
                     memory_load_batch: Some(load_memory_payload_batch::<P>),
@@ -104,6 +105,7 @@ impl PgSidecarRegistry {
                     key,
                     sidecar_table: table.to_string(),
                     owner_pinned: false,
+                    memory_key_column: None,
                     memory_insert: None,
                     memory_load: None,
                     memory_load_batch: None,
@@ -141,6 +143,7 @@ impl PgSidecarRegistry {
                 key,
                 sidecar_table: P::sidecar_table().to_string(),
                 owner_pinned: false,
+                memory_key_column: None,
                 memory_insert: None,
                 memory_load: None,
                 memory_load_batch: None,
@@ -181,6 +184,7 @@ impl PgSidecarRegistry {
                     key,
                     sidecar_table: table.to_string(),
                     owner_pinned: false,
+                    memory_key_column: None,
                     memory_insert: None,
                     memory_load: None,
                     memory_load_batch: None,
@@ -217,6 +221,7 @@ impl PgSidecarRegistry {
                 key,
                 sidecar_table: sidecar_table.into(),
                 owner_pinned: <P as PgMemoryPayload>::OWNER_PINNED,
+                memory_key_column: Some(<P as PgMemoryPayload>::MEMORY_KEY_COLUMN),
                 memory_insert: Some(insert_memory_sidecar::<P>),
                 memory_load: Some(load_memory_payload::<P>),
                 memory_load_batch: Some(load_memory_payload_batch::<P>),
@@ -248,8 +253,10 @@ impl PgSidecarRegistry {
     ///
     /// Returns `ConstraintViolation` if a sidecar-bearing schema has no
     /// PG registration, a registration is orphaned, a table name drifts,
-    /// an insert-capable kind has no typed inserter, or a registration's
-    /// `owner_pinned` flag contradicts its schema's declared transfer rule.
+    /// an insert-capable kind has no typed inserter, a registration's
+    /// `owner_pinned` flag contradicts its schema's declared transfer rule,
+    /// or its `pg_sidecar!(key: …)` column contradicts the `Surface` that
+    /// declares the same table.
     pub fn freeze_against(
         mut self,
         registry: &proxima_core::FlavorRegistryFrozen,
@@ -339,6 +346,7 @@ impl PgSidecarRegistry {
 
         self.check_owner_pinned_against_contracts(registry)?;
         self.check_keep_is_owner_pinned(registry)?;
+        self.check_memory_key_against_contracts(registry)?;
         self.attach_projections(registry)?;
 
         Ok(PgSidecarRegistryFrozen {
@@ -455,6 +463,59 @@ impl PgSidecarRegistry {
         Ok(())
     }
 
+    /// `pg_sidecar!(key: …)` and the contract `Surface`'s
+    /// `KeyShape::MemoryT { column }` are the same fact, and this is what
+    /// compares them.
+    ///
+    /// WHY IT MATTERS THAT THEY DISAGREE SILENTLY. The two are read by
+    /// different generators: the typed `INSERT` and the batch read spell the
+    /// macro's column, while the projection `INSERT`, the substring arm and
+    /// the snippet lookup spell the `Surface`'s. A disagreement therefore
+    /// writes the sidecar row on one column and looks for it on another —
+    /// a table whose rows exist and whose projection is empty, with nothing
+    /// failing anywhere. Neither generator can notice: each is internally
+    /// consistent with the declaration it reads.
+    ///
+    /// A table with NO surface is skipped rather than refused. The
+    /// projection and embedding lanes already refuse it at core freeze when
+    /// they need one (`ProjectedSidecarNotMemoryKeyed`,
+    /// `EmbeddedSidecarNotMemoryKeyed`); a sidecar that is neither projected
+    /// nor embedded has made no second claim for this check to compare
+    /// against, and inventing one here would be this function asserting a
+    /// declaration nobody wrote.
+    fn check_memory_key_against_contracts(
+        &self,
+        registry: &proxima_core::FlavorRegistryFrozen,
+    ) -> Result<(), StorageError> {
+        for entry in self.entries.values() {
+            let Some(registered) = entry.memory_key_column else {
+                continue;
+            };
+            let Some((flavor_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
+                continue;
+            };
+            let Some(contract) = registry.flavor_contract(flavor_id) else {
+                continue;
+            };
+            let Some(declared) = contract.sidecar_memory_key_column(&entry.sidecar_table) else {
+                continue;
+            };
+            if declared != registered {
+                return Err(StorageError::ConstraintViolation(format!(
+                    "PG sidecar {} registers `pg_sidecar!(key: {registered})` but flavor \
+                     {flavor_id} declares its Surface as KeyShape::MemoryT {{ column: \
+                     {declared:?} }}; {} v{} would have its row written on {registered} and its \
+                     projection, substring and snippet statements read from {declared}, so the \
+                     two declarations have to name one column",
+                    entry.sidecar_table,
+                    entry.key.schema_id.as_str(),
+                    entry.key.schema_version.into_inner(),
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// `ForgetRule::Keep` on a memory sidecar and
     /// `pg_sidecar!(owner_pinned: true)` are the same fact, because
     /// owner-pinning is the ONLY mechanism by which the forget can honour
@@ -530,5 +591,94 @@ impl PgSidecarRegistry {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod memory_key_agreement_tests {
+    use super::{PgSidecarEntry, PgSidecarKey, PgSidecarRegistry};
+    use proxima_core::verbs::schema::PayloadKind;
+    use proxima_core::{AgentNoteV1, FactPayload, SchemaId, SchemaVersion, StorageError};
+    use std::collections::HashMap;
+
+    const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
+
+    /// One registration of flavor #0's note sidecar, keyed on `key_column`.
+    ///
+    /// Everything else is what `add_fact` would build. The inserters are
+    /// stubs because this check reads neither: it compares two declarations.
+    fn registry_keyed_on(key_column: &'static str) -> PgSidecarRegistry {
+        let key = PgSidecarKey::new(
+            PayloadKind::Fact,
+            SchemaId::new(AgentNoteV1::SCHEMA_ID.to_owned()),
+            SchemaVersion::new(1),
+        );
+        let entry = PgSidecarEntry {
+            key: key.clone(),
+            sidecar_table: AGENT_NOTE.to_owned(),
+            owner_pinned: false,
+            memory_key_column: Some(key_column),
+            memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
+            memory_load: None,
+            memory_load_batch: Some(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
+            cited_object_insert: None,
+            citation_mapping_insert: None,
+            goal_insert: None,
+            goal_copy: None,
+            projection_insert: None,
+            projection_table: None,
+            projection_language: None,
+        };
+        PgSidecarRegistry {
+            entries: HashMap::from([(key, entry)]),
+        }
+    }
+
+    /// The shipped registration agrees with the contract, so freeze passes.
+    ///
+    /// The positive half matters as much as the negative: a check that only
+    /// ever fires on doctored input is indistinguishable from one whose
+    /// lookup silently finds nothing.
+    #[test]
+    fn a_registration_keyed_as_its_surface_declares_is_admitted() {
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        assert_eq!(
+            proxima_core::FLAVOR_0.sidecar_memory_key_column(AGENT_NOTE),
+            Some("t"),
+            "the note's Surface declares its memory key"
+        );
+        registry_keyed_on("t")
+            .check_memory_key_against_contracts(&registry)
+            .expect("the macro key and the Surface key are the same column");
+    }
+
+    /// A registration keyed on a column its `Surface` does not declare is
+    /// refused, by an error naming BOTH declarations and both values.
+    ///
+    /// Without this the two generators stay internally consistent and
+    /// disagree with each other: the typed `INSERT` writes the row on
+    /// `note_memory_id`, the projection `INSERT` looks for it on `t`, and
+    /// the schema's search corpus is silently empty.
+    #[test]
+    fn a_registration_keyed_off_its_surface_is_refused_naming_both() {
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let err = registry_keyed_on("note_memory_id")
+            .check_memory_key_against_contracts(&registry)
+            .expect_err("the two declarations name different columns");
+        let StorageError::ConstraintViolation(message) = err else {
+            panic!("a declaration disagreement is a constraint violation");
+        };
+        for named in [
+            AGENT_NOTE,
+            "note_memory_id",
+            "KeyShape::MemoryT",
+            "\"t\"",
+            AgentNoteV1::SCHEMA_ID,
+        ] {
+            assert!(
+                message.contains(named),
+                "the refusal names {named}, so the reader can find both declarations: {message}"
+            );
+        }
     }
 }

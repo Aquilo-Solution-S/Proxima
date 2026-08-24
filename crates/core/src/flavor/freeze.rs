@@ -592,7 +592,7 @@ impl FlavorRegistry {
     /// registration that does resolve a unit is ACCEPTED, and correctly: the
     /// drain matches units by id, so it finds the sibling's and has text.
     fn validate_embedding_recipes_match_behavior(&self) -> Result<(), FlavorRegistryError> {
-        let units = crate::verbs::schema::contract_embed_units(&self.contracts);
+        let units = crate::verbs::schema::contract_embed_units(&self.contracts)?;
         let non_embeddable =
             crate::verbs::schema::non_embeddable_schema_ids(&self.contracts, &units);
         for contract in &self.contracts {
@@ -1601,7 +1601,12 @@ mod tests {
             )]),
             transfer: TransferRule::StaysOnKey,
             provenance: Provenance::None,
-            surfaces: &[],
+            // Declared on this registration only, and required: an embed
+            // unit whose sidecar names no memory key is refused before the
+            // arm this fixture is about is reached. The sibling below shares
+            // the table and declares no surface of its own, which is the
+            // `surface_for` rule (one table, one declaring registration).
+            surfaces: MEMORY_KEYED_SIDECAR,
             natural_key_columns: &[],
         },
         SchemaContract {
@@ -1789,6 +1794,65 @@ mod tests {
     /// spell a projection statement from.
     static PROJECTED_SIDECAR_WRONG_KEY: FlavorContract =
         uniformity_contract(&[reachability_schema(Some("tags"), CUSTOM_KEYED_SIDECAR)]);
+
+    /// A schema that EMBEDS rather than searches, over the same
+    /// custom-keyed sidecar.
+    ///
+    /// The embedding lane's twin of the two fixtures above, and it must not
+    /// be projected: a projected schema is refused by
+    /// `validate_projection_declarations` first, which would mask the arm
+    /// under test. `EmbeddingRecipe::resolve` binds a unit to its sidecar
+    /// TABLE and never sees a `Surface`, so nothing but this refusal keeps
+    /// the drain's text read off a naming convention.
+    const fn embedding_schema(surfaces: &'static [Surface]) -> SchemaContract {
+        SchemaContract {
+            id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+            kind: PayloadKind::Fact,
+            sidecar_table: Some("test_flavor.thing_v1"),
+            search: SearchProjectionDecl::None {
+                why: "the embed unit's key column is what this fixture is about",
+            },
+            embedding: EmbeddingRecipe::Units(EMBED_BODY),
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces,
+            natural_key_columns: &[],
+        }
+    }
+
+    static EMBED_BODY: &[crate::flavor::contract::EmbedUnit] =
+        &[crate::flavor::contract::EmbedUnit::stored(
+            "body",
+            crate::flavor::contract::SLOT_DEFAULT,
+        )];
+
+    /// A flavor whose only schema embeds, so it declares no projection.
+    const fn embedding_contract(schemas: &'static [SchemaContract]) -> FlavorContract {
+        FlavorContract {
+            flavor_id: FIXTURE_FLAVOR,
+            ordinal: 7,
+            schemas,
+            state_surfaces: &[],
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
+            projection: ProjectionDecl::None {
+                why: "the fixture embeds; it does not search",
+            },
+        }
+    }
+
+    /// An embed unit over a sidecar no surface keys on the memory `t`.
+    static EMBEDDED_SIDECAR_WRONG_KEY: FlavorContract =
+        embedding_contract(&[embedding_schema(CUSTOM_KEYED_SIDECAR)]);
+
+    /// The same schema over the sidecar keyed as the drain needs it. Freeze
+    /// accepts this one, which is what makes the refusal above a statement
+    /// about the KEY rather than about the fixture.
+    static EMBEDDED_SIDECAR_RIGHT_KEY: FlavorContract =
+        embedding_contract(&[embedding_schema(MEMORY_KEYED_SIDECAR)]);
 
     /// One weight level: no array at all.
     static ONE_LEVEL: &[WeightedField] = &[WeightedField {
@@ -2535,6 +2599,22 @@ mod tests {
                 },
             ),
             (
+                "an embed unit's sidecar declares no surface to key the text read on",
+                |registry| {
+                    register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
+                    registry.contracts.push(&EMBEDDED_SIDECAR_WRONG_KEY);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::EmbeddedSidecarNotMemoryKeyed {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
                 "a non-core projection declares no tag column, so no query shape reaches it",
                 |registry| {
                     register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
@@ -2620,6 +2700,26 @@ mod tests {
         if let Err(err) = reachable.try_freeze() {
             panic!("a tag-filtered request reaches this projection: {err}");
         }
+
+        // The embedding lane's twin: the same embed unit over a sidecar
+        // whose surface DOES key on the memory `t` freezes, and the unit
+        // the drain reads carries that column rather than a convention.
+        let mut embedded = FlavorRegistry::new();
+        register_fixture_schema(&mut embedded, "thing", "test_flavor.thing_v1");
+        embedded.contracts.push(&EMBEDDED_SIDECAR_RIGHT_KEY);
+        let frozen = match embedded.try_freeze() {
+            Ok(frozen) => frozen,
+            Err(err) => panic!("an embed unit over a memory-keyed sidecar must freeze: {err}"),
+        };
+        let unit = frozen
+            .embed_units()
+            .iter()
+            .find(|unit| unit.sidecar_table == "test_flavor.thing_v1")
+            .expect("the fixture's recipe resolves one unit");
+        assert_eq!(
+            unit.key_column, "t",
+            "the unit carries the column the surface declares, for the drain to filter on"
+        );
     }
 
     /// The counterpart: the registry as the binary actually composes it,

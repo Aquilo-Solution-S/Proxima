@@ -447,3 +447,39 @@ fn the_kept_memory_sidecar_set_is_the_owner_pinned_set() {
          honour that declaration"
     );
 }
+
+/// Parity pin: `pg_sidecar!(key: …)` and the contract `Surface`'s
+/// `KeyShape::MemoryT { column }` are two statements of one fact.
+///
+/// `freeze_against`'s `check_memory_key_against_contracts` refuses a
+/// registry where they disagree; this walks the SHIPPED registry so the
+/// agreement is proven over every core sidecar rather than over a fixture.
+/// A registration whose contract declares no surface for its table is
+/// skipped by the check and skipped here, for the same reason: an absent
+/// declaration is not a second claim.
+#[test]
+fn every_registered_memory_sidecar_keys_on_the_column_its_surface_declares() {
+    let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+    let sidecars = crate::sidecars::core_pg_sidecars();
+
+    let mut checked = 0_usize;
+    for table in sidecars.memory_sidecar_tables() {
+        let Some(declared) = registry
+            .contracts()
+            .iter()
+            .find_map(|contract| contract.sidecar_memory_key_column(table))
+        else {
+            continue;
+        };
+        assert_eq!(
+            sidecars.memory_key_column(table),
+            Some(declared),
+            "{table}: the macro key and the Surface key are the same column"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "core declares memory-keyed sidecar surfaces, so the walk has to reach some"
+    );
+}
