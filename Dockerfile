@@ -2,7 +2,7 @@
 # Build the Code-flavor MCP server. cmake + pkg-config are required to
 # build native crypto deps (aws-lc-sys / ring). Pin bookworm so the
 # builder's glibc matches the distroless cc-debian12 runtime.
-FROM rust:1.97-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
+FROM rust:1.98-bookworm@sha256:e70e2eec3d495fd5c8e0be74adda86507dfac7f51a724fbf9813ff59b2b247c7 AS builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends cmake pkg-config \
     && rm -rf /var/lib/apt/lists/*
@@ -13,7 +13,7 @@ RUN cargo build --release -p proxima-mcp \
 
 # Distroless cc image: glibc + libstdc++ (for aws-lc) + ca-certificates
 # (for outbound TLS to Zitadel/S3/embeddings), non-root by default.
-FROM gcr.io/distroless/cc-debian12@sha256:6e1871c34683dc9ee996d13084497783fd98ac0200213d0826625f4e9d4be1d0 AS runtime
+FROM gcr.io/distroless/cc-debian12@sha256:e5d81ddde149641e2a9ba55be4545bc125c67de07508b03ba4c22e6eb0ded5aa AS runtime
 # Provenance. Without these a running container cannot be attributed to a
 # release or a commit — `initialize.serverInfo` reports the version, but only
 # to an MCP client that can already reach it.
