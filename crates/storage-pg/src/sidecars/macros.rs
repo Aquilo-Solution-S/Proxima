@@ -450,6 +450,7 @@ macro_rules! pg_sidecar {
                 &'t self,
                 tx: &'t mut ::sqlx::Transaction<'_, ::sqlx::Postgres>,
                 memory_id: $crate::core::MemoryId,
+                _permit: $crate::sidecars::SidecarInsertPermit,
             ) -> $crate::sidecars::PgSidecarFuture<'t> {
                 ::std::boxed::Box::pin(async move {
                     // Same tokens as the OWNER_PINNED const below: one

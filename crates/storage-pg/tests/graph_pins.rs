@@ -1,6 +1,7 @@
 //! Pins on the node, PK outbound, GIN inbound, lineage by t.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{InboundPinQuery, MemoryReadPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::{
@@ -12,7 +13,6 @@ use proxima_core::{
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use uuid::Uuid;
 
 fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
@@ -55,10 +55,12 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
-        let leaf = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
+        let leaf = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
         let mut derived_cmd = draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]);
         derived_cmd.schema_id = SchemaId::new("core/agent-note-v1".into());
-        let derived = ingest_fact_atomic(pool, &permit, &derived_cmd, None).await?;
+        let derived = pg.ingest_fact_atomic(&permit, &derived_cmd, None).await?;
         sqlx::query(
             "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $2, 'derived title', 'made from leaf', '{}')",
@@ -158,30 +160,36 @@ async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
 
-        let a = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
-        let b = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
-        let c = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
+        let a = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let b = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let c = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
         let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
-        let foreign =
-            ingest_fact_atomic(pool, &other_permit, &draft("fact", vec![], vec![]), None).await?;
-        let hub = ingest_fact_atomic(
-            pool,
-            &permit,
-            &draft(
-                "abstraction",
-                vec![foreign.memory_id.into_inner()],
-                vec![
-                    a.memory_id.into_inner(),
-                    b.memory_id.into_inner(),
-                    c.memory_id.into_inner(),
-                ],
-            ),
-            None,
-        )
-        .await?;
+        let foreign = pg
+            .ingest_fact_atomic(&other_permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let hub = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft(
+                    "abstraction",
+                    vec![foreign.memory_id.into_inner()],
+                    vec![
+                        a.memory_id.into_inner(),
+                        b.memory_id.into_inner(),
+                        c.memory_id.into_inner(),
+                    ],
+                ),
+                None,
+            )
+            .await?;
 
         let hubs = pg.load_pin_nodes(&[owner], &[hub.memory_id]).await?;
         assert_eq!(hubs.len(), 1);
@@ -249,22 +257,24 @@ async fn lineage_redacts_foreign_origin_instead_of_dropping() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
 
-        let own = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
-        let foreign =
-            ingest_fact_atomic(pool, &other_permit, &draft("fact", vec![], vec![]), None).await?;
-        let derived = ingest_fact_atomic(
-            pool,
-            &permit,
-            &draft(
-                "abstraction",
-                vec![],
-                vec![own.memory_id.into_inner(), foreign.memory_id.into_inner()],
-            ),
-            None,
-        )
-        .await?;
+        let own = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let foreign = pg
+            .ingest_fact_atomic(&other_permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let derived = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft(
+                    "abstraction",
+                    vec![],
+                    vec![own.memory_id.into_inner(), foreign.memory_id.into_inner()],
+                ),
+                None,
+            )
+            .await?;
 
         let walked = pg
             .walk_memory_lineage(
@@ -337,17 +347,18 @@ async fn inbound_pin_page_is_newest_heads_and_keyset() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
-        let hub = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
+        let hub = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
         let mut ids = Vec::new();
         for _ in 0..300 {
-            let child = ingest_fact_atomic(
-                pool,
-                &permit,
-                &draft("abstraction", vec![], vec![hub.memory_id.into_inner()]),
-                None,
-            )
-            .await?;
+            let child = pg
+                .ingest_fact_atomic(
+                    &permit,
+                    &draft("abstraction", vec![], vec![hub.memory_id.into_inner()]),
+                    None,
+                )
+                .await?;
             ids.push(child.memory_id);
         }
         let newest = &ids[ids.len() - 200..];
@@ -410,19 +421,22 @@ async fn inbound_heads_only_drops_superseded_pin() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
-        let hub = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
-        let other = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
-        let old = ingest_fact_atomic(
-            pool,
-            &permit,
-            &draft("abstraction", vec![], vec![hub.memory_id.into_inner()]),
-            None,
-        )
-        .await?;
+        let hub = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let other = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let old = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft("abstraction", vec![], vec![hub.memory_id.into_inner()]),
+                None,
+            )
+            .await?;
         let mut next = draft("abstraction", vec![], vec![other.memory_id.into_inner()]);
         next.handle = Some(old.handle);
-        let new = ingest_fact_atomic(pool, &permit, &next, None).await?;
+        let new = pg.ingest_fact_atomic(&permit, &next, None).await?;
         assert_ne!(old.memory_id, new.memory_id);
 
         let heads = pg
@@ -480,59 +494,60 @@ async fn lineage_diamond_visits_shared_node_once() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
 
-        let leaf = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
-        let e1 = ingest_fact_atomic(
-            pool,
-            &permit,
-            &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
-            None,
-        )
-        .await?;
-        let e2 = ingest_fact_atomic(
-            pool,
-            &permit,
-            &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
-            None,
-        )
-        .await?;
-        let meet = ingest_fact_atomic(
-            pool,
-            &permit,
-            &draft(
-                "abstraction",
-                vec![],
-                vec![e1.memory_id.into_inner(), e2.memory_id.into_inner()],
-            ),
-            None,
-        )
-        .await?;
-        let left = ingest_fact_atomic(
-            pool,
-            &permit,
-            &draft("abstraction", vec![], vec![meet.memory_id.into_inner()]),
-            None,
-        )
-        .await?;
-        let right = ingest_fact_atomic(
-            pool,
-            &permit,
-            &draft("abstraction", vec![], vec![meet.memory_id.into_inner()]),
-            None,
-        )
-        .await?;
-        let tip = ingest_fact_atomic(
-            pool,
-            &permit,
-            &draft(
-                "abstraction",
-                vec![],
-                vec![left.memory_id.into_inner(), right.memory_id.into_inner()],
-            ),
-            None,
-        )
-        .await?;
+        let leaf = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let e1 = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
+                None,
+            )
+            .await?;
+        let e2 = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
+                None,
+            )
+            .await?;
+        let meet = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft(
+                    "abstraction",
+                    vec![],
+                    vec![e1.memory_id.into_inner(), e2.memory_id.into_inner()],
+                ),
+                None,
+            )
+            .await?;
+        let left = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft("abstraction", vec![], vec![meet.memory_id.into_inner()]),
+                None,
+            )
+            .await?;
+        let right = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft("abstraction", vec![], vec![meet.memory_id.into_inner()]),
+                None,
+            )
+            .await?;
+        let tip = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft(
+                    "abstraction",
+                    vec![],
+                    vec![left.memory_id.into_inner(), right.memory_id.into_inner()],
+                ),
+                None,
+            )
+            .await?;
 
         let up = pg
             .walk_memory_lineage(
@@ -607,31 +622,32 @@ async fn lineage_pages_finish_a_distance_before_the_next() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
 
-        let leaf = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
+        let leaf = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
         let mut mids = Vec::new();
         for _ in 0..5 {
-            let mid = ingest_fact_atomic(
-                pool,
+            let mid = pg
+                .ingest_fact_atomic(
+                    &permit,
+                    &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
+                    None,
+                )
+                .await?;
+            mids.push(mid.memory_id);
+        }
+        let root = pg
+            .ingest_fact_atomic(
                 &permit,
-                &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
+                &draft(
+                    "abstraction",
+                    vec![],
+                    mids.iter().map(|id| id.into_inner()).collect(),
+                ),
                 None,
             )
             .await?;
-            mids.push(mid.memory_id);
-        }
-        let root = ingest_fact_atomic(
-            pool,
-            &permit,
-            &draft(
-                "abstraction",
-                vec![],
-                mids.iter().map(|id| id.into_inner()).collect(),
-            ),
-            None,
-        )
-        .await?;
 
         let req = |limit: u32, after: Option<MemoryLineageCursor>| MemoryLineageRequest {
             owner,

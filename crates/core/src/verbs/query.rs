@@ -609,7 +609,7 @@ pub struct QueryResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{SearchOrder, TagMatch, like_pattern};
+    use super::{SearchOrder, SidecarAtom, TagMatch, like_pattern};
 
     #[test]
     fn tag_match_and_order_accept_mixed_case() {
@@ -641,5 +641,54 @@ mod tests {
     #[test]
     fn like_pattern_escapes_wildcards() {
         assert_eq!(like_pattern("a_b%c\\d"), "%a\\_b\\%c\\\\d%");
+    }
+
+    #[test]
+    fn payload_columns_become_atoms() {
+        #[derive(serde::Serialize)]
+        struct Sample {
+            repo_id: uuid::Uuid,
+            file_path: String,
+            chunk_index: u32,
+        }
+
+        let repo = uuid::Uuid::nil();
+        let payload = Sample {
+            repo_id: repo,
+            file_path: "src/lib.rs".into(),
+            chunk_index: 3,
+        };
+        let atoms =
+            SidecarAtom::bind_columns(&payload, &["repo_id", "file_path", "chunk_index"]).unwrap();
+        assert_eq!(atoms[0].1, SidecarAtom::Uuid(repo));
+        assert_eq!(atoms[1].1, SidecarAtom::Text("src/lib.rs".into()));
+        assert_eq!(atoms[2].1, SidecarAtom::I32(3));
+    }
+
+    #[test]
+    fn missing_column_is_refused_by_name() {
+        #[derive(serde::Serialize)]
+        struct Sample {
+            repo_id: uuid::Uuid,
+        }
+
+        let payload = Sample {
+            repo_id: uuid::Uuid::nil(),
+        };
+        let err = SidecarAtom::bind_columns(&payload, &["missing"]).unwrap_err();
+        assert!(
+            err.contains("missing"),
+            "the refusal names the column: {err}"
+        );
+    }
+
+    #[test]
+    fn uuid_string_is_uuid_atom() {
+        let id = uuid::Uuid::nil();
+        let value = serde_json::Value::String(id.to_string());
+        assert_eq!(
+            SidecarAtom::from_json("repo_id", &value).unwrap(),
+            SidecarAtom::Uuid(id)
+        );
     }
 }

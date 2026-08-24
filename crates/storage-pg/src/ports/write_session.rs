@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
-use proxima_core::storage_ports::{OwnerWritePermit, WriteSession, WriteSessionFactory};
+use proxima_core::storage_ports::{
+    OwnerWritePermit, SidecarSessionRead, WriteSession, WriteSessionFactory,
+};
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
 use proxima_core::verbs::goal_write::{CreateGoalAtomicRequest, GoalWriteOutcome};
+use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, ColdObjectStore, MemoryId, SidecarPayload,
     StorageError, cold_object_key,
@@ -42,6 +45,46 @@ impl WriteSession for PgWriteSession {
             .await
             .map_err(crate::error::map_err)?;
         Ok(())
+    }
+
+    async fn read_own_sidecar(
+        &mut self,
+        permit: &OwnerWritePermit,
+        read: &SidecarSessionRead<'_>,
+    ) -> Result<Vec<serde_json::Value>, StorageError> {
+        crate::sidecars::read_own_sidecar_in_tx(
+            &mut self.tx,
+            &self.sidecars,
+            &self.surfaces,
+            permit,
+            read,
+        )
+        .await
+    }
+
+    async fn owned_series_head_memory_id(
+        &mut self,
+        permit: &OwnerWritePermit,
+        schema_id: &proxima_core::SchemaId,
+        sidecar_table: &str,
+        columns: &[(&str, SidecarAtom)],
+    ) -> Result<Option<MemoryId>, StorageError> {
+        if !self.sidecars.is_memory_sidecar_table(sidecar_table) {
+            return Err(StorageError::ConstraintViolation(format!(
+                "session series-head lookup names {sidecar_table}, which is not a registered \
+                 memory sidecar table; register the payload with `pg_sidecar!` so the surface \
+                 is declared"
+            )));
+        }
+        let head = verbs::query::owned_head_memory_id(
+            &mut *self.tx,
+            *permit.owner(),
+            schema_id,
+            sidecar_table,
+            columns,
+        )
+        .await?;
+        Ok(head.map(MemoryId::new))
     }
 
     async fn ingest_fact_with_typed_sidecar(
@@ -117,7 +160,6 @@ impl WriteSession for PgWriteSession {
             schema_version: req.schema_version,
             text: req.text.clone(),
             operator_kind: req.operator_kind,
-            model_id: req.model_id,
             supersedes: req.supersedes,
             lexical_language: req.lexical_language,
             embedding: req.embedding.clone(),

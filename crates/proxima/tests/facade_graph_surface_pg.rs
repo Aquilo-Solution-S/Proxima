@@ -4,7 +4,7 @@ use proxima::flavor::{
     AbstractionPayload, EdgeEndpoint, EdgeKind, FactPayload, FlavorBundle, FlavorRegistry,
     InputContractId, MemoryId, OperatorId, PayloadKeyBuilder, PayloadReference, PgMemoryPayload,
     PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry,
-    ReferenceBinding, SchemaId, SchemaVersion, SidecarPayload,
+    ReferenceBinding, SchemaId, SchemaVersion, SidecarInsertPermit, SidecarPayload,
 };
 use proxima::{
     AppInfo, AuthPath, AuthzContext, EdgeExistsRequest, EdgeFilter, EdgeReadRequest, FlavorApp,
@@ -86,13 +86,14 @@ impl PgMemorySidecar for FacadeFact {
         &'t self,
         tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
         memory_id: MemoryId,
+        _permit: SidecarInsertPermit,
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO public.facade_surface_fact_v1
-                    (memory_id, note_id, title, body)
+                    (t, note_id, title, body)
                  VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (memory_id) DO NOTHING",
+                 ON CONFLICT (t) DO NOTHING",
             )
             .bind(memory_id.into_inner())
             .bind(self.note_id)
@@ -116,7 +117,7 @@ impl PgMemoryPayload for FacadeFact {
                 .fetch_optional_by_memory_id(
                     "SELECT note_id, title, body
                        FROM public.facade_surface_fact_v1
-                      WHERE memory_id = $1",
+                      WHERE t = $1",
                     memory_id,
                 )
                 .await?;
@@ -166,13 +167,14 @@ impl PgMemorySidecar for FacadeAbstraction {
         &'t self,
         tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
         memory_id: MemoryId,
+        _permit: SidecarInsertPermit,
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO public.facade_surface_abstraction_v1
-                    (memory_id, title, body, source_count, observed_entity)
+                    (t, title, body, source_count, observed_entity)
                  VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (memory_id) DO NOTHING",
+                 ON CONFLICT (t) DO NOTHING",
             )
             .bind(memory_id.into_inner())
             .bind(&self.title)
@@ -197,7 +199,7 @@ impl PgMemoryPayload for FacadeAbstraction {
                 .fetch_optional_by_memory_id(
                     "SELECT title, body, source_count, observed_entity
                        FROM public.facade_surface_abstraction_v1
-                      WHERE memory_id = $1",
+                      WHERE t = $1",
                     memory_id,
                 )
                 .await?;
@@ -304,31 +306,29 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             [(owner, Role::admin())],
             AuthPath::HostBearer,
         );
-        let fact_permit = built
-            .engine
-            .authorize_owner_write(&authz, &owner, proxima_core::AccessKind::Fact)
-            .await?;
 
         let fact = FacadeFact {
             note_id: Uuid::now_v7(),
             title: "Observed facade gap".to_string(),
             body: "A consumer needs a single facade crate.".to_string(),
         };
-        let fact_for_sidecar = fact.clone();
-        let fact_outcome = proxima_storage_pg::verbs::fact_ingest::ingest_fact_for_owner(
-            built.pool_for_tests(),
-            &fact_permit,
-            &fact,
-            None,
-            move |tx, outcome| {
-                Box::pin(async move {
-                    fact_for_sidecar
-                        .insert_memory_sidecar(tx, outcome.memory_id)
-                        .await
-                })
-            },
+        // The public write path: `Engine` → `UnitOfWork` → the write-session
+        // port. The sidecar row comes off the frozen registry, not off a
+        // closure this test hands a transaction to.
+        // Narrowed to the one owner it writes for: the engine stamps the
+        // write owner from resolved access, so the ingest must resolve
+        // exactly one.
+        let write_authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            AuthPath::HostBearer,
         )
-        .await?;
+        .narrowed_to_owner(owner)
+        .expect("an admin on exactly this owner narrows to it");
+        let fact_outcome = built
+            .engine
+            .ingest_typed_fact(&write_authz, "facade-surface-test", &fact)
+            .await?;
 
         let derived_handle = MemoryId::new(Uuid::now_v7());
         let derived_from = [EdgeEndpoint::memory(
@@ -484,7 +484,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
 async fn create_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
         "CREATE TABLE public.facade_surface_fact_v1 (
-            memory_id uuid PRIMARY KEY,
+            t uuid PRIMARY KEY,
             note_id uuid NOT NULL,
             title text NOT NULL,
             body text NOT NULL
@@ -494,7 +494,7 @@ async fn create_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     .await?;
     sqlx::query(
         "CREATE TABLE public.facade_surface_abstraction_v1 (
-            memory_id uuid PRIMARY KEY,
+            t uuid PRIMARY KEY,
             title text NOT NULL,
             body text NOT NULL,
             source_count integer NOT NULL,

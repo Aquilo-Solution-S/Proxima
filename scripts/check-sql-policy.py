@@ -681,7 +681,22 @@ def run_fixture(path: Path) -> int:
 # against a table with that column and that the row lands. The statement is
 # the one `attach_projections` stores, so the site carries the
 # `SQL-POLICY: generated` proof like every other execution of it.
-EXPECTED_DYNAMIC_SQL_SITES = 83
+# 83 -> 90: the seven sites of the write session's own sidecar read
+# (`sidecars/read_ctx.rs::read_own_sidecar_in_tx`) — one `QueryBuilder`
+# constructor, two `PgIdent` pushes (table, predicate column), four fixed
+# fragments. They are a net REDUCTION in dynamic SQL reachable by a caller,
+# not an increase: the affordance exists so a flavor doing a read-model
+# precondition check inside the write transaction never holds a
+# `&mut Transaction` and never writes its own statement. Every value is a
+# bound `SidecarAtom` and both identifiers go through `PgIdent`, so the
+# builder can only emit a single-table `SELECT` over a registered sidecar.
+#
+# 90 -> 92: the two further sites of that read's OWNER SCOPE — one `PgIdent`
+# push for the owner column the table's `Surface` declares, one fixed `=`
+# fragment. The bound value is the resolved permit's owner, never a caller's:
+# the scope is stamped server-side and a caller's predicates are `AND`-ed
+# after it, so they can narrow the owner's rows and never widen past them.
+EXPECTED_DYNAMIC_SQL_SITES = 92
 
 
 def run_self_test() -> int:

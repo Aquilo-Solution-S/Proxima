@@ -8,7 +8,9 @@ pub(crate) mod active_goals;
 pub(crate) mod change_history;
 pub mod consolidate;
 pub(crate) mod content;
-pub mod derive_append;
+// Nothing in here is API any more: the derive verb is the body of the
+// memory-write ports. The module stays visible to the crate only.
+pub(crate) mod derive_append;
 pub mod fact_embeddings;
 pub mod fact_ingest;
 pub mod forget;

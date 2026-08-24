@@ -4,6 +4,14 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::PgStorage;
+use crate::core_pg_sidecars;
+use crate::verbs::forget::{
+    MemoryColdStore, cold_object_key, commit_forget, erase_memory, forget_memory,
+    forget_memory_oneshot, hydrate_memory, purge_cold_objects_after_commit, snapshot_hot,
+};
+use crate::verbs::memory_timeseries::ingest_fact_timeseries;
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerTransferPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
 use proxima_core::{
@@ -11,14 +19,6 @@ use proxima_core::{
     SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::core_pg_sidecars;
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
-use proxima_storage_pg::verbs::forget::{
-    MemoryColdStore, cold_object_key, commit_forget, erase_memory, forget_memory,
-    forget_memory_oneshot, hydrate_memory, purge_cold_objects_after_commit, snapshot_hot,
-};
-use proxima_storage_pg::verbs::memory_timeseries::ingest_fact_timeseries;
 use uuid::Uuid;
 
 /// The forget's registry-resolved legs, exactly as `PgStorage` assembles
@@ -108,7 +108,7 @@ async fn forget_hydrate_and_erase() {
         let pool = pg.pool_for_tests();
         let mut sourced = draft(Some(("src", "k1")));
         sourced.rendered_text = Some("Actual title\nbody".into());
-        let written = ingest_fact_atomic(pool, &permit, &sourced, None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &sourced, None).await?;
         let t = written.memory_id.into_inner();
         let stamped = sidecar_tables_for(pool, t).await?;
         assert!(
@@ -281,10 +281,12 @@ async fn erase_announce_carries_the_series_handle() {
         let pool = pg.pool_for_tests();
 
         // Two t on one handle, so a handle-shaped and a t-shaped value differ.
-        let first = ingest_fact_atomic(pool, &permit, &draft(Some(("src", "e1"))), None).await?;
+        let first = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src", "e1"))), None)
+            .await?;
         let mut second_draft = draft(Some(("src", "e2")));
         second_draft.handle = Some(first.handle);
-        let second = ingest_fact_atomic(pool, &permit, &second_draft, None).await?;
+        let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
         assert_eq!(second.handle, first.handle);
         let t = second.memory_id.into_inner();
         assert_ne!(t, second.handle, "the erased t is not its own handle");
@@ -337,7 +339,7 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
-        let origin = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let origin = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let mut sourced = draft(Some(("src", "k-held")));
         sourced.refs = vec![origin.memory_id.into_inner()];
         let written = ingest_stamped(pool, &permit, &sourced, &[AGENT_NOTE.to_owned()]).await?;
@@ -442,10 +444,10 @@ async fn forget_non_last_t_rewinds_memory_head() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let first = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let mut later = draft(None);
         later.handle = Some(first.handle);
-        let second = ingest_fact_atomic(pool, &permit, &later, None).await?;
+        let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
         assert_eq!(second.handle, first.handle);
         assert_ne!(second.memory_id, first.memory_id);
 
@@ -572,7 +574,7 @@ async fn concurrent_forget_serializes_before_cold_put() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let written = ingest_fact_atomic(pg.pool_for_tests(), &permit, &draft(None), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
         let key = cold_object_key(t);
         let cold = Arc::new(BlockingPutCold {
@@ -657,7 +659,7 @@ async fn oneshot_forget_put_does_not_hold_row_lock() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
-        let written = ingest_fact_atomic(&pool, &permit, &draft(None), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
         let probe = Arc::new(UnlockOnPut {
             pool,
@@ -975,23 +977,23 @@ async fn forget_and_admit_preserve_grounding_support() {
         let pool = pg.pool_for_tests();
         let cold = MemoryColdStore::default();
 
-        let fact = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
-        let abs = ingest_fact_atomic(
-            pool,
-            &permit,
-            &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
-            None,
-        )
-        .await
-        .expect("A from Fact");
-        let abs2 = ingest_fact_atomic(
-            pool,
-            &permit,
-            &derived_abstraction(EntityKind::Abstraction, abs.memory_id.into_inner()),
-            None,
-        )
-        .await
-        .expect("A2 from A");
+        let fact = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let abs = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
+                None,
+            )
+            .await
+            .expect("A from Fact");
+        let abs2 = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Abstraction, abs.memory_id.into_inner()),
+                None,
+            )
+            .await
+            .expect("A2 from A");
 
         let mut tx = pool.begin().await?;
         let err = forget_memory(
@@ -1037,7 +1039,8 @@ async fn forget_and_admit_preserve_grounding_support() {
             EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id),
             EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id),
         ];
-        let mixed_abs = ingest_fact_atomic(pool, &permit, &mixed, None)
+        let mixed_abs = pg
+            .ingest_fact_atomic(&permit, &mixed, None)
             .await
             .expect("A from hot A + cooled Fact");
 
@@ -1083,21 +1086,20 @@ async fn forget_and_admit_preserve_grounding_support() {
         .expect("forget A after A2 gone; mixed_abs still has cooled Fact");
         tx.commit().await?;
 
-        let err = ingest_fact_atomic(
-            pool,
-            &permit,
-            &derived_abstraction(EntityKind::Abstraction, abs.memory_id.into_inner()),
-            None,
-        )
-        .await
-        .expect_err("admit A from cooled A only");
+        let err = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Abstraction, abs.memory_id.into_inner()),
+                None,
+            )
+            .await
+            .expect_err("admit A from cooled A only");
         assert!(
             err.to_string().contains("cooled fact") || err.to_string().contains("23514"),
             "got: {err}"
         );
 
-        ingest_fact_atomic(
-            pool,
+        pg.ingest_fact_atomic(
             &permit,
             &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
             None,
@@ -1127,21 +1129,21 @@ async fn refused_forget_does_not_leave_untracked_cold_object() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let cold = MemoryColdStore::default();
-        let fact = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
-        let abs = ingest_fact_atomic(
-            pool,
-            &permit,
-            &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
-            None,
-        )
-        .await?;
-        let abs2 = ingest_fact_atomic(
-            pool,
-            &permit,
-            &derived_abstraction(EntityKind::Abstraction, abs.memory_id.into_inner()),
-            None,
-        )
-        .await?;
+        let fact = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let abs = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
+                None,
+            )
+            .await?;
+        let abs2 = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Abstraction, abs.memory_id.into_inner()),
+                None,
+            )
+            .await?;
         let key = "cold/refuse-orphan";
         let mut tx = pool.begin().await?;
         forget_memory(
@@ -1182,7 +1184,7 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
-        let written = ingest_fact_atomic(&pool, &permit, &draft(None), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
         let owner_id = owner.stored_owner_id();
         let key = cold_object_key(t);
@@ -1265,7 +1267,7 @@ async fn forget_of_an_already_cooled_t_reports_not_found() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
-        let written = ingest_fact_atomic(&pool, &permit, &draft(None), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
         let key = cold_object_key(t);
 
@@ -1336,7 +1338,7 @@ async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
             )
             .into(),
         );
-        let written = ingest_fact_atomic(pool, &permit, &sourced, None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &sourced, None).await?;
         let t = written.memory_id.into_inner();
         let cited_object_id = written
             .cited_object_id
@@ -1369,7 +1371,8 @@ async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
         let mut replay_input = sourced.clone();
         replay_input.citation = None;
         replay_input.blob_id = None;
-        let replay = ingest_fact_atomic(pool, &permit, &replay_input, None)
+        let replay = pg
+            .ingest_fact_atomic(&permit, &replay_input, None)
             .await
             .expect("re-delivery of a cooled admission");
         assert!(replay.idempotent_replay);
@@ -1413,7 +1416,7 @@ async fn forget_pinless_abstraction_is_refused() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let owner_id = owner.stored_owner_id();
         let handle = Uuid::now_v7();
         let t = Uuid::now_v7();
@@ -1481,30 +1484,30 @@ async fn concurrent_forget_keeps_one_grounding_support() {
             AccessKind::Fact,
         );
         let pool = pg.pool_for_tests().clone();
-        let f1 = ingest_fact_atomic(&pool, &p1, &draft(None), None).await?;
-        let f2 = ingest_fact_atomic(&pool, &p2, &draft(None), None).await?;
-        ingest_fact_atomic(&pool, &p3, &draft(None), None).await?;
-        let a1 = ingest_fact_atomic(
-            &pool,
-            &p1,
-            &derived_abstraction(EntityKind::Fact, f1.memory_id.into_inner()),
-            None,
-        )
-        .await?;
-        let a2 = ingest_fact_atomic(
-            &pool,
-            &p2,
-            &derived_abstraction(EntityKind::Fact, f2.memory_id.into_inner()),
-            None,
-        )
-        .await?;
+        let f1 = pg.ingest_fact_atomic(&p1, &draft(None), None).await?;
+        let f2 = pg.ingest_fact_atomic(&p2, &draft(None), None).await?;
+        pg.ingest_fact_atomic(&p3, &draft(None), None).await?;
+        let a1 = pg
+            .ingest_fact_atomic(
+                &p1,
+                &derived_abstraction(EntityKind::Fact, f1.memory_id.into_inner()),
+                None,
+            )
+            .await?;
+        let a2 = pg
+            .ingest_fact_atomic(
+                &p2,
+                &derived_abstraction(EntityKind::Fact, f2.memory_id.into_inner()),
+                None,
+            )
+            .await?;
         let mut both = draft(None);
         both.kind = "abstraction".into();
         both.derived_from = vec![
             EdgeEndpoint::memory(EntityKind::Abstraction, a1.memory_id),
             EdgeEndpoint::memory(EntityKind::Abstraction, a2.memory_id),
         ];
-        let dep = ingest_fact_atomic(&pool, &p3, &both, None).await?;
+        let dep = pg.ingest_fact_atomic(&p3, &both, None).await?;
 
         let a1_t = a1.memory_id.into_inner();
         let a2_t = a2.memory_id.into_inner();
@@ -1621,10 +1624,8 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
-        let fact = ingest_fact_atomic(&pool, &permit, &draft(None), None).await?;
-        let abs = ingest_fact_atomic(
-            &pool,
-            &permit,
+        let fact = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let abs = pg.ingest_fact_atomic(&permit,
             &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
             None,
         )
@@ -1744,7 +1745,7 @@ async fn commit_forget_aborts_when_owner_transferred() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
         let mut conn = pool.acquire().await?;
         let snapshot = snapshot_hot(&mut conn, &core_pg_sidecars(), t).await?;
@@ -1813,7 +1814,7 @@ async fn a_rolled_back_erase_keeps_the_cold_object_and_its_locator() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
         let key = cold_object_key(t);
         let cold = MemoryColdStore::default();
@@ -1878,7 +1879,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
         let key = cold_object_key(t);
         let ok_cold = MemoryColdStore::default();
@@ -1950,10 +1951,12 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
         let cold = MemoryColdStore::default();
 
         // Two versions on one handle, each with its own receipt.
-        let first = ingest_fact_atomic(&pool, &permit, &draft(Some(("src", "k1"))), None).await?;
+        let first = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src", "k1"))), None)
+            .await?;
         let mut later = draft(Some(("src", "k2")));
         later.handle = Some(first.handle);
-        let second = ingest_fact_atomic(&pool, &permit, &later, None).await?;
+        let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
         let (t1, t2) = (first.memory_id.into_inner(), second.memory_id.into_inner());
 
         let receipts = |t: Uuid| {
@@ -2160,14 +2163,13 @@ async fn hydrate_files_no_embedding_job_for_a_never_schema() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
         let cold = MemoryColdStore::default();
 
         // `core/write-act-v1` declares `Never`; `core/agent-note-v1` declares
         // a unit. One flow, opposite answers — the control is what makes the
         // zero mean the gate rather than an empty table.
-        let never = cool_then_hydrate(pool, &owner, &permit, &cold, "core/write-act-v1").await?;
-        let embeds = cool_then_hydrate(pool, &owner, &permit, &cold, "core/agent-note-v1").await?;
+        let never = cool_then_hydrate(&pg, &owner, &permit, &cold, "core/write-act-v1").await?;
+        let embeds = cool_then_hydrate(&pg, &owner, &permit, &cold, "core/agent-note-v1").await?;
         assert_eq!(never, 0, "a Never schema files no embedding job on hydrate");
         assert_eq!(embeds, 1, "an embeddable schema still restores its job");
         Ok(())
@@ -2180,16 +2182,17 @@ async fn hydrate_files_no_embedding_job_for_a_never_schema() {
 /// Ingest one Fact under `schema_id`, give it the vector a write that ignored
 /// the recipe would have left behind, cool it, hydrate it, count the jobs.
 async fn cool_then_hydrate(
-    pool: &sqlx::PgPool,
+    pg: &PgStorage,
     owner: &OwnerRef,
     permit: &OwnerWritePermit,
     cold: &MemoryColdStore,
     schema_id: &str,
 ) -> Result<i64, Box<dyn std::error::Error>> {
+    let pool = pg.pool_for_tests();
     let mut sourced = draft(None);
     sourced.schema_id = SchemaId::new(schema_id.to_owned());
     sourced.rendered_text = Some("a line".into());
-    let written = ingest_fact_atomic(pool, permit, &sourced, None).await?;
+    let written = pg.ingest_fact_atomic(permit, &sourced, None).await?;
     let t = written.memory_id.into_inner();
     let zeroes = format!("[{}]", vec!["0"; 1024].join(","));
     sqlx::query(

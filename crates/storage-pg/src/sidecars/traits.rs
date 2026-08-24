@@ -1,13 +1,21 @@
 use super::{
     GoalId, MemoryId, PayloadKind, PgConnection, PgFactSidecar, PgMemoryPayloadBatchFuture,
-    PgMemoryPayloadFuture, PgSidecarFuture, PgSidecarReadCtx, Postgres, StorageError, Transaction,
+    PgMemoryPayloadFuture, PgSidecarFuture, PgSidecarReadCtx, Postgres, SidecarInsertPermit,
+    StorageError, Transaction,
 };
 
+/// A flavor's typed memory-sidecar insert.
+///
+/// Flavors IMPLEMENT this; only the frozen registry INVOKES it. The
+/// [`SidecarInsertPermit`] argument is what separates the two — an
+/// implementor names the type, a caller has to mint one, and the mint is
+/// crate-private. See [`SidecarInsertPermit`] for the invariant that buys.
 pub trait PgMemorySidecar: Send + Sync + 'static {
     fn insert_memory_sidecar<'t>(
         &'t self,
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
+        permit: SidecarInsertPermit,
     ) -> PgSidecarFuture<'t>;
 }
 
@@ -100,7 +108,8 @@ where
         &'t self,
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
+        permit: SidecarInsertPermit,
     ) -> PgSidecarFuture<'t> {
-        self.clone().insert_sidecar(tx, memory_id)
+        self.clone().insert_sidecar(tx, memory_id, permit)
     }
 }

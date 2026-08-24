@@ -26,6 +26,7 @@ mod dispatch;
 mod entry;
 mod frozen;
 mod macros;
+mod permit;
 mod read_ctx;
 mod registry;
 mod sql;
@@ -37,7 +38,9 @@ mod tests;
 pub use core_sidecars::{core_pg_sidecars, register_core_pg_sidecars};
 pub use entry::{PgSidecarEntry, PgSidecarKey};
 pub use frozen::PgSidecarRegistryFrozen;
+pub use permit::SidecarInsertPermit;
 pub use read_ctx::PgSidecarReadCtx;
+pub(crate) use read_ctx::read_own_sidecar_in_tx;
 #[cfg(test)]
 pub(crate) use read_ctx::validate_sidecar_read_sql;
 pub use registry::PgSidecarRegistry;

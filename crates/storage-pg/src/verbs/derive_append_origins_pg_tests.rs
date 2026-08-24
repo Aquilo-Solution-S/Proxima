@@ -1,7 +1,17 @@
 //! The in-tx origin proof reads the STORED kind, not the declared one: a
 //! declared Fact on a Perspective row must fail.
-#![allow(clippy::doc_markdown, clippy::too_many_lines)]
+//!
+//! Crate-internal because the verb is: the derive helpers are `pub(crate)`
+//! implementation detail of the write ports, so the test that pins their
+//! refusals lives beside them rather than reaching in from outside.
 
+// One test walks every refusal in turn against one seeded graph; splitting it
+// would re-seed the same three memories four times to assert four messages.
+#![expect(clippy::too_many_lines, reason = "one seeded graph, four refusals")]
+
+use super::{DerivedDraft, DerivedOutcome};
+use crate::PgStorage;
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
@@ -9,9 +19,6 @@ use proxima_core::{
     SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_with_edges_in_tx};
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use uuid::Uuid;
 
 fn draft(kind: &str) -> FactWriteCommand {
@@ -38,8 +45,7 @@ fn derived_draft(
     memory_id: Uuid,
     operator_kind: MemoryOperatorKind,
     kind: EntityKind,
-    model_id: &str,
-) -> DerivedDraft<'_> {
+) -> DerivedDraft<'static> {
     DerivedDraft {
         memory_id,
         owner,
@@ -48,34 +54,45 @@ fn derived_draft(
         schema_version: SchemaVersion::new(1),
         text: "derived".into(),
         operator_kind,
-        model_id,
         supersedes: None,
         lexical_language: None,
         embedding: DerivedEmbedding::None,
     }
 }
 
-async fn append_ftoa(
+/// The four steps a derived write is: the origin proof, the reference-kind
+/// proof, the append, and the declared-index assertion.
+///
+/// [`crate::ports::memory`] and [`crate::ports::write_session`] run exactly
+/// these (with a sketch write between the last two). These tests are about
+/// the four proofs, none of which reads the sidecar payload, so they compose
+/// them directly rather than through a payload registration that would only
+/// stand between the assertion and what it asserts.
+async fn append_with_edges(
     pool: &sqlx::PgPool,
     permit: &OwnerWritePermit,
     draft: &DerivedDraft<'_>,
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
-) -> Result<proxima_storage_pg::verbs::derive_append::DerivedOutcome, StorageError> {
+) -> Result<DerivedOutcome, StorageError> {
     let mut tx = pool
         .begin()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    let outcome = append_derived_with_edges_in_tx(
+    super::validate_derived_origins_in_tx(&mut tx, draft, origins).await?;
+    super::validate_derived_reference_kinds_in_tx(&mut tx, references).await?;
+    let outcome = super::append_derived_in_tx(
         &mut tx,
         permit,
         draft,
         origins,
         references,
         &[],
+        None,
         |_, _| Box::pin(async { Ok(()) }),
     )
     .await?;
+    super::assert_derived_index_rows(&mut tx, draft, &outcome, origins, references).await?;
     tx.commit()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
@@ -108,23 +125,22 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Perspective);
         let pool = pg.pool_for_tests();
 
-        let fact = ingest_fact_atomic(pool, &permit, &draft("fact"), None).await?;
+        let fact = pg.ingest_fact_atomic(&permit, &draft("fact"), None).await?;
         let mut abs = draft("abstraction");
         abs.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
-        let abs = ingest_fact_atomic(pool, &permit, &abs, None).await?;
+        let abs = pg.ingest_fact_atomic(&permit, &abs, None).await?;
         let mut perspective = draft("perspective");
         perspective.derived_from =
             vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
-        let perspective = ingest_fact_atomic(pool, &permit, &perspective, None).await?;
+        let perspective = pg.ingest_fact_atomic(&permit, &perspective, None).await?;
 
         let spoof = derived_draft(
             owner,
             Uuid::now_v7(),
             MemoryOperatorKind::FtoA,
             EntityKind::Abstraction,
-            "d2-model",
         );
-        let err = append_ftoa(
+        let err = append_with_edges(
             pool,
             &permit,
             &spoof,
@@ -143,9 +159,8 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
             Uuid::now_v7(),
             MemoryOperatorKind::FtoA,
             EntityKind::Abstraction,
-            "d2-model",
         );
-        let err = append_ftoa(
+        let err = append_with_edges(
             pool,
             &permit,
             &spoofed_ref,
@@ -164,9 +179,8 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
             Uuid::now_v7(),
             MemoryOperatorKind::FtoA,
             EntityKind::Abstraction,
-            "d2-model",
         );
-        let err = append_ftoa(
+        let err = append_with_edges(
             pool,
             &permit,
             &honest_wrong_phase,
@@ -193,9 +207,8 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
             Uuid::now_v7(),
             MemoryOperatorKind::FtoA,
             EntityKind::Abstraction,
-            "d2-model",
         );
-        let ok = append_ftoa(
+        let ok = append_with_edges(
             pool,
             &permit,
             &honest,

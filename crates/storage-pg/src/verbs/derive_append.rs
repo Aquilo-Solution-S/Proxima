@@ -1,4 +1,11 @@
 //! Operator-derived memory append verb.
+//!
+//! Crate-internal throughout: this is the body of the `MemoryWritePort` /
+//! `WriteSession` derive implementations in `crate::ports`. A derived write
+//! reaches it through `Engine::author_derived_authorized` or
+//! `UnitOfWork::author_derived`, which is the one path that runs origin
+//! validation, reference-kind validation, the sidecar + projection insert,
+//! and the declared-index assertion as a unit.
 
 use proxima_core::llm::EMBEDDING_DIM;
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,7 +23,7 @@ use crate::sidecars::PgSidecarFuture;
 type InputProofRow = (uuid::Uuid, EntityKind, Option<uuid::Uuid>, bool, bool);
 
 #[derive(Debug, Clone)]
-pub struct DerivedDraft<'a> {
+pub(crate) struct DerivedDraft<'a> {
     pub memory_id: uuid::Uuid,
     pub owner: Owner,
     pub kind: EntityKind,
@@ -24,7 +31,6 @@ pub struct DerivedDraft<'a> {
     pub schema_version: SchemaVersion,
     pub text: String,
     pub operator_kind: MemoryOperatorKind,
-    pub model_id: &'a str,
     /// Prior `t` this write revises. Resolved to its `handle` in this
     /// transaction so the write lands as a later `t` on the same series —
     /// that later `t` *is* the supersession. No column records it and no
@@ -40,7 +46,7 @@ pub struct DerivedDraft<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct DerivedOutcome {
+pub(crate) struct DerivedOutcome {
     pub memory_id: MemoryId,
     pub idempotent_replay: bool,
 }
@@ -243,124 +249,6 @@ pub(crate) async fn append_derived_in_tx(
         sidecar,
     )
     .await
-}
-
-/// Append one operator-derived memory together with the index rows its own
-/// declarations imply, in the same transaction.
-///
-/// Flavor-SDK in-tx write tier: validates the operator proof ledger (origin
-/// shape, input liveness, F→A batch closure, supersedes owner/kind) but does
-/// NOT authorize the caller against the owner. `pub` because `proxima-code`
-/// persists derived memories inside multi-write transactions through it
-/// (`ingest::blobs`, `mcp::emit_execution_request`).
-///
-/// `origins` and `references` are endpoints, never kinds: the first list is
-/// what the write says it was made from, the second is what its payload
-/// points at, and each list's [`proxima_core::EdgeKind`] follows from
-/// which list it is.
-///
-/// # Errors
-///
-/// Returns `ConstraintViolation` when the operator proof shape does not match
-/// persisted input rows, `Conflict` when an idempotent replay changes proof
-/// metadata or declared index rows, and storage errors from Postgres.
-pub async fn append_derived_with_edges_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    permit: &OwnerWritePermit,
-    draft: &DerivedDraft<'_>,
-    origins: &[EdgeEndpoint],
-    references: &[EdgeEndpoint],
-    sidecar_tables: &[String],
-    sidecar: impl for<'t> FnOnce(
-        &'t mut Transaction<'_, Postgres>,
-        &'t DerivedOutcome,
-    ) -> PgSidecarFuture<'t>,
-) -> Result<DerivedOutcome, StorageError> {
-    validate_permit_owner(permit, &draft.owner)?;
-    validate_derived_origins_in_tx(tx, draft, origins).await?;
-    validate_derived_reference_kinds_in_tx(tx, references).await?;
-    let outcome = append_derived_in_tx(
-        tx,
-        permit,
-        draft,
-        origins,
-        references,
-        sidecar_tables,
-        None,
-        sidecar,
-    )
-    .await?;
-    assert_derived_index_rows(tx, draft, &outcome, origins, references).await?;
-    Ok(outcome)
-}
-
-/// One derived node in a batch that must be written as a unit.
-#[derive(Debug, Clone, Copy)]
-pub struct DerivedBatchEntry<'a> {
-    pub draft: &'a DerivedDraft<'a>,
-    pub origins: &'a [EdgeEndpoint],
-    pub references: &'a [EdgeEndpoint],
-    pub sidecar_tables: &'a [String],
-}
-
-/// Append a set of derived memories whose references point at each other.
-///
-/// The reason this exists rather than a loop over
-/// [`append_derived_with_edges_in_tx`]: an index row's target must already
-/// exist (Lean E1), so a group of nodes that refer to one another cannot be
-/// written one complete node at a time. A file's code chunks are exactly that
-/// group — chunk 2 calls chunk 7 and chunk 7 calls chunk 2 — and the ids are
-/// deterministic, so every member can be *named* before any of them is
-/// written.
-///
-/// So the write is two phases in one transaction: every node row and sidecar
-/// first, then every node's declared index rows.
-///
-/// # Errors
-///
-/// Same as [`append_derived_with_edges_in_tx`], for any member.
-pub async fn append_derived_batch_with_edges_in_tx<S>(
-    tx: &mut Transaction<'_, Postgres>,
-    permit: &OwnerWritePermit,
-    entries: &[DerivedBatchEntry<'_>],
-    mut sidecar: S,
-) -> Result<Vec<DerivedOutcome>, StorageError>
-where
-    S: for<'t> FnMut(
-        usize,
-        &'t mut Transaction<'_, Postgres>,
-        &'t DerivedOutcome,
-    ) -> PgSidecarFuture<'t>,
-{
-    for entry in entries {
-        validate_permit_owner(permit, &entry.draft.owner)?;
-        validate_derived_origins_in_tx(tx, entry.draft, entry.origins).await?;
-    }
-    let mut outcomes = Vec::with_capacity(entries.len());
-    for (index, entry) in entries.iter().enumerate() {
-        let sidecar = &mut sidecar;
-        outcomes.push(
-            append_derived_in_tx(
-                tx,
-                permit,
-                entry.draft,
-                entry.origins,
-                entry.references,
-                entry.sidecar_tables,
-                None,
-                move |tx, outcome| sidecar(index, tx, outcome),
-            )
-            .await?,
-        );
-    }
-    for (entry, outcome) in entries.iter().zip(&outcomes) {
-        // After every node exists: sibling refs that were unresolvable
-        // at the origin-proof step can now be kind-checked.
-        validate_derived_reference_kinds_in_tx(tx, entry.references).await?;
-        assert_derived_index_rows(tx, entry.draft, outcome, entry.origins, entry.references)
-            .await?;
-    }
-    Ok(outcomes)
 }
 
 /// Count declared pins; on replay, re-read stored `origins`/`refs` and
@@ -593,6 +481,14 @@ async fn load_stored_memory_kinds_in_tx(
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "derive_append_origins_pg_tests.rs"]
+mod origins_pg_tests;
+
+#[cfg(test)]
+#[path = "derive_append_replay_pg_tests.rs"]
+mod replay_pg_tests;
 
 #[cfg(test)]
 mod tests {

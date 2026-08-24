@@ -1450,11 +1450,10 @@ mod tests {
             .expect("core/agent-note-v1 is a search surface")
             .clone();
         assert_eq!(
-            note.sidecar_key_column.as_deref(),
-            Some("t"),
+            note.sidecar_key_column, "t",
             "core's own note keys on `t`, which is why a literal `t` went unnoticed"
         );
-        note.sidecar_key_column = Some(RENAMED.to_owned());
+        note.sidecar_key_column = RENAMED.to_owned();
 
         let sql = super::substring_sql(&[&note], &request_with_tags()).expect("substring");
         // Substituted into a shape rather than built with `format!`, so the
@@ -1471,14 +1470,6 @@ mod tests {
         assert!(
             !sql.contains("c.t "),
             "nothing probes the sidecar on `t` behind the declaration's back: {sql}"
-        );
-
-        note.sidecar_key_column = None;
-        let err = super::substring_sql(&[&note], &request_with_tags())
-            .expect_err("a sidecar with no declared memory key is refused");
-        assert!(
-            err.to_string().contains("KeyShape::MemoryT"),
-            "and the refusal names the declaration to fix: {err}"
         );
     }
 

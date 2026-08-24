@@ -532,16 +532,16 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
         "crates/core/src/storage_ports/cursors.rs": ["store_source_cursor"],
     }
     storage_pg_verbs = {
+        # The pool- and transaction-scoped raw tier is gone: what is left in
+        # these two files is `pub(crate)` body of the port impls. The rule
+        # still applies to it — `rust_signature_for` does not care about
+        # visibility — and the names below are the ones that still take a
+        # permit rather than an already-authorized write wrapper.
         "crates/storage-pg/src/verbs/fact_ingest.rs": [
             "ingest_fact_atomic",
-            "ingest_fact_in_tx",
-            "ingest_fact_for_owner_in_tx",
-            "ingest_fact",
-            "ingest_fact_for_owner",
         ],
         "crates/storage-pg/src/verbs/derive_append.rs": [
             "append_derived_in_tx",
-            "append_derived_with_edges_in_tx",
         ],
         "crates/storage-pg/src/verbs/persist_mcp_call.rs": [
             "persist_mcp_call_atomic",

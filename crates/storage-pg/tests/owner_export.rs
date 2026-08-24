@@ -2,6 +2,7 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportTarget, OwnerSurfaces};
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{OwnerInversePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::EntityKind;
@@ -9,7 +10,6 @@ use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerRef, SchemaId, Schem
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::core_pg_sidecars;
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory};
 use uuid::Uuid;
 
@@ -89,16 +89,17 @@ async fn export_edges_are_the_pins_already_on_memory() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
 
-        let leaf = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
-        let derived = ingest_fact_atomic(
-            pool,
-            &permit,
-            &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
-            None,
-        )
-        .await?;
+        let leaf = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let derived = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
+                None,
+            )
+            .await?;
 
         let auth =
             ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });
@@ -154,9 +155,12 @@ async fn export_carries_cooled_locators_and_sketches() {
         let pool = pg.pool_for_tests();
         let cold = MemoryColdStore::default();
 
-        let hot = ingest_fact_atomic(pool, &permit, &sketched("fact", "Still hot"), None).await?;
-        let cooled =
-            ingest_fact_atomic(pool, &permit, &sketched("fact", "Went cold\nbody"), None).await?;
+        let hot = pg
+            .ingest_fact_atomic(&permit, &sketched("fact", "Still hot"), None)
+            .await?;
+        let cooled = pg
+            .ingest_fact_atomic(&permit, &sketched("fact", "Went cold\nbody"), None)
+            .await?;
         let cooled_t = cooled.memory_id.into_inner();
         let key = cold_object_key(cooled_t);
         let mut tx = pool.begin().await?;
@@ -175,8 +179,9 @@ async fn export_carries_cooled_locators_and_sketches() {
         // A neighbour owner's cooled admission and sketch must not appear.
         let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
-        let neighbour =
-            ingest_fact_atomic(pool, &other_permit, &sketched("fact", "Not yours"), None).await?;
+        let neighbour = pg
+            .ingest_fact_atomic(&other_permit, &sketched("fact", "Not yours"), None)
+            .await?;
         let neighbour_t = neighbour.memory_id.into_inner();
         let neighbour_key = cold_object_key(neighbour_t);
         let mut tx = pool.begin().await?;
@@ -288,7 +293,8 @@ async fn export_carries_registered_citation_sidecar_rows() {
             (other, "core/cited-v1", 9u8, "not mine", 11),
         ] {
             let permit = OwnerWritePermit::new_for_tests(holder, AccessKind::Fact);
-            ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
+            pg.ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+                .await?;
             let blob_id: Uuid = sqlx::query_scalar(
                 "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
                  VALUES ($1, $2, $3)
@@ -368,7 +374,8 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
 
         for holder in [owner, other] {
             let permit = OwnerWritePermit::new_for_tests(holder, AccessKind::Fact);
-            ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
+            pg.ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+                .await?;
         }
 
         let blob_id: Uuid = sqlx::query_scalar(

@@ -1,4 +1,13 @@
-//! Timeseries Fact write/read.
+//! Memory timeseries: the admission row every write lands, and the two
+//! reads that go straight at it.
+//!
+//! Crate-internal write and reads: `ingest_fact_timeseries` is the row every
+//! governed write path materializes through, so a public door onto it is a
+//! second write path — one that skips the sidecar, the projection row, the
+//! sketch and the embedding enqueue its callers add. `read_memory_by_t` /
+//! `read_memory_head` take the same transaction and exist to assert on that
+//! row from inside the crate; the authorized read surface is the query ports.
+
 #![allow(
     clippy::missing_errors_doc,
     clippy::doc_markdown,
@@ -29,7 +38,7 @@ pub struct MemoryRow {
 /// `sidecar_tables` is the declared set forget will dump/delete — tables
 /// actually inserted for this `t`, never the global registry.
 /// `content_id` is the owner-scoped payload (required for A/P).
-pub async fn ingest_fact_timeseries(
+pub(crate) async fn ingest_fact_timeseries(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     draft: &FactWriteCommand,
@@ -229,7 +238,14 @@ pub async fn ingest_fact_timeseries(
     })
 }
 
-pub async fn read_memory_by_t(
+/// Read one admission row by `t`, inside the caller's transaction.
+///
+/// Test-only, and the gate says so rather than a comment: the only consumer
+/// is the suite below, which asserts on the row a write just landed before
+/// that write commits. The authorized read surface is the query ports; this
+/// reaches the table directly and must not become a second one.
+#[cfg(test)]
+pub(crate) async fn read_memory_by_t(
     tx: &mut Transaction<'_, Postgres>,
     t: Uuid,
 ) -> Result<Option<MemoryRow>, StorageError> {
@@ -244,7 +260,10 @@ pub async fn read_memory_by_t(
     .map_err(internal)
 }
 
-pub async fn read_memory_head(
+/// Read a series' current head row, inside the caller's transaction.
+/// Test-only for the same reason as [`read_memory_by_t`].
+#[cfg(test)]
+pub(crate) async fn read_memory_head(
     tx: &mut Transaction<'_, Postgres>,
     handle: Uuid,
 ) -> Result<Option<MemoryRow>, StorageError> {
@@ -260,3 +279,11 @@ pub async fn read_memory_head(
     .await
     .map_err(internal)
 }
+
+// The admission-row suite. Crate-internal for the same reason the verb is:
+// it reads the row back through `read_memory_by_t` / `read_memory_head`
+// inside the write's own transaction, which is not something the read ports
+// offer and should not be.
+#[cfg(test)]
+#[path = "memory_timeseries_pg_tests.rs"]
+mod memory_timeseries_pg_tests;

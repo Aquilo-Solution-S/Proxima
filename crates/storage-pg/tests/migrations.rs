@@ -97,9 +97,45 @@ fn collect_relations(dir: &Path, found: &mut BTreeSet<String>) {
         } else if path.extension().is_some_and(|ext| ext == "rs") {
             let source = std::fs::read_to_string(&path)
                 .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-            collect_relations_in_source(&source, found);
+            let mut named = BTreeSet::new();
+            collect_relations_in_source(&source, &mut named);
+            // A file that CREATEs a relation is that relation's source, so
+            // the migration is not required to be. This is how the in-crate
+            // PG suites' fixture tables stay out of the claim without
+            // pardoning the files that hold them: every other relation they
+            // name is still checked.
+            for created in relations_created_in_source(&source) {
+                named.remove(&created);
+            }
+            found.extend(named);
         }
     }
+}
+
+/// Relations this source itself creates (`CREATE TABLE proxima_core.<name>`,
+/// with or without `IF NOT EXISTS`).
+fn relations_created_in_source(source: &str) -> BTreeSet<String> {
+    let mut created = BTreeSet::new();
+    let mut rest = source;
+    while let Some(at) = rest.find("CREATE TABLE ") {
+        let tail = &rest[at + "CREATE TABLE ".len()..];
+        rest = tail;
+        let tail = tail
+            .trim_start()
+            .strip_prefix("IF NOT EXISTS ")
+            .unwrap_or(tail);
+        let Some(qualified) = tail.trim_start().strip_prefix("proxima_core.") else {
+            continue;
+        };
+        let name: String = qualified
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .collect();
+        if !name.is_empty() {
+            created.insert(name);
+        }
+    }
+    created
 }
 
 fn collect_relations_in_source(source: &str, found: &mut BTreeSet<String>) {

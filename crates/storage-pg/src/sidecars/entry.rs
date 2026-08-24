@@ -1,13 +1,14 @@
 use super::{
     GoalId, MemoryId, PayloadKind, PgConnection, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture,
-    PgSidecarFuture, PgSidecarReadCtx, Postgres, SchemaId, SchemaVersion, SidecarPayload,
-    Transaction,
+    PgSidecarFuture, PgSidecarReadCtx, Postgres, SchemaId, SchemaVersion, SidecarInsertPermit,
+    SidecarPayload, Transaction,
 };
 
 type PgMemorySidecarInserter = for<'t> fn(
     &'t mut Transaction<'_, Postgres>,
     MemoryId,
     &'t SidecarPayload,
+    SidecarInsertPermit,
 ) -> PgSidecarFuture<'t>;
 type PgMemoryPayloadLoader =
     for<'t> fn(PgSidecarReadCtx<'t>, MemoryId) -> PgMemoryPayloadFuture<'t>;

@@ -12,6 +12,10 @@
 //! write, transfer, forget-to-cold, erase.
 #![allow(clippy::doc_markdown)]
 
+use crate::PgStorage;
+use crate::core_pg_sidecars;
+use crate::verbs::forget::{MemoryColdStore, cold_object_key, erase_memory, forget_memory_oneshot};
+use crate::verbs::memory_timeseries::ingest_fact_timeseries;
 use proxima_core::owner_inverse::{
     EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget, OwnerSurfaces,
 };
@@ -22,12 +26,6 @@ use proxima_core::{
     SchemaVersion, SidecarPayload, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::core_pg_sidecars;
-use proxima_storage_pg::verbs::forget::{
-    MemoryColdStore, cold_object_key, erase_memory, forget_memory_oneshot,
-};
-use proxima_storage_pg::verbs::memory_timeseries::ingest_fact_timeseries;
 use uuid::Uuid;
 
 /// The transfer's registry-resolved legs, exactly as the engine assembles
@@ -357,11 +355,8 @@ async fn a_projection_row_cannot_claim_a_schema_its_memory_is_not() {
             .iter()
             .find(|schema| schema.schema_id().as_str() == AgentNoteV1::SCHEMA_ID)
             .expect("the note schema is declared");
-        let sql = proxima_storage_pg::projection::projection_insert_sql(
-            &proxima_core::FLAVOR_0,
-            note_schema,
-        )
-        .expect("the generator emits a valid statement");
+        let sql = crate::projection::projection_insert_sql(&proxima_core::FLAVOR_0, note_schema)
+            .expect("the generator emits a valid statement");
 
         // A real, declared schema id — and not this memory's.
         // SQL-POLICY: generated
@@ -493,7 +488,7 @@ async fn a_sidecar_keyed_on_its_own_column_name_still_files_its_projection_row()
         .await?;
 
         let (contract, schema) = a_note_contract_keyed_on(RENAMED_TABLE, RENAMED_KEY);
-        let sql = proxima_storage_pg::projection::projection_insert_sql(&contract, schema)
+        let sql = crate::projection::projection_insert_sql(&contract, schema)
             .expect("the generator emits a valid statement");
         assert!(
             sql.contains(&format!("c.{RENAMED_KEY}")),

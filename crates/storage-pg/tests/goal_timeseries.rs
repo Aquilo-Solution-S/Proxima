@@ -5,6 +5,7 @@
     clippy::too_many_lines
 )]
 
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{MemoryReadPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
@@ -12,7 +13,6 @@ use proxima_core::verbs::query::{EntityKind, QueryRequest};
 use proxima_core::{AccessKind, MemoryId, OwnerRef, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, WRITE_ACT_SCHEMA, write_goal};
 use uuid::Uuid;
 
@@ -84,7 +84,7 @@ async fn goal_write_replay_terminal_and_write_act() {
 
         let mut produced = fact_draft();
         produced.refs = vec![created.write_act_t.expect("write-act")];
-        let produced_out = ingest_fact_atomic(pool, &permit, &produced, None).await?;
+        let produced_out = pg.ingest_fact_atomic(&permit, &produced, None).await?;
         let refs: Vec<Uuid> =
             sqlx::query_scalar("SELECT refs FROM proxima_core.memory WHERE t = $1")
                 .bind(produced_out.memory_id.into_inner())
@@ -117,7 +117,7 @@ async fn goal_write_replay_terminal_and_write_act() {
         assert_eq!(replay.t, created.t);
         assert_eq!(replay.handle, created.handle);
 
-        let close = ingest_fact_atomic(pool, &permit, &fact_draft(), None).await?;
+        let close = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
         let mut tx = pool.begin().await?;
         let closed = write_goal(
             &mut tx,
@@ -189,8 +189,8 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let pool = pg.pool_for_tests();
 
-        let assignment = ingest_fact_atomic(pool, &permit, &fact_draft(), None).await?;
-        let evidence = ingest_fact_atomic(pool, &permit, &fact_draft(), None).await?;
+        let assignment = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let evidence = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
 
         let mut tx = pool.begin().await?;
         let created = write_goal(

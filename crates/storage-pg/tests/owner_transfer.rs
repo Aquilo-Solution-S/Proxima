@@ -3,28 +3,29 @@
 
 use std::sync::Arc;
 
+use proxima_core::FactPayload;
 use proxima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget,
     OwnerExportTarget, OwnerSurfaces,
 };
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::MemoryAuthoringPort;
 use proxima_core::storage_ports::{
     ChangeEventPort, McpCallReadPort, MemoryReadPort, OwnerInversePort, OwnerTransferPort,
     OwnerWritePermit,
 };
-use proxima_core::verbs::fact_ingest::FactIngestOutcome;
-use proxima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
+use proxima_core::verbs::fact_ingest::{
+    AuthorizedFactWrite, CitationSpec, FactIngestOutcome, FactWriteCommand,
+};
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::persist_mcp_call::McpCallLoggedV1;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
     AccessKind, ChangeEventKind, ColdObjectStore, EntityId, EntityRef, GoalId, GroupId, MemoryId,
-    OwnerRef, SchemaId, SchemaVersion, StorageError, UserId,
+    OwnerRef, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
-use proxima_storage_pg::sidecars::PgMemorySidecar;
-use proxima_storage_pg::verbs::fact_ingest::{ingest_fact_atomic, ingest_fact_in_tx};
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory_series, hydrate_memory};
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::wake_timeseries::{
@@ -78,7 +79,7 @@ fn draft() -> FactWriteCommand {
 /// `sidecar_tables` and the sidecar's `owner_id` is filled by the
 /// owner-pinned INSERT rather than by this test.
 async fn ingest_mcp_call_fact(
-    pool: &sqlx::PgPool,
+    pg: &PgStorage,
     permit: &OwnerWritePermit,
 ) -> Result<FactIngestOutcome, StorageError> {
     let payload = McpCallLoggedV1 {
@@ -92,19 +93,20 @@ async fn ingest_mcp_call_fact(
         io_truncated: false,
         io_content_hash: [3_u8; 32],
     };
-    let mut tx = pool
-        .begin()
+    let draft = FactWriteCommand::from_payload(
+        "proxima/fact",
+        SourceBatchId::new(Uuid::now_v7()),
+        &payload,
+        time::OffsetDateTime::now_utc(),
+    );
+    let authorized = AuthorizedFactWrite::new_for_tests(
+        OwnerWritePermit::new_for_tests(*permit.owner(), AccessKind::Fact),
+        draft,
+        McpCallLoggedV1::sidecar_table().map(str::to_owned),
+        Vec::new(),
+    );
+    pg.ingest_fact_with_typed_sidecar(&authorized, &[SidecarPayload::fact(payload)], None)
         .await
-        .map_err(|err| StorageError::Unavailable(format!("begin mcp call ingest: {err}")))?;
-    let sidecar = payload.clone();
-    let outcome = ingest_fact_in_tx(&mut tx, permit, &payload, None, move |tx, outcome| {
-        Box::pin(async move { sidecar.insert_memory_sidecar(tx, outcome.memory_id).await })
-    })
-    .await?;
-    tx.commit()
-        .await
-        .map_err(|err| StorageError::Unavailable(format!("commit mcp call ingest: {err}")))?;
-    Ok(outcome)
 }
 
 /// A Fact carrying the mcp-call schema, for appending a second version to a
@@ -233,7 +235,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
-        let written = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
         let t = written.memory_id.into_inner();
         sqlx::query(
             "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
@@ -364,7 +366,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             )
             .into(),
         );
-        let first = ingest_fact_atomic(pool, &permit, &first_draft, None).await?;
+        let first = pg.ingest_fact_atomic(&permit, &first_draft, None).await?;
         let cited_object_id = first
             .cited_object_id
             .expect("citation-bearing write returns its object");
@@ -400,7 +402,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         let mut later = draft();
         later.handle = Some(first.handle);
         later.ingest_key = Some("k2".into());
-        let second = ingest_fact_atomic(pool, &permit, &later, None).await?;
+        let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
         assert_eq!(second.handle, first.handle);
 
         let transferred = pg
@@ -581,12 +583,12 @@ async fn transfer_retries_when_ingest_advances_the_captured_head() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
-        let first = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
         let mut second_draft = draft();
         second_draft.handle = Some(first.handle);
         second_draft.ingest_key = Some("k2".into());
-        let second = ingest_fact_atomic(pool, &permit, &second_draft, None).await?;
+        let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
 
         sqlx::raw_sql(
             "CREATE SEQUENCE public.transfer_race_probe;
@@ -644,7 +646,7 @@ async fn transfer_retries_when_ingest_advances_the_captured_head() {
         let mut third_draft = draft();
         third_draft.handle = Some(first.handle);
         third_draft.ingest_key = Some("k3".into());
-        let third = ingest_fact_atomic(pool, &permit, &third_draft, None).await?;
+        let third = pg.ingest_fact_atomic(&permit, &third_draft, None).await?;
 
         let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
             .bind(PROBE_LOCK)
@@ -717,12 +719,12 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
-        let first = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
         let mut later = draft();
         later.handle = Some(first.handle);
         later.ingest_key = Some("k2".into());
-        let second = ingest_fact_atomic(pool, &permit, &later, None).await?;
+        let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
         assert_eq!(second.handle, first.handle);
         let personal_key = cold_object_key(first.memory_id.into_inner());
 
@@ -987,7 +989,7 @@ async fn transfer_writes_announce_rows_under_both_lanes() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
-        let written = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
         let t = written.memory_id.into_inner();
 
         assert!(
@@ -1090,7 +1092,7 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
-        let seed = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        let seed = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
         let _ = seed;
         let hash = vec![7u8; 32];
         let blob_id: Uuid = sqlx::query_scalar(
@@ -1106,7 +1108,7 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
         let mut cited = draft();
         cited.ingest_key = Some("blob-k".into());
         cited.blob_id = Some(blob_id);
-        let written = ingest_fact_atomic(pool, &permit, &cited, None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &cited, None).await?;
         assert!(
             pg.transfer_to_owner(
                 &permit,
@@ -1157,7 +1159,7 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
         // dispatches to this sidecar. Written against `core/test-fact-v1`
         // it would dispatch elsewhere and the "destination sees nothing"
         // assertion below would hold vacuously.
-        let written = ingest_mcp_call_fact(pool, &permit).await?;
+        let written = ingest_mcp_call_fact(&pg, &permit).await?;
         let t = written.memory_id.into_inner();
         sqlx::query(
             "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
@@ -1326,13 +1328,13 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
         let dest = destination();
         let pool = pg.pool_for_tests();
 
-        let first = ingest_mcp_call_fact(pool, &permit).await?;
+        let first = ingest_mcp_call_fact(&pg, &permit).await?;
         // A live head keeps the series transferable after the first version
         // is cooled.
         let mut later = mcp_draft();
         later.handle = Some(first.handle);
         later.ingest_key = Some("k2".into());
-        let second = ingest_fact_atomic(pool, &permit, &later, None).await?;
+        let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
         assert!(
             pg.transfer_to_owner(&permit, EntityId::Memory(second.memory_id), dest, &contract_sidecar_tables())
                 .await?
@@ -1422,7 +1424,7 @@ async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
-        let written = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
 
         let before: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.owners WHERE owner_id = $1",
@@ -1475,7 +1477,7 @@ async fn transfer_refuses_the_current_owner_as_destination() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let written = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
 
         let err = pg
             .transfer_to_owner(
@@ -1553,7 +1555,7 @@ async fn seed_cited_blob(
 }
 
 async fn cite(
-    pool: &sqlx::PgPool,
+    pg: &PgStorage,
     permit: &OwnerWritePermit,
     key: &str,
     blob_id: Uuid,
@@ -1561,13 +1563,13 @@ async fn cite(
     let mut cited = draft();
     cited.ingest_key = Some(key.into());
     cited.blob_id = Some(blob_id);
-    ingest_fact_atomic(pool, permit, &cited, None).await
+    pg.ingest_fact_atomic(permit, &cited, None).await
 }
 
 /// [`cite`], attributed to a named source so a source-scope erase can
 /// select it. `draft()` attributes everything to `src`, which is one scope.
 async fn cite_from(
-    pool: &sqlx::PgPool,
+    pg: &PgStorage,
     permit: &OwnerWritePermit,
     source: &str,
     key: &str,
@@ -1577,7 +1579,7 @@ async fn cite_from(
     cited.source_id = Some(source.into());
     cited.ingest_key = Some(key.into());
     cited.blob_id = Some(blob_id);
-    ingest_fact_atomic(pool, permit, &cited, None).await
+    pg.ingest_fact_atomic(permit, &cited, None).await
 }
 
 /// The dedupe arm, in place of a refusal.
@@ -1609,11 +1611,11 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
         .fetch_one(pool)
         .await?;
 
-        let mine = cite(pool, &permit, "shared-mine", blob_id).await?;
+        let mine = cite(&pg, &permit, "shared-mine", blob_id).await?;
         // A second series cites the very same blob row. This is what used
         // to make the transfer below impossible. It stays behind, which is
         // why the row cannot simply change hands.
-        let _also_mine = cite(pool, &permit, "shared-also-mine", blob_id).await?;
+        let _also_mine = cite(&pg, &permit, "shared-also-mine", blob_id).await?;
 
         assert!(
             pg.transfer_to_owner(
@@ -1712,7 +1714,7 @@ async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
         let pool = pg.pool_for_tests();
 
         let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[12_u8; 32]).await?;
-        let written = cite(pool, &permit, "solo", blob_id).await?;
+        let written = cite(&pg, &permit, "solo", blob_id).await?;
         assert!(
             pg.transfer_to_owner(
                 &permit,
@@ -1781,7 +1783,7 @@ async fn a_destination_that_already_holds_the_bytes_keeps_its_own_row() {
         let (source_blob, _) = seed_cited_blob(pool, owner, &hash).await?;
         let (dest_blob, dest_upload) = seed_cited_blob(pool, dest, &hash).await?;
 
-        let written = cite(pool, &permit, "collide", source_blob).await?;
+        let written = cite(&pg, &permit, "collide", source_blob).await?;
         assert!(
             pg.transfer_to_owner(
                 &permit,
@@ -1848,8 +1850,8 @@ async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
 
         let hash = vec![14_u8; 32];
         let (blob_id, minting_upload) = seed_cited_blob(pool, owner, &hash).await?;
-        let mine = cite(pool, &permit, "chain-mine", blob_id).await?;
-        let _also_mine = cite(pool, &permit, "chain-also-mine", blob_id).await?;
+        let mine = cite(&pg, &permit, "chain-mine", blob_id).await?;
+        let _also_mine = cite(&pg, &permit, "chain-also-mine", blob_id).await?;
 
         // Hop one: shared, so the destination mounts.
         assert!(
@@ -1869,7 +1871,7 @@ async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
 
         // Make hop one's row shared too, so hop two mounts rather than moves.
         let first_permit = OwnerWritePermit::new_for_tests(first, AccessKind::Fact);
-        let shadow = cite(pool, &first_permit, "chain-shadow", hop_one).await?;
+        let shadow = cite(&pg, &first_permit, "chain-shadow", hop_one).await?;
         let _ = shadow;
         assert!(
             pg.transfer_to_owner(
@@ -1936,8 +1938,8 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
         let object_key = format!("objects/{upload_id}");
         cold.put(&object_key, b"the shared bytes").await?;
 
-        let mine = cite(pool, &permit, "purge-mine", blob_id).await?;
-        let _also_mine = cite(pool, &permit, "purge-also-mine", blob_id).await?;
+        let mine = cite(&pg, &permit, "purge-mine", blob_id).await?;
+        let _also_mine = cite(&pg, &permit, "purge-also-mine", blob_id).await?;
         assert!(
             pg.transfer_to_owner(
                 &permit,
@@ -2041,8 +2043,8 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
         let object_key = format!("objects/{upload_id}");
         cold.put(&object_key, b"bytes two owners read").await?;
 
-        let dropped = cite_from(pool, &permit, "src-drop", "scope-drop", blob_id).await?;
-        let handed_over = cite_from(pool, &permit, "src-keep", "scope-keep", blob_id).await?;
+        let dropped = cite_from(&pg, &permit, "src-drop", "scope-drop", blob_id).await?;
+        let handed_over = cite_from(&pg, &permit, "src-keep", "scope-keep", blob_id).await?;
         assert!(
             pg.transfer_to_owner(
                 &permit,
@@ -2147,7 +2149,7 @@ async fn erasing_the_last_admission_citing_a_blob_takes_the_blob_and_owes_its_by
 
         let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[31_u8; 32]).await?;
         let object_key = format!("objects/{upload_id}");
-        let mine = cite(pool, &permit, "series-erase", blob_id).await?;
+        let mine = cite(&pg, &permit, "series-erase", blob_id).await?;
 
         let mut tx = pool.begin().await?;
         let (erased, plan) = erase_memory_series(
@@ -2208,8 +2210,8 @@ async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
 
         let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[37_u8; 32]).await?;
         let object_key = format!("objects/{upload_id}");
-        let mine = cite(pool, &permit, "series-mine", blob_id).await?;
-        let handed_over = cite(pool, &permit, "series-handed-over", blob_id).await?;
+        let mine = cite(&pg, &permit, "series-mine", blob_id).await?;
+        let handed_over = cite(&pg, &permit, "series-handed-over", blob_id).await?;
         assert!(
             pg.transfer_to_owner(
                 &permit,
@@ -2298,20 +2300,20 @@ async fn a_cited_blob_is_held_against_a_concurrent_citation() {
         let pool = pg.pool_for_tests();
 
         let (blob_id, _upload) = seed_cited_blob(pool, owner, &[31_u8; 32]).await?;
-        let cited = cite(pool, &permit, "held-blob", blob_id).await?;
+        let cited = cite(&pg, &permit, "held-blob", blob_id).await?;
 
-        // A second session whose statements give up rather than hang.
-        let writer = sqlx::postgres::PgPoolOptions::new()
-            .after_connect(|conn, _| {
-                Box::pin(async move {
-                    sqlx::query("SET statement_timeout = '2500ms'")
-                        .execute(conn)
-                        .await?;
-                    Ok(())
-                })
-            })
-            .connect(&db_url(&db_name))
-            .await?;
+        // A second session whose statements give up rather than hang. Same
+        // storage, its own pool: the per-connection statement timeout is
+        // pool policy, so a second `PgStorage` IS the second session.
+        let writer = PgStorage::connect_with_config(
+            &db_url(&db_name),
+            proxima_storage_pg::PgPoolConfig {
+                statement_timeout: std::time::Duration::from_millis(2500),
+                ..proxima_storage_pg::PgPoolConfig::default()
+            },
+            proxima_storage_pg::PgTuning::default(),
+        )
+        .await?;
 
         // Nothing held: citing the same blob is an ordinary write.
         cite(&writer, &permit, "before-the-lock", blob_id)
@@ -2344,7 +2346,7 @@ async fn a_cited_blob_is_held_against_a_concurrent_citation() {
         cite(&writer, &permit, "after-the-lock", blob_id)
             .await
             .expect("once the erase is gone the citation lands");
-        writer.close().await;
+        writer.pool_for_tests().close().await;
         Ok(())
     }
     .await;

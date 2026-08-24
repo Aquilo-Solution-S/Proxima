@@ -6,6 +6,7 @@
     clippy::used_underscore_binding
 )]
 
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
@@ -14,7 +15,6 @@ use proxima_core::{
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::query_timeseries::{change_history, query_heads};
 use proxima_storage_pg::verbs::wake_timeseries::{
@@ -69,58 +69,59 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
-        let visit =
-            ingest_fact_atomic(pool, &permit, &fact("visit", vec![], vec![], "fact"), None).await?;
-        let file = ingest_fact_atomic(
-            pool,
-            &permit,
-            &fact("file", vec![visit.memory_id.into_inner()], vec![], "fact"),
-            None,
-        )
-        .await?;
-        let c1 = ingest_fact_atomic(
-            pool,
-            &permit,
-            &fact(
-                "chunk",
-                vec![visit.memory_id.into_inner(), file.memory_id.into_inner()],
-                vec![],
-                "fact",
-            ),
-            None,
-        )
-        .await?;
-        let c2 = ingest_fact_atomic(
-            pool,
-            &permit,
-            &fact(
-                "chunk",
-                vec![visit.memory_id.into_inner(), file.memory_id.into_inner()],
-                vec![],
-                "fact",
-            ),
-            None,
-        )
-        .await?;
+        let visit = pg
+            .ingest_fact_atomic(&permit, &fact("visit", vec![], vec![], "fact"), None)
+            .await?;
+        let file = pg
+            .ingest_fact_atomic(
+                &permit,
+                &fact("file", vec![visit.memory_id.into_inner()], vec![], "fact"),
+                None,
+            )
+            .await?;
+        let c1 = pg
+            .ingest_fact_atomic(
+                &permit,
+                &fact(
+                    "chunk",
+                    vec![visit.memory_id.into_inner(), file.memory_id.into_inner()],
+                    vec![],
+                    "fact",
+                ),
+                None,
+            )
+            .await?;
+        let c2 = pg
+            .ingest_fact_atomic(
+                &permit,
+                &fact(
+                    "chunk",
+                    vec![visit.memory_id.into_inner(), file.memory_id.into_inner()],
+                    vec![],
+                    "fact",
+                ),
+                None,
+            )
+            .await?;
         let sum_draft = fact(
             "sum",
             vec![],
             vec![c1.memory_id.into_inner(), c2.memory_id.into_inner()],
             "abstraction",
         );
-        let sum = ingest_fact_atomic(pool, &permit, &sum_draft, None).await?;
-        let self_p = ingest_fact_atomic(
-            pool,
-            &permit,
-            &fact(
-                "self",
-                vec![sum.memory_id.into_inner()],
-                vec![],
-                "perspective",
-            ),
-            None,
-        )
-        .await?;
+        let sum = pg.ingest_fact_atomic(&permit, &sum_draft, None).await?;
+        let self_p = pg
+            .ingest_fact_atomic(
+                &permit,
+                &fact(
+                    "self",
+                    vec![sum.memory_id.into_inner()],
+                    vec![],
+                    "perspective",
+                ),
+                None,
+            )
+            .await?;
 
         let mut tx = pool.begin().await?;
         let wake = insert_wake_config(

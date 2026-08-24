@@ -223,6 +223,31 @@ impl AuthorizedNodeLinks {
 }
 
 impl AuthorizedFactWrite {
+    /// Test-only constructor. Engine fact-ingest authorization remains the
+    /// production mint; this exists so a storage-backend test can exercise
+    /// the WRITE PORT — the only public write path — instead of reaching
+    /// past it into a backend verb.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn new_for_tests(
+        owner_write: OwnerWritePermit,
+        draft: FactWriteCommand,
+        fact_sidecar_table: Option<String>,
+        fact_natural_key_columns: Vec<String>,
+    ) -> Self {
+        let links = AuthorizedNodeLinks::new(draft.derived_from.clone(), Vec::new());
+        Self::new(
+            crate::engine::MemoryPermit::owner_scoped_with_write_for_tests(
+                owner_write,
+                crate::access::Relation::Editor,
+            ),
+            draft,
+            fact_sidecar_table,
+            fact_natural_key_columns,
+            links,
+        )
+    }
+
     pub(crate) fn new(
         permit: MemoryPermit,
         draft: FactWriteCommand,

@@ -100,7 +100,7 @@ impl FlavorRegistry {
         self.validate_dispatcher_action_specs()?;
         self.validate_contracts()?;
         self.validate_embedding_recipes_match_behavior()?;
-        Ok(FlavorRegistryFrozen::from_registry(self))
+        FlavorRegistryFrozen::from_registry(self)
     }
 
     /// Cross-check the declarations against the registrations.

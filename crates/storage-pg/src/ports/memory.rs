@@ -38,7 +38,6 @@ impl MemoryAuthoringPort for PgStorage {
                 schema_version: req.schema_version,
                 text: req.text.clone(),
                 operator_kind: req.operator_kind,
-                model_id: req.model_id,
                 supersedes: req.supersedes,
                 lexical_language: req.lexical_language,
                 embedding: req.embedding.clone(),
