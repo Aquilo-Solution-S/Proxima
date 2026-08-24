@@ -13,9 +13,9 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use proxima_core::flavor::{FlavorContract, ProjectionDecl, ToolContract};
 use proxima_core::mcp::{
-    McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
-    McpToolOrigin, Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall,
-    core_action_meta,
+    McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx,
+    McpToolError, McpToolOrigin, Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch,
+    ToolCall, core_action_meta,
 };
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, GroupId,
@@ -64,12 +64,14 @@ impl Tool for DispatchTool {
             allowed_fields: &["id"],
             required_fields: &["id"],
             annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+            audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "touch",
             allowed_fields: &["id", "note"],
             required_fields: &["id"],
             annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+            audience: McpToolAudience::Shared,
         },
     ];
     type Args = DispatchArgs;

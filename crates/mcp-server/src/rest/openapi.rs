@@ -692,6 +692,7 @@ mod tests {
             allowed_fields: &["id"],
             required_fields: &["id"],
             annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+            audience: proxima_core::mcp::McpToolAudience::Shared,
         }];
         type Args = CollisionDispatcherArgs;
         type Output = ();
@@ -829,6 +830,7 @@ mod tests {
                         .read_only(true)
                         .open_world(false),
                 ),
+                audience: proxima_core::mcp::McpToolAudience::Shared,
             }];
 
         fn stub(
@@ -856,7 +858,9 @@ mod tests {
                 }),
                 output_schema: json!({ "type": "object" }),
                 action_arg_specs,
+                argv_action_specs: &[],
                 annotations: None,
+                audience: proxima_core::mcp::McpToolAudience::Shared,
                 call: &|_, _| Box::pin(async { Ok(Value::Null) }),
             }
         }

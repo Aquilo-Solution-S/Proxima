@@ -520,6 +520,27 @@ pub trait Tool: Send + Sync + 'static {
     /// schemars-derived `x-proxima-actions` disagree. Each spec's annotations
     /// are the sole read/write authority for that action; missing means write.
     const ACTION_ARG_SPECS: &'static [crate::mcp::McpActionArgSpec] = &[];
+    /// The actions of an argv-keyed dispatcher, or `&[]`.
+    ///
+    /// For a tool whose arguments are a CLI grammar (`{argv, flags}`), this
+    /// is THE enumeration of its per-command scope keys. The action is
+    /// derived at dispatch by longest-prefix match of `args["argv"]` against
+    /// each spec's `argv_prefix`, the set is closed (unmatched argv is a
+    /// validation error), and the derived `tool:action` key is what the
+    /// scope gate and `tools/list` both consult — one vocabulary at both
+    /// doors. Flag validation past the action key stays with the tool's own
+    /// dispatch.
+    ///
+    /// Mutually exclusive with [`Self::ACTION_ARG_SPECS`]: registration
+    /// refuses a tool declaring both, so no code path has to decide which
+    /// vocabulary names an action.
+    const ARGV_ACTION_SPECS: &'static [crate::mcp::McpArgvActionSpec] = &[];
+    /// Tool-level audience: [`crate::mcp::McpToolAudience::Owner`] declares
+    /// every key of this tool the owner's alone. Descriptor data for hosts
+    /// that compute separate tool surfaces per audience — Proxima's own
+    /// gating does not read it. See
+    /// [`crate::mcp::McpToolDescriptor::audience`].
+    const AUDIENCE: crate::mcp::McpToolAudience = crate::mcp::McpToolAudience::Shared;
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
     /// What the tool answers with. `JsonSchema` is required for the same

@@ -1,4 +1,6 @@
-use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{
+    CoreActionMeta, McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError,
+};
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
@@ -54,12 +56,14 @@ impl McpTool for CoreFactTool {
             allowed_fields: &["fact"],
             required_fields: &["fact"],
             annotations: Some(READ_ONLY),
+            audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "facts_citing_object",
             allowed_fields: &["cited_object_id", "limit", "cursor"],
             required_fields: &["cited_object_id"],
             annotations: Some(READ_ONLY),
+            audience: McpToolAudience::Shared,
         },
     ];
     type Args = CoreFactArgs;

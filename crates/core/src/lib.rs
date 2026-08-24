@@ -64,12 +64,12 @@ pub use goal::{SimpleTextGoalV1, TaskGoalV1, TaskPriority};
 pub use ids::*;
 pub use llm::*;
 pub use mcp::{
-    CoreActionMeta, McpAuthorContext, McpCallFn, McpTool, McpToolAnnotations, McpToolCtx,
-    McpToolDescriptor, McpToolError, McpToolErrorKind, McpToolOrigin, MemoryHandleClass, Next,
-    PrefixedUuidClass, PrefixedUuidError, RequestBehavior, ScopeGateBehavior, TerminalDispatch,
-    all_core_actions, all_core_resources, canonical_scope_keys, canonical_scope_keys_excluding,
-    core_action_meta, core_tool_annotations, format_prefixed_uuid, parse_prefixed_uuid,
-    provider_safe_tool_name, tool_name_matches,
+    CoreActionMeta, McpAuthorContext, McpCallFn, McpTool, McpToolAnnotations, McpToolAudience,
+    McpToolCtx, McpToolDescriptor, McpToolError, McpToolErrorKind, McpToolOrigin,
+    MemoryHandleClass, Next, PrefixedUuidClass, PrefixedUuidError, RequestBehavior,
+    ScopeGateBehavior, TerminalDispatch, all_core_actions, all_core_resources,
+    canonical_scope_keys, canonical_scope_keys_excluding, core_action_meta, core_tool_annotations,
+    format_prefixed_uuid, parse_prefixed_uuid, provider_safe_tool_name, tool_name_matches,
 };
 pub use memory::*;
 pub use models::*;

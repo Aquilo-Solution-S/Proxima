@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use proxima_core::authz::OwnerResolver;
 use proxima_core::error::ProtocolError;
-use proxima_core::mcp::{McpActionArgSpec, McpTool, McpToolAnnotations, McpToolCtx, McpToolError};
+use proxima_core::mcp::{
+    McpActionArgSpec, McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolError,
+};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthzContext, FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError, Owner,
@@ -151,6 +153,7 @@ stub_tool!(
         allowed_fields: &["id"],
         required_fields: &["id"],
         annotations: None,
+        audience: McpToolAudience::Shared,
     }]
 );
 stub_tool!(
@@ -162,6 +165,7 @@ stub_tool!(
         allowed_fields: &[],
         required_fields: &[],
         annotations: None,
+        audience: McpToolAudience::Shared,
     }]
 );
 stub_tool!(
@@ -173,6 +177,7 @@ stub_tool!(
         allowed_fields: &["id"],
         required_fields: &["id"],
         annotations: None,
+        audience: McpToolAudience::Shared,
     }]
 );
 stub_tool!(
@@ -185,12 +190,14 @@ stub_tool!(
             allowed_fields: &["id"],
             required_fields: &["id"],
             annotations: None,
+            audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "touch",
             allowed_fields: &["id"],
             required_fields: &["id", "note"],
             annotations: None,
+            audience: McpToolAudience::Shared,
         },
     ]
 );
@@ -203,6 +210,7 @@ stub_tool!(
         allowed_fields: &["id"],
         required_fields: &["id"],
         annotations: READ_ONLY_ANNOTATIONS,
+        audience: McpToolAudience::Shared,
     }],
     READ_ONLY_ANNOTATIONS
 );
@@ -215,6 +223,7 @@ stub_tool!(
         allowed_fields: &["id"],
         required_fields: &["id"],
         annotations: None,
+        audience: McpToolAudience::Shared,
     }],
     READ_ONLY_ANNOTATIONS
 );
@@ -230,12 +239,14 @@ stub_tool!(
             allowed_fields: &["id"],
             required_fields: &["id"],
             annotations: None,
+            audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
             annotations: None,
+            audience: McpToolAudience::Shared,
         },
     ]
 );
