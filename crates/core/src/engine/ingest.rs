@@ -13,15 +13,17 @@ use crate::storage_ports::EmbeddingJobHandle;
 use crate::verbs::fact_ingest::{
     AuthorizedCitationAttachment, AuthorizedFactWithCitation, AuthorizedFactWithCitationRef,
     AuthorizedFactWrite, AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject,
-    AuthorizedNodeLinks, FactIngestOutcome, FactWriteCommand, InlineCitationMappingDraft,
-    InlineCitedObjectDraft,
+    AuthorizedNodeLinks, CitationSpec, FactIngestOutcome, FactWriteCommand,
+    InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
-use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
+use crate::verbs::persist_mcp_call::{
+    MCP_CALL_CITATION_SCHEMA, MCP_CALL_IO_SCHEMA, MCP_CALL_SOURCE_ID, McpCallLogInput,
+    McpCallLogOutcome,
+};
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
-use crate::{EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload};
-
-#[cfg(test)]
-use crate::SourceBatchId;
+use crate::{
+    EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload, SourceBatchId,
+};
 
 /// Liveness probe after a provider refuses a batch.
 ///
@@ -1236,6 +1238,15 @@ impl Engine {
     /// per-user actor (`actor_oid` / `actor_upn`) is recorded as Fact
     /// data; the graph Owner is what gets authorized here.
     ///
+    /// The write itself is the ordinary governed typed-Fact path —
+    /// [`Self::authorize_fact_ingest`] then
+    /// [`Self::ingest_fact_with_typed_sidecar`] — and deliberately not a
+    /// verb of its own. The admission row therefore declares
+    /// `proxima_core.mcp_call_logged_v1` in `sidecar_tables` and the typed
+    /// row lands through the frozen sidecar registry; that row is the ONLY
+    /// thing [`Self::read_mcp_call_history`] reads, so a second write path
+    /// that skipped it would log calls into an unreadable history.
+    ///
     /// # Errors
     ///
     /// Returns `Forbidden` when `authz` cannot access the log Owner or lacks
@@ -1251,18 +1262,55 @@ impl Engine {
             .authorize_write(authz, &owner, Relation::Ingest)
             .await?;
         input.owner = *permit.owner();
-        self.storage
-            .ingest
-            .mcp_call_write
-            .persist_mcp_call_atomic(permit.owner_write_permit(), &input)
-            .await
-            .map_err(|err| {
-                super::errors::map_write_storage_error(
-                    err,
-                    "mcp_call",
-                    "mcp call referenced row not found",
-                )
-            })
+        // The gate above is what rejects a foreign log Owner. The Fact path
+        // below resolves the owner from the context instead of taking one,
+        // so it is handed a context narrowed to the owner just authorized —
+        // the same shape the core `record_utterance` tool writes through.
+        let scoped = authz
+            .clone()
+            .narrowed_to_owner(input.owner)
+            .ok_or_else(|| {
+                ProtocolError::forbidden("mcp call log owner is not writable by this context")
+            })?;
+
+        let receipt_id = input.receipt_id();
+        let payload = input.payload();
+        let mut draft = FactWriteCommand::from_payload(
+            MCP_CALL_SOURCE_ID,
+            SourceBatchId::new(uuid::Uuid::now_v7()),
+            &payload,
+            input.observed_at,
+        )
+        .occurred_at(input.occurred_at)
+        // Content-addressed I/O citation: the same request/response bytes
+        // under one Owner share one cited object, whatever else differs.
+        .with_citation(CitationSpec::v1(
+            MCP_CALL_IO_SCHEMA,
+            input.io_content_hash(),
+            MCP_CALL_CITATION_SCHEMA,
+        ));
+        // Whole-verb replay key. `from_payload` digests the payload alone,
+        // which would collapse two identical calls made at different times
+        // into one Fact; `McpCallLogInput::receipt_id` folds the timestamps
+        // as well, which is the documented idempotency of this verb.
+        draft.ingest_key = Some(hex::encode(receipt_id.into_inner()));
+
+        let sidecars = [SidecarPayload::fact(payload)];
+        let authorized = self
+            .authorize_fact_ingest(&scoped, Relation::Ingest, draft, &sidecars)
+            .await?;
+        let embed_client = self.embed_client();
+        let requested = embed_client.as_ref().map(|client| client.model_id());
+        let outcome = self
+            .ingest_fact_with_typed_sidecar(&authorized, &sidecars, requested)
+            .await?;
+        Ok(McpCallLogOutcome {
+            receipt_id,
+            fact_memory_id: outcome.memory_id,
+            cited_object_id: outcome.cited_object_id,
+            change_event_seq: outcome.change_event_seq,
+            idempotent_replay: outcome.idempotent_replay,
+        })
     }
 }
 

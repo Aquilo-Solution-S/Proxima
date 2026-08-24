@@ -4,11 +4,10 @@ use std::sync::Arc;
 use super::handles::{
     ChangeEventHandle, CitationHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle,
     EmbeddingTextHandle, EmbeddingWriteHandle, FactIngestHandle, GoalReadHandle,
-    GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle,
-    MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle,
-    OwnerDropProofHandle, OwnerEraseAuthorityHandle, OwnerInverseHandle,
-    OwnerMembershipAdminHandle, OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle,
-    SourceCursorHandle, WriteSessionFactoryHandle,
+    GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, MemoryAuthoringHandle,
+    MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
+    OwnerEraseAuthorityHandle, OwnerInverseHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
+    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle, WriteSessionFactoryHandle,
 };
 use super::rejecting::RejectingStorage;
 
@@ -16,7 +15,6 @@ use super::rejecting::RejectingStorage;
 #[derive(Clone)]
 pub struct StoragePorts {
     fact_ingest: FactIngestHandle,
-    mcp_call_write: McpCallWriteHandle,
     mcp_call_read: McpCallReadHandle,
     memory_authoring: MemoryAuthoringHandle,
     memory_read: MemoryReadHandle,
@@ -65,7 +63,6 @@ pub(crate) struct GoalCommandStoragePorts {
 #[derive(Clone)]
 pub(crate) struct IngestStoragePorts {
     pub fact_ingest: FactIngestHandle,
-    pub mcp_call_write: McpCallWriteHandle,
     pub embedding_text: EmbeddingTextHandle,
     pub embedding_write: EmbeddingWriteHandle,
     pub embedding_job: EmbeddingJobHandle,
@@ -128,7 +125,6 @@ pub(crate) struct EngineStoragePorts {
 #[derive(Default)]
 pub struct StoragePortsBuilder {
     fact_ingest: Option<FactIngestHandle>,
-    mcp_call_write: Option<McpCallWriteHandle>,
     mcp_call_read: Option<McpCallReadHandle>,
     memory_authoring: Option<MemoryAuthoringHandle>,
     memory_read: Option<MemoryReadHandle>,
@@ -178,7 +174,6 @@ impl StoragePorts {
         let rejecting = Arc::new(RejectingStorage);
         Self {
             fact_ingest: rejecting.clone(),
-            mcp_call_write: rejecting.clone(),
             mcp_call_read: rejecting.clone(),
             memory_authoring: rejecting.clone(),
             memory_read: rejecting.clone(),
@@ -265,7 +260,6 @@ impl From<StoragePorts> for EngineStoragePorts {
             },
             ingest: IngestStoragePorts {
                 fact_ingest: ports.fact_ingest.clone(),
-                mcp_call_write: ports.mcp_call_write.clone(),
                 embedding_text: ports.embedding_text.clone(),
                 embedding_write: ports.embedding_write.clone(),
                 embedding_job: ports.embedding_job.clone(),
@@ -301,12 +295,6 @@ impl StoragePortsBuilder {
     #[must_use]
     pub fn fact_ingest(mut self, handle: FactIngestHandle) -> Self {
         self.fact_ingest = Some(handle);
-        self
-    }
-
-    #[must_use]
-    pub fn mcp_call_write(mut self, handle: McpCallWriteHandle) -> Self {
-        self.mcp_call_write = Some(handle);
         self
     }
 
@@ -481,7 +469,6 @@ impl StoragePortsBuilder {
 
         Ok(require_ports!(
             fact_ingest,
-            mcp_call_write,
             mcp_call_read,
             memory_authoring,
             memory_read,

@@ -511,7 +511,9 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
         "crates/core/src/storage_ports/fact.rs": [
             "ingest_fact_atomic",
         ],
-        "crates/core/src/storage_ports/mcp.rs": ["persist_mcp_call_atomic"],
+        # There is no MCP-call write surface to guard either: the engine logs
+        # a call through the governed typed-Fact path (`ingest_fact_atomic`
+        # above), so `storage_ports/mcp.rs` is a read port only.
         # There is no edge-write surface to guard. An edge is not a thing a
         # caller appends; it is the index row a node write leaves behind, so
         # the permit that guards the node write is the only one there is.
@@ -542,10 +544,6 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
         ],
         "crates/storage-pg/src/verbs/derive_append.rs": [
             "append_derived_in_tx",
-        ],
-        "crates/storage-pg/src/verbs/persist_mcp_call.rs": [
-            "persist_mcp_call_atomic",
-            "persist_mcp_call_in_tx",
         ],
         "crates/storage-pg/src/verbs/fact_embeddings/jobs.rs": ["enqueue_missing_embedding_jobs"],
         "crates/storage-pg/src/verbs/source_cursors.rs": ["store_source_cursor"],

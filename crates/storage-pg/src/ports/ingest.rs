@@ -1,12 +1,9 @@
-use proxima_core::storage_ports::{
-    FactIngestPort, McpCallReadPort, McpCallWritePort, OwnerWritePermit,
-};
+use proxima_core::storage_ports::{FactIngestPort, McpCallReadPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
     FactIngestOutcome, FactWriteCommand,
 };
 use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
-use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use proxima_core::{SidecarPayload, StorageError};
 
 use crate::error::{internal, with_bounded_retry};
@@ -156,17 +153,6 @@ impl FactIngestPort for PgStorage {
             }
         })
         .await
-    }
-}
-
-#[async_trait::async_trait]
-impl McpCallWritePort for PgStorage {
-    async fn persist_mcp_call_atomic(
-        &self,
-        permit: &OwnerWritePermit,
-        input: &McpCallLogInput,
-    ) -> Result<McpCallLogOutcome, StorageError> {
-        verbs::persist_mcp_call::persist_mcp_call_atomic(&self.pool, permit, input).await
     }
 }
 

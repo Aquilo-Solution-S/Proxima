@@ -370,7 +370,7 @@ pub use storage_ports::{
     EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, EmbeddingReconcileOptions,
     EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome,
     EmbeddingWritePort, FactIngestPort, GoalReadPort, GoalWritePort, InboundPinQuery,
-    McpCallReadPort, McpCallWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
+    McpCallReadPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
     OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort, OwnerEraseAuthorityPort,
     OwnerInversePort, OwnerMembershipAdminPort, OwnerTransferPort, RegistryProjectionPort,
     SourceBatchPort, SourceCursorPort, StoragePorts,

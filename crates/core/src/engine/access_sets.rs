@@ -189,19 +189,6 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl McpCallWritePort for MembershipStorage {
-        async fn persist_mcp_call_atomic(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-            _input: &McpCallLogInput,
-        ) -> Result<McpCallLogOutcome, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-    }
-
-    #[async_trait::async_trait]
     impl McpCallReadPort for MembershipStorage {
         async fn read_mcp_call_history(
             &self,
@@ -922,7 +909,6 @@ pub(in crate::engine) mod tests {
             let storage = Arc::new(self);
             StoragePorts::builder()
                 .fact_ingest(storage.clone())
-                .mcp_call_write(storage.clone())
                 .mcp_call_read(storage.clone())
                 .memory_authoring(storage.clone())
                 .memory_read(storage.clone())

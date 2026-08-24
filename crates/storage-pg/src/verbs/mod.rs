@@ -22,7 +22,6 @@ pub(crate) mod mcp_call_history;
 pub mod memory_timeseries;
 pub(crate) mod owner_erase;
 pub(crate) mod owner_export;
-pub mod persist_mcp_call;
 pub mod query;
 pub mod query_timeseries;
 pub(crate) mod sketch;

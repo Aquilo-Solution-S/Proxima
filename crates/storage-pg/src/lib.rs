@@ -993,7 +993,6 @@ impl PgStorage {
     pub fn storage_ports(self: Arc<Self>) -> StoragePorts {
         StoragePorts::builder()
             .fact_ingest(self.clone())
-            .mcp_call_write(self.clone())
             .mcp_call_read(self.clone())
             .memory_authoring(self.clone())
             .memory_read(self.clone())

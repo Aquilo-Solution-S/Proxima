@@ -63,13 +63,12 @@ pub use goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 pub use handles::{
     ChangeEventHandle, CitationHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle,
     EmbeddingTextHandle, EmbeddingWriteHandle, FactIngestHandle, GoalReadHandle,
-    GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle,
-    MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle,
-    OwnerDropProofHandle, OwnerEraseAuthorityHandle, OwnerInverseHandle,
-    OwnerMembershipAdminHandle, OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle,
-    SourceCursorHandle, WriteSessionFactoryHandle,
+    GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, MemoryAuthoringHandle,
+    MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
+    OwnerEraseAuthorityHandle, OwnerInverseHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
+    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle, WriteSessionFactoryHandle,
 };
-pub use mcp::{McpCallReadPort, McpCallWritePort};
+pub use mcp::McpCallReadPort;
 pub use memory::{
     CitationPort, InboundPinQuery, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
     OperatorWriteProof,
