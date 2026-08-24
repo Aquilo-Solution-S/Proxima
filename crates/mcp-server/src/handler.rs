@@ -692,16 +692,10 @@ pub(crate) fn action_allowed_for_auth(
 ) -> bool {
     let scope_allowed = auth
         .is_none_or(|ctx| scope_permits_action(ctx.authz.tool_scope(), descriptor.name, action));
-    // Argv specs carry no per-action annotations — flag semantics belong to
-    // the tool's own dispatch — so an argv action classifies read/write from
-    // the tool-level declaration, matching what the owner-role gate enforces
-    // at call time.
-    let read_only = if descriptor.action_arg_specs.is_empty() {
-        descriptor.is_read_only()
-    } else {
-        descriptor.action_is_read_only(action)
-    };
-    scope_allowed && owner_role_allows(auth, read_only)
+    // One classification rule for both vocabularies, owned by the
+    // descriptor, so this advertisement decision and the owner-role gate
+    // `ScopeGateBehavior` runs at call time cannot answer differently.
+    scope_allowed && owner_role_allows(auth, descriptor.action_is_read_only(action))
 }
 
 fn owner_role_allows(auth: Option<&McpAuthContext>, read_only: bool) -> bool {
@@ -724,20 +718,36 @@ pub(crate) fn annotations_for_auth(
     auth: Option<&McpAuthContext>,
     descriptor: &McpToolDescriptor,
 ) -> Option<McpToolAnnotations> {
-    if descriptor.action_arg_specs.is_empty() {
+    // Both dispatcher vocabularies project the same way; the classification
+    // of each action — including whether it falls back to the tool — is the
+    // descriptor's single rule, never re-derived here.
+    let actions: Vec<&str> = if descriptor.action_arg_specs.is_empty() {
+        descriptor
+            .argv_action_specs
+            .iter()
+            .map(|spec| spec.action)
+            .collect()
+    } else {
+        descriptor
+            .action_arg_specs
+            .iter()
+            .map(|spec| spec.action)
+            .collect()
+    };
+    if actions.is_empty() {
         return descriptor.resolved_annotations();
     }
-    let visible = descriptor
-        .action_arg_specs
-        .iter()
-        .filter(|spec| auth.is_none() || action_allowed_for_auth(auth, descriptor, spec.action))
+    let visible = actions
+        .into_iter()
+        .filter(|action| auth.is_none() || action_allowed_for_auth(auth, descriptor, action))
+        .map(|action| descriptor.effective_action_annotations(action))
         .collect::<Vec<_>>();
     let first = *visible.first()?;
     let common = |field: fn(McpToolAnnotations) -> Option<bool>| {
-        let first = first.annotations.and_then(field);
+        let first = first.and_then(field);
         visible
             .iter()
-            .all(|spec| spec.annotations.and_then(field) == first)
+            .all(|annotations| annotations.and_then(field) == first)
             .then_some(first)
             .flatten()
     };
@@ -745,7 +755,7 @@ pub(crate) fn annotations_for_auth(
         read_only: Some(
             visible
                 .iter()
-                .all(|spec| spec.annotations.and_then(|value| value.read_only) == Some(true)),
+                .all(|annotations| annotations.and_then(|value| value.read_only) == Some(true)),
         ),
         destructive: common(|value| value.destructive),
         idempotent: common(|value| value.idempotent),
@@ -863,6 +873,23 @@ mod tests {
             allowed_fields: &["id"],
             required_fields: &["id"],
             annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+            audience: proxima_core::mcp::McpToolAudience::Shared,
+        },
+    ];
+
+    /// The argv twin of [`MIXED_ACTIONS`]: one command that declares itself
+    /// a read, one that declares nothing and so classifies from the tool.
+    const MIXED_ARGV_ACTIONS: &[proxima_core::mcp::McpArgvActionSpec] = &[
+        proxima_core::mcp::McpArgvActionSpec {
+            action: "approval",
+            argv_prefix: &["approval"],
+            annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+            audience: proxima_core::mcp::McpToolAudience::Shared,
+        },
+        proxima_core::mcp::McpArgvActionSpec {
+            action: "approval-decide",
+            argv_prefix: &["approval", "decide"],
+            annotations: None,
             audience: proxima_core::mcp::McpToolAudience::Shared,
         },
     ];
@@ -1321,6 +1348,110 @@ mod tests {
             annotations_for_auth(Some(&writer), &mixed).and_then(|value| value.read_only),
             Some(false),
             "a mixed dispatcher is conservatively a write when both actions are visible",
+        );
+    }
+
+    /// The argv vocabulary classifies per command too, and an unannotated
+    /// command still falls back to the tool.
+    ///
+    /// The motivating shape is a dispatcher whose argv-keyed commands are
+    /// mostly reads under a tool that must call itself writable because
+    /// some of them write. Classifying the whole tool cost a
+    /// read-capable-only owner every one of those reads.
+    #[test]
+    fn a_viewer_keeps_the_annotated_read_command_of_an_argv_dispatcher() {
+        use proxima_core::{
+            AuthPath, AuthzContext, GroupId, Owner, ToolScope, UserId, access::Role,
+        };
+
+        let owner = Owner::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let viewer = McpAuthContext {
+            owner,
+            authz: AuthzContext::for_subject_with_role(
+                UserId::new(uuid::Uuid::now_v7()),
+                [(owner, Role::viewer())],
+                AuthPath::HostBearer,
+            )
+            .with_tool_scope(ToolScope::All),
+            model_id: None,
+        };
+        let cli = McpToolDescriptor {
+            argv_action_specs: MIXED_ARGV_ACTIONS,
+            // The tool writes; only the annotated command opts out.
+            ..flavor_descriptor(
+                "proxima-stub_cli",
+                Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+            )
+        };
+
+        assert!(
+            action_allowed_for_auth(Some(&viewer), &cli, "approval"),
+            "an argv command that declares read_only must stay callable by a viewer"
+        );
+        assert!(
+            !action_allowed_for_auth(Some(&viewer), &cli, "approval-decide"),
+            "an argv command that declares nothing classifies from the tool, which writes"
+        );
+        assert!(
+            tool_allowed_for_auth(Some(&viewer), &cli),
+            "the read command keeps the dispatcher visible"
+        );
+        assert_eq!(
+            annotations_for_auth(Some(&viewer), &cli).and_then(|value| value.read_only),
+            Some(true),
+            "only the read command is visible to a viewer",
+        );
+
+        let writer = McpAuthContext {
+            owner,
+            authz: AuthzContext::for_subject_with_role(
+                UserId::new(uuid::Uuid::now_v7()),
+                [(owner, Role::editor())],
+                AuthPath::HostBearer,
+            )
+            .with_tool_scope(ToolScope::All),
+            model_id: None,
+        };
+        assert_eq!(
+            annotations_for_auth(Some(&writer), &cli).and_then(|value| value.read_only),
+            Some(false),
+            "a mixed argv dispatcher is conservatively a write when both commands are visible",
+        );
+    }
+
+    /// A descriptor whose argv commands say nothing keeps classifying from
+    /// the tool — the pre-annotation behaviour, and what makes `None`
+    /// additive rather than a silent reclassification.
+    #[test]
+    fn unannotated_argv_commands_still_classify_from_the_tool() {
+        const SILENT: &[proxima_core::mcp::McpArgvActionSpec] =
+            &[proxima_core::mcp::McpArgvActionSpec {
+                action: "approval",
+                argv_prefix: &["approval"],
+                annotations: None,
+                audience: proxima_core::mcp::McpToolAudience::Shared,
+            }];
+
+        let read_tool = McpToolDescriptor {
+            argv_action_specs: SILENT,
+            ..flavor_descriptor(
+                "proxima-stub_cli",
+                Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+            )
+        };
+        assert!(read_tool.action_is_read_only("approval"));
+
+        let write_tool = McpToolDescriptor {
+            argv_action_specs: SILENT,
+            ..flavor_descriptor(
+                "proxima-stub_cli",
+                Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+            )
+        };
+        assert!(!write_tool.action_is_read_only("approval"));
+        assert!(
+            !write_tool.action_is_read_only("not-a-command"),
+            "a key the vocabulary does not emit is a write under a write tool"
         );
     }
 

@@ -109,6 +109,9 @@ impl McpToolDescriptor {
     /// would make a later write action read-only under a read-only parent.
     /// Silence therefore stays fail-closed and is interpreted as a write by
     /// [`Self::action_is_read_only`].
+    ///
+    /// This is the `action`-tagged half only. Callers classifying an action
+    /// of *any* dispatcher want [`Self::effective_action_annotations`].
     #[must_use]
     pub fn resolved_action_annotations(
         &self,
@@ -118,11 +121,61 @@ impl McpToolDescriptor {
             .and_then(|spec| spec.annotations)
     }
 
-    /// Whether the owner-role gate should treat one dispatcher action as a
-    /// read. Missing specs and missing annotations are writes.
+    /// The descriptor-owned contract for one argv-keyed action.
+    #[must_use]
+    pub fn argv_action_spec(&self, action: &str) -> Option<&McpArgvActionSpec> {
+        self.argv_action_specs
+            .iter()
+            .find(|spec| spec.action == action)
+    }
+
+    /// The action key one `{argv, …}` payload resolves to, or `None` when
+    /// this tool is not argv-keyed or the argv matches no declared command.
+    ///
+    /// The same longest-prefix resolution the scope gate and the terminal
+    /// dispatch run, exposed so a caller outside this crate classifies the
+    /// action it is actually about to invoke. `None` is the unclassifiable
+    /// case and every caller must read it as a write.
+    #[must_use]
+    pub fn argv_action(&self, args: &serde_json::Value) -> Option<&'static str> {
+        if self.argv_action_specs.is_empty() {
+            return None;
+        }
+        resolve_argv_action(self.name, self.argv_action_specs, args).ok()
+    }
+
+    /// The annotations that classify one action of this tool, whatever keys
+    /// it. **The single precedence rule** — every read/write decision about
+    /// an action goes through here so the rule lives once.
+    ///
+    /// - `action`-tagged dispatcher: the action spec alone, never the parent
+    ///   (see [`Self::resolved_action_annotations`] for why).
+    /// - argv-keyed dispatcher: the argv spec's own annotations when it
+    ///   declared any, else the tool's declaration (see
+    ///   [`McpArgvActionSpec::annotations`] for why the two directions
+    ///   differ).
+    /// - flat tool, or a key the vocabulary does not emit: the tool's
+    ///   declaration, which is what the whole-tool gate would have used.
+    #[must_use]
+    pub fn effective_action_annotations(
+        &self,
+        action: &str,
+    ) -> Option<crate::mcp::McpToolAnnotations> {
+        if !self.action_arg_specs.is_empty() {
+            return self.resolved_action_annotations(action);
+        }
+        if let Some(spec) = self.argv_action_spec(action) {
+            return spec.annotations.or_else(|| self.resolved_annotations());
+        }
+        self.resolved_annotations()
+    }
+
+    /// Whether the owner-role gate should treat one action as a read.
+    /// Silence — after [`Self::effective_action_annotations`] has applied
+    /// every fallback — is a write.
     #[must_use]
     pub fn action_is_read_only(&self, action: &str) -> bool {
-        self.resolved_action_annotations(action)
+        self.effective_action_annotations(action)
             .and_then(|annotations| annotations.read_only)
             .unwrap_or(false)
     }
@@ -206,6 +259,20 @@ pub struct McpActionArgSpec {
 pub struct McpArgvActionSpec {
     pub action: &'static str,
     pub argv_prefix: &'static [&'static str],
+    /// Behaviour of this action, or `None` to classify from the tool's own
+    /// declaration. Unlike [`McpActionArgSpec::annotations`], `None` here
+    /// falls back rather than meaning write: `try_freeze` requires a
+    /// tool-level `ANNOTATIONS` on every tool with no `action_arg_specs`
+    /// (see `FlavorRegistryError::UndeclaredToolBehavior`), so an argv
+    /// dispatcher always has one to fall back to and the fallback is as
+    /// fail-closed as the declaration it reads. A tagged dispatcher has no
+    /// such guarantee, which is why silence there stays a write.
+    ///
+    /// Declaring it is what lets a dispatcher whose commands are mostly
+    /// reads keep those reads authorized for a read-capable-only owner —
+    /// and retry-safe on `QUERY` — under a tool that must declare itself
+    /// writable because some of its commands write.
+    pub annotations: Option<crate::mcp::McpToolAnnotations>,
     /// Who this action is for. See [`McpToolAudience`].
     pub audience: McpToolAudience,
 }
@@ -505,11 +572,13 @@ mod argv_action_tests {
         McpArgvActionSpec {
             action: "approval",
             argv_prefix: &["approval"],
+            annotations: None,
             audience: McpToolAudience::Shared,
         },
         McpArgvActionSpec {
             action: "approval-decide",
             argv_prefix: &["approval", "decide"],
+            annotations: None,
             audience: McpToolAudience::Shared,
         },
     ];

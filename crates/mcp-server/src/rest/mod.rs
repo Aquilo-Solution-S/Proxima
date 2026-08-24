@@ -175,14 +175,23 @@ async fn tool_route(
     if method == Method::GET {
         return tool_descriptor(&state, &auth, &tool);
     }
+    // Both dispatcher vocabularies name their action inside the body, so
+    // both defer the method gate until the body is parsed.
+    let dispatches_actions =
+        !descriptor.action_arg_specs.is_empty() || !descriptor.argv_action_specs.is_empty();
     if method != Method::POST && method != Method::QUERY {
-        let admits_query = if descriptor.action_arg_specs.is_empty() {
-            descriptor.is_read_only()
+        let admits_query = if dispatches_actions {
+            descriptor
+                .action_arg_specs
+                .iter()
+                .map(|spec| spec.action)
+                .chain(descriptor.argv_action_specs.iter().map(|spec| spec.action))
+                .any(|action| {
+                    descriptor.action_is_read_only(action)
+                        && action_allowed_for_auth(Some(&auth), descriptor, action)
+                })
         } else {
-            descriptor.action_arg_specs.iter().any(|spec| {
-                descriptor.action_is_read_only(spec.action)
-                    && action_allowed_for_auth(Some(&auth), descriptor, spec.action)
-            })
+            descriptor.is_read_only()
         };
         let allow = if admits_query {
             "GET, POST, QUERY"
@@ -193,7 +202,7 @@ async fn tool_route(
             .expect_err("non-invocation method is rejected")
             .into_response();
     }
-    if descriptor.action_arg_specs.is_empty() {
+    if !dispatches_actions {
         let read_only = descriptor.is_read_only();
         let allow = if read_only {
             "GET, POST, QUERY"
@@ -208,15 +217,18 @@ async fn tool_route(
         Ok(args) => args,
         Err(problem) => return problem.into_response(),
     };
-    // A whole-dispatcher invocation still names its action in the body, so
-    // method safety resolves from that action spec just like the narrowed
-    // route. Missing/unknown actions are writes here and are classified by
-    // the shared dispatch validator after POST reaches it.
-    if !descriptor.action_arg_specs.is_empty() {
-        let read_only = args
-            .get("action")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|action| descriptor.action_is_read_only(action));
+    // A whole-dispatcher invocation still names its action in the body — as
+    // `action`, or as the `argv` prefix an argv-keyed tool derives its key
+    // from — so method safety resolves from that action just like the
+    // narrowed route. Missing/unknown actions are writes here and are
+    // classified by the shared dispatch validator after POST reaches it.
+    if dispatches_actions {
+        let action = if descriptor.action_arg_specs.is_empty() {
+            descriptor.argv_action(&args)
+        } else {
+            args.get("action").and_then(serde_json::Value::as_str)
+        };
+        let read_only = action.is_some_and(|action| descriptor.action_is_read_only(action));
         let allow = if read_only {
             "GET, POST, QUERY"
         } else {

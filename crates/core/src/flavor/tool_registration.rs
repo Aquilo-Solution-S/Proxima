@@ -219,11 +219,13 @@ mod action_vocabulary_tests {
         McpArgvActionSpec {
             action: "approval",
             argv_prefix: &["approval"],
+            annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
             audience: McpToolAudience::Shared,
         },
         McpArgvActionSpec {
             action: "approval-decide",
             argv_prefix: &["approval", "decide"],
+            annotations: None,
             audience: McpToolAudience::Owner,
         },
     ];
@@ -264,6 +266,7 @@ mod action_vocabulary_tests {
         const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = &[McpArgvActionSpec {
             action: "look",
             argv_prefix: &["look"],
+            annotations: None,
             audience: McpToolAudience::Shared,
         }];
         type Args = ArgvArgs;

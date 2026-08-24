@@ -123,20 +123,30 @@ fn action_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor, action: &str) -> b
         && owner_role_permits(ctx, tool.action_is_read_only(action))
 }
 
+/// A dispatcher is visible when at least one of its actions is, whichever
+/// vocabulary keys them: an argv dispatcher advertises `tool:action` leaves
+/// exactly like an `action`-tagged one, so classifying it whole would hide a
+/// mostly-read CLI tool from a read-capable-only owner because one of its
+/// commands writes. Same rule the MCP server's `tools/list` applies.
 fn tool_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor) -> bool {
+    let has_actions = !tool.action_arg_specs.is_empty() || !tool.argv_action_specs.is_empty();
     if !ctx
         .authz
         .tool_scope()
-        .allows_tool_advertisement(tool.name, !tool.action_arg_specs.is_empty())
+        .allows_tool_advertisement(tool.name, has_actions)
     {
         return false;
     }
-    if tool.action_arg_specs.is_empty() {
-        owner_role_permits(ctx, tool.is_read_only())
-    } else {
+    if !tool.action_arg_specs.is_empty() {
         tool.action_arg_specs
             .iter()
             .any(|spec| action_visible(ctx, tool, spec.action))
+    } else if !tool.argv_action_specs.is_empty() {
+        tool.argv_action_specs
+            .iter()
+            .any(|spec| action_visible(ctx, tool, spec.action))
+    } else {
+        owner_role_permits(ctx, tool.is_read_only())
     }
 }
 

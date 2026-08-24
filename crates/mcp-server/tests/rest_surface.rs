@@ -32,6 +32,7 @@ fn host() -> McpToolHost {
 }
 
 const FLAVOR_DISPATCH: &str = "proxima-stub_dispatch";
+const FLAVOR_ARGV: &str = "proxima-stub_cli";
 const CALLER_CONTEXT_TOOL: &str = "proxima-stub_caller_context";
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -149,10 +150,72 @@ impl proxima_core::mcp::McpTool for StubDispatchTool {
     }
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct StubArgvArgs {
+    #[schemars(description = "Command words followed by flags.")]
+    argv: Vec<String>,
+}
+
+/// An argv-keyed dispatcher in the shape the per-action annotation exists
+/// for: the tool must declare itself writable because `approval decide`
+/// writes, and `approval` states for itself that it only reads. The write
+/// command declares nothing, so it classifies from the tool.
+#[derive(Debug)]
+struct StubArgvTool;
+
+impl proxima_core::mcp::McpTool for StubArgvTool {
+    const NAME: &'static str = FLAVOR_ARGV;
+    const DESCRIPTION: &'static str = "An argv-keyed flavor dispatcher.";
+    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(
+        proxima_core::mcp::McpToolAnnotations::new()
+            .read_only(false)
+            .open_world(false),
+    );
+    const ARGV_ACTION_SPECS: &'static [proxima_core::mcp::McpArgvActionSpec] = &[
+        proxima_core::mcp::McpArgvActionSpec {
+            action: "approval",
+            argv_prefix: &["approval"],
+            annotations: Some(
+                proxima_core::mcp::McpToolAnnotations::new()
+                    .read_only(true)
+                    .open_world(false),
+            ),
+            audience: proxima_core::mcp::McpToolAudience::Shared,
+        },
+        proxima_core::mcp::McpArgvActionSpec {
+            action: "approval-decide",
+            argv_prefix: &["approval", "decide"],
+            annotations: None,
+            audience: proxima_core::mcp::McpToolAudience::Shared,
+        },
+    ];
+    type Args = StubArgvArgs;
+    type Output = Vec<String>;
+
+    fn call(
+        _ctx: proxima_core::mcp::McpToolCtx,
+        args: Self::Args,
+    ) -> futures_util::future::BoxFuture<
+        'static,
+        Result<Vec<String>, proxima_core::mcp::McpToolError>,
+    > {
+        Box::pin(async move { Ok(args.argv) })
+    }
+}
+
 /// The same registry-only host, with one flavor dispatcher added.
 fn flavor_host() -> McpToolHost {
     let mut registry = FlavorRegistry::new();
     registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxima-stub");
+    McpToolHost::from_parts(
+        Arc::new(registry.freeze_or_panic_for_tests()),
+        FlavorServices::default(),
+    )
+}
+
+fn argv_host() -> McpToolHost {
+    let mut registry = FlavorRegistry::new();
+    registry.add_mcp_tool_or_panic_for_tests::<StubArgvTool>("proxima-stub");
     McpToolHost::from_parts(
         Arc::new(registry.freeze_or_panic_for_tests()),
         FlavorServices::default(),
@@ -995,6 +1058,86 @@ async fn mixed_flavor_dispatcher_actions_keep_role_and_method_boundaries() {
             .get("query")
             .is_none()
     );
+}
+
+/// An argv-keyed dispatcher mixes reads and writes exactly like a tagged
+/// one, and every gate reads the derived command's own annotation.
+///
+/// Before `McpArgvActionSpec` could carry annotations, every command
+/// classified from the tool — which, for a dispatcher that must declare
+/// itself writable because a minority of its commands write, cost a
+/// read-capable-only owner the whole read surface and took retry-safe
+/// `QUERY` off the reads as well.
+#[tokio::test]
+async fn an_annotated_argv_read_command_keeps_role_and_query_under_a_write_tool() {
+    let host = argv_host();
+    let router = app(host.clone());
+    let viewer = viewer_auth(ToolScope::All);
+    let writer = auth(ToolScope::All);
+    let uri = format!("/v1/tools/{FLAVOR_ARGV}");
+
+    // The tool itself is a write; the annotated command is not.
+    let rest_catalog = get(&router, "/v1/tools", &viewer).await.json();
+    assert!(
+        rest_catalog["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .any(|tool| tool["id"] == FLAVOR_ARGV),
+        "the read command keeps a writable argv dispatcher visible to a viewer: {rest_catalog:#}"
+    );
+
+    let read = call(
+        &router,
+        Method::QUERY,
+        &uri,
+        &viewer,
+        Some(serde_json::json!({ "argv": ["approval", "--list"] })),
+    )
+    .await;
+    assert_eq!(read.status, StatusCode::OK, "viewer QUERY {uri}");
+    assert_eq!(read.json(), serde_json::json!(["approval", "--list"]));
+
+    // The unannotated sibling classifies from the tool, which writes: no
+    // QUERY for anyone, and no call at all for a viewer.
+    let retryable_write = call(
+        &router,
+        Method::QUERY,
+        &uri,
+        &writer,
+        Some(serde_json::json!({ "argv": ["approval", "decide", "--id", "7"] })),
+    )
+    .await;
+    assert_eq!(retryable_write.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(retryable_write.header(header::ALLOW), Some("GET, POST"));
+
+    let viewer_write = call(
+        &router,
+        Method::POST,
+        &uri,
+        &viewer,
+        Some(serde_json::json!({ "argv": ["approval", "decide", "--id", "7"] })),
+    )
+    .await;
+    assert_eq!(viewer_write.status, StatusCode::FORBIDDEN);
+
+    let writer_write = call(
+        &router,
+        Method::POST,
+        &uri,
+        &writer,
+        Some(serde_json::json!({ "argv": ["approval", "decide", "--id", "7"] })),
+    )
+    .await;
+    assert_eq!(writer_write.status, StatusCode::OK);
+
+    // The OpenAPI document says the same thing the router enforces: a
+    // caller who can only reach the read command is offered `query`; one
+    // who can also reach the write is not.
+    let viewer_openapi = get(&router, "/v1/openapi.json", &viewer).await.json();
+    assert!(viewer_openapi["paths"][&uri]["query"].is_object());
+    let writer_openapi = get(&router, "/v1/openapi.json", &writer).await.json();
+    assert!(writer_openapi["paths"][&uri].get("query").is_none());
 }
 
 /// `QUERY` and `POST` are the same read, so they must answer identically —
