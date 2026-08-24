@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{migrated_db, project_code, seed_memory, test_owner};
+use common::{migrated_db, project_code, seed_memory_with_sidecars, test_owner};
 use proxima_code::payloads::{CommitSummaryV1, CommitV1};
 use proxima_core::{AbstractionPayload, FactPayload};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
@@ -69,7 +69,7 @@ async fn commit_and_summary_search_accept_non_english_prose() {
         let pool = pg.pool_for_tests();
         let owner = test_owner();
         let repo_id = Uuid::now_v7();
-        let (_, commit_t) = seed_memory(
+        let (_, commit_t) = seed_memory_with_sidecars(
             pool,
             &owner,
             CommitV1::SCHEMA_ID,
@@ -77,9 +77,10 @@ async fn commit_and_summary_search_accept_non_english_prose() {
             None,
             None,
             &[],
+            &["proxima_code.commit_v1"],
         )
         .await?;
-        let (_, summary_t) = seed_memory(
+        let (_, summary_t) = seed_memory_with_sidecars(
             pool,
             &owner,
             CommitSummaryV1::SCHEMA_ID,
@@ -87,6 +88,7 @@ async fn commit_and_summary_search_accept_non_english_prose() {
             None,
             None,
             &[],
+            &["proxima_code.commit_summary_v1"],
         )
         .await?;
 

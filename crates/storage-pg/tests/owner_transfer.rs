@@ -22,8 +22,9 @@ use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::persist_mcp_call::McpCallLoggedV1;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
-    AccessKind, ChangeEventKind, ColdObjectStore, EntityId, EntityRef, GoalId, GroupId, MemoryId,
-    OwnerRef, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, StorageError, UserId,
+    AccessKind, AgentNoteV1, ChangeEventKind, ColdObjectStore, EntityId, EntityRef, GoalId,
+    GroupId, MemoryId, OwnerRef, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
+    StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory_series, hydrate_memory};
@@ -78,9 +79,20 @@ fn draft() -> FactWriteCommand {
 /// through the ordinary Fact ingest, so the Memory stamps
 /// `sidecar_tables` and the sidecar's `owner_id` is filled by the
 /// owner-pinned INSERT rather than by this test.
+fn note_payload(title: &str, body: &str) -> SidecarPayload {
+    SidecarPayload::fact(AgentNoteV1 {
+        note_id: Uuid::now_v7(),
+        title: title.to_owned(),
+        body: body.to_owned(),
+        tags: Vec::new(),
+        idempotency_key: None,
+    })
+}
+
 async fn ingest_mcp_call_fact(
     pg: &PgStorage,
     permit: &OwnerWritePermit,
+    extra: &[SidecarPayload],
 ) -> Result<FactIngestOutcome, StorageError> {
     let payload = McpCallLoggedV1 {
         tool_name: "core_remember".into(),
@@ -93,19 +105,25 @@ async fn ingest_mcp_call_fact(
         io_truncated: false,
         io_content_hash: [3_u8; 32],
     };
-    let draft = FactWriteCommand::from_payload(
+    let mut draft = FactWriteCommand::from_payload(
         "proxima/fact",
         SourceBatchId::new(Uuid::now_v7()),
         &payload,
         time::OffsetDateTime::now_utc(),
     );
+    // `extra` may carry a `LanguagePolicy::PerRow` schema; the mcp sidecar
+    // itself pins its configuration and reads no language bind.
+    draft.lexical_language =
+        Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
     let authorized = AuthorizedFactWrite::new_for_tests(
         OwnerWritePermit::new_for_tests(*permit.owner(), AccessKind::Fact),
         draft,
         McpCallLoggedV1::sidecar_table().map(str::to_owned),
         Vec::new(),
     );
-    pg.ingest_fact_with_typed_sidecar(&authorized, &[SidecarPayload::fact(payload)], None)
+    let mut payloads = vec![SidecarPayload::fact(payload)];
+    payloads.extend_from_slice(extra);
+    pg.ingest_fact_with_typed_sidecar(&authorized, &payloads, None)
         .await
 }
 
@@ -235,15 +253,24 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
-        let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
+        // The typed write, not `ingest_fact_atomic` plus a hand-written row:
+        // only a write that DECLARES `agent_note_v1` leaves a note row the
+        // transfer's sidecar leg can reach.
+        let mut fact = draft();
+        // `agent-note-v1` is `LanguagePolicy::PerRow`: the write names a
+        // language.
+        fact.lexical_language =
+            Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
+        let authorized = AuthorizedFactWrite::new_for_tests(
+            OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
+            fact,
+            AgentNoteV1::sidecar_table().map(str::to_owned),
+            Vec::new(),
+        );
+        let written = pg
+            .ingest_fact_with_typed_sidecar(&authorized, &[note_payload("pub", "body")], None)
+            .await?;
         let t = written.memory_id.into_inner();
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
-             VALUES ($1, $1, 'pub', 'body')",
-        )
-        .bind(t)
-        .execute(pool)
-        .await?;
         let content_id: Uuid = sqlx::query_scalar(
             "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/test-fact-v1', $2)
@@ -1159,15 +1186,10 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
         // dispatches to this sidecar. Written against `core/test-fact-v1`
         // it would dispatch elsewhere and the "destination sees nothing"
         // assertion below would hold vacuously.
-        let written = ingest_mcp_call_fact(&pg, &permit).await?;
+        // Both sidecars ride one write, so the memory declares both: an
+        // ordinary sidecar the transfer moves, and the retained audit row.
+        let written = ingest_mcp_call_fact(&pg, &permit, &[note_payload("note", "body")]).await?;
         let t = written.memory_id.into_inner();
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
-             VALUES ($1, $1, 'note', 'body')",
-        )
-        .bind(t)
-        .execute(pool)
-        .await?;
 
         let pinned_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.mcp_call_logged_v1 WHERE t = $1")
@@ -1328,7 +1350,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
         let dest = destination();
         let pool = pg.pool_for_tests();
 
-        let first = ingest_mcp_call_fact(&pg, &permit).await?;
+        let first = ingest_mcp_call_fact(&pg, &permit, &[]).await?;
         // A live head keeps the series transferable after the first version
         // is cooled.
         let mut later = mcp_draft();

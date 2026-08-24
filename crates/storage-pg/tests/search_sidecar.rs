@@ -133,8 +133,10 @@ async fn seed_note_lang(
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-         VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, sidecar_tables)
+         VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
+                 ARRAY['proxima_core.agent_note_v1'])",
     )
     .bind(handle)
     .bind(t)
@@ -1137,8 +1139,10 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
                 (head, "this revision says nothing"),
             ] {
                 sqlx::query(
-                    "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-                     VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
+                    "INSERT INTO proxima_core.memory
+                         (handle, t, kind, owner_id, schema_id, sidecar_tables)
+                     VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
+                             ARRAY['proxima_core.agent_note_v1'])",
                 )
                 .bind(handle)
                 .bind(t)

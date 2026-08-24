@@ -558,10 +558,12 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                (handle, t, kind, owner_id, schema_id, origins, content_id)
+                (handle, t, kind, owner_id, schema_id, origins, content_id,
+                 sidecar_tables)
              SELECT ('7a5b0000-0000-4000-8000-' || lpad(to_hex(g.i), 12, '0'))::uuid,
                     ('7a5b0000-0000-4000-8000-' || lpad(to_hex(g.i), 12, '0'))::uuid,
-                    'abstraction', $1, $4, ARRAY[$5]::uuid[], c.content_id
+                    'abstraction', $1, $4, ARRAY[$5]::uuid[], c.content_id,
+                    ARRAY['proxima_code.code_chunk_v1']
                FROM generate_series($2::int, $3::int) AS g(i)
                JOIN proxima_core.content c
                  ON c.owner_id = $1

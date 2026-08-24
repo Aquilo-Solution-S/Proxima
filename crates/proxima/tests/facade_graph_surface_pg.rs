@@ -242,7 +242,10 @@ impl FlavorBundle for FacadeSurfaceApp {
     }
 
     fn migrators() -> Vec<proxima::NamedMigrator> {
-        Vec::new()
+        vec![proxima::NamedMigrator::new(
+            "facade-test",
+            facade_migrator(),
+        )]
     }
 }
 
@@ -312,7 +315,6 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        create_sidecar_tables(built.pool_for_tests()).await?;
         let authz = AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(owner, Role::admin())],
@@ -493,37 +495,74 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
     result
 }
 
-async fn create_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
-    sqlx::query(
+/// The test flavor's own baseline, as a real flavor ships one.
+///
+/// It used to be a `create_sidecar_tables(pool)` called AFTER `build()`,
+/// which is after boot — so this flavor's tables did not exist while the
+/// substrate was checking the deployment, and the declaration triggers that
+/// guard them did not exist at all. A flavor's DDL belongs in its migrator;
+/// that is the whole of what changed here.
+///
+/// The trigger statements are read off the frozen registry rather than
+/// written out, because that is what a flavor's migration author does:
+/// `declaration_trigger_artifacts` emits them, the migration carries them.
+fn facade_migrator() -> sqlx::migrate::Migrator {
+    use sqlx::SqlSafeStr;
+
+    let mut registry = FlavorRegistry::new();
+    FacadeSurfaceApp::register(&mut registry).expect("the facade test flavor registers");
+    let registry = registry.try_freeze().expect("and freezes");
+    let mut sidecars = PgSidecarRegistry::new();
+    proxima_storage_pg::register_core_pg_sidecars(&mut sidecars);
+    FacadeSurfaceApp::register_pg_sidecars(&mut sidecars);
+    let sidecars = sidecars
+        .freeze_against(&registry)
+        .expect("the facade test PG registrations match its contract");
+
+    let mut statements = vec![
         "CREATE TABLE public.facade_surface_fact_v1 (
             t uuid PRIMARY KEY,
             note_id uuid NOT NULL,
             title text NOT NULL,
             body text NOT NULL
-        )",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
+        )"
+        .to_owned(),
         "CREATE TABLE public.facade_surface_abstraction_v1 (
             t uuid PRIMARY KEY,
             title text NOT NULL,
             body text NOT NULL,
             source_count integer NOT NULL,
             observed_entity uuid NOT NULL
-        )",
-    )
-    .execute(pool)
-    .await?;
-    // A test flavor is a flavor: `memory.sidecar_tables` is constrained to
-    // be a subset of `proxima_core.flavor_surface`, so a fixture that
-    // stamps a sidecar has to declare it like any other.
-    sqlx::query(
+        )"
+        .to_owned(),
+        // A test flavor is a flavor: `memory.sidecar_tables` is constrained
+        // to be a subset of `proxima_core.flavor_surface`, so a fixture that
+        // stamps a sidecar has to declare it like any other.
         "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id) VALUES
              ('public.facade_surface_fact_v1', 'facade-test'),
-             ('public.facade_surface_abstraction_v1', 'facade-test')",
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
+             ('public.facade_surface_abstraction_v1', 'facade-test')"
+            .to_owned(),
+    ];
+    statements.extend(
+        sidecars
+            .declaration_trigger_artifacts("facade-test")
+            .expect("the facade test flavor's declaration triggers")
+            .into_iter()
+            .map(|artifact| artifact.forward),
+    );
+
+    sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(vec![sqlx::migrate::Migration::new(
+            FACADE_MIGRATION_VERSION,
+            std::borrow::Cow::Borrowed("facade test surfaces"),
+            sqlx::migrate::MigrationType::Simple,
+            sqlx::AssertSqlSafe(statements.join(";\n")).into_sql_str(),
+            false,
+        )]),
+        ..sqlx::migrate::Migrator::DEFAULT
+    }
 }
+
+/// Host/example lane (`docs/09` §Migrations: timestamp versions ending
+/// `00..=19`), so this fixture cannot collide with a first-party flavor.
+const FACADE_MIGRATION_VERSION: i64 = 20_260_824_000_010;

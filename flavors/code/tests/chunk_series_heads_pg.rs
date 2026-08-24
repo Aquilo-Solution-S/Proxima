@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{migrated_db, seed_memory, test_owner};
+use common::{migrated_db, seed_memory_with_sidecars, test_owner};
 use proxima_code::CodeChunkV1;
 use proxima_core::AbstractionPayload;
 use proxima_pg_testkit::drop_db;
@@ -19,8 +19,17 @@ async fn owned_chunk_series_heads_lists_present_and_tombstone() {
         let schema = <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID;
         let mut handles = Vec::new();
         for (index, state) in [(0_i32, "Present"), (1, "Present"), (2, "Tombstone")] {
-            let (handle, t) =
-                seed_memory(pool, &owner, schema, "abstraction", None, None, &[]).await?;
+            let (handle, t) = seed_memory_with_sidecars(
+                pool,
+                &owner,
+                schema,
+                "abstraction",
+                None,
+                None,
+                &[],
+                &[<CodeChunkV1 as AbstractionPayload>::sidecar_table()],
+            )
+            .await?;
             sqlx::query(
                 "INSERT INTO proxima_code.code_chunk_v1
                     (t, repo_id, file_path, chunk_index, text, language, chunk_type,

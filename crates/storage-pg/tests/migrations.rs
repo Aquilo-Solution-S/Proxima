@@ -418,13 +418,25 @@ async fn migrations_apply_to_fresh_db() {
             );
         }
 
-        let core_versions: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM public._sqlx_migrations
-              WHERE success AND version <= 9999",
+        // A fresh database applies the embedded core set and nothing else.
+        // Derived from the migrator rather than a hardcoded count: v0.0.8 was
+        // one file, and every release after it appends one, so a literal here
+        // would have to be edited by each additive migration and would say
+        // nothing about which versions actually landed.
+        let applied: Vec<i64> = sqlx::query_scalar(
+            "SELECT version FROM public._sqlx_migrations
+              WHERE success AND version <= 9999 ORDER BY version",
         )
-        .fetch_one(pg.pool_for_tests())
+        .fetch_all(pg.pool_for_tests())
         .await?;
-        assert_eq!(core_versions, 1, "core ships exactly one migration");
+        let embedded: Vec<i64> = proxima_storage_pg::core_migrator()
+            .iter()
+            .map(|migration| migration.version)
+            .collect();
+        assert_eq!(
+            applied, embedded,
+            "a fresh database applies exactly the embedded core migration set"
+        );
 
         let grounding_vol: String = sqlx::query_scalar(
             "SELECT provolatile::text
@@ -1037,4 +1049,467 @@ fn generator_output_is_the_migration_text() {
         baseline.contains(proxima_storage_pg::projection::BTREE_GIN_EXTENSION),
         "the composite GIN needs btree_gin"
     );
+}
+
+/// One frozen core registry, for the tests below and nothing else.
+fn frozen_core_sidecars() -> proxima_storage_pg::PgSidecarRegistryFrozen {
+    let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+    let mut pg = proxima_storage_pg::PgSidecarRegistry::new();
+    proxima_storage_pg::register_core_pg_sidecars(&mut pg);
+    pg.freeze_against(&registry)
+        .expect("the core registration freezes against the core contract")
+}
+
+/// The migration text IS the declaration-integrity generator's output.
+///
+/// The same pin as `generator_output_is_the_migration_text`, one layer
+/// down: `crates/storage-pg/src/integrity.rs` has the same two consumers —
+/// the migration author, who pastes its output into the migration, and
+/// `ensure_declaration_triggers`, which re-runs it against the catalog at
+/// boot. A hand edit to the trigger block, or a generator change the
+/// migration did not follow, fails here rather than at the next boot.
+///
+/// The text lives in `0002_v009_declaration_triggers.sql`, not in the v008
+/// baseline: `0001_v008.sql` is frozen, and pasting into it would change the
+/// checksum of a version live databases have already applied. The second
+/// assertion below is what keeps that decision from quietly rotting.
+#[test]
+fn generated_declaration_triggers_are_the_migration_text() {
+    use proxima_storage_pg::integrity::DECLARATION_TRIGGER_FUNCTION;
+
+    let migration = include_str!("../migrations/0002_v009_declaration_triggers.sql");
+    let baseline = include_str!("../migrations/0001_v008.sql");
+    assert!(
+        migration.contains(DECLARATION_TRIGGER_FUNCTION),
+        "0002_v009_declaration_triggers.sql does not carry the shared trigger function \
+         verbatim:\n{DECLARATION_TRIGGER_FUNCTION}"
+    );
+    assert!(
+        !baseline.contains("assert_memory_declares_sidecar"),
+        "the v008 baseline is frozen — declaration integrity ships as the additive 0002, \
+         never as an edit to a version live databases have already applied"
+    );
+
+    let artifacts = frozen_core_sidecars()
+        .declaration_trigger_artifacts("core")
+        .expect("core's declaration triggers");
+    assert_eq!(
+        artifacts.len(),
+        6,
+        "flavor #0 registers six memory sidecars; a seventh needs its trigger in the migration"
+    );
+    for artifact in &artifacts {
+        assert!(
+            migration.contains(&artifact.forward),
+            "0002_v009_declaration_triggers.sql does not carry the generator's output \
+             verbatim:\n{}",
+            artifact.forward
+        );
+    }
+}
+
+/// `task_goal_v1` hangs off a Goal, so no memory ever stamps it — and a
+/// trigger asking `proxima_core.memory` about it would refuse every Goal
+/// sidecar write there is.
+///
+/// Asserted rather than assumed, because the generator's filter
+/// (`memory_insert` or `memory_load_batch` present) is what excludes it and
+/// nothing else would notice if that filter widened.
+#[test]
+fn a_goal_sidecar_gets_no_declaration_trigger() {
+    let tables: Vec<String> = frozen_core_sidecars()
+        .declaration_trigger_artifacts("core")
+        .expect("core's declaration triggers")
+        .iter()
+        .map(|artifact| artifact.forward.clone())
+        .collect();
+    assert!(
+        !tables
+            .iter()
+            .any(|forward| forward.contains("proxima_core.task_goal_v1")),
+        "a Goal sidecar is not a memory sidecar: {tables:?}"
+    );
+}
+
+/// The invariant, through a raw connection that has bypassed every line of
+/// Rust in this workspace.
+///
+/// This is the whole point of putting it in the database: the memory row
+/// exists and is legal, the sidecar row's FK to it is satisfied, and the
+/// only thing wrong is that the memory never declared the table. A port
+/// check cannot see this write at all.
+#[tokio::test]
+async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+
+        let owner_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner_id)
+            .execute(pool)
+            .await?;
+
+        // Two memories of the same schema. One declares the note sidecar,
+        // one declares nothing — so the ONLY difference between the two
+        // inserts below is the stamp.
+        let mut ids = Vec::new();
+        for declared in [false, true] {
+            let handle = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                 VALUES ($1, 'fact', 'core/agent-note-v1', $2, $1)",
+            )
+            .bind(handle)
+            .bind(owner_id)
+            .execute(pool)
+            .await?;
+            let stamp: Vec<String> = if declared {
+                vec!["proxima_core.agent_note_v1".to_owned()]
+            } else {
+                Vec::new()
+            };
+            sqlx::query(
+                "INSERT INTO proxima_core.memory
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables)
+                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3)",
+            )
+            .bind(handle)
+            .bind(owner_id)
+            .bind(&stamp)
+            .execute(pool)
+            .await?;
+            ids.push(handle);
+        }
+
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             VALUES ($1, $1, 'title', 'body', '{}')",
+        )
+        .bind(ids[0])
+        .execute(pool)
+        .await
+        .expect_err("an undeclared sidecar row must be refused by the database");
+        let message = err.to_string();
+        assert!(
+            message.contains("proxima_core.agent_note_v1"),
+            "the refusal names the table: {message}"
+        );
+        assert!(
+            message.contains(&ids[0].to_string()),
+            "the refusal names the memory row: {message}"
+        );
+
+        // The same statement, against the memory that declared it.
+        sqlx::query(
+            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             VALUES ($1, $1, 'title', 'body', '{}')",
+        )
+        .bind(ids[1])
+        .execute(pool)
+        .await
+        .expect("a declared sidecar row is admitted");
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("declaration integrity trigger test failed");
+}
+
+/// The boot guardrail is bidirectional, like its projection sibling.
+#[tokio::test]
+async fn a_dropped_declaration_trigger_fails_the_boot_guardrail() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let sidecars = frozen_core_sidecars();
+
+        proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+            .await
+            .expect("a freshly migrated database satisfies the guardrail");
+
+        sqlx::query("DROP TRIGGER agent_note_v1_declared_by_memory ON proxima_core.agent_note_v1")
+            .execute(pool)
+            .await?;
+        let err = proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+            .await
+            .expect_err("a registered sidecar with no trigger is unguarded");
+        let message = err.to_string();
+        assert!(
+            message.contains("proxima_core.agent_note_v1"),
+            "the refusal names the table that lost its guard: {message}"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("declaration trigger boot guardrail test failed");
+}
+
+/// The guard reads the column the REGISTRATION declares, proven against a
+/// live table keyed on something other than `t`.
+///
+/// The unit test on the emitted text cannot show this: `to_jsonb(NEW) ->>
+/// TG_ARGV[0]` is what makes one shared function serve every table, and a
+/// hardcoded `NEW.t` would pass every other test in this file, because
+/// every sidecar core ships happens to key on `t`. Here the column is
+/// `note_memory_id`, so a guard that spelled `t` would read NULL and refuse
+/// the admitted row as well as the undeclared one.
+#[tokio::test]
+async fn the_trigger_reads_the_declared_key_column_of_a_renamed_sidecar() {
+    const TABLE: &str = "public.renamed_sidecar_v1";
+    const KEY: &str = "note_memory_id";
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+
+        sqlx::query(
+            "CREATE TABLE public.renamed_sidecar_v1 (
+                 note_memory_id uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+                 body text NOT NULL
+             )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id)
+             VALUES ($1, 'renamed-test')",
+        )
+        .bind(TABLE)
+        .execute(pool)
+        .await?;
+        let artifact = proxima_storage_pg::integrity::declaration_trigger(TABLE, KEY)
+            .expect("the generator emits a trigger for a renamed key");
+        // SQL-POLICY: generated
+        sqlx::query(sqlx::AssertSqlSafe(artifact.forward))
+            .execute(pool)
+            .await?;
+
+        let owner_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner_id)
+            .execute(pool)
+            .await?;
+        let mut ids = Vec::new();
+        for declared in [false, true] {
+            let handle = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                 VALUES ($1, 'fact', 'core/agent-note-v1', $2, $1)",
+            )
+            .bind(handle)
+            .bind(owner_id)
+            .execute(pool)
+            .await?;
+            let stamp: Vec<String> = if declared {
+                vec![TABLE.to_owned()]
+            } else {
+                Vec::new()
+            };
+            sqlx::query(
+                "INSERT INTO proxima_core.memory
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables)
+                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3)",
+            )
+            .bind(handle)
+            .bind(owner_id)
+            .bind(&stamp)
+            .execute(pool)
+            .await?;
+            ids.push(handle);
+        }
+
+        let err = sqlx::query(
+            "INSERT INTO public.renamed_sidecar_v1 (note_memory_id, body) VALUES ($1, 'body')",
+        )
+        .bind(ids[0])
+        .execute(pool)
+        .await
+        .expect_err("an undeclared row is refused on the declared key column");
+        assert!(
+            err.to_string().contains(TABLE) && err.to_string().contains(&ids[0].to_string()),
+            "the refusal names the table and the memory it read off {KEY}: {err}"
+        );
+
+        sqlx::query(
+            "INSERT INTO public.renamed_sidecar_v1 (note_memory_id, body) VALUES ($1, 'body')",
+        )
+        .bind(ids[1])
+        .execute(pool)
+        .await
+        .expect("a declared row is admitted, so the guard read the right column");
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("renamed-key declaration trigger test failed");
+}
+
+/// Apply the frozen v0.0.8 baseline and nothing else, exactly the way a
+/// database deployed on v0.0.8 carries it: the file's own bytes, and one
+/// ledger row whose checksum is the embedded migration's.
+///
+/// The checksum is taken from the migrator rather than recomputed here, so
+/// this fixture can never disagree with what `ensure_core_ledger_compatible`
+/// compares against.
+async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    let migrator = proxima_storage_pg::core_migrator();
+    let baseline = migrator
+        .iter()
+        .find(|migration| migration.version == 1)
+        .expect("the embedded core set carries the v008 baseline");
+
+    // SQL-POLICY: fixed-fragment — the migration's own embedded text, the
+    // same bytes `core_migrator().run()` would execute. Nothing from outside
+    // the binary reaches it.
+    sqlx::raw_sql(baseline.sql.clone()).execute(pool).await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS public._sqlx_migrations (
+             version bigint PRIMARY KEY,
+             description text NOT NULL,
+             installed_on timestamptz NOT NULL DEFAULT now(),
+             success boolean NOT NULL,
+             checksum bytea NOT NULL,
+             execution_time bigint NOT NULL
+         )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO public._sqlx_migrations
+             (version, description, success, checksum, execution_time)
+         VALUES ($1, $2, true, $3, 0)",
+    )
+    .bind(baseline.version)
+    .bind(baseline.description.as_ref())
+    .bind(baseline.checksum.as_ref())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// A v0.0.8 database upgrades to v0.0.9 in place — no reset, no data loss.
+///
+/// This is the whole reason the declaration triggers ship as
+/// `0002_v009_declaration_triggers.sql` instead of being pasted into the
+/// baseline. Pasting them in would change the checksum of version 1, which
+/// every deployed database has already recorded, and
+/// `ensure_core_ledger_compatible` would answer `SchemaResetRequired` — a
+/// forced destructive reset with no schema reason behind it.
+///
+/// Three things are asserted, because the upgrade is only real if all three
+/// hold: boot does not demand a reset, the ledger ends up carrying both
+/// versions, and the invariant the new migration exists to install is
+/// actually live afterwards.
+#[tokio::test]
+async fn a_v008_database_upgrades_to_v009_in_place() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        let pool = pg.pool_for_tests();
+        seed_a_live_v008_database(pool).await?;
+
+        // A row written under v0.0.8 that the upgrade must not disturb. The
+        // `BEFORE INSERT` triggers constrain what is written from here on;
+        // they do not validate history, and a migration that dropped this
+        // row would be exactly the destructive reset being avoided.
+        let owner = Uuid::now_v7();
+        let handle = Uuid::now_v7();
+        let survivor = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner)
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'upgrade.probe.v1', $2, $3)",
+        )
+        .bind(handle)
+        .bind(owner)
+        .bind(survivor)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'fact', $3, 'upgrade.probe.v1')",
+        )
+        .bind(handle)
+        .bind(survivor)
+        .bind(owner)
+        .execute(pool)
+        .await?;
+
+        pg.run_migrations().await.map_err(|err| {
+            format!("a live v0.0.8 database must upgrade in place, not reset: {err}")
+        })?;
+
+        let versions: Vec<i64> = sqlx::query_scalar(
+            "SELECT version FROM public._sqlx_migrations
+              WHERE success AND version <= $1 ORDER BY version",
+        )
+        .bind(proxima_storage_pg::CORE_MIGRATION_VERSION_CEILING)
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            versions,
+            vec![1, 2],
+            "the upgrade appends v0.0.9; it does not re-apply or replace the baseline"
+        );
+
+        let still_there: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM proxima_core.memory WHERE t = $1)")
+                .bind(survivor)
+                .fetch_one(pool)
+                .await?;
+        assert!(still_there, "the upgrade must not touch v0.0.8 data");
+
+        // The boot guardrail is the same one `Engine::boot` runs, so this
+        // asserts the upgraded catalog is what the generator expects — not
+        // merely that a migration ran.
+        proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &frozen_core_sidecars())
+            .await
+            .map_err(|err| {
+                format!("the upgraded database must satisfy the boot guardrail: {err}")
+            })?;
+
+        proxima_storage_pg::ensure_core_schema_current(pool).await?;
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("v0.0.8 -> v0.0.9 in-place upgrade failed");
 }

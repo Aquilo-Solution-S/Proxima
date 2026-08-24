@@ -93,8 +93,10 @@ async fn seed_note(
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-         VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, sidecar_tables)
+         VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
+                 ARRAY['proxima_core.agent_note_v1'])",
     )
     .bind(handle)
     .bind(t)
@@ -165,11 +167,13 @@ const CORPUS_ROWS: i32 = 4_000;
 /// Seed `CORPUS_ROWS` notes for `owner`, every one of them matching the
 /// query the pin runs, each with its admission and projection row.
 ///
-/// Two statements, not one: `memory_align_head` is a BEFORE INSERT trigger
+/// Three statements, not one: `memory_align_head` is a BEFORE INSERT trigger
 /// that reads `memory_head` back, and every CTE of one statement reads the
 /// same snapshot, so heads written in a sibling CTE are invisible to it.
-/// The sidecar and projection rows ride along with their admissions in the
-/// second, because referential integrity is an AFTER trigger.
+/// `agent_note_v1_declared_by_memory` reads `memory` back the same way, so
+/// the admissions need a statement of their own too. The projection rows
+/// ride along with the sidecars, because referential integrity is an AFTER
+/// trigger.
 async fn seed_projection_corpus(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<(), sqlx::Error> {
     let owner_id = owner.stored_owner_id();
     sqlx::query(
@@ -189,15 +193,24 @@ async fn seed_projection_corpus(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<
     .execute(pool)
     .await?;
     sqlx::query(
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, sidecar_tables)
+         SELECT h.handle, h.t, 'fact', $1, 'core/agent-note-v1',
+                ARRAY['proxima_core.agent_note_v1']
+           FROM proxima_core.memory_head h
+          WHERE h.owner_id = $1
+            AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)",
+    )
+    .bind(owner_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
         "WITH ids AS MATERIALIZED (
-             SELECT h.handle, h.t, row_number() OVER (ORDER BY h.t) AS n
-               FROM proxima_core.memory_head h
-              WHERE h.owner_id = $1
-                AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)
-         ), admissions AS (
-             INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             SELECT handle, t, 'fact', $1, 'core/agent-note-v1' FROM ids
-             RETURNING t
+             SELECT m.t, row_number() OVER (ORDER BY m.t) AS n
+               FROM proxima_core.memory m
+              WHERE m.owner_id = $1
+                AND NOT EXISTS (
+                        SELECT 1 FROM proxima_core.agent_note_v1 s WHERE s.t = m.t)
          ), notes AS (
              INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
              SELECT t, uuidv7(), 'Needle ' || n, 'needle body ' || n, '{}' FROM ids

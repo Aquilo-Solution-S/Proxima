@@ -83,7 +83,7 @@ and `goal`/`goal_head` refuse UPDATE entirely (`goal_head_t_only` freezes
 |---|---|
 | core owns entity tables | flavors do not redefine `memory` / `goal` |
 | flavor owns its sidecars | PK is `t` → `memory(t)` or `goal(t)` |
-| one core file | v0.0.8 is `0001_v008.sql` |
+| one frozen core baseline | `0001_v008.sql`; v0.0.9+ append additive files, never edit it |
 | composite binary runs both | one `proxima_core` plus N flavor schemas |
 
 <a id="core-tables-abstract"></a>

@@ -575,3 +575,162 @@ async fn a_sidecar_keyed_on_its_own_column_name_still_files_its_projection_row()
     })
     .await;
 }
+
+// ---------------------------------------------------------------------------
+// `integrity_check`: the same invariants asked of rows already there.
+// ---------------------------------------------------------------------------
+
+use crate::integrity::{IntegrityFinding, IntegrityViolation};
+
+/// The clean case, asserted first: a check that only ever fires on doctored
+/// input is indistinguishable from one whose lookup finds nothing.
+#[tokio::test]
+async fn integrity_check_passes_a_written_note_and_says_what_it_looked_at() {
+    with_db("proxima_integrity_clean", async |pg| {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let pool = pg.pool_for_tests();
+        write_note(pool, owner, None).await?;
+
+        let report = core_pg_sidecars()
+            .integrity_check(pool)
+            .await
+            .expect("a write through the port leaves no drift");
+        assert!(
+            report
+                .declared_tables
+                .iter()
+                .any(|table| table == AGENT_NOTE),
+            "the note table was checked: {report:?}"
+        );
+        assert!(
+            report
+                .projected_schemas
+                .iter()
+                .any(|schema| schema.sidecar_table == AGENT_NOTE
+                    && schema.schema_id == AgentNoteV1::SCHEMA_ID
+                    && schema.projection_table == "proxima_core.projection"),
+            "and so was its projection: {report:?}"
+        );
+        Ok(())
+    })
+    .await;
+}
+
+/// Delete a projection row → the check fails naming it; rebuild → it passes.
+///
+/// The pair is the point. `rebuild_projection_for_table` had no way to be
+/// asked whether it was needed, and a check with no repair beside it is a
+/// report nobody can act on.
+#[tokio::test]
+async fn a_deleted_projection_row_fails_the_check_and_rebuild_repairs_it() {
+    with_db("proxima_integrity_projection", async |pg| {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let pool = pg.pool_for_tests();
+        let t = write_note(pool, owner, None).await?;
+
+        sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
+            .bind(t.into_inner())
+            .execute(pool)
+            .await?;
+
+        let err = core_pg_sidecars()
+            .integrity_check(pool)
+            .await
+            .expect_err("a sidecar row with no projection row is drift");
+        let IntegrityViolation::Drift(findings) = &err else {
+            panic!("a missing projection row is drift, not a storage failure: {err}");
+        };
+        assert_eq!(
+            findings,
+            &vec![IntegrityFinding::UnprojectedSidecarRows {
+                sidecar_table: AGENT_NOTE.to_owned(),
+                schema_id: AgentNoteV1::SCHEMA_ID.to_owned(),
+                projection_table: "proxima_core.projection".to_owned(),
+                rows: 1,
+            }],
+            "exactly the one row, and only the projection class"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("rebuild_projection_for_table"),
+            "the error names the repair: {message}"
+        );
+
+        let mut tx = pool.begin().await?;
+        core_pg_sidecars()
+            .rebuild_projection_for_table(&mut tx, t, AGENT_NOTE, AgentNoteV1::SCHEMA_ID, None)
+            .await?;
+        tx.commit().await?;
+
+        core_pg_sidecars()
+            .integrity_check(pool)
+            .await
+            .expect("the named repair repairs it");
+        Ok(())
+    })
+    .await;
+}
+
+/// The second class is unproducible through `INSERT` while the declaration
+/// trigger is installed, so the test turns the trigger off to make one.
+///
+/// That is the shape of the evidence, not a workaround: with M4 in the
+/// database the only way this class arises is a database whose trigger
+/// someone removed, or rows written before it existed. The check has to
+/// catch both, and disabling the trigger on a raw connection is exactly
+/// those conditions.
+#[tokio::test]
+async fn an_undeclared_sidecar_row_is_caught_and_the_finding_says_there_is_no_repair() {
+    with_db("proxima_integrity_undeclared", async |pg| {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let pool = pg.pool_for_tests();
+
+        // A legal memory row that declares NO sidecar table at all.
+        let write = draft(None);
+        let mut tx = pool.begin().await?;
+        let outcome = ingest_fact_timeseries(&mut tx, &owner, &write, &[], None).await?;
+        tx.commit().await?;
+
+        sqlx::query(
+            "ALTER TABLE proxima_core.agent_note_v1
+                 DISABLE TRIGGER agent_note_v1_declared_by_memory",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             VALUES ($1, $1, 'title', 'body', '{}')",
+        )
+        .bind(outcome.memory_id.into_inner())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE proxima_core.agent_note_v1
+                 ENABLE TRIGGER agent_note_v1_declared_by_memory",
+        )
+        .execute(pool)
+        .await?;
+
+        let err = core_pg_sidecars()
+            .integrity_check(pool)
+            .await
+            .expect_err("a row no memory declares is drift");
+        let IntegrityViolation::Drift(findings) = &err else {
+            panic!("an undeclared row is drift, not a storage failure: {err}");
+        };
+        assert!(
+            findings.contains(&IntegrityFinding::UndeclaredSidecarRows {
+                sidecar_table: AGENT_NOTE.to_owned(),
+                rows: 1,
+            }),
+            "the undeclared row is found: {findings:?}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains(AGENT_NOTE) && message.contains("NO repair"),
+            "the finding names the table and says the row cannot be repaired: {message}"
+        );
+        Ok(())
+    })
+    .await;
+}

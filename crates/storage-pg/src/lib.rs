@@ -35,6 +35,7 @@ mod error;
 #[doc(hidden)]
 pub use error::map_err;
 pub use error::{MAX_TRANSACTION_ATTEMPTS, is_transient_conflict};
+pub mod integrity;
 mod pg_ident;
 mod pgvector;
 mod pool_config;
@@ -281,7 +282,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
         .map_err(internal)?;
         if max_version.unwrap_or(0) < min_required {
             return Err(StorageError::Internal(format!(
-                "database core migrations at version {}; version {min_required}+ required — apply 0001_v008.sql on a fresh DB (see docs/how-to/migrations.md)",
+                "database core migrations at version {}; version {min_required}+ required — run the pending core migrations under crates/storage-pg/migrations/ (they are additive over the v008 baseline, so an existing database upgrades in place; a fresh one starts at 0001_v008.sql). In a split-role deploy that is the DDL-role init step, not this process (see docs/how-to/migrations.md and docs/15-deployment.md)",
                 max_version.unwrap_or(0)
             )));
         }
@@ -1243,21 +1244,49 @@ mod pgvector_tests {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn core_migrator_contains_the_v008_baseline() {
+    fn core_migrator_is_the_v008_baseline_plus_additive_migrations() {
         let versions: Vec<i64> = super::core_migrator()
             .iter()
             .map(|migration| migration.version)
             .collect();
-        assert_eq!(versions, vec![1], "v0.0.8 is one file: 0001_v008.sql");
+        assert_eq!(
+            versions,
+            vec![1, 2],
+            "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
+             v0.0.9 is 0002_v009_declaration_triggers.sql"
+        );
     }
 
+    /// The v0.0.7 ALTER lane occupied versions 2..=21 and the squash to a
+    /// single v008 baseline retired all of them.
+    ///
+    /// Version 2 is now v0.0.9's additive migration, which reuses a retired
+    /// number. That is safe, and this is why: the tripwire for a pre-v0.0.8
+    /// database is version 1's checksum, which is the legacy `0001_init.sql`
+    /// and can never match `0001_v008.sql`. `ensure_core_ledger_compatible`
+    /// compares it first and returns `SchemaResetRequired` before version 2
+    /// is ever reached, so no pre-v008 database can mistake the v009
+    /// migration for the legacy version it recorded.
+    ///
+    /// The number is asserted to be v0.0.9's, not merely absent, so the
+    /// reuse stays a decision rather than an accident.
     #[test]
-    fn core_migrator_v008_has_no_legacy_alter_versions() {
-        let versions: Vec<i64> = super::core_migrator()
+    fn no_legacy_alter_version_survives_the_v008_squash() {
+        let migrator = super::core_migrator();
+        let versions: Vec<i64> = migrator.iter().map(|migration| migration.version).collect();
+        let version_2 = migrator
             .iter()
-            .map(|migration| migration.version)
-            .collect();
-        for dead in 2..=21 {
+            .find(|migration| migration.version == 2)
+            .expect("version 2 is v0.0.9's additive migration");
+        assert!(
+            version_2
+                .sql
+                .as_str()
+                .contains("assert_memory_declares_sidecar"),
+            "version 2 must be the v0.0.9 declaration-trigger migration, not a resurrected \
+             legacy ALTER"
+        );
+        for dead in 3..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"

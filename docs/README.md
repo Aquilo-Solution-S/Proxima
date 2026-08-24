@@ -58,5 +58,6 @@ section instead of restating invariants.
 ## Current Implementation Status
 
 - Runtime framework, storage, MCP substrate, facade, and code flavor crates exist.
-- Schema is timeseries v0.0.8: one core file `0001_v008.sql`.
+- Schema is timeseries v0.0.8 (`0001_v008.sql`, frozen) plus additive core
+  migrations from v0.0.9 on; existing databases upgrade in place.
 - Crates are git/tag consumed unless package manifests and release notes say otherwise.

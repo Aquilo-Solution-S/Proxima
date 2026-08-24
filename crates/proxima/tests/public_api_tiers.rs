@@ -1082,9 +1082,19 @@ fn storage_write_verbs_expose_no_public_function() {
 /// it — they read the table directly, and the authorized read surface is the
 /// query ports.
 ///
-/// Only `rebuild_projection_for_table` stays public, because rebuild
-/// re-derives a projection row FROM a sidecar row and so can only restore the
-/// invariant, never break it.
+/// Two exemptions, on two different grounds.
+///
+/// `rebuild_projection_for_table` stays public because rebuild re-derives a
+/// projection row FROM a sidecar row and so can only restore the invariant,
+/// never break it.
+///
+/// `integrity_check` stays public because it is not a read of the data at
+/// all: every statement it runs is a `SELECT count(*)` over a registered
+/// surface, so what crosses the crate boundary is an integer per surface —
+/// no row, no payload, no owner, nothing an authorized read would have had
+/// to scope. It is public for the reason it exists: a downstream flavor's
+/// CI has to be able to assert zero drift after its own ingest suite, and a
+/// check nobody outside the crate can run is a check nobody runs.
 ///
 /// The rule is "public fn taking a transaction, connection, or pool", not
 /// "public fn": the registry's read and lookup methods
@@ -1098,7 +1108,7 @@ fn storage_backend_exposes_no_public_transaction_taking_fn() {
         (
             "sidecars/frozen.rs",
             include_str!("../../storage-pg/src/sidecars/frozen.rs"),
-            &["rebuild_projection_for_table"],
+            &["rebuild_projection_for_table", "integrity_check"],
         ),
         (
             "verbs/memory_timeseries.rs",
@@ -1141,8 +1151,9 @@ fn storage_backend_exposes_no_public_transaction_taking_fn() {
                 !takes_connection || exempt.contains(&name.as_str()),
                 "{module}:{} exposes `{name}` publicly with a transaction, connection, or \
                  pool: a storage write or direct-table read reachable outside this crate is a \
-                 second path past the engine. Make it `pub(crate)`; the only exemption is \
-                 `rebuild_projection_for_table`, and only because rebuild is the maintenance.",
+                 second path past the engine. Make it `pub(crate)`; the exemptions are \
+                 `rebuild_projection_for_table`, because rebuild IS the maintenance, and \
+                 `integrity_check`, because it returns counts and never a row.",
                 index + 1
             );
         }

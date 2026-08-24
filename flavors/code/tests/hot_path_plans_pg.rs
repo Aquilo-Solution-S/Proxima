@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{migrated_db, project_code, seed_memory, test_owner};
+use common::{migrated_db, project_code, seed_memory_with_sidecars, test_owner};
 use proxima_code::mcp::search_chunks::{chunk_gin_sql_for_tests, chunk_like_sql_for_tests};
 use proxima_code::mcp::search_commits::{
     commit_like_sql_for_tests, commit_search_sql_for_tests, summary_like_sql_for_tests,
@@ -22,7 +22,7 @@ async fn code_hot_path_plans_use_expected_indexes() {
         let owner = test_owner();
         let pool = pg.pool_for_tests();
         let repo_id = Uuid::now_v7();
-        let (_, chunk_t) = seed_memory(
+        let (_, chunk_t) = seed_memory_with_sidecars(
             pool,
             &owner,
             <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
@@ -30,6 +30,7 @@ async fn code_hot_path_plans_use_expected_indexes() {
             None,
             None,
             &[],
+            &[<CodeChunkV1 as AbstractionPayload>::sidecar_table()],
         )
         .await?;
         sqlx::query(
@@ -50,7 +51,7 @@ async fn code_hot_path_plans_use_expected_indexes() {
             None,
         )
         .await?;
-        let (_, file_t) = seed_memory(
+        let (_, file_t) = seed_memory_with_sidecars(
             pool,
             &owner,
             FileRevisionV1::SCHEMA_ID,
@@ -58,6 +59,7 @@ async fn code_hot_path_plans_use_expected_indexes() {
             None,
             None,
             &[],
+            &["proxima_code.file_revision_v1"],
         )
         .await?;
         sqlx::query(
@@ -393,16 +395,34 @@ async fn seed_chunk_corpus(
     // The decoys are exactly the heads that have no admission yet, which is
     // the statement above and nothing else: `seed_memory` writes head and
     // admission together.
+    //
+    // Admissions go in their own statement: sibling data-modifying CTEs
+    // share one snapshot, so a `code_chunk_v1` row written alongside its
+    // admission cannot see it, and `<relation>_declared_by_memory` reads
+    // `memory.sidecar_tables` as of that snapshot.
     sqlx::query(
         "WITH ids AS MATERIALIZED (
-             SELECT h.handle, h.t, row_number() OVER (ORDER BY h.t) AS n
+             SELECT h.handle, h.t
                FROM proxima_core.memory_head h
               WHERE h.owner_id = $1
                 AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)
-         ), admissions AS (
-             INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             SELECT handle, t, 'fact', $1, 'proxima-code/code-chunk-v1' FROM ids
-             RETURNING t
+         )
+         INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, sidecar_tables)
+         SELECT handle, t, 'fact', $1, 'proxima-code/code-chunk-v1',
+                ARRAY['proxima_code.code_chunk_v1']
+           FROM ids",
+    )
+    .bind(owner.stored_owner_id())
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "WITH ids AS MATERIALIZED (
+             SELECT m.t, row_number() OVER (ORDER BY m.t) AS n
+               FROM proxima_core.memory m
+              WHERE m.owner_id = $1
+                AND NOT EXISTS
+                    (SELECT 1 FROM proxima_code.code_chunk_v1 c WHERE c.t = m.t)
          ), chunks AS (
              INSERT INTO proxima_code.code_chunk_v1
                  (t, repo_id, file_path, chunk_index, text, language, chunk_type,

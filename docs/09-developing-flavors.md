@@ -807,12 +807,50 @@ Version lanes:
 
 | Source | Reserved versions |
 |---|---|
-| Proxima core | `0001_v008.sql` (version 1) |
+| Proxima core | integer versions `1..=9999`; `0001_v008.sql` is the frozen baseline, later releases append (v0.0.9 is `0002_v009_declaration_triggers.sql`) |
 | example/host migrators | timestamp versions ending `00..=19` |
 | first-party flavors | timestamp versions ending `20..=39` |
 | downstream host composition | timestamp versions ending `60..=99`; external hosts own collision avoidance when they compose migrators outside Proxima's facade |
 
-Run `python3 scripts/check-migration-ranges.py` before adding a migration.
+Run `python3 scripts/check-migration-ranges.py` before adding a migration. It
+also content-pins the frozen v0.0.8 baselines: from v0.0.9 on a schema change
+is a **new** migration, never an edit to a file live databases have applied
+(see [how-to/migrations.md](how-to/migrations.md)).
+
+### Declaration triggers
+
+Every registered **memory** sidecar table carries one generated trigger:
+
+```sql
+CREATE OR REPLACE TRIGGER <relation>_declared_by_memory
+    BEFORE INSERT ON <schema>.<relation>
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.assert_memory_declares_sidecar('<memory key column>');
+```
+
+It refuses a sidecar row whose `proxima_core.memory` row does not name that
+table in `sidecar_tables` — the direction `assert_sidecar_stamp_declared`
+does not cover. Forget, owner erase and owner export all walk
+`memory.sidecar_tables`, so an unstamped row is reachable by none of them.
+
+| | |
+|---|---|
+| Emitted by | `PgSidecarRegistryFrozen::declaration_trigger_artifacts(flavor_id)` |
+| Lands in | the flavor's own additive v0.0.9 migration, verbatim — never the frozen v0.0.8 baseline |
+| Pinned by | a test comparing generator output against that migration's text, which also asserts the baseline does not carry it |
+| Checked at boot | `proxima_storage_pg::integrity::ensure_declaration_triggers`, bidirectionally; issues no DDL (docs/15 split-role) |
+| Not emitted for | Goal, `CitedObject` and `CitationMapping` sidecars, child tables of a sidecar row, and projection tables — none of them is ever stamped by a memory |
+
+`PgSidecarRegistryFrozen::integrity_check(pool)` is the read-back, and the
+one line a flavor's CI runs after its own ingest tests:
+
+```rust
+frozen_sidecars.integrity_check(pool).await?;
+```
+
+It refuses on any sidecar row of a projected schema with no projection row
+(repair: `rebuild_projection_for_table`, which the error names) and on any
+row no memory declares (no repair — the row is outside every declaration).
 
 ## MCP Tools
 

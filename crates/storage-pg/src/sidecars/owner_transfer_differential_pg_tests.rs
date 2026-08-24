@@ -93,6 +93,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
+const MCP_CALL: &str = "proxima_core.mcp_call_logged_v1";
 
 /// The three transfers this corpus performs, and the entities that must
 /// refuse. Named so the adapter and the dump agree without sharing state.
@@ -167,11 +168,17 @@ async fn write_note(
     handle: Option<Uuid>,
     blob_id: Option<Uuid>,
     title: &str,
+    call_log: bool,
 ) -> Result<(MemoryId, Uuid), Box<dyn std::error::Error>> {
     let mut tx = pool.begin().await?;
     let write = draft(source, handle, blob_id);
-    let outcome =
-        ingest_fact_timeseries(&mut tx, &owner, &write, &[AGENT_NOTE.to_owned()], None).await?;
+    // `call_log` admissions carry a hand-written `RetainAtSource` row below,
+    // and a sidecar row the memory does not declare is one no verb reaches.
+    let mut tables = vec![AGENT_NOTE.to_owned()];
+    if call_log {
+        tables.push(MCP_CALL.to_owned());
+    }
+    let outcome = ingest_fact_timeseries(&mut tx, &owner, &write, &tables, None).await?;
     core_pg_sidecars()
         .writing(&write)
         .insert_memory_sidecar(&mut tx, outcome.memory_id, &note(title))
@@ -342,6 +349,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
             None,
             Some(blob),
             n,
+            false,
         )
         .await?;
         let (second, _) = write_note(
@@ -351,6 +359,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
             Some(handle),
             Some(blob),
             n,
+            true,
         )
         .await?;
         let (third, _) = write_note(
@@ -360,6 +369,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
             Some(handle),
             Some(blob),
             n,
+            false,
         )
         .await?;
         // The oldest version cools: the series carries a cold tail whose
@@ -428,7 +438,16 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     .await?;
 
     // ── The source's OTHER series: never named by a transfer ────────────
-    let (kept, _) = write_note(pool, source, Some(("src-b", "kept-1")), None, None, "kept").await?;
+    let (kept, _) = write_note(
+        pool,
+        source,
+        Some(("src-b", "kept-1")),
+        None,
+        None,
+        "kept",
+        false,
+    )
+    .await?;
     embed(pool, kept.into_inner(), source).await?;
     sqlx::query("UPDATE proxima_core.memory SET content_id = $2 WHERE t = $1")
         .bind(kept.into_inner())
@@ -444,6 +463,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
         None,
         Some(blob_mount),
         "bystander",
+        true,
     )
     .await?;
     embed(pool, bystander_t.into_inner(), bystander).await?;

@@ -372,7 +372,9 @@ fn code_template_name() -> String {
     format!("proxima_tmpl_code_{hash:016x}")
 }
 
-fn code_pg_sidecars() -> PgSidecarRegistryFrozen {
+/// This flavor's frozen PG sidecar registry — the same handle production
+/// composes, and the one [`assert_no_declaration_drift`] asks.
+pub fn code_pg_sidecars() -> PgSidecarRegistryFrozen {
     let registry = proxima_code::schema_registry();
     let mut sidecars = PgSidecarRegistry::new();
     register_core_pg_sidecars(&mut sidecars);
@@ -380,4 +382,23 @@ fn code_pg_sidecars() -> PgSidecarRegistryFrozen {
     sidecars
         .freeze_against(&registry)
         .expect("code test PG sidecars match code schema registry")
+}
+
+/// Zero declaration drift over everything this flavor's suite just wrote.
+///
+/// The downstream half of `PgSidecarRegistryFrozen::integrity_check`: a
+/// flavor's own ingest tests are the only place its own write paths are
+/// exercised, so they are the only place that can tell whether those paths
+/// left a searchable row unsearchable or a sidecar row no memory declares.
+/// Call it at the end of an ingest test; it is one statement per registered
+/// surface and reads nothing else.
+///
+/// # Panics
+///
+/// Panics with the finding list when the check refuses.
+pub async fn assert_no_declaration_drift(pg: &PgStorage) {
+    code_pg_sidecars()
+        .integrity_check(pg.pool_for_tests())
+        .await
+        .unwrap_or_else(|err| panic!("this flavor's ingest left declaration drift: {err}"));
 }

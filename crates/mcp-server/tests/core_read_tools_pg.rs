@@ -691,7 +691,15 @@ async fn insert_fact(
     owner: &Owner,
     text: &str,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
-    let t = insert_memory_row(pg, owner, "fact", "test/wake-e2e-fact-v1", &[]).await?;
+    let t = insert_memory_row(
+        pg,
+        owner,
+        "fact",
+        "test/wake-e2e-fact-v1",
+        &[],
+        &["proxima_core.agent_note_v1"],
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO proxima_core.agent_note_v1
             (t, note_id, title, body, tags)
@@ -801,12 +809,17 @@ async fn arm_goal_for_fact(
     Ok(())
 }
 
+/// `sidecars` is the tables this admission's caller then writes a row into.
+/// It is the stamp forget, owner erase and owner export reach a sidecar row
+/// through, and since the declaration trigger the database refuses an
+/// unstamped one outright.
 async fn insert_memory_row(
     pg: &PgStorage,
     owner: &Owner,
     kind: &str,
     schema_id: &str,
     origins: &[uuid::Uuid],
+    sidecars: &[&str],
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let handle = uuid::Uuid::now_v7();
     let t = uuid::Uuid::now_v7();
@@ -818,6 +831,7 @@ async fn insert_memory_row(
             "fact",
             "core/test-fact-v1",
             &[],
+            &[],
         ))
         .await?;
         if kind == "perspective" {
@@ -827,6 +841,7 @@ async fn insert_memory_row(
                 "abstraction",
                 "core/test-abs-v1",
                 &[fact_t],
+                &[],
             ))
             .await?;
             origins.push(abs_t);
@@ -873,9 +888,11 @@ async fn insert_memory_row(
             .await?,
         )
     };
+    let sidecars: Vec<String> = sidecars.iter().map(|table| (*table).to_owned()).collect();
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, content_id)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7)",
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8)",
     )
     .bind(handle)
     .bind(t)
@@ -884,6 +901,7 @@ async fn insert_memory_row(
     .bind(schema_id)
     .bind(origins)
     .bind(content_id)
+    .bind(&sidecars)
     .execute(pg.pool_for_tests())
     .await?;
     Ok(t)
@@ -901,6 +919,7 @@ async fn insert_memory(
         "abstraction",
         "core/agent-derivation-v1",
         origins,
+        &["proxima_core.agent_derivation_v1"],
     )
     .await?;
     sqlx::query(
