@@ -50,6 +50,8 @@ search: SearchProjectionDecl::Projected {
         weight: WEIGHT_UNIFORM,
     }],
     tag_column: None,
+    // The row's configuration is the write's; a write naming none is
+    // refused. `Pinned("english")` instead fixes it for the surface.
     language: LanguagePolicy::PerRow { column: "lexical_language" },
     bands: BANDS,
     substring: SubstringArm::Off,

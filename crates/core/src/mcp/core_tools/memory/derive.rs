@@ -336,7 +336,7 @@ impl McpTool for DeriveTool {
                         derived_from: &derived_from,
                         extra_refs: &[],
                         supersedes: None,
-                        lexical_language: lexical_language.as_deref(),
+                        lexical_language: Some(lexical_language.as_str()),
                     },
                 )
                 .await

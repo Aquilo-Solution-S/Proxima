@@ -47,6 +47,7 @@ impl PgSidecarRegistry {
                     goal_copy: None,
                     projection_insert: None,
                     projection_table: None,
+                    projection_language: None,
                 },
             );
             assert!(
@@ -112,6 +113,7 @@ impl PgSidecarRegistry {
                     goal_copy: Some(copy_goal_sidecar::<P>),
                     projection_insert: None,
                     projection_table: None,
+                    projection_language: None,
                 },
             );
             assert!(
@@ -148,6 +150,7 @@ impl PgSidecarRegistry {
                 goal_copy: None,
                 projection_insert: None,
                 projection_table: None,
+                projection_language: None,
             },
         );
         assert!(
@@ -187,6 +190,7 @@ impl PgSidecarRegistry {
                     goal_copy: None,
                     projection_insert: None,
                     projection_table: None,
+                    projection_language: None,
                 },
             );
             assert!(
@@ -222,6 +226,7 @@ impl PgSidecarRegistry {
                 goal_copy: None,
                 projection_insert: None,
                 projection_table: None,
+                projection_language: None,
             },
         );
         assert!(
@@ -381,12 +386,19 @@ impl PgSidecarRegistry {
             else {
                 continue;
             };
-            if !schema.search.is_projected() {
+            let proxima_core::flavor::SearchProjectionDecl::Projected { language, .. } =
+                &schema.search
+            else {
                 continue;
-            }
+            };
             entry.projection_insert =
                 Some(crate::projection::projection_insert_sql(contract, schema)?);
             entry.projection_table = Some(spec.table.to_owned());
+            // Frozen beside the statement it explains: the statement's
+            // shape and the policy that produced it are one decision, and
+            // reading the policy back off the contract at write time would
+            // let the two answer differently.
+            entry.projection_language = Some(*language);
         }
         Ok(())
     }

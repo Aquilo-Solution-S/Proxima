@@ -352,6 +352,10 @@ async fn write_remembered(
             idempotency_key,
         };
         let pin = bind.remember.contains(&idx);
+        // A remember item takes no `language`, so this write keeps the
+        // builder's default: an explicit request for the deployment
+        // configuration, which is what an omitted `language` resolves to
+        // on the standalone `core_remember` too.
         let mut spec = TypedFactIngest::new("core/episode-remember", &payload);
         if pin {
             spec = spec.refs([act_id.into_inner()]);
@@ -469,7 +473,7 @@ async fn write_derive(
             derived_from: &derived_from,
             extra_refs: &extra_refs,
             supersedes: None,
-            lexical_language: lexical_language.as_deref(),
+            lexical_language: Some(lexical_language.as_str()),
         })
         .await
         .map_err(|err| map_bound_derived_error(err, "derive", pin))?;
@@ -568,7 +572,13 @@ async fn write_stances(
                 derived_from: &[],
                 extra_refs: &extra_refs,
                 supersedes: None,
-                lexical_language: None,
+                // A stance item takes no `language`, and the
+                // interpretation schema declares `LanguagePolicy::PerRow`.
+                // The write names the deployment configuration rather than
+                // carrying no language at all — see `memory::interpret`.
+                lexical_language: Some(
+                    crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT,
+                ),
             })
             .await
             .map_err(|err| map_bound_derived_error(err, "stance", pin))?;

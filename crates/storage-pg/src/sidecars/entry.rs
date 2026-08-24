@@ -1,3 +1,5 @@
+use proxima_core::flavor::LanguagePolicy;
+
 use super::{
     GoalId, MemoryId, PayloadKind, PgConnection, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture,
     PgSidecarFuture, PgSidecarReadCtx, Postgres, SchemaId, SchemaVersion, SidecarInsertPermit,
@@ -70,4 +72,13 @@ pub struct PgSidecarEntry {
     /// ask the registry which tables follow an owner without knowing which
     /// flavors are linked.
     pub(super) projection_table: Option<String>,
+    /// The projected schema's declared language policy, `None` when the
+    /// schema writes no projection row.
+    ///
+    /// The write path reads it instead of taking a language on faith: a
+    /// pinned policy carries its configuration INSIDE `projection_insert`
+    /// as a literal and its statement has no language bind to fill, so
+    /// there is nothing for a caller to pass; `PerRow` says the row's
+    /// language is the writing draft's, so the draft must carry one.
+    pub(super) projection_language: Option<LanguagePolicy>,
 }

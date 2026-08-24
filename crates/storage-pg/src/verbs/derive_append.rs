@@ -36,8 +36,10 @@ pub(crate) struct DerivedDraft<'a> {
     /// that later `t` *is* the supersession. No column records it and no
     /// edge is written. `None` mints a new series.
     pub supersedes: Option<MemoryId>,
-    /// Resolved text-search configuration name; `None` applies the
-    /// database default (`proxima_core.lexical_config()`).
+    /// Resolved text-search configuration name. The deployment-default
+    /// sentinel resolves to `proxima_core.lexical_config()`; `None` is no
+    /// language at all, which a `LanguagePolicy::PerRow` schema refuses
+    /// (see `PgSidecarWriter::insert_memory_sidecar`).
     pub lexical_language: Option<&'a str>,
     /// Vector to write inline, embedding job to enqueue, or neither — see
     /// [`DerivedEmbedding`]. Whichever it is happens inside this write's
