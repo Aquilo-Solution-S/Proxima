@@ -4,102 +4,134 @@ All notable changes to Proxima, generated from [Conventional Commits](https://ww
 
 Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpublished (`publish = false`).
 
-## [Unreleased]
+## [0.0.9] - 2026-08-24
 
 ### Features
-- **breaking:** **core**: An undeletable surface is a boot refusal, not a silent skip ([`437593c`](https://github.com/Aquilo-Solution-S/Proxima/commit/437593c2db5f0a499ca0d3ece92297301316620f)). `EraseRule::ByKey` on a key with no home fell through both generic erase loops; the only thing standing between that and a table nothing ever deletes was an exemption list in `proxima-storage-pg`, checked by a test that — because the substrate crate depends on no flavor — could only ever see flavor #0. An out-of-tree flavor could freeze, boot, and report `Completed` over rows that outlived their owner. The five-way partition now lives in freeze, over one classifier (`EraseLeg::derive`) that the boot check and the erase both call, with the bespoke list moved into `FlavorContract` where freeze can read it.
-- **breaking:** **core**: The journal leaves; the erase hands back a receipt ([`879db79`](https://github.com/Aquilo-Solution-S/Proxima/commit/879db79bbba9a7ca7992a697f7b03deb3caaff57)). `compliance_audit_log` and its seventeen counters are gone. An erase returns a map of table to rows destroyed, derived from the same `counter` declarations the surfaces already carried; a declared counter with no derivation is a freeze error. A host that must be able to show what it did records the receipt, which is a promise about its users and therefore theirs to keep.
-- **breaking:** **core**: The declarations generate the erase and the export ([`17c5486`](https://github.com/Aquilo-Solution-S/Proxima/commit/17c5486cf9eed050a9dc8b1de67f7613ff97316d)). Both verbs now read `EraseRule` and `ExportRule` off every surface in the frozen registry instead of naming tables from memory. The statement shapes did not change; the export's nine hand-written SQL constants and four dynamic sidecar builders collapsed into one generator, and the content GC lost an N+1.
-- **breaking:** **core**: The retention window and the legal hold leave core ([`1e052bf`](https://github.com/Aquilo-Solution-S/Proxima/commit/1e052bfecdd7f9682c35429957ac6de036017acd)). `owner_fact_retention`, `owner_legal_holds`, the 248-line enforcement lane and their CLI arms are gone with no successor and no consult hoisted into the erase. A retention schedule and a litigation hold are judgements about a hosting application's obligations to its own users; core stores, and offers the inverse of storing.
-- **breaking:** **core**: Bands, substring arms and read shape become declared values ([`8264804`](https://github.com/Aquilo-Solution-S/Proxima/commit/82648043b93087bfb1db457be7d23a6335b89fc3))
-- **storage-pg**: The substrate answers what a scope erase may take and whose it is ([`474fb2b`](https://github.com/Aquilo-Solution-S/Proxima/commit/474fb2bd241fc72e9c665229a8689ae0d26914eb))
-- **storage-pg**: A caller with its own error type can still recognise a deadlock ([`bed891e`](https://github.com/Aquilo-Solution-S/Proxima/commit/bed891e68227c049485d34038b714532d35724ce))
-- **breaking:** **core**: PerRow's column name becomes a constraint; bands stay a stated deferral ([`5fd2bf8`](https://github.com/Aquilo-Solution-S/Proxima/commit/5fd2bf8d2204b450cdf348a1a96a1114e8ef79c9))
-- **breaking:** **blob**: A shared cited blob dedupes on transfer instead of refusing ([`b95c294`](https://github.com/Aquilo-Solution-S/Proxima/commit/b95c2949d6cb44e3798257a4aeaa12a0137d8ab3))
-- **breaking:** **search**: One projection table per flavor replaces eight sidecar tsvectors ([`6f31fa1`](https://github.com/Aquilo-Solution-S/Proxima/commit/6f31fa1cb5aaf05f387b3d9f8ae3a6131b5035c2))
-- **breaking:** **code**: The code flavor declares its FlavorContract ([`1b20d5f`](https://github.com/Aquilo-Solution-S/Proxima/commit/1b20d5fe77aefd14397a6ce639c51b5387ee754f))
-- **breaking:** **core**: Per-field weights become relative floats; projection vocabulary lands ([`9fb1d36`](https://github.com/Aquilo-Solution-S/Proxima/commit/9fb1d3655ea3897b0a3bd96f222a8b64ece31bce))
-- **breaking:** **storage-pg**: Flavor_surface makes stamp ⊆ registry a database constraint ([`db694cd`](https://github.com/Aquilo-Solution-S/Proxima/commit/db694cd34a522355382d053fc7a23eb0d8748fcd))
-- **core**: Core is flavor #0 ([`d0482ff`](https://github.com/Aquilo-Solution-S/Proxima/commit/d0482ff9c5a776f233703c4000b7b02a42efc8a5))
-- **core**: The flavor contract is a declaration, not code ([`fe0bfa8`](https://github.com/Aquilo-Solution-S/Proxima/commit/fe0bfa8d5751c80b61bb5d41362553263f860dd2))
-- **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
+- **breaking:** Declaration integrity below every path — the sidecar trigger, and the integrity check beside rebuild ([`f650316`](https://github.com/Aquilo-Solution-S/Proxima/commit/f650316a82ee4fe61633f07cacec99ac04ee6056)) in [#251](https://github.com/Aquilo-Solution-S/Proxima/pull/251) by @HeinrichvH
+- An argv-keyed action carries its own annotations, and one helper decides what an action is ([`d3ca1a7`](https://github.com/Aquilo-Solution-S/Proxima/commit/d3ca1a7b6769787b9c47d04c6a9bc3ec8bfee339)) in [#250](https://github.com/Aquilo-Solution-S/Proxima/pull/250) by @HeinrichvH
+- The descriptor names its audience and argv-derived action keys ([`ea3ab37`](https://github.com/Aquilo-Solution-S/Proxima/commit/ea3ab379a8306ec754193bdf1ae04c097c0579b4)) in [#242](https://github.com/Aquilo-Solution-S/Proxima/pull/242) by @HeinrichvH
+- Freeze refuses the registrations that used to fail silently ([`7cb0341`](https://github.com/Aquilo-Solution-S/Proxima/commit/7cb03414f8149d6fe254faea0fc1dd9ac98ba314)) in [#240](https://github.com/Aquilo-Solution-S/Proxima/pull/240) by @HeinrichvH
 
 ### Bug Fixes
-- **storage-pg**: The goal selection stops binding a kind nothing reads ([`21c985e`](https://github.com/Aquilo-Solution-S/Proxima/commit/21c985eb4cc76b1eb7503c1d6719c8a1249e8251)). Residue of the retired composite `(owner_kind, owner_id)` key: the statement bound `$1` and filtered on `$2`.
-- **proxima**: The export half of an owner's rights reaches the facade ([`05a6b7c`](https://github.com/Aquilo-Solution-S/Proxima/commit/05a6b7c9d2bf8114d2a85e78b45aa30b2870d7c5)). The export types were public in core and re-exported nowhere, so a host depending on `proxima` could erase an owner but not hand one a copy.
-- **breaking:** **contract**: Correct the erase declarations before anything generates from them ([`85e679f`](https://github.com/Aquilo-Solution-S/Proxima/commit/85e679fb9a30966009a989198a358262b9496d5e)). Every keyed `KeyShape` now names its own column instead of implying `t`, and freeze refuses a surface that no owner predicate can reach. Generating from declarations nobody had checked would have shipped whatever they got wrong.
-- **storage-pg**: The projection rebuild picks its statement by schema, and the guard gets a pin ([`88848d3`](https://github.com/Aquilo-Solution-S/Proxima/commit/88848d3023b7a373a056f865093702194a150dad)). Hydrate looked the projection statement up by sidecar table alone and ran it for every stamped extra, so a memory with extra sidecars got projection rows claiming schemas it is not.
-- **breaking:** **storage-pg**: The kind filter reaches the candidate window too ([`f114f1f`](https://github.com/Aquilo-Solution-S/Proxima/commit/f114f1f683e74a9c641b4d892b5bb3208868b8bf)). `core/agent-derivation-v1` registers under two payload kinds, so a `kind`-filtered request narrows the participating schema set but not the rows; the abstraction-kind rows entered the window and admission dropped them, leaving the starved schema at the substring arm's flat floor. Measured on the same corpus and the same row: `0.250000` at `limit = 1`, `0.545455` at `limit = 8`.
-- **storage-pg**: The projection generator writes only the schema it was asked for ([`a8a74cb`](https://github.com/Aquilo-Solution-S/Proxima/commit/a8a74cba4c3cc377df9e3c3123685d925c61a521))
-- **core**: The projection uniformity arms each get a fixture, and the validators get their order back ([`e745c17`](https://github.com/Aquilo-Solution-S/Proxima/commit/e745c171a470a9aebcb958c0f6beafcea157a1ba))
-- **breaking:** **storage-pg**: HeadsOnly restricts the candidate window, not only admission ([`fc790e9`](https://github.com/Aquilo-Solution-S/Proxima/commit/fc790e9674e3bf6eba7728366bf6fe0578a03618))
-- **core**: The ts_rank weight array joins the uniformity check ([`010e5a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/010e5a5d8e18c40438cb05a0937f12e5af32f929))
-- **breaking:** **code**: The substring arms are declared, and their owner is a real predicate ([`0d95ff2`](https://github.com/Aquilo-Solution-S/Proxima/commit/0d95ff2bfbaa6aba418e291c405c75a35b962c55))
-- **breaking:** **code**: The owner boundary covers the seed leg, and the erase stops waiting ([`2075839`](https://github.com/Aquilo-Solution-S/Proxima/commit/2075839cc4edcff813c18cfa35bfb8d2d6590c59))
-- **storage-pg**: Giving up on a lock is transient, not a fault ([`42270bd`](https://github.com/Aquilo-Solution-S/Proxima/commit/42270bd3fcd6cdbc2acd2a7d31f0ddc2dd639b52))
-- **breaking:** **code**: The erase footprint is a joint fixpoint, locked once, inside one owner ([`8543d52`](https://github.com/Aquilo-Solution-S/Proxima/commit/8543d52db41abfb3538ead6190ff609f900608c9))
-- **storage-pg**: A cited blob is held before the erase decides nothing cites it ([`c483af1`](https://github.com/Aquilo-Solution-S/Proxima/commit/c483af13a36dec6d4ecd24d75adce7c01c677037))
-- **dev-migrate**: The reset owns the namespace the boot check probes ([`3f502ce`](https://github.com/Aquilo-Solution-S/Proxima/commit/3f502cee258ddca4850e7334879c288ff8829986))
-- **breaking:** **storage-pg**: A series erase takes the blobs its admissions cited ([`11149c7`](https://github.com/Aquilo-Solution-S/Proxima/commit/11149c7100b5eea347538ca20bb7219892f7e53f))
-- **breaking:** **code**: A repo erase closes its reference footprint and locks what it erases ([`12e8a93`](https://github.com/Aquilo-Solution-S/Proxima/commit/12e8a93a1147ad695686cc8883c55fec0afcb2c0))
-- **breaking:** **code**: The code lexical arms index on the owner, not filter on it ([`e7e84ea`](https://github.com/Aquilo-Solution-S/Proxima/commit/e7e84ea028867ae2347418f628b9f0f21dc70405))
-- **breaking:** **search**: The ranked arm reads the projection alone, so its GIN serves it ([`2ec6a82`](https://github.com/Aquilo-Solution-S/Proxima/commit/2ec6a82e199a89c55b369b58d74309c0b21337cc))
-- **storage-pg**: The lexical-stamp parity pin follows the declaration down to one table ([`6be0cc2`](https://github.com/Aquilo-Solution-S/Proxima/commit/6be0cc22a478f2caeca34116175f6e0c689c7746))
-- **test**: Bound the citation match, and correct the contract-reach record ([`be69924`](https://github.com/Aquilo-Solution-S/Proxima/commit/be69924a78a70a09ed1e9cb7923487a4450b5daa))
-- **breaking:** **compliance**: The owner-pinned export emits rows, not primary keys ([`bcb73a8`](https://github.com/Aquilo-Solution-S/Proxima/commit/bcb73a8ec9d2cfadf6e3b36438cbe797ebae2e59))
-- **core**: The transfer-rule doc link resolves under -D warnings ([`563c51b`](https://github.com/Aquilo-Solution-S/Proxima/commit/563c51b034b50a6853aea4b480e2d180823bfbda))
-- **breaking:** **compliance**: One list of sidecar surfaces, built from the contracts ([`0155977`](https://github.com/Aquilo-Solution-S/Proxima/commit/015597739e5398e32c5e9cfb416c5c38f19fab68))
-- **breaking:** **storage-pg**: An owner transfer retains the audit sidecar instead of deleting it ([`8cfd68c`](https://github.com/Aquilo-Solution-S/Proxima/commit/8cfd68c23d4ee2f7f32f7f0d5424112c412a7160))
-- **breaking:** **blob-s3**: Derive object keys from the upload row, not the owner ([`421034c`](https://github.com/Aquilo-Solution-S/Proxima/commit/421034c37ef5c4cf0f5f07796c8db1826acbbc51))
-- **breaking:** **core**: An owner transfer resolves the destination out of band ([`4d5e134`](https://github.com/Aquilo-Solution-S/Proxima/commit/4d5e1349262fa0fbc9d2541cbec0046375766e8b))
-- **core**: Type owner kind in sketch hydration ([`21aeba5`](https://github.com/Aquilo-Solution-S/Proxima/commit/21aeba5bec1bd6b5bf8ed79ef657e930f5acb0ea))
-- **breaking:** **core**: Delete the World owner ([`87e69a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/87e69a528476d03548a95767ea9df4887523c499))
-
-### Performance
-- **breaking:** **storage-pg**: One ranked statement per flavor, and the LIKE retry dies ([`5374e9c`](https://github.com/Aquilo-Solution-S/Proxima/commit/5374e9cd3e7e927e527b5f9eebd06850b83cd2d2)). Snippets are hydrated from the page instead of ridden in on the lexical statement, so a Semantic or semantic-only Hybrid hit now carries one where it previously came back empty.
+- Log MCP calls through the governed typed-Fact path ([`b457943`](https://github.com/Aquilo-Solution-S/Proxima/commit/b4579432e8eaacefbb6ef32c82fc48d47fdb06b4)) in [#252](https://github.com/Aquilo-Solution-S/Proxima/pull/252) by @HeinrichvH
+- **breaking:** Every generated statement spells declared names from the declaration — the sweep ([`38b5723`](https://github.com/Aquilo-Solution-S/Proxima/commit/38b5723db6d0d716afc98b70cbf06def162bb860)) by @HeinrichvH
+- Generated sidecar SQL keys on the column the contract declares, never on a spelling convention ([`383e560`](https://github.com/Aquilo-Solution-S/Proxima/commit/383e56040559bfa203a84a9e32fd632d75699127)) in [#239](https://github.com/Aquilo-Solution-S/Proxima/pull/239) by @HeinrichvH
+- A lost shared-catalog race retries the source run instead of failing the boot ([`cc7941b`](https://github.com/Aquilo-Solution-S/Proxima/commit/cc7941bfe1b749ef07c8f7c137a842f8af11fa63)) in [#237](https://github.com/Aquilo-Solution-S/Proxima/pull/237) by @HeinrichvH
 
 ### Refactor
-- **storage-pg**: The last two names outlive the thing they named ([`f887cbf`](https://github.com/Aquilo-Solution-S/Proxima/commit/f887cbfdddb9fb0cf839bd982996973cab0a1055))
-- **breaking:** **core**: The compliance vocabulary leaves; the verbs name owner and scope ([`5ab37d3`](https://github.com/Aquilo-Solution-S/Proxima/commit/5ab37d3f8a312740ebeb2d59f5721b54647b7be0)). `compliance_*` becomes `owner_*` throughout, and "who may erase an owner" is `OwnerEraseAuthorityPort` — the one provider seam, fail-closed when unwired.
-- **storage-pg**: The erase row lock is a substrate primitive, not flavor SQL ([`abd08fa`](https://github.com/Aquilo-Solution-S/Proxima/commit/abd08fac819ef9dc6deef1765ab3c1fc956ae27d))
-- **breaking:** **code**: Repo erase moves to the flavor that owns the rows ([`cdfb3aa`](https://github.com/Aquilo-Solution-S/Proxima/commit/cdfb3aa6c3a1bfed161f92a4f2fdf53a745f393e))
-- **breaking:** **core**: The frozen registry keeps one contract lookup ([`273fe44`](https://github.com/Aquilo-Solution-S/Proxima/commit/273fe444df61b47f84423bba297bf462a4009947))
-- **breaking:** **storage-pg**: Erase, the lexical guardrail and search read the contract ([`ad2122d`](https://github.com/Aquilo-Solution-S/Proxima/commit/ad2122dbb525257fce172dc8b978c96f1e6bb8ee))
-- **breaking:** **core**: The MCP resource manifest is the contract, not a copy of it ([`7f4cf93`](https://github.com/Aquilo-Solution-S/Proxima/commit/7f4cf93df44936c0d6433868f448c036f11a3dbd))
-- **storage-pg**: Nothing on the transfer path is called publish ([`3ab827c`](https://github.com/Aquilo-Solution-S/Proxima/commit/3ab827c371852daebe55df8f6ed6020bd7f62177))
-- **breaking:** **code**: A shared repo is a group, not the World ([`a9bc93d`](https://github.com/Aquilo-Solution-S/Proxima/commit/a9bc93d050b25cb2349dfd1de2c6ce580c2fa10f))
+- **breaking:** An owner is one column — Surface.owner_column, and the multi-column form is unwritable ([`9ecd17d`](https://github.com/Aquilo-Solution-S/Proxima/commit/9ecd17dc56509673cf265756b270dc4a89dbe5f9)) in [#248](https://github.com/Aquilo-Solution-S/Proxima/pull/248) by @HeinrichvH
+- **breaking:** OWNER_PINNED states itself — no declaration on PgMemoryPayload defaults ([`fdf421f`](https://github.com/Aquilo-Solution-S/Proxima/commit/fdf421f131c3f853916c29b42d29edde2107cb62)) in [#247](https://github.com/Aquilo-Solution-S/Proxima/pull/247) by @HeinrichvH
+- **breaking:** The projection language comes off the declaration and the draft, and a PerRow write that named none is refused ([`90ee7e0`](https://github.com/Aquilo-Solution-S/Proxima/commit/90ee7e0dbd0a784c3e4110324bc9ddcadbf5940b)) in [#246](https://github.com/Aquilo-Solution-S/Proxima/pull/246) by @HeinrichvH
+- **breaking:** One write path — the port is the only public door to storage ([`4b51fe3`](https://github.com/Aquilo-Solution-S/Proxima/commit/4b51fe371eba3a7c61c884839750af9db1ebd018)) in [#241](https://github.com/Aquilo-Solution-S/Proxima/pull/241) by @HeinrichvH
 
 ### Documentation
-- Two ghosts and one claim that reached further than its evidence ([`573b801`](https://github.com/Aquilo-Solution-S/Proxima/commit/573b801f1b2196ce370fc4dfe11664b89e000311)). `ComplianceAdminPort::may_perform_operator_maintenance` was documented in two places and does not exist; docs/01's source block still promised substrate-enforced residency, retention cleanup and refusal-with-reason; and the differential harness now names what its corpus cannot witness.
-- Nothing in the substrate argues from a statute ([`e018f8f`](https://github.com/Aquilo-Solution-S/Proxima/commit/e018f8fe5e12764446f0e9990ab1177d78aef3b9)). Fifteen sites, one of which shipped: a `COMMENT ON COLUMN` naming Article 17 wrote into pg_description, which comes back out of every schema-dump tool an operator points at the database. The migration test now counts statute references in the catalog and requires zero.
-- The compliance chapter becomes the inverses of storing ([`d7de259`](https://github.com/Aquilo-Solution-S/Proxima/commit/d7de25932c881581984aa9b7cee19249071a118b)). Chapter 13 argued from a regulation and described enforcement core does not perform; it now states the position that replaced them and says which judgements belong to the host.
-- Contract Reach says what freeze checks and what it takes on trust ([`871c011`](https://github.com/Aquilo-Solution-S/Proxima/commit/871c01180c1d58739875be7e19e5f7a83e5988e3))
-- The flavor search surface is a declaration, and pg_trgm's blocker was wrong ([`237282d`](https://github.com/Aquilo-Solution-S/Proxima/commit/237282d4d515a11ec4acc31966032314cce6af0a))
-- What the contract does not yet reach, said where a reader looks ([`0e280ed`](https://github.com/Aquilo-Solution-S/Proxima/commit/0e280edc6f16a58eb43fc22ec901e0c8c6ba94a5))
-- The resource catalog is named after what it is now ([`791894d`](https://github.com/Aquilo-Solution-S/Proxima/commit/791894dd92ee6836313eb73a32179a5fffe2debd))
-- The coverage row and the transfer port name what actually exists ([`5270686`](https://github.com/Aquilo-Solution-S/Proxima/commit/5270686c604cae8964b504021332c4ba76b8a806))
-- **breaking:** The World owner is gone from prose, Lean, and the changelog ([`9abf3de`](https://github.com/Aquilo-Solution-S/Proxima/commit/9abf3de134b6e986f1ea0cec6885f3dc58bec8df))
+- One git selector form per graph, and why the mixed form fails ([`f4dc0e3`](https://github.com/Aquilo-Solution-S/Proxima/commit/f4dc0e39e2845eb377129cc73f45f6b01883b6ed)) in [#238](https://github.com/Aquilo-Solution-S/Proxima/pull/238) by @HeinrichvH
+
+### Dependencies
+- **deps**: Bump the cargo-minor-patch group across 1 directory with 3 updates ([`ee8c637`](https://github.com/Aquilo-Solution-S/Proxima/commit/ee8c637bc0ed6fc57e9f130cedd0ffa4e2ea1300)) in [#245](https://github.com/Aquilo-Solution-S/Proxima/pull/245) by @dependabot[bot]
+- **deps**: Bump distroless/cc-debian12 from `6e1871c` to `e5d81dd` ([`9195824`](https://github.com/Aquilo-Solution-S/Proxima/commit/91958247dd762820c10ba9c0a44ca9222b238549)) in [#244](https://github.com/Aquilo-Solution-S/Proxima/pull/244) by @dependabot[bot]
+- **deps**: Bump rust in the docker group across 1 directory ([`11c77e4`](https://github.com/Aquilo-Solution-S/Proxima/commit/11c77e40d58c27d97316c03af9f43cec072a9113)) in [#243](https://github.com/Aquilo-Solution-S/Proxima/pull/243) by @dependabot[bot]
+
+## [0.0.8] - 2026-08-22
+
+### Features
+- **breaking:** Policy lands on the contract — every declaration gets a consumer, or dies ([`bb910fe`](https://github.com/Aquilo-Solution-S/Proxima/commit/bb910fef082d5ba52c571f6cd938905a58ad23ae)) in [#234](https://github.com/Aquilo-Solution-S/Proxima/pull/234) by @HeinrichvH
+- **breaking:** Compliance becomes the inverses of storing — retention, holds and the journal leave core ([`eef54c8`](https://github.com/Aquilo-Solution-S/Proxima/commit/eef54c8ecc14d6a256261cd72ed63f9b42b939aa)) in [#233](https://github.com/Aquilo-Solution-S/Proxima/pull/233) by @HeinrichvH
+- **breaking:** Search collapses onto the projections — like_only dies, bands become declarations ([`fd36250`](https://github.com/Aquilo-Solution-S/Proxima/commit/fd362509225eb6aa8f38bd1b007d5106dd3df69a)) in [#232](https://github.com/Aquilo-Solution-S/Proxima/pull/232) by @HeinrichvH
+- **breaking:** Search moves onto per-flavor projections — one vocabulary, contract-derived erase, blob dedupe ([`e7c3c83`](https://github.com/Aquilo-Solution-S/Proxima/commit/e7c3c83f6091ce9bdd87f4fa481047fd751c941b)) in [#231](https://github.com/Aquilo-Solution-S/Proxima/pull/231) by @HeinrichvH
+- **breaking:** The flavor contract — capabilities become declarations, core becomes flavor #0 ([`b5fe11a`](https://github.com/Aquilo-Solution-S/Proxima/commit/b5fe11ad07555ea1e2d784c053206b42beea890d)) in [#230](https://github.com/Aquilo-Solution-S/Proxima/pull/230) by @HeinrichvH
+- V0.0.8 hippocampus — Content, situated Self, recall/think/episode ([`36cb382`](https://github.com/Aquilo-Solution-S/Proxima/commit/36cb38226cf3a232edfba87b392a40eb1616e32f)) in [#217](https://github.com/Aquilo-Solution-S/Proxima/pull/217) by @HeinrichvH
+- **storage-pg**: Index the columns the sweep's hot reads actually probe ([`ff40984`](https://github.com/Aquilo-Solution-S/Proxima/commit/ff40984145633d6bf7b681e5165eb2b5e5e3f7eb)) by @HeinrichvH
+- **breaking:** **storage-pg**: Ship index-first search as the default path ([`b912d6a`](https://github.com/Aquilo-Solution-S/Proxima/commit/b912d6a143487db10ba88829bfd901bb7f2cb92e)) by @HeinrichvH
+- **storage-pg**: Flag-ablated tuning surface for the storage perf wave ([`67a9bd6`](https://github.com/Aquilo-Solution-S/Proxima/commit/67a9bd6d2450012945e20b3f67ae9eaa5c1a1a99)) by @HeinrichvH
+- **breaking:** **core**: Add durable delegated worker authority ([`2868960`](https://github.com/Aquilo-Solution-S/Proxima/commit/286896009873dc9f22c104cb0811eee10ee25d26)) in [#189](https://github.com/Aquilo-Solution-S/Proxima/pull/189) by @HeinrichvH
+- **proxima**: Expose offline OpenAPI generation ([`e9d60ee`](https://github.com/Aquilo-Solution-S/Proxima/commit/e9d60ee995b5eeddf56c43462859868664559be4)) in [#187](https://github.com/Aquilo-Solution-S/Proxima/pull/187) by @HeinrichvH
+- **blob-s3**: Add bounded verified byte reads ([`0b05647`](https://github.com/Aquilo-Solution-S/Proxima/commit/0b05647f9605bc8c323c841121df7f389f20f42e)) in [#186](https://github.com/Aquilo-Solution-S/Proxima/pull/186) by @HeinrichvH
+- **breaking:** **core**: Carry transport-neutral tool caller metadata ([`923dcc8`](https://github.com/Aquilo-Solution-S/Proxima/commit/923dcc86a49a234c777477cceea9f87c52cb6a41)) in [#185](https://github.com/Aquilo-Solution-S/Proxima/pull/185) by @HeinrichvH
+- **breaking:** **proxima**: Compose flavor services once ([`1d6ba3b`](https://github.com/Aquilo-Solution-S/Proxima/commit/1d6ba3b52c64251566207085f143e25298006624)) in [#183](https://github.com/Aquilo-Solution-S/Proxima/pull/183) by @HeinrichvH
+- **proxima**: Expose endpoint policy to flavors ([`01d8648`](https://github.com/Aquilo-Solution-S/Proxima/commit/01d864878a50e0a0d62ba238a24d1ee0af4537bb)) in [#181](https://github.com/Aquilo-Solution-S/Proxima/pull/181) by @HeinrichvH
+- **breaking:** **core**: Declare dispatcher behavior per action ([`f87a427`](https://github.com/Aquilo-Solution-S/Proxima/commit/f87a427340fdf7e3948f8ee4f394bfbb2bd9ca98)) in [#176](https://github.com/Aquilo-Solution-S/Proxima/pull/176) by @HeinrichvH
+
+### Bug Fixes
+- **breaking:** A Never schema enqueues no embedding job, on ingest or on rehydrate ([`402b62e`](https://github.com/Aquilo-Solution-S/Proxima/commit/402b62e8b92be727472ca7dfb93ea26f5e3a91b4)) by @HeinrichvH
+- **breaking:** **core**: The embedding recipe is checked against behaviour, and governs every kind ([`2ff9e04`](https://github.com/Aquilo-Solution-S/Proxima/commit/2ff9e04a3e0479e2383c5e51339ade4ae1309825)) by @HeinrichvH
+- **breaking:** Remove the World owner — owner-scoped memory, owner→owner transfer ([`686818f`](https://github.com/Aquilo-Solution-S/Proxima/commit/686818f3302ef47d64885a931ba3939ceac1a2b8)) in [#229](https://github.com/Aquilo-Solution-S/Proxima/pull/229) by @HeinrichvH
+- **breaking:** Transfer semantics — goals never in World, announced transfers, lexical forget; inert knob cut ([`2aac6bc`](https://github.com/Aquilo-Solution-S/Proxima/commit/2aac6bc344f779e938c3a55a20baf7d537d4372f)) in [#228](https://github.com/Aquilo-Solution-S/Proxima/pull/228) by @HeinrichvH
+- **config**: Remove hardcoded runtime assumptions ([`a43fab9`](https://github.com/Aquilo-Solution-S/Proxima/commit/a43fab9a942ecb00f3d7154b44d207d07f0a6b09)) in [#227](https://github.com/Aquilo-Solution-S/Proxima/pull/227) by @HeinrichvH
+- **breaking:** **llm-openai-compat**: Remove provider-specific embedding surface ([`0afdb30`](https://github.com/Aquilo-Solution-S/Proxima/commit/0afdb30c44312e21228e34783246eb36d6cdb407)) in [#226](https://github.com/Aquilo-Solution-S/Proxima/pull/226) by @HeinrichvH
+- **breaking:** **core**: Complete the v0.0.8 dead-surface cut ([`0e40b99`](https://github.com/Aquilo-Solution-S/Proxima/commit/0e40b9909363c4559495558ab6e1db1183148bb5)) in [#225](https://github.com/Aquilo-Solution-S/Proxima/pull/225) by @HeinrichvH
+- **storage-pg**: Complete compliance erase and export ([`aa217f3`](https://github.com/Aquilo-Solution-S/Proxima/commit/aa217f327785c2a2a1e8b0aca088f95bdf5ffa87)) in [#224](https://github.com/Aquilo-Solution-S/Proxima/pull/224) by @HeinrichvH
+- **storage-pg**: Harden forget and cooled replay ([`55d29f3`](https://github.com/Aquilo-Solution-S/Proxima/commit/55d29f3efd06031820d27a6cea68513515214a00)) in [#223](https://github.com/Aquilo-Solution-S/Proxima/pull/223) by @HeinrichvH
+- **storage-pg**: Close v0.0.8 review findings ([`17338a2`](https://github.com/Aquilo-Solution-S/Proxima/commit/17338a20b3a1fa26c579edeac8242a33ca99ed0d)) in [#222](https://github.com/Aquilo-Solution-S/Proxima/pull/222) by @HeinrichvH
+- **storage-pg**: Close remaining v0.0.8 release-gate Highs ([`c4e7318`](https://github.com/Aquilo-Solution-S/Proxima/commit/c4e7318f84433292013af1a0864829942dcc75db)) in [#219](https://github.com/Aquilo-Solution-S/Proxima/pull/219) by @HeinrichvH
+- Close v0.0.8 release-gate Highs and Mediums ([`8d489a4`](https://github.com/Aquilo-Solution-S/Proxima/commit/8d489a491f5927a0ae207d2ba54d5688cd73c86c)) in [#218](https://github.com/Aquilo-Solution-S/Proxima/pull/218) by @HeinrichvH
+- **storage-pg**: Concurrent ensure_owner_row must not RowNotFound ([`2eebeb1`](https://github.com/Aquilo-Solution-S/Proxima/commit/2eebeb1509b7a8d5e6af69ed5e86e40182b02b04)) in [#216](https://github.com/Aquilo-Solution-S/Proxima/pull/216) by @HeinrichvH
+- **storage-pg**: Tagged core_search_memories must scan flavor sidecars ([`0e64613`](https://github.com/Aquilo-Solution-S/Proxima/commit/0e6461369c80f812e4e10875bef361ea84ea0535)) in [#215](https://github.com/Aquilo-Solution-S/Proxima/pull/215) by @HeinrichvH
+- **storage-pg**: List_group_members must not ORDER BY created_at ([`c78be92`](https://github.com/Aquilo-Solution-S/Proxima/commit/c78be92d38d18786b892b0011d4f504df287e89f)) in [#214](https://github.com/Aquilo-Solution-S/Proxima/pull/214) by @HeinrichvH
+- **proxima**: Re-export hook types and MCP catalog types ([`6ea708d`](https://github.com/Aquilo-Solution-S/Proxima/commit/6ea708d6699fbe67d70239a7b21e0f60d1872e93)) in [#213](https://github.com/Aquilo-Solution-S/Proxima/pull/213) by @HeinrichvH
+- V0.0.8 pre-tag cleanup ([`76780f7`](https://github.com/Aquilo-Solution-S/Proxima/commit/76780f787a79815b50bc78de4e6419a04c568372)) in [#212](https://github.com/Aquilo-Solution-S/Proxima/pull/212) by @HeinrichvH
+- **storage-pg**: Preflight the HNSW settings this deployment will send ([`d11dbb7`](https://github.com/Aquilo-Solution-S/Proxima/commit/d11dbb74e360c6e650531690ffc9bfa732644da4)) by @HeinrichvH
+- **storage-pg**: Refuse an out-of-range HNSW knob at boot, not per search ([`e68525e`](https://github.com/Aquilo-Solution-S/Proxima/commit/e68525e974094e7ccd022e1fcdb32c137864ac3f)) by @HeinrichvH
+- **breaking:** **storage-pg**: Finish the env_value migration ([`bda233f`](https://github.com/Aquilo-Solution-S/Proxima/commit/bda233fc5354c6d6dfb3d4ad0aef617e1a1c5794)) in [#201](https://github.com/Aquilo-Solution-S/Proxima/pull/201) by @HeinrichvH
+- **breaking:** **storage-pg**: One tail for every Goal write ([`b120ca4`](https://github.com/Aquilo-Solution-S/Proxima/commit/b120ca41ff176a4d7cb08e32a4308a72b52cdc40)) in [#198](https://github.com/Aquilo-Solution-S/Proxima/pull/198) by @HeinrichvH
+- **breaking:** **core**: Carry two computed values to the surfaces that claim them ([`97702ac`](https://github.com/Aquilo-Solution-S/Proxima/commit/97702acab5d82ae2fed59119deec7aa98d5f10eb)) in [#196](https://github.com/Aquilo-Solution-S/Proxima/pull/196) by @HeinrichvH
+- **proxima**: One rule for an empty environment value ([`13d7a22`](https://github.com/Aquilo-Solution-S/Proxima/commit/13d7a2283f1e846221f2a3b2d9567127ead8e584)) in [#195](https://github.com/Aquilo-Solution-S/Proxima/pull/195) by @HeinrichvH
+- **proxima**: Admit core resource keys to the derived tool palette ([`8c67180`](https://github.com/Aquilo-Solution-S/Proxima/commit/8c67180e72146975a4ab482eab557e06b0010de4)) in [#194](https://github.com/Aquilo-Solution-S/Proxima/pull/194) by @HeinrichvH
+- **core**: Align flat-tool catalog scope with dispatch ([`f9cb50c`](https://github.com/Aquilo-Solution-S/Proxima/commit/f9cb50c57af9b00ee3463e90d3ab45143315a1a6)) in [#188](https://github.com/Aquilo-Solution-S/Proxima/pull/188) by @HeinrichvH
+- **breaking:** **blob-s3**: Split reconciliation authority ([`40c1713`](https://github.com/Aquilo-Solution-S/Proxima/commit/40c1713e66dc6181e692ccc031f8cb181e8f5e5f)) in [#184](https://github.com/Aquilo-Solution-S/Proxima/pull/184) by @HeinrichvH
+- **breaking:** **mcp-server**: Enforce listener-wide browser CORS ([`8ba4a2d`](https://github.com/Aquilo-Solution-S/Proxima/commit/8ba4a2d87113e04883c6947d92d03cf04349791e)) in [#182](https://github.com/Aquilo-Solution-S/Proxima/pull/182) by @HeinrichvH
+- **breaking:** **core**: Seal schema admission at registry freeze ([`28eb57f`](https://github.com/Aquilo-Solution-S/Proxima/commit/28eb57fcb25bf193e3048391a2b3c727e60ce2c2)) in [#179](https://github.com/Aquilo-Solution-S/Proxima/pull/179) by @HeinrichvH
+- **breaking:** **core**: Classify output serialization as internal ([`72aeb8a`](https://github.com/Aquilo-Solution-S/Proxima/commit/72aeb8a7bd4e544ba21403ca1593c606ab9eab6d)) in [#178](https://github.com/Aquilo-Solution-S/Proxima/pull/178) by @HeinrichvH
+- **breaking:** **mcp-server**: Guard the complete listener by Host ([`6e26547`](https://github.com/Aquilo-Solution-S/Proxima/commit/6e26547885c7d284593b1a3b3de60af5fa73f128)) in [#177](https://github.com/Aquilo-Solution-S/Proxima/pull/177) by @HeinrichvH
+- **breaking:** **proxima**: Remove inert MCP owner-access gate ([`c5edf87`](https://github.com/Aquilo-Solution-S/Proxima/commit/c5edf875553aef3be44c4122d9780918e2809551)) in [#175](https://github.com/Aquilo-Solution-S/Proxima/pull/175) by @HeinrichvH
+
+### Performance
+- **breaking:** **storage-pg**: Make the lexical gate reachable by an index ([`f5f4cff`](https://github.com/Aquilo-Solution-S/Proxima/commit/f5f4cffba2a6f3d3eca95ae1af09b55ff014e373)) by @HeinrichvH
+- **storage-pg**: Make every hot read a shape an index can serve ([`bf8c70a`](https://github.com/Aquilo-Solution-S/Proxima/commit/bf8c70a1ada87b71483c33a0fa15216b5364ee00)) by @HeinrichvH
+- **core**: Hydrate payloads and neighbor edges concurrently ([`f179615`](https://github.com/Aquilo-Solution-S/Proxima/commit/f1796153fa25f6df68338e5ac0bd73ca920653cc)) by @HeinrichvH
+- **breaking:** **storage-pg**: Rank first, then decide eligibility ([`4d46a97`](https://github.com/Aquilo-Solution-S/Proxima/commit/4d46a979a4526b0fe172aca08e1122a4bbc25b88)) by @HeinrichvH
+- **storage-pg**: Kind-specialize the dedup arm's head filter per branch ([`00a8374`](https://github.com/Aquilo-Solution-S/Proxima/commit/00a8374644bbc4d4e382ef230267510073b9208d)) by @HeinrichvH
+
+### Refactor
+- Timeseries v0.0.8 hard cut ([`1e2ec56`](https://github.com/Aquilo-Solution-S/Proxima/commit/1e2ec5646aaa343490da74c59af1e25249bc3e20)) in [#211](https://github.com/Aquilo-Solution-S/Proxima/pull/211) by @HeinrichvH
+- **storage-pg**: Store Fact as EntityKind and unify sidecar reads ([`152630c`](https://github.com/Aquilo-Solution-S/Proxima/commit/152630c5198283c5c376cb94b238c36865ca659c)) in [#207](https://github.com/Aquilo-Solution-S/Proxima/pull/207) by @HeinrichvH
+- **storage-pg**: Derive the chunk-row alias where the barrier is ([`8c8ac81`](https://github.com/Aquilo-Solution-S/Proxima/commit/8c8ac81da5c5682574e613d1d4665c31a4bf69bb)) by @HeinrichvH
+- **storage-pg**: Declare the default semantic arm once ([`526c27a`](https://github.com/Aquilo-Solution-S/Proxima/commit/526c27af585dbea158efb68b80f37bc90454a471)) by @HeinrichvH
+- **storage-pg**: One integer env parser, not three ([`31fb1d3`](https://github.com/Aquilo-Solution-S/Proxima/commit/31fb1d3da494458e59d552c9a7e490875d872ada)) by @HeinrichvH
+- **storage-pg**: One bind prefix for both search branches ([`bbbd272`](https://github.com/Aquilo-Solution-S/Proxima/commit/bbbd272b6ebf0d35d2fa2ad16fbac3199cdf7ae4)) by @HeinrichvH
+- **storage-pg**: Hold the fact-head liveness test once ([`ec0cdc4`](https://github.com/Aquilo-Solution-S/Proxima/commit/ec0cdc4b35871d1bb25d43c9893a396c726179ce)) by @HeinrichvH
+- **storage-pg**: Drop the ChunkRows field with one possible value ([`5e93c93`](https://github.com/Aquilo-Solution-S/Proxima/commit/5e93c9314ab73a4d8ed67c7d3a1e3822d28b350f)) by @HeinrichvH
+- **storage-pg**: One spelling of the vector branch's eligibility joins ([`a23d519`](https://github.com/Aquilo-Solution-S/Proxima/commit/a23d519ce6f5ff66b5e44bff71b2472eda078e35)) by @HeinrichvH
+- **storage-pg**: Dedupe the similarity CASE and the projection binds ([`5ad689e`](https://github.com/Aquilo-Solution-S/Proxima/commit/5ad689ea32b0536d1f5b2548c98593968a1d4c43)) by @HeinrichvH
+- **breaking:** **storage-pg**: Strip the tuning surface deferred to v0.0.9 ([`a55395d`](https://github.com/Aquilo-Solution-S/Proxima/commit/a55395dcdb1f82efe56b11a377de706492bfb20a)) by @HeinrichvH
+- **breaking:** **core**: Retire the second tool-descriptor family ([`804d336`](https://github.com/Aquilo-Solution-S/Proxima/commit/804d336c246ee2ea9e48c91a0a38e9450b4a33e1)) in [#200](https://github.com/Aquilo-Solution-S/Proxima/pull/200) by @HeinrichvH
+- **core**: One admission check for every compliance erase ([`bad9048`](https://github.com/Aquilo-Solution-S/Proxima/commit/bad9048cdda81276bf309abedb13ac6936cd30a7)) in [#199](https://github.com/Aquilo-Solution-S/Proxima/pull/199) by @HeinrichvH
+- **storage-pg,proxima**: Call the shared definitions instead of restating them ([`c2001b1`](https://github.com/Aquilo-Solution-S/Proxima/commit/c2001b1229f199ab6cd4b4bb179bfddece221a3d)) in [#197](https://github.com/Aquilo-Solution-S/Proxima/pull/197) by @HeinrichvH
+- **breaking:** **core**: Remove inert dependency satisfaction seam ([`1e7c314`](https://github.com/Aquilo-Solution-S/Proxima/commit/1e7c3146a955e0fb3b6dcaea352fe128255d83d5)) in [#180](https://github.com/Aquilo-Solution-S/Proxima/pull/180) by @HeinrichvH
+
+### Documentation
+- The embedding recipe governs, and the freeze comment says how far ([`18f6dbc`](https://github.com/Aquilo-Solution-S/Proxima/commit/18f6dbc0380a8a46ade89d52c2206a00a8cc77f5)) in [#236](https://github.com/Aquilo-Solution-S/Proxima/pull/236) by @HeinrichvH
+- **breaking:** The prose cut — comments state invariants, not the road here ([`5b4f6bd`](https://github.com/Aquilo-Solution-S/Proxima/commit/5b4f6bd48e30520e24b1aa40da0a7c8878f7cc23)) in [#235](https://github.com/Aquilo-Solution-S/Proxima/pull/235) by @HeinrichvH
+- **storage-pg**: Retire the wave adjudications file ([`755e380`](https://github.com/Aquilo-Solution-S/Proxima/commit/755e380b22a408cb64ed2373b8133a04e79cc1a0)) by @HeinrichvH
+- **storage-pg**: State the predicate from_lookup actually implements ([`a66dbc2`](https://github.com/Aquilo-Solution-S/Proxima/commit/a66dbc25d769535fcd1f58a7aafa2af001dac9a9)) by @HeinrichvH
+- **storage-pg**: The shipped scan ceiling is inherited, not asserted ([`87d2268`](https://github.com/Aquilo-Solution-S/Proxima/commit/87d2268e82cb82dfaf202010be0b282d318a182f)) by @HeinrichvH
+- Document the PROXIMA_PG_* search tuning variables ([`55dcdf8`](https://github.com/Aquilo-Solution-S/Proxima/commit/55dcdf8b12b8508f18cc0e122af8be6d6bd2f051)) by @HeinrichvH
+- **releasing**: The changelog lands through a PR, the tag lands after it ([`ee2444c`](https://github.com/Aquilo-Solution-S/Proxima/commit/ee2444ce250c8397dd4e10b3f632c1224bad3b72)) in [#174](https://github.com/Aquilo-Solution-S/Proxima/pull/174) by @HeinrichvH
 
 ### Testing
-- **core**: The bundle is pinned to the declarations, not to a corpus ([`d615418`](https://github.com/Aquilo-Solution-S/Proxima/commit/d615418c4ea3fff64fde8b36e77c5f0491de0f9f)). `OwnerExportBundle` documents "one entry per declared exportable surface, including the ones that came back empty" and nothing checked it: deleting a surface from the generator's loop passed the whole suite AND the differential, which strips empty sections by design. Now exported from a fresh owner, twice — flavor 0 in `proxima-storage-pg`, both contracts in `proxima-code`, the one crate that sees the whole registry and the generated statements together. The same file requires every base table in `proxima_core` and `proxima_code` to be a declared surface or carry a stated reason not to be.
-- **storage-pg**: The differential dump costs no dynamic SQL ([`b0c35ee`](https://github.com/Aquilo-Solution-S/Proxima/commit/b0c35eee670f6487bead5d6f30bf096513801e7f)). Postgres assembles the per-relation query with `format(..., %I)` inside `query_to_xml`, so walking every base relation adds nothing to the ratchet.
-- **storage-pg**: Pin the owner inverse against its pre-phase self ([`dd731ef`](https://github.com/Aquilo-Solution-S/Proxima/commit/dd731ef3eaffc03dbf565e901d3bde9f3c63aef1)). On a seeded twelve-leg multi-owner corpus, the rewritten erase leaves byte-identical database state and the rewritten export produces byte-identical canonical JSON, in both owner and source scope. Generated goldens from the pre-phase tree, so the equivalence was proved before the old implementation was deleted.
-- **storage-pg**: The mirror guard counts predicates, not just binds ([`7e5fb81`](https://github.com/Aquilo-Solution-S/Proxima/commit/7e5fb81fe2b38bf5e4c95656d97e2e95019a47a8))
-- **storage-pg**: The plan pin drops the fallback that its own permitted plan would fail ([`656bac6`](https://github.com/Aquilo-Solution-S/Proxima/commit/656bac636d2da80d09225d0ff06d46a80653d21a))
-- **storage-pg**: The band pin perturbs all three bands, not one ([`d908e93`](https://github.com/Aquilo-Solution-S/Proxima/commit/d908e9375e74eb1a8bcc2f012248e39131f03264))
-- **storage-pg**: The substring leg's head restriction gets a runtime case ([`6887b0b`](https://github.com/Aquilo-Solution-S/Proxima/commit/6887b0b5a59dc02417d20bae603d13c0393db0ce))
-- **storage-pg**: The plan pin stops forbidding the plan that wins at scale ([`e659ebd`](https://github.com/Aquilo-Solution-S/Proxima/commit/e659ebda62ac3cbaebf8b93fba9b15b12aa0a2f6)). Measured: 51.5 ms hash join against 85.8 ms nested loop at 25 000 heads.
-- **code**: The ranked commit arms bind the owner, and the ratchet says why ([`4487adf`](https://github.com/Aquilo-Solution-S/Proxima/commit/4487adfaa8ddc1eb2d3501e491f3d9a55d8d9208))
-- **code**: The cascade check sees every surface the contract declares ([`fb37282`](https://github.com/Aquilo-Solution-S/Proxima/commit/fb37282d80518c23d9cf5e0b9bc8b8113780b935))
-- **search**: The core plan pin asserts the owner is an INDEX condition ([`c90016a`](https://github.com/Aquilo-Solution-S/Proxima/commit/c90016abc0661e08969b3b9907839733c7690d8f))
-- **compliance**: Pin the source arm's object refcount, not just the owner arm's ([`6fb5a84`](https://github.com/Aquilo-Solution-S/Proxima/commit/6fb5a84c3dfcb370fb26b08991d2257cf7980fe2))
-- **compliance**: Pin that an erased owner keeps no searchable row ([`4ba05af`](https://github.com/Aquilo-Solution-S/Proxima/commit/4ba05afa8564fe48c3ff4a1f18402cad33715c2c))
-- **v0.0.8**: The write side of the projection, and R12 end to end ([`f281555`](https://github.com/Aquilo-Solution-S/Proxima/commit/f2815550fcfd13588709154c2d37cffd9f4ae511))
-- **search**: Pin the projection against b5fe11ad's results, byte for byte ([`e6db34c`](https://github.com/Aquilo-Solution-S/Proxima/commit/e6db34cafb2cd4582f3c5a9594ab086c838ac2da))
-- **storage-pg**: Pin the search rewire, and resolve the cited enforcement ([`8ef6858`](https://github.com/Aquilo-Solution-S/Proxima/commit/8ef6858a6afcd4ae22c57051957ce7dea62c1079))
-- **core**: Every contract cross-check has a registry shaped to trip it ([`8aa8eec`](https://github.com/Aquilo-Solution-S/Proxima/commit/8aa8eec695b6a17ad23789ea056fb380724a0f5c))
-- **storage-pg**: The §2.5 acceptance cases, and the embedding byte-parity gate ([`50e1adf`](https://github.com/Aquilo-Solution-S/Proxima/commit/50e1adf1e35e789d8dca27d373c58a203dd47d38))
-- Every World test is deleted or generalized to an owner destination ([`117b6bb`](https://github.com/Aquilo-Solution-S/Proxima/commit/117b6bb60cf2d4a17480d0db3e166525d04eafe0))
+- **storage-pg**: Vacuum the GIN fixture before asserting the plan ([`15c55f9`](https://github.com/Aquilo-Solution-S/Proxima/commit/15c55f9dbf52d6e51a20679949c8039f1e41dfd7)) in [#204](https://github.com/Aquilo-Solution-S/Proxima/pull/204) by @HeinrichvH
+- **storage-pg**: Give the rank-first plan guard a corpus that decides it ([`0f6f626`](https://github.com/Aquilo-Solution-S/Proxima/commit/0f6f626123b57dac393ce6b9be9bb01d9f1827a0)) in [#202](https://github.com/Aquilo-Solution-S/Proxima/pull/202) by @HeinrichvH
+- **storage-pg**: Pin the plan the rank-first redesign is betting on ([`c95b9dd`](https://github.com/Aquilo-Solution-S/Proxima/commit/c95b9dd6d8bb4b4cf932e8c0ef21025f90b0ef96)) by @HeinrichvH
+- **storage-pg**: Make the plan guard's own caveat the record ([`352c823`](https://github.com/Aquilo-Solution-S/Proxima/commit/352c823692e9a74aaf8e993de0be2da6fc0b79be)) by @HeinrichvH
+- **storage-pg**: EXPLAIN both semantic arms, not just the default ([`42255bf`](https://github.com/Aquilo-Solution-S/Proxima/commit/42255bfcddfe9e3f1dab2349dcb15b90cac96434)) by @HeinrichvH
+- **storage-pg**: Hermetic tuning fixtures and one source of settings truth ([`e98bd68`](https://github.com/Aquilo-Solution-S/Proxima/commit/e98bd683d8b45c601a4fcfd2cf34bd510df22a8a)) by @HeinrichvH
+
+### Dependencies
+- **deps**: Bump rust from `14bc9c5` to `0e2bcae` ([`e7f61ff`](https://github.com/Aquilo-Solution-S/Proxima/commit/e7f61fffd1f6ee1efc5907270830f2e0ba5dfd04)) in [#208](https://github.com/Aquilo-Solution-S/Proxima/pull/208) by @dependabot[bot]
+- **deps**: Bump distroless/cc-debian12 from `e8e7ee4` to `6e1871c` ([`2e5fbb7`](https://github.com/Aquilo-Solution-S/Proxima/commit/2e5fbb7b22aec1061cbd139652882dd7448bb982)) in [#209](https://github.com/Aquilo-Solution-S/Proxima/pull/209) by @dependabot[bot]
+- **deps**: Bump the cargo-minor-patch group with 5 updates ([`83f767d`](https://github.com/Aquilo-Solution-S/Proxima/commit/83f767d580cf0d6af56cd0c51d724de27a3b3e69)) in [#210](https://github.com/Aquilo-Solution-S/Proxima/pull/210) by @dependabot[bot]
+- **deps**: Bump rust from `77fac8b` to `14bc9c5` ([`d6ca038`](https://github.com/Aquilo-Solution-S/Proxima/commit/d6ca0387ea74d3a33af445c2f859629d58930c41)) in [#191](https://github.com/Aquilo-Solution-S/Proxima/pull/191) by @dependabot[bot]
+- **deps**: Bump the cargo-minor-patch group with 4 updates ([`e8fe4c1`](https://github.com/Aquilo-Solution-S/Proxima/commit/e8fe4c1063a978e67e00403c4af111cdf6f44086)) in [#193](https://github.com/Aquilo-Solution-S/Proxima/pull/193) by @dependabot[bot]
 
 ## [0.0.7] - 2026-08-04
 
@@ -240,6 +272,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** **core**: Collapse MCP references to prefixed ids, delete HandleTable ([`3af8697`](https://github.com/Aquilo-Solution-S/Proxima/commit/3af869797065eb60f9c8490352452ca468f9b7e3)) in [#67](https://github.com/Aquilo-Solution-S/Proxima/pull/67) by @HeinrichvH
 
 ### Documentation
+- **changelog**: Stamp v0.0.7 ([`1c47be3`](https://github.com/Aquilo-Solution-S/Proxima/commit/1c47be3afc41acefe4517ca331775dfdccf0dbb6)) in [#173](https://github.com/Aquilo-Solution-S/Proxima/pull/173) by @HeinrichvH
 - The migration policy is three rules, written down ([`c4d4370`](https://github.com/Aquilo-Solution-S/Proxima/commit/c4d437074947767f3de28b9bbf618c3eff3ae0cd)) in [#171](https://github.com/Aquilo-Solution-S/Proxima/pull/171) by @HeinrichvH
 - **migrating**: One release, one story ([`c24a703`](https://github.com/Aquilo-Solution-S/Proxima/commit/c24a7034279656fdcb8661d85f7aed052843a59b)) by @HeinrichvH
 - A dispatcher is any tool that declares its actions, flavor or substrate ([`e3f02f3`](https://github.com/Aquilo-Solution-S/Proxima/commit/e3f02f3833f554944daedbb7dbac4291ca9f059c)) by @HeinrichvH
@@ -1168,6 +1201,8 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - @HeinrichvH made their first contribution
 - @boreas-aquilo made their first contribution
 - @ made their first contribution
+[0.0.9]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.8...v0.0.9
+[0.0.8]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.4...v0.0.5
