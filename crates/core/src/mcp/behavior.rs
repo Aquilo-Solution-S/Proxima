@@ -158,10 +158,19 @@ impl ScopeGateBehavior {
                 .get("action")
                 .and_then(serde_json::Value::as_str)
                 .expect("dispatcher action was validated before owner-role enforcement");
+            descriptor.action_is_read_only(action)
+        } else if let Some(descriptor) =
+            descriptor.filter(|value| !value.argv_action_specs.is_empty())
+        {
+            // Same per-action authority for the argv vocabulary, resolved
+            // through the same longest-prefix match `enforce_scope` just
+            // ran. An argv action that declared nothing classifies from the
+            // tool (see `McpArgvActionSpec::annotations`); argv the
+            // vocabulary does not emit — already refused above, so
+            // unreachable through the chain — is a write.
             descriptor
-                .resolved_action_annotations(action)
-                .and_then(|annotations| annotations.read_only)
-                .unwrap_or(false)
+                .argv_action(args)
+                .is_some_and(|action| descriptor.action_is_read_only(action))
         } else {
             // Flat tools still resolve their own declaration, then the
             // substrate manifest.
@@ -459,6 +468,11 @@ mod argv_scope_tests {
 
     /// An argv-keyed dispatcher with two commands sharing a first word, so
     /// the gate's derivation has to pick by longest prefix.
+    ///
+    /// Mixed on purpose, and in the shape the field exists for: the tool
+    /// must declare itself writable because one command writes, and the
+    /// read command says so itself. The sibling declares nothing and so
+    /// classifies from the tool — a write.
     struct ArgvTool;
 
     impl McpTool for ArgvTool {
@@ -468,11 +482,13 @@ mod argv_scope_tests {
             McpArgvActionSpec {
                 action: "approval",
                 argv_prefix: &["approval"],
+                annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
                 audience: McpToolAudience::Shared,
             },
             McpArgvActionSpec {
                 action: "approval-decide",
                 argv_prefix: &["approval", "decide"],
+                annotations: None,
                 audience: McpToolAudience::Shared,
             },
         ];
@@ -485,14 +501,33 @@ mod argv_scope_tests {
         }
     }
 
+    /// A group viewer under `ToolScope::All`: may read, may not write, so
+    /// the owner-role half of the gate is the only thing that can deny.
+    fn argv_viewer_ctx() -> McpToolCtx {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let owner = OwnerRef::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+        let authz = AuthzContext::for_subject_with_role(
+            subject,
+            [(owner, crate::access::Role::viewer())],
+            AuthPath::HostBearer,
+        )
+        .with_tool_scope(ToolScope::All);
+        argv_ctx_with_authz(owner, authz)
+    }
+
     fn argv_ctx(tool_scope: ToolScope) -> McpToolCtx {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let authz =
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(tool_scope);
+        argv_ctx_with_authz(owner, authz)
+    }
+
+    fn argv_ctx_with_authz(owner: OwnerRef, authz: AuthzContext) -> McpToolCtx {
         let mut registry = FlavorRegistry::new();
         registry.add_mcp_tool_or_panic_for_tests::<ArgvTool>("proxima-stub");
         McpToolCtx {
             owner,
-            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
-                .with_tool_scope(tool_scope),
+            authz,
             registry: Arc::new(registry.freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),
@@ -540,6 +575,37 @@ mod argv_scope_tests {
         assert!(
             matches!(err, McpToolError::NotAuthorized(ref key)
                 if key == &format!("{}:approval-decide", ArgvTool::NAME)),
+            "got {err:?}",
+        );
+    }
+
+    /// A read-capable-only owner keeps the read commands of a writable argv
+    /// dispatcher.
+    ///
+    /// Without per-action argv annotations every command classified from
+    /// the tool-level declaration, so a dispatcher whose commands are mostly
+    /// reads lost its whole read surface to a viewer. The unannotated
+    /// sibling is the negative control: it still classifies from the tool,
+    /// and the tool declares a write.
+    #[test]
+    fn a_viewer_keeps_the_read_command_of_a_writable_argv_dispatcher() {
+        let ctx = argv_viewer_ctx();
+
+        ScopeGateBehavior::enforce_scope(
+            ArgvTool::NAME,
+            &serde_json::json!({ "argv": ["approval", "--list"] }),
+            &ctx,
+        )
+        .expect("an argv action that declares read_only is callable by a viewer");
+
+        let err = ScopeGateBehavior::enforce_scope(
+            ArgvTool::NAME,
+            &serde_json::json!({ "argv": ["approval", "decide", "--id", "7"] }),
+            &ctx,
+        )
+        .expect_err("an argv action that declares nothing stays a write");
+        assert!(
+            matches!(err, McpToolError::NotAuthorized(ref key) if key == ArgvTool::NAME),
             "got {err:?}",
         );
     }
