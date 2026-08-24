@@ -666,7 +666,13 @@ def run_fixture(path: Path) -> int:
 # cannot be silently not-followed — `FlavorRegistryError::UnmovableSurface`
 # refuses it at boot, and `UnforgettableSurface` does the same for a surface
 # that claims forget destroys its rows.
-EXPECTED_DYNAMIC_SQL_SITES = 76
+#
+# 76 -> 82: the six sites of the shared-catalog contention regression tests
+# (`boot_pg.rs` role-DDL migrator + admin-side CREATE/ALTER/DROP ROLE). All
+# six splice one identifier the test itself mints from `Uuid::now_v7()`
+# under a fixed prefix; the dynamism exists only because Postgres has no
+# bind parameters for role names in DDL.
+EXPECTED_DYNAMIC_SQL_SITES = 82
 
 
 def run_self_test() -> int:

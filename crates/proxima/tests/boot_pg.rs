@@ -728,3 +728,150 @@ async fn boot_rejects_embedding_client_with_wrong_dim() {
     let _ = drop_db(&db_name).await;
     result.expect("embedding dim guard test failed");
 }
+
+fn role_ddl_migrator(role_name: &str) -> Migrator {
+    Migrator {
+        migrations: Cow::Owned(vec![Migration::new(
+            20_990_101_000_001,
+            Cow::Borrowed("role ddl on a shared catalog"),
+            MigrationType::Simple,
+            // SQL-POLICY: fixed-fragment — {role_name} is minted by the calling
+            // test from Uuid::now_v7().simple() under a fixed [a-z_] prefix, so the
+            // spliced identifier is [a-z0-9_] only; no caller value reaches it.
+            sqlx::AssertSqlSafe(format!("ALTER ROLE {role_name} SET lock_timeout = '32s';"))
+                .into_sql_str(),
+            false,
+        )]),
+        ..Migrator::DEFAULT
+    }
+}
+
+/// Boot-migrate one database while another session on a *different database*
+/// of the same cluster holds an uncommitted write to the same role's shared
+/// catalogs, and assert the facade rides out the lost race.
+///
+/// With `role_settings_pre_seeded` the role already has a committed
+/// `pg_db_role_setting` row, so holder and migration both UPDATE the shared
+/// tuple and the loser gets `tuple concurrently updated` (XX000). Without it
+/// both INSERT the missing row and the loser gets a `23505` unique violation
+/// on the catalog's index. Both shapes are deterministic: the blocked
+/// statement fails the moment the holder commits.
+async fn assert_role_ddl_contention_retries_to_green(
+    role_settings_pre_seeded: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+    let role_name = format!("proxima_test_role_{}", Uuid::now_v7().simple());
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let mut admin = sqlx::PgConnection::connect(&admin_url()).await?;
+        // SQL-POLICY: fixed-fragment — {role_name} is minted by this test from
+        // Uuid::now_v7().simple() under a fixed [a-z_] prefix, so the spliced
+        // identifier is [a-z0-9_] only and no caller value reaches the statement.
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE ROLE {role_name}")))
+            .execute(&mut admin)
+            .await?;
+        if role_settings_pre_seeded {
+            // SQL-POLICY: fixed-fragment — same test-minted {role_name} as above.
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER ROLE {role_name} SET idle_in_transaction_session_timeout = '30s'"
+            )))
+            .execute(&mut admin)
+            .await?;
+        }
+
+        // Hold an uncommitted write to the role's shared-catalog row from the
+        // admin database. The migrating boot below runs against a different
+        // database, so no database-scoped lock protects it from this.
+        let mut tx = admin.begin().await?;
+        // SQL-POLICY: fixed-fragment — same test-minted {role_name} as above.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "ALTER ROLE {role_name} SET statement_timeout = '31s'"
+        )))
+        .execute(tx.as_mut())
+        .await?;
+
+        let pg = PgStorage::connect(&db_url).await?;
+        let migrator = role_ddl_migrator(&role_name);
+        let run = tokio::spawn(async move {
+            run_core_and_flavor_migrations(&pg, [NamedMigrator::new("role-ddl-flavor", migrator)])
+                .await
+        });
+
+        // Wait until the flavor's ALTER ROLE is blocked on the held row, then
+        // commit: Postgres answers the blocked statement with the lost-race
+        // error the moment the holder's write commits. The migration
+        // connection carries a 5s lock_timeout, so the commit must come
+        // promptly once blockage is visible.
+        let mut poll = sqlx::PgConnection::connect(&admin_url()).await?;
+        let deadline = Instant::now() + Duration::from_mins(1);
+        loop {
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1 FROM pg_stat_activity
+                     WHERE state = 'active'
+                       AND wait_event_type = 'Lock'
+                       AND query LIKE 'ALTER ROLE%32s%'
+                 )",
+            )
+            .fetch_one(&mut poll)
+            .await?;
+            if blocked {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "migration never blocked on the held role row"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tx.commit().await?;
+
+        let report = run.await.expect("migration task must not panic")?;
+        assert_eq!(report.sources, ["proxima-core", "role-ddl-flavor"]);
+
+        // The retried migration's effect reached the shared catalog.
+        let setconfig: Option<Vec<String>> = sqlx::query_scalar(
+            "SELECT s.setconfig
+             FROM pg_db_role_setting s
+             JOIN pg_roles r ON r.oid = s.setrole
+             WHERE r.rolname = $1 AND s.setdatabase = 0",
+        )
+        .bind(&role_name)
+        .fetch_optional(&mut admin)
+        .await?;
+        let setconfig = setconfig.unwrap_or_default();
+        assert!(
+            setconfig.iter().any(|entry| entry == "lock_timeout=32s"),
+            "role setting from the retried migration missing: {setconfig:?}"
+        );
+        Ok(())
+    }
+    .await;
+
+    if let Ok(mut cleanup) = sqlx::PgConnection::connect(&admin_url()).await {
+        // SQL-POLICY: fixed-fragment — same test-minted {role_name} as above.
+        let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP ROLE IF EXISTS {role_name}"
+        )))
+        .execute(&mut cleanup)
+        .await;
+    }
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn shared_catalog_role_ddl_insert_contention_retries_to_green() {
+    assert_role_ddl_contention_retries_to_green(false)
+        .await
+        .expect("insert-shape contention retry test failed");
+}
+
+#[tokio::test]
+async fn shared_catalog_role_ddl_update_contention_retries_to_green() {
+    assert_role_ddl_contention_retries_to_green(true)
+        .await
+        .expect("update-shape contention retry test failed");
+}
