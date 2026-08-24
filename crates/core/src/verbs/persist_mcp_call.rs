@@ -169,8 +169,14 @@ impl CitationMappingPayload for McpCallIoCitationV1 {
 pub struct McpCallLogOutcome {
     pub receipt_id: FactReceiptId,
     pub fact_memory_id: MemoryId,
-    pub cited_object_id: Uuid,
-    pub citation_mapping_id: Uuid,
+    /// The cited I/O object this call's Fact reaches. Content-addressed on
+    /// [`McpCallLogInput::io_content_hash`], so repeated calls with
+    /// identical I/O share one object.
+    ///
+    /// There is no `citation_mapping_id` beside it: `McpCallIoCitationV1`
+    /// is a pure link with no sidecar table of its own — `memory.blob_id`
+    /// carries the whole mapping.
+    pub cited_object_id: Option<Uuid>,
     pub change_event_seq: Uuid,
     pub idempotent_replay: bool,
 }

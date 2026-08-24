@@ -8,14 +8,13 @@ use super::embeddings::{
 };
 use super::fact::{FactIngestPort, SourceBatchPort};
 use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
-use super::mcp::{McpCallReadPort, McpCallWritePort};
+use super::mcp::McpCallReadPort;
 use super::memory::{CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort};
 use super::owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
 use super::registry::RegistryProjectionPort;
 use super::write_session::WriteSessionFactory;
 
 pub type FactIngestHandle = Arc<dyn FactIngestPort>;
-pub type McpCallWriteHandle = Arc<dyn McpCallWritePort>;
 pub type McpCallReadHandle = Arc<dyn McpCallReadPort>;
 pub type MemoryAuthoringHandle = Arc<dyn MemoryAuthoringPort>;
 pub type MemoryReadHandle = Arc<dyn MemoryReadPort>;

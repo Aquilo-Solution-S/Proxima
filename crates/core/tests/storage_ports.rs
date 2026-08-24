@@ -57,20 +57,6 @@ impl FactIngestPort for FactIngestFake {
 }
 
 #[derive(Debug)]
-struct OperatorMcpCallWriteFake;
-
-#[async_trait::async_trait]
-impl McpCallWritePort for OperatorMcpCallWriteFake {
-    async fn persist_mcp_call_atomic(
-        &self,
-        _permit: &OwnerWritePermit,
-        input: &McpCallLogInput,
-    ) -> Result<McpCallLogOutcome, StorageError> {
-        fake_error()
-    }
-}
-
-#[derive(Debug)]
 struct OperatorMcpCallReadFake;
 
 #[async_trait::async_trait]
@@ -713,7 +699,6 @@ fn assert_port<T: Send + Sync + 'static>() {}
 #[test]
 fn public_storage_ports_can_be_mocked_independently() {
     assert_port::<FactIngestFake>();
-    assert_port::<OperatorMcpCallWriteFake>();
     assert_port::<OperatorMcpCallReadFake>();
     assert_port::<MemoryAuthoringFake>();
     assert_port::<MemoryReadFake>();

@@ -7,7 +7,7 @@ use super::embeddings::{
 };
 use super::fact::{FactIngestPort, SourceBatchPort};
 use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
-use super::mcp::{McpCallReadPort, McpCallWritePort};
+use super::mcp::McpCallReadPort;
 use super::memory::{
     CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OperatorWriteProof,
 };
@@ -34,7 +34,6 @@ use crate::verbs::goal_write::{
     DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
-use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::{
     EmbeddableEntityRef, EntityId, EntityKind, GroupId, MembershipRow, Owner, OwnerRef, Relation,
     SidecarPayload, SourceId, UserId,
@@ -84,19 +83,6 @@ impl FactIngestPort for RejectingStorage {
         _sidecar_payloads: &[SidecarPayload],
         _embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-}
-
-#[async_trait::async_trait]
-impl McpCallWritePort for RejectingStorage {
-    async fn persist_mcp_call_atomic(
-        &self,
-        _permit: &OwnerWritePermit,
-        _input: &McpCallLogInput,
-    ) -> Result<McpCallLogOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
