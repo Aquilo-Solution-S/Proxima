@@ -10,6 +10,7 @@
 //! duplicate versions fail before the database is touched.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use proxima_core::StorageError;
 use proxima_storage_pg::{
@@ -227,16 +228,12 @@ async fn run_sources_on_connection(
 ) -> Result<(), MigrationError> {
     for source in sources {
         if source.source == CORE_SOURCE {
-            source
-                .migrator
-                .run_direct(None, &mut *conn, false)
+            run_source_with_contention_retry(conn, &source)
                 .await
                 .map_err(MigrationError::Core)?;
         } else {
             cut_over_flavor_ledger(conn, &source).await?;
-            source
-                .migrator
-                .run_direct(None, &mut *conn, false)
+            run_source_with_contention_retry(conn, &source)
                 .await
                 .map_err(|err| MigrationError::Flavor {
                     source: source.source,
@@ -246,6 +243,92 @@ async fn run_sources_on_connection(
     }
 
     Ok(())
+}
+
+/// Total attempts for one source when shared-catalog contention is the only
+/// failure. Contention needs another migrator racing on the same cluster, and
+/// every round settles one winner whose role DDL is then committed — N racing
+/// boots need at most N rounds, and a genuine catalog problem still surfaces
+/// instead of looping.
+const CATALOG_CONTENTION_ATTEMPTS: u32 = 5;
+
+/// Base delay between contention retries; multiplied by the attempt number so
+/// concurrent losers decorrelate without a randomness source.
+const CATALOG_CONTENTION_BACKOFF: Duration = Duration::from_millis(100);
+
+/// Run one source, retrying when it loses a shared-catalog race.
+///
+/// Role DDL in a migration (`ALTER ROLE`, `GRANT <role> TO ...`) updates
+/// cluster-shared catalogs (`pg_authid`, `pg_auth_members`). No lock taken on
+/// this connection can exclude a concurrent migrator on a *sibling database*
+/// of the same cluster: Postgres advisory locks — `SQLx`'s per-run migrator
+/// lock included — are scoped to the database in their lock tag, so two boots
+/// migrating two different databases hold their locks independently and still
+/// collide on the one shared tuple. The loser gets `tuple concurrently
+/// updated` (raised by Postgres' non-MVCC catalog update path).
+///
+/// Retrying the whole source run is safe: each migration applies inside its
+/// own transaction together with its ledger row, so a failed run recorded
+/// nothing for the failing version, and the retry skips already-recorded
+/// versions and re-executes only the loser. A failed attempt also leaves this
+/// session's migrator advisory lock stacked (`run_direct` skips its unlock on
+/// error, and re-locking on retry stacks); that is contained because the
+/// facade never returns the migration connection to the pool.
+async fn run_source_with_contention_retry(
+    conn: &mut PgConnection,
+    source: &NamedMigrator,
+) -> Result<(), MigrateError> {
+    let mut attempt = 1;
+    loop {
+        match source.migrator.run_direct(None, &mut *conn, false).await {
+            Err(err)
+                if attempt < CATALOG_CONTENTION_ATTEMPTS && is_shared_catalog_contention(&err) =>
+            {
+                tracing::warn!(
+                    source = source.source,
+                    attempt,
+                    error = %err,
+                    "shared-catalog contention during migration; retrying"
+                );
+                tokio::time::sleep(CATALOG_CONTENTION_BACKOFF * attempt).await;
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Whether a migration failure is a lost race on a cluster-shared catalog.
+///
+/// The race has two server-side shapes. Updating an *existing* shared tuple
+/// concurrently raises `tuple concurrently updated` — matched on the message
+/// because Postgres files it under the catch-all `XX000` internal-error
+/// SQLSTATE, which would sweep in genuine corruption (under a non-English
+/// `lc_messages` the match misses and the boot fails exactly as it did
+/// without the retry — degraded to the status quo, never looser). A
+/// concurrent *first* write of a shared tuple instead surfaces as a
+/// unique-key violation (`23505`) on the catalog's index — both sessions saw
+/// no row and both insert — so `23505` counts only when the named table is
+/// one of the role-DDL shared catalogs, where re-running converges (the
+/// retry's write finds the winner's row and updates it, or reports the true
+/// conflict, e.g. a duplicate `CREATE ROLE`).
+fn is_shared_catalog_contention(err: &MigrateError) -> bool {
+    let (MigrateError::Execute(sqlx::Error::Database(db))
+    | MigrateError::ExecuteMigration(sqlx::Error::Database(db), _)) = err
+    else {
+        return false;
+    };
+    if matches!(
+        db.message(),
+        "tuple concurrently updated" | "tuple concurrently deleted"
+    ) {
+        return true;
+    }
+    db.code().as_deref() == Some("23505")
+        && matches!(
+            db.table(),
+            Some("pg_authid" | "pg_auth_members" | "pg_db_role_setting")
+        )
 }
 
 /// One-time per-database cutover of a flavor's ledger rows out of the shared
