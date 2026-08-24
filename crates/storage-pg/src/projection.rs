@@ -38,7 +38,7 @@ use std::fmt::Write as _;
 
 use proxima_core::StorageError;
 use proxima_core::flavor::{
-    FlavorContract, LanguagePolicy, ProjectionSpec, SchemaContract, SearchProjectionDecl,
+    FlavorContract, KeyShape, LanguagePolicy, SchemaContract, SearchProjectionDecl,
     TSVECTOR_WEIGHT_CLASSES,
 };
 use proxima_core::{SearchProjectionColumnKind, verbs::schema::MemorySearchProjection};
@@ -338,19 +338,36 @@ pub fn projection_vector_sql(search: &SearchProjectionDecl) -> Result<String, St
 /// row rather than from a bind, so the projection's owner is the memory's
 /// owner by construction and no caller can supply a different one.
 ///
+/// The sidecar side of the join and of the `WHERE` reads the column the
+/// contract declares for that table (`KeyShape::MemoryT { column }`), which
+/// is what keeps the statement a function of the contract alone. `m.t` is
+/// the kernel memory table's own key and is fixed.
+///
+/// The whole contract is the input rather than the projection spec alone,
+/// because a sidecar's `Surface` may be declared on a SIBLING registration
+/// of the same table — see [`FlavorContract::surface_for`].
+///
 /// # Errors
 ///
-/// `StorageError::Internal` for an invalid identifier or a schema that is
-/// not a search surface.
+/// `StorageError::Internal` for an invalid identifier, a flavor that
+/// declares no projection, a schema that is not a search surface, or a
+/// sidecar that declares no memory key.
 pub fn projection_insert_sql(
-    spec: &ProjectionSpec,
+    contract: &FlavorContract,
     schema: &SchemaContract,
 ) -> Result<String, StorageError> {
+    let spec = contract.projection.spec().ok_or_else(|| {
+        StorageError::Internal(format!(
+            "flavor {} declares no projection table, so its schemas write no projection row",
+            contract.flavor_id
+        ))
+    })?;
     let table = PgIdent::table(spec.table)?;
-    let sidecar = schema.sidecar_table.ok_or_else(|| {
+    let sidecar_table = schema.sidecar_table.ok_or_else(|| {
         StorageError::Internal("a projected schema declares no sidecar table".into())
     })?;
-    let sidecar = PgIdent::table(sidecar)?;
+    let sidecar = PgIdent::table(sidecar_table)?;
+    let key = PgIdent::column(sidecar_memory_key(contract, schema, sidecar_table)?)?;
     let SearchProjectionDecl::Projected {
         tag_column,
         language,
@@ -369,9 +386,16 @@ pub fn projection_insert_sql(
     let language_value = language_value_expr(*language)?;
 
     // SQL-POLICY: PgIdent
-    // The projection table, the sidecar table, the tag column and every
-    // configuration name are validated identifiers; the schema id is a
-    // bind ($3) and the memory id is a bind ($1).
+    // The projection table, the sidecar table, its declared memory-key
+    // column, the tag column and every configuration name are validated
+    // identifiers; the schema id is a bind ($3) and the memory id is a
+    // bind ($1).
+    //
+    // `c.{key}` is the SIDECAR's key column as the contract declares it and
+    // `m.t` is the kernel memory table's own, which is fixed. Spelling the
+    // sidecar side `t` would make this statement a function of the contract
+    // plus a naming convention no declaration states, and a sidecar keyed
+    // on any other column would get no projection row.
     //
     // `m.schema_id = $3` makes `projection.schema_id = memory.schema_id` a
     // property of the only statement that writes a projection row, rather
@@ -384,19 +408,54 @@ pub fn projection_insert_sql(
     Ok(format!(
         "INSERT INTO {table}
        (memory_id, schema_id, owner_id, search_tsv, tag, lexical_language)
-SELECT c.t,
+SELECT c.{key},
        $3,
        m.owner_id,
        {vector},
        {tag},
        {language_value}
   FROM {sidecar} c
-  JOIN proxima_core.memory m ON m.t = c.t
- WHERE c.t = $1
+  JOIN proxima_core.memory m ON m.t = c.{key}
+ WHERE c.{key} = $1
    AND m.schema_id = $3",
         table = table.as_str(),
-        sidecar = sidecar.as_str()
+        sidecar = sidecar.as_str(),
+        key = key.as_str()
     ))
+}
+
+/// The sidecar's memory-key column, as the contract's [`Surface`] for that
+/// table declares it, or the refusal.
+///
+/// There is no `t` fallback on either arm, deliberately. A default here
+/// reads as "the contract, unless it says something this generator does not
+/// expect", which is the shape of defect that produces a flavor whose
+/// projection is silently empty. The error names the declaration to fix.
+///
+/// [`Surface`]: proxima_core::flavor::Surface
+fn sidecar_memory_key(
+    contract: &FlavorContract,
+    schema: &SchemaContract,
+    sidecar_table: &str,
+) -> Result<&'static str, StorageError> {
+    let Some(surface) = contract.surface_for(sidecar_table) else {
+        return Err(StorageError::Internal(format!(
+            "projected schema {} declares sidecar table {sidecar_table}, which no Surface of \
+             flavor {} declares; add that Surface so the projection can read the declared \
+             memory-key column",
+            schema.schema_id().as_str(),
+            contract.flavor_id
+        )));
+    };
+    match surface.key {
+        KeyShape::MemoryT { column } => Ok(column),
+        other => Err(StorageError::Internal(format!(
+            "projected schema {} keys sidecar {sidecar_table} as {other:?}; a projection row is \
+             one per memory, so the sidecar's memory column has to be declared as \
+             KeyShape::MemoryT {{ column }}",
+            schema.schema_id().as_str()
+        ))),
+    }
 }
 
 /// Every projection table a composed binary declares, in name order.
@@ -447,6 +506,33 @@ pub(crate) fn sidecar_text_sql(
         .map(|field| (field.column.as_str(), field.kind))
         .collect::<Vec<_>>();
     search_text_expr(&fields)
+}
+
+/// The sidecar key column of a runtime search projection, validated.
+///
+/// The read-side twin of [`sidecar_memory_key`]. Freeze carried the
+/// declared column onto [`MemorySearchProjection`]; every read statement
+/// that joins or filters the sidecar spells it from here, so the substring
+/// arm, the snippet lookup and the projection `INSERT` all key the sidecar
+/// on the one column its `Surface` declares. Same rule as the write side:
+/// no `t` fallback, because the fallback is the defect.
+///
+/// # Errors
+///
+/// `StorageError::Internal` when the schema's sidecar surface declared no
+/// memory key, or named one that is not a valid identifier.
+pub(crate) fn projection_key_ident(
+    projection: &MemorySearchProjection,
+) -> Result<PgIdent<'_>, StorageError> {
+    let column = projection.sidecar_key_column.as_deref().ok_or_else(|| {
+        StorageError::Internal(format!(
+            "search projection {} declares no memory-key column for sidecar {}; \
+             the schema's Surface has to key it as KeyShape::MemoryT {{ column }}",
+            projection.schema_id.as_str(),
+            projection.sidecar_table
+        ))
+    })?;
+    PgIdent::column(column)
 }
 
 /// The boot half of the pin: what the generator says, and what the catalog
@@ -545,7 +631,7 @@ mod tests {
         PROJECTION_COLUMNS, projection_artifacts, projection_insert_sql, projection_vector_sql,
     };
     use proxima_core::FLAVOR_0;
-    use proxima_core::flavor::SearchProjectionDecl;
+    use proxima_core::flavor::{SchemaContract, SearchProjectionDecl};
 
     /// `PROJECTION_MEMORY_COLUMN` names one thing, and everything that
     /// spells that thing agrees with it.
@@ -601,7 +687,7 @@ mod tests {
             .find(|schema| schema.search.is_projected())
             .expect("core projects at least one schema");
         let spec = FLAVOR_0.projection.spec().expect("core declares a spec");
-        let insert = projection_insert_sql(spec, schema).expect("the insert generates");
+        let insert = projection_insert_sql(&FLAVOR_0, schema).expect("the insert generates");
         assert!(
             insert.contains(&format!("({PROJECTION_MEMORY_COLUMN}, schema_id,")),
             "and the projection INSERT writes it: {insert}"
@@ -613,6 +699,133 @@ mod tests {
                 column: PROJECTION_MEMORY_COLUMN,
             },
             "the one reader agrees with all of the above"
+        );
+
+        // Two surfaces, two key columns. The projection's own is this
+        // constant and is fixed for every flavor; the SIDECAR's is whatever
+        // that schema's `Surface` declares, and the `INSERT` reads it from
+        // there. Asserting them together is what keeps a reader from
+        // treating one as the other — the confusion that put a literal `t`
+        // on the sidecar side of this statement.
+        let sidecar_table = schema
+            .sidecar_table
+            .expect("a projected schema has a sidecar");
+        let sidecar_key = FLAVOR_0
+            .sidecar_memory_key_column(sidecar_table)
+            .expect("a projected sidecar declares a memory key");
+        assert!(
+            insert.contains(&format!("FROM {sidecar_table} c")),
+            "the sidecar is the FROM: {insert}"
+        );
+        assert!(
+            insert.contains(&format!(
+                "JOIN proxima_core.memory m ON m.t = c.{sidecar_key}"
+            )),
+            "and the join reads the DECLARED sidecar column against the kernel's fixed \
+             `t`: {insert}"
+        );
+    }
+
+    const NOTE_SIDECAR: &str = "proxima_core.agent_note_v1";
+
+    /// Flavor #0's note declaration with its sidecar re-keyed, and nothing
+    /// else changed — so an assertion that fails below is about the key
+    /// column and nothing else.
+    ///
+    /// The contract is narrowed to the one schema so `surface_for` cannot
+    /// answer from a sibling's declaration of the same table.
+    fn a_contract_keying_the_note_on(
+        key: proxima_core::flavor::KeyShape,
+    ) -> (
+        proxima_core::flavor::FlavorContract,
+        &'static SchemaContract,
+    ) {
+        let mut surface = FLAVOR_0
+            .surface_for(NOTE_SIDECAR)
+            .expect("the note sidecar is declared");
+        surface.key = key;
+        let mut schema = *FLAVOR_0
+            .schemas
+            .iter()
+            .find(|schema| schema.sidecar_table == Some(NOTE_SIDECAR))
+            .expect("agent_note_v1");
+        schema.surfaces = Box::leak(Box::new([surface]));
+        let schema: &'static SchemaContract = Box::leak(Box::new(schema));
+        let mut contract = FLAVOR_0;
+        contract.schemas = std::slice::from_ref(schema);
+        (contract, schema)
+    }
+
+    /// The generator is a function of the contract, INCLUDING the column the
+    /// sidecar keys its memory on.
+    ///
+    /// A downstream flavor may key its sidecar on a name of its own —
+    /// `KeyShape::MemoryT { column }` exists precisely because the erase and
+    /// export lanes could not otherwise find the id. A literal `t` on the
+    /// sidecar side of this statement made the projection a function of the
+    /// contract PLUS a naming convention no declaration states, and such a
+    /// flavor got no projection rows at all.
+    #[test]
+    fn the_insert_keys_the_sidecar_on_the_column_the_contract_declares() {
+        const RENAMED: &str = "note_memory_id";
+
+        let (contract, schema) =
+            a_contract_keying_the_note_on(proxima_core::flavor::KeyShape::MemoryT {
+                column: RENAMED,
+            });
+        let insert = projection_insert_sql(&contract, schema).expect("the insert generates");
+
+        // Substituted into a shape rather than built with `format!`, so the
+        // SQL-policy scanner does not read an expectation about a statement
+        // as a statement being built.
+        for shape in [
+            "SELECT c.<key>,",
+            "JOIN proxima_core.memory m ON m.t = c.<key>",
+            "WHERE c.<key> = $1",
+        ] {
+            let expected = shape.replace("<key>", RENAMED);
+            assert!(
+                insert.contains(&expected),
+                "the declared key column is spelled at every sidecar reference; \
+                 missing {expected:?} in: {insert}"
+            );
+        }
+        // The three spellings the defect had, named literally. A blanket
+        // `!contains("c.t")` would also reject `c.tags`, the tag column this
+        // very statement copies.
+        for forbidden in ["SELECT c.t,", "m.t = c.t\n", "WHERE c.t = $1"] {
+            assert!(
+                !insert.contains(forbidden),
+                "nothing keys the sidecar on `t` behind the declaration's back; \
+                 found {forbidden:?} in: {insert}"
+            );
+        }
+        assert!(
+            insert.contains("m.t = "),
+            "`m.t` is the kernel memory table's own key and stays: {insert}"
+        );
+    }
+
+    /// A sidecar the generator cannot key on a memory is a refusal that
+    /// names the declaration to fix — never a fall back to `t`.
+    ///
+    /// The fallback is the defect: it writes a statement the contract did
+    /// not ask for, which either files nothing or errors in the writing
+    /// transaction, and in both cases the flavor's search is empty with
+    /// nothing saying why.
+    #[test]
+    fn a_sidecar_that_is_not_memory_keyed_is_refused_by_name() {
+        let (contract, schema) =
+            a_contract_keying_the_note_on(proxima_core::flavor::KeyShape::Custom(&["note_id"]));
+        let err = projection_insert_sql(&contract, schema).expect_err("the generator refuses");
+        let message = err.to_string();
+        assert!(
+            message.contains("KeyShape::MemoryT"),
+            "the refusal names the declaration to fix: {message}"
+        );
+        assert!(
+            message.contains("proxima_core.agent_note_v1"),
+            "and the surface it is about: {message}"
         );
     }
 
@@ -707,16 +920,12 @@ mod tests {
 
     #[test]
     fn the_maintenance_statement_takes_its_owner_from_the_memory_row() {
-        let spec = FLAVOR_0
-            .projection
-            .spec()
-            .expect("core declares a projection");
         let note = FLAVOR_0
             .schemas
             .iter()
-            .find(|schema| schema.sidecar_table == Some("proxima_core.agent_note_v1"))
+            .find(|schema| schema.sidecar_table == Some(NOTE_SIDECAR))
             .expect("agent_note_v1");
-        let sql = projection_insert_sql(spec, note).expect("insert");
+        let sql = projection_insert_sql(&FLAVOR_0, note).expect("insert");
         assert!(sql.contains("m.owner_id"), "owner comes from memory");
         assert!(
             sql.contains("JOIN proxima_core.memory m ON m.t = c.t"),

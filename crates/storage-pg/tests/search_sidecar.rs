@@ -78,17 +78,14 @@ async fn project(
     schema_id: &str,
     language: Option<&str>,
 ) -> Result<(), sqlx::Error> {
-    let spec = proxima_core::FLAVOR_0
-        .projection
-        .spec()
-        .expect("flavor #0 declares a projection");
     let schema = proxima_core::FLAVOR_0
         .schemas
         .iter()
         .find(|schema| schema.schema_id().as_str() == schema_id)
         .expect("declared schema");
-    let sql = proxima_storage_pg::projection::projection_insert_sql(spec, schema)
-        .expect("the generator emits a valid statement");
+    let sql =
+        proxima_storage_pg::projection::projection_insert_sql(&proxima_core::FLAVOR_0, schema)
+            .expect("the generator emits a valid statement");
     // SQL-POLICY: generated
     sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(t)
@@ -463,6 +460,7 @@ async fn tagged_search_scans_flavor_sidecars() {
             schema_version: SchemaVersion::new(1),
             kind: PayloadKind::Abstraction,
             sidecar_table: "proxima_docs.section_text_v1".into(),
+            sidecar_key_column: Some("t".into()),
             fields: vec![MemorySearchProjectionField {
                 column: "text".into(),
                 kind: SearchProjectionColumnKind::Text,

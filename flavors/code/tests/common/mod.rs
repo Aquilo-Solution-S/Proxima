@@ -83,16 +83,12 @@ pub async fn project_code(
     language: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let contract = &proxima_code::contract::CODE_FLAVOR_CONTRACT;
-    let spec = contract
-        .projection
-        .spec()
-        .expect("the code flavor declares a projection");
     let schema = contract
         .schemas
         .iter()
         .find(|schema| schema.schema_id().as_str() == schema_id)
         .expect("declared schema");
-    let sql = proxima_storage_pg::projection::projection_insert_sql(spec, schema)
+    let sql = proxima_storage_pg::projection::projection_insert_sql(contract, schema)
         .expect("the generator emits a valid statement");
     // SQL-POLICY: generated
     sqlx::query(sqlx::AssertSqlSafe(sql))

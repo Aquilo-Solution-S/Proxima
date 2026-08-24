@@ -165,6 +165,16 @@ pub struct MemorySearchProjection {
     /// The schema's own sidecar — still the home of the raw text, which
     /// the substring arm scans and the top-k snippet join reads.
     pub sidecar_table: String,
+    /// The column that sidecar stores its memory `t` under, off the
+    /// schema's own `Surface` (`KeyShape::MemoryT { column }`).
+    ///
+    /// Carried so the SQL builders join and filter the sidecar on the
+    /// DECLARED column instead of assuming `t`. `None` when the sidecar
+    /// surface is absent or keys its rows on something that is not a
+    /// memory; the builders refuse on `None` rather than defaulting,
+    /// because the default is what makes a renamed key column a silent
+    /// failure instead of a refusal.
+    pub sidecar_key_column: Option<String>,
     /// The flavor's projection table, where the vector lives.
     pub projection_table: String,
     pub fields: Vec<MemorySearchProjectionField>,
@@ -377,6 +387,9 @@ fn contract_search_projections(
                 schema_version: schema.schema_version(),
                 kind: schema.kind,
                 sidecar_table: sidecar_table.to_owned(),
+                sidecar_key_column: contract
+                    .sidecar_memory_key_column(sidecar_table)
+                    .map(str::to_owned),
                 projection_table: spec.table.to_owned(),
                 fields: fields
                     .iter()
