@@ -696,7 +696,30 @@ def run_fixture(path: Path) -> int:
 # fragment. The bound value is the resolved permit's owner, never a caller's:
 # the scope is stamped server-side and a caller's predicates are `AND`-ed
 # after it, so they can narrow the owner's rows and never widen past them.
-EXPECTED_DYNAMIC_SQL_SITES = 92
+# 92 -> 94: the declaration-fidelity sweep. Both new sites are in
+# `verbs/query/series_handle.rs`, and they are one fixed fragment split in
+# two around one identifier. The series-head lookup joined its sidecar back
+# to `proxima_core.memory` with a literal `m.t = s.t`, so a sidecar keyed on
+# any other column — `pg_sidecar!` accepts any `key:` ident — could not be
+# found through it at all: an ingest looking for its own current head found
+# none and started a second series. The sidecar side is now the column the
+# registration declares, pushed through `PgIdent`, which turns one
+# `builder.push(" s JOIN … WHERE …")` into a fragment, a `PgIdent` push, and
+# a second fragment. `m.t` and `h.t` stay literal: they are the kernel
+# tables' own keys.
+#
+# The sweep's other three fixes add ZERO sites, and that is the shape to
+# expect rather than a coincidence. `fact_embeddings/text.rs` (the drain's
+# text read, now filtered on `MemoryEmbedUnit::key_column`),
+# `verbs/forget.rs`'s stamped-sidecar dump (now keyed off the frozen
+# registry's declared column instead of `s.t`), and the `owner_id` literals
+# in `verbs/owner_erase.rs` / `verbs/owner_export.rs` (now
+# `Surface::owner_columns`) all interpolate one more validated identifier
+# into a `format!` the per-line rule already counted. Replacing a literal
+# name with a declared one is invisible to this detector by construction,
+# which is worth stating: the number moves for the shape of the assembly,
+# not for the fidelity of it.
+EXPECTED_DYNAMIC_SQL_SITES = 94
 
 
 def run_self_test() -> int:

@@ -38,6 +38,22 @@ pub trait PgMemoryPayload: Send + Sync + 'static {
     /// Erase, export, and payload hydrate all key on it.
     const OWNER_PINNED: bool = false;
 
+    /// The column this sidecar stores its memory `t` under.
+    ///
+    /// `pg_sidecar!(key: …)` emits it, so a macro-generated sidecar states
+    /// it once and the generated statements read it. It has NO DEFAULT on
+    /// purpose: `t` as a default is the naming convention the contract's
+    /// `KeyShape::MemoryT { column }` exists to replace, and a hand-written
+    /// impl that inherited it would be spelling a column no declaration of
+    /// its own names.
+    ///
+    /// This is the SECOND declaration of that column — the contract's
+    /// `Surface` is the first — and
+    /// `PgSidecarRegistry::check_memory_key_against_contracts` is what keeps
+    /// the two one fact. A disagreement puts the typed INSERT on one column
+    /// and the projection INSERT on the other.
+    const MEMORY_KEY_COLUMN: &'static str;
+
     #[must_use]
     fn load_batch<'t>(
         ctx: PgSidecarReadCtx<'t>,

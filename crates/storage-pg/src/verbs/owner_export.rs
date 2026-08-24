@@ -6,7 +6,7 @@ use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportBundle, OwnerS
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::access::owner_columns::owner_binds;
+use crate::access::owner_columns::{owner_binds, sole_owner_column};
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 
@@ -126,12 +126,18 @@ fn export_statement(surface: &Surface) -> Result<Option<String>, StorageError> {
             key_column = key_column.as_str(),
         )
     } else {
+        // `s.{owner}` is the surface's OWN owner column as it declares it.
+        // The branch above joins to the key's home table instead, and
+        // `base.owner_id` there is `proxima_core.memory`'s own column,
+        // which is fixed.
+        let owner = sole_owner_column(surface)?;
         format!(
             "SELECT {projection}
                FROM {table} s
-              WHERE s.owner_id IS NOT DISTINCT FROM $1
+              WHERE s.{owner} IS NOT DISTINCT FROM $1
               ORDER BY {order}",
             table = table.as_str(),
+            owner = owner.as_str(),
         )
     };
     Ok(Some(sql))

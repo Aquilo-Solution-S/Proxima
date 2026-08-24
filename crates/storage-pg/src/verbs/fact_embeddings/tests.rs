@@ -2045,4 +2045,103 @@ mod pg_tests {
         drop_db(&db_name).await?;
         result
     }
+
+    /// A sidecar may key its memory on a column of its own naming, and the
+    /// embedding drain still finds its text.
+    ///
+    /// The twin of the projection lane's renamed-key fixture. The drain is
+    /// driven by `EmbeddingRecipe::resolve`, which binds a unit to its
+    /// sidecar TABLE and never sees a `Surface`, so before
+    /// `MemoryEmbedUnit::key_column` existed both statements here spelled
+    /// the memory column `t`: a flavor that keyed its sidecar on anything
+    /// else got no text, its job completed with nothing embedded, and the
+    /// memory was semantically invisible with no error anywhere.
+    ///
+    /// The unit is hand-built rather than frozen from a contract for the
+    /// reason the projection fixture states: reaching this statement from a
+    /// registration would exercise the registry, and the statement is what
+    /// is under test. Freeze's own refusal for a unit whose sidecar
+    /// declares no memory key is `EmbeddedSidecarNotMemoryKeyed`.
+    #[tokio::test]
+    async fn the_drain_reads_text_through_the_declared_memory_key_column()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const RENAMED_TABLE: &str = "proxima_core.renamed_embed_note_v1";
+        const RENAMED_KEY: &str = "note_memory_id";
+
+        let (pg, db_name) = fresh_pg("proxima_spg_embed_key").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let outcome = pg
+                .ingest_fact_atomic(&permit, &fact_draft("renamed key note"), None)
+                .await?;
+            let pool = pg.pool_for_tests();
+
+            sqlx::query(
+                "CREATE TABLE proxima_core.renamed_embed_note_v1 (
+                     note_memory_id uuid PRIMARY KEY
+                                    REFERENCES proxima_core.memory (t) ON DELETE CASCADE,
+                     embed_text     text NOT NULL
+                 )",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.renamed_embed_note_v1 (note_memory_id, embed_text)
+                 VALUES ($1, 'the pilings under the north quay are sound')",
+            )
+            .bind(outcome.memory_id.into_inner())
+            .execute(pool)
+            .await?;
+
+            let unit = |key_column: &str| MemoryEmbedUnit {
+                schema_id: SchemaId::new("proxima-test/fact-embedding-v1".into()),
+                schema_version: SchemaVersion::new(1),
+                kind: proxima_core::verbs::schema::PayloadKind::Fact,
+                sidecar_table: RENAMED_TABLE.to_owned(),
+                column: "embed_text".to_owned(),
+                key_column: key_column.to_owned(),
+            };
+            let items = [(owner, EntityKind::Fact, outcome.memory_id)];
+
+            let batched = load_embedding_texts(pool, &items, &[], &[unit(RENAMED_KEY)]).await?;
+            assert_eq!(
+                batched,
+                vec![Some(
+                    "the pilings under the north quay are sound".to_owned()
+                )],
+                "the batch read filters on the column the unit declares"
+            );
+
+            let single = load_embedding_text(
+                pool,
+                &owner,
+                EntityKind::Fact,
+                outcome.memory_id,
+                &[],
+                &[unit(RENAMED_KEY)],
+            )
+            .await?;
+            assert_eq!(
+                single,
+                Some("the pilings under the north quay are sound".to_owned()),
+                "and so does the single-row read behind it"
+            );
+
+            // The control. `t` is what both statements used to spell
+            // unconditionally, and against this table it is not a column at
+            // all: without it the assertions above could pass on a fixture
+            // that happened to be keyed on `t` after all.
+            let wrong = load_embedding_texts(pool, &items, &[], &[unit("t")]).await;
+            assert!(
+                wrong.is_err(),
+                "spelling the key `t` reaches no column of a sidecar keyed otherwise"
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
 }

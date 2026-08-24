@@ -315,7 +315,25 @@ impl MemoryReadPort for PgStorage {
         sidecar_table: &str,
         columns: &[(&str, proxima_core::verbs::query::SidecarAtom)],
     ) -> Result<Option<uuid::Uuid>, StorageError> {
-        verbs::query::owned_head_handle(&self.pool, owner, schema_id, sidecar_table, columns).await
+        let key_column = self
+            .sidecars
+            .memory_key_column(sidecar_table)
+            .ok_or_else(|| {
+                StorageError::ConstraintViolation(format!(
+                    "owned series-handle lookup names {sidecar_table}, which is not a registered \
+                 memory sidecar table; register the payload with `pg_sidecar!` so its memory-key \
+                 column is declared"
+                ))
+            })?;
+        verbs::query::owned_head_handle(
+            &self.pool,
+            owner,
+            schema_id,
+            sidecar_table,
+            key_column,
+            columns,
+        )
+        .await
     }
 }
 

@@ -215,6 +215,15 @@ pub enum FlavorRegistryError {
         schema_id: SchemaId,
         table: &'static str,
     },
+    /// An embedding schema's sidecar declares no surface keyed on the
+    /// memory `t`. The drain's text read filters that column, so the schema
+    /// has no statement to generate — the twin of
+    /// [`Self::ProjectedSidecarNotMemoryKeyed`] on the embedding lane.
+    EmbeddedSidecarNotMemoryKeyed {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        table: &'static str,
+    },
     /// A non-core schema declares a search projection no request shape can
     /// scan. Every write to it pays a projection row and a GIN index entry
     /// for a corpus no query reaches.
@@ -533,6 +542,17 @@ impl std::fmt::Display for FlavorRegistryError {
                  the projection generator spells each projection row's key from that column, so \
                  there is no statement to generate -- declare a surface for {table} with \
                  `key: KeyShape::MemoryT {{ column: .. }}`"
+            ),
+            Self::EmbeddedSidecarNotMemoryKeyed {
+                flavor_id,
+                schema_id,
+                table,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares {schema_id} an embed unit on sidecar {table}, and \
+                 no surface of this flavor declares {table} keyed on the memory t; the drain \
+                 filters the text read on that column, so there is no statement to generate -- \
+                 declare a surface for {table} with `key: KeyShape::MemoryT {{ column: .. }}`"
             ),
             Self::UnreachableSearchProjection {
                 flavor_id,

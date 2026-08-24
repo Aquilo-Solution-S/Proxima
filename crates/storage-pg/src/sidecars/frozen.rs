@@ -92,6 +92,23 @@ impl PgSidecarRegistryFrozen {
             .map(|entry| entry.sidecar_table.as_str())
     }
 
+    /// The column `table` stores its memory `t` under, as its registration
+    /// declares it (`pg_sidecar!(key: …)`), or `None` when `table` is not a
+    /// registered memory sidecar.
+    ///
+    /// The one reader is the series-head lookup, which joins a sidecar back
+    /// to `proxima_core.memory` knowing only the table name. Freeze has
+    /// already held this equal to the contract's
+    /// `KeyShape::MemoryT { column }` for the same table, so the two sides
+    /// of that join are one declaration read twice, not two spellings.
+    #[must_use]
+    pub fn memory_key_column(&self, table: &str) -> Option<&'static str> {
+        self.entries
+            .values()
+            .filter(|entry| entry.sidecar_table == table)
+            .find_map(|entry| entry.memory_key_column)
+    }
+
     #[must_use]
     pub fn is_memory_sidecar_table(&self, table: &str) -> bool {
         self.entries.values().any(|entry| {
@@ -118,6 +135,7 @@ impl PgSidecarRegistryFrozen {
                 key,
                 sidecar_table: table.to_owned(),
                 owner_pinned: false,
+                memory_key_column: Some("t"),
                 memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
                 memory_load: None,
                 memory_load_batch: Some(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
@@ -557,6 +575,7 @@ mod language_bind_tests {
             key: key(),
             sidecar_table: "proxima_core.agent_note_v1".to_owned(),
             owner_pinned: false,
+            memory_key_column: Some("t"),
             memory_insert: None,
             memory_load: None,
             memory_load_batch: None,

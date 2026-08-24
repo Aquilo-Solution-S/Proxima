@@ -229,6 +229,20 @@ pub struct MemoryEmbedUnit {
     pub kind: PayloadKind,
     pub sidecar_table: String,
     pub column: String,
+    /// The column that sidecar stores its memory `t` under, off the
+    /// schema's own `Surface` (`KeyShape::MemoryT { column }`).
+    ///
+    /// The embedding lane's twin of
+    /// [`MemorySearchProjection::sidecar_key_column`], and here for the same
+    /// reason: the drain's text read filters the sidecar on its memory key,
+    /// and spelling that `t` would make the statement a function of the
+    /// contract plus an unstated naming convention. Not optional — freeze
+    /// refuses a unit whose sidecar surface is absent or keyed on anything
+    /// but a memory `t` ([`EmbeddedSidecarNotMemoryKeyed`]), so by the time
+    /// a drain holds this value the column exists.
+    ///
+    /// [`EmbeddedSidecarNotMemoryKeyed`]: crate::flavor::FlavorRegistryError::EmbeddedSidecarNotMemoryKeyed
+    pub key_column: String,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -435,7 +449,26 @@ fn contract_search_projections(
 /// each declaration against this rather than against a second declaration:
 /// a recipe that resolves to nothing here is a schema that does not embed,
 /// whatever it says it does.
-pub(crate) fn contract_embed_units(contracts: &[&'static FlavorContract]) -> Vec<MemoryEmbedUnit> {
+///
+/// The memory-key column travels with the `(table, column)` pair because
+/// the drain's statement needs all three, and only the contract knows the
+/// third: [`EmbeddingRecipe::resolve`] binds a unit to its sidecar table and
+/// never sees a `Surface`, so a key read anywhere downstream would be read
+/// from a convention. Resolved contract-wide
+/// ([`FlavorContract::sidecar_memory_key_column`]) for the reason that lookup
+/// documents — one table may be registered under two `SchemaContract`s and
+/// its `Surface` is declared on exactly one of them.
+///
+/// # Errors
+///
+/// `EmbeddedSidecarNotMemoryKeyed` when a unit's sidecar declares no surface
+/// keyed on the memory `t`. Refused rather than defaulted, on the same rule
+/// the projection lane keeps: the default is the defect.
+///
+/// [`EmbeddingRecipe::resolve`]: crate::flavor::EmbeddingRecipe::resolve
+pub(crate) fn contract_embed_units(
+    contracts: &[&'static FlavorContract],
+) -> Result<Vec<MemoryEmbedUnit>, crate::flavor::FlavorRegistryError> {
     let mut out = Vec::new();
     for contract in contracts {
         for schema in contract.schemas {
@@ -443,17 +476,25 @@ pub(crate) fn contract_embed_units(contracts: &[&'static FlavorContract]) -> Vec
                 let Some(table) = unit.table else {
                     continue;
                 };
+                let key_column = contract.sidecar_memory_key_column(table).ok_or(
+                    crate::flavor::FlavorRegistryError::EmbeddedSidecarNotMemoryKeyed {
+                        flavor_id: contract.flavor_id,
+                        schema_id: schema.schema_id(),
+                        table,
+                    },
+                )?;
                 out.push(MemoryEmbedUnit {
                     schema_id: schema.schema_id(),
                     schema_version: schema.schema_version(),
                     kind: schema.kind,
                     sidecar_table: table.to_owned(),
                     column: unit.column.to_owned(),
+                    key_column: key_column.to_owned(),
                 });
             }
         }
     }
-    out
+    Ok(out)
 }
 
 impl FlavorRegistryFrozen {
@@ -468,7 +509,7 @@ impl FlavorRegistryFrozen {
     /// # Errors
     ///
     /// Propagates the refusals raised by the vocabulary builders it calls
-    /// (see [`contract_search_projections`]).
+    /// (see [`contract_search_projections`] and [`contract_embed_units`]).
     pub(crate) fn from_registry(
         registry: crate::FlavorRegistry,
     ) -> Result<Self, crate::flavor::FlavorRegistryError> {
@@ -485,7 +526,7 @@ impl FlavorRegistryFrozen {
         } = registry;
         let schema_capability_tags = crate::flavor::schema_capability_map(&schema_capability_tags);
         let search_projections = contract_search_projections(&contracts)?;
-        let embed_units = contract_embed_units(&contracts);
+        let embed_units = contract_embed_units(&contracts)?;
         let index = FrozenIndex::build(&schemas, &protocol_ingress, &contracts, &embed_units);
         Ok(Self {
             schemas,

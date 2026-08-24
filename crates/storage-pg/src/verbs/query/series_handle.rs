@@ -2,6 +2,11 @@
 //!
 //! Tesla-valve admit: sidecar row → `memory.t` → `memory_head` (`h.t = m.t`).
 //! Owner-only. A transferred series is a miss for the prior owner.
+//!
+//! The sidecar side of the first join is the column the table's registration
+//! declares (`pg_sidecar!(key: …)`, held equal to the contract `Surface`'s
+//! `KeyShape::MemoryT { column }` at freeze), not a literal `t`. `m.t` and
+//! `h.t` are the kernel tables' own keys and are fixed.
 
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{Owner, SchemaId, StorageError};
@@ -34,15 +39,21 @@ impl HeadProjection {
 
 /// Current owned series handle for `schema_id` whose sidecar matches `columns`.
 ///
+/// `key_column` is `sidecar_table`'s DECLARED memory-key column, off the
+/// frozen sidecar registry — see [`memory_key_column`].
+///
 /// # Errors
 ///
 /// `ConstraintViolation` when a column identifier is invalid.
 /// `Internal` on query failure.
+///
+/// [`memory_key_column`]: crate::sidecars::PgSidecarRegistryFrozen::memory_key_column
 pub async fn owned_head_handle<'e, E>(
     executor: E,
     owner: Owner,
     schema_id: &SchemaId,
     sidecar_table: &str,
+    key_column: &str,
     columns: &[(&str, SidecarAtom)],
 ) -> Result<Option<Uuid>, StorageError>
 where
@@ -53,6 +64,7 @@ where
         owner,
         schema_id,
         sidecar_table,
+        key_column,
         columns,
         HeadProjection::Handle,
     )
@@ -72,6 +84,7 @@ pub(crate) async fn owned_head_memory_id<'e, E>(
     owner: Owner,
     schema_id: &SchemaId,
     sidecar_table: &str,
+    key_column: &str,
     columns: &[(&str, SidecarAtom)],
 ) -> Result<Option<Uuid>, StorageError>
 where
@@ -82,6 +95,7 @@ where
         owner,
         schema_id,
         sidecar_table,
+        key_column,
         columns,
         HeadProjection::MemoryId,
     )
@@ -93,6 +107,7 @@ async fn owned_head_column<'e, E>(
     owner: Owner,
     schema_id: &SchemaId,
     sidecar_table: &str,
+    key_column: &str,
     columns: &[(&str, SidecarAtom)],
     projection: HeadProjection,
 ) -> Result<Option<Uuid>, StorageError>
@@ -105,6 +120,7 @@ where
         ));
     }
     let table = PgIdent::table(sidecar_table)?;
+    let key = PgIdent::column(key_column)?;
     let col_idents = columns
         .iter()
         .map(|(column, _)| PgIdent::column(column))
@@ -117,9 +133,12 @@ where
     let mut builder = QueryBuilder::<Postgres>::new(projection.column());
     builder.push(table.as_str());
     // SQL-POLICY: fixed-fragment
+    builder.push(" s JOIN proxima_core.memory m ON m.t = s.");
+    // SQL-POLICY: PgIdent
+    builder.push(key.as_str());
+    // SQL-POLICY: fixed-fragment
     builder.push(
-        " s JOIN proxima_core.memory m ON m.t = s.t \
-         JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t \
+        " JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t \
          WHERE m.owner_id = ",
     );
     builder.push_bind(owner.stored_owner_id());
@@ -169,3 +188,10 @@ pub(crate) fn push_atom(builder: &mut QueryBuilder<Postgres>, value: &SidecarAto
         }
     }
 }
+
+// The renamed-key fixture lives beside the builder: what it proves is that
+// the emitted statement is valid Postgres against a sidecar keyed on a
+// column of its own naming, which no string comparison can reach.
+#[cfg(test)]
+#[path = "series_handle_pg_tests.rs"]
+mod series_handle_pg_tests;

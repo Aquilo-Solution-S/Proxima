@@ -27,8 +27,11 @@ use super::{FromRow, MemoryId, PgPool, PgRow, PgSidecarRegistryFrozen, Postgres,
 /// transfer legs key on, so "which column carries the owner" has one answer
 /// per table. A surface that declares none is refused rather than read
 /// unscoped: an empty `owner_columns` claims the row is reached through its
-/// key's owner, and reaching it that way needs the declared memory-key
-/// column that `owned_head_*` does not yet carry.
+/// key's owner, and joining through the Memory to prove that owner is a
+/// SECOND statement shape this builder does not emit. The declared
+/// memory-key column such a join would need is now on the frozen registry
+/// (`PgSidecarRegistryFrozen::memory_key_column`), so the refusal is a
+/// scope-of-this-builder decision rather than a missing carrier.
 ///
 /// # Errors
 ///

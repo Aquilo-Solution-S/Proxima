@@ -19,6 +19,50 @@ pub fn owner_arrays(owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>)
     owners.iter().map(owner_binds).unzip()
 }
 
+/// The one column a surface's own owner predicate filters on, as DECLARED.
+///
+/// The erase and export legs each render `WHERE <owner column> = $1` over a
+/// surface that carries its own owner, and both used to spell that column
+/// `owner_id`. Every shipped declaration happens to say `owner_id`, which
+/// is precisely what makes the literal invisible: the statement claimed to
+/// be a function of the declaration and was a function of the declaration
+/// plus a naming convention.
+///
+/// The transfer leg reads the WHOLE list — [`TransferLeg::Rehomed`] sets
+/// every declared owner column on the destination — and these two do not,
+/// because "which columns does a move rewrite" and "which column decides
+/// whose row this is" are different questions and only the first has an
+/// answer for a list. A surface declaring two owner columns is therefore
+/// refused here by name rather than filtered on the first: filtering on one
+/// silently under-erases and under-exports (today's behaviour), and
+/// `OR`-ing them is a scope decision nothing in the kernel has made.
+///
+/// # Errors
+///
+/// `Internal` when the surface declares no owner column — its caller is
+/// meant to have taken the through-the-key branch — or more than one, or
+/// when the declared name is not a legal identifier.
+pub(crate) fn sole_owner_column(
+    surface: &proxima_core::flavor::Surface,
+) -> Result<crate::pg_ident::PgIdent<'_>, StorageError> {
+    match surface.owner_columns {
+        [column] => crate::pg_ident::PgIdent::column(column),
+        [] => Err(StorageError::Internal(format!(
+            "{} declares no owner column, so it has no owner predicate of its own; \
+             its rows are reached through the owner of their key",
+            surface.table
+        ))),
+        columns => Err(StorageError::Internal(format!(
+            "{} declares {} owner columns ({columns:?}); the erase and export legs filter on \
+             ONE, and which of several decides whose row this is -- or whether they are \
+             disjunctive -- is not something the surface declaration says. Declare a single \
+             owner column, or decide that scope in the kernel first",
+            surface.table,
+            columns.len(),
+        ))),
+    }
+}
+
 /// Insert `proxima_core.owners` or confirm the stored kind matches `owner`.
 ///
 /// The only production owners upsert. Memory / goal / wake / citation /
