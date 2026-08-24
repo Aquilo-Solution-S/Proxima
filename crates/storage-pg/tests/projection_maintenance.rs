@@ -352,17 +352,16 @@ async fn a_projection_row_cannot_claim_a_schema_its_memory_is_not() {
             "the fixture starts empty"
         );
 
-        let spec = proxima_core::FLAVOR_0
-            .projection
-            .spec()
-            .expect("flavor #0 declares a projection");
         let note_schema = proxima_core::FLAVOR_0
             .schemas
             .iter()
             .find(|schema| schema.schema_id().as_str() == AgentNoteV1::SCHEMA_ID)
             .expect("the note schema is declared");
-        let sql = proxima_storage_pg::projection::projection_insert_sql(spec, note_schema)
-            .expect("the generator emits a valid statement");
+        let sql = proxima_storage_pg::projection::projection_insert_sql(
+            &proxima_core::FLAVOR_0,
+            note_schema,
+        )
+        .expect("the generator emits a valid statement");
 
         // A real, declared schema id — and not this memory's.
         // SQL-POLICY: generated
@@ -399,6 +398,130 @@ async fn a_projection_row_cannot_claim_a_schema_its_memory_is_not() {
             projection_of(pool, t).await?.map(|row| row.schema_id),
             Some(AgentNoteV1::SCHEMA_ID.to_string()),
             "…carrying the memory's own schema id"
+        );
+        Ok(())
+    })
+    .await;
+}
+
+/// Flavor #0's note declaration, re-pointed at a sidecar that keys its
+/// memory on a column of its own naming.
+///
+/// Everything else is the shipped declaration, so the statement under test
+/// differs from the production one in the table and the key column and
+/// nothing else. The contract is narrowed to the one schema so the surface
+/// lookup answers from this declaration rather than from the real note's.
+fn a_note_contract_keyed_on(
+    table: &'static str,
+    key_column: &'static str,
+) -> (
+    proxima_core::flavor::FlavorContract,
+    &'static proxima_core::flavor::SchemaContract,
+) {
+    let mut surface = proxima_core::FLAVOR_0
+        .surface_for(AGENT_NOTE)
+        .expect("the note sidecar is declared");
+    surface.table = table;
+    surface.key = proxima_core::flavor::KeyShape::MemoryT { column: key_column };
+    let mut schema = *proxima_core::FLAVOR_0
+        .schemas
+        .iter()
+        .find(|schema| schema.schema_id().as_str() == AgentNoteV1::SCHEMA_ID)
+        .expect("the note schema is declared");
+    schema.sidecar_table = Some(table);
+    schema.surfaces = Box::leak(Box::new([surface]));
+    let schema: &'static proxima_core::flavor::SchemaContract = Box::leak(Box::new(schema));
+    let mut contract = proxima_core::FLAVOR_0;
+    contract.schemas = std::slice::from_ref(schema);
+    (contract, schema)
+}
+
+/// A sidecar may key its memory on a column of its own naming, and the
+/// projection row still lands.
+///
+/// `KeyShape::MemoryT { column }` exists because the erase and export lanes
+/// have no other way to learn which column carries the id; a downstream
+/// flavor that keyed its sidecar on such a name got no projection rows,
+/// because the generator spelled the sidecar side of its join `t` whatever
+/// the declaration said. The generated text is asserted in the module's own
+/// unit tests; what this adds is the half a string comparison cannot reach
+/// — the statement has to be valid `PostgreSQL` against a table with that
+/// column, and it has to file the row.
+///
+/// Deliberately NOT routed through `insert_memory_sidecar`: reaching that
+/// path with a renamed key needs a payload type, a `pg_sidecar!`
+/// registration and a second flavor contract in the frozen registry, which
+/// would exercise the registry rather than the generator. The statement
+/// that path runs is the one executed here — `attach_projections` stores
+/// exactly this function's output.
+#[tokio::test]
+async fn a_sidecar_keyed_on_its_own_column_name_still_files_its_projection_row() {
+    const RENAMED_TABLE: &str = "proxima_core.renamed_note_v1";
+    const RENAMED_KEY: &str = "note_memory_id";
+
+    with_db("proxima_proj_renamed_key", async |pg| {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let pool = pg.pool_for_tests();
+        let t = write_note(pool, owner, None).await?;
+
+        // The real write path already filed this (memory, schema) pair;
+        // clear it so the renamed statement is the only writer and the
+        // primary key cannot mask the result.
+        sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
+            .bind(t.into_inner())
+            .execute(pool)
+            .await?;
+
+        sqlx::query(
+            "CREATE TABLE proxima_core.renamed_note_v1 (
+                 note_memory_id uuid PRIMARY KEY
+                                REFERENCES proxima_core.memory (t) ON DELETE CASCADE,
+                 title          text   NOT NULL,
+                 body           text   NOT NULL,
+                 tags           text[] NOT NULL DEFAULT '{}'
+             )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.renamed_note_v1 (note_memory_id, title, body, tags)
+             VALUES ($1, 'harbour survey', 'the pilings under the north quay are sound',
+                     ARRAY['survey'])",
+        )
+        .bind(t.into_inner())
+        .execute(pool)
+        .await?;
+
+        let (contract, schema) = a_note_contract_keyed_on(RENAMED_TABLE, RENAMED_KEY);
+        let sql = proxima_storage_pg::projection::projection_insert_sql(&contract, schema)
+            .expect("the generator emits a valid statement");
+        assert!(
+            sql.contains(&format!("c.{RENAMED_KEY}")),
+            "the generator reads the declared key column: {sql}"
+        );
+
+        // SQL-POLICY: generated
+        let filed = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(t.into_inner())
+            .bind(Some("german"))
+            .bind(AgentNoteV1::SCHEMA_ID)
+            .execute(pool)
+            .await?;
+        assert_eq!(
+            filed.rows_affected(),
+            1,
+            "a sidecar keyed on its own column name files exactly one projection row"
+        );
+        assert_eq!(
+            projection_of(pool, t).await?,
+            Some(ProjectionRow {
+                schema_id: AgentNoteV1::SCHEMA_ID.to_string(),
+                owner_id: owner.stored_owner_id(),
+                lexical_language: "german".to_string(),
+                tag: vec!["survey".to_string()],
+                has_vector: true,
+            }),
+            "and it carries the joined memory's owner, the copied tag and the vector"
         );
         Ok(())
     })

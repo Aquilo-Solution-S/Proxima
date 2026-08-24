@@ -384,7 +384,8 @@ impl PgSidecarRegistry {
             if !schema.search.is_projected() {
                 continue;
             }
-            entry.projection_insert = Some(crate::projection::projection_insert_sql(spec, schema)?);
+            entry.projection_insert =
+                Some(crate::projection::projection_insert_sql(contract, schema)?);
             entry.projection_table = Some(spec.table.to_owned());
         }
         Ok(())

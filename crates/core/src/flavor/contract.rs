@@ -1524,6 +1524,43 @@ impl FlavorContract {
             .chain(projection.map(|spec| spec.surface()))
     }
 
+    /// The [`Surface`] declaring one physical table, wherever in this
+    /// contract it is declared.
+    ///
+    /// Contract-wide rather than per-schema, and that is load-bearing: one
+    /// table may be registered under two `SchemaContract`s — one payload
+    /// type serving the Abstraction and the Perspective layers — and the
+    /// surface is declared on exactly ONE of them so erase and forget
+    /// cannot reach the same rows twice. A lookup rooted in a schema
+    /// therefore finds nothing for the sibling registration, which is a
+    /// silence, not an absence.
+    #[must_use]
+    pub fn surface_for(&self, table: &str) -> Option<Surface> {
+        self.all_surfaces().find(|surface| surface.table == table)
+    }
+
+    /// The column a sidecar stores its memory `t` under, as DECLARED.
+    ///
+    /// Every generated statement that joins a sidecar back to
+    /// `proxima_core.memory` — the projection `INSERT`, the substring arm,
+    /// the snippet lookup — reads this rather than spelling `t`, so the SQL
+    /// is a function of the contract and not of the contract plus an
+    /// unstated naming convention. [`KeyShape::MemoryT`] already names the
+    /// column for the erase and export lanes; this is the same field, read
+    /// by the lexical lane.
+    ///
+    /// `None` when no surface declares the table, or when the one that does
+    /// keys its rows on something that is not a memory `t`. Consumers
+    /// refuse on `None`; none of them substitutes a default, because the
+    /// default is the defect.
+    #[must_use]
+    pub fn sidecar_memory_key_column(&self, table: &str) -> Option<&'static str> {
+        match self.surface_for(table)?.key {
+            KeyShape::MemoryT { column } => Some(column),
+            _ => None,
+        }
+    }
+
     /// Which leg destroys `surface`'s rows when its owner is erased.
     ///
     /// The single classifier. `validate_erase_legs` calls it at freeze and

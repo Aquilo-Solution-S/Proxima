@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
-use crate::projection::snippet_sql;
+use crate::projection::{projection_key_ident, snippet_sql};
 
 /// Outbound origin pins of the frontier, newest `(src, tgt)` first.
 const ANCESTOR_HOP_SQL: &str = "SELECT DISTINCT ON (m.t, pin)
@@ -393,12 +393,16 @@ pub(super) async fn load_one_schema_snippets(
         return Ok(Vec::new());
     }
     let table = PgIdent::table(&projection.sidecar_table)?;
+    let key = projection_key_ident(projection)?;
     let snippet = snippet_sql(projection)?;
+    // The lookup is by the sidecar's DECLARED memory-key column, aliased
+    // back to `t` so the row shape is one spelling across flavors.
     let sql = format!(
-        "SELECT c.t, {snippet} AS snippet
+        "SELECT c.{key} AS t, {snippet} AS snippet
            FROM {table} c
-          WHERE c.t = ANY($1::uuid[])",
+          WHERE c.{key} = ANY($1::uuid[])",
         table = table.as_str(),
+        key = key.as_str(),
         snippet = snippet,
     );
     // SQL-POLICY: PgIdent

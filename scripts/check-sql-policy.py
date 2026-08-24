@@ -672,7 +672,16 @@ def run_fixture(path: Path) -> int:
 # six splice one identifier the test itself mints from `Uuid::now_v7()`
 # under a fixed prefix; the dynamism exists only because Postgres has no
 # bind parameters for role names in DDL.
-EXPECTED_DYNAMIC_SQL_SITES = 82
+#
+# 82 -> 83: one site in `projection_maintenance.rs`, which runs the
+# projection generator's own output against a sidecar whose memory-key
+# column is not `t`. The generator reads that column from
+# `KeyShape::MemoryT { column }`; the emitted text is asserted in unit
+# tests, but only executing it proves the statement is valid Postgres
+# against a table with that column and that the row lands. The statement is
+# the one `attach_projections` stores, so the site carries the
+# `SQL-POLICY: generated` proof like every other execution of it.
+EXPECTED_DYNAMIC_SQL_SITES = 83
 
 
 def run_self_test() -> int:

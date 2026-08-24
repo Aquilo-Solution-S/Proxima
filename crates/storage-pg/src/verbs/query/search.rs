@@ -56,7 +56,7 @@ use sqlx::PgPool;
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::pgvector::set_hnsw_search_sql;
-use crate::projection::sidecar_text_sql;
+use crate::projection::{projection_key_ident, sidecar_text_sql};
 use crate::tuning::PgTuning;
 
 use super::lineage::load_one_schema_snippets;
@@ -502,35 +502,39 @@ fn substring_sql(
             .entry(projection.sidecar_table.as_str())
             .or_insert(projection);
     }
-    let legs = by_table
-        .into_values()
+    let scanned: Vec<&MemorySearchProjection> = by_table.into_values().collect();
+    let legs = scanned
+        .iter()
         .map(|projection| substring_leg_sql(projection, req))
         .collect::<Result<Vec<_>, StorageError>>()?;
-    let [only] = legs.as_slice() else {
+    // Every leg projects its memory id as `t` whatever its sidecar calls
+    // the column, so the union's own ordering stays one spelling.
+    if let ([only], [projection]) = (legs.as_slice(), scanned.as_slice()) {
+        let key = projection_key_ident(projection)?;
         let order_by = match req.order {
-            SearchOrder::Relevance => "s.lexical_score DESC, s.t DESC",
-            SearchOrder::Recency => "s.t DESC",
+            SearchOrder::Relevance => format!("lexical_score DESC, c.{} DESC", key.as_str()),
+            SearchOrder::Recency => format!("c.{} DESC", key.as_str()),
         };
-        let union = legs.join("\n          UNION ALL\n");
         // SQL-POLICY: PgIdent
         return Ok(format!(
-            "SELECT s.t, s.lexical_score
+            "{only}
+          ORDER BY {order_by}
+          LIMIT $2"
+        ));
+    }
+    let order_by = match req.order {
+        SearchOrder::Relevance => "s.lexical_score DESC, s.t DESC",
+        SearchOrder::Recency => "s.t DESC",
+    };
+    let union = legs.join("\n          UNION ALL\n");
+    // SQL-POLICY: PgIdent
+    Ok(format!(
+        "SELECT s.t, s.lexical_score
                FROM (
           {union}
                     ) s
               ORDER BY {order_by}
               LIMIT $2"
-        ));
-    };
-    let order_by = match req.order {
-        SearchOrder::Relevance => "lexical_score DESC, c.t DESC",
-        SearchOrder::Recency => "c.t DESC",
-    };
-    // SQL-POLICY: PgIdent
-    Ok(format!(
-        "{only}
-          ORDER BY {order_by}
-          LIMIT $2"
     ))
 }
 
@@ -544,6 +548,7 @@ fn substring_leg_sql(
     req: &MemorySearchRequest,
 ) -> Result<String, StorageError> {
     let table = PgIdent::table(&projection.sidecar_table)?;
+    let key = projection_key_ident(projection)?;
     let search_text = sidecar_text_sql(projection)?;
     let tag_pred = match projection.tag_column.as_deref() {
         Some(column) if !req.tags.is_empty() => {
@@ -564,21 +569,26 @@ fn substring_leg_sql(
     // slot in it. See `admit_side_restriction`.
     let admit_pred = admit_side_restriction(req, SUBSTRING_MEMORY_ID);
     // SQL-POLICY: PgIdent
+    // `c.{key}` is the sidecar's DECLARED memory-key column and `m.t` the
+    // kernel memory table's own; the leg aliases its projection back to `t`
+    // so the row shape and the union's ordering are one spelling whatever
+    // a flavor names its column.
     Ok(format!(
-        "SELECT c.t,
+        "SELECT c.{key} AS t,
                 {floor}::real AS lexical_score
            FROM {table} c
-           JOIN proxima_core.memory m ON m.t = c.t
+           JOIN proxima_core.memory m ON m.t = c.{key}
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND (lower({search_text}) LIKE $1 ESCAPE '\\')
             {tag_pred}{admit_pred}
             AND ($4::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(c.t), TIMESTAMPTZ '1970-01-01') >= $4)
+                 OR COALESCE(uuid_extract_timestamp(c.{key}), TIMESTAMPTZ '1970-01-01') >= $4)
             AND ($5::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(c.t), TIMESTAMPTZ '1970-01-01') <= $5)
-            AND ($6::uuid IS NULL OR c.t < $6)",
+                 OR COALESCE(uuid_extract_timestamp(c.{key}), TIMESTAMPTZ '1970-01-01') <= $5)
+            AND ($6::uuid IS NULL OR c.{key} < $6)",
         table = table.as_str(),
+        key = key.as_str(),
     ))
 }
 
@@ -1418,6 +1428,58 @@ mod tests {
         let untagged = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
         assert!(!untagged.contains("p.tag"));
         assert!(untagged.contains("p.owner_id = ANY($7::uuid[])"));
+    }
+
+    /// The substring leg probes the sidecar on the column the CONTRACT
+    /// declares, and projects it back as `t`.
+    ///
+    /// `KeyShape::MemoryT { column }` lets a sidecar name its memory column
+    /// itself; the leg spelled it `t` regardless, so such a schema's arm
+    /// referenced a column its table does not have. The alias is what keeps
+    /// the row shape and the union's `ORDER BY s.t` one spelling whatever a
+    /// flavor calls the column.
+    #[test]
+    fn the_substring_leg_probes_the_declared_key_column() {
+        const RENAMED: &str = "note_memory_id";
+
+        let mut note = proxima_core::FlavorRegistry::new()
+            .freeze_or_panic_for_tests()
+            .search_projections()
+            .iter()
+            .find(|projection| projection.schema_id.as_str() == "core/agent-note-v1")
+            .expect("core/agent-note-v1 is a search surface")
+            .clone();
+        assert_eq!(
+            note.sidecar_key_column.as_deref(),
+            Some("t"),
+            "core's own note keys on `t`, which is why a literal `t` went unnoticed"
+        );
+        note.sidecar_key_column = Some(RENAMED.to_owned());
+
+        let sql = super::substring_sql(&[&note], &request_with_tags()).expect("substring");
+        // Substituted into a shape rather than built with `format!`, so the
+        // SQL-policy scanner does not read an expectation about a statement
+        // as a statement being built.
+        for shape in [
+            "SELECT c.<key> AS t",
+            "JOIN proxima_core.memory m ON m.t = c.<key>",
+            "($6::uuid IS NULL OR c.<key> < $6)",
+        ] {
+            let expected = shape.replace("<key>", RENAMED);
+            assert!(sql.contains(&expected), "missing {expected:?} in: {sql}");
+        }
+        assert!(
+            !sql.contains("c.t "),
+            "nothing probes the sidecar on `t` behind the declaration's back: {sql}"
+        );
+
+        note.sidecar_key_column = None;
+        let err = super::substring_sql(&[&note], &request_with_tags())
+            .expect_err("a sidecar with no declared memory key is refused");
+        assert!(
+            err.to_string().contains("KeyShape::MemoryT"),
+            "and the refusal names the declaration to fix: {err}"
+        );
     }
 
     /// Admission's filters are on the CANDIDATE side, in both arms, and
