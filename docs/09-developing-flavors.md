@@ -510,7 +510,19 @@ engine
     .await?;
 ```
 
-Do not call `proxima_storage_pg::ingest_fact_with_sidecar`.
+There is no backend write helper to call instead: `proxima-storage-pg`'s
+fact-ingest and derive verbs are `pub(crate)`, and a typed sidecar insert
+takes a `SidecarInsertPermit` only the frozen registry can mint. A flavor
+implements `PgMemorySidecar` / `PgFactSidecar`; the registry invokes it, and
+writes the search-projection row in the same transaction.
+
+A flavor that must read its own sidecar rows before deciding what to append
+does that inside the write transaction, through the session:
+`UnitOfWork::advisory_xact_lock` → `UnitOfWork::owned_series_head_memory_id`
+/ `UnitOfWork::read_own_sidecar` → `UnitOfWork::ingest_typed` → `commit`.
+Those reads are read-only by construction: the backend emits the statement
+from a declared table and bound column predicates, so no transaction,
+connection, or pool crosses the port.
 
 ## Registry
 

@@ -1,7 +1,20 @@
 use super::{
-    Arc, GoalId, HashMap, HashSet, MemoryId, PgConnection, PgSidecarEntry, PgSidecarKey,
-    PgSidecarReadCtx, Postgres, SchemaInfo, SidecarPayload, StorageError, Transaction,
+    Arc, GoalId, HashMap, HashSet, MemoryId, PgSidecarEntry, PgSidecarKey, PgSidecarReadCtx,
+    Postgres, SchemaInfo, SidecarPayload, StorageError, Transaction,
 };
+
+// The two suites that write a sidecar row through the registry deliberately —
+// to prove the projection row follows it, and that a transfer moves both.
+// `insert_memory_sidecar` is `pub(crate)`, so they live beside it. Their
+// goldens stay in `tests/golden/` with the erase differential's; three pinned
+// baselines in one place beat three beside three readers.
+#[cfg(test)]
+#[path = "projection_maintenance_pg_tests.rs"]
+mod projection_maintenance_pg_tests;
+
+#[cfg(test)]
+#[path = "owner_transfer_differential_pg_tests.rs"]
+mod owner_transfer_differential_pg_tests;
 
 #[derive(Debug, Clone, Default)]
 pub struct PgSidecarRegistryFrozen {
@@ -100,7 +113,7 @@ impl PgSidecarRegistryFrozen {
                 key,
                 sidecar_table: table.to_owned(),
                 owner_pinned: false,
-                memory_insert: Some(|_, _, _| Box::pin(async { Ok(()) })),
+                memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
                 memory_load: None,
                 memory_load_batch: Some(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
                 cited_object_insert: None,
@@ -170,6 +183,11 @@ impl PgSidecarRegistryFrozen {
 
     /// Insert a typed sidecar row for an already-created Memory row.
     ///
+    /// Crate-private: this is the one write that maintains the projection
+    /// row alongside the sidecar row, and a public door onto it — even the
+    /// CORRECT door — is a second write path. Callers reach it through
+    /// `Engine`/`UnitOfWork` and the write ports.
+    ///
     /// `lexical_language` is the resolved text-search configuration the
     /// caller asked for, or `None` for the deployment default. It is stamped
     /// on the projection row, which is where a memory's language lives.
@@ -180,7 +198,7 @@ impl PgSidecarRegistryFrozen {
     /// registered for the payload schema or when the erased payload type
     /// does not match the registered Rust type. Returns storage errors
     /// from the concrete inserter.
-    pub async fn insert_memory_sidecar(
+    pub(crate) async fn insert_memory_sidecar(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
@@ -208,7 +226,7 @@ impl PgSidecarRegistryFrozen {
                 key.kind,
             ))
         })?;
-        insert(tx, memory_id, payload).await?;
+        insert(tx, memory_id, payload, super::SidecarInsertPermit::new()).await?;
         if let Some(sql) = entry.projection_insert.as_deref() {
             // SQL-POLICY: generated
             sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -224,8 +242,17 @@ impl PgSidecarRegistryFrozen {
 
     /// Rebuild the projection row for one already-restored sidecar row.
     ///
+    /// The one public mutating method left on the frozen registry, and the
+    /// reason it may stay public is the reason it needs no
+    /// [`super::SidecarInsertPermit`]: rebuild IS the maintenance. It
+    /// re-derives a projection row FROM a sidecar row that already exists,
+    /// so invoking it can only restore the invariant the permit protects,
+    /// never break it. Who may trigger a full-table rebuild is a cost and
+    /// authorization question, not an integrity one, and it already sits
+    /// behind a registry handle only the host context holds.
+    ///
     /// Hydrate restores sidecar rows generically from the cold dump, so it
-    /// cannot go through [`Self::insert_memory_sidecar`]. It re-derives the
+    /// cannot go through `insert_memory_sidecar`. It re-derives the
     /// projection from the restored row instead — the same statement, run
     /// against a row that is already there.
     ///
@@ -345,82 +372,6 @@ impl PgSidecarRegistryFrozen {
         .await
     }
 
-    /// Insert a typed sidecar row for an already-created cited-object row.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ConstraintViolation` when no PG cited-object sidecar is
-    /// registered for the payload schema or when the erased payload type
-    /// does not match the registered Rust type. Returns storage errors from
-    /// the concrete inserter.
-    pub async fn insert_cited_object_sidecar(
-        &self,
-        tx: &mut PgConnection,
-        cited_object_id: uuid::Uuid,
-        payload: &SidecarPayload,
-    ) -> Result<(), StorageError> {
-        let key = PgSidecarKey::new(
-            payload.kind,
-            payload.schema_id.clone(),
-            payload.schema_version,
-        );
-        let entry = self.entries.get(&key).ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "no PG sidecar registered for {} v{} {:?}",
-                key.schema_id.as_str(),
-                key.schema_version.into_inner(),
-                key.kind,
-            ))
-        })?;
-        let insert = entry.cited_object_insert.ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "PG sidecar for {} v{} {:?} is not a cited-object sidecar",
-                key.schema_id.as_str(),
-                key.schema_version.into_inner(),
-                key.kind,
-            ))
-        })?;
-        insert(tx, cited_object_id, payload).await
-    }
-
-    /// Insert a typed sidecar row for an already-created citation-mapping row.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ConstraintViolation` when no PG citation-mapping sidecar is
-    /// registered for the payload schema or when the erased payload type
-    /// does not match the registered Rust type. Returns storage errors from
-    /// the concrete inserter.
-    pub async fn insert_citation_mapping_sidecar(
-        &self,
-        tx: &mut PgConnection,
-        citation_mapping_id: uuid::Uuid,
-        payload: &SidecarPayload,
-    ) -> Result<(), StorageError> {
-        let key = PgSidecarKey::new(
-            payload.kind,
-            payload.schema_id.clone(),
-            payload.schema_version,
-        );
-        let entry = self.entries.get(&key).ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "no PG sidecar registered for {} v{} {:?}",
-                key.schema_id.as_str(),
-                key.schema_version.into_inner(),
-                key.kind,
-            ))
-        })?;
-        let insert = entry.citation_mapping_insert.ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "PG sidecar for {} v{} {:?} is not a citation-mapping sidecar",
-                key.schema_id.as_str(),
-                key.schema_version.into_inner(),
-                key.kind,
-            ))
-        })?;
-        insert(tx, citation_mapping_id, payload).await
-    }
-
     /// Insert a typed sidecar row for an already-created Goal row.
     ///
     /// # Errors
@@ -429,7 +380,7 @@ impl PgSidecarRegistryFrozen {
     /// for the payload schema or when the erased payload type does not match
     /// the registered Rust type. Returns storage errors from the concrete
     /// inserter.
-    pub async fn insert_goal_sidecar(
+    pub(crate) async fn insert_goal_sidecar(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         goal_id: GoalId,
@@ -466,7 +417,7 @@ impl PgSidecarRegistryFrozen {
     /// Returns `ConstraintViolation` when no PG Goal sidecar copy hook is
     /// registered for the schema. Returns storage errors from the concrete
     /// copier.
-    pub async fn copy_goal_sidecar(
+    pub(crate) async fn copy_goal_sidecar(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         key: PgSidecarKey,

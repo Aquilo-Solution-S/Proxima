@@ -6,19 +6,17 @@
     clippy::used_underscore_binding
 )]
 
+use crate::PgStorage;
+use crate::access::owner_columns::ensure_owner_row;
+use crate::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
+use crate::verbs::memory_timeseries::{read_memory_by_t, read_memory_head};
+use crate::verbs::wake_timeseries::{WakeConfigDraft, WakeTriggerKind, insert_wake_config};
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{AccessKind, GroupId, OwnerRef, SchemaId, SchemaVersion, StorageError, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::access::owner_columns::ensure_owner_row;
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
-use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
-use proxima_storage_pg::verbs::memory_timeseries::{read_memory_by_t, read_memory_head};
-use proxima_storage_pg::verbs::wake_timeseries::{
-    WakeConfigDraft, WakeTriggerKind, insert_wake_config,
-};
 use uuid::Uuid;
 
 fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
@@ -53,8 +51,8 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
-        let first = ingest_fact_atomic(pg.pool_for_tests(), &permit, &draft(None), None).await?;
-        let second = ingest_fact_atomic(pg.pool_for_tests(), &permit, &draft(None), None).await?;
+        let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let second = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         assert_ne!(
             first.memory_id, second.memory_id,
             "keyless Fact must mint a new t"
@@ -62,9 +60,9 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
         assert_ne!(first.handle, second.handle);
 
         let sourced = draft(Some(("src/webhook", "delivery-1")));
-        let a = ingest_fact_atomic(pg.pool_for_tests(), &permit, &sourced, None).await?;
+        let a = pg.ingest_fact_atomic(&permit, &sourced, None).await?;
         assert!(!a.idempotent_replay);
-        let b = ingest_fact_atomic(pg.pool_for_tests(), &permit, &sourced, None).await?;
+        let b = pg.ingest_fact_atomic(&permit, &sourced, None).await?;
         assert!(b.idempotent_replay);
         assert_eq!(a.memory_id, b.memory_id);
         assert_eq!(a.handle, b.handle);
@@ -127,10 +125,10 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
-        let file = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let file = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let mut chunk = draft(None);
         chunk.refs = vec![file.memory_id.into_inner()];
-        let chunk_out = ingest_fact_atomic(pool, &permit, &chunk, None).await?;
+        let chunk_out = pg.ingest_fact_atomic(&permit, &chunk, None).await?;
         let mut tx = pool.begin().await?;
         let row = read_memory_by_t(&mut tx, chunk_out.memory_id.into_inner())
             .await?
@@ -138,14 +136,15 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
         tx.commit().await?;
         assert_eq!(row.refs, vec![file.memory_id.into_inner()]);
 
-        let other = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let other = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let mut many = draft(None);
         many.refs = vec![
             file.memory_id.into_inner(),
             chunk_out.memory_id.into_inner(),
             other.memory_id.into_inner(),
         ];
-        let many_out = ingest_fact_atomic(pool, &permit, &many, None)
+        let many_out = pg
+            .ingest_fact_atomic(&permit, &many, None)
             .await
             .expect("multi-pin refs");
         let mut tx = pool.begin().await?;
@@ -158,7 +157,8 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
         let missing = Uuid::now_v7();
         let mut bad = draft(None);
         bad.refs = vec![missing];
-        let err = ingest_fact_atomic(pool, &permit, &bad, None)
+        let err = pg
+            .ingest_fact_atomic(&permit, &bad, None)
             .await
             .expect_err("missing pin");
         assert!(
@@ -172,7 +172,8 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             .await?;
         let mut closed = draft(None);
         closed.refs = vec![file.memory_id.into_inner()];
-        let err = ingest_fact_atomic(pool, &permit, &closed, None)
+        let err = pg
+            .ingest_fact_atomic(&permit, &closed, None)
             .await
             .expect_err("closed_handle");
         assert!(
@@ -192,7 +193,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
         .await?;
         let mut cited = draft(None);
         cited.blob_id = Some(blob_id);
-        let cited_out = ingest_fact_atomic(pool, &permit, &cited, None).await?;
+        let cited_out = pg.ingest_fact_atomic(&permit, &cited, None).await?;
         let stored: Option<Uuid> =
             sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
                 .bind(cited_out.memory_id.into_inner())
@@ -214,7 +215,8 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             proxima_core::EntityKind::Fact,
             chunk_out.memory_id,
         )];
-        let abs_out = ingest_fact_atomic(pool, &permit, &abs, None)
+        let abs_out = pg
+            .ingest_fact_atomic(&permit, &abs, None)
             .await
             .expect("A origins Fact t");
 
@@ -224,7 +226,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             proxima_core::EdgeEndpoint::memory(proxima_core::EntityKind::Fact, chunk_out.memory_id),
             proxima_core::EdgeEndpoint::memory(proxima_core::EntityKind::Fact, other.memory_id),
         ];
-        ingest_fact_atomic(pool, &permit, &abs_many, None)
+        pg.ingest_fact_atomic(&permit, &abs_many, None)
             .await
             .expect("A origins many Facts");
 
@@ -234,7 +236,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             proxima_core::EntityKind::Abstraction,
             abs_out.memory_id,
         )];
-        ingest_fact_atomic(pool, &permit, &abs_from_abs, None)
+        pg.ingest_fact_atomic(&permit, &abs_from_abs, None)
             .await
             .expect("A origins Abstraction t");
 
@@ -244,7 +246,8 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             proxima_core::EntityKind::Fact,
             chunk_out.memory_id,
         )];
-        let err = ingest_fact_atomic(pool, &permit, &persp_from_fact, None)
+        let err = pg
+            .ingest_fact_atomic(&permit, &persp_from_fact, None)
             .await
             .expect_err("P origins Fact");
         assert!(
@@ -258,7 +261,8 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             proxima_core::EntityKind::Abstraction,
             abs_out.memory_id,
         )];
-        let persp_out = ingest_fact_atomic(pool, &permit, &persp_ok, None)
+        let persp_out = pg
+            .ingest_fact_atomic(&permit, &persp_ok, None)
             .await
             .expect("P origins A");
 
@@ -268,7 +272,8 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             proxima_core::EntityKind::Perspective,
             persp_out.memory_id,
         )];
-        let err = ingest_fact_atomic(pool, &permit, &abs_from_p, None)
+        let err = pg
+            .ingest_fact_atomic(&permit, &abs_from_p, None)
             .await
             .expect_err("A origins P");
         assert!(
@@ -297,7 +302,8 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             abs_out.memory_id,
         )];
         persp.blob_id = Some(blob_id);
-        let err = ingest_fact_atomic(pool, &permit, &persp, None)
+        let err = pg
+            .ingest_fact_atomic(&permit, &persp, None)
             .await
             .expect_err("P cannot cite");
         assert!(
@@ -340,7 +346,7 @@ async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
         let permit = OwnerWritePermit::new_for_tests(personal, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
-        ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         {
             let mut conn = pool.acquire().await?;
             ensure_owner_row(&mut conn, &personal).await?;
@@ -394,7 +400,7 @@ async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
 
         let group_permit = OwnerWritePermit::new_for_tests(group, AccessKind::Fact);
         assert_kind_conflict(
-            ingest_fact_atomic(pool, &group_permit, &draft(None), None)
+            pg.ingest_fact_atomic(&group_permit, &draft(None), None)
                 .await
                 .expect_err("fact"),
         );
@@ -442,7 +448,7 @@ async fn ensure_owner_row_returns_under_concurrent_first_insert() {
 
 #[test]
 fn memory_pin_checks_is_set_based() {
-    let src = include_str!("../migrations/0001_v008.sql");
+    let src = include_str!("../../migrations/0001_v008.sql");
     let start = src
         .find("CREATE FUNCTION proxima_core.memory_pin_checks")
         .expect("memory_pin_checks");

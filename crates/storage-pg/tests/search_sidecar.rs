@@ -460,7 +460,7 @@ async fn tagged_search_scans_flavor_sidecars() {
             schema_version: SchemaVersion::new(1),
             kind: PayloadKind::Abstraction,
             sidecar_table: "proxima_docs.section_text_v1".into(),
-            sidecar_key_column: Some("t".into()),
+            sidecar_key_column: "t".into(),
             fields: vec![MemorySearchProjectionField {
                 column: "text".into(),
                 kind: SearchProjectionColumnKind::Text,

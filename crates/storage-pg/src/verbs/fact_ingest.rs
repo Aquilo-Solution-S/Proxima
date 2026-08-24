@@ -1,111 +1,56 @@
 //! `FactIngest` verb — atomic insert of a Fact `memory` + optional
 //! `blob_id` citation.
 //!
-//! [`ingest_fact_in_tx`] exposes the same body inside an existing
-//! transaction so flavor crates can append a typed sidecar row
-//! atomically with the Fact materialization. The pool-level
-//! [`ingest_fact_atomic`] is a thin wrapper that opens its own tx.
+//! Every write helper here is `pub(crate)`: they are the body of the
+//! `FactIngestPort` / `WriteSession` implementations in `crate::ports`, not
+//! an API. A caller reaches a Fact write through `Engine`/`UnitOfWork`,
+//! which is the one path that maintains the search-projection row, the
+//! sketch, and the embedding enqueue together with the Fact. A second
+//! entry point that skipped any of those would make them optional.
+//!
+//! [`PgFactSidecar`] stays public because flavors IMPLEMENT it. They cannot
+//! invoke it — see [`crate::sidecars::SidecarInsertPermit`].
 
 use std::future::Future;
 use std::pin::Pin;
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{
-    AuthorizedInlineCitedObject, CitationSpec, FactIngestOutcome, FactWriteCommand,
+    AuthorizedInlineCitedObject, FactIngestOutcome, FactWriteCommand,
 };
 use proxima_core::{
-    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, EdgeEndpoint,
-    FactPayload, MemoryId, Owner, SchemaId, SourceBatchId, StorageError,
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, FactPayload,
+    MemoryId, Owner, SchemaId, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::{internal, map_err, with_bounded_retry};
-use crate::sidecars::{PgMemorySidecar, PgSidecarRegistryFrozen};
+use crate::sidecars::PgSidecarRegistryFrozen;
 
 pub type FactIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
 
 /// Companion trait for Postgres-backed typed Fact sidecars. Flavor
 /// crates implement this for each `FactPayload` whose sidecar table
-/// is inserted by `proxima-storage-pg` helpers.
+/// is inserted by `proxima-storage-pg`.
+///
+/// Implemented by flavors, invoked by the frozen registry only: the
+/// [`crate::sidecars::SidecarInsertPermit`] argument cannot be minted
+/// outside this crate.
 pub trait PgFactSidecar: FactPayload + Sized {
     /// Insert this payload's sidecar row keyed by `memory_id`.
     fn insert_sidecar<'t>(
         self,
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
+        permit: crate::sidecars::SidecarInsertPermit,
     ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't;
 }
 
-/// Common context for typed Fact ingest helpers.
-#[derive(Debug, Clone)]
-pub struct FactIngestContext<'a> {
-    pub permit: &'a OwnerWritePermit,
-    pub source_id: &'a str,
-    pub source_batch_id: SourceBatchId,
-    pub observed_at: time::OffsetDateTime,
-    pub embedding_model_id: Option<&'a str>,
-    /// What this Fact declares it was made from. One
-    /// [`proxima_core::EdgeKind::Origin`] row per entry, in the Fact's own transaction.
-    /// Endpoints only — the kind follows from the field, never from a
-    /// caller.
-    pub derived_from: &'a [EdgeEndpoint],
-    /// Series handle. `None` mints a new series.
-    pub handle: Option<uuid::Uuid>,
-}
-
-impl<'a> FactIngestContext<'a> {
-    /// Build a context with `observed_at = now` and no embedding model.
-    #[must_use]
-    pub fn new(
-        permit: &'a OwnerWritePermit,
-        source_id: &'a str,
-        source_batch_id: SourceBatchId,
-    ) -> Self {
-        Self {
-            permit,
-            source_id,
-            source_batch_id,
-            observed_at: time::OffsetDateTime::now_utc(),
-            embedding_model_id: None,
-            derived_from: &[],
-            handle: None,
-        }
-    }
-
-    /// Override the observation/occurrence timestamp used by the draft.
-    #[must_use]
-    pub const fn observed_at(mut self, observed_at: time::OffsetDateTime) -> Self {
-        self.observed_at = observed_at;
-        self
-    }
-
-    /// Configure the embedding model id to enqueue for the ingested Fact.
-    #[must_use]
-    pub const fn embedding_model_id(mut self, model_id: Option<&'a str>) -> Self {
-        self.embedding_model_id = model_id;
-        self
-    }
-
-    /// Declare what this Fact was made from. Each endpoint becomes one
-    /// `origin` index row inside the Fact's write transaction, which is
-    /// what makes the provenance idempotent without an id scheme.
-    #[must_use]
-    pub const fn derived_from(mut self, derived_from: &'a [EdgeEndpoint]) -> Self {
-        self.derived_from = derived_from;
-        self
-    }
-
-    /// Reuse an existing series handle (new `t` on the same handle).
-    #[must_use]
-    pub const fn handle(mut self, handle: Option<uuid::Uuid>) -> Self {
-        self.handle = handle;
-        self
-    }
-}
-
+/// What [`ingest_core`] needs beyond the draft: which embedding model to
+/// enqueue, and how the draft's citation resolves to a `blob_id`.
 #[derive(Debug, Clone, Copy)]
 struct IngestCoreOptions<'a> {
     embedding_model_id: Option<&'a str>,
@@ -131,7 +76,7 @@ enum CitationPlan<'a> {
 ///
 /// Constraint violations map to `ConstraintViolation`; sqlx failures
 /// map to `Internal`.
-pub async fn ingest_fact_atomic(
+pub(crate) async fn ingest_fact_atomic(
     pool: &PgPool,
     permit: &OwnerWritePermit,
     draft: &FactWriteCommand,
@@ -144,368 +89,6 @@ pub async fn ingest_fact_atomic(
         tx.commit().await.map_err(map_err)?;
         Ok(outcome)
     })
-    .await
-}
-
-/// Pool-scoped gated `FactIngest` with a caller-owned typed sidecar
-/// insert. Opens its own transaction; commits only after the Fact and
-/// sidecar both succeed.
-///
-/// # Errors
-///
-/// Returns storage errors from Fact materialization, sidecar insertion,
-/// or transaction commit. A sidecar error rolls back the transaction.
-pub async fn fact_ingest_with_sidecar_atomic<F>(
-    pool: &PgPool,
-    authorized: &AuthorizedFactWrite,
-    embedding_model_id: Option<&str>,
-    sidecar_tables: &[String],
-    sidecar: F,
-) -> Result<FactIngestOutcome, StorageError>
-where
-    F: for<'t> FnOnce(
-        &'t mut Transaction<'_, Postgres>,
-        &'t FactIngestOutcome,
-    ) -> FactIngestSidecarFuture<'t>,
-{
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome = ingest_fact_with_sidecar_in_tx(
-        &mut tx,
-        authorized,
-        embedding_model_id,
-        sidecar_tables,
-        None,
-        sidecar,
-    )
-    .await?;
-    tx.commit().await.map_err(map_err)?;
-    Ok(outcome)
-}
-
-/// Pool-scoped gated Fact ingest with typed inline citation sidecars.
-/// Opens its own transaction; commits only after all core rows and
-/// caller/registry sidecars succeed.
-///
-/// # Errors
-///
-/// Returns storage errors from Fact materialization, cited-object
-/// sidecar insertion, Fact sidecar insertion, citation-mapping
-/// sidecar insertion, or transaction commit.
-pub async fn ingest_fact_with_citation_atomic<F>(
-    pool: &PgPool,
-    sidecars: &PgSidecarRegistryFrozen,
-    authorized: &AuthorizedFactWithCitation,
-    embedding_model_id: Option<&str>,
-    sidecar_tables: &[String],
-    fact_sidecar: F,
-) -> Result<FactIngestOutcome, StorageError>
-where
-    F: for<'t> FnOnce(
-        &'t mut Transaction<'_, Postgres>,
-        &'t FactIngestOutcome,
-    ) -> FactIngestSidecarFuture<'t>,
-{
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome = ingest_fact_with_citation_in_tx(
-        &mut tx,
-        sidecars,
-        authorized,
-        embedding_model_id,
-        sidecar_tables,
-        fact_sidecar,
-    )
-    .await?;
-    tx.commit().await.map_err(map_err)?;
-    Ok(outcome)
-}
-
-/// Build an uncited Fact draft from a typed payload, authorize it, and
-/// materialize it plus the caller-owned sidecar inside an existing tx.
-///
-/// # Errors
-///
-/// Returns storage errors from authorization/schema validation, Fact
-/// materialization, or sidecar insertion.
-pub async fn ingest_fact_in_tx<P, F>(
-    tx: &mut Transaction<'_, Postgres>,
-    permit: &OwnerWritePermit,
-    payload: &P,
-    embedding_model_id: Option<&str>,
-    sidecar: F,
-) -> Result<FactIngestOutcome, StorageError>
-where
-    P: FactPayload,
-    F: for<'t> FnOnce(
-        &'t mut Transaction<'_, Postgres>,
-        &'t FactIngestOutcome,
-    ) -> FactIngestSidecarFuture<'t>,
-{
-    ingest_fact_for_owner_in_tx(tx, permit, payload, embedding_model_id, sidecar).await
-}
-
-/// Transaction-scoped uncited Fact ingest helper for an explicit target owner.
-///
-/// # Errors
-///
-/// Returns storage errors from Fact authorization, materialization, sidecar
-/// insertion, or embedding enqueue.
-pub async fn ingest_fact_for_owner_in_tx<P, F>(
-    tx: &mut Transaction<'_, Postgres>,
-    permit: &OwnerWritePermit,
-    payload: &P,
-    embedding_model_id: Option<&str>,
-    sidecar: F,
-) -> Result<FactIngestOutcome, StorageError>
-where
-    P: FactPayload,
-    F: for<'t> FnOnce(
-        &'t mut Transaction<'_, Postgres>,
-        &'t FactIngestOutcome,
-    ) -> FactIngestSidecarFuture<'t>,
-{
-    let now = time::OffsetDateTime::now_utc();
-    let draft = FactWriteCommand::from_payload(
-        "proxima/fact",
-        SourceBatchId::new(uuid::Uuid::now_v7()),
-        payload,
-        now,
-    );
-    ingest_typed_payload(
-        tx,
-        permit.owner(),
-        &draft,
-        embedding_model_id,
-        P::sidecar_table(),
-        sidecar,
-    )
-    .await
-}
-
-/// Read a typed Fact payload's schema-declared reference fields as index
-/// targets.
-fn payload_reference_targets<P: FactPayload>(
-    payload: &P,
-) -> Result<Vec<EdgeEndpoint>, StorageError> {
-    payload
-        .references()
-        .into_iter()
-        .map(|reference| {
-            reference
-                .validate()
-                .map(|()| reference.target)
-                .map_err(StorageError::ConstraintViolation)
-        })
-        .collect()
-}
-
-/// Transaction-scoped uncited Fact ingest helper with no caller-owned sidecar.
-///
-/// # Errors
-///
-/// Returns storage errors from Fact authorization, materialization, or
-/// embedding enqueue. The caller owns transaction rollback/commit.
-pub async fn ingest_fact_for_owner_plain_in_tx<P>(
-    tx: &mut Transaction<'_, Postgres>,
-    permit: &OwnerWritePermit,
-    payload: &P,
-    embedding_model_id: Option<&str>,
-) -> Result<FactIngestOutcome, StorageError>
-where
-    P: FactPayload,
-{
-    let now = time::OffsetDateTime::now_utc();
-    let draft = FactWriteCommand::from_payload(
-        "proxima/fact",
-        SourceBatchId::new(uuid::Uuid::now_v7()),
-        payload,
-        now,
-    );
-    ingest_typed_payload(
-        tx,
-        permit.owner(),
-        &draft,
-        embedding_model_id,
-        None,
-        noop_fact_sidecar,
-    )
-    .await
-}
-
-async fn ingest_typed_payload<F>(
-    tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
-    draft: &FactWriteCommand,
-    embedding_model_id: Option<&str>,
-    sidecar_table: Option<&str>,
-    sidecar: F,
-) -> Result<FactIngestOutcome, StorageError>
-where
-    F: for<'t> FnOnce(
-        &'t mut Transaction<'_, Postgres>,
-        &'t FactIngestOutcome,
-    ) -> FactIngestSidecarFuture<'t>,
-{
-    let options = IngestCoreOptions {
-        embedding_model_id,
-        citation_plan: CitationPlan::DraftHint,
-    };
-    let tables = sidecar_table
-        .map(str::to_owned)
-        .into_iter()
-        .collect::<Vec<_>>();
-    ingest_core(tx, owner, draft, options, &tables, None, sidecar).await
-}
-
-/// Pool-scoped uncited Fact ingest helper. Opens its own transaction;
-/// commits only after the Fact and sidecar both succeed.
-///
-/// # Errors
-///
-/// Returns storage errors from transaction setup, Fact ingest, sidecar
-/// insertion, or transaction commit.
-pub async fn ingest_fact<P, F>(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
-    payload: &P,
-    embedding_model_id: Option<&str>,
-    sidecar: F,
-) -> Result<FactIngestOutcome, StorageError>
-where
-    P: FactPayload,
-    F: for<'t> FnOnce(
-        &'t mut Transaction<'_, Postgres>,
-        &'t FactIngestOutcome,
-    ) -> FactIngestSidecarFuture<'t>,
-{
-    ingest_fact_for_owner(pool, permit, payload, embedding_model_id, sidecar).await
-}
-
-/// Pool-scoped uncited Fact ingest helper with no caller-owned sidecar.
-///
-/// # Errors
-///
-/// Returns storage errors from transaction setup, Fact authorization,
-/// materialization, embedding enqueue, or transaction commit.
-pub async fn ingest_fact_for_owner_plain<P>(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
-    payload: &P,
-    embedding_model_id: Option<&str>,
-) -> Result<FactIngestOutcome, StorageError>
-where
-    P: FactPayload,
-{
-    // Retry the whole transaction on transient deadlock/serialization.
-    with_bounded_retry(move || async move {
-        let mut tx = pool.begin().await.map_err(internal)?;
-        let outcome =
-            ingest_fact_for_owner_plain_in_tx(&mut tx, permit, payload, embedding_model_id).await?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(outcome)
-    })
-    .await
-}
-
-/// Pool-scoped uncited Fact ingest helper for an explicit target owner.
-///
-/// # Errors
-///
-/// Returns storage errors from transaction setup, Fact authorization, sidecar
-/// insertion, or transaction commit.
-pub async fn ingest_fact_for_owner<P, F>(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
-    payload: &P,
-    embedding_model_id: Option<&str>,
-    sidecar: F,
-) -> Result<FactIngestOutcome, StorageError>
-where
-    P: FactPayload,
-    F: for<'t> FnOnce(
-        &'t mut Transaction<'_, Postgres>,
-        &'t FactIngestOutcome,
-    ) -> FactIngestSidecarFuture<'t>,
-{
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome =
-        ingest_fact_for_owner_in_tx(&mut tx, permit, payload, embedding_model_id, sidecar).await?;
-    tx.commit().await.map_err(map_err)?;
-    Ok(outcome)
-}
-
-fn noop_fact_sidecar<'t>(
-    _tx: &'t mut Transaction<'_, Postgres>,
-    _outcome: &'t FactIngestOutcome,
-) -> FactIngestSidecarFuture<'t> {
-    Box::pin(async { Ok(()) })
-}
-
-/// Build a typed Fact draft with an opaque citation and insert the
-/// Fact plus its Postgres sidecar inside an existing transaction.
-///
-/// # Errors
-///
-/// Returns storage errors from Fact materialization, sidecar insertion, or
-/// embedding enqueue.
-pub async fn ingest_fact_with_sidecar<P>(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &FactIngestContext<'_>,
-    payload: &P,
-    citation: CitationSpec,
-) -> Result<FactIngestOutcome, StorageError>
-where
-    P: FactPayload + PgMemorySidecar + Clone,
-{
-    let mut draft = FactWriteCommand::from_payload(
-        ctx.source_id,
-        ctx.source_batch_id,
-        payload,
-        ctx.observed_at,
-    )
-    .with_citation(citation)
-    .with_derived_from(ctx.derived_from.to_vec());
-    draft.handle = ctx.handle;
-    if draft.handle.is_none()
-        && let Some(table) = P::sidecar_table()
-    {
-        let columns = P::natural_key_columns();
-        if !columns.is_empty() {
-            let atoms = super::query::sidecar_atoms_from_payload(payload, columns)?;
-            let binds = atoms
-                .iter()
-                .map(|(column, value)| (column.as_str(), value.clone()))
-                .collect::<Vec<_>>();
-            draft.handle = super::query::owned_head_handle(
-                &mut **tx,
-                *ctx.permit.owner(),
-                &P::schema_id(),
-                table,
-                &binds,
-            )
-            .await?;
-        }
-    }
-    let sidecar_payload = payload.clone();
-    let references = payload_reference_targets(payload)?;
-    ingest_fact_with_derived_sidecar_in_tx(
-        tx,
-        ctx.permit,
-        &draft,
-        ctx.embedding_model_id,
-        P::sidecar_table(),
-        P::natural_key_columns(),
-        &references,
-        move |tx, outcome| {
-            Box::pin(async move {
-                if outcome.idempotent_replay {
-                    return Ok(());
-                }
-                sidecar_payload
-                    .insert_memory_sidecar(tx, outcome.memory_id)
-                    .await
-            })
-        },
-    )
     .await
 }
 
@@ -542,45 +125,6 @@ pub(crate) async fn ingest_fact_command_in_tx(
     .await
 }
 
-/// Run raw-draft `FactIngest` plus a typed sidecar insert inside an
-/// already-open transaction.
-///
-/// Crate-private: raw-owner write with no proof/authz param; the only
-/// caller is `ingest_fact_with_sidecar`, which carries the owner inside
-/// its `FactIngestContext`.
-///
-/// # Errors
-///
-/// Returns storage errors from Fact materialization, sidecar insertion, or
-/// embedding enqueue. The caller owns transaction rollback/commit.
-#[allow(clippy::too_many_arguments)] // one parameter per typed-ingest input
-pub(crate) async fn ingest_fact_with_derived_sidecar_in_tx<F>(
-    tx: &mut Transaction<'_, Postgres>,
-    permit: &OwnerWritePermit,
-    draft: &FactWriteCommand,
-    embedding_model_id: Option<&str>,
-    sidecar_table: Option<&str>,
-    _natural_key_columns: &[&str],
-    _references: &[EdgeEndpoint],
-    sidecar: F,
-) -> Result<FactIngestOutcome, StorageError>
-where
-    F: for<'t> FnOnce(
-        &'t mut Transaction<'_, Postgres>,
-        &'t FactIngestOutcome,
-    ) -> FactIngestSidecarFuture<'t>,
-{
-    let options = IngestCoreOptions {
-        embedding_model_id,
-        citation_plan: CitationPlan::DraftHint,
-    };
-    let tables = sidecar_table
-        .map(str::to_owned)
-        .into_iter()
-        .collect::<Vec<_>>();
-    ingest_core(tx, permit.owner(), draft, options, &tables, None, sidecar).await
-}
-
 /// Run gated Fact ingest plus typed inline citation sidecars inside an
 /// already-open transaction.
 ///
@@ -590,7 +134,7 @@ where
 /// Fact sidecar insertion, cited-object sidecar insertion, or
 /// citation-mapping sidecar insertion. The caller owns transaction
 /// rollback/commit.
-pub async fn ingest_fact_with_citation_in_tx<F>(
+pub(crate) async fn ingest_fact_with_citation_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitation,
@@ -640,7 +184,7 @@ where
 /// otherwise storage errors from core row materialization, Fact sidecar
 /// insertion, or citation-mapping sidecar insertion. The caller owns
 /// transaction rollback/commit.
-pub async fn ingest_fact_with_citation_ref_in_tx<F>(
+pub(crate) async fn ingest_fact_with_citation_ref_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitationRef,
@@ -828,7 +372,7 @@ async fn verify_cited_object_ref_in_tx(
 ///
 /// Returns storage errors from Fact materialization or sidecar
 /// insertion. The caller owns transaction rollback/commit.
-pub async fn ingest_fact_with_sidecar_in_tx<F>(
+pub(crate) async fn ingest_fact_with_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedFactWrite,
     embedding_model_id: Option<&str>,

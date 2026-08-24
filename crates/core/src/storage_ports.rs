@@ -77,4 +77,6 @@ pub use memory::{
 pub use owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
 pub use proof::{OperatorMaintenanceProof, OwnerWritePermit};
 pub use registry::RegistryProjectionPort;
-pub use write_session::{WriteSession, WriteSessionFactory};
+pub use write_session::{
+    SIDECAR_SESSION_READ_MAX_ROWS, SidecarSessionRead, WriteSession, WriteSessionFactory,
+};

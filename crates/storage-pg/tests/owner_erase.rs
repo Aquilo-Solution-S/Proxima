@@ -6,6 +6,7 @@ use std::sync::Arc;
 use proxima_core::owner_inverse::{
     EraseAuthorization, OwnerEraseOutcome, OwnerEraseRefusal, OwnerEraseTarget, OwnerSurfaces,
 };
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{
     MemoryAuthoringPort, OwnerInversePort, OwnerMembershipAdminPort, OwnerWritePermit,
 };
@@ -16,7 +17,6 @@ use proxima_core::{
     StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::wake_timeseries::{
@@ -119,11 +119,12 @@ async fn create_citation_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx:
 /// One cited blob of `owner`, with an upload record and both citation sidecar
 /// rows hanging off it, cited by one Fact in `source`.
 async fn cite_blob(
-    pool: &sqlx::PgPool,
+    pg: &PgStorage,
     owner: OwnerRef,
     source: Option<(&str, &str)>,
     seed: u8,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let pool = pg.pool_for_tests();
     // `blob.owner_id` references `owners`, which ordinary writes materialize.
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
@@ -171,7 +172,7 @@ async fn cite_blob(
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     let mut cited = draft(source);
     cited.blob_id = Some(blob_id);
-    ingest_fact_atomic(pool, &permit, &cited, None).await?;
+    pg.ingest_fact_atomic(&permit, &cited, None).await?;
     Ok(blob_id)
 }
 
@@ -285,7 +286,9 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let written = ingest_fact_atomic(pool, &permit, &draft(Some(("src", "k1"))), None).await?;
+        let written = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src", "k1"))), None)
+            .await?;
         let t = written.memory_id.into_inner();
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
@@ -309,8 +312,9 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
 
         let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
-        let other_written =
-            ingest_fact_atomic(pool, &other_permit, &draft(Some(("src", "k-other"))), None).await?;
+        let other_written = pg
+            .ingest_fact_atomic(&other_permit, &draft(Some(("src", "k-other"))), None)
+            .await?;
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
@@ -435,7 +439,7 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let written = ingest_fact_atomic(pool, &permit, &draft(Some(("src", "k-cooled"))), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(Some(("src", "k-cooled"))), None).await?;
         let t = written.memory_id.into_inner();
         MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
         let keys_after_forget: i64 = sqlx::query_scalar(
@@ -588,7 +592,8 @@ async fn erase_source_scope_keeps_all_wake_configs() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        ingest_fact_atomic(pool, &permit, &draft(Some(("src-wake", "k-wake"))), None).await?;
+        pg.ingest_fact_atomic(&permit, &draft(Some(("src-wake", "k-wake"))), None)
+            .await?;
 
         let mut tx = pool.begin().await?;
         let armed = insert_wake_config(&mut tx, &owner, &wake_draft("armed prompt")).await?;
@@ -663,8 +668,9 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let written =
-            ingest_fact_atomic(pool, &permit, &draft(Some(("src", "k-cold"))), None).await?;
+        let written = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src", "k-cold"))), None)
+            .await?;
         let t = written.memory_id.into_inner();
         MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
         let key: String =
@@ -718,7 +724,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
@@ -826,8 +832,9 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let written =
-            ingest_fact_atomic(pool, &permit, &draft(Some(("src", "k-abort"))), None).await?;
+        let written = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src", "k-abort"))), None)
+            .await?;
         let t = written.memory_id.into_inner();
         MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
         let key: String =
@@ -838,7 +845,8 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
 
         let outsider = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let outsider_permit = OwnerWritePermit::new_for_tests(outsider, AccessKind::Fact);
-        ingest_fact_atomic(pool, &outsider_permit, &draft(None), None).await?;
+        pg.ingest_fact_atomic(&outsider_permit, &draft(None), None)
+            .await?;
         let mut tx = pool.begin().await?;
         let wake = insert_wake_config(&mut tx, &owner, &wake_draft("held prompt")).await?;
         write_armed_goal(&mut tx, &outsider, "outsider goal", "held", wake).await?;
@@ -896,7 +904,7 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
         create_citation_sidecar_tables(pool).await?;
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
-        let blob = cite_blob(pool, owner, Some(("src", "k-blob")), 3).await?;
+        let blob = cite_blob(&pg, owner, Some(("src", "k-blob")), 3).await?;
         // A pending upload names no blob: owner data attributable to no source.
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
@@ -909,7 +917,7 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
         .await?;
 
         let neighbour = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let neighbour_blob = cite_blob(pool, neighbour, Some(("src", "k-other")), 5).await?;
+        let neighbour_blob = cite_blob(&pg, neighbour, Some(("src", "k-other")), 5).await?;
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
@@ -968,14 +976,16 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
         create_citation_sidecar_tables(pool).await?;
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
-        let kept = cite_blob(pool, owner, Some(("src-keep", "k-keep")), 7).await?;
-        let shared = cite_blob(pool, owner, Some(("src-drop", "k-shared-drop")), 8).await?;
-        let dropped = cite_blob(pool, owner, Some(("src-drop", "k-drop")), 9).await?;
+        let kept = cite_blob(&pg, owner, Some(("src-keep", "k-keep")), 7).await?;
+        let shared = cite_blob(&pg, owner, Some(("src-drop", "k-shared-drop")), 8).await?;
+        let dropped = cite_blob(&pg, owner, Some(("src-drop", "k-drop")), 9).await?;
         let (unrelated, unrelated_key) = completed_blob_upload(pool, owner, 10).await?;
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let mut shared_survivor = draft(Some(("src-keep", "k-shared-keep")));
         shared_survivor.blob_id = Some(shared);
-        let shared_survivor = ingest_fact_atomic(pool, &permit, &shared_survivor, None).await?;
+        let shared_survivor = pg
+            .ingest_fact_atomic(&permit, &shared_survivor, None)
+            .await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, shared_survivor.memory_id).await?;
         let shared_cold_key: String =
             sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
@@ -1088,7 +1098,9 @@ async fn erase_group_owner_refuses_while_membership_rows_exist() {
 
         let owner = OwnerRef::Group(group);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let written = ingest_fact_atomic(pool, &permit, &draft(Some(("src", "g1"))), None).await?;
+        let written = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src", "g1"))), None)
+            .await?;
         let t = written.memory_id.into_inner();
 
         let auth =
@@ -1129,8 +1141,9 @@ async fn erase_group_owner_completes_when_abandoned() {
         let group = GroupId::new(Uuid::now_v7());
         let owner = OwnerRef::Group(group);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let written =
-            ingest_fact_atomic(pool, &permit, &draft(Some(("src", "g-empty"))), None).await?;
+        let written = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src", "g-empty"))), None)
+            .await?;
         let t = written.memory_id.into_inner();
         let mut gtx = pool.begin().await?;
         let goal = write_goal(
@@ -1206,11 +1219,12 @@ async fn erase_source_scope_rewinds_head_to_remaining_t() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let first =
-            ingest_fact_atomic(pool, &permit, &draft(Some(("src-old", "k-old"))), None).await?;
+        let first = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src-old", "k-old"))), None)
+            .await?;
         let mut later = draft(Some(("src-new", "k-new")));
         later.handle = Some(first.handle);
-        let second = ingest_fact_atomic(pool, &permit, &later, None).await?;
+        let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
         assert_eq!(second.handle, first.handle);
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
@@ -1269,10 +1283,12 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let target =
-            ingest_fact_atomic(pool, &permit, &draft(Some(("src-cool", "k-cool"))), None).await?;
-        let other =
-            ingest_fact_atomic(pool, &permit, &draft(Some(("src-keep", "k-keep"))), None).await?;
+        let target = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src-cool", "k-cool"))), None)
+            .await?;
+        let other = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src-keep", "k-keep"))), None)
+            .await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, target.memory_id).await?;
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
@@ -1353,7 +1369,8 @@ async fn erasing_a_member_leaves_the_memberships_that_name_it() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         // A memory, so the erase has something of its own to do and the
         // survival below is not the survival of an empty operation.
-        ingest_fact_atomic(pool, &permit, &draft(Some(("src", "k1"))), None).await?;
+        pg.ingest_fact_atomic(&permit, &draft(Some(("src", "k1"))), None)
+            .await?;
 
         let group_id = Uuid::now_v7();
         sqlx::query(

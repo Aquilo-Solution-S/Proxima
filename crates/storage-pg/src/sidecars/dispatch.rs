@@ -1,14 +1,15 @@
 use super::{
     GoalId, MemoryId, PayloadKind, PgCitationMappingSidecar, PgCitedObjectSidecar, PgConnection,
     PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture,
-    PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, Postgres, SidecarPayload, StorageError,
-    Transaction,
+    PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, Postgres, SidecarInsertPermit,
+    SidecarPayload, StorageError, Transaction,
 };
 
 pub(super) fn insert_memory_sidecar<'t, P>(
     tx: &'t mut Transaction<'_, Postgres>,
     memory_id: MemoryId,
     payload: &'t SidecarPayload,
+    permit: SidecarInsertPermit,
 ) -> PgSidecarFuture<'t>
 where
     P: PgMemorySidecar,
@@ -22,7 +23,7 @@ where
                 payload.kind,
             ))
         })?;
-        typed.insert_memory_sidecar(tx, memory_id).await
+        typed.insert_memory_sidecar(tx, memory_id, permit).await
     })
 }
 

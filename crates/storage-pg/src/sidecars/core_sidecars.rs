@@ -1,8 +1,8 @@
 use super::{
     GoalId, MemoryId, PgCitationMappingSidecar, PgCitedObjectSidecar, PgConnection, PgGoalSidecar,
     PgMemoryPayload, PgMemoryPayloadBatchFuture, PgMemorySidecar, PgSidecarFuture,
-    PgSidecarReadCtx, PgSidecarRegistry, PgSidecarRegistryFrozen, Postgres, SidecarPayload,
-    StorageError, Transaction,
+    PgSidecarReadCtx, PgSidecarRegistry, PgSidecarRegistryFrozen, Postgres, SidecarInsertPermit,
+    SidecarPayload, StorageError, Transaction,
 };
 use proxima_core::verbs::schema::PayloadKind;
 
@@ -170,6 +170,7 @@ impl PgMemorySidecar for proxima_core::InterpretationV1 {
         &'t self,
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
+        _permit: SidecarInsertPermit,
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(

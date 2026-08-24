@@ -517,22 +517,18 @@ pub(crate) fn sidecar_text_sql(
 /// on the one column its `Surface` declares. Same rule as the write side:
 /// no `t` fallback, because the fallback is the defect.
 ///
+/// There is no "absent column" arm: freeze refuses a projected schema whose
+/// sidecar is not `KeyShape::MemoryT`-keyed, so the field is a `String` and
+/// the only thing left to check here is that it is a legal identifier.
+///
 /// # Errors
 ///
-/// `StorageError::Internal` when the schema's sidecar surface declared no
-/// memory key, or named one that is not a valid identifier.
+/// `StorageError::Internal` when the declared memory key column is not a
+/// valid identifier.
 pub(crate) fn projection_key_ident(
     projection: &MemorySearchProjection,
 ) -> Result<PgIdent<'_>, StorageError> {
-    let column = projection.sidecar_key_column.as_deref().ok_or_else(|| {
-        StorageError::Internal(format!(
-            "search projection {} declares no memory-key column for sidecar {}; \
-             the schema's Surface has to key it as KeyShape::MemoryT {{ column }}",
-            projection.schema_id.as_str(),
-            projection.sidecar_table
-        ))
-    })?;
-    PgIdent::column(column)
+    PgIdent::column(&projection.sidecar_key_column)
 }
 
 /// The boot half of the pin: what the generator says, and what the catalog

@@ -1678,6 +1678,15 @@ d_blobs AS (
 -- or not the primary query reads its output.
 SELECT object_key FROM enqueued";
 
+// The forget/erase/hydrate suite. Crate-internal because it works at this
+// layer deliberately: it stamps `sidecar_tables` lists by hand — including a
+// registered table that does not exist in Postgres — to prove forget reads
+// the stamp rather than the registry. The governed port would refuse those
+// drafts, which is exactly why the test cannot be written above it.
+#[cfg(test)]
+#[path = "forget_pg_tests.rs"]
+mod forget_pg_tests;
+
 #[cfg(test)]
 mod tests {
     use super::{ForgetLeg, OwnerSurfaces, StorageError, forget_leg_sql, write_bytes};

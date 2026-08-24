@@ -1,6 +1,10 @@
 //! Derived replay compares origins and refs; a ref mismatch is Conflict.
-#![allow(clippy::doc_markdown, clippy::too_many_lines)]
+//!
+//! Crate-internal for the same reason as the origin-proof tests beside it.
 
+use super::{DerivedDraft, DerivedOutcome};
+use crate::PgStorage;
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
@@ -8,9 +12,6 @@ use proxima_core::{
     SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_with_edges_in_tx};
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use uuid::Uuid;
 
 fn fact_draft() -> FactWriteCommand {
@@ -41,34 +42,45 @@ fn derived_draft(owner: OwnerRef, handle: Uuid) -> DerivedDraft<'static> {
         schema_version: SchemaVersion::new(1),
         text: "derived".into(),
         operator_kind: MemoryOperatorKind::FtoA,
-        model_id: "p6",
         supersedes: None,
         lexical_language: None,
         embedding: DerivedEmbedding::None,
     }
 }
 
-async fn append(
+/// The four steps a derived write is: the origin proof, the reference-kind
+/// proof, the append, and the declared-index assertion.
+///
+/// [`crate::ports::memory`] and [`crate::ports::write_session`] run exactly
+/// these (with a sketch write between the last two). These tests are about
+/// the four proofs, none of which reads the sidecar payload, so they compose
+/// them directly rather than through a payload registration that would only
+/// stand between the assertion and what it asserts.
+async fn append_with_edges(
     pool: &sqlx::PgPool,
     permit: &OwnerWritePermit,
     draft: &DerivedDraft<'_>,
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
-) -> Result<proxima_storage_pg::verbs::derive_append::DerivedOutcome, StorageError> {
+) -> Result<DerivedOutcome, StorageError> {
     let mut tx = pool
         .begin()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    let outcome = append_derived_with_edges_in_tx(
+    super::validate_derived_origins_in_tx(&mut tx, draft, origins).await?;
+    super::validate_derived_reference_kinds_in_tx(&mut tx, references).await?;
+    let outcome = super::append_derived_in_tx(
         &mut tx,
         permit,
         draft,
         origins,
         references,
         &[],
+        None,
         |_, _| Box::pin(async { Ok(()) }),
     )
     .await?;
+    super::assert_derived_index_rows(&mut tx, draft, &outcome, origins, references).await?;
     tx.commit()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
@@ -94,15 +106,15 @@ async fn same_origins_and_refs_replay() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
         let pool = pg.pool_for_tests();
-        let origin = ingest_fact_atomic(pool, &permit, &fact_draft(), None).await?;
-        let callee = ingest_fact_atomic(pool, &permit, &fact_draft(), None).await?;
+        let origin = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let callee = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
         let handle = Uuid::now_v7();
         let draft = derived_draft(owner, handle);
         let origins = [EdgeEndpoint::memory(EntityKind::Fact, origin.memory_id)];
         let references = [EdgeEndpoint::memory(EntityKind::Fact, callee.memory_id)];
-        let first = append(pool, &permit, &draft, &origins, &references).await?;
+        let first = append_with_edges(pool, &permit, &draft, &origins, &references).await?;
         assert!(!first.idempotent_replay);
-        let replay = append(pool, &permit, &draft, &origins, &references).await?;
+        let replay = append_with_edges(pool, &permit, &draft, &origins, &references).await?;
         assert!(replay.idempotent_replay);
         assert_eq!(replay.memory_id, first.memory_id);
         Ok(())
@@ -119,13 +131,13 @@ async fn same_origins_different_refs_is_conflict() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
         let pool = pg.pool_for_tests();
-        let origin = ingest_fact_atomic(pool, &permit, &fact_draft(), None).await?;
-        let callee_a = ingest_fact_atomic(pool, &permit, &fact_draft(), None).await?;
-        let callee_b = ingest_fact_atomic(pool, &permit, &fact_draft(), None).await?;
+        let origin = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let callee_a = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let callee_b = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
         let handle = Uuid::now_v7();
         let draft = derived_draft(owner, handle);
         let origins = [EdgeEndpoint::memory(EntityKind::Fact, origin.memory_id)];
-        let first = append(
+        let first = append_with_edges(
             pool,
             &permit,
             &draft,
@@ -134,7 +146,7 @@ async fn same_origins_different_refs_is_conflict() {
         )
         .await?;
         assert!(!first.idempotent_replay);
-        let err = append(
+        let err = append_with_edges(
             pool,
             &permit,
             &draft,
@@ -163,11 +175,11 @@ async fn different_origins_append_new_t() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
         let pool = pg.pool_for_tests();
-        let origin_a = ingest_fact_atomic(pool, &permit, &fact_draft(), None).await?;
-        let origin_b = ingest_fact_atomic(pool, &permit, &fact_draft(), None).await?;
+        let origin_a = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let origin_b = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
         let handle = Uuid::now_v7();
         let draft = derived_draft(owner, handle);
-        let first = append(
+        let first = append_with_edges(
             pool,
             &permit,
             &draft,
@@ -175,7 +187,7 @@ async fn different_origins_append_new_t() {
             &[],
         )
         .await?;
-        let second = append(
+        let second = append_with_edges(
             pool,
             &permit,
             &draft,

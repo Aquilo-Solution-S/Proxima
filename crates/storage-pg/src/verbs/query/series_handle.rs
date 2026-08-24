@@ -11,6 +11,27 @@ use uuid::Uuid;
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 
+/// Which column of the head row the lookup projects.
+///
+/// One statement, two readers: the ingest path wants the series `handle` to
+/// append a later `t` onto, a precondition check wants the head `t` itself
+/// so it can read that row's sidecar. Both come off the same `memory_head`
+/// row, so they are one query with one join, not two spellings of it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum HeadProjection {
+    Handle,
+    MemoryId,
+}
+
+impl HeadProjection {
+    const fn column(self) -> &'static str {
+        match self {
+            Self::Handle => "SELECT h.handle FROM ",
+            Self::MemoryId => "SELECT h.t FROM ",
+        }
+    }
+}
+
 /// Current owned series handle for `schema_id` whose sidecar matches `columns`.
 ///
 /// # Errors
@@ -23,6 +44,57 @@ pub async fn owned_head_handle<'e, E>(
     schema_id: &SchemaId,
     sidecar_table: &str,
     columns: &[(&str, SidecarAtom)],
+) -> Result<Option<Uuid>, StorageError>
+where
+    E: PgExecutor<'e>,
+{
+    owned_head_column(
+        executor,
+        owner,
+        schema_id,
+        sidecar_table,
+        columns,
+        HeadProjection::Handle,
+    )
+    .await
+}
+
+/// Current owned series head `t` for `schema_id` whose sidecar matches
+/// `columns` — the [`HeadProjection::MemoryId`] reading of
+/// [`owned_head_handle`].
+///
+/// # Errors
+///
+/// `ConstraintViolation` when a column identifier is invalid.
+/// `Internal` on query failure.
+pub(crate) async fn owned_head_memory_id<'e, E>(
+    executor: E,
+    owner: Owner,
+    schema_id: &SchemaId,
+    sidecar_table: &str,
+    columns: &[(&str, SidecarAtom)],
+) -> Result<Option<Uuid>, StorageError>
+where
+    E: PgExecutor<'e>,
+{
+    owned_head_column(
+        executor,
+        owner,
+        schema_id,
+        sidecar_table,
+        columns,
+        HeadProjection::MemoryId,
+    )
+    .await
+}
+
+async fn owned_head_column<'e, E>(
+    executor: E,
+    owner: Owner,
+    schema_id: &SchemaId,
+    sidecar_table: &str,
+    columns: &[(&str, SidecarAtom)],
+    projection: HeadProjection,
 ) -> Result<Option<Uuid>, StorageError>
 where
     E: PgExecutor<'e>,
@@ -40,7 +112,9 @@ where
 
     // SQL-POLICY: PgIdent
     // SQL-POLICY: QueryBuilder-bound-values
-    let mut builder = QueryBuilder::<Postgres>::new("SELECT h.handle FROM ");
+    // SQL-POLICY: fixed-fragment — `HeadProjection::column` is a closed set
+    // of two literals.
+    let mut builder = QueryBuilder::<Postgres>::new(projection.column());
     builder.push(table.as_str());
     // SQL-POLICY: fixed-fragment
     builder.push(
@@ -70,8 +144,13 @@ where
         .map_err(map_err)
 }
 
+/// Bind one [`SidecarAtom`] into a builder.
+///
+/// The single binder for the atom vocabulary: every generated statement
+/// that takes a flavor-named column value goes through it, so "which Rust
+/// type does a `Text` atom bind as" has one answer.
 // SQL-POLICY: QueryBuilder-bound-values
-fn push_atom(builder: &mut QueryBuilder<Postgres>, value: &SidecarAtom) {
+pub(crate) fn push_atom(builder: &mut QueryBuilder<Postgres>, value: &SidecarAtom) {
     match value {
         SidecarAtom::Uuid(id) => {
             builder.push_bind(*id);
@@ -88,69 +167,5 @@ fn push_atom(builder: &mut QueryBuilder<Postgres>, value: &SidecarAtom) {
         SidecarAtom::Bool(flag) => {
             builder.push_bind(*flag);
         }
-    }
-}
-
-/// Map a typed sidecar payload onto declared NK / series-key columns.
-///
-/// # Errors
-///
-/// `ConstraintViolation` when the payload is not a JSON object, a declared
-/// column is missing, or the JSON value is not a sidecar atom.
-pub fn sidecar_atoms_from_payload<P: serde::Serialize>(
-    payload: &P,
-    columns: &[&str],
-) -> Result<Vec<(String, SidecarAtom)>, StorageError> {
-    SidecarAtom::bind_columns(payload, columns).map_err(StorageError::ConstraintViolation)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::sidecar_atoms_from_payload;
-    use proxima_core::verbs::query::SidecarAtom;
-    use serde::Serialize;
-    use uuid::Uuid;
-
-    #[derive(Serialize)]
-    struct Sample {
-        repo_id: Uuid,
-        file_path: String,
-        chunk_index: u32,
-    }
-
-    #[test]
-    fn payload_columns_become_atoms() {
-        let repo = Uuid::nil();
-        let payload = Sample {
-            repo_id: repo,
-            file_path: "src/lib.rs".into(),
-            chunk_index: 3,
-        };
-        let atoms = sidecar_atoms_from_payload(&payload, &["repo_id", "file_path", "chunk_index"])
-            .expect("atoms");
-        assert_eq!(atoms[0].1, SidecarAtom::Uuid(repo));
-        assert_eq!(atoms[1].1, SidecarAtom::Text("src/lib.rs".into()));
-        assert_eq!(atoms[2].1, SidecarAtom::I32(3));
-    }
-
-    #[test]
-    fn missing_column_is_constraint() {
-        let payload = Sample {
-            repo_id: Uuid::nil(),
-            file_path: "a.rs".into(),
-            chunk_index: 0,
-        };
-        let err = sidecar_atoms_from_payload(&payload, &["missing"]).unwrap_err();
-        assert!(err.to_string().contains("missing"));
-    }
-
-    #[test]
-    fn uuid_string_is_uuid_atom() {
-        let id = Uuid::nil();
-        let value = serde_json::Value::String(id.to_string());
-        assert_eq!(
-            SidecarAtom::from_json("repo_id", &value).unwrap(),
-            SidecarAtom::Uuid(id)
-        );
     }
 }

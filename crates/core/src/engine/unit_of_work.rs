@@ -6,7 +6,7 @@ use crate::authz::AuthzContext;
 use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
 use crate::storage::{AuthorDerivedRequest, DerivedEmbedding};
-use crate::storage_ports::WriteSession;
+use crate::storage_ports::{SidecarSessionRead, WriteSession};
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 use crate::verbs::goal_write::{CreateGoalAtomicRequest, GoalDraft, GoalWriteOutcome};
 use crate::verbs::query::SidecarAtom;
@@ -269,6 +269,74 @@ impl UnitOfWork<'_> {
         self.ensure_session()
             .await?
             .advisory_xact_lock(key)
+            .await
+            .map_err(|err| ProtocolError::internal(err.to_string()))
+    }
+
+    /// Read `owner`'s own sidecar rows inside THIS transaction.
+    ///
+    /// The read-model precondition affordance: `advisory_xact_lock` →
+    /// read → check → append, all on one snapshot. Opens the transaction
+    /// if the unit has not written yet, because a read that is not in the
+    /// transaction is exactly the thing this exists to stop being.
+    ///
+    /// `owner` goes through the same write gate as the append that follows
+    /// it, and the resolved permit — not `read` — is what scopes the rows.
+    /// A predicate can narrow the answer; nothing a caller passes widens it
+    /// past the authorized owner. Read-only by construction — see
+    /// [`SidecarSessionRead`] for both invariants.
+    ///
+    /// # Errors
+    ///
+    /// Authorization or storage faults, or a refusal when the table is not
+    /// a registered memory sidecar or declares no owner column.
+    pub async fn read_own_sidecar(
+        &mut self,
+        owner: Owner,
+        read: &SidecarSessionRead<'_>,
+    ) -> Result<Vec<serde_json::Value>, ProtocolError> {
+        let write_permit = self
+            .engine
+            .authorize_write(self.authz, &owner, Relation::Editor)
+            .await?;
+        self.ensure_session()
+            .await?
+            .read_own_sidecar(write_permit.owner_write_permit(), read)
+            .await
+            .map_err(|err| ProtocolError::internal(err.to_string()))
+    }
+
+    /// Current owned series head for a sidecar key, read inside THIS
+    /// transaction.
+    ///
+    /// [`Engine::owned_series_handle`] answers the same question against the
+    /// pool, which is the right thing before a unit of work is open and the
+    /// wrong thing once one is: a lock the session holds does not cover a
+    /// read that does not run in it.
+    ///
+    /// # Errors
+    ///
+    /// Authorization or storage faults, or a refusal when the table is not
+    /// a registered memory sidecar.
+    pub async fn owned_series_head_memory_id(
+        &mut self,
+        owner: Owner,
+        schema_id: &SchemaId,
+        sidecar_table: &str,
+        columns: &[(&str, SidecarAtom)],
+    ) -> Result<Option<MemoryId>, ProtocolError> {
+        let write_permit = self
+            .engine
+            .authorize_write(self.authz, &owner, Relation::Editor)
+            .await?;
+        self.ensure_session()
+            .await?
+            .owned_series_head_memory_id(
+                write_permit.owner_write_permit(),
+                schema_id,
+                sidecar_table,
+                columns,
+            )
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))
     }

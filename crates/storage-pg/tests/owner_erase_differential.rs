@@ -61,12 +61,12 @@
 
 use std::collections::BTreeMap;
 
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{AccessKind, OwnerRef, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -119,7 +119,8 @@ async fn owner_row(pool: &PgPool, owner: OwnerRef) -> Result<(), sqlx::Error> {
 /// Seed the twelve genuinely owner-scope legs for a target owner, plus a
 /// neighbour owner whose rows every erase must leave alone, plus one shared
 /// object key both owners' upload rows name (the cross-owner mount).
-pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
+pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> {
+    let pool = pg.pool_for_tests();
     let target = UserId::new(Uuid::now_v7());
     let neighbour = UserId::new(Uuid::now_v7());
     let owner = OwnerRef::Personal(target);
@@ -206,50 +207,34 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     }
     // A two-version series on source `src-a`, a single admission on `src-b`,
     // and one neighbour admission on `src-a`.
-    let first = ingest_fact_atomic(
-        pool,
-        &permit,
-        &draft(Some(("src-a", "k1")), None, None),
-        None,
-    )
-    .await?;
+    let first = pg
+        .ingest_fact_atomic(&permit, &draft(Some(("src-a", "k1")), None, None), None)
+        .await?;
     let handle = first.handle;
-    let second = ingest_fact_atomic(
-        pool,
-        &permit,
-        &draft(Some(("src-a", "k2")), Some(handle), Some(blob)),
-        None,
-    )
-    .await?;
-    let third = ingest_fact_atomic(
-        pool,
-        &permit,
-        &draft(Some(("src-b", "k3")), None, None),
-        None,
-    )
-    .await?;
-    let neighbour_memory = ingest_fact_atomic(
-        pool,
-        &other_permit,
-        &draft(Some(("src-a", "n1")), None, None),
-        None,
-    )
-    .await?;
+    let second = pg
+        .ingest_fact_atomic(
+            &permit,
+            &draft(Some(("src-a", "k2")), Some(handle), Some(blob)),
+            None,
+        )
+        .await?;
+    let third = pg
+        .ingest_fact_atomic(&permit, &draft(Some(("src-b", "k3")), None, None), None)
+        .await?;
+    let neighbour_memory = pg
+        .ingest_fact_atomic(
+            &other_permit,
+            &draft(Some(("src-a", "n1")), None, None),
+            None,
+        )
+        .await?;
 
-    let fourth = ingest_fact_atomic(
-        pool,
-        &permit,
-        &draft(Some(("src-a", "k4")), None, None),
-        None,
-    )
-    .await?;
-    let fifth = ingest_fact_atomic(
-        pool,
-        &permit,
-        &draft(Some(("src-b", "k5")), None, None),
-        None,
-    )
-    .await?;
+    let fourth = pg
+        .ingest_fact_atomic(&permit, &draft(Some(("src-a", "k4")), None, None), None)
+        .await?;
+    let fifth = pg
+        .ingest_fact_atomic(&permit, &draft(Some(("src-b", "k5")), None, None), None)
+        .await?;
 
     let t4 = fourth.memory_id.into_inner();
     let t5 = fifth.memory_id.into_inner();
@@ -707,7 +692,7 @@ async fn scenario(source_scope: Option<&str>, out_key: &str) {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = boot(&url).await?;
         let pool = pg.pool_for_tests();
-        let corpus = seed(pool).await?;
+        let corpus = seed(&pg).await?;
         let mut text = export_dump(&pg, corpus.target).await?;
         match source_scope {
             None => {

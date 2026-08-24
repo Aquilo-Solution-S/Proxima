@@ -1,12 +1,12 @@
 //! WakeConfig share / RESTRICT / match / fire.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{AccessKind, OwnerRef, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::wake_timeseries::{
     WakeConfigDraft, WakeTriggerKind, fire_wake, insert_wake_config, matching_wake_ids,
     update_wake_prompt, write_armed_goal,
@@ -92,8 +92,12 @@ async fn goal_wake_share_restrict_match_fire() {
                 .await?;
         assert_eq!(prompt, "updated");
 
-        let visit = ingest_fact_atomic(pool, &permit, &fact_draft("core/visit-v1"), None).await?;
-        let other = ingest_fact_atomic(pool, &permit, &fact_draft("core/other-v1"), None).await?;
+        let visit = pg
+            .ingest_fact_atomic(&permit, &fact_draft("core/visit-v1"), None)
+            .await?;
+        let other = pg
+            .ingest_fact_atomic(&permit, &fact_draft("core/other-v1"), None)
+            .await?;
         let matched = matching_wake_ids(pool, visit.memory_id.into_inner()).await?;
         assert_eq!(matched, vec![wake_id]);
         let unmatched = matching_wake_ids(pool, other.memory_id.into_inner()).await?;

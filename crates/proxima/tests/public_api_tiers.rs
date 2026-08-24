@@ -1030,3 +1030,121 @@ fn auth_module_names_oidc_primitives() {
     ) -> Result<proxima::CoreMcpTools, proxima::flavor::FlavorServiceError> =
         proxima::BuiltProxima::core_mcp_tools_with_request_services;
 }
+
+/// One write path: `Engine` / `UnitOfWork`.
+///
+/// The storage backend's fact-ingest and derive verbs are the body of its
+/// port impls, not an API. If a `pub fn` reappears in either file, some
+/// caller can once more begin its own transaction and append a Fact or a
+/// derived row past the engine — and past the projection row, the sketch,
+/// and the embedding enqueue that the one path maintains with it.
+///
+/// Scanned rather than expressed in types: a type-level pin cannot name a
+/// function that must not exist, so the check has to read the source. `pub
+/// trait` / `pub type` / `pub struct` are unaffected — flavors still
+/// implement the sidecar traits; they just cannot invoke them (see
+/// `SidecarInsertPermit`).
+#[test]
+fn storage_write_verbs_expose_no_public_function() {
+    for (module, source) in [
+        (
+            "verbs::fact_ingest",
+            include_str!("../../storage-pg/src/verbs/fact_ingest.rs"),
+        ),
+        (
+            "verbs::derive_append",
+            include_str!("../../storage-pg/src/verbs/derive_append.rs"),
+        ),
+    ] {
+        for (index, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            assert!(
+                !(trimmed.starts_with("pub fn ") || trimmed.starts_with("pub async fn ")),
+                "{module}:{} exposes a public write function; the write tier is \
+                 `Engine`/`UnitOfWork` only, so this belongs behind `pub(crate)`: {trimmed}",
+                index + 1
+            );
+        }
+    }
+}
+
+/// No storage-backend surface hands out a public write onto a transaction.
+///
+/// Two files, one rule, because they are the same door in two places.
+///
+/// The frozen registry's `insert_*` methods are the CORRECT door — they write
+/// the projection row with the sidecar row — and that is exactly why a public
+/// one is still a second write path: correct today is not the same as
+/// maintained-by-construction tomorrow. `memory_timeseries` is the row under
+/// all of them: a public `ingest_fact_timeseries` lands an admission with no
+/// sidecar, no projection row, no sketch and no embedding enqueue, which is
+/// every invariant its callers add. Its two transaction-scoped reads go with
+/// it — they read the table directly, and the authorized read surface is the
+/// query ports.
+///
+/// Only `rebuild_projection_for_table` stays public, because rebuild
+/// re-derives a projection row FROM a sidecar row and so can only restore the
+/// invariant, never break it.
+///
+/// The rule is "public fn taking a transaction, connection, or pool", not
+/// "public fn": the registry's read and lookup methods
+/// (`tables_for_payloads`, `memory_sidecar_tables`,
+/// `load_memory_payloads_batch`, …) are how the engine and the inverse lanes
+/// ask it questions.
+#[test]
+fn storage_backend_exposes_no_public_transaction_taking_fn() {
+    const CONNECTION_TYPES: [&str; 3] = ["Transaction", "PgConnection", "PgPool"];
+    let surfaces: [(&str, &str, &[&str]); 2] = [
+        (
+            "sidecars/frozen.rs",
+            include_str!("../../storage-pg/src/sidecars/frozen.rs"),
+            &["rebuild_projection_for_table"],
+        ),
+        (
+            "verbs/memory_timeseries.rs",
+            include_str!("../../storage-pg/src/verbs/memory_timeseries.rs"),
+            &[],
+        ),
+    ];
+
+    for (module, source, exempt) in surfaces {
+        let mut lines = source.lines().enumerate();
+        while let Some((index, line)) = lines.next() {
+            let trimmed = line.trim_start();
+            let Some(rest) = trimmed
+                .strip_prefix("pub async fn ")
+                .or_else(|| trimmed.strip_prefix("pub fn "))
+            else {
+                continue;
+            };
+            let name = rest
+                .split(['(', '<'])
+                .next()
+                .unwrap_or(rest)
+                .trim()
+                .to_owned();
+            // A signature runs to the line closing its parameter list; a
+            // one-line signature closes on its own line.
+            let mut signature = line.to_owned();
+            if !line.contains(')') {
+                for (_, more) in lines.by_ref() {
+                    signature.push_str(more);
+                    if more.trim_start().starts_with(')') {
+                        break;
+                    }
+                }
+            }
+            let takes_connection = CONNECTION_TYPES
+                .iter()
+                .any(|needle| signature.contains(needle));
+            assert!(
+                !takes_connection || exempt.contains(&name.as_str()),
+                "{module}:{} exposes `{name}` publicly with a transaction, connection, or \
+                 pool: a storage write or direct-table read reachable outside this crate is a \
+                 second path past the engine. Make it `pub(crate)`; the only exemption is \
+                 `rebuild_projection_for_table`, and only because rebuild is the maintenance.",
+                index + 1
+            );
+        }
+    }
+}

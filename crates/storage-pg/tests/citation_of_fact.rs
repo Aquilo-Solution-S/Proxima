@@ -1,12 +1,12 @@
 //! citation_of_fact is memory ⋈ blob; no fabricated mapping columns.
 #![allow(clippy::doc_markdown)]
 
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{CitationPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{AccessKind, OwnerRef, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use uuid::Uuid;
 
 fn draft() -> FactWriteCommand {
@@ -41,7 +41,7 @@ async fn citation_of_fact_is_blob_id_and_schema_only() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let _seed = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        let _seed = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
 
         let hash = vec![9u8; 32];
         let blob_id: Uuid = sqlx::query_scalar(
@@ -55,7 +55,7 @@ async fn citation_of_fact_is_blob_id_and_schema_only() {
         .await?;
         let mut cited = draft();
         cited.blob_id = Some(blob_id);
-        let written = ingest_fact_atomic(pool, &permit, &cited, None).await?;
+        let written = pg.ingest_fact_atomic(&permit, &cited, None).await?;
 
         let readback = pg
             .citation_of_fact(&[owner], written.memory_id)

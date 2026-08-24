@@ -2,6 +2,7 @@
 //! pre-tx walk.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
+use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{GoalWritePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::{
@@ -14,7 +15,6 @@ use proxima_core::{
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use uuid::Uuid;
 
 fn draft(kind: &str) -> FactWriteCommand {
@@ -48,15 +48,14 @@ async fn perspective_evidence_is_rejected_in_tx() {
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
-        let pool = pg.pool_for_tests();
-        let fact = ingest_fact_atomic(pool, &permit, &draft("fact"), None).await?;
+        let fact = pg.ingest_fact_atomic(&permit, &draft("fact"), None).await?;
         let mut abs = draft("abstraction");
         abs.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
-        let abs = ingest_fact_atomic(pool, &permit, &abs, None).await?;
+        let abs = pg.ingest_fact_atomic(&permit, &abs, None).await?;
         let mut perspective = draft("perspective");
         perspective.derived_from =
             vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
-        let perspective = ingest_fact_atomic(pool, &permit, &perspective, None).await?;
+        let perspective = pg.ingest_fact_atomic(&permit, &perspective, None).await?;
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let topology = GoalTopologyWrite::new(
             GoalAssignmentTarget::perspective(perspective.memory_id),

@@ -4,7 +4,7 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{MemoryId, SidecarPayload, StorageError};
 use proxima_storage_pg::sidecars::{
     PgMemoryPayload, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture, PgMemorySidecar,
-    PgSidecarFuture, PgSidecarReadCtx,
+    PgSidecarFuture, PgSidecarReadCtx, SidecarInsertPermit,
 };
 use proxima_storage_pg::verbs::fact_ingest::{FactIngestSidecarFuture, PgFactSidecar};
 use sqlx::{Postgres, Transaction};
@@ -270,6 +270,7 @@ impl PgMemorySidecar for CodeChunkV1 {
         &'t self,
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
+        _permit: SidecarInsertPermit,
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
@@ -511,6 +512,7 @@ impl PgFactSidecar for AcceptanceCriteriaV1 {
         self,
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
+        _permit: SidecarInsertPermit,
     ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
@@ -578,6 +580,7 @@ impl PgFactSidecar for TestRequestV1 {
         self,
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
+        _permit: SidecarInsertPermit,
     ) -> FactIngestSidecarFuture<'t>
     where
         Self: 't,
@@ -654,6 +657,7 @@ impl PgMemorySidecar for CodeExecutionPlanV1 {
         &'t self,
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
+        _permit: SidecarInsertPermit,
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(

@@ -78,6 +78,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::PgStorage;
+use crate::core_pg_sidecars;
+use crate::verbs::memory_timeseries::ingest_fact_timeseries;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
@@ -85,9 +88,6 @@ use proxima_core::{
     SchemaVersion, SidecarPayload, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::core_pg_sidecars;
-use proxima_storage_pg::verbs::memory_timeseries::ingest_fact_timeseries;
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -109,6 +109,12 @@ pub struct Corpus {
     pub goal: Uuid,
     pub source: OwnerRef,
     pub destination: OwnerRef,
+    /// The third owner the corpus seeds. Nothing reads the handle: the dump
+    /// covers every owner in the database, so the bystander's rows are
+    /// asserted by the golden rather than by a caller of this field. Kept
+    /// because the corpus's third participant is part of what the gate says
+    /// it covers.
+    #[expect(dead_code, reason = "seeded participant, asserted through the dump")]
     pub bystander: OwnerRef,
 }
 
@@ -810,7 +816,7 @@ async fn transfer_differential() {
             std::fs::write(format!("{dir}/owner_transfer.txt"), &actual)?;
             return Ok(());
         }
-        let golden = include_str!("golden/owner_transfer.txt");
+        let golden = include_str!("../../tests/golden/owner_transfer.txt");
         assert_eq!(
             by_relation(&actual),
             by_relation(golden),

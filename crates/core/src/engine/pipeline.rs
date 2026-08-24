@@ -115,6 +115,18 @@ impl MemoryPermit {
         }
     }
 
+    /// Test-only owner-scoped write permit. The gates in this module remain
+    /// the production mint; see [`crate::verbs::fact_ingest::AuthorizedFactWrite::new_for_tests`].
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn owner_scoped_with_write_for_tests(
+        owner_write: OwnerWritePermit,
+        relation: Relation,
+    ) -> Self {
+        let requested = *owner_write.owner();
+        Self::owner_scoped_with_write(owner_write, requested, relation)
+    }
+
     #[must_use]
     pub fn mode(&self) -> &PermitMode {
         &self.mode

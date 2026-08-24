@@ -178,7 +178,7 @@ pub use proxima_core::{
 pub use proxima_storage_pg::pg_sidecar;
 pub use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgGoalSidecar, PgMemoryPayload,
-    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx,
+    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, SidecarInsertPermit,
 };
 pub use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, register_core_pg_sidecars,

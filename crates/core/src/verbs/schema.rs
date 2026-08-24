@@ -169,12 +169,13 @@ pub struct MemorySearchProjection {
     /// schema's own `Surface` (`KeyShape::MemoryT { column }`).
     ///
     /// Carried so the SQL builders join and filter the sidecar on the
-    /// DECLARED column instead of assuming `t`. `None` when the sidecar
-    /// surface is absent or keys its rows on something that is not a
-    /// memory; the builders refuse on `None` rather than defaulting,
-    /// because the default is what makes a renamed key column a silent
-    /// failure instead of a refusal.
-    pub sidecar_key_column: Option<String>,
+    /// DECLARED column instead of assuming `t`. Not optional: freeze
+    /// refuses a projected schema whose sidecar surface is absent or keyed
+    /// on anything but a memory `t`
+    /// (`FlavorRegistryError::ProjectedSidecarNotMemoryKeyed`), so by the
+    /// time a builder holds this value the column exists. The refusal is
+    /// what keeps a renamed key column from becoming a silent `t` default.
+    pub sidecar_key_column: String,
     /// The flavor's projection table, where the vector lives.
     pub projection_table: String,
     pub fields: Vec<MemorySearchProjectionField>,
@@ -360,9 +361,17 @@ pub struct FlavorRegistryFrozen {
 ///
 /// One vocabulary, read once, at freeze. A schema whose contract says
 /// `SearchProjectionDecl::None` contributes nothing, and says why.
+///
+/// # Errors
+///
+/// `ProjectedSidecarNotMemoryKeyed` when a projected schema's sidecar
+/// declares no memory key column. `validate_contracts` refuses that first;
+/// the arm here is what lets [`MemorySearchProjection::sidecar_key_column`]
+/// be a `String` — the same refusal, raised at the one place the column is
+/// read, rather than a default no reader could tell from a declaration.
 fn contract_search_projections(
     contracts: &[&'static FlavorContract],
-) -> Vec<MemorySearchProjection> {
+) -> Result<Vec<MemorySearchProjection>, crate::flavor::FlavorRegistryError> {
     let mut out = Vec::new();
     for contract in contracts {
         let Some(spec) = contract.projection.spec() else {
@@ -389,7 +398,14 @@ fn contract_search_projections(
                 sidecar_table: sidecar_table.to_owned(),
                 sidecar_key_column: contract
                     .sidecar_memory_key_column(sidecar_table)
-                    .map(str::to_owned),
+                    .ok_or(
+                        crate::flavor::FlavorRegistryError::ProjectedSidecarNotMemoryKeyed {
+                            flavor_id: contract.flavor_id,
+                            schema_id: schema.schema_id(),
+                            table: sidecar_table,
+                        },
+                    )?
+                    .to_owned(),
                 projection_table: spec.table.to_owned(),
                 fields: fields
                     .iter()
@@ -410,7 +426,7 @@ fn contract_search_projections(
             });
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every stored embed-text column the linked contracts declare.
@@ -448,7 +464,14 @@ impl FlavorRegistryFrozen {
     /// two struct definitions plus the destructure below, which the
     /// compiler keeps exhaustive; the constructor signature never
     /// widens.
-    pub(crate) fn from_registry(registry: crate::FlavorRegistry) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Propagates the refusals raised by the vocabulary builders it calls
+    /// (see [`contract_search_projections`]).
+    pub(crate) fn from_registry(
+        registry: crate::FlavorRegistry,
+    ) -> Result<Self, crate::flavor::FlavorRegistryError> {
         let crate::FlavorRegistry {
             schemas,
             schema_capability_tags,
@@ -461,10 +484,10 @@ impl FlavorRegistryFrozen {
             authorization_hooks,
         } = registry;
         let schema_capability_tags = crate::flavor::schema_capability_map(&schema_capability_tags);
-        let search_projections = contract_search_projections(&contracts);
+        let search_projections = contract_search_projections(&contracts)?;
         let embed_units = contract_embed_units(&contracts);
         let index = FrozenIndex::build(&schemas, &protocol_ingress, &contracts, &embed_units);
-        Self {
+        Ok(Self {
             schemas,
             schema_capability_tags,
             search_projections,
@@ -477,7 +500,7 @@ impl FlavorRegistryFrozen {
             owner_resolver,
             authorization_hooks,
             index,
-        }
+        })
     }
 
     /// One flavor's contract, by id.

@@ -57,7 +57,7 @@ there is no id-less owner — so `OwnerRef::columns()` returns
 | host witness | `BuiltProxima::system_authority()` / `RunningProxima::system_authority()` expose a borrowed witness to embedding hosts |
 | wire/flavor boundary | MCP tools and flavor `ToolCtx` do not receive `SystemAuthority`; normal membership/HostBearer paths need no witness |
 | target-owner Fact ingest | supported host path: narrow a server-resolved context to one authorized owner with `AuthzContext::narrowed_to_owner(owner)`, then call `Engine::fact_ingest(&owner_authz, draft)`. The engine stamps the write owner from resolved access; `FactWriteCommand` carries no owner field. |
-| sidecar-less Fact ingest | supported host path is `Engine::fact_ingest`; backend-only `proxima-storage-pg` helpers such as `ingest_fact_for_owner_plain` are not stable Host API or Flavor SDK. |
+| sidecar-less Fact ingest | supported host path is `Engine::fact_ingest`. `proxima-storage-pg`'s write verbs are `pub(crate)` implementation detail of its port impls — there is no second entry point to reach past the engine with. |
 | guardrail | `scripts/check-architecture-guardrails.py` fails if listed storage write traits or `storage-pg` write verbs lose `OwnerWritePermit` |
 
 ## Delegated Worker Authority
