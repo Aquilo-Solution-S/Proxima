@@ -2,7 +2,15 @@ use proxima::flavor::{
     FactPayload, FlavorBundle, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
     FlavorRegistryError, FlavorRegistryFrozen, PayloadKeyBuilder,
 };
+// Contract vocabulary is not on the `proxima` facade (docs/14 tiers), so a
+// declaration is spelled against the substrate crate the way the in-tree
+// flavor does.
 use proxima::{AppInfo, FlavorApp, RuntimeBuilder};
+use proxima_core::flavor::{
+    EmbeddingRecipe, FlavorContract, ProjectionDecl, Provenance, SchemaContract, SchemaRef,
+    SearchProjectionDecl, TransferRule,
+};
+use proxima_core::verbs::schema::PayloadKind;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ConformanceFactV1 {
@@ -10,7 +18,10 @@ struct ConformanceFactV1 {
 }
 
 impl FactPayload for ConformanceFactV1 {
-    const SCHEMA_ID: &'static str = "proxima-conformance/fact-v1";
+    // `SchemaRef` renders `<flavor>/<name>-v<version>`, so the id and the
+    // version are one fact: a contract cannot name a schema whose id
+    // spells a different version than it declares.
+    const SCHEMA_ID: &'static str = "proxima-conformance/fact-v7";
     const SCHEMA_VERSION: u32 = 7;
 
     fn receipt_key(&self) -> Vec<u8> {
@@ -68,6 +79,38 @@ impl FlavorApp for HostedConformanceApp {
     }
 }
 
+/// The declaration for the flavor below: freeze refuses a flavor that is
+/// linked and declares nothing.
+static CONFORMANCE_CONTRACT: FlavorContract = FlavorContract {
+    flavor_id: "proxima-conformance",
+    // Non-zero: ordinal 0 is core's and cannot be claimed twice.
+    ordinal: 7,
+    schemas: &[SchemaContract {
+        id: SchemaRef::new("proxima-conformance", "fact", 7),
+        kind: PayloadKind::Fact,
+        sidecar_table: Some("proxima_conformance.fact_v1"),
+        search: SearchProjectionDecl::None {
+            why: "a conformance fixture, not a search surface",
+        },
+        embedding: EmbeddingRecipe::Never {
+            why: "a conformance fixture, not a memory",
+        },
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[],
+        natural_key_columns: &[],
+    }],
+    state_surfaces: &[],
+    kernel_surfaces: &[],
+    tools: &[],
+    resources: &[],
+    bespoke_erase_legs: &[],
+    bespoke_transfer_legs: &[],
+    projection: ProjectionDecl::None {
+        why: "a conformance fixture registers no search surface",
+    },
+};
+
 fn register_conformance_flavor(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
     registry.try_add_flavor(FlavorDescriptor {
         flavor_id: "proxima-conformance".to_string(),
@@ -76,7 +119,8 @@ fn register_conformance_flavor(registry: &mut FlavorRegistry) -> Result<(), Flav
         author: None,
         provenance: FlavorProvenance::Builtin,
     })?;
-    registry.try_add_fact_schema::<ConformanceFactV1>()
+    registry.try_add_fact_schema::<ConformanceFactV1>()?;
+    registry.try_add_contract(&CONFORMANCE_CONTRACT)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

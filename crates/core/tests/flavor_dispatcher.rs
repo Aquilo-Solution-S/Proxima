@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
+use proxima_core::flavor::{FlavorContract, ProjectionDecl, ToolContract};
 use proxima_core::mcp::{
     McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
     McpToolOrigin, Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall,
@@ -79,9 +80,37 @@ impl Tool for DispatchTool {
     }
 }
 
+/// The flavor's declaration. `contract =` is optional to the macro and
+/// refused at freeze when omitted, so the fixture carries one.
+///
+/// `actions` and `idempotent` are held to the REGISTRATION: the action list
+/// is the specs above, in order, and `idempotent` is false because a
+/// dispatcher resolves its annotations per action and this one mixes a read
+/// with a write.
+static DISPATCH_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
+    flavor_id: FLAVOR,
+    // Non-zero: ordinal 0 is core's, and two claims on it are refused.
+    ordinal: 7,
+    schemas: &[],
+    state_surfaces: &[],
+    kernel_surfaces: &[],
+    tools: &[ToolContract {
+        wire_name: DISPATCH,
+        actions: &["look", "touch"],
+        idempotent: false,
+    }],
+    resources: &[],
+    bespoke_erase_legs: &[],
+    bespoke_transfer_legs: &[],
+    projection: ProjectionDecl::None {
+        why: "a dispatcher fixture registers no search surface",
+    },
+};
+
 proxima_flavor! {
     name = "proxima-core",
     mcp_tools = [ DispatchTool ],
+    contract = &DISPATCH_FLAVOR_CONTRACT,
 }
 
 fn frozen() -> Arc<FlavorRegistryFrozen> {

@@ -192,6 +192,31 @@ pub enum FlavorRegistryError {
         schema_version: SchemaVersion,
         kind: PayloadKind,
     },
+    /// A flavor registered a `FlavorDescriptor` — it is linked into this
+    /// binary — and declared no `FlavorContract`. Everything it registers
+    /// is then invisible to erase, export, forget and transfer, and its
+    /// Memory writes are refused later by a `flavor_surface` constraint
+    /// that names none of the cause.
+    UnclaimedRegistration {
+        flavor_id: String,
+    },
+    /// A projected schema's sidecar declares no surface keyed on the
+    /// memory `t`. The projection generator spells each row's key from
+    /// that column, so the schema has no projection statement to generate.
+    ProjectedSidecarNotMemoryKeyed {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        table: &'static str,
+    },
+    /// A non-core schema declares a search projection no request shape can
+    /// scan. Every write to it pays a projection row and a GIN index entry
+    /// for a corpus no query reaches.
+    UnreachableSearchProjection {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        /// Which reachability condition the declaration fails.
+        why: &'static str,
+    },
     /// The contract names an MCP tool that was never registered.
     ContractToolNotRegistered {
         flavor_id: &'static str,
@@ -474,6 +499,41 @@ impl std::fmt::Display for FlavorRegistryError {
                 "schema {schema_id} v{schema_version} {kind:?} is registered under flavor \
                  {flavor_id} but its contract does not declare it, so every registry walk \
                  (erase, export, forget, transfer) would miss its surfaces"
+            ),
+            Self::UnclaimedRegistration { flavor_id } => write!(
+                f,
+                "flavor {flavor_id} is linked into this binary and declares no FlavorContract, \
+                 so every registry walk (erase, export, forget, transfer) skips whatever it \
+                 registers and its Memory writes are refused later by a flavor_surface \
+                 constraint naming none of this; declare a FlavorContract for {flavor_id} and \
+                 register it, which for a flavor built with proxima_flavor! means adding \
+                 `contract = &<YOUR_CONTRACT>` to the macro"
+            ),
+            Self::ProjectedSidecarNotMemoryKeyed {
+                flavor_id,
+                schema_id,
+                table,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares {schema_id} a search projection over sidecar \
+                 {table}, and no surface of this flavor declares {table} keyed on the memory t; \
+                 the projection generator spells each projection row's key from that column, so \
+                 there is no statement to generate -- declare a surface for {table} with \
+                 `key: KeyShape::MemoryT {{ column: .. }}`"
+            ),
+            Self::UnreachableSearchProjection {
+                flavor_id,
+                schema_id,
+                why,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares {schema_id} as a search projection that \
+                 core_search_memories can never scan: {why}. Every write to it still pays a \
+                 projection row and a GIN index entry -- declare a tag_column so a \
+                 tag-filtered request reaches it, declare SearchProjectionDecl::None {{ why }} \
+                 if it is not a search surface, or declare \
+                 RankSource::SidecarWithProjectionOwner {{ why }} if the flavor's own tools \
+                 rank it"
             ),
             Self::ContractToolNotRegistered { flavor_id, name } => write!(
                 f,
