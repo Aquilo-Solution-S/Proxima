@@ -52,9 +52,15 @@ Compiling witnesses: `flavors/code` (flavor crate) and `apps/proxima-mcp` (host)
 
 Out-of-tree `Cargo.toml` pins **one** `proxima` git selector, identical in
 form and value to every host that links the flavor (`tag = "v0.0.8"` or
-`rev = "<commit>"`, never both in one graph). Writes go through
-`proxima::Engine` (Host API). Do not depend on `proxima-core` or
-`proxima-storage-pg` for Fact ingest.
+`rev = "<commit>"`, never both in one graph). Cargo treats a `tag` and the
+`rev` naming that same tag's commit as **different sources**: mixing the two
+forms anywhere in one dependency graph resolves `proxima-core` twice, and the
+build fails with trait-mismatch errors that name types, not the pin. The rule
+is transitive — a flavor crate a host pulls in carries its own Proxima pins,
+and those must match the host's selector form and value too, so bumping a
+host means bumping every flavor crate in its graph in the same change.
+Writes go through `proxima::Engine` (Host API). Do not depend on
+`proxima-core` or `proxima-storage-pg` for Fact ingest.
 
 ## Build Order
 
