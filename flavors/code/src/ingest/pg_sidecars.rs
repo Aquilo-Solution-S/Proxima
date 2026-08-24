@@ -350,6 +350,7 @@ impl PgMemoryPayload for CodeChunkV1 {
     // The column this table stores its memory `t` under, spelled by
     // every statement below. Freeze holds it equal to the contract
     // `Surface`'s `KeyShape::MemoryT { column }` for proxima_code.code_chunk_v1.
+    const OWNER_PINNED: bool = false;
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
     fn load_batch<'t>(
@@ -551,6 +552,7 @@ impl PgMemoryPayload for AcceptanceCriteriaV1 {
     // The column this table stores its memory `t` under, spelled by
     // every statement below. Freeze holds it equal to the contract
     // `Surface`'s `KeyShape::MemoryT { column }` for proxima_code.acceptance_criteria_v1.
+    const OWNER_PINNED: bool = false;
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
     // N+1 per work item; acceptable at this cardinality.
@@ -629,6 +631,7 @@ impl PgMemoryPayload for TestRequestV1 {
     // The column this table stores its memory `t` under, spelled by
     // every statement below. Freeze holds it equal to the contract
     // `Surface`'s `KeyShape::MemoryT { column }` for proxima_code.test_requested_v1.
+    const OWNER_PINNED: bool = false;
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
     // N+1 per work item; acceptable at this cardinality.
@@ -729,6 +732,7 @@ impl PgMemoryPayload for CodeExecutionPlanV1 {
     // The column this table stores its memory `t` under, spelled by
     // every statement below. Freeze holds it equal to the contract
     // `Surface`'s `KeyShape::MemoryT { column }` for proxima_code.execution_plan_v1.
+    const OWNER_PINNED: bool = false;
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
     // N+1 per work item; acceptable at this cardinality.

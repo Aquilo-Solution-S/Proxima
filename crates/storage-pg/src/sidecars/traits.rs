@@ -30,13 +30,17 @@ pub trait PgMemorySidecar: Send + Sync + 'static {
 pub trait PgMemoryPayload: Send + Sync + 'static {
     /// Does this sidecar carry its OWN `owner_id`, stamped at write time?
     ///
-    /// The default is `false`: a sidecar is an extra column on a Memory and
+    /// `false` for a sidecar that is an extra column on a Memory and
     /// reaches its owner through that Memory, so it follows the Memory
-    /// wherever it goes. Set it for a sidecar that describes the ACT rather
+    /// wherever it goes. `true` for a sidecar that describes the ACT rather
     /// than the Memory — an audit row naming the actor — which must stay
     /// with the owner that wrote it when the Memory is transferred away.
     /// Erase, export, and payload hydrate all key on it.
-    const OWNER_PINNED: bool = false;
+    ///
+    /// `pg_sidecar!` emits it. It has NO DEFAULT, for the same reason
+    /// `MEMORY_KEY_COLUMN` has none: every declaration on this trait is
+    /// stated, and a hand-written impl inherits nothing it did not say.
+    const OWNER_PINNED: bool;
 
     /// The column this sidecar stores its memory `t` under.
     ///
