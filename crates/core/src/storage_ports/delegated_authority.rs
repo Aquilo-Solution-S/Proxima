@@ -667,7 +667,9 @@ mod tests {
     use crate::access::AccessKind;
     use crate::auth::{AuthError, Credentials};
     use crate::error::ErrorCode;
-    use crate::mcp::{McpActionArgSpec, McpTool, McpToolAnnotations, McpToolCtx, McpToolError};
+    use crate::mcp::{
+        McpActionArgSpec, McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolError,
+    };
     use crate::query::QueryRequest;
     use crate::{FactPayload, FlavorRegistry, GroupId, PayloadKeyBuilder, Relation, SourceBatchId};
 
@@ -713,12 +715,14 @@ mod tests {
                 allowed_fields: &[],
                 required_fields: &[],
                 annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+                audience: McpToolAudience::Shared,
             },
             McpActionArgSpec {
                 action: "other",
                 allowed_fields: &[],
                 required_fields: &[],
                 annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+                audience: McpToolAudience::Shared,
             },
         ];
         type Args = DispatcherArgs;

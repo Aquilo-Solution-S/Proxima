@@ -3,7 +3,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::access::EntityId;
-use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{
+    CoreActionMeta, McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError,
+};
 use crate::owner::parse_external_key;
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
 
@@ -54,6 +56,7 @@ impl McpTool for CoreTransferTool {
         allowed_fields: &["entity", "to_owner"],
         required_fields: &["entity", "to_owner"],
         annotations: Some(DESTRUCTIVE_NON_IDEMPOTENT),
+        audience: McpToolAudience::Shared,
     }];
     type Args = CoreTransferArgs;
     type Output = TransferOutput;

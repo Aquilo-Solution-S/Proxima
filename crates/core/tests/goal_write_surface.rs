@@ -1,4 +1,6 @@
-use proxima_core::mcp::{McpActionArgSpec, McpTool, McpToolAnnotations, McpToolCtx, McpToolError};
+use proxima_core::mcp::{
+    McpActionArgSpec, McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolError,
+};
 use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
 use proxima_core::verbs::goal_write::{
     GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, GoalWakeConfigWrite,
@@ -268,6 +270,7 @@ impl McpTool for StubDispatchTool {
         allowed_fields: &["id"],
         required_fields: &["id"],
         annotations: None,
+        audience: McpToolAudience::Shared,
     }];
     type Args = StubDispatchArgs;
     type Output = ();

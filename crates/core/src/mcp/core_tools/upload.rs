@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 
 use crate::error::ProtocolError;
-use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{
+    CoreActionMeta, McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError,
+};
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::storage_ports::CitedBlobService;
 use crate::{AccessKind, AuthzContext, Owner, Relation};
@@ -174,24 +176,28 @@ impl McpTool for CoreUploadTool {
             allowed_fields: &["filename", "mime", "byte_len", "space"],
             required_fields: &["filename", "mime", "byte_len"],
             annotations: Some(WRITE_NON_IDEMPOTENT),
+            audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "complete",
             allowed_fields: &["upload_id", "space"],
             required_fields: &["upload_id"],
             annotations: Some(WRITE_NON_IDEMPOTENT),
+            audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "abort",
             allowed_fields: &["upload_id", "space"],
             required_fields: &["upload_id"],
             annotations: Some(WRITE_NON_IDEMPOTENT),
+            audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "read_url",
             allowed_fields: &["cited_object_id", "space"],
             required_fields: &["cited_object_id"],
             annotations: Some(READ_ONLY),
+            audience: McpToolAudience::Shared,
         },
     ];
     type Args = CoreUploadArgs;

@@ -124,6 +124,7 @@ impl proxima_core::mcp::McpTool for StubDispatchTool {
                     .read_only(true)
                     .open_world(false),
             ),
+            audience: proxima_core::mcp::McpToolAudience::Shared,
         },
         proxima_core::mcp::McpActionArgSpec {
             action: "touch",
@@ -134,6 +135,7 @@ impl proxima_core::mcp::McpTool for StubDispatchTool {
                     .read_only(false)
                     .open_world(false),
             ),
+            audience: proxima_core::mcp::McpToolAudience::Shared,
         },
     ];
     type Args = StubDispatchArgs;

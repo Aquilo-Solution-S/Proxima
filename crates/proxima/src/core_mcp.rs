@@ -281,7 +281,9 @@ mod tests {
             args_schema: serde_json::json!({ "type": "object" }),
             output_schema: serde_json::json!({ "type": "object" }),
             action_arg_specs: &[],
+            argv_action_specs: &[],
             annotations: None,
+            audience: proxima_core::McpToolAudience::Shared,
             call: &call,
         }];
 
