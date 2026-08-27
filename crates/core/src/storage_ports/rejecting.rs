@@ -20,7 +20,7 @@ use crate::access::AccessError;
 use crate::owner_inverse::OwnerEraseTarget;
 use crate::read_models::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, FactRow, GoalWakeCandidate,
-    GoalWakeCandidateRequest, MemorySnapshot, SidecarSpec,
+    GoalWakeCandidateRequest, MemorySchemaSpec, MemorySnapshot,
 };
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, EmbeddingJobClaim, StorageError};
 use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
@@ -152,7 +152,7 @@ impl MemoryReadPort for RejectingStorage {
     async fn query_memories(
         &self,
         _req: &crate::verbs::query::QueryRequest,
-        _schemas: &[crate::verbs::schema::SchemaInfo],
+        _schemas: &[MemorySchemaSpec],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError> {
         Ok(crate::verbs::query::QueryResponse {
             memories: Vec::new(),
@@ -190,6 +190,7 @@ impl MemoryReadPort for RejectingStorage {
     async fn load_memory_graph_payloads(
         &self,
         _identities: &[crate::MemoryGraphIdentity],
+        _schemas: &[MemorySchemaSpec],
         _include_body: bool,
     ) -> Result<Vec<crate::MemoryGraphPayloadRow>, StorageError> {
         Ok(Vec::new())
@@ -235,7 +236,7 @@ impl MemoryInspectPort for RejectingStorage {
     async fn load_memory_by_id(
         &self,
         _memory_id: crate::MemoryId,
-        _sidecars: &[SidecarSpec],
+        _schemas: &[MemorySchemaSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         Ok(None)
     }
@@ -244,7 +245,7 @@ impl MemoryInspectPort for RejectingStorage {
         &self,
         _read_owners: &[OwnerRef],
         _memory_ids: &[crate::MemoryId],
-        _sidecars: &[SidecarSpec],
+        _schemas: &[MemorySchemaSpec],
     ) -> Result<Vec<MemorySnapshot>, StorageError> {
         Ok(Vec::new())
     }
@@ -535,7 +536,7 @@ impl CitationPort for RejectingStorage {
         &self,
         _read_owners: &[OwnerRef],
         _cited_object_id: uuid::Uuid,
-        _sidecars: &[SidecarSpec],
+        _schemas: &[MemorySchemaSpec],
         _after: Option<crate::verbs::query::FactCitationCursor>,
         _limit: u32,
     ) -> Result<crate::verbs::query::FactCitationPage, StorageError> {
@@ -775,7 +776,7 @@ impl RegistryProjectionPort for RejectingStorage {
         &self,
         _owner: &Owner,
         _memory_id: crate::MemoryId,
-        _sidecars: &[SidecarSpec],
+        _schemas: &[MemorySchemaSpec],
     ) -> Result<Vec<FactRow>, StorageError> {
         Ok(Vec::new())
     }
@@ -783,7 +784,7 @@ impl RegistryProjectionPort for RejectingStorage {
     async fn load_abstraction_heads(
         &self,
         _owner: &Owner,
-        _sidecars: &[SidecarSpec],
+        _schemas: &[MemorySchemaSpec],
         _limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError> {
         Ok(Vec::new())

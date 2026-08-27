@@ -95,6 +95,59 @@ fn freeze_rejects_duplicate_schema_keys() {
 }
 
 #[test]
+fn freeze_rejects_two_memory_versions_under_one_selector() {
+    let mut registry = FlavorRegistry::new();
+    let original = registry
+        .schemas
+        .iter()
+        .find(|schema| schema.kind == PayloadKind::Fact)
+        .expect("default registry has a Fact schema")
+        .clone();
+    let mut newer = original.clone();
+    newer.schema_version = SchemaVersion::new(original.schema_version.into_inner() + 1);
+    let mut ingress = registry
+        .protocol_ingress
+        .iter()
+        .find(|entry| {
+            entry.schema_id == original.schema_id
+                && entry.schema_version == original.schema_version
+                && entry.kind == original.kind
+        })
+        .expect("Fact schema has ingress")
+        .clone();
+    ingress.schema_version = newer.schema_version;
+    registry.schemas.push(newer);
+    registry.protocol_ingress.push(ingress);
+    let err = registry
+        .try_freeze()
+        .expect_err("Memory selector must be unique even across versions");
+    assert!(matches!(
+        err,
+        FlavorRegistryError::DuplicateMemorySchemaSelector {
+            kind: PayloadKind::Fact,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn freeze_allows_one_selector_per_distinct_memory_layer() {
+    let registry = FlavorRegistry::new();
+    let frozen = registry
+        .try_freeze()
+        .expect("the default AgentDerivation selector is shared by A and P");
+    let registrations = frozen
+        .schemas()
+        .iter()
+        .filter(|schema| schema.schema_id.as_str() == "core/agent-derivation-v1")
+        .map(|schema| schema.kind)
+        .collect::<Vec<_>>();
+    assert_eq!(registrations.len(), 2);
+    assert!(registrations.contains(&PayloadKind::Abstraction));
+    assert!(registrations.contains(&PayloadKind::Perspective));
+}
+
+#[test]
 fn opaque_registration_rejects_memory_and_goal_kinds() {
     for kind in [
         PayloadKind::Fact,

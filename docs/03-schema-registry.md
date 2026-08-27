@@ -26,7 +26,7 @@ Registry rules:
 
 | Rule | Consequence |
 |---|---|
-| `(schema_id, schema_version, kind)` identifies one payload shape | no untyped Memory payload |
+| `(schema_id, schema_version, kind)` identifies one payload shape | no untyped payload |
 | sidecar-backed schemas declare a qualified sidecar table | no inferred table naming |
 | every sidecar-backed write inserts the entity row and sidecar row atomically | no orphan typed storage |
 | registry freezes at startup from core plus linked flavors | no runtime schema registration |
@@ -89,7 +89,7 @@ Required registry metadata:
 | Field | Meaning |
 |---|---|
 | `schema_id` | stable qualified id |
-| `schema_version` | monotonic version for that id |
+| `schema_version` | declared payload version; for Fact/Abstraction/Perspective it is the unique frozen version of `(kind, schema_id)`, so a new logical shape also needs a new `schema_id` |
 | `kind` | closed `PayloadKind` |
 | `sidecar_table` | optional/required per family; qualified SQL table when present, e.g. `proxima_code.commit_v1` |
 
@@ -333,20 +333,28 @@ Memory row stores:
 | Column | Rule |
 |---|---|
 | `schema_id` | flavor-qualified id |
-| `schema_version` | active version at write time |
-| `kind` | Fact has `NULL` kind in storage variant; A/P carry derived kind |
+| `kind` | closed Memory layer; the stored selector is `(kind, schema_id)` |
+| `sidecar_tables` | stamped sidecar surfaces for this row; an integrity check, never a version selector |
 
 Lookup:
 
 ```
-(kind, schema_id, schema_version)
-  -> SchemaInfo
+(kind, schema_id)
+  -> unique registered Memory schema declaration
   -> sidecar_table
   -> join by memory_id
 ```
 
-For A/P, no `Memory.text` exists to migrate; schema evolution changes typed
-sidecar representation without changing the admitted Memory `t`.
+`proxima_core.memory` and `memory_head` do not store `schema_version`.
+Every visible F/A/P row must resolve exactly one registered declaration for
+its stored selector. A missing or ambiguous declaration fails closed; readers
+never invent version 1 or omit an authorized row. A sidecar-less registration
+is still a complete declaration and truthfully hydrates its version with no
+payload/text.
+
+For A/P, no `Memory.text` exists to migrate. A changed logical payload shape
+needs a new schema id and new admissions; a storage-only backfill may preserve
+an admitted `t` only when the logical schema contract is unchanged.
 
 For Facts, schema migration never rewrites Fact `MemoryId`, optional receipt
 metadata, or citation mapping.
@@ -360,9 +368,12 @@ Allowed:
 
 | From | To |
 |---|---|
-| Fact vN | Fact vN+1 |
-| Abstraction vN | Abstraction vN+1 |
-| Perspective vN | Perspective vN+1 |
+| Fact `(F, schema-a)` vN | Fact `(F, schema-b)` vN+1 |
+| Abstraction `(A, schema-a)` vN | Abstraction `(A, schema-b)` vN+1 |
+| Perspective `(P, schema-a)` vN | Perspective `(P, schema-b)` vN+1 |
+
+Each transition above changes the stored selector. Reusing `schema-a` for both
+versions is forbidden because a Memory row cannot say which version it holds.
 
 Forbidden:
 
@@ -370,24 +381,31 @@ Forbidden:
 |---|---|
 | Fact -> Abstraction | layer/kind change |
 | Abstraction -> Perspective | layer/kind change |
-| old version left as permanent parallel schema | planner drift |
+| two F/A/P versions under one `(kind, schema_id)` selector | Memory stores no version, so reads would be ambiguous |
 | parent entity id replacement | breaks identity |
 | silent lossy migration | unowned forgetting |
 
 Deploy discipline:
 
-1. Add new payload type/version.
-2. Add new sidecar SQL table.
-3. Add explicit migration/backfill path.
-4. Write new entities to the new version.
-5. Read old and new during migration window.
+1. Add a new payload type/version and a new stored selector for F/A/P.
+2. Add a new sidecar SQL table when required.
+3. Add an explicit migration/backfill path if existing `t` values must move.
+4. Write new entities to the new selector.
+5. Retain the old selector only while its explicit migration/read contract is supported.
 6. Drop old sidecar only after backfill completes.
+
+Goal and citation registrations retain their existing
+`(schema_id, schema_version, kind)` duplicate law; this Memory selector rule
+does not change them.
 
 This section is a discipline, not a license for runtime registration.
 
-### Streaming migration discipline
+### Streaming storage-backfill discipline
 
-Large sidecars migrate in bounded chunks.
+Large auxiliary/projection tables and storage-only sidecar layouts migrate in
+bounded chunks. This is not a dual-version F/A/P schema window: the logical
+payload selector and shape must remain unchanged. A new F/A/P shape follows
+the new-selector/new-admission rule above.
 
 Chunk invariant:
 
@@ -424,10 +442,10 @@ Properties:
 | information-preserving by default | lossy migration must be explicit |
 | owner-preserving | no cross-owner data movement |
 
-### Why migration over additive
+### Why a storage backfill over permanent query unions
 
-Permanent additive schemas accumulate dead tables and force every query
-to union historical shapes.
+For an unchanged logical schema, permanent duplicate storage layouts
+accumulate dead tables and force every query to union historical layouts.
 
 Migration keeps:
 
@@ -439,7 +457,8 @@ Migration keeps:
 | `origin` provenance entries | yes |
 | active query shape | yes |
 
-Only the typed sidecar representation changes.
+Only the physical storage layout changes; the registered payload contract does
+not.
 
 ## Renderer (Facts only)
 
@@ -471,7 +490,7 @@ follow from what those nodes declare (see
 | connections without a connection vocabulary | payload `references()` |
 | schema-aware UI/protocol | Schema verb |
 | current-state projections | stateful Fact heads |
-| migration without identity churn | sidecar-only evolution |
+| storage-layout migration without identity churn | unchanged logical schema plus an explicit backfill |
 
 ## What this does not do
 

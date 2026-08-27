@@ -8,11 +8,12 @@ use proxima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget,
     OwnerExportTarget, OwnerSurfaces,
 };
+use proxima_core::read_models::MemorySchemaSpec;
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::MemoryAuthoringPort;
 use proxima_core::storage_ports::{
-    ChangeEventPort, McpCallReadPort, MemoryReadPort, OwnerInversePort, OwnerTransferPort,
-    OwnerWritePermit,
+    ChangeEventPort, McpCallReadPort, MemoryInspectPort, MemoryReadPort, OwnerInversePort,
+    OwnerTransferPort, OwnerWritePermit,
 };
 use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, CitationSpec, FactIngestOutcome, FactWriteCommand,
@@ -34,6 +35,32 @@ use proxima_storage_pg::verbs::wake_timeseries::{
 };
 use proxima_storage_pg::{PgStorage, core_pg_sidecars};
 use uuid::Uuid;
+
+fn memory_schema_specs() -> Vec<MemorySchemaSpec> {
+    proxima_core::FlavorRegistry::new()
+        .freeze_or_panic_for_tests()
+        .schemas()
+        .iter()
+        .filter_map(|schema| {
+            let kind = match schema.kind {
+                proxima_core::verbs::schema::PayloadKind::Fact => proxima_core::EntityKind::Fact,
+                proxima_core::verbs::schema::PayloadKind::Abstraction => {
+                    proxima_core::EntityKind::Abstraction
+                }
+                proxima_core::verbs::schema::PayloadKind::Perspective => {
+                    proxima_core::EntityKind::Perspective
+                }
+                _ => return None,
+            };
+            Some(MemorySchemaSpec {
+                kind,
+                schema_id: schema.schema_id.clone(),
+                schema_version: schema.schema_version,
+                sidecar_table: schema.sidecar_table.clone(),
+            })
+        })
+        .collect()
+}
 
 /// The five sidecar legs exactly as the engine assembles them: from the
 /// frozen flavor registry. Passing empty slices here would silently skip
@@ -145,6 +172,7 @@ async fn hydrated_actor_payloads(
     owner: OwnerRef,
     memory_id: MemoryId,
 ) -> Result<usize, StorageError> {
+    let schemas = memory_schema_specs();
     let response = pg
         .query_memories(
             &QueryRequest {
@@ -152,7 +180,7 @@ async fn hydrated_actor_payloads(
                 include_payloads: true,
                 ..QueryRequest::for_owner(owner)
             },
-            &[],
+            &schemas,
         )
         .await?;
     Ok(response
@@ -166,6 +194,31 @@ async fn hydrated_actor_payloads(
                 .is_some_and(|json| json.get("actor_upn").is_some())
         })
         .count())
+}
+
+async fn assert_owner_pinned_payload_redacted(
+    pg: &PgStorage,
+    owner: OwnerRef,
+    memory_id: MemoryId,
+) -> Result<(), StorageError> {
+    let snapshots = pg
+        .load_memories_by_ids(&[owner], &[memory_id], &memory_schema_specs())
+        .await?;
+    assert_eq!(
+        snapshots.len(),
+        1,
+        "the transferred Memory remains visible when its owner-pinned payload stays behind"
+    );
+    let snapshot = &snapshots[0];
+    assert_eq!(snapshot.memory_id, memory_id);
+    assert_eq!(snapshot.owner, owner);
+    assert_eq!(
+        snapshot.schema_version.into_inner(),
+        McpCallLoggedV1::SCHEMA_VERSION
+    );
+    assert!(snapshot.payload.is_none());
+    assert!(snapshot.text.is_none());
+    Ok(())
 }
 
 /// Which owners the `mcp_call_logged_v1` rows for `t` are pinned to.
@@ -1253,6 +1306,7 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
             0,
             "the destination must not hydrate the prior owner's actor identity"
         );
+        assert_owner_pinned_payload_redacted(&pg, dest, written.memory_id).await?;
 
         // (b) The source still answers "what did my agents do".
         let history = pg.read_mcp_call_history(&history_request(owner)).await?;
@@ -1393,6 +1447,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
             0,
             "the destination still cannot see the prior owner's actor identity"
         );
+        assert_owner_pinned_payload_redacted(&pg, dest, first.memory_id).await?;
 
         // Now the destination erases its whole owner. The Memory goes; the
         // source's audit row stays, and the erase does not fail on it.

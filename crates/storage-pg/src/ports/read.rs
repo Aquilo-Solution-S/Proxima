@@ -1,4 +1,4 @@
-use proxima_core::read_models::{ChangeEventForWake, SidecarSpec};
+use proxima_core::read_models::{ChangeEventForWake, MemorySchemaSpec};
 use proxima_core::storage_ports::{ChangeEventPort, CitationPort};
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::query::FactCitationReadback;
@@ -43,7 +43,7 @@ impl CitationPort for PgStorage {
         &self,
         read_owners: &[OwnerRef],
         cited_object_id: uuid::Uuid,
-        sidecars: &[SidecarSpec],
+        schemas: &[MemorySchemaSpec],
         after: Option<proxima_core::verbs::query::FactCitationCursor>,
         limit: u32,
     ) -> Result<proxima_core::verbs::query::FactCitationPage, StorageError> {
@@ -52,7 +52,7 @@ impl CitationPort for PgStorage {
             &self.sidecars,
             read_owners,
             cited_object_id,
-            sidecars,
+            schemas,
             after,
             limit,
         )

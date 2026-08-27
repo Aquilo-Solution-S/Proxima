@@ -124,6 +124,7 @@ impl MemoryReadPort for MemoryReadFake {
     async fn load_memory_graph_payloads(
         &self,
         _identities: &[MemoryGraphIdentity],
+        _schemas: &[proxima_core::read_models::MemorySchemaSpec],
         _include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
         fake_error()
@@ -156,7 +157,7 @@ impl MemoryReadPort for MemoryReadFake {
     async fn query_memories(
         &self,
         req: &proxima_core::verbs::query::QueryRequest,
-        schemas: &[proxima_core::verbs::schema::SchemaInfo],
+        _schemas: &[proxima_core::read_models::MemorySchemaSpec],
     ) -> Result<proxima_core::verbs::query::QueryResponse, StorageError> {
         fake_error()
     }
@@ -196,7 +197,7 @@ impl MemoryInspectPort for MemoryInspectFake {
     async fn load_memory_by_id(
         &self,
         memory_id: proxima_core::MemoryId,
-        sidecars: &[SidecarSpec],
+        _schemas: &[proxima_core::read_models::MemorySchemaSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         fake_error()
     }
@@ -205,7 +206,7 @@ impl MemoryInspectPort for MemoryInspectFake {
         &self,
         _read_owners: &[OwnerRef],
         _memory_ids: &[proxima_core::MemoryId],
-        _sidecars: &[SidecarSpec],
+        _schemas: &[proxima_core::read_models::MemorySchemaSpec],
     ) -> Result<Vec<MemorySnapshot>, StorageError> {
         fake_error()
     }
@@ -487,7 +488,7 @@ impl CitationPort for CitationFake {
         &self,
         read_owners: &[OwnerRef],
         cited_object_id: uuid::Uuid,
-        sidecars: &[SidecarSpec],
+        _schemas: &[proxima_core::read_models::MemorySchemaSpec],
         _after: Option<proxima_core::verbs::query::FactCitationCursor>,
         _limit: u32,
     ) -> Result<proxima_core::verbs::query::FactCitationPage, StorageError> {
@@ -679,7 +680,7 @@ impl RegistryProjectionPort for RegistryProjectionFake {
         &self,
         owner: &Owner,
         memory_id: proxima_core::MemoryId,
-        sidecars: &[SidecarSpec],
+        _schemas: &[proxima_core::read_models::MemorySchemaSpec],
     ) -> Result<Vec<proxima_core::FactRow>, StorageError> {
         fake_error()
     }
@@ -687,7 +688,7 @@ impl RegistryProjectionPort for RegistryProjectionFake {
     async fn load_abstraction_heads(
         &self,
         owner: &Owner,
-        sidecars: &[SidecarSpec],
+        _schemas: &[proxima_core::read_models::MemorySchemaSpec],
         limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError> {
         fake_error()

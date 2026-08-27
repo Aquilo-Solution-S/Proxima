@@ -19,7 +19,7 @@ use proxima_core::engine::Engine;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError};
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    FlavorServices, MemoryId, Owner,
+    FlavorServices, MemoryId, Owner, schema_only_key,
 };
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
@@ -1745,13 +1745,8 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
     .await?;
     let shell_self = seed_perspective(&fixture.pg, &owner, "Planner Root").await?;
     let goal_activated = seed_active_goal_activation(&fixture.pg, &owner, shell_self).await?;
-    let plan_source = abstraction_memory(
-        fixture.pg.pool_for_tests(),
-        &owner,
-        "test/plan-source-v1",
-        "planning context",
-    )
-    .await?;
+    let plan_source =
+        abstraction_memory(fixture.pg.pool_for_tests(), &owner, "planning context").await?;
 
     let output = run_tool::<CodeEmitExecutionPlanTool>(
         shell_ctx(
@@ -2047,7 +2042,7 @@ async fn seed_active_goal_activation(
     let _ = common::seed_memory(
         pg.pool_for_tests(),
         owner,
-        "core/goal-activated-v1",
+        GoalActivationFixture::SCHEMA_ID,
         "fact",
         Some(memory_id),
         None,
@@ -2063,18 +2058,43 @@ async fn seed_perspective(
     label: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
-    let _ = label;
-    let _ = common::seed_memory(
+    let _ = common::seed_memory_with_sidecars(
         pg.pool_for_tests(),
         owner,
-        "test/mcp-perspective-v1",
+        "core/interpretation-v1",
         "perspective",
         Some(memory_id),
         None,
         &[],
+        &["proxima_core.interpretation_v1"],
     )
     .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.interpretation_v1
+            (t, claim, confidence, model_id, client_name, client_version)
+         VALUES ($1, $2, 100, 'test-model', 'test', '1')",
+    )
+    .bind(memory_id)
+    .bind(label)
+    .execute(pg.pool_for_tests())
+    .await?;
     Ok(memory_id)
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct GoalActivationFixture;
+
+impl FactPayload for GoalActivationFixture {
+    const SCHEMA_ID: &'static str = "test/goal-activated-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn receipt_key(&self) -> Vec<u8> {
+        schema_only_key(Self::SCHEMA_ID, Self::SCHEMA_VERSION)
+    }
+
+    fn render(&self) -> String {
+        "goal activated".to_owned()
+    }
 }
 
 /// Mint a prior execution-request Fact + sidecar row that a retry targets.
@@ -2109,11 +2129,29 @@ async fn ingest_execution_request_fixture(
 fn registry_for_mcp() -> Arc<FlavorRegistryFrozen> {
     let mut registry = FlavorRegistry::new();
     proxima_code::register(&mut registry).unwrap();
+    registry.add_fact_schema_or_panic_for_tests::<GoalActivationFixture>();
     Arc::new(registry.freeze_or_panic_for_tests())
 }
 
 fn registry_for_engine() -> FlavorRegistryFrozen {
-    common::code_registry_with_test_citations()
+    let mut registry = FlavorRegistry::new();
+    proxima_code::register(&mut registry).expect("code schema registration");
+    registry.add_fact_schema_or_panic_for_tests::<GoalActivationFixture>();
+    registry
+        .try_add_opaque_schema(
+            proxima_core::SchemaId::new(common::TEST_CITED_BLOB_SCHEMA_ID.into()),
+            proxima_core::SchemaVersion::new(1),
+            proxima_core::verbs::schema::PayloadKind::CitedObject,
+        )
+        .expect("test cited-object registration");
+    registry
+        .try_add_opaque_schema(
+            proxima_core::SchemaId::new(common::TEST_CITATION_BLOB_SCHEMA_ID.into()),
+            proxima_core::SchemaVersion::new(1),
+            proxima_core::verbs::schema::PayloadKind::CitationMapping,
+        )
+        .expect("test citation-mapping registration");
+    registry.freeze_or_panic_for_tests()
 }
 
 /// The `file_path` of every match, in rank order.
@@ -2472,11 +2510,29 @@ async fn fact_memory_on_handle(
 async fn abstraction_memory(
     pool: &PgPool,
     owner: &Owner,
-    schema_id: &str,
     payload: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let t = Uuid::new_v5(&Uuid::NAMESPACE_OID, payload.as_bytes());
-    let _ = common::seed_memory(pool, owner, schema_id, "abstraction", Some(t), None, &[]).await?;
+    let _ = common::seed_memory_with_sidecars(
+        pool,
+        owner,
+        "core/agent-derivation-v1",
+        "abstraction",
+        Some(t),
+        None,
+        &[],
+        &["proxima_core.agent_derivation_v1"],
+    )
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.agent_derivation_v1
+            (t, title, body, tags, model_id, client_name, client_version)
+         VALUES ($1, 'planning context', $2, ARRAY[]::text[], 'test-model', 'test', '1')",
+    )
+    .bind(t)
+    .bind(payload)
+    .execute(pool)
+    .await?;
     Ok(t)
 }
 
@@ -3139,7 +3195,7 @@ async fn a_work_assignment_walk_reaches_both_subjects_its_payload_names()
 
     let (_, work_item_t) =
         common::seed_memory(pool, &owner, "core/test-fact-v1", "fact", None, None, &[]).await?;
-    let (_, target_t) = common::seed_memory(
+    let (_, target_t) = common::seed_memory_with_sidecars(
         pool,
         &owner,
         "core/interpretation-v1",
@@ -3147,7 +3203,16 @@ async fn a_work_assignment_walk_reaches_both_subjects_its_payload_names()
         None,
         None,
         &[],
+        &["proxima_core.interpretation_v1"],
     )
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.interpretation_v1
+            (t, claim, confidence, model_id, client_name, client_version)
+         VALUES ($1, 'the assignment target', 100, 'test-model', 'test', '1')",
+    )
+    .bind(target_t)
+    .execute(pool)
     .await?;
 
     let (_, assignment_t) = common::seed_memory_with_sidecars(

@@ -1,4 +1,4 @@
-use proxima_core::read_models::SidecarSpec;
+use proxima_core::read_models::MemorySchemaSpec;
 use proxima_core::verbs::query::{FactCitationCursor, FactCitationPage, FactCitationReadback};
 use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
 use sqlx::PgPool;
@@ -16,7 +16,7 @@ pub(crate) async fn facts_citing_object(
     pg_sidecars: &PgSidecarRegistryFrozen,
     read_owners: &[OwnerRef],
     cited_object_id: uuid::Uuid,
-    sidecars: &[SidecarSpec],
+    schemas: &[MemorySchemaSpec],
     after: Option<FactCitationCursor>,
     limit: u32,
 ) -> Result<FactCitationPage, StorageError> {
@@ -73,7 +73,7 @@ pub(crate) async fn facts_citing_object(
         .iter()
         .map(|(memory_id, _)| MemoryId::new(*memory_id))
         .collect();
-    let loaded = load_memories_by_ids(pool, pg_sidecars, read_owners, &ids, sidecars).await?;
+    let loaded = load_memories_by_ids(pool, pg_sidecars, read_owners, &ids, schemas).await?;
     let mut by_id: HashMap<MemoryId, _> = loaded
         .into_iter()
         .map(|snapshot| (snapshot.memory_id, snapshot))

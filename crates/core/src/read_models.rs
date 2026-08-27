@@ -2,7 +2,7 @@
 
 use crate::{
     ChangeEvent, EntityKind, GoalId, MemoryId, OwnerRef, SchemaId, SchemaVersion, SidecarPayload,
-    ToolScope,
+    StorageError, ToolScope,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,10 +43,104 @@ pub struct AbstractionRow {
 }
 
 #[derive(Debug, Clone)]
-pub struct SidecarSpec {
+pub struct MemorySchemaSpec {
+    pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
-    pub sidecar_table: String,
+    pub sidecar_table: Option<String>,
+}
+
+/// Resolve the single registered declaration for a persisted Memory selector.
+///
+/// Memory rows store `(kind, schema_id)` but no version. A missing or
+/// ambiguous declaration is a registry/storage invariant failure, never a
+/// reason to invent a version or omit a visible row.
+///
+/// # Errors
+///
+/// Returns [`StorageError::ConstraintViolation`] when zero or multiple
+/// declarations match the stored selector.
+pub fn resolve_memory_schema<'a>(
+    specs: &'a [MemorySchemaSpec],
+    kind: EntityKind,
+    schema_id: &SchemaId,
+) -> Result<&'a MemorySchemaSpec, StorageError> {
+    let mut matches = specs
+        .iter()
+        .filter(|spec| spec.kind == kind && spec.schema_id == *schema_id);
+    let Some(first) = matches.next() else {
+        return Err(StorageError::ConstraintViolation(format!(
+            "no registered Memory schema for {kind:?} {}",
+            schema_id.as_str()
+        )));
+    };
+    if matches.next().is_some() {
+        return Err(StorageError::ConstraintViolation(format!(
+            "ambiguous registered Memory schema for {kind:?} {}",
+            schema_id.as_str()
+        )));
+    }
+    Ok(first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MemorySchemaSpec, resolve_memory_schema};
+    use crate::{EntityKind, SchemaId, SchemaVersion, StorageError};
+
+    fn spec(kind: EntityKind, id: &str, version: u32) -> MemorySchemaSpec {
+        MemorySchemaSpec {
+            kind,
+            schema_id: SchemaId::new(id.to_owned()),
+            schema_version: SchemaVersion::new(version),
+            sidecar_table: None,
+        }
+    }
+
+    #[test]
+    fn resolver_requires_exactly_one_selector() {
+        let id = SchemaId::new("test/book".to_owned());
+        assert!(matches!(
+            resolve_memory_schema(&[], EntityKind::Fact, &id),
+            Err(StorageError::ConstraintViolation(_))
+        ));
+        let one = [spec(EntityKind::Fact, "test/book", 2)];
+        assert_eq!(
+            resolve_memory_schema(&one, EntityKind::Fact, &id)
+                .expect("one declaration")
+                .schema_version,
+            SchemaVersion::new(2)
+        );
+        let ambiguous = [
+            spec(EntityKind::Fact, "test/book", 1),
+            spec(EntityKind::Fact, "test/book", 2),
+        ];
+        assert!(matches!(
+            resolve_memory_schema(&ambiguous, EntityKind::Fact, &id),
+            Err(StorageError::ConstraintViolation(_))
+        ));
+    }
+
+    #[test]
+    fn resolver_allows_same_id_across_memory_layers() {
+        let id = SchemaId::new("test/book".to_owned());
+        let specs = [
+            spec(EntityKind::Fact, "test/book", 1),
+            spec(EntityKind::Abstraction, "test/book", 2),
+        ];
+        assert_eq!(
+            resolve_memory_schema(&specs, EntityKind::Fact, &id)
+                .expect("Fact declaration")
+                .schema_version,
+            SchemaVersion::new(1)
+        );
+        assert_eq!(
+            resolve_memory_schema(&specs, EntityKind::Abstraction, &id)
+                .expect("Abstraction declaration")
+                .schema_version,
+            SchemaVersion::new(2)
+        );
+    }
 }
 
 /// Triage-level summary of one active Goal. Detail is reachable through

@@ -10,16 +10,9 @@ use crate::error::map_err;
 pub(super) fn memory_row_from_db(
     r: MemoryRowDb,
     payload: Option<SidecarPayload>,
+    schema_version: SchemaVersion,
 ) -> Result<MemoryRow, StorageError> {
-    let schema_version = u32::try_from(r.schema_version).map_err(|_| {
-        StorageError::Internal(format!(
-            "invalid memory schema_version {} for memory {}",
-            r.schema_version, r.memory_id
-        ))
-    })?;
-
     let schema_id = SchemaId::new(r.schema_id);
-    let schema_version = SchemaVersion::new(schema_version);
 
     Ok(MemoryRow {
         handle: r.handle,
@@ -96,7 +89,7 @@ pub(super) struct MemoryRowDb {
     owner_kind: OwnerRefKind,
     owner_id: Option<uuid::Uuid>,
     pub(super) schema_id: String,
-    pub(super) schema_version: i32,
+    pub(super) sidecar_tables: Vec<String>,
     pub(super) kind: String,
     pub(super) origins: Vec<uuid::Uuid>,
     pub(super) refs: Vec<uuid::Uuid>,
