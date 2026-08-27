@@ -27,6 +27,14 @@ pub use crate::runtime_config::{
 /// `BlobError` comes with them because `from_env` returns it.
 pub use proxima_blob_s3::{BlobError, CitedBlobStore, S3RuntimeConfig};
 pub use proxima_core::cursor::Cursor;
+/// The owner-authorized batch Memory read already exposed by
+/// [`proxima_core::Engine::get_memories`].
+///
+/// Keeping the request, response, and snapshot on the host facade makes the
+/// existing Engine signature nameable without reaching through the facade to
+/// `proxima-core`. Authorization and the absent/invisible collapse remain in
+/// the Engine verb; this export adds no storage access.
+pub use proxima_core::engine::{GetMemoriesReadRequest, GetMemoriesReadResponse};
 /// The read verb a flavor searches its own corpus with.
 ///
 /// [`proxima_core::Engine::search`] was already public, but every type in
@@ -71,6 +79,7 @@ pub use proxima_core::owner_inverse::{
     OwnerEraseCounts, OwnerEraseOutcome, OwnerEraseRefusal, OwnerEraseRequest, OwnerEraseTarget,
     OwnerExportBundle, OwnerExportRequest, OwnerExportTarget,
 };
+pub use proxima_core::read_models::MemorySnapshot;
 /// Cited-blob verified-read and reconciliation surfaces.
 ///
 /// Global [`CitedBlobStore::reconcile_all`] requires the booted runtime's
