@@ -258,6 +258,24 @@ fn host_api_can_build_a_search_read_request() {
 }
 
 #[test]
+fn host_api_can_build_a_batch_memory_read_request() {
+    // Binding the response's public field proves the full Engine signature is
+    // usable from the facade, without constructing a snapshot and widening
+    // this host-tier test into every nested payload type.
+    fn memories(response: &proxima::GetMemoriesReadResponse) -> &[proxima::MemorySnapshot] {
+        &response.memories
+    }
+
+    let memory_id = proxima::MemoryId::new(uuid::Uuid::nil());
+    let request = proxima::GetMemoriesReadRequest {
+        memory_ids: vec![memory_id],
+    };
+    assert_eq!(request.memory_ids, vec![memory_id]);
+
+    let _: fn(&proxima::GetMemoriesReadResponse) -> &[proxima::MemorySnapshot] = memories;
+}
+
+#[test]
 fn flavor_sdk_imports_from_flavor_module() {
     use proxima::flavor::{FactPayload, FlavorBundle, FlavorRegistry, PgSidecarRegistry, SchemaId};
     fn _needs_bundle<T: FlavorBundle>() {}
