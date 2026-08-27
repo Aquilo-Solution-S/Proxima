@@ -3,7 +3,8 @@ use crate::authz::AuthzContext;
 use crate::edge::Edge;
 use crate::error::ProtocolError;
 use crate::read_models::{
-    ChangeEventForWake, GoalWakeCandidate, GoalWakeCandidateRequest, MemorySnapshot, SidecarSpec,
+    ChangeEventForWake, GoalWakeCandidate, GoalWakeCandidateRequest, MemorySchemaSpec,
+    MemorySnapshot,
 };
 use crate::storage::{MemoryGraphIdentity, MemoryGraphPayloadRow, StorageError};
 use crate::storage_ports::ReadVerbStoragePorts;
@@ -137,6 +138,7 @@ impl Engine {
         search_authorized(
             &self.storage.read_verb,
             self.registry.search_projections(),
+            &self.memory_schema_specs(),
             std::slice::from_ref(read_permit.owner()),
             req,
         )
@@ -160,8 +162,8 @@ impl Engine {
         // Absent and invisible are both "not returned" — do not probe
         // `home_owner` / `visible_to_any` first.
         let read_owners = self.authorize_read(authz).await?;
-        let sidecars = self.sidecar_specs();
-        get_memory_authorized(&self.storage.read_verb, &read_owners, &sidecars, req).await
+        let schemas = self.memory_schema_specs();
+        get_memory_authorized(&self.storage.read_verb, &read_owners, &schemas, req).await
     }
 
     /// Batch single-memory read: snapshots for the subset of
@@ -179,12 +181,12 @@ impl Engine {
         req: &GetMemoriesReadRequest,
     ) -> Result<GetMemoriesReadResponse, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
-        let sidecars = self.sidecar_specs();
+        let schemas = self.memory_schema_specs();
         let memories = self
             .storage
             .read_verb
             .memory_inspect
-            .load_memories_by_ids(&read_owners, &req.memory_ids, &sidecars)
+            .load_memories_by_ids(&read_owners, &req.memory_ids, &schemas)
             .await
             .map_err(|err| storage_error("load_memories_by_ids", &err))?;
         Ok(GetMemoriesReadResponse { memories })
@@ -311,7 +313,11 @@ impl Engine {
             .storage
             .read_verb
             .memory_inspect
-            .load_memories_by_ids(&read_owners, &[req.trigger_fact_id], &[])
+            .load_memories_by_ids(
+                &read_owners,
+                &[req.trigger_fact_id],
+                &self.memory_schema_specs(),
+            )
             .await
             .map_err(|err| storage_error("load_memories_by_ids", &err))?;
         let snapshot = found
@@ -395,7 +401,11 @@ impl Engine {
             .storage
             .read_verb
             .memory_inspect
-            .load_memories_by_ids(&read_owners, &[req.fact_memory_id], &[])
+            .load_memories_by_ids(
+                &read_owners,
+                &[req.fact_memory_id],
+                &self.memory_schema_specs(),
+            )
             .await
             .map_err(|err| storage_error("load_memories_by_ids", &err))?;
         if found.is_empty() {
@@ -423,11 +433,11 @@ impl Engine {
         req: &FactsCitingObjectReadRequest,
     ) -> Result<crate::verbs::query::FactCitationPage, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
-        let sidecars = self.sidecar_specs();
-        facts_citing_object_authorized(&self.storage.read_verb, &read_owners, req, &sidecars).await
+        let schemas = self.memory_schema_specs();
+        facts_citing_object_authorized(&self.storage.read_verb, &read_owners, req, &schemas).await
     }
 
-    pub(in crate::engine) fn sidecar_specs(&self) -> Vec<SidecarSpec> {
+    pub(in crate::engine) fn memory_schema_specs(&self) -> Vec<MemorySchemaSpec> {
         self.registry
             .list()
             .into_iter()
@@ -435,12 +445,18 @@ impl Engine {
                 matches!(
                     schema.kind,
                     PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
-                ) && schema.sidecar_table.is_some()
+                )
             })
-            .map(|schema| SidecarSpec {
+            .map(|schema| MemorySchemaSpec {
+                kind: match schema.kind {
+                    PayloadKind::Fact => EntityKind::Fact,
+                    PayloadKind::Abstraction => EntityKind::Abstraction,
+                    PayloadKind::Perspective => EntityKind::Perspective,
+                    _ => unreachable!("filtered to memory payload kinds"),
+                },
                 schema_id: SchemaId::new(schema.schema_id.as_str().to_string()),
                 schema_version: SchemaVersion::new(schema.schema_version.into_inner()),
-                sidecar_table: schema.sidecar_table.expect("filtered to sidecar schemas"),
+                sidecar_table: schema.sidecar_table,
             })
             .collect()
     }
@@ -496,6 +512,7 @@ fn validate_search_request(search: &MemorySearchRequest) -> Result<(), ProtocolE
 pub(in crate::engine) async fn search_authorized(
     ports: &ReadVerbStoragePorts,
     search_projections: &[MemorySearchProjection],
+    schemas: &[MemorySchemaSpec],
     read_owners: &[OwnerRef],
     req: &SearchReadRequest,
 ) -> Result<SearchReadResponse, ProtocolError> {
@@ -525,7 +542,7 @@ pub(in crate::engine) async fn search_authorized(
     } else {
         ports
             .memory_read
-            .load_memory_graph_payloads(&identities, req.include_body)
+            .load_memory_graph_payloads(&identities, schemas, req.include_body)
             .await
             .map_err(|err| storage_error("load_memory_graph_payloads", &err))?
     };
@@ -552,12 +569,12 @@ pub(in crate::engine) async fn search_authorized(
 pub(in crate::engine) async fn get_memory_authorized(
     ports: &ReadVerbStoragePorts,
     read_owners: &[OwnerRef],
-    sidecars: &[SidecarSpec],
+    schemas: &[MemorySchemaSpec],
     req: &GetMemoryReadRequest,
 ) -> Result<GetMemoryReadResponse, ProtocolError> {
     let mut found = ports
         .memory_inspect
-        .load_memories_by_ids(read_owners, &[req.memory_id], sidecars)
+        .load_memories_by_ids(read_owners, &[req.memory_id], schemas)
         .await
         .map_err(|err| storage_error("load_memories_by_ids", &err))?;
     let Some(memory) = found.pop() else {
@@ -624,14 +641,14 @@ pub(in crate::engine) async fn facts_citing_object_authorized(
     ports: &ReadVerbStoragePorts,
     read_owners: &[OwnerRef],
     req: &FactsCitingObjectReadRequest,
-    sidecars: &[SidecarSpec],
+    schemas: &[MemorySchemaSpec],
 ) -> Result<crate::verbs::query::FactCitationPage, ProtocolError> {
     ports
         .citation
         .facts_citing_object(
             read_owners,
             req.cited_object_id,
-            sidecars,
+            schemas,
             req.after,
             req.limit,
         )

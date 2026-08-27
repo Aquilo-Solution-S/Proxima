@@ -3,6 +3,7 @@ use crate::OwnerRef;
 use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
+use crate::read_models::MemorySchemaSpec;
 use crate::storage_ports::QueryStoragePorts;
 use crate::verbs::change_history::{
     ChangeHistoryRequest, ChangeHistoryResponse, MAX_CHANGE_HISTORY_LIMIT,
@@ -14,7 +15,7 @@ use crate::verbs::query::{
     EdgeExistsRequest, EdgeExistsResponse, EdgeReadRequest, EdgeReadResponse, MemoryLineageRequest,
     MemoryLineageResponse, QueryCursor, QueryRequest, QueryResponse, SidecarAtom,
 };
-use crate::verbs::schema::{FlavorRegistryFrozen, SchemaRequest, SchemaResponse};
+use crate::verbs::schema::{SchemaRequest, SchemaResponse};
 use crate::{Owner, SchemaId};
 
 impl Engine {
@@ -49,7 +50,8 @@ impl Engine {
         req: &QueryRequest,
     ) -> Result<QueryResponse, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
-        query_authorized(&self.storage.query, &self.registry, &read_owners, req).await
+        let schemas = self.memory_schema_specs();
+        query_authorized(&self.storage.query, &schemas, &read_owners, req).await
     }
 
     /// The read access set (`S_read`) this context resolves to.
@@ -207,7 +209,7 @@ impl Engine {
 
 pub(in crate::engine) async fn query_authorized(
     ports: &QueryStoragePorts,
-    registry: &FlavorRegistryFrozen,
+    schemas: &[MemorySchemaSpec],
     read_owners: &[OwnerRef],
     req: &QueryRequest,
 ) -> Result<QueryResponse, ProtocolError> {
@@ -219,7 +221,7 @@ pub(in crate::engine) async fn query_authorized(
     effective.read_owners = read_owners.to_vec();
     ports
         .memory_read
-        .query_memories(&effective, registry.list().as_slice())
+        .query_memories(&effective, schemas)
         .await
         .map_err(|e| ProtocolError::internal(e.to_string()))
 }

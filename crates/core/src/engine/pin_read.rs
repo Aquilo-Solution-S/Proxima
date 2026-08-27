@@ -450,6 +450,7 @@ mod tests {
         async fn load_memory_graph_payloads(
             &self,
             _identities: &[crate::storage::MemoryGraphIdentity],
+            _schemas: &[crate::read_models::MemorySchemaSpec],
             _include_body: bool,
         ) -> Result<Vec<crate::storage::MemoryGraphPayloadRow>, StorageError> {
             Ok(Vec::new())
@@ -487,7 +488,7 @@ mod tests {
         async fn query_memories(
             &self,
             _req: &crate::verbs::query::QueryRequest,
-            _schemas: &[crate::verbs::schema::SchemaInfo],
+            _schemas: &[crate::read_models::MemorySchemaSpec],
         ) -> Result<crate::verbs::query::QueryResponse, StorageError> {
             Err(StorageError::Internal("unused".into()))
         }

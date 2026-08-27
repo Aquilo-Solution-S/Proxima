@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use proxima_core::read_models::{MemorySnapshot, SidecarSpec};
+use proxima_core::read_models::{MemorySchemaSpec, MemorySnapshot};
 use proxima_core::storage_ports::{
     MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerWritePermit,
 };
@@ -239,12 +239,14 @@ impl MemoryReadPort for PgStorage {
     async fn load_memory_graph_payloads(
         &self,
         identities: &[MemoryGraphIdentity],
+        schemas: &[MemorySchemaSpec],
         include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
         verbs::consolidate::load_memory_graph_payloads(
             &self.pool,
             &self.sidecars,
             identities,
+            schemas,
             include_body,
         )
         .await
@@ -286,7 +288,7 @@ impl MemoryReadPort for PgStorage {
     async fn query_memories(
         &self,
         req: &QueryRequest,
-        schemas: &[proxima_core::verbs::schema::SchemaInfo],
+        schemas: &[MemorySchemaSpec],
     ) -> Result<QueryResponse, StorageError> {
         verbs::query::query_memories(&self.pool, &self.sidecars, req, schemas).await
     }
@@ -342,23 +344,23 @@ impl MemoryInspectPort for PgStorage {
     async fn load_memory_by_id(
         &self,
         memory_id: proxima_core::MemoryId,
-        sidecars: &[SidecarSpec],
+        schemas: &[MemorySchemaSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
-        verbs::consolidate::load_memory_by_id(&self.pool, &self.sidecars, memory_id, sidecars).await
+        verbs::consolidate::load_memory_by_id(&self.pool, &self.sidecars, memory_id, schemas).await
     }
 
     async fn load_memories_by_ids(
         &self,
         read_owners: &[OwnerRef],
         memory_ids: &[MemoryId],
-        sidecars: &[SidecarSpec],
+        schemas: &[MemorySchemaSpec],
     ) -> Result<Vec<MemorySnapshot>, StorageError> {
         verbs::consolidate::load_memories_by_ids(
             &self.pool,
             &self.sidecars,
             read_owners,
             memory_ids,
-            sidecars,
+            schemas,
         )
         .await
     }

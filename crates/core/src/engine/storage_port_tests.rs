@@ -22,7 +22,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
     async fn query_memories(
         &self,
         _req: &crate::verbs::query::QueryRequest,
-        _schemas: &[crate::verbs::schema::SchemaInfo],
+        _schemas: &[crate::read_models::MemorySchemaSpec],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError> {
         Ok(crate::verbs::query::QueryResponse {
             memories: Vec::new(),
@@ -60,6 +60,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
     async fn load_memory_graph_payloads(
         &self,
         _identities: &[crate::MemoryGraphIdentity],
+        _schemas: &[crate::read_models::MemorySchemaSpec],
         _include_body: bool,
     ) -> Result<Vec<crate::MemoryGraphPayloadRow>, StorageError> {
         Ok(Vec::new())
@@ -177,10 +178,9 @@ async fn query_helper_accepts_only_query_read_handles() {
         memory_read: read,
     };
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
-    let registry = crate::FlavorRegistry::new().freeze_or_panic_for_tests();
     let req = crate::verbs::query::QueryRequest::for_owner(owner);
 
-    let response = super::query::query_authorized(&ports, &registry, &[owner], &req)
+    let response = super::query::query_authorized(&ports, &[], &[owner], &req)
         .await
         .expect("query helper should compile against query ports only");
 
@@ -327,7 +327,7 @@ mod storage_port_tests_support {
         async fn load_memory_by_id(
             &self,
             _memory_id: crate::MemoryId,
-            _sidecars: &[crate::read_models::SidecarSpec],
+            _schemas: &[crate::read_models::MemorySchemaSpec],
         ) -> Result<Option<crate::read_models::MemorySnapshot>, StorageError> {
             Ok(None)
         }
@@ -336,7 +336,7 @@ mod storage_port_tests_support {
             &self,
             _read_owners: &[crate::OwnerRef],
             _memory_ids: &[crate::MemoryId],
-            _sidecars: &[crate::read_models::SidecarSpec],
+            _schemas: &[crate::read_models::MemorySchemaSpec],
         ) -> Result<Vec<crate::read_models::MemorySnapshot>, StorageError> {
             Ok(Vec::new())
         }
@@ -469,7 +469,7 @@ mod storage_port_tests_support {
             &self,
             _read_owners: &[OwnerRef],
             _cited_object_id: uuid::Uuid,
-            _sidecars: &[crate::read_models::SidecarSpec],
+            _schemas: &[crate::read_models::MemorySchemaSpec],
             _after: Option<crate::verbs::query::FactCitationCursor>,
             _limit: u32,
         ) -> Result<crate::verbs::query::FactCitationPage, StorageError> {

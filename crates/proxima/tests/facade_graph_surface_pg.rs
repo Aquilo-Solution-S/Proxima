@@ -8,11 +8,22 @@ use proxima::flavor::{
 };
 use proxima::{
     AppInfo, AuthPath, AuthzContext, EdgeExistsRequest, EdgeFilter, EdgeReadRequest, FlavorApp,
-    MemoryLineageDirection, MemoryLineageRequest, Proxima, StorageError, ToolScope, company_owner,
+    GetMemoriesReadRequest, MemoryLineageDirection, MemoryLineageRequest, Proxima, QueryRequest,
+    StorageError, ToolScope, company_owner,
 };
+use proxima_core::engine::{FactCitationReadRequest, GetMemoryReadRequest};
+use proxima_core::flavor::{
+    BandComparability, CounterRule, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract,
+    ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec, Provenance, RankSource,
+    SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm, Surface, TransferRule,
+    WEIGHT_UNIFORM, WeightedField,
+};
+use proxima_core::read_models::MemorySchemaSpec;
+use proxima_core::storage::MemoryGraphIdentity;
+use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthorDerivedRequestInput, EdgeTargetProjection, EntityKind, EntityRef, MemoryOperatorKind,
-    Role, UserId,
+    Role, SearchProjectionColumnKind, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use uuid::Uuid;
@@ -54,11 +65,12 @@ struct FacadeFact {
     note_id: Uuid,
     title: String,
     body: String,
+    tags: Vec<String>,
 }
 
 impl FactPayload for FacadeFact {
-    const SCHEMA_ID: &'static str = "facade-test/fact-v1";
-    const SCHEMA_VERSION: u32 = 1;
+    const SCHEMA_ID: &'static str = "facade-test/fact-v2";
+    const SCHEMA_VERSION: u32 = 2;
 
     fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
@@ -91,14 +103,15 @@ impl PgMemorySidecar for FacadeFact {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO public.facade_surface_fact_v1
-                    (t, note_id, title, body)
-                 VALUES ($1, $2, $3, $4)
+                    (t, note_id, title, body, tags)
+                 VALUES ($1, $2, $3, $4, $5)
                  ON CONFLICT (t) DO NOTHING",
             )
             .bind(memory_id.into_inner())
             .bind(self.note_id)
             .bind(&self.title)
             .bind(&self.body)
+            .bind(&self.tags)
             .execute(tx.as_mut())
             .await
             .map_err(|err| StorageError::Internal(err.to_string()))?;
@@ -119,22 +132,44 @@ impl PgMemoryPayload for FacadeFact {
         memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async move {
-            let row: Option<(Uuid, String, String)> = ctx
+            let row: Option<(Uuid, String, String, Vec<String>)> = ctx
                 .fetch_optional_by_memory_id(
-                    "SELECT note_id, title, body
+                    "SELECT note_id, title, body, tags
                        FROM public.facade_surface_fact_v1
                       WHERE t = $1",
                     memory_id,
                 )
                 .await?;
-            Ok(row.map(|(note_id, title, body)| {
+            Ok(row.map(|(note_id, title, body, tags)| {
                 SidecarPayload::fact(FacadeFact {
                     note_id,
                     title,
                     body,
+                    tags,
                 })
             }))
         })
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct FacadeSidecarlessFact {
+    observation_id: Uuid,
+    body: String,
+}
+
+impl FactPayload for FacadeSidecarlessFact {
+    const SCHEMA_ID: &'static str = "facade-test/sidecarless-fact-v3";
+    const SCHEMA_VERSION: u32 = 3;
+
+    fn receipt_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("observation_id", self.observation_id);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        self.body.clone()
     }
 }
 
@@ -227,13 +262,128 @@ impl PgMemoryPayload for FacadeAbstraction {
     }
 }
 
+const FACADE_BANDS: &[proxima_core::flavor::Band] = &[
+    proxima_core::flavor0::BAND_EXACT,
+    proxima_core::flavor0::BAND_RESCUE,
+    proxima_core::flavor0::BAND_SUBSTRING,
+];
+
+const FACADE_PROJECTION: ProjectionSpec = ProjectionSpec {
+    table: "facade_surface.projection",
+    index: "facade_surface_projection_owner_tsv_gin",
+    overfetch_k: 1_000,
+    band_comparability: BandComparability::CoreBands,
+    rank_source: RankSource::Projection,
+};
+
+const fn facade_memory_surface(table: &'static str) -> Surface {
+    Surface {
+        table,
+        key: KeyShape::MemoryT { column: "t" },
+        owner_column: None,
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Rows,
+        forget: ForgetRule::DumpThenDelete,
+        lexical_language_column: None,
+        counter: CounterRule::Counted("sidecar_rows"),
+        completeness: None,
+    }
+}
+
+static FACADE_CONTRACT: FlavorContract = FlavorContract {
+    flavor_id: "facade-test",
+    ordinal: 7,
+    schemas: &[
+        SchemaContract {
+            id: SchemaRef::new("facade-test", "fact", 2),
+            kind: PayloadKind::Fact,
+            sidecar_table: Some("public.facade_surface_fact_v1"),
+            search: SearchProjectionDecl::Projected {
+                fields: &[
+                    WeightedField {
+                        column: "title",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: WEIGHT_UNIFORM,
+                    },
+                    WeightedField {
+                        column: "body",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: WEIGHT_UNIFORM,
+                    },
+                ],
+                tag_column: Some("tags"),
+                language: LanguagePolicy::Pinned("simple"),
+                bands: FACADE_BANDS,
+                substring: SubstringArm::MemoryFirstNestedLoop,
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "the fixture proves lexical hydration, not embedding",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[facade_memory_surface("public.facade_surface_fact_v1")],
+            natural_key_columns: &["note_id"],
+        },
+        SchemaContract {
+            id: SchemaRef::new("facade-test", "sidecarless-fact", 3),
+            kind: PayloadKind::Fact,
+            sidecar_table: None,
+            search: SearchProjectionDecl::None {
+                why: "a sidecarless Memory has no payload text to project",
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "a sidecarless Memory has no payload text to embed",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[],
+            natural_key_columns: &[],
+        },
+        SchemaContract {
+            id: SchemaRef::new("facade-test", "abstraction", 1),
+            kind: PayloadKind::Abstraction,
+            sidecar_table: Some("public.facade_surface_abstraction_v1"),
+            search: SearchProjectionDecl::None {
+                why: "the fixture's search proof belongs to its version-two Fact",
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "the fixture proves derivation without an embedding client",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::OriginEdges,
+            surfaces: &[facade_memory_surface(
+                "public.facade_surface_abstraction_v1",
+            )],
+            natural_key_columns: &[],
+        },
+    ],
+    state_surfaces: &[],
+    kernel_surfaces: &[],
+    tools: &[],
+    resources: &[],
+    bespoke_erase_legs: &[],
+    bespoke_transfer_legs: &[],
+    projection: ProjectionDecl::Table(FACADE_PROJECTION),
+};
+
+mod facade_fixture_registry {
+    use super::{FACADE_CONTRACT, FacadeAbstraction, FacadeFact, FacadeSidecarlessFact};
+
+    proxima_core::proxima_flavor! {
+        name = "facade-test",
+        display_name = "Facade Surface Test",
+        fact_schemas = [FacadeFact, FacadeSidecarlessFact],
+        abstraction_schemas = [FacadeAbstraction],
+        contract = &FACADE_CONTRACT,
+    }
+}
+
 struct FacadeSurfaceApp;
 
 impl FlavorBundle for FacadeSurfaceApp {
     fn register(registry: &mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError> {
-        registry.try_add_fact_schema::<FacadeFact>()?;
-        registry.try_add_abstraction_schema::<FacadeAbstraction>()?;
-        Ok(())
+        facade_fixture_registry::register(registry)
     }
 
     fn register_pg_sidecars(registry: &mut PgSidecarRegistry) {
@@ -257,6 +407,27 @@ impl FlavorApp for FacadeSurfaceApp {
             version: "1",
         }
     }
+}
+
+fn memory_schema_specs(registry: &proxima_core::FlavorRegistryFrozen) -> Vec<MemorySchemaSpec> {
+    registry
+        .schemas()
+        .iter()
+        .filter_map(|schema| {
+            let kind = match schema.kind {
+                proxima_core::verbs::schema::PayloadKind::Fact => EntityKind::Fact,
+                proxima_core::verbs::schema::PayloadKind::Abstraction => EntityKind::Abstraction,
+                proxima_core::verbs::schema::PayloadKind::Perspective => EntityKind::Perspective,
+                _ => return None,
+            };
+            Some(MemorySchemaSpec {
+                kind,
+                schema_id: schema.schema_id.clone(),
+                schema_version: schema.schema_version,
+                sidecar_table: schema.sidecar_table.clone(),
+            })
+        })
+        .collect()
 }
 
 #[test]
@@ -324,7 +495,8 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         let fact = FacadeFact {
             note_id: Uuid::now_v7(),
             title: "Observed facade gap".to_string(),
-            body: "A consumer needs a single facade crate.".to_string(),
+            body: "quasarregistryprobe needs a single facade crate.".to_string(),
+            tags: vec!["facade-surface-test".to_owned()],
         };
         // The public write path: `Engine` → `UnitOfWork` → the write-session
         // port. The sidecar row comes off the frozen registry, not off a
@@ -343,6 +515,172 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .engine
             .ingest_typed_fact(&write_authz, "facade-surface-test", &fact)
             .await?;
+        let mut query = QueryRequest::for_owner(owner);
+        query.include_payloads = true;
+        let queried = built.engine.query(&authz, &query).await?;
+        let snapshot = queried
+            .memories
+            .iter()
+            .find(|row| row.id == fact_outcome.memory_id)
+            .expect("v2 fact snapshot");
+        assert_eq!(snapshot.schema_version.into_inner(), 2);
+        assert_eq!(
+            snapshot
+                .payload
+                .as_ref()
+                .and_then(SidecarPayload::graph_body),
+            Some(fact.body.clone())
+        );
+        let single = built
+            .engine
+            .get_memory(
+                &authz,
+                &GetMemoryReadRequest {
+                    memory_id: fact_outcome.memory_id,
+                    include_neighbor_edges: false,
+                },
+            )
+            .await?
+            .memory
+            .expect("single v2 snapshot");
+        assert_eq!(single.schema_version.into_inner(), 2);
+        assert_eq!(single.text.as_deref(), Some(fact.body.as_str()));
+        let batch = built
+            .engine
+            .get_memories(
+                &authz,
+                &GetMemoriesReadRequest {
+                    memory_ids: vec![fact_outcome.memory_id],
+                },
+            )
+            .await?;
+        assert_eq!(batch.memories.len(), 1);
+        assert_eq!(batch.memories[0].schema_version.into_inner(), 2);
+        assert_eq!(batch.memories[0].text.as_deref(), Some(fact.body.as_str()));
+
+        let sidecarless_memory_id = insert_raw_fact_admission(
+            built.pool_for_tests(),
+            owner,
+            FacadeSidecarlessFact::SCHEMA_ID,
+            &[],
+        )
+        .await?;
+        let sidecarless_snapshot = built
+            .engine
+            .get_memory(
+                &authz,
+                &GetMemoryReadRequest {
+                    memory_id: sidecarless_memory_id,
+                    include_neighbor_edges: false,
+                },
+            )
+            .await?
+            .memory
+            .expect("sidecarless snapshot");
+        assert_eq!(sidecarless_snapshot.schema_version.into_inner(), 3);
+        assert!(sidecarless_snapshot.payload.is_none());
+        assert!(sidecarless_snapshot.text.is_none());
+
+        let search = built
+            .engine
+            .search(
+                &authz,
+                &proxima::SearchReadRequest {
+                    search: proxima::MemorySearchRequest {
+                        owner,
+                        read_owners: vec![owner],
+                        query: "quasarregistryprobe".to_owned(),
+                        mode: proxima::SearchMode::Lexical,
+                        supersession: proxima::SupersessionStatus::HeadsOnly,
+                        limit: 10,
+                        kind: None,
+                        schema_id: None,
+                        tags: vec!["facade-surface-test".to_owned()],
+                        tag_match: proxima::TagMatch::Any,
+                        since: None,
+                        until: None,
+                        order: proxima::SearchOrder::Relevance,
+                        min_score: None,
+                        semantic_weight: None,
+                        after: None,
+                        query_embedding: None,
+                        embedding_model_id: None,
+                    },
+                    include_body: true,
+                    include_neighbor_edges: false,
+                },
+            )
+            .await?;
+        assert!(
+            search
+                .memories
+                .iter()
+                .any(|row| row.memory_id == fact_outcome.memory_id),
+            "search returns the registered version-two Fact"
+        );
+        assert!(search.payloads.iter().any(|row| {
+            row.memory_id == fact_outcome.memory_id
+                && row.body.as_deref() == Some(fact.body.as_str())
+        }));
+
+        let mut identity_only = QueryRequest::for_owner(owner);
+        identity_only.include_payloads = false;
+        let identity_page = built.engine.query(&authz, &identity_only).await?;
+        let identity_row = identity_page
+            .memories
+            .iter()
+            .find(|row| row.id == fact_outcome.memory_id)
+            .expect("v2 query row without payload");
+        assert_eq!(identity_row.schema_version.into_inner(), 2);
+        assert!(identity_row.payload.is_none());
+
+        let foreign_owner = company_owner(Uuid::now_v7());
+        let foreign_memory_id = insert_raw_fact_admission(
+            built.pool_for_tests(),
+            foreign_owner,
+            FacadeSidecarlessFact::SCHEMA_ID,
+            &[],
+        )
+        .await?;
+
+        let unknown = MemoryId::new(Uuid::now_v7());
+        let collapsed = built
+            .engine
+            .get_memories(
+                &authz,
+                &GetMemoriesReadRequest {
+                    memory_ids: vec![fact_outcome.memory_id, unknown, foreign_memory_id],
+                },
+            )
+            .await?;
+        assert_eq!(collapsed.memories.len(), 1);
+        assert_eq!(collapsed.memories[0].memory_id, fact_outcome.memory_id);
+
+        let citation = built
+            .engine
+            .read_fact_citation(
+                &authz,
+                &FactCitationReadRequest {
+                    fact_memory_id: fact_outcome.memory_id,
+                },
+            )
+            .await?;
+        assert!(citation.is_none(), "the v2 visibility preflight succeeds");
+
+        let graph_payloads = proxima_storage_pg::verbs::consolidate::load_memory_graph_payloads(
+            built.pool_for_tests(),
+            built.pg_sidecars.as_ref(),
+            &[MemoryGraphIdentity {
+                memory_id: fact_outcome.memory_id,
+                kind: EntityKind::Fact,
+                schema_id: SchemaId::new(FacadeFact::SCHEMA_ID.to_owned()),
+            }],
+            &memory_schema_specs(built.registry.as_ref()),
+            true,
+        )
+        .await?;
+        assert_eq!(graph_payloads.len(), 1);
+        assert_eq!(graph_payloads[0].body.as_deref(), Some(fact.body.as_str()));
 
         let derived_handle = MemoryId::new(Uuid::now_v7());
         let derived_from = [EdgeEndpoint::memory(
@@ -495,6 +833,171 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
     result
 }
 
+#[tokio::test]
+async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloads()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = unique_db_name("proxima_facade_sidecar_integrity");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            AuthPath::HostBearer,
+        );
+
+        let valid_with_extension = insert_raw_facade_fact(
+            built.pool_for_tests(),
+            owner,
+            &[
+                "public.facade_surface_fact_v1",
+                "public.facade_surface_abstraction_v1",
+            ],
+            true,
+        )
+        .await?;
+        let missing_stamp =
+            insert_raw_facade_fact(built.pool_for_tests(), owner, &[], false).await?;
+        let wrong_stamp = insert_raw_facade_fact(
+            built.pool_for_tests(),
+            owner,
+            &["public.facade_surface_abstraction_v1"],
+            false,
+        )
+        .await?;
+        let missing_primary_row = insert_raw_facade_fact(
+            built.pool_for_tests(),
+            owner,
+            &["public.facade_surface_fact_v1"],
+            false,
+        )
+        .await?;
+
+        let mut valid_query = QueryRequest::for_owner(owner);
+        valid_query.include_payloads = false;
+        valid_query.memory_ids = vec![valid_with_extension];
+        let valid = built.engine.query(&authz, &valid_query).await?;
+        assert_eq!(valid.memories.len(), 1);
+        assert_eq!(valid.memories[0].schema_version.into_inner(), 2);
+        assert!(valid.memories[0].payload.is_none());
+
+        let Err(mixed_err) = built
+            .engine
+            .get_memories(
+                &authz,
+                &GetMemoriesReadRequest {
+                    memory_ids: vec![valid_with_extension, wrong_stamp],
+                },
+            )
+            .await
+        else {
+            panic!("one corrupt visible row must fail the whole batch");
+        };
+        assert_eq!(mixed_err.code, proxima_core::ErrorCode::Internal);
+
+        for (label, memory_id) in [
+            ("missing primary stamp", missing_stamp),
+            ("wrong primary stamp", wrong_stamp),
+            ("missing primary row", missing_primary_row),
+        ] {
+            let mut query = QueryRequest::for_owner(owner);
+            query.include_payloads = false;
+            query.memory_ids = vec![memory_id];
+            let Err(err) = built.engine.query(&authz, &query).await else {
+                panic!("{label} must fail closed");
+            };
+            assert_eq!(
+                err.code,
+                proxima_core::ErrorCode::Internal,
+                "{label}: {err}"
+            );
+        }
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+async fn insert_raw_facade_fact(
+    pool: &sqlx::PgPool,
+    owner: proxima::Owner,
+    stamped_tables: &[&str],
+    insert_primary_row: bool,
+) -> Result<MemoryId, sqlx::Error> {
+    let memory_id =
+        insert_raw_fact_admission(pool, owner, FacadeFact::SCHEMA_ID, stamped_tables).await?;
+    if insert_primary_row {
+        sqlx::query(
+            "INSERT INTO public.facade_surface_fact_v1 (t, note_id, title, body)
+             VALUES ($1, $2, 'integrity fixture', 'payload present')",
+        )
+        .bind(memory_id.into_inner())
+        .bind(Uuid::now_v7())
+        .execute(pool)
+        .await?;
+    }
+    Ok(memory_id)
+}
+
+async fn insert_raw_fact_admission(
+    pool: &sqlx::PgPool,
+    owner: proxima::Owner,
+    schema_id: &str,
+    stamped_tables: &[&str],
+) -> Result<MemoryId, sqlx::Error> {
+    let handle = Uuid::now_v7();
+    let t = Uuid::now_v7();
+    let owner_id = owner.stored_owner_id();
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, $2::proxima_core.owner_kind)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(owner_id)
+    .bind(proxima_core::OwnerRefKind::of(&owner).as_str())
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'fact', $2, $3, $4)",
+    )
+    .bind(handle)
+    .bind(schema_id)
+    .bind(owner_id)
+    .bind(t)
+    .execute(pool)
+    .await?;
+    let stamped_tables = stamped_tables
+        .iter()
+        .map(|table| (*table).to_owned())
+        .collect::<Vec<_>>();
+    sqlx::query(
+        "INSERT INTO proxima_core.memory
+            (handle, t, kind, owner_id, schema_id, sidecar_tables)
+         VALUES ($1, $2, 'fact', $3, $4, $5)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(owner_id)
+    .bind(schema_id)
+    .bind(&stamped_tables)
+    .execute(pool)
+    .await?;
+    Ok(MemoryId::new(t))
+}
+
 /// The test flavor's own baseline, as a real flavor ships one.
 ///
 /// It used to be a `create_sidecar_tables(pool)` called AFTER `build()`,
@@ -518,13 +1021,18 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
     let sidecars = sidecars
         .freeze_against(&registry)
         .expect("the facade test PG registrations match its contract");
+    let projection = proxima_storage_pg::projection::projection_artifacts(&FACADE_CONTRACT)
+        .expect("the facade projection declaration is valid")
+        .expect("the facade contract declares a projection table");
 
     let mut statements = vec![
+        "CREATE SCHEMA facade_surface".to_owned(),
         "CREATE TABLE public.facade_surface_fact_v1 (
             t uuid PRIMARY KEY,
             note_id uuid NOT NULL,
             title text NOT NULL,
-            body text NOT NULL
+            body text NOT NULL,
+            tags text[] NOT NULL DEFAULT '{}'
         )"
         .to_owned(),
         "CREATE TABLE public.facade_surface_abstraction_v1 (
@@ -543,6 +1051,12 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
              ('public.facade_surface_abstraction_v1', 'facade-test')"
             .to_owned(),
     ];
+    statements.extend(
+        projection
+            .forward()
+            .into_iter()
+            .map(|statement| statement.trim_end_matches(';').to_owned()),
+    );
     statements.extend(
         sidecars
             .declaration_trigger_artifacts("facade-test")

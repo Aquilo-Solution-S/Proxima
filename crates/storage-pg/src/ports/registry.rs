@@ -1,4 +1,4 @@
-use proxima_core::read_models::{AbstractionRow, FactRow, SidecarSpec};
+use proxima_core::read_models::{AbstractionRow, FactRow, MemorySchemaSpec};
 use proxima_core::storage_ports::RegistryProjectionPort;
 use proxima_core::{Owner, StorageError};
 
@@ -10,14 +10,14 @@ impl RegistryProjectionPort for PgStorage {
         &self,
         owner: &Owner,
         memory_id: proxima_core::MemoryId,
-        sidecars: &[SidecarSpec],
+        schemas: &[MemorySchemaSpec],
     ) -> Result<Vec<FactRow>, StorageError> {
         verbs::consolidate::load_memory_batch_facts(
             &self.pool,
             &self.sidecars,
             owner,
             memory_id,
-            sidecars,
+            schemas,
         )
         .await
     }
@@ -25,14 +25,14 @@ impl RegistryProjectionPort for PgStorage {
     async fn load_abstraction_heads(
         &self,
         owner: &Owner,
-        sidecars: &[SidecarSpec],
+        schemas: &[MemorySchemaSpec],
         limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError> {
         verbs::consolidate::load_abstraction_heads(
             &self.pool,
             &self.sidecars,
             owner,
-            sidecars,
+            schemas,
             limit,
         )
         .await

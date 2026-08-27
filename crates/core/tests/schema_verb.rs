@@ -48,7 +48,7 @@ macro_rules! fact_payload {
 
 fact_payload!(
     StatefulV1,
-    id = "test/stateful",
+    id = "test/stateful-v1",
     version = 1,
     table = Some("test_schema.stateful_v1"),
     natural_key = &["entity_id"],
@@ -59,7 +59,7 @@ fact_payload!(
 );
 fact_payload!(
     StatefulV2,
-    id = "test/stateful",
+    id = "test/stateful-v2",
     version = 2,
     table = Some("test_schema.stateful_v2"),
     natural_key = &["entity_id"],
@@ -96,12 +96,13 @@ fn schema_response_lists_the_frozen_registry() {
     assert_eq!(actual, expected);
 }
 
-/// Every registered version of a stateful Fact schema carries its own
-/// sidecar table and natural-key columns. Storage reads them at ingest to
-/// pick the series `handle`; there is no separate per-query filter list.
+/// Every registered stateful Fact selector carries its own sidecar table and
+/// natural-key columns. Memory stores no schema version, so a new version uses
+/// a new selector rather than creating an ambiguous `(Fact, schema_id)` pair.
 #[test]
-fn every_stateful_fact_schema_version_registers_its_natural_key() {
-    let schema_id = SchemaId::new("test/stateful".into());
+fn every_stateful_fact_selector_registers_its_natural_key() {
+    let v1_schema_id = SchemaId::new("test/stateful-v1".into());
+    let v2_schema_id = SchemaId::new("test/stateful-v2".into());
     let mut registry = FlavorRegistry::new();
     registry
         .try_add_fact_schema::<StatefulV1>()
@@ -117,7 +118,10 @@ fn every_stateful_fact_schema_version_registers_its_natural_key() {
     let stateful = registry
         .list()
         .into_iter()
-        .filter(|info| info.schema_id == schema_id && info.kind == PayloadKind::Fact)
+        .filter(|info| {
+            (info.schema_id == v1_schema_id || info.schema_id == v2_schema_id)
+                && info.kind == PayloadKind::Fact
+        })
         .collect::<Vec<_>>();
     let versions = stateful
         .iter()
@@ -139,8 +143,15 @@ fn every_stateful_fact_schema_version_registers_its_natural_key() {
     );
     assert_eq!(
         registry
-            .lookup_payload(&schema_id, SchemaVersion::new(1), PayloadKind::Fact)
+            .lookup_payload(&v1_schema_id, SchemaVersion::new(1), PayloadKind::Fact,)
             .expect("stateful v1 schema")
+            .natural_key_columns,
+        ["entity_id"]
+    );
+    assert_eq!(
+        registry
+            .lookup_payload(&v2_schema_id, SchemaVersion::new(2), PayloadKind::Fact,)
+            .expect("stateful v2 schema")
             .natural_key_columns,
         ["entity_id"]
     );

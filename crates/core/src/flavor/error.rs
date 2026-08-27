@@ -8,6 +8,14 @@ pub enum FlavorRegistryError {
         schema_version: SchemaVersion,
         kind: PayloadKind,
     },
+    /// A Memory stores no schema version, so F/A/P registrations must have a
+    /// unique `(kind, schema_id)` selector at freeze.
+    DuplicateMemorySchemaSelector {
+        schema_id: SchemaId,
+        kind: PayloadKind,
+        first_version: SchemaVersion,
+        conflicting_version: SchemaVersion,
+    },
     DuplicateTool {
         name: &'static str,
     },
@@ -311,6 +319,15 @@ impl std::fmt::Display for FlavorRegistryError {
             } => write!(
                 f,
                 "duplicate schema registered: {schema_id} v{schema_version} {kind:?}"
+            ),
+            Self::DuplicateMemorySchemaSelector {
+                schema_id,
+                kind,
+                first_version,
+                conflicting_version,
+            } => write!(
+                f,
+                "duplicate Memory schema selector: {schema_id} {kind:?} has v{first_version} and v{conflicting_version}"
             ),
             Self::DuplicateTool { name } => {
                 write!(f, "duplicate tool name registered: {name}")

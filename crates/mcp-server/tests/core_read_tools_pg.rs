@@ -695,7 +695,7 @@ async fn insert_fact(
         pg,
         owner,
         "fact",
-        "test/wake-e2e-fact-v1",
+        "core/agent-note-v1",
         &[],
         &["proxima_core.agent_note_v1"],
     )

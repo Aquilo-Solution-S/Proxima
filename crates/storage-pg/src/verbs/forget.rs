@@ -1109,6 +1109,22 @@ pub async fn hydrate_memory(
     .fetch_one(tx.as_mut())
     .await
     .map_err(map_err)?;
+    let mut stamped_tables = rec
+        .sidecar_dumps
+        .iter()
+        .map(|(table, _)| table.clone())
+        .collect::<Vec<_>>();
+    if let Some(primary) = sidecars.memory_sidecar_table_for_schema(
+        match rec.row.kind.as_str() {
+            "abstraction" => proxima_core::EntityKind::Abstraction,
+            "perspective" => proxima_core::EntityKind::Perspective,
+            _ => proxima_core::EntityKind::Fact,
+        },
+        &rec.schema_id,
+    ) && !stamped_tables.iter().any(|table| table == primary)
+    {
+        stamped_tables.push(primary.to_owned());
+    }
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
@@ -1126,12 +1142,7 @@ pub async fn hydrate_memory(
     .bind(cooled_content)
     .bind(&rec.row.origins)
     .bind(&rec.row.refs)
-    .bind(
-        rec.sidecar_dumps
-            .iter()
-            .map(|(table, _)| table.clone())
-            .collect::<Vec<_>>(),
-    )
+    .bind(stamped_tables)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;

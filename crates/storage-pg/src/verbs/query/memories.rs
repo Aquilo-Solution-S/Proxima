@@ -5,11 +5,12 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use futures_util::future::try_join_all;
+use proxima_core::read_models::MemorySchemaSpec;
 use proxima_core::verbs::query::{
     EntityKind, QueryCursor, QueryRequest, QueryResponse, SupersessionStatus,
 };
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{MemoryId, SchemaId, SchemaVersion, SidecarPayload, StorageError};
+use proxima_core::verbs::schema::PayloadKind;
+use proxima_core::{MemoryId, SchemaId, SidecarPayload, StorageError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -20,11 +21,12 @@ use super::edges::query_edges;
 use super::goals::query_goals;
 use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water};
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn query_memories(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &QueryRequest,
-    _schemas: &[SchemaInfo],
+    schemas: &[MemorySchemaSpec],
 ) -> Result<QueryResponse, StorageError> {
     let owner_ids: Vec<Uuid> = req
         .read_owners
@@ -103,15 +105,49 @@ pub(crate) async fn query_memories(
         None
     };
 
-    let mut payloads = if req.include_payloads {
-        load_row_payloads_batch(pool, sidecars, &rows).await?
-    } else {
-        HashMap::new()
-    };
+    let mut schema_versions = HashMap::new();
+    for row in &rows {
+        let kind = parse_memory_kind(&row.kind)?;
+        let spec = proxima_core::resolve_memory_schema(
+            schemas,
+            kind,
+            &SchemaId::new(row.schema_id.clone()),
+        )?;
+        validate_row_stamp(
+            sidecars,
+            spec,
+            &row.sidecar_tables,
+            MemoryId::new(row.memory_id),
+        )?;
+        schema_versions.insert(MemoryId::new(row.memory_id), spec.schema_version);
+    }
+    // `include_payloads` controls projection, not integrity. A required
+    // primary sidecar that disappeared is corruption even when the caller
+    // asks only for identity fields, so every query verifies its presence.
+    let mut payloads = load_row_payloads_batch(pool, sidecars, schemas, &rows).await?;
     let mut memories = Vec::with_capacity(rows.len());
     for row in rows {
-        let payload = payloads.remove(&MemoryId::new(row.memory_id));
-        memories.push(memory_row_from_db(row, payload)?);
+        let id = MemoryId::new(row.memory_id);
+        let loaded_payload = payloads.remove(&id);
+        let schema_version = schema_versions
+            .remove(&id)
+            .ok_or_else(|| StorageError::Internal("query schema resolution lost row".into()))?;
+        if proxima_core::resolve_memory_schema(
+            schemas,
+            parse_memory_kind(&row.kind)?,
+            &SchemaId::new(row.schema_id.clone()),
+        )?
+        .sidecar_table
+        .as_deref()
+        .is_some_and(|table| {
+            loaded_payload.is_none() && !sidecars.is_owner_pinned_memory_sidecar_table(table)
+        }) {
+            return Err(StorageError::ConstraintViolation(format!(
+                "required sidecar payload missing for memory {id:?}"
+            )));
+        }
+        let payload = req.include_payloads.then_some(loaded_payload).flatten();
+        memories.push(memory_row_from_db(row, payload, schema_version)?);
     }
 
     let (goals, next_goal_cursor) =
@@ -136,27 +172,29 @@ pub(crate) async fn query_memories(
 async fn load_row_payloads_batch(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
+    schemas: &[MemorySchemaSpec],
     rows: &[MemoryRowDb],
 ) -> Result<HashMap<MemoryId, SidecarPayload>, StorageError> {
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for row in rows {
-        let schema_version = u32::try_from(row.schema_version).map_err(|_| {
-            StorageError::Internal(format!(
-                "invalid memory schema_version {} for memory {}",
-                row.schema_version, row.memory_id
-            ))
-        })?;
-        let kind = match row.kind.as_str() {
-            "fact" | "Fact" => PayloadKind::Fact,
-            "abstraction" | "Abstraction" => PayloadKind::Abstraction,
-            "perspective" | "Perspective" => PayloadKind::Perspective,
-            _ => continue,
+        let entity_kind = parse_memory_kind(&row.kind)?;
+        let spec = proxima_core::resolve_memory_schema(
+            schemas,
+            entity_kind,
+            &SchemaId::new(row.schema_id.clone()),
+        )?;
+        let kind = payload_kind_for(entity_kind).expect("memory kind has payload kind");
+        validate_row_stamp(
+            sidecars,
+            spec,
+            &row.sidecar_tables,
+            MemoryId::new(row.memory_id),
+        )?;
+        let Some(schema_sidecar) = spec.sidecar_table.as_ref() else {
+            continue;
         };
-        let key = PgSidecarKey::new(
-            kind,
-            SchemaId::new(row.schema_id.clone()),
-            SchemaVersion::new(schema_version),
-        );
+        let _ = schema_sidecar;
+        let key = PgSidecarKey::new(kind, spec.schema_id.clone(), spec.schema_version);
         if sidecars.contains(&key) {
             ids_by_key
                 .entry(key)
@@ -197,7 +235,7 @@ fn memory_page_sql(
         "SELECT m.t AS memory_id, m.handle, \
                 COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
                 o.kind::text::proxima_core.owner_kind AS owner_kind, \
-                m.owner_id, m.schema_id, 1::int4 AS schema_version, \
+                m.owner_id, m.schema_id, m.sidecar_tables, \
                 m.kind::text AS kind, m.origins, m.refs \
          {from} \
          JOIN proxima_core.owners o ON o.owner_id = m.owner_id \
@@ -226,6 +264,46 @@ fn memory_page_sql(
     }
     let _ = write!(sql, " ORDER BY m.t DESC LIMIT {fetch_limit}");
     sql
+}
+
+fn parse_memory_kind(kind: &str) -> Result<EntityKind, StorageError> {
+    match kind {
+        "fact" | "Fact" => Ok(EntityKind::Fact),
+        "abstraction" | "Abstraction" => Ok(EntityKind::Abstraction),
+        "perspective" | "Perspective" => Ok(EntityKind::Perspective),
+        other => Err(StorageError::ConstraintViolation(format!(
+            "invalid memory kind {other}"
+        ))),
+    }
+}
+
+fn payload_kind_for(kind: EntityKind) -> Option<PayloadKind> {
+    match kind {
+        EntityKind::Fact => Some(PayloadKind::Fact),
+        EntityKind::Abstraction => Some(PayloadKind::Abstraction),
+        EntityKind::Perspective => Some(PayloadKind::Perspective),
+        EntityKind::Goal => None,
+    }
+}
+
+fn validate_row_stamp(
+    sidecars: &PgSidecarRegistryFrozen,
+    spec: &MemorySchemaSpec,
+    stamped_tables: &[String],
+    memory_id: MemoryId,
+) -> Result<(), StorageError> {
+    let Some(table) = spec.sidecar_table.as_deref() else {
+        return Ok(());
+    };
+    let kind = payload_kind_for(spec.kind).expect("memory kind has payload kind");
+    if sidecars.table_for_schema(kind, &spec.schema_id, spec.schema_version) != Some(table)
+        || !stamped_tables.iter().any(|stamped| stamped == table)
+    {
+        return Err(StorageError::ConstraintViolation(format!(
+            "memory {memory_id:?} has invalid sidecar stamp for {table}"
+        )));
+    }
+    Ok(())
 }
 
 /// [`memory_page_sql`] with the request-derived inputs recomputed exactly
@@ -258,6 +336,76 @@ pub fn memory_page_sql_for_tests(req: &QueryRequest) -> Result<String, StorageEr
 
 #[cfg(test)]
 mod tests {
+    use super::{MemorySchemaSpec, validate_row_stamp};
+    use crate::sidecars::{PgSidecarRegistryFrozen, core_pg_sidecars};
+    use proxima_core::{AgentNoteV1, EntityKind, FactPayload, MemoryId, SchemaId, SchemaVersion};
+
+    #[test]
+    fn required_primary_stamp_is_checked_against_the_frozen_sidecar_registry() {
+        let spec = MemorySchemaSpec {
+            kind: EntityKind::Fact,
+            schema_id: SchemaId::new("test/fact".to_owned()),
+            schema_version: SchemaVersion::new(2),
+            sidecar_table: Some("test.fact_v2".to_owned()),
+        };
+        let err = validate_row_stamp(
+            &PgSidecarRegistryFrozen::default(),
+            &spec,
+            &[],
+            MemoryId::new(uuid::Uuid::now_v7()),
+        )
+        .expect_err("unregistered or unstamped primary must fail closed");
+        assert!(err.to_string().contains("invalid sidecar stamp"));
+    }
+
+    #[test]
+    fn sidecarless_registered_memory_needs_no_stamp() {
+        let spec = MemorySchemaSpec {
+            kind: EntityKind::Fact,
+            schema_id: SchemaId::new("test/fact".to_owned()),
+            schema_version: SchemaVersion::new(2),
+            sidecar_table: None,
+        };
+        validate_row_stamp(
+            &PgSidecarRegistryFrozen::default(),
+            &spec,
+            &["extra.table".to_owned()],
+            MemoryId::new(uuid::Uuid::now_v7()),
+        )
+        .expect("sidecarless memory permits extra declared stamps");
+    }
+
+    #[test]
+    fn primary_stamp_must_be_present_but_declared_extensions_do_not_interfere() {
+        let registry = core_pg_sidecars();
+        let primary = AgentNoteV1::sidecar_table().expect("AgentNote has a primary sidecar");
+        let spec = MemorySchemaSpec {
+            kind: EntityKind::Fact,
+            schema_id: AgentNoteV1::schema_id(),
+            schema_version: SchemaVersion::new(AgentNoteV1::SCHEMA_VERSION),
+            sidecar_table: Some(primary.to_owned()),
+        };
+        let memory_id = MemoryId::new(uuid::Uuid::now_v7());
+
+        validate_row_stamp(&registry, &spec, &[primary.to_owned()], memory_id)
+            .expect("the registered primary stamp agrees");
+        validate_row_stamp(
+            &registry,
+            &spec,
+            &["proxima_core.write_act_v1".to_owned(), primary.to_owned()],
+            memory_id,
+        )
+        .expect("an additional declared extension does not select the schema");
+        let err = validate_row_stamp(
+            &registry,
+            &spec,
+            &["proxima_core.write_act_v1".to_owned()],
+            memory_id,
+        )
+        .expect_err("a different declared table cannot stand in for the primary");
+        assert!(err.to_string().contains("invalid sidecar stamp"));
+    }
+
     #[test]
     fn non_head_query_does_not_join_head_for_schema() {
         let src = include_str!("memories.rs");

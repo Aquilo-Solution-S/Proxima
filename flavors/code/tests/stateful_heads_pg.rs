@@ -15,7 +15,7 @@ use std::time::Duration;
 
 mod common;
 
-use common::{code_registry_with_test_citations, migrated_db, seed_memory_with_sidecars};
+use common::{migrated_db, seed_memory_with_sidecars};
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 use proxima_core::engine::Engine;
 use proxima_core::verbs::fact_ingest::{
@@ -24,8 +24,8 @@ use proxima_core::verbs::fact_ingest::{
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaTombstone};
 use proxima_core::{
-    AbstractionPayload, FactPayload, FlavorRegistry, Owner, OwnerRef, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, UserId,
+    AbstractionPayload, FactPayload, FlavorRegistry, Owner, OwnerRef, PayloadKeyBuilder, SchemaId,
+    SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
@@ -38,7 +38,44 @@ fn make_owner() -> (UserId, Owner) {
 }
 
 fn registry_for_test() -> FlavorRegistryFrozen {
-    code_registry_with_test_citations()
+    let mut registry = FlavorRegistry::new();
+    proxima_code::register(&mut registry).expect("code schema registration");
+    registry.add_fact_schema_or_panic_for_tests::<StatelessFactV1>();
+    registry
+        .try_add_opaque_schema(
+            SchemaId::new(common::TEST_CITED_BLOB_SCHEMA_ID.into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitedObject,
+        )
+        .expect("test cited-object registration");
+    registry
+        .try_add_opaque_schema(
+            SchemaId::new(common::TEST_CITATION_BLOB_SCHEMA_ID.into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitationMapping,
+        )
+        .expect("test citation-mapping registration");
+    registry.freeze_or_panic_for_tests()
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct StatelessFactV1 {
+    value: String,
+}
+
+impl FactPayload for StatelessFactV1 {
+    const SCHEMA_ID: &'static str = "test/stateless-fact-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn receipt_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("value", &self.value);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        self.value.clone()
+    }
 }
 
 fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand {
@@ -287,9 +324,9 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
 
         let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
 
-        // Two distinct commit Facts.
+        // Two distinct sidecarless Facts.
         for payload in [b"c1" as &[u8], b"c2"] {
-            let draft = fresh_draft(owner, CommitV1::SCHEMA_ID, payload);
+            let draft = fresh_draft(owner, StatelessFactV1::SCHEMA_ID, payload);
             engine
                 .fact_ingest(
                     &proxima_core::AuthzContext::single_owner(
@@ -305,7 +342,7 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             owner,
             read_owners: vec![owner],
             entity_kind: None,
-            schema_id: Some(SchemaId::new(CommitV1::SCHEMA_ID.into())),
+            schema_id: Some(SchemaId::new(StatelessFactV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
             goal_state: None,
             assignment: None,

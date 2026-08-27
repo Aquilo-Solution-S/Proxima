@@ -11,7 +11,7 @@ pub struct InboundPinQuery<'a> {
 }
 
 use crate::edge::{EdgeKind, PinNode};
-use crate::read_models::{MemorySnapshot, SidecarSpec};
+use crate::read_models::{MemorySchemaSpec, MemorySnapshot};
 use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphIdentity,
     MemoryGraphPayloadRow, MemoryKindRow, StorageError,
@@ -76,6 +76,7 @@ pub trait MemoryReadPort: Send + Sync {
     async fn load_memory_graph_payloads(
         &self,
         identities: &[MemoryGraphIdentity],
+        schemas: &[MemorySchemaSpec],
         include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError>;
 
@@ -106,7 +107,7 @@ pub trait MemoryReadPort: Send + Sync {
     async fn query_memories(
         &self,
         req: &crate::verbs::query::QueryRequest,
-        schemas: &[crate::verbs::schema::SchemaInfo],
+        schemas: &[MemorySchemaSpec],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
 
     async fn search_memories(
@@ -137,7 +138,7 @@ pub trait MemoryInspectPort: Send + Sync {
     async fn load_memory_by_id(
         &self,
         memory_id: crate::MemoryId,
-        sidecars: &[SidecarSpec],
+        schemas: &[MemorySchemaSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError>;
 
     /// Batch counterpart of [`Self::load_memory_by_id`], visibility-scoped:
@@ -148,7 +149,7 @@ pub trait MemoryInspectPort: Send + Sync {
         &self,
         read_owners: &[OwnerRef],
         memory_ids: &[crate::MemoryId],
-        sidecars: &[SidecarSpec],
+        schemas: &[MemorySchemaSpec],
     ) -> Result<Vec<MemorySnapshot>, StorageError>;
 }
 
@@ -162,7 +163,7 @@ pub trait CitationPort: Send + Sync {
         &self,
         read_owners: &[OwnerRef],
         cited_object_id: uuid::Uuid,
-        sidecars: &[SidecarSpec],
+        schemas: &[MemorySchemaSpec],
         after: Option<crate::verbs::query::FactCitationCursor>,
         limit: u32,
     ) -> Result<crate::verbs::query::FactCitationPage, StorageError>;

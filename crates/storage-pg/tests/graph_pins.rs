@@ -1,6 +1,7 @@
 //! Pins on the node, PK outbound, GIN inbound, lineage by t.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
+use proxima_core::read_models::MemorySchemaSpec;
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{InboundPinQuery, MemoryReadPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
@@ -8,16 +9,38 @@ use proxima_core::verbs::query::{
     EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageRequest, QueryRequest,
 };
 use proxima_core::{
-    AccessKind, AgentNoteV1, EdgeKind, EdgeTargetProjection, EntityRef, FactPayload, OwnerRef,
-    SchemaId, SchemaVersion, SidecarPayload, UserId, project_listed_edge, project_window_edges,
+    AbstractionPayload, AccessKind, AgentDerivationV1, EdgeKind, EdgeTargetProjection, EntityRef,
+    OwnerRef, SchemaId, SchemaVersion, SidecarPayload, UserId, project_listed_edge,
+    project_window_edges,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
+fn memory_schema_specs(registry: &proxima_core::FlavorRegistryFrozen) -> Vec<MemorySchemaSpec> {
+    registry
+        .schemas()
+        .iter()
+        .filter_map(|schema| {
+            let kind = match schema.kind {
+                proxima_core::verbs::schema::PayloadKind::Fact => EntityKind::Fact,
+                proxima_core::verbs::schema::PayloadKind::Abstraction => EntityKind::Abstraction,
+                proxima_core::verbs::schema::PayloadKind::Perspective => EntityKind::Perspective,
+                _ => return None,
+            };
+            Some(MemorySchemaSpec {
+                kind,
+                schema_id: schema.schema_id.clone(),
+                schema_version: schema.schema_version,
+                sidecar_table: schema.sidecar_table.clone(),
+            })
+        })
+        .collect()
+}
+
 fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
     FactWriteCommand {
-        schema_id: SchemaId::new(format!("graph/{kind}")),
+        schema_id: SchemaId::new("core/upload-v1".to_owned()),
         schema_version: SchemaVersion::new(1),
         handle: None,
         source_id: None,
@@ -47,9 +70,9 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url)
-            .await?
-            .with_flavors(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests());
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let specs = memory_schema_specs(&registry);
+        let pg = PgStorage::connect(&url).await?.with_flavors(&registry);
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -58,29 +81,32 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
             .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
             .await?;
         let mut derived_cmd = draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]);
-        derived_cmd.schema_id = SchemaId::new("core/agent-note-v1".into());
-        // `agent-note-v1` is `LanguagePolicy::PerRow`: the write names a
+        derived_cmd.schema_id = SchemaId::new(AgentDerivationV1::SCHEMA_ID.into());
+        // `agent-derivation-v1` is `LanguagePolicy::PerRow`: the write names a
         // language.
         derived_cmd.lexical_language =
             Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
         // The typed write, not `ingest_fact_atomic` plus a hand-written row:
-        // it stamps `sidecar_tables`, without which the note row is one no
+        // it stamps `sidecar_tables`, without which the derivation row is one no
         // forget, erase or export can reach.
         let authorized = AuthorizedFactWrite::new_for_tests(
             OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
             derived_cmd,
-            AgentNoteV1::sidecar_table().map(str::to_owned),
+            Some(AgentDerivationV1::sidecar_table().to_owned()),
             Vec::new(),
         );
         let derived = pg
             .ingest_fact_with_typed_sidecar(
                 &authorized,
-                &[SidecarPayload::fact(AgentNoteV1 {
-                    note_id: Uuid::now_v7(),
+                &[SidecarPayload::abstraction(AgentDerivationV1 {
                     title: "derived title".into(),
                     body: "made from leaf".into(),
                     tags: Vec::new(),
                     idempotency_key: None,
+                    source_memory_ids: vec![leaf.memory_id.into_inner()],
+                    model_id: "test".into(),
+                    client_name: "test".into(),
+                    client_version: "1".into(),
                 })],
                 None,
             )
@@ -88,7 +114,7 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
 
         let mut q = QueryRequest::for_owner(owner);
         q.include_payloads = false;
-        let page = pg.query_memories(&q, &[]).await?;
+        let page = pg.query_memories(&q, &specs).await?;
         let derived_row = page
             .memories
             .iter()

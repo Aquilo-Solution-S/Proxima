@@ -262,7 +262,7 @@ pub(in crate::engine) mod tests {
         async fn query_memories(
             &self,
             _req: &verbs::query::QueryRequest,
-            _schemas: &[verbs::schema::SchemaInfo],
+            _schemas: &[crate::read_models::MemorySchemaSpec],
         ) -> Result<verbs::query::QueryResponse, StorageError> {
             Ok(verbs::query::QueryResponse {
                 memories: Vec::new(),
@@ -300,6 +300,7 @@ pub(in crate::engine) mod tests {
         async fn load_memory_graph_payloads(
             &self,
             _identities: &[MemoryGraphIdentity],
+            _schemas: &[crate::read_models::MemorySchemaSpec],
             _include_body: bool,
         ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
             Ok(Vec::new())
@@ -345,7 +346,7 @@ pub(in crate::engine) mod tests {
         async fn load_memory_by_id(
             &self,
             _memory_id: MemoryId,
-            _sidecars: &[SidecarSpec],
+            _schemas: &[crate::read_models::MemorySchemaSpec],
         ) -> Result<Option<MemorySnapshot>, StorageError> {
             Ok(None)
         }
@@ -354,7 +355,7 @@ pub(in crate::engine) mod tests {
             &self,
             _read_owners: &[OwnerRef],
             _memory_ids: &[MemoryId],
-            _sidecars: &[SidecarSpec],
+            _schemas: &[crate::read_models::MemorySchemaSpec],
         ) -> Result<Vec<MemorySnapshot>, StorageError> {
             Ok(Vec::new())
         }
@@ -648,7 +649,7 @@ pub(in crate::engine) mod tests {
             &self,
             _read_owners: &[OwnerRef],
             _cited_object_id: uuid::Uuid,
-            _sidecars: &[SidecarSpec],
+            _schemas: &[crate::read_models::MemorySchemaSpec],
             _after: Option<verbs::query::FactCitationCursor>,
             _limit: u32,
         ) -> Result<verbs::query::FactCitationPage, StorageError> {
@@ -879,7 +880,7 @@ pub(in crate::engine) mod tests {
             &self,
             _owner: &Owner,
             _memory_id: MemoryId,
-            _sidecars: &[SidecarSpec],
+            _schemas: &[crate::read_models::MemorySchemaSpec],
         ) -> Result<Vec<FactRow>, StorageError> {
             Ok(Vec::new())
         }
@@ -887,7 +888,7 @@ pub(in crate::engine) mod tests {
         async fn load_abstraction_heads(
             &self,
             _owner: &Owner,
-            _sidecars: &[SidecarSpec],
+            _schemas: &[crate::read_models::MemorySchemaSpec],
             _limit: usize,
         ) -> Result<Vec<AbstractionRow>, StorageError> {
             Ok(Vec::new())

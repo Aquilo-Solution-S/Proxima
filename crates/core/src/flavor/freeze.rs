@@ -40,6 +40,26 @@ impl FlavorRegistry {
                 });
             }
         }
+        let mut seen_memory_selectors = std::collections::HashMap::new();
+        for schema in &self.schemas {
+            if !matches!(
+                schema.kind,
+                PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
+            ) {
+                continue;
+            }
+            if let Some(first_version) = seen_memory_selectors.insert(
+                (schema.kind, schema.schema_id.clone()),
+                schema.schema_version,
+            ) {
+                return Err(FlavorRegistryError::DuplicateMemorySchemaSelector {
+                    schema_id: schema.schema_id.clone(),
+                    kind: schema.kind,
+                    first_version,
+                    conflicting_version: schema.schema_version,
+                });
+            }
+        }
         // Every Memory/Goal schema is typed; only citation schemas may be
         // opaque. A typed descriptor whose ingress parser was dropped is
         // unusable at the protocol boundary, so catch that internal drift
