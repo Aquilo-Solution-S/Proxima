@@ -432,6 +432,44 @@ fn every_mcp_tool_declares_an_output_schema_without_dispatcher_normalization() {
     }
 }
 
+#[test]
+fn search_output_schema_advertises_structured_memory_id() {
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
+    let search = frozen
+        .list_mcp_tools()
+        .iter()
+        .find(|tool| tool.name == "core_search_memories")
+        .expect("core_search_memories is registered");
+    let memory = search
+        .output_schema
+        .pointer("/properties/memories/items/properties")
+        .and_then(serde_json::Value::as_object)
+        .expect("search output memories item properties");
+    assert_eq!(
+        memory
+            .get("memory_id")
+            .and_then(|field| field.get("type"))
+            .and_then(serde_json::Value::as_str),
+        Some("string"),
+        "structured search identity must be a UUID string: {:#}",
+        search.output_schema,
+    );
+    assert_eq!(
+        memory
+            .get("memory_id")
+            .and_then(|field| field.get("format"))
+            .and_then(serde_json::Value::as_str),
+        Some("uuid"),
+        "structured search identity must advertise UUID format: {:#}",
+        search.output_schema,
+    );
+    assert!(
+        memory.contains_key("memory"),
+        "typed memory handle remains in the output: {:#}",
+        search.output_schema,
+    );
+}
+
 /// A dispatcher answers with an untagged union, and the manifest says so. The
 /// argument-side flattener would have collapsed this into one merged object
 /// with `additionalProperties: false`, which describes no reply the tool ever
