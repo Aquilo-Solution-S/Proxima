@@ -172,10 +172,11 @@ is not `type: object` or that carries a root `oneOf`/`anyOf`/`allOf`:
   `properties` map, an `action` string-enum discriminator, and
   `additionalProperties: false`.
 - Per-action metadata is published under the `x-proxima-actions` schema
-  extension — variant-derived `description`, `allowed_fields`,
-  `required_fields`, and `field_descriptions` keyed by action. The
-  `proxima://tools` catalog mirrors those field sets and, for flavor actions,
-  the variant description; substrate action prose remains the curated
+  extension — variant-derived `description`, closed `$ref`-free
+  `argument_schema`, `allowed_fields`, `required_fields`, and
+  `field_descriptions` keyed by action. The `proxima://tools` catalog mirrors
+  the same `argument_schema` and field sets and, for flavor actions, the
+  variant description; substrate action prose remains the curated
   `CoreActionMeta` description. Fields shared across actions carry a neutral
   root description that points back to this metadata.
 - **Argument validation is strict and pre-decode**, for every dispatcher
@@ -183,6 +184,14 @@ is not `type: object` or that carries a root `oneOf`/`anyOf`/`allOf`:
   field outside that action's `allowed_fields`, or a missing
   `required_field`, is rejected with JSON-RPC `-32602`. Unknown fields are an
   error, not silently dropped.
+
+When a conditional `if` branch tests a property's value, its schema must also
+list that property in `required` when absence is not meant to match. JSON
+Schema's `properties` keyword validates only present properties; the explicit
+requirement keeps an absent condition field from entering the wrong branch.
+An action-root applicator may omit `type` because the closed action root
+already fixes the instance to an object; an explicit non-object type cannot
+also introduce action-root `properties` or `required` fields.
 
 **The discriminator must literally be `action`.** Not a style preference:
 `ToolScope` keys are spelled `"{tool}:{action}"`, `validate_action_args` and
@@ -197,7 +206,7 @@ Three carriers, split authority:
 | Surface | What it is |
 |---|---|
 | `McpToolDescriptor.action_arg_specs` | THE enumeration and per-action behavior authority. Every scope/role gate, catalog, REST method gate, and OpenAPI operation reads its `annotations`; missing annotations or missing `read_only` means write. |
-| `x-proxima-actions` | Derived from the `Args` type by the schema pass: variant description plus allowed/required fields and their prose. |
+| `x-proxima-actions` | Derived from the `Args` type by the schema pass: variant description, action-only `argument_schema`, and allowed/required fields with their prose. |
 | `CoreActionMeta` | Substrate-only decoration: per-action scope key, curated description, and produced schema ids. Never an existence or behavior claim. |
 
 `FlavorRegistry::try_freeze` refuses a registry where the first two disagree

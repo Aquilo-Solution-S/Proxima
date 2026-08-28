@@ -173,11 +173,14 @@ per-action field sets under `x-proxima-actions`. REST exposes both forms:
   `"action": "set"` into the body before dispatch.
 
 The narrowed form is the better REST citizen and the better OpenAPI
-operation: its request schema is built by selecting
-`x-proxima-actions.set.allowed_fields` out of the flattened properties,
-applying `required_fields` as the schema's `required`, and dropping the
-`action` property. That is strictly more precise than the flattened
-schema an MCP client sees, and it is generated, not authored.
+operation: its request schema is the generated
+`x-proxima-actions.set.argument_schema`. Generation removes only the
+action-root discriminator, closes that root, and hoists its root
+conditional/combinator field names; nested property subtrees remain
+unchanged. OpenAPI consumes that generated value directly and removes only
+the root `$schema` marker because the document declares the dialect once. REST
+does not reconstruct a schema from flattened properties or hand-authored field
+lists.
 
 Two failure modes must be explicit rather than silent:
 
@@ -339,7 +342,7 @@ dialect, so the newer floor costs nothing in schema fidelity.
 | `post` / `query` operations | `is_read_only()` / `action_is_read_only()` |
 | `operationId` | structurally tagged `tool` / `action` / `resource` target with byte-length-prefixed name components and an explicit method tag |
 | `summary` / `description` | `McpToolDescriptor.description`; substrate action description from `CoreActionMeta`, flavor action description from `x-proxima-actions.<action>.description` |
-| request schema | `args_schema`, narrowed per action |
+| request schema | `args_schema` for the whole tool; `x-proxima-actions.<action>.argument_schema` for an action route |
 | success response schema | `output_schema`, derived from the tool's Rust `Output` type |
 | `x-proxima-read-only`, `-destructive`, `-idempotent` | flat tool `resolved_annotations()`; dispatcher `McpActionArgSpec.annotations` |
 | security scheme | HTTP bearer |

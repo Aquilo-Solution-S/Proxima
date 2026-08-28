@@ -27,6 +27,7 @@ pub struct SubstrateToolActionItem {
     pub description: String,
     pub produces_schema_ids: Vec<String>,
     pub annotations: McpToolAnnotations,
+    pub argument_schema: serde_json::Value,
     pub allowed_fields: Vec<String>,
     pub required_fields: Vec<String>,
 }
@@ -103,6 +104,14 @@ pub(super) fn substrate_tool_actions(
                     .map(|id| (*id).to_string())
                     .collect(),
                 annotations: spec.annotations.unwrap_or_default(),
+                argument_schema: desc
+                    .args_schema
+                    .get("x-proxima-actions")
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|actions| actions.get(spec.action))
+                    .and_then(|metadata| metadata.get("argument_schema"))
+                    .cloned()
+                    .expect("frozen dispatcher action must carry argument_schema metadata"),
                 allowed_fields: spec
                     .allowed_fields
                     .iter()
@@ -211,6 +220,7 @@ mod tests {
             engine: None,
         };
 
+        let registry = ctx.registry.clone();
         let output = list_substrate_tools(ctx, ListSubstrateToolsArgs::default())
             .await
             .expect("catalog lists");
@@ -233,5 +243,14 @@ mod tests {
                 .contains(&"idempotency_key".to_string())
         );
         assert!(decompose.allowed_fields.contains(&"children".to_string()));
+        let descriptor = registry
+            .list_mcp_tools()
+            .iter()
+            .find(|tool| tool.name == protocol_tool::CORE_GOAL)
+            .expect("core_goal descriptor");
+        assert_eq!(
+            decompose.argument_schema,
+            descriptor.args_schema["x-proxima-actions"]["decompose"]["argument_schema"]
+        );
     }
 }

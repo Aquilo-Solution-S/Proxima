@@ -241,11 +241,15 @@ writes use the same tool with the matching action key.
    fields merged together.
 7. `ACTION_ARG_SPECS` that disagree with the derived schema: a discriminator
    other than `action`, a different action set, or different
-   `allowed_fields`/`required_fields` for an action. Two specs naming the same
-   action fail here too — a set comparison cannot see the collapse, and the
-   later spec would never be read — as do specs on a tool whose `Args` is a
-   plain struct, and a schema whose `x-proxima-actions` is present but not an
-   object, which is a malformed extension rather than an absent one.
+   `allowed_fields`/`required_fields` for an action. Each action also carries
+   its generated, closed, `$ref`-free `argument_schema`; freeze reruns the
+   same root-only field analysis used by schema generation and rejects
+   missing, malformed, reopened, root-`action`, duplicate, or drifting
+   metadata. Two specs naming the same action fail here too — a set comparison
+   cannot see the collapse, and the later spec would never be read — as do
+   specs on a tool whose `Args` is a plain struct, and a schema whose
+   `x-proxima-actions` is present but not an object, which is a malformed
+   extension rather than an absent one.
 8. Contract/registration drift: two contracts claiming the same ordinal, a
    contract set with no flavor #0 in it, resources declared by a flavor other
    than #0, a contract schema id carrying another flavor's prefix, a
