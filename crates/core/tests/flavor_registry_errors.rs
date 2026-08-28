@@ -144,6 +144,155 @@ macro_rules! stub_tool {
 }
 
 stub_tool!(TaggedNoSpecsTool, "proxima-test_tagged", TaggedArgs, &[]);
+macro_rules! malformed_dispatch_args {
+    ($name:ident, $argument_schema:expr, $include_argument_schema:expr, $allowed:expr) => {
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct $name;
+
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                let mut action = serde_json::json!({
+                    "allowed_fields": $allowed,
+                    "required_fields": ["value"],
+                    "field_descriptions": {}
+                });
+                if $include_argument_schema {
+                    action["argument_schema"] = $argument_schema;
+                }
+                schemars::Schema::try_from(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["run"] },
+                        "value": { "type": "string" }
+                    },
+                    "required": ["action"],
+                    "additionalProperties": false,
+                    "x-proxima-actions": { "run": action }
+                }))
+                .expect("test schema is a JSON object")
+            }
+        }
+    };
+}
+
+macro_rules! malformed_dispatch_tool {
+    ($tool:ident, $name:literal, $args:ty) => {
+        #[allow(dead_code)]
+        struct $tool;
+
+        impl McpTool for $tool {
+            const NAME: &'static str = $name;
+            const DESCRIPTION: &'static str = "test";
+            const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[McpActionArgSpec {
+                action: "run",
+                allowed_fields: &["value"],
+                required_fields: &["value"],
+                annotations: None,
+                audience: McpToolAudience::Shared,
+            }];
+            const ANNOTATIONS: Option<McpToolAnnotations> = STUB_ANNOTATIONS;
+            type Args = $args;
+            type Output = ();
+
+            fn call(
+                _ctx: McpToolCtx,
+                _args: Self::Args,
+            ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+    };
+}
+
+macro_rules! schema {
+    ($($tokens:tt)*) => {
+        serde_json::json!($($tokens)*)
+    };
+}
+
+malformed_dispatch_args!(MissingArgumentSchemaArgs, schema!({}), false, ["value"]);
+malformed_dispatch_args!(MalformedArgumentSchemaArgs, schema!("bad"), true, ["value"]);
+malformed_dispatch_args!(NonObjectArgumentSchemaArgs, schema!([]), true, ["value"]);
+malformed_dispatch_args!(
+    RootActionArgumentSchemaArgs,
+    schema!({
+        "type": "object", "properties": {
+            "action": { "type": "string" }, "value": { "type": "string" }
+        }, "required": ["value"], "additionalProperties": false
+    }),
+    true,
+    ["value"]
+);
+malformed_dispatch_args!(
+    ReopenedArgumentSchemaArgs,
+    schema!({
+        "type": "object", "properties": { "value": { "type": "string" } },
+        "required": ["value"], "additionalProperties": true
+    }),
+    true,
+    ["value"]
+);
+malformed_dispatch_args!(
+    UnhoistedArgumentSchemaArgs,
+    schema!({
+        "type": "object", "properties": { "value": { "type": "string" } },
+        "required": ["value"], "additionalProperties": false,
+        "oneOf": [{ "type": "object", "properties": { "hidden": { "type": "string" } }, "additionalProperties": false }]
+    }),
+    true,
+    ["value"]
+);
+malformed_dispatch_args!(
+    DriftingArgumentSchemaArgs,
+    schema!({
+        "type": "object", "properties": { "value": { "type": "string" } },
+        "required": ["value"], "additionalProperties": false
+    }),
+    true,
+    ["other"]
+);
+
+malformed_dispatch_tool!(
+    MissingArgumentSchemaTool,
+    "proxima-test_missingarg",
+    MissingArgumentSchemaArgs
+);
+malformed_dispatch_tool!(
+    MalformedArgumentSchemaTool,
+    "proxima-test_malformedarg",
+    MalformedArgumentSchemaArgs
+);
+malformed_dispatch_tool!(
+    NonObjectArgumentSchemaTool,
+    "proxima-test_nonobjectarg",
+    NonObjectArgumentSchemaArgs
+);
+malformed_dispatch_tool!(
+    RootActionArgumentSchemaTool,
+    "proxima-test_rootactionarg",
+    RootActionArgumentSchemaArgs
+);
+malformed_dispatch_tool!(
+    ReopenedArgumentSchemaTool,
+    "proxima-test_reopenedarg",
+    ReopenedArgumentSchemaArgs
+);
+malformed_dispatch_tool!(
+    UnhoistedArgumentSchemaTool,
+    "proxima-test_unhoistedarg",
+    UnhoistedArgumentSchemaArgs
+);
+malformed_dispatch_tool!(
+    DriftingArgumentSchemaTool,
+    "proxima-test_driftingarg",
+    DriftingArgumentSchemaArgs
+);
+
 stub_tool!(
     WrongTagTool,
     "proxima-test_wrongtag",
@@ -494,6 +643,26 @@ fn freeze_error<T: McpTool>() -> FlavorRegistryError {
     registry
         .try_freeze()
         .expect_err("an inconsistent dispatcher must not seal")
+}
+
+fn assert_invalid_argument_schema<T: McpTool>(needle: &str) {
+    let err = freeze_error::<T>();
+    assert!(
+        matches!(err, FlavorRegistryError::InvalidActionSpecs { .. }),
+        "got {err:?}"
+    );
+    assert!(err.to_string().contains(needle), "{err}");
+}
+
+#[test]
+fn malformed_argument_schema_metadata_cannot_be_frozen() {
+    assert_invalid_argument_schema::<MissingArgumentSchemaTool>("missing argument_schema");
+    assert_invalid_argument_schema::<MalformedArgumentSchemaTool>("argument_schema is invalid");
+    assert_invalid_argument_schema::<NonObjectArgumentSchemaTool>("argument_schema is invalid");
+    assert_invalid_argument_schema::<RootActionArgumentSchemaTool>("action property");
+    assert_invalid_argument_schema::<ReopenedArgumentSchemaTool>("additionalProperties");
+    assert_invalid_argument_schema::<UnhoistedArgumentSchemaTool>("not hoisted");
+    assert_invalid_argument_schema::<DriftingArgumentSchemaTool>("metadata allowed_fields");
 }
 
 /// An internally tagged `Args` is what makes a client see a dispatcher —

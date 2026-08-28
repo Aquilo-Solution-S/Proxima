@@ -296,26 +296,21 @@ fn collect_tool_paths(
         .args_schema
         .get("x-proxima-actions")
         .and_then(Value::as_object);
-    let discriminator = discriminator_key(&tool.args_schema).unwrap_or("action");
     for spec in tool
         .action_arg_specs
         .iter()
         .filter(|spec| auth.is_none() || action_allowed_for_auth(auth, tool, spec.action))
     {
         let action = spec.action;
-        // The extension carries the same field sets plus per-field prose, so
-        // prefer it; a tool that declared specs without it still narrows.
-        let synthesized;
-        let action_meta = if let Some(meta) = extension.and_then(|map| map.get(action)) {
-            meta
-        } else {
-            synthesized = json!({
-                "allowed_fields": spec.allowed_fields,
-                "required_fields": spec.required_fields,
-                "field_descriptions": {},
+        let action_schema = extension
+            .and_then(|map| map.get(action))
+            .and_then(|metadata| metadata.get("argument_schema"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "frozen dispatcher {} action {} has no argument_schema metadata",
+                    tool.name, action
+                )
             });
-            &synthesized
-        };
         // Per-action, not tool-level. The spec is the same authority the
         // owner-role gate and router read; missing annotations stay a write.
         let action_annotations = spec.annotations.unwrap_or_default();
@@ -330,11 +325,7 @@ fn collect_tool_paths(
             summary: format!("Invoke {} action `{action}`", tool.name),
             description: action_description,
             parameters: context_parameter_refs(),
-            request_schema: Some(narrowed_action_schema(
-                &tool.args_schema,
-                discriminator,
-                action_meta,
-            )),
+            request_schema: Some(embeddable_schema(action_schema)),
             produces_schema_ids: tool.produces_schema_ids,
             output_schema: Some(&tool.output_schema),
             annotations: action_annotations,
@@ -433,58 +424,22 @@ fn path_template_variables(path: &str) -> Vec<String> {
     variables
 }
 
-/// Narrow a dispatcher tool's flattened `args_schema` to a single action.
-///
-/// The flattened schema an MCP client sees is the union of every variant's
-/// fields behind one discriminator, with per-action requiredness recorded
-/// only in `x-proxima-actions` and enforced at runtime by serde. A REST
-/// route supplies the action itself, so the operation can advertise exactly
-/// that variant: `allowed_fields` selects the properties, `required_fields`
-/// becomes `required`, the discriminator property is dropped because the
-/// path carries it, and each field's variant-specific prose replaces the
-/// neutralized "shared dispatcher field" text the flattener wrote for fields
-/// that appear in more than one variant. Strictly more precise than the MCP
-/// surface, and the main reason this generator exists.
-fn narrowed_action_schema(args_schema: &Value, discriminator: &str, action_meta: &Value) -> Value {
-    let flattened = args_schema.get("properties").and_then(Value::as_object);
-    let descriptions = action_meta
-        .get("field_descriptions")
-        .and_then(Value::as_object);
-    let mut properties = Map::new();
-    for field in string_list(action_meta, "allowed_fields") {
-        if field == discriminator {
-            continue;
-        }
-        let Some(property) = flattened.and_then(|properties| properties.get(&field)) else {
-            continue;
-        };
-        let mut property = property.clone();
-        if let Some(description) = descriptions
-            .and_then(|descriptions| descriptions.get(&field))
-            .and_then(Value::as_str)
-            && let Some(map) = property.as_object_mut()
-        {
-            map.insert("description".to_string(), json!(description));
-        }
-        properties.insert(field, property);
+/// The document declares the dialect once through jsonSchemaDialect, so the
+/// root $schema schemars emits is redundant in every operation body.
+fn embeddable_schema(args_schema: &Value) -> Value {
+    let mut schema = args_schema.clone();
+    if let Some(map) = schema.as_object_mut() {
+        map.shift_remove("$schema");
     }
-    json!({
-        "type": "object",
-        "properties": Value::Object(properties),
-        "required": string_list(action_meta, "required_fields"),
-        "additionalProperties": false,
-    })
+    schema
 }
 
-/// The discriminator key the flattener chose (`action`, `kind`, …).
-///
-/// It writes `required = [discriminator]` on the flattened root, which is
-/// the only place the key survives; a flavor dispatcher may tag on something
-/// other than `action`.
+#[cfg(test)]
 fn discriminator_key(args_schema: &Value) -> Option<&str> {
     args_schema.get("required")?.as_array()?.first()?.as_str()
 }
 
+#[cfg(test)]
 fn string_list(value: &Value, key: &str) -> Vec<String> {
     value
         .get(key)
@@ -497,16 +452,6 @@ fn string_list(value: &Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// The document declares the dialect once through `jsonSchemaDialect`, so
-/// the root `$schema` schemars emits is redundant in every operation body.
-fn embeddable_schema(args_schema: &Value) -> Value {
-    let mut schema = args_schema.clone();
-    if let Some(map) = schema.as_object_mut() {
-        map.shift_remove("$schema");
-    }
-    schema
 }
 
 fn responses(produces_schema_ids: &[&str], output_schema: Option<&Value>) -> Value {
@@ -853,6 +798,12 @@ mod tests {
                             "allowed_fields": ["id"],
                             "required_fields": ["id"],
                             "field_descriptions": {},
+                            "argument_schema": {
+                                "type": "object",
+                                "properties": { "id": { "type": "string" } },
+                                "required": ["id"],
+                                "additionalProperties": false
+                            },
                         },
                     },
                 }),

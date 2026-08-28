@@ -734,7 +734,8 @@ async fn a_conflicting_body_action_on_a_flavor_route_is_400() {
 
 #[tokio::test]
 async fn the_openapi_document_advertises_a_flavor_dispatchers_actions() {
-    let router = app(flavor_host());
+    let host = flavor_host();
+    let router = app(host.clone());
     let answer = get(&router, "/v1/openapi.json", &auth(ToolScope::All)).await;
     assert_eq!(answer.status, StatusCode::OK);
 
@@ -755,6 +756,23 @@ async fn the_openapi_document_advertises_a_flavor_dispatchers_actions() {
     assert!(
         schema.pointer("/properties/action").is_none(),
         "`action` is carried by the route, not the body: {schema:#}",
+    );
+    let catalog = host
+        .read_resource("proxima://tools", author(), Some(auth(ToolScope::All)))
+        .await
+        .expect("tool catalog");
+    let catalog_schema = catalog["tools"]
+        .as_array()
+        .expect("catalog tools")
+        .iter()
+        .find(|tool| tool["tool_id"] == FLAVOR_DISPATCH)
+        .and_then(|tool| tool["actions"].as_array())
+        .and_then(|actions| actions.iter().find(|action| action["action"] == "look"))
+        .map(|action| &action["argument_schema"])
+        .expect("catalog action schema");
+    assert_eq!(
+        schema, catalog_schema,
+        "REST action schema equals catalog metadata"
     );
     assert_eq!(
         item.pointer("/post/description")

@@ -2,6 +2,9 @@ use super::{
     BTreeSet, CapabilityTag, FlavorRegistry, FlavorRegistryError, FlavorRegistryFrozen,
     McpToolDescriptor, PayloadKind, SchemaCapabilityTags, SchemaId, SchemaVersion,
 };
+use crate::mcp::schema::{
+    analyze_root_fields, schema_contains_defs, schema_contains_ref, validate_closed_root_schema,
+};
 
 /// Whether two schemas would hand `ts_rank` different weight arrays.
 ///
@@ -1054,37 +1057,139 @@ impl FlavorRegistry {
 /// each spec's field lists against the ones the schema derived for that action.
 /// The action sets are known to agree by the time this runs, so `extension`
 /// has a key for every spec.
+#[allow(clippy::too_many_lines)]
 fn validate_action_field_sets(
     tool: &McpToolDescriptor,
     extension: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), FlavorRegistryError> {
     for spec in tool.action_arg_specs {
-        let meta = &extension[spec.action];
+        let Some(meta) = extension
+            .get(spec.action)
+            .and_then(serde_json::Value::as_object)
+        else {
+            return Err(FlavorRegistryError::InvalidActionSpecs {
+                name: tool.name,
+                message: format!("action {} metadata must be an object", spec.action),
+            });
+        };
+        let Some(argument_schema) = meta.get("argument_schema") else {
+            return Err(FlavorRegistryError::InvalidActionSpecs {
+                name: tool.name,
+                message: format!("action {} metadata is missing argument_schema", spec.action),
+            });
+        };
+        validate_closed_root_schema(argument_schema).map_err(|message| {
+            FlavorRegistryError::InvalidActionSpecs {
+                name: tool.name,
+                message: format!(
+                    "action {} argument_schema is invalid: {message}",
+                    spec.action
+                ),
+            }
+        })?;
+        if schema_contains_ref(argument_schema) || schema_contains_defs(argument_schema) {
+            return Err(FlavorRegistryError::InvalidActionSpecs {
+                name: tool.name,
+                message: format!("action {} argument_schema must be ref-free", spec.action),
+            });
+        }
+        let derived = analyze_root_fields(argument_schema).map_err(|message| {
+            FlavorRegistryError::InvalidActionSpecs {
+                name: tool.name,
+                message: format!(
+                    "action {} argument_schema is invalid: {message}",
+                    spec.action
+                ),
+            }
+        })?;
         for (key, fields) in [
             ("allowed_fields", spec.allowed_fields),
             ("required_fields", spec.required_fields),
         ] {
             let declared_fields = fields.iter().copied().collect::<BTreeSet<_>>();
-            let derived_fields = meta
-                .get(key)
-                .and_then(serde_json::Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .collect::<BTreeSet<_>>()
-                })
-                .unwrap_or_default();
-            if declared_fields != derived_fields {
+            if fields
+                .iter()
+                .any(|field| field.is_empty() || *field == "action")
+            {
                 return Err(FlavorRegistryError::InvalidActionSpecs {
                     name: tool.name,
                     message: format!(
-                        "action `{}` declares {key} {declared_fields:?} but the derived schema \
-                         says {derived_fields:?}",
+                        "action {} declares an empty or root action field in {key}",
                         spec.action
                     ),
                 });
             }
+            if fields.len() != declared_fields.len() {
+                return Err(FlavorRegistryError::InvalidActionSpecs {
+                    name: tool.name,
+                    message: format!("action {} contains duplicate fields in {key}", spec.action),
+                });
+            }
+            let expected = if key == "allowed_fields" {
+                &derived.allowed
+            } else {
+                &derived.required
+            };
+            let expected_fields = expected.iter().map(String::as_str).collect::<BTreeSet<_>>();
+            if declared_fields != expected_fields {
+                return Err(FlavorRegistryError::InvalidActionSpecs {
+                    name: tool.name,
+                    message: format!(
+                        "action {} declares {key} {declared_fields:?} but the argument_schema \
+                         says {expected_fields:?}",
+                        spec.action
+                    ),
+                });
+            }
+            let Some(metadata_fields) = meta.get(key).and_then(serde_json::Value::as_array) else {
+                return Err(FlavorRegistryError::InvalidActionSpecs {
+                    name: tool.name,
+                    message: format!("action {} metadata is missing {key}", spec.action),
+                });
+            };
+            let mut metadata_names = BTreeSet::new();
+            for field in metadata_fields {
+                let Some(field) = field.as_str() else {
+                    return Err(FlavorRegistryError::InvalidActionSpecs {
+                        name: tool.name,
+                        message: format!(
+                            "action {} metadata {key} must contain only strings",
+                            spec.action
+                        ),
+                    });
+                };
+                if field.is_empty() || field == "action" || !metadata_names.insert(field) {
+                    return Err(FlavorRegistryError::InvalidActionSpecs {
+                        name: tool.name,
+                        message: format!(
+                            "action {} metadata {key} contains an empty, root action, or duplicate field",
+                            spec.action
+                        ),
+                    });
+                }
+            }
+            if metadata_names != expected_fields {
+                return Err(FlavorRegistryError::InvalidActionSpecs {
+                    name: tool.name,
+                    message: format!(
+                        "action {} metadata {key} drifts from argument_schema {expected_fields:?}",
+                        spec.action
+                    ),
+                });
+            }
+        }
+        if !derived
+            .required
+            .iter()
+            .all(|field| derived.allowed.iter().any(|name| name == field))
+        {
+            return Err(FlavorRegistryError::InvalidActionSpecs {
+                name: tool.name,
+                message: format!(
+                    "action {} argument_schema required fields are not allowed",
+                    spec.action
+                ),
+            });
         }
     }
     Ok(())
@@ -2758,5 +2863,100 @@ mod tests {
         if let Err(err) = FlavorRegistry::new().try_freeze() {
             panic!("the registry the binary composes must freeze: {err}");
         }
+    }
+
+    fn mutated_goal_schema_error(
+        mutate: impl FnOnce(&mut serde_json::Value),
+    ) -> FlavorRegistryError {
+        let mut registry = FlavorRegistry::default();
+        let tool = registry
+            .mcp_tools
+            .iter_mut()
+            .find(|tool| tool.name == "core_goal")
+            .expect("core_goal is registered");
+        mutate(&mut tool.args_schema["x-proxima-actions"]["set"]["argument_schema"]);
+        registry
+            .try_freeze()
+            .expect_err("mutated argument_schema must not freeze")
+    }
+
+    fn mutated_goal_metadata_error(
+        mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+    ) -> FlavorRegistryError {
+        let mut registry = FlavorRegistry::default();
+        let tool = registry
+            .mcp_tools
+            .iter_mut()
+            .find(|tool| tool.name == "core_goal")
+            .expect("core_goal is registered");
+        let action = tool.args_schema["x-proxima-actions"]["set"]
+            .as_object_mut()
+            .expect("action metadata object");
+        mutate(action);
+        registry
+            .try_freeze()
+            .expect_err("mutated action metadata must not freeze")
+    }
+
+    #[test]
+    fn dispatcher_argument_schema_freeze_rejects_malformed_metadata() {
+        for (mutate, expected) in [
+            (
+                Box::new(|schema: &mut serde_json::Value| {
+                    schema["$ref"] = serde_json::json!("#/$defs/Value");
+                }) as Box<dyn FnOnce(&mut serde_json::Value)>,
+                "ref-free",
+            ),
+            (
+                Box::new(|schema: &mut serde_json::Value| {
+                    schema["$defs"] = serde_json::json!({});
+                }),
+                "ref-free",
+            ),
+            (
+                Box::new(|schema: &mut serde_json::Value| {
+                    schema["properties"]["action"] = serde_json::json!({ "type": "string" });
+                }),
+                "action property",
+            ),
+            (
+                Box::new(|schema: &mut serde_json::Value| {
+                    schema["additionalProperties"] = serde_json::json!(true);
+                }),
+                "additionalProperties",
+            ),
+            (
+                Box::new(|schema: &mut serde_json::Value| {
+                    schema
+                        .as_object_mut()
+                        .expect("argument schema object")
+                        .remove("additionalProperties");
+                }),
+                "additionalProperties",
+            ),
+            (
+                Box::new(|schema: &mut serde_json::Value| {
+                    schema["oneOf"] = serde_json::json!([
+                        { "type": "object", "properties": { "hidden": { "type": "string" } } }
+                    ]);
+                }),
+                "not hoisted",
+            ),
+        ] {
+            let err = mutated_goal_schema_error(mutate);
+            assert!(
+                matches!(err, FlavorRegistryError::InvalidActionSpecs { .. }),
+                "got {err:?}"
+            );
+            assert!(err.to_string().contains(expected), "{err}");
+        }
+        let err = mutated_goal_metadata_error(|metadata| {
+            metadata["allowed_fields"] = serde_json::json!(["other"]);
+        });
+        assert!(matches!(
+            err,
+            FlavorRegistryError::InvalidActionSpecs { .. }
+        ));
+        assert!(err.to_string().contains("metadata allowed_fields"), "{err}");
     }
 }

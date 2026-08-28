@@ -1351,6 +1351,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn scoped_dispatcher_projection_preserves_allowed_argument_schema_metadata() {
+        use proxima_core::access::Role;
+        use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, GroupId, Owner, UserId};
+
+        let registry = FlavorRegistry::default().freeze_or_panic_for_tests();
+        let descriptor = registry
+            .list_mcp_tools()
+            .iter()
+            .find(|tool| tool.name == protocol_tool::CORE_MEMBERSHIP)
+            .expect("core membership dispatcher");
+        let owner = Owner::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let viewer = McpAuthContext {
+            owner,
+            authz: AuthzContext::for_subject_with_role(
+                UserId::new(uuid::Uuid::now_v7()),
+                [(owner, Role::viewer())],
+                AuthPath::HostBearer,
+            ),
+            model_id: None,
+        };
+        let projected = project_dispatcher_actions_for_auth(descriptor, Some(&viewer));
+        let actions = projected["x-proxima-actions"]
+            .as_object()
+            .expect("projected action metadata");
+        assert!(actions.contains_key("list_members"));
+        assert!(!actions.contains_key("add_member"));
+        assert_eq!(
+            actions["list_members"]["argument_schema"],
+            descriptor.args_schema["x-proxima-actions"]["list_members"]["argument_schema"]
+        );
+        assert_eq!(
+            projected["properties"]["action"]["enum"],
+            serde_json::json!(["list_members"])
+        );
+    }
+
     /// The argv vocabulary classifies per command too, and an unannotated
     /// command still falls back to the tool.
     ///
