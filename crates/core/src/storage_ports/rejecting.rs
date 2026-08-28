@@ -495,6 +495,14 @@ impl GoalReadPort for RejectingStorage {
     ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError> {
         Ok(Vec::new())
     }
+
+    async fn load_goal_evidence(
+        &self,
+        _owner: &OwnerRef,
+        _goal_id: crate::GoalId,
+    ) -> Result<Option<Vec<crate::MemoryId>>, StorageError> {
+        Ok(None)
+    }
 }
 
 #[async_trait::async_trait]

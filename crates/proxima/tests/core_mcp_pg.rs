@@ -1537,6 +1537,11 @@ async fn facade_core_episode_commit_binds_derive_stance_and_goal() {
                 .bind(goal_t)
                 .fetch_one(built.pool_for_tests())
                 .await?;
+        let goal_evidence: Vec<Uuid> =
+            sqlx::query_scalar("SELECT evidence_t FROM proxima_core.goal WHERE t = $1")
+                .bind(goal_t)
+                .fetch_one(built.pool_for_tests())
+                .await?;
         assert!(
             derived_refs.contains(&act_t),
             "bound derive must ref this write-act: {derived_refs:?}"
@@ -1550,6 +1555,11 @@ async fn facade_core_episode_commit_binds_derive_stance_and_goal() {
             "unbound remember must not ref this write-act: {unbound_refs:?}"
         );
         assert_eq!(goal_act, Some(act_t), "bound goal write_act_t");
+        assert_eq!(
+            goal_evidence,
+            vec![derived_t],
+            "episode Goal evidence must preserve the derived Abstraction t"
+        );
 
         let siblings = call_test_model_tool(
             &tools,

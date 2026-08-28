@@ -56,6 +56,10 @@ pub use read_verbs::{
 pub use unit_of_work::{TypedFactIngest, UnitOfWork};
 pub use upload::UploadCompleted;
 
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) use access_sets::tests::MembershipStorage;
+
 pub struct Engine {
     registry: FlavorRegistryFrozen,
     system_authority_binding: crate::authz::SystemAuthorityBinding,

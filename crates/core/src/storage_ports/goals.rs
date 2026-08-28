@@ -57,6 +57,17 @@ pub trait GoalReadPort: Send + Sync {
         read_owners: &[OwnerRef],
         goal_ids: &[crate::GoalId],
     ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError>;
+
+    /// Load the exact evidence vector from one owner-scoped Goal row.
+    ///
+    /// `None` deliberately means either absent or owned by another owner. The
+    /// caller must preserve that collapse instead of joining through visible
+    /// Memory rows and shortening the stored vector.
+    async fn load_goal_evidence(
+        &self,
+        owner: &OwnerRef,
+        goal_id: crate::GoalId,
+    ) -> Result<Option<Vec<crate::MemoryId>>, StorageError>;
 }
 
 #[async_trait::async_trait]

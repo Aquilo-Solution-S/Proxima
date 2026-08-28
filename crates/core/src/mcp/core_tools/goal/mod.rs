@@ -100,7 +100,8 @@ pub struct GoalSetArgs {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
     #[schemars(
-        description = "Required Fact or Abstraction memory handles (`F...`/`A...`) that motivate this operator-authored goal; at least one is required."
+        length(min = 1),
+        description = "Required Abstraction memory handles (`A...`) that motivate this operator-authored goal; at least one is required."
     )]
     pub evidence: Vec<String>,
     #[schemars(
@@ -268,11 +269,11 @@ impl McpTool for CoreGoalTool {
 async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput, McpToolError> {
     if args.evidence.is_empty() {
         return Err(McpToolError::InvalidInput(
-            "goal set requires >=1 Fact|Abstraction evidence handle motivating the goal".into(),
+            "goal set requires >=1 Abstraction evidence handle motivating the goal".into(),
         ));
     }
     let payload = encode_goal_payload(&ctx, args.payload)?;
-    let evidence = resolve_evidence(&ctx, &args.evidence)?;
+    let evidence = resolve_operator_goal_evidence(&ctx, &args.evidence)?;
     let assignment = target_perspective(&ctx, args.target_perspective.as_deref())?;
     let wake = args
         .wake
@@ -362,7 +363,8 @@ pub struct GoalMarkAchievedArgs {
     )]
     pub goal: String,
     #[schemars(
-        description = "Memory handles (`F.../A.../P...`) evidencing completion; at least one is required."
+        length(min = 1),
+        description = "Fact or Abstraction memory handles (`F...`/`A...`) evidencing completion; at least one is required."
     )]
     pub evidence: Vec<String>,
     #[schemars(description = "Optional stable idempotency key for replay-safe completion.")]
@@ -412,7 +414,8 @@ pub struct GoalModifyArgs {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
     #[schemars(
-        description = "Fact or Abstraction evidence handles (`F...`/`A...`) for the operator-authored modified goal head."
+        length(min = 1),
+        description = "Optional nonempty Abstraction evidence handles (`A...`) for the operator-authored modified goal head; omit to carry the prior exact evidence vector."
     )]
     pub evidence: Option<Vec<String>>,
     #[schemars(
@@ -432,12 +435,17 @@ async fn goal_modify(
     ctx: McpToolCtx,
     args: GoalModifyArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
+    if args.evidence.as_ref().is_some_and(Vec::is_empty) {
+        return Err(McpToolError::InvalidInput(
+            "operator-authored Goal evidence must contain at least one Abstraction handle".into(),
+        ));
+    }
     let prior = ctx.resolve_goal(&args.goal)?;
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = args
         .evidence
         .as_ref()
-        .map(|evidence| resolve_evidence(&ctx, evidence))
+        .map(|evidence| resolve_operator_goal_evidence(&ctx, evidence))
         .transpose()?;
     let wake = match (args.wake, args.clear_wake) {
         (Some(_), true) => {
@@ -460,7 +468,7 @@ async fn goal_modify(
                 prior_goal_id: prior,
                 replacement: payload,
                 wake,
-                authorship: GoalAuthorship::User,
+                authorship: system_operator_authorship(&ctx, "goal_modify"),
                 request_id,
                 evidence,
                 author_self_perspective_id: ctx.caller_self_perspective,
@@ -478,7 +486,7 @@ pub struct GoalDecomposeArgs {
     )]
     pub parent_goal: String,
     #[schemars(
-        length(max = 50),
+        length(min = 1, max = 50),
         description = "Child goals to create (1 to 50); each is set Active and linked to the parent."
     )]
     pub children: Vec<ChildGoalInput>,
@@ -496,9 +504,9 @@ pub struct GoalDecomposeArgs {
 pub struct ChildGoalInput {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
-    #[serde(default)]
     #[schemars(
-        description = "Required Fact or Abstraction memory handles (`F...`/`A...`) that motivate this operator-authored child goal."
+        length(min = 1),
+        description = "Required Abstraction memory handles (`A...`) that motivate this operator-authored child goal."
     )]
     pub evidence: Vec<String>,
     #[schemars(
@@ -537,7 +545,7 @@ async fn goal_decompose(
     for (index, child) in args.children.into_iter().enumerate() {
         children.push(ChildGoalDraft {
             payload: encode_goal_payload(&ctx, child.payload)?,
-            evidence: resolve_evidence(&ctx, &child.evidence)?,
+            evidence: resolve_operator_goal_evidence(&ctx, &child.evidence)?,
             wake: child
                 .wake
                 .map(|wake| encode_wake_config(&ctx, wake))
@@ -554,9 +562,7 @@ async fn goal_decompose(
             &GoalDecomposeRequest {
                 owner: ctx.owner,
                 parent_goal_id: parent,
-                authorship: GoalAuthorship::System(SystemOrigin::Tool {
-                    tool_id: ToolId::new(protocol_action::CORE_GOAL_DECOMPOSE),
-                }),
+                authorship: system_operator_authorship(&ctx, "goal_decompose"),
                 topology,
                 children,
                 author_self_perspective_id: ctx.caller_self_perspective,
@@ -685,6 +691,35 @@ fn resolve_evidence(
         .collect()
 }
 
+/// Resolve operator-authored Goal evidence at the protocol boundary.
+///
+/// A syntactically valid but absent or unreadable `A:` reaches the Engine's
+/// normal authorization gate and collapses to `Forbidden("entry not found")`.
+/// Other prefixes are rejected before any storage access, so a caller cannot
+/// pair an operator schema with a lower- or higher-layer carrier.
+pub(crate) fn resolve_operator_goal_evidence(
+    ctx: &McpToolCtx,
+    evidence: &[String],
+) -> Result<Vec<GoalEvidenceRef>, McpToolError> {
+    if evidence.is_empty() {
+        return Err(McpToolError::InvalidInput(
+            "operator-authored Goal evidence must contain at least one Abstraction handle".into(),
+        ));
+    }
+    evidence
+        .iter()
+        .map(|handle| {
+            ctx.resolve_abstraction_memory(handle)
+                .map(GoalEvidenceRef::new)
+                .map_err(|_| {
+                    McpToolError::InvalidInput(
+                        "operator-authored Goal evidence must be Abstraction".into(),
+                    )
+                })
+        })
+        .collect()
+}
+
 fn target_perspective(
     ctx: &McpToolCtx,
     target_perspective: Option<&str>,
@@ -741,8 +776,11 @@ fn format_goal_write_output(ctx: &McpToolCtx, outcome: &GoalWriteOutcome) -> Goa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::MembershipStorage;
     use crate::mcp::McpAuthorContext;
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, UserId};
+    use crate::{
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, MemoryId, OwnerRef, UserId,
+    };
     use std::sync::Arc;
 
     fn test_ctx() -> McpToolCtx {
@@ -761,6 +799,135 @@ mod tests {
             services: FlavorServices::default(),
             engine: None,
         }
+    }
+
+    fn operator_recording_ctx() -> (
+        McpToolCtx,
+        std::sync::Arc<std::sync::Mutex<Vec<GoalAuthorship>>>,
+        MemoryId,
+    ) {
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let target = MemoryId::new(uuid::Uuid::now_v7());
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let storage = MembershipStorage {
+            member: owner,
+            group: crate::GroupId::new(uuid::Uuid::now_v7()),
+            membership_relation: crate::Relation::Viewer,
+            home_owner: Some(owner),
+            entity_readable: true,
+            memory_kind: Some(crate::EntityKind::Perspective),
+            goal_evidence: None,
+            observed_modify_evidence: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            observed_goal_authorship: observed.clone(),
+        };
+        let engine = std::sync::Arc::new(crate::Engine::compose_or_panic_for_tests(
+            storage.storage_ports(),
+            |_| {},
+        ));
+        let authz = crate::AuthzContext::single_owner(&owner, crate::AuthPath::HostBearer);
+        let ctx = McpToolCtx {
+            owner,
+            authz,
+            registry: std::sync::Arc::new(crate::FlavorRegistry::new().freeze_or_panic_for_tests()),
+            author: McpAuthorContext {
+                model_id: "test-model".into(),
+                client_name: "test-client".into(),
+                client_version: "1".into(),
+                caller_self_perspective: Some(target),
+            },
+            caller_self_perspective: Some(target),
+            services: crate::FlavorServices::default(),
+            engine: Some(engine),
+        };
+        (ctx, observed, target)
+    }
+
+    fn valid_goal_payload_args() -> GoalPayloadArgs {
+        GoalPayloadArgs {
+            schema_id: "core/simple-text-v1".into(),
+            schema_version: None,
+            title: "test goal".into(),
+            text: "test goal body".into(),
+            body: serde_json::json!({}),
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_goal_actions_forward_operator_authorship() {
+        let (ctx, observed, target) = operator_recording_ctx();
+        let abstraction = format!("A:{}", uuid::Uuid::now_v7());
+        let perspective = ctx.format_perspective_memory(target);
+
+        let set_error = goal_set(
+            ctx.clone(),
+            GoalSetArgs {
+                payload: valid_goal_payload_args(),
+                evidence: vec![abstraction.clone()],
+                target_perspective: Some(perspective.clone()),
+                wake: None,
+                idempotency_key: Some("operator-set-authorship".into()),
+            },
+        )
+        .await
+        .expect_err("recording storage rejects the test write after capture");
+        assert!(
+            matches!(set_error, McpToolError::Protocol(ref error) if error.code == crate::error::ErrorCode::Internal)
+        );
+
+        let modify_error = goal_modify(
+            ctx.clone(),
+            GoalModifyArgs {
+                goal: ctx.format_goal(crate::GoalId::new(uuid::Uuid::now_v7())),
+                payload: valid_goal_payload_args(),
+                evidence: Some(vec![abstraction.clone()]),
+                wake: None,
+                clear_wake: false,
+                idempotency_key: Some("operator-modify-authorship".into()),
+            },
+        )
+        .await
+        .expect_err("recording storage rejects the test write after capture");
+        assert!(
+            matches!(modify_error, McpToolError::Protocol(ref error) if error.code == crate::error::ErrorCode::Internal)
+        );
+
+        let decompose_error = goal_decompose(
+            ctx.clone(),
+            GoalDecomposeArgs {
+                parent_goal: ctx.format_goal(crate::GoalId::new(uuid::Uuid::now_v7())),
+                children: vec![ChildGoalInput {
+                    payload: valid_goal_payload_args(),
+                    evidence: vec![abstraction],
+                    wake: None,
+                }],
+                target_perspective: Some(perspective),
+                idempotency_key: "operator-decompose-authorship".into(),
+            },
+        )
+        .await
+        .expect_err("recording storage rejects the test write after capture");
+        assert!(
+            matches!(decompose_error, McpToolError::Protocol(ref error) if error.code == crate::error::ErrorCode::Internal)
+        );
+
+        let authorships = observed
+            .lock()
+            .expect("goal authorship recorder lock")
+            .clone();
+        let prompts = authorships
+            .iter()
+            .map(|authorship| match authorship {
+                GoalAuthorship::System(SystemOrigin::Operator { prompt_version, .. }) => {
+                    prompt_version.as_str()
+                }
+                other => panic!("expected operator authorship, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            prompts,
+            vec!["goal_set", "goal_modify", "goal_decompose"],
+            "direct MCP Goal actions must retain their operator provenance"
+        );
     }
 
     fn goal_set_args(evidence: Vec<String>) -> GoalSetArgs {
@@ -791,23 +958,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn goal_modify_rejects_explicit_empty_evidence_before_engine() {
+        let err = goal_modify(
+            test_ctx(),
+            GoalModifyArgs {
+                goal: format!("G:{}", uuid::Uuid::now_v7()),
+                payload: GoalPayloadArgs {
+                    schema_id: "bogus/goal".into(),
+                    schema_version: None,
+                    title: "t".into(),
+                    text: "b".into(),
+                    body: serde_json::json!({}),
+                },
+                evidence: Some(Vec::new()),
+                wake: None,
+                clear_wake: false,
+                idempotency_key: None,
+            },
+        )
+        .await
+        .expect_err("explicit empty operator evidence must fail at the MCP boundary");
+        assert!(
+            matches!(err, McpToolError::InvalidInput(ref message) if message.contains("at least one")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn goal_set_accepts_nonempty_evidence_before_payload_resolution() {
         // With evidence present the empty-evidence guard must pass; the call
-        // then fails downstream on the unregistered schema, proving the guard
-        // only fires on empty evidence (a Fact/Abstraction handle is accepted).
+        // then fails later on the unregistered schema, proving the guard
+        // only fires on empty evidence (an Abstraction handle is accepted).
         let err = goal_set(
             test_ctx(),
             goal_set_args(vec![format!("A:{}", uuid::Uuid::now_v7())]),
         )
         .await
-        .expect_err("bogus schema still fails downstream");
+        .expect_err("bogus schema still fails later");
         assert!(
             !matches!(err, McpToolError::InvalidInput(ref m) if m.contains("requires >=1")),
             "guard must not fire for non-empty evidence: {err:?}",
         );
         assert!(
             matches!(err, McpToolError::InvalidInput(ref m) if m.contains("unregistered GoalPayload")),
-            "expected downstream schema error, got {err:?}",
+            "expected subsequent schema error, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn operator_goal_evidence_accepts_only_abstraction_handles() {
+        let ctx = test_ctx();
+        let abstraction = format!("A:{}", uuid::Uuid::now_v7());
+        let resolved = resolve_operator_goal_evidence(&ctx, std::slice::from_ref(&abstraction))
+            .expect("A handle should resolve at the boundary");
+        assert_eq!(resolved.len(), 1);
+
+        for prefix in ['F', 'P'] {
+            let handle = format!("{prefix}:{}", uuid::Uuid::now_v7());
+            let err = resolve_operator_goal_evidence(&ctx, &[handle])
+                .expect_err("non-Abstraction prefixes must fail before storage");
+            assert!(
+                matches!(err, McpToolError::InvalidInput(ref message) if message.contains("must be Abstraction")),
+                "got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn operator_goal_evidence_rejects_empty_input() {
+        let err = resolve_operator_goal_evidence(&test_ctx(), &[])
+            .expect_err("operator Goal evidence must be nonempty");
+        assert!(
+            matches!(err, McpToolError::InvalidInput(ref message) if message.contains("at least one")),
+            "got {err:?}"
         );
     }
 

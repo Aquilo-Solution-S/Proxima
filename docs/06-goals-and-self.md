@@ -116,6 +116,14 @@ assignment target because active-goal projection is defined through
 `Goal.assignment_t`. Simple owner-scoped, unassigned Goal creation remains
 out-of-scope.
 
+Operator-authored A→Goal writes use
+`GoalAuthorship::System(SystemOrigin::Operator)` and
+require a nonempty list of Abstraction evidence. The `core_goal` set, modify,
+and decompose actions resolve `A:<uuid>` handles before the Engine write. The
+episode wrapper permits its local `derive` Abstraction and applies the same
+rule to external handles. Host-authored writes, including completion through
+`mark_achieved`, retain the kernel's Fact-or-Abstraction evidence contract.
+
 <a id="self--flavor-projection"></a>
 
 ## Self -- Query Projection
@@ -192,6 +200,21 @@ goal.evidence_t -> the Facts and Abstractions this Goal rests on
 ```
 
 One `reference` index entry per element.
+
+The evidence layer follows the write attribution:
+
+| Write | Evidence contract |
+|---|---|
+| operator-authored `set` / `modify` / `decompose` | nonempty Abstraction set; exact admitted `t` values are stored |
+| host-authored Goal write | Fact or Abstraction set, including an empty topology where the host contract permits it |
+| `mark_achieved` completion | nonempty Fact or Abstraction set; this is completion evidence, not A→Goal input |
+
+An omitted `modify` evidence field carries the prior Goal's exact stored
+`evidence_t` vector. The read is owner-scoped and does not join through Memory,
+so a cooled, missing, or unreadable target cannot shorten the successor's
+statement; reauthorization and the transactional write fail closed when the
+whole vector cannot be admitted. Explicit `[]` is distinct from omission on
+the operator MCP action and is rejected there.
 
 Lifecycle Fact provenance:
 

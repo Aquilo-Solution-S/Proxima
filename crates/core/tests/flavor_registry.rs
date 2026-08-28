@@ -231,6 +231,58 @@ fn core_goal_action_metadata_preserves_required_fields() {
     );
 }
 
+#[test]
+fn core_goal_evidence_advertises_nonempty_operator_and_completion_inputs() {
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
+    let schema = &frozen
+        .list_mcp_tools()
+        .iter()
+        .find(|tool| tool.name == "core_goal")
+        .expect("core_goal registered")
+        .args_schema;
+    assert_eq!(
+        schema
+            .pointer("/properties/evidence/minItems")
+            .and_then(serde_json::Value::as_u64),
+        Some(1),
+        "set/modify/mark_achieved share a nonempty root evidence contract: {schema:#}"
+    );
+}
+
+#[test]
+fn goal_child_and_episode_evidence_advertise_nonempty_inputs() {
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
+    let schema_for = |name: &str| {
+        &frozen
+            .list_mcp_tools()
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("{name} registered"))
+            .args_schema
+    };
+    assert_eq!(
+        schema_for("core_goal")
+            .pointer("/properties/children/items/properties/evidence/minItems")
+            .and_then(serde_json::Value::as_u64),
+        Some(1),
+        "decompose child evidence must be nonempty"
+    );
+    assert_eq!(
+        schema_for("core_goal")
+            .pointer("/properties/children/minItems")
+            .and_then(serde_json::Value::as_u64),
+        Some(1),
+        "decompose children must be nonempty"
+    );
+    assert_eq!(
+        schema_for("core_episode_commit")
+            .pointer("/properties/goal/items/properties/evidence/minItems")
+            .and_then(serde_json::Value::as_u64),
+        Some(1),
+        "episode Goal evidence must be nonempty"
+    );
+}
+
 /// The hand-written `McpActionArgSpec` lists that gate `validate_action_args`
 /// (and feed the `proxima://tools` catalog) must match the schemars-derived
 /// `x-proxima-actions` metadata exactly. Without this guard the two silently

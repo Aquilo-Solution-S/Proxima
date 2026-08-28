@@ -444,6 +444,14 @@ impl GoalReadPort for GoalReadFake {
     ) -> Result<Vec<proxima_core::read_models::GoalWakeConfigRow>, StorageError> {
         fake_error()
     }
+
+    async fn load_goal_evidence(
+        &self,
+        owner: &OwnerRef,
+        goal_id: proxima_core::GoalId,
+    ) -> Result<Option<Vec<proxima_core::MemoryId>>, StorageError> {
+        fake_error()
+    }
 }
 
 #[derive(Debug)]

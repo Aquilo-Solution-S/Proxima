@@ -304,6 +304,14 @@ mod storage_port_tests_support {
         ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError> {
             Ok(Vec::new())
         }
+
+        async fn load_goal_evidence(
+            &self,
+            _owner: &crate::OwnerRef,
+            _goal_id: crate::GoalId,
+        ) -> Result<Option<Vec<crate::MemoryId>>, StorageError> {
+            Ok(None)
+        }
     }
 
     #[derive(Debug)]

@@ -598,6 +598,9 @@ mod tests {
             home_owner: None,
             entity_readable: false,
             memory_kind: None,
+            goal_evidence: None,
+            observed_modify_evidence: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            observed_goal_authorship: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -614,6 +617,9 @@ mod tests {
             home_owner,
             entity_readable,
             memory_kind: None,
+            goal_evidence: None,
+            observed_modify_evidence: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            observed_goal_authorship: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
