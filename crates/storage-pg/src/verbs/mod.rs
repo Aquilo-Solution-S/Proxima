@@ -14,6 +14,7 @@ pub(crate) mod derive_append;
 pub mod fact_embeddings;
 pub mod fact_ingest;
 pub mod forget;
+pub(crate) mod goal_reads;
 pub mod goal_timeseries;
 pub(crate) mod goal_wake_candidates;
 pub(crate) mod goal_write;

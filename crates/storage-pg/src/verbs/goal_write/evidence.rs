@@ -78,43 +78,28 @@ pub(super) async fn validate_evidence_in_owner(
     Ok(out)
 }
 
-/// The evidence a Goal already rests on, read from the Goal's own column.
-///
-/// The kinds come from the memories rows because the column stores what the
-/// Goal said, not what those memories are — the index rows carry the kind for
-/// traversal, and this path needs it for the operator-evidence rule.
-pub(super) async fn outgoing_motivated_by_evidence(
+/// Read the exact prior Goal evidence vector for a storage-level omitted
+/// modify. This remains a Goal-column read: joining through Memory would turn
+/// a cooled or missing target into a shorter successor statement.
+pub(super) async fn load_goal_evidence_exact(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     goal_id: GoalId,
-) -> Result<Vec<EvidenceTarget>, StorageError> {
-    let owner_id = owner.stored_owner_id();
-    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
-        "SELECT pin, m.kind::text
-           FROM proxima_core.goal g
-           JOIN unnest(g.evidence_t) WITH ORDINALITY AS ev(pin, ord) ON TRUE
-           JOIN proxima_core.memory m ON m.t = ev.pin
-          WHERE g.t = $1 AND g.owner_id = $2
-          ORDER BY ev.ord",
+) -> Result<Option<Vec<GoalEvidenceRef>>, StorageError> {
+    let ids: Option<Vec<uuid::Uuid>> = sqlx::query_scalar(
+        "SELECT evidence_t
+           FROM proxima_core.goal
+          WHERE t = $1 AND owner_id = $2",
     )
     .bind(goal_id.into_inner())
-    .bind(owner_id)
-    .fetch_all(&mut **tx)
+    .bind(owner.stored_owner_id())
+    .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|(memory_id, kind)| {
-            let kind = match kind.as_str() {
-                "fact" => EntityKind::Fact,
-                "abstraction" => EntityKind::Abstraction,
-                "perspective" => EntityKind::Perspective,
-                _ => return None,
-            };
-            Some(EvidenceTarget {
-                kind,
-                memory_id: MemoryId::new(memory_id),
-            })
-        })
-        .collect())
+    Ok(ids.map(|ids| {
+        ids.into_iter()
+            .map(MemoryId::new)
+            .map(GoalEvidenceRef::new)
+            .collect()
+    }))
 }

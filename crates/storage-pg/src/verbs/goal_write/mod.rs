@@ -30,7 +30,7 @@ mod wake;
 
 use edges::{assert_goal_topology_references, goal_topology_edge_count};
 use evidence::{
-    outgoing_motivated_by_evidence, validate_evidence_in_owner, validate_operator_goal_evidence,
+    load_goal_evidence_exact, validate_evidence_in_owner, validate_operator_goal_evidence,
 };
 use insert::insert_or_replay_goal;
 use lifecycle::{LifecycleWrite, lifecycle_outcome};

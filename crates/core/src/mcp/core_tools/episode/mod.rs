@@ -106,6 +106,7 @@ pub struct EpisodeGoalItem {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
     #[schemars(
+        length(min = 1),
         description = "Abstraction evidence (`A:` or intra-episode `derive`). Operator-authored Goals require Abstraction evidence only."
     )]
     pub evidence: Vec<String>,
@@ -612,7 +613,7 @@ async fn write_goals(
     for (idx, item) in items.iter().enumerate() {
         if item.evidence.is_empty() {
             return Err(McpToolError::InvalidInput(
-                "goal set requires >=1 Fact|Abstraction evidence handle motivating the goal".into(),
+                "goal set requires >=1 Abstraction evidence handle motivating the goal".into(),
             ));
         }
         let payload = encode_goal_payload(ctx, item.payload.clone())?;
@@ -713,17 +714,16 @@ fn resolve_goal_evidence(
     evidence
         .iter()
         .map(|handle| {
-            let (memory_id, class) = if let Some(slot) = resolve_local_slot(slots, handle)? {
-                (slot.id, slot.class)
-            } else {
-                derive::resolve_source_memory(ctx, handle)?
-            };
-            if class != MemoryHandleClass::Abstraction {
-                return Err(McpToolError::InvalidInput(
-                    "operator-authored Goal evidence must be Abstraction".into(),
-                ));
+            if let Some(slot) = resolve_local_slot(slots, handle)? {
+                if slot.class != MemoryHandleClass::Abstraction {
+                    return Err(McpToolError::InvalidInput(
+                        "operator-authored Goal evidence must be Abstraction".into(),
+                    ));
+                }
+                return Ok(GoalEvidenceRef::new(slot.id));
             }
-            Ok(GoalEvidenceRef::new(memory_id))
+            super::goal::resolve_operator_goal_evidence(ctx, std::slice::from_ref(handle))
+                .map(|mut evidence| evidence.remove(0))
         })
         .collect()
 }

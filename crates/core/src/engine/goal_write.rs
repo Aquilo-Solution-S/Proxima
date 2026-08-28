@@ -263,8 +263,56 @@ impl Engine {
             self.validate_wake_config_for_write(authz, Some(config))
                 .await?;
         }
-        self.validate_optional_goal_evidence_authorized(authz, req.evidence.as_deref())
-            .await?;
+        let replacement = self.normalize_payload_write(req.replacement.clone())?;
+        let evidence = if let Some(evidence) = req.evidence.clone() {
+            self.validate_goal_evidence_authorized(authz, &evidence)
+                .await?;
+            Some(evidence)
+        } else {
+            let carried = self
+                .storage()
+                .read_verb
+                .goal_read
+                .load_goal_evidence(permit.owner(), req.prior_goal_id)
+                .await
+                .map_err(|err| super::errors::internal_storage_error("load_goal_evidence", &err))?;
+            let Some(ids) = carried else {
+                // Keep None for an absent or foreign Goal. Storage then
+                // performs its normal owner-scoped prior-head lookup and
+                // preserves the existing not-found collapse.
+                return self
+                    .modify_goal_with_evidence(
+                        &permit,
+                        req,
+                        replacement,
+                        None,
+                        author_self_perspective_id,
+                    )
+                    .await;
+            };
+            let evidence: Vec<_> = ids.into_iter().map(GoalEvidenceRef::new).collect();
+            self.validate_goal_evidence_authorized(authz, &evidence)
+                .await?;
+            Some(evidence)
+        };
+        self.modify_goal_with_evidence(
+            &permit,
+            req,
+            replacement,
+            evidence,
+            author_self_perspective_id,
+        )
+        .await
+    }
+
+    async fn modify_goal_with_evidence(
+        &self,
+        permit: &WritePermit,
+        req: &GoalModifyRequest,
+        replacement: crate::verbs::goal_write::GoalPayloadWrite,
+        evidence: Option<Vec<GoalEvidenceRef>>,
+        author_self_perspective_id: Option<MemoryId>,
+    ) -> Result<GoalWriteOutcome, ProtocolError> {
         let embedding_client = self.embed_client();
         let context =
             self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
@@ -275,12 +323,12 @@ impl Engine {
                 &ModifyGoalAtomicRequest {
                     owner: *permit.owner(),
                     prior_goal_id: req.prior_goal_id,
-                    replacement: self.normalize_payload_write(req.replacement.clone())?,
+                    replacement,
                     wake: req.wake.clone(),
                     authorship: req.authorship.clone(),
                     request_id: req.request_id.clone(),
                     context,
-                    evidence: req.evidence.clone(),
+                    evidence,
                 },
                 permit.owner_write_permit(),
             )
@@ -481,18 +529,6 @@ impl Engine {
                 continue;
             }
             self.authorize_entry_read(authz, crate::access::EntityId::Memory(item.memory_id()))
-                .await?;
-        }
-        Ok(())
-    }
-
-    async fn validate_optional_goal_evidence_authorized(
-        &self,
-        authz: &AuthzContext,
-        evidence: Option<&[GoalEvidenceRef]>,
-    ) -> Result<(), ProtocolError> {
-        if let Some(evidence) = evidence {
-            self.validate_goal_evidence_authorized(authz, evidence)
                 .await?;
         }
         Ok(())
@@ -754,6 +790,9 @@ mod tests {
             home_owner: Some(home_owner),
             entity_readable,
             memory_kind: Some(memory_kind),
+            goal_evidence: None,
+            observed_modify_evidence: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            observed_goal_authorship: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -1028,6 +1067,41 @@ mod tests {
             .await
             .expect_err("denied context must fail before schema or storage");
         assert_forbidden(&err);
+    }
+
+    #[tokio::test]
+    async fn modify_goal_carries_exact_stored_evidence_when_omitted() {
+        let owner = owner();
+        let evidence = vec![memory_id(), memory_id()];
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let mut storage = storage_with_memory(owner, owner, true, EntityKind::Abstraction);
+        storage.goal_evidence = Some(evidence.clone());
+        storage.observed_modify_evidence = observed.clone();
+        let engine = engine_with_ports(storage);
+        let req = GoalModifyRequest {
+            owner,
+            prior_goal_id: goal_id(),
+            replacement: payload_write(),
+            wake: None,
+            authorship: GoalAuthorship::User,
+            request_id: request_id("modify-carry-evidence"),
+            evidence: None,
+            author_self_perspective_id: None,
+        };
+
+        let err = engine
+            .modify_goal(
+                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+                &req,
+            )
+            .await
+            .expect_err("test storage rejects writes after recording the request");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert_eq!(
+            *observed.lock().expect("modify evidence recorder lock"),
+            Some(evidence),
+            "omitted evidence must be carried exactly, not rebuilt from visible joins"
+        );
     }
 
     #[tokio::test]

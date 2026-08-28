@@ -5,7 +5,7 @@ use super::{
     ModifyGoalAtomicRequest, OwnerWritePermit, PgPool, PgSidecarRegistryFrozen, StorageError,
     SystemOrigin, TransitionGoalAtomicRequest, WakeWrite, child_draft, draft_from_payload,
     draft_from_stored, ensure_create_goal_replay_side_effects_match, insert_or_replay_goal,
-    internal, lifecycle_outcome, load_prior_goal, map_err, outgoing_motivated_by_evidence,
+    internal, lifecycle_outcome, load_goal_evidence_exact, load_prior_goal, map_err,
     validate_active_head, validate_evidence_in_owner, validate_goal_achievement,
     validate_goal_transition, validate_operator_goal_evidence,
 };
@@ -212,7 +212,6 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
     }
     let mut tx = pool.begin().await.map_err(internal)?;
     let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &req.evidence).await?;
-    validate_operator_goal_evidence(&req.authorship, &evidence)?;
     let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
     validate_goal_achievement(prior.state)?;
     let draft = draft_from_stored(
@@ -268,10 +267,13 @@ pub(crate) async fn modify_goal_atomic_in_pool(
     _permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
-    let evidence = match &req.evidence {
-        Some(evidence) => validate_evidence_in_owner(&mut tx, &req.owner, evidence).await?,
-        None => outgoing_motivated_by_evidence(&mut tx, &req.owner, req.prior_goal_id).await?,
+    let carried_or_explicit = match &req.evidence {
+        Some(evidence) => evidence.clone(),
+        None => load_goal_evidence_exact(&mut tx, &req.owner, req.prior_goal_id)
+            .await?
+            .unwrap_or_default(),
     };
+    let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &carried_or_explicit).await?;
     let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
     if prior.state != GoalState::Active {
         return Err(StorageError::ConstraintViolation(

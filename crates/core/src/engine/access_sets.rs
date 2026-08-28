@@ -117,14 +117,14 @@ fn push_write_owner(write: &mut Vec<(OwnerRef, Relation)>, owner: OwnerRef, rela
 
 #[cfg(test)]
 #[allow(clippy::too_many_lines, clippy::wildcard_imports)]
-pub(in crate::engine) mod tests {
-    use std::sync::Arc;
+pub(crate) mod tests {
+    use std::sync::{Arc, Mutex};
 
     use crate::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 
     use crate::goal_write::{
         AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-        DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest,
+        DecomposeGoalOutcome, GoalAuthorship, GoalWriteOutcome, ModifyGoalAtomicRequest,
         TransitionGoalAtomicRequest,
     };
     use crate::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
@@ -132,13 +132,16 @@ pub(in crate::engine) mod tests {
     use crate::*;
 
     #[derive(Debug)]
-    pub(in crate::engine) struct MembershipStorage {
-        pub(in crate::engine) member: OwnerRef,
-        pub(in crate::engine) group: GroupId,
-        pub(in crate::engine) membership_relation: Relation,
-        pub(in crate::engine) home_owner: Option<OwnerRef>,
-        pub(in crate::engine) entity_readable: bool,
-        pub(in crate::engine) memory_kind: Option<EntityKind>,
+    pub(crate) struct MembershipStorage {
+        pub(crate) member: OwnerRef,
+        pub(crate) group: GroupId,
+        pub(crate) membership_relation: Relation,
+        pub(crate) home_owner: Option<OwnerRef>,
+        pub(crate) entity_readable: bool,
+        pub(crate) memory_kind: Option<EntityKind>,
+        pub(crate) goal_evidence: Option<Vec<MemoryId>>,
+        pub(crate) observed_modify_evidence: Arc<Mutex<Option<Vec<MemoryId>>>>,
+        pub(crate) observed_goal_authorship: Arc<Mutex<Vec<GoalAuthorship>>>,
     }
 
     #[async_trait::async_trait]
@@ -541,9 +544,13 @@ pub(in crate::engine) mod tests {
     impl GoalWritePort for MembershipStorage {
         async fn create_goal_atomic(
             &self,
-            _req: &CreateGoalAtomicRequest<'_>,
+            req: &CreateGoalAtomicRequest<'_>,
             _permit: &crate::storage_ports::OwnerWritePermit,
         ) -> Result<GoalWriteOutcome, StorageError> {
+            self.observed_goal_authorship
+                .lock()
+                .expect("goal authorship recorder lock")
+                .push(req.draft.authorship.clone());
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -571,9 +578,20 @@ pub(in crate::engine) mod tests {
 
         async fn modify_goal_atomic(
             &self,
-            _req: &ModifyGoalAtomicRequest<'_>,
+            req: &ModifyGoalAtomicRequest<'_>,
             _permit: &crate::storage_ports::OwnerWritePermit,
         ) -> Result<GoalWriteOutcome, StorageError> {
+            self.observed_goal_authorship
+                .lock()
+                .expect("goal authorship recorder lock")
+                .push(req.authorship.clone());
+            *self
+                .observed_modify_evidence
+                .lock()
+                .expect("modify evidence recorder lock") = req
+                .evidence
+                .as_ref()
+                .map(|evidence| evidence.iter().map(|item| item.memory_id()).collect());
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -581,9 +599,13 @@ pub(in crate::engine) mod tests {
 
         async fn decompose_goal_atomic(
             &self,
-            _req: &DecomposeGoalAtomicRequest<'_>,
+            req: &DecomposeGoalAtomicRequest<'_>,
             _permit: &crate::storage_ports::OwnerWritePermit,
         ) -> Result<DecomposeGoalOutcome, StorageError> {
+            self.observed_goal_authorship
+                .lock()
+                .expect("goal authorship recorder lock")
+                .push(req.authorship.clone());
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -607,6 +629,14 @@ pub(in crate::engine) mod tests {
             _goal_ids: &[crate::GoalId],
         ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError> {
             Ok(Vec::new())
+        }
+
+        async fn load_goal_evidence(
+            &self,
+            _owner: &OwnerRef,
+            _goal_id: crate::GoalId,
+        ) -> Result<Option<Vec<MemoryId>>, StorageError> {
+            Ok(self.goal_evidence.clone())
         }
     }
 
@@ -906,7 +936,7 @@ pub(in crate::engine) mod tests {
 
     impl MembershipStorage {
         #[must_use]
-        pub(in crate::engine) fn storage_ports(self) -> StoragePorts {
+        pub(crate) fn storage_ports(self) -> StoragePorts {
             let storage = Arc::new(self);
             StoragePorts::builder()
                 .fact_ingest(storage.clone())
