@@ -201,6 +201,9 @@ pub struct SearchMemoriesOutput {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SearchMemoryOutput {
+    /// The stable UUID of this Memory admission. The typed `memory` handle
+    /// remains the generic wire reference used by other MCP surfaces.
+    pub memory_id: uuid::Uuid,
     pub memory: String,
     pub space: String,
     pub kind: String,
@@ -699,6 +702,7 @@ fn search_memory_output(
 ) -> Result<SearchMemoryOutput, McpToolError> {
     let class = super::get_memory::memory_class(row.kind)?;
     Ok(SearchMemoryOutput {
+        memory_id: row.memory_id.into_inner(),
         memory: ctx.format_memory_with_class(row.memory_id, class),
         space: space.to_string(),
         kind: row.kind.as_str().to_string(),
@@ -830,6 +834,7 @@ mod tests {
 
     fn memory_output(handle: &str) -> SearchMemoryOutput {
         SearchMemoryOutput {
+            memory_id: uuid::Uuid::nil(),
             memory: handle.to_string(),
             space: "current".into(),
             kind: "Fact".into(),

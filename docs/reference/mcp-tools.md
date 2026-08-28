@@ -28,3 +28,12 @@ binary/profile.
 
 `mcp-catalog.example.json` is an example snapshot for readers and tests. It is
 not authoritative for a running binary.
+
+## Search result identity
+
+Each `core_search_memories` result exposes both identity forms:
+
+- `memory` is the typed, prefixed entity reference (for example, `A:<uuid>`)
+  used across MCP memory resources and tools.
+- `memory_id` is the structured UUID of that Memory admission, suitable for
+  UUID-typed client code without parsing the typed reference.

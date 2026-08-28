@@ -5,7 +5,9 @@ use std::sync::Arc;
 use common::{create_db, db_url, drop_db};
 use proxima_core::FlavorServices;
 use proxima_core::mcp::McpAuthorContext;
-use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, Owner, OwnerRef, UserId};
+use proxima_core::{
+    AuthPath, AuthzContext, Engine, FlavorRegistry, MemoryId, Owner, OwnerRef, UserId,
+};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -108,6 +110,54 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     assert_eq!(lineage["edges"][0]["kind"], "origin");
     assert_eq!(lineage["edges"][0]["source"], format!("A:{derived}"));
     assert_eq!(lineage["edges"][0]["target"], format!("A:{source}"));
+
+    drop(server);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_results_expose_structured_memory_id() -> Result<(), Box<dyn std::error::Error>> {
+    let db_name = create_db().await?;
+    let database_url = db_url(&db_name);
+    let pg = PgStorage::connect(&database_url).await?;
+    pg.run_migrations().await?;
+
+    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let memory_id = insert_memory(&pg, &owner, "structured search identity", &[]).await?;
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let engine = Arc::new(
+        Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
+    );
+    let server = McpToolHost::from_engine(engine, FlavorServices::default());
+    let auth = McpAuthContext {
+        owner,
+        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .narrowed_to_owner(owner)
+            .expect("personal owner narrows"),
+        model_id: None,
+    };
+
+    let output = server
+        .call_tool(
+            "core_search_memories",
+            serde_json::json!({
+                "query": "structured search identity",
+                "mode": "lexical",
+                "limit": 1,
+            }),
+            author_ctx(),
+            Some(auth),
+        )
+        .await?;
+    let result = output["memories"]
+        .as_array()
+        .and_then(|memories| memories.first())
+        .expect("search returns the inserted memory");
+    let structured_id = MemoryId::new(serde_json::from_value(result["memory_id"].clone())?);
+    assert_eq!(structured_id.into_inner(), memory_id);
+    assert_eq!(result["memory"], format!("A:{memory_id}"));
 
     drop(server);
     drop(pg);
