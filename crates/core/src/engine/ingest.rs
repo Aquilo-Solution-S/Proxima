@@ -1583,8 +1583,38 @@ mod tests {
         memory_kind: Option<EntityKind>,
         observed_fact_writes: Arc<AtomicUsize>,
     ) -> Engine {
-        Engine::compose_or_panic_for_tests(
+        observed_reference_engine(
+            owner,
+            home_owner,
+            entity_readable,
+            memory_kind,
+            observed_fact_writes,
+        )
+        .0
+    }
+
+    /// `reference_engine` plus the two admission-path observations: the
+    /// entities handed to `visible_home_owner` and the id batch of each
+    /// `load_memory_kinds` call. Round-trip counts are a contract of this
+    /// path, so a test can assert them rather than infer them from behaviour.
+    #[allow(clippy::type_complexity)]
+    fn observed_reference_engine(
+        owner: Owner,
+        home_owner: Option<Owner>,
+        entity_readable: bool,
+        memory_kind: Option<EntityKind>,
+        observed_fact_writes: Arc<AtomicUsize>,
+    ) -> (
+        Engine,
+        Arc<std::sync::Mutex<Vec<crate::EntityId>>>,
+        Arc<std::sync::Mutex<Vec<Vec<MemoryId>>>>,
+    ) {
+        let observed_entity_reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_kind_loads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let engine = Engine::compose_or_panic_for_tests(
             MembershipStorage {
+                observed_entity_reads: observed_entity_reads.clone(),
+                observed_kind_loads: observed_kind_loads.clone(),
                 member: owner,
                 group: GroupId::new(uuid::Uuid::now_v7()),
                 membership_relation: Relation::Viewer,
@@ -1598,7 +1628,8 @@ mod tests {
             }
             .storage_ports(),
             FlavorRegistry::add_fact_schema_or_panic_for_tests::<ReferencedTestFact>,
-        )
+        );
+        (engine, observed_entity_reads, observed_kind_loads)
     }
 
     #[tokio::test]
@@ -1644,22 +1675,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn many_readable_fact_references_batch_their_kind_load() {
+    async fn duplicate_origins_are_admitted_once_and_batch_their_kind_load() {
         let owner = test_owner();
         let first = MemoryId::new(uuid::Uuid::now_v7());
         let second = MemoryId::new(uuid::Uuid::now_v7());
         let third = MemoryId::new(uuid::Uuid::now_v7());
+        // `derived_from` reaches the admission loop exactly as the caller
+        // wrote it — unlike payload references, which `authorize_fact_node_links`
+        // folds before it delegates — so this is the path a duplicate can
+        // actually reach.
         let payload = ReferencedTestFact {
-            fact_id: "batched-kinds".to_owned(),
-            targets: vec![
-                EdgeEndpoint::memory(EntityKind::Fact, first),
-                EdgeEndpoint::memory(EntityKind::Fact, second),
-                EdgeEndpoint::memory(EntityKind::Fact, first),
-                EdgeEndpoint::memory(EntityKind::Fact, third),
-            ],
+            fact_id: "duplicate-origins".to_owned(),
+            targets: Vec::new(),
         };
         let sidecars = [SidecarPayload::fact(payload.clone())];
-        let engine = reference_engine(
+        let (engine, entity_reads, kind_loads) = observed_reference_engine(
             owner,
             Some(owner),
             true,
@@ -1672,19 +1702,40 @@ mod tests {
             .authorize_fact_ingest(
                 &authz,
                 Relation::Ingest,
-                referenced_draft(&payload),
+                referenced_draft(&payload).with_derived_from(vec![
+                    EdgeEndpoint::memory(EntityKind::Fact, first),
+                    EdgeEndpoint::memory(EntityKind::Fact, second),
+                    EdgeEndpoint::memory(EntityKind::Fact, first),
+                    EdgeEndpoint::memory(EntityKind::Fact, third),
+                ]),
                 &sidecars,
             )
             .await
-            .expect("readable targets of the declared kind should authorize");
+            .expect("readable origins of the declared kind should authorize");
 
         assert_eq!(
-            authorized.links().references(),
+            authorized.links().origins(),
             &[
                 EdgeEndpoint::memory(EntityKind::Fact, first),
                 EdgeEndpoint::memory(EntityKind::Fact, second),
                 EdgeEndpoint::memory(EntityKind::Fact, third),
             ]
+        );
+        // Four declarations, three distinct endpoints: the repeat is admitted
+        // once, so it costs one entry read rather than two.
+        assert_eq!(
+            entity_reads.lock().expect("entity reads").as_slice(),
+            &[
+                crate::EntityId::Memory(first),
+                crate::EntityId::Memory(second),
+                crate::EntityId::Memory(third),
+            ]
+        );
+        // One owner, so exactly one kind load carrying every distinct target,
+        // rather than one load per declaration.
+        assert_eq!(
+            kind_loads.lock().expect("kind loads").as_slice(),
+            &[vec![first, second, third]]
         );
     }
 

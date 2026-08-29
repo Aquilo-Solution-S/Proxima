@@ -146,6 +146,14 @@ pub(crate) mod tests {
         pub(crate) observed_fact_writes: Arc<AtomicUsize>,
         pub(crate) observed_modify_evidence: Arc<Mutex<Option<Vec<MemoryId>>>>,
         pub(crate) observed_goal_authorship: Arc<Mutex<Vec<GoalAuthorship>>>,
+        /// Every entity handed to `visible_home_owner`, in call order. The
+        /// admission path reads a repeated declaration once, so a duplicate
+        /// target must not appear twice here.
+        pub(crate) observed_entity_reads: Arc<Mutex<Vec<EntityId>>>,
+        /// The id batch of each `load_memory_kinds` call, in call order. Kind
+        /// resolution is batched per owner, so N declared targets under one
+        /// owner must produce exactly one entry.
+        pub(crate) observed_kind_loads: Arc<Mutex<Vec<Vec<MemoryId>>>>,
     }
 
     #[async_trait::async_trait]
@@ -226,6 +234,10 @@ pub(crate) mod tests {
             _owner: &Owner,
             memory_ids: &[MemoryId],
         ) -> Result<Vec<MemoryKindRow>, StorageError> {
+            self.observed_kind_loads
+                .lock()
+                .expect("observed kind loads")
+                .push(memory_ids.to_vec());
             Ok(self
                 .memory_kind
                 .map(|kind| {
@@ -732,9 +744,13 @@ pub(crate) mod tests {
 
         async fn visible_home_owner(
             &self,
-            _entity: EntityId,
+            entity: EntityId,
             _read_owners: &[OwnerRef],
         ) -> Result<Option<OwnerRef>, StorageError> {
+            self.observed_entity_reads
+                .lock()
+                .expect("observed entity reads")
+                .push(entity);
             if self.entity_readable {
                 Ok(self.home_owner)
             } else {

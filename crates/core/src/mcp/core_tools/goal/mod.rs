@@ -810,6 +810,8 @@ mod tests {
         let target = MemoryId::new(uuid::Uuid::now_v7());
         let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let storage = MembershipStorage {
+            observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             member: owner,
             group: crate::GroupId::new(uuid::Uuid::now_v7()),
             membership_relation: crate::Relation::Viewer,

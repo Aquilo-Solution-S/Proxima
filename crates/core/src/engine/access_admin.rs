@@ -511,6 +511,10 @@ mod tests {
             crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
                 .with_storage_ports(
                     MembershipStorage {
+                        observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(
+                            Vec::new(),
+                        )),
+                        observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
                         member: OwnerRef::Personal(subject),
                         group: destination_group,
                         // Real, sufficient, receiving-side consent, sitting
@@ -635,6 +639,8 @@ mod tests {
         }));
         let engine = crate::Engine::new(registry.freeze_or_panic_for_tests()).with_storage_ports(
             MembershipStorage {
+                observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
                 member: OwnerRef::Personal(member),
                 group,
                 membership_relation: Relation::Viewer,
@@ -678,6 +684,8 @@ mod tests {
         home_owner: Option<OwnerRef>,
     ) -> MembershipStorage {
         MembershipStorage {
+            observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             member: OwnerRef::Personal(member),
             group,
             membership_relation: Relation::Viewer,
@@ -880,6 +888,10 @@ mod tests {
             crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
                 .with_storage_ports(
                     MembershipStorage {
+                        observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(
+                            Vec::new(),
+                        )),
+                        observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
                         member: OwnerRef::Personal(caller),
                         group: destination,
                         membership_relation: relation,
@@ -943,6 +955,8 @@ mod tests {
         let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(
                 MembershipStorage {
+                    observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                    observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
                     member: OwnerRef::Personal(caller),
                     group: destination,
                     membership_relation: Relation::Admin,
