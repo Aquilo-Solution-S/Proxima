@@ -85,6 +85,40 @@ impl EdgeEndpoint {
         }
     }
 
+    /// The stable id stored in a pin column for this endpoint.
+    #[must_use]
+    pub const fn entity_id(self) -> uuid::Uuid {
+        match self.entity {
+            EntityRef::Memory(memory_id) => memory_id.into_inner(),
+            EntityRef::Goal(goal_id) => goal_id.into_inner(),
+        }
+    }
+
+    /// Check that the endpoint's kind agrees with the entity address.
+    ///
+    /// Memory endpoints carry an F/A/P kind; Goal endpoints carry `Goal`.
+    /// Keeping this check next to the address constructors prevents a caller
+    /// from authorizing one entity while declaring another kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the declared kind and addressed entity disagree.
+    pub fn validate_shape(self) -> Result<(), String> {
+        match (self.kind, self.entity) {
+            (EntityKind::Goal, EntityRef::Goal(_))
+            | (
+                EntityKind::Fact | EntityKind::Abstraction | EntityKind::Perspective,
+                EntityRef::Memory(_),
+            ) => Ok(()),
+            (EntityKind::Goal, EntityRef::Memory(_)) => {
+                Err("a Goal endpoint must address a Goal".to_string())
+            }
+            (_, EntityRef::Goal(_)) => {
+                Err("a memory endpoint must carry an F/A/P kind".to_string())
+            }
+        }
+    }
+
     /// The memory row this endpoint pins, if it pins one.
     #[must_use]
     pub const fn memory_id(self) -> Option<MemoryId> {
@@ -160,7 +194,12 @@ pub struct PinNode {
     /// that crossed the authorization boundary.
     pub schema_id: SchemaId,
     pub origins: Vec<MemoryId>,
+    /// Raw reference ids that have not been resolved as readable Goals. A
+    /// missing target stays here so edge projection can redact it without
+    /// disclosing whether it was a Memory or Goal.
     pub refs: Vec<MemoryId>,
+    /// Goal references resolved by an owner-scoped batch read.
+    pub goal_refs: Vec<GoalId>,
 }
 
 impl PinNode {
@@ -176,6 +215,32 @@ impl PinNode {
                     .copied()
                     .map(|id| (id, EdgeKind::Reference)),
             )
+    }
+
+    /// Goal reference pins resolved by an owner-scoped batch read.
+    pub fn goal_pins(&self) -> impl Iterator<Item = (GoalId, EdgeKind)> + '_ {
+        self.goal_refs
+            .iter()
+            .copied()
+            .map(|id| (id, EdgeKind::Reference))
+    }
+
+    /// Move readable Goal references out of the raw UUID carrier.
+    pub fn resolve_visible_goal_refs(&mut self, visible: &[GoalId]) {
+        if visible.is_empty() || self.refs.is_empty() {
+            return;
+        }
+        let visible: std::collections::HashSet<_> = visible.iter().copied().collect();
+        let mut unresolved = Vec::with_capacity(self.refs.len());
+        for id in self.refs.drain(..) {
+            let goal = GoalId::new(id.into_inner());
+            if visible.contains(&goal) {
+                self.goal_refs.push(goal);
+            } else {
+                unresolved.push(id);
+            }
+        }
+        self.refs = unresolved;
     }
 }
 
@@ -210,6 +275,17 @@ pub fn project_window_edges(nodes: &[PinNode], cap: usize) -> Vec<Edge> {
             edges.push(Edge {
                 source: EdgeEndpoint::memory(source.kind, source.id),
                 target: EdgeTargetProjection::visible(EdgeEndpoint::memory(target_kind, target)),
+                kind,
+                created_at: pin_created_at(source.id),
+            });
+            if edges.len() >= cap {
+                return edges;
+            }
+        }
+        for (target, kind) in source.goal_pins() {
+            edges.push(Edge {
+                source: EdgeEndpoint::memory(source.kind, source.id),
+                target: EdgeTargetProjection::visible(EdgeEndpoint::goal(target)),
                 kind,
                 created_at: pin_created_at(source.id),
             });
@@ -290,7 +366,7 @@ mod tests {
         EdgeEndpoint, EdgeKind, EdgeTargetProjection, PinNode, project_listed_edge,
         project_window_edges, validate_edge_layering, validate_not_self_loop,
     };
-    use crate::{EntityKind, GoalId, MemoryId};
+    use crate::{EntityKind, EntityRef, GoalId, MemoryId};
 
     fn memory(kind: EntityKind) -> EdgeEndpoint {
         EdgeEndpoint::memory(kind, MemoryId::new(uuid::Uuid::now_v7()))
@@ -382,6 +458,7 @@ mod tests {
                 schema_id: crate::SchemaId::new("test/pin-v1".into()),
                 origins: Vec::new(),
                 refs: Vec::new(),
+                goal_refs: Vec::new(),
             },
             PinNode {
                 id: hub,
@@ -389,6 +466,7 @@ mod tests {
                 schema_id: crate::SchemaId::new("test/pin-v1".into()),
                 origins: vec![leaf],
                 refs: vec![outside],
+                goal_refs: Vec::new(),
             },
         ];
         let edges = project_window_edges(&nodes, 50);
@@ -399,6 +477,55 @@ mod tests {
             edges[0].target.endpoint().and_then(EdgeEndpoint::memory_id),
             Some(leaf)
         );
+    }
+
+    #[test]
+    fn window_projection_keeps_resolved_goal_references() {
+        let source = MemoryId::new(uuid::Uuid::now_v7());
+        let goal = GoalId::new(uuid::Uuid::now_v7());
+        let mut node = PinNode {
+            id: source,
+            kind: EntityKind::Fact,
+            schema_id: crate::SchemaId::new("test/pin-v1".into()),
+            origins: Vec::new(),
+            refs: vec![MemoryId::new(goal.into_inner())],
+            goal_refs: Vec::new(),
+        };
+        node.resolve_visible_goal_refs(&[goal]);
+        assert!(node.refs.is_empty());
+        let edges = project_window_edges(&[node], 50);
+        assert_eq!(edges.len(), 1);
+        assert!(matches!(
+            edges[0].target,
+            EdgeTargetProjection::Visible {
+                target: EdgeEndpoint {
+                    entity: EntityRef::Goal(id), ..
+                }
+            } if id == goal
+        ));
+    }
+
+    #[test]
+    fn unresolved_goal_reference_stays_a_redactable_raw_id() {
+        let source = MemoryId::new(uuid::Uuid::now_v7());
+        let goal = GoalId::new(uuid::Uuid::now_v7());
+        let mut node = PinNode {
+            id: source,
+            kind: EntityKind::Fact,
+            schema_id: crate::SchemaId::new("test/pin-v1".into()),
+            origins: Vec::new(),
+            refs: vec![MemoryId::new(goal.into_inner())],
+            goal_refs: Vec::new(),
+        };
+        node.resolve_visible_goal_refs(&[]);
+        let edges = project_listed_edge(
+            node.kind,
+            node.id,
+            node.refs[0],
+            EdgeKind::Reference,
+            &std::collections::HashMap::new(),
+        );
+        assert!(matches!(edges.target, EdgeTargetProjection::Redacted));
     }
 
     #[test]

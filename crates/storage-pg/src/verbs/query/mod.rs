@@ -28,7 +28,7 @@ pub use code_series_heads::{
 pub use edges::MAX_SNAPSHOT_EDGES;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use edges::inbound_pin_sql_for_tests;
-pub(crate) use edges::{load_inbound_pin_nodes, load_pin_nodes};
+pub(crate) use edges::{load_inbound_pin_nodes, load_pin_nodes, load_visible_goal_ids};
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use goals::goal_page_sql_for_tests;
 pub use goals::{ActiveGoalTargetRow, active_goals_for_memory_targets};

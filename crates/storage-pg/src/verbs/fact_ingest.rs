@@ -14,9 +14,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{
-    AuthorizedInlineCitedObject, FactIngestOutcome, FactWriteCommand,
+    AuthorizedInlineCitedObject, AuthorizedNodeLinks, FactIngestOutcome, FactWriteCommand,
 };
 use proxima_core::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, FactPayload,
@@ -57,6 +56,28 @@ struct IngestCoreOptions<'a> {
     citation_plan: CitationPlan<'a>,
 }
 
+/// Authorization-bearing inputs shared by every Fact persistence route.
+#[derive(Debug, Clone, Copy)]
+struct AuthorizedFactInput<'a> {
+    owner: &'a Owner,
+    draft: &'a FactWriteCommand,
+    links: &'a AuthorizedNodeLinks,
+}
+
+impl<'a> AuthorizedFactInput<'a> {
+    const fn new(
+        owner: &'a Owner,
+        draft: &'a FactWriteCommand,
+        links: &'a AuthorizedNodeLinks,
+    ) -> Self {
+        Self {
+            owner,
+            draft,
+            links,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum CitationPlan<'a> {
     DraftHint,
@@ -76,16 +97,15 @@ enum CitationPlan<'a> {
 ///
 /// Constraint violations map to `ConstraintViolation`; sqlx failures
 /// map to `Internal`.
-pub(crate) async fn ingest_fact_atomic(
+pub(crate) async fn ingest_authorized_fact_atomic(
     pool: &PgPool,
-    permit: &OwnerWritePermit,
-    draft: &FactWriteCommand,
+    authorized: &AuthorizedFactWrite,
     embedding_model_id: Option<&str>,
 ) -> Result<FactIngestOutcome, StorageError> {
     // Retry the whole transaction on transient deadlock/serialization.
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
-        let outcome = ingest_fact_command_in_tx(&mut tx, permit, draft, embedding_model_id).await?;
+        let outcome = ingest_fact_command_in_tx(&mut tx, authorized, embedding_model_id).await?;
         tx.commit().await.map_err(map_err)?;
         Ok(outcome)
     })
@@ -95,8 +115,7 @@ pub(crate) async fn ingest_fact_atomic(
 /// Run the `FactIngest` body inside an already-open transaction. The
 /// caller owns `tx` and is responsible for committing or rolling back.
 ///
-/// Crate-private: raw-owner write with no proof/authz param; in-crate
-/// callers only (`ingest_fact_atomic`, goal-write side effects). External
+/// Crate-private transaction body for the authorized Fact write. External
 /// flavors bundle sidecars via the `FactIngestContext`-based helpers.
 ///
 /// # Errors
@@ -105,8 +124,7 @@ pub(crate) async fn ingest_fact_atomic(
 /// map to `Internal`.
 pub(crate) async fn ingest_fact_command_in_tx(
     tx: &mut Transaction<'_, Postgres>,
-    permit: &OwnerWritePermit,
-    draft: &FactWriteCommand,
+    authorized: &AuthorizedFactWrite,
     embedding_model_id: Option<&str>,
 ) -> Result<FactIngestOutcome, StorageError> {
     let options = IngestCoreOptions {
@@ -115,8 +133,11 @@ pub(crate) async fn ingest_fact_command_in_tx(
     };
     ingest_core(
         tx,
-        permit.owner(),
-        draft,
+        AuthorizedFactInput::new(
+            authorized.owner_write_permit().owner(),
+            authorized.draft(),
+            authorized.links(),
+        ),
         options,
         &[],
         None,
@@ -158,8 +179,11 @@ where
     };
     ingest_core(
         tx,
-        authorized.owner_write_permit().owner(),
-        draft,
+        AuthorizedFactInput::new(
+            authorized.owner_write_permit().owner(),
+            draft,
+            authorized.links(),
+        ),
         options,
         sidecar_tables,
         None,
@@ -209,8 +233,11 @@ where
     };
     ingest_core(
         tx,
-        authorized.owner_write_permit().owner(),
-        draft,
+        AuthorizedFactInput::new(
+            authorized.owner_write_permit().owner(),
+            draft,
+            authorized.links(),
+        ),
         options,
         sidecar_tables,
         None,
@@ -393,8 +420,11 @@ where
     };
     ingest_core(
         tx,
-        authorized.owner_write_permit().owner(),
-        draft,
+        AuthorizedFactInput::new(
+            authorized.owner_write_permit().owner(),
+            draft,
+            authorized.links(),
+        ),
         options,
         sidecar_tables,
         content_id,
@@ -406,8 +436,7 @@ where
 #[allow(clippy::too_many_lines)]
 async fn ingest_core<F>(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
-    draft: &FactWriteCommand,
+    authorized: AuthorizedFactInput<'_>,
     options: IngestCoreOptions<'_>,
     sidecar_tables: &[String],
     content_id: Option<uuid::Uuid>,
@@ -419,6 +448,11 @@ where
         &'t FactIngestOutcome,
     ) -> FactIngestSidecarFuture<'t>,
 {
+    let AuthorizedFactInput {
+        owner,
+        draft,
+        links,
+    } = authorized;
     let mut write = draft.clone();
     if write.blob_id.is_none() {
         write.blob_id =
@@ -428,6 +462,8 @@ where
         tx,
         owner,
         &write,
+        links.origins(),
+        links.references(),
         sidecar_tables,
         content_id,
     )

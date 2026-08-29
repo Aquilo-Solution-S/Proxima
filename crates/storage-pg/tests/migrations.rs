@@ -320,6 +320,14 @@ async fn migrations_apply_to_fresh_db() {
             "cooled carries blob_id so citation-bearing replays keep their object"
         );
         assert!(
+            column_exists(&pg, "cooled", "origins").await,
+            "cooled carries nullable origins for exact replay"
+        );
+        assert!(
+            column_exists(&pg, "cooled", "refs").await,
+            "cooled carries nullable refs for exact replay"
+        );
+        assert!(
             column_exists(&pg, "memory", "schema_id").await,
             "schema_id is on each memory row (same value as the handle)"
         );
@@ -492,6 +500,177 @@ async fn migrations_apply_to_fresh_db() {
 
     let _ = drop_db(&db_name).await;
     result.expect("migrations integration test failed");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal')",
+        )
+        .bind(owner)
+        .execute(pool)
+        .await?;
+
+        let goal_handle = Uuid::now_v7();
+        let goal_t = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+             VALUES ($1, 'test/goal-v1', $2, $3)",
+        )
+        .bind(goal_handle)
+        .bind(owner)
+        .bind(goal_t)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.goal
+                 (handle, t, owner_id, title, state, request_id)
+             VALUES ($1, $2, $3, 'reference target', 'Active', 'reference-goal')",
+        )
+        .bind(goal_handle)
+        .bind(goal_t)
+        .bind(owner)
+        .execute(pool)
+        .await?;
+
+        let fact_handle = Uuid::now_v7();
+        let fact_t = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'test/fact-v1', $2, $3)",
+        )
+        .bind(fact_handle)
+        .bind(owner)
+        .bind(fact_t)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory
+                 (handle, t, kind, owner_id, schema_id, refs)
+             VALUES ($1, $2, 'fact', $3, 'test/fact-v1', ARRAY[$4]::uuid[])",
+        )
+        .bind(fact_handle)
+        .bind(fact_t)
+        .bind(owner)
+        .bind(goal_t)
+        .execute(pool)
+        .await?;
+
+        // Origins are Memory-only. Include a real Fact origin so the
+        // grounding check cannot be the reason this insert is rejected.
+        let source_handle = Uuid::now_v7();
+        let source_t = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'test/source-v1', $2, $3)",
+        )
+        .bind(source_handle)
+        .bind(owner)
+        .bind(source_t)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory
+                 (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'fact', $3, 'test/source-v1')",
+        )
+        .bind(source_handle)
+        .bind(source_t)
+        .bind(owner)
+        .execute(pool)
+        .await?;
+
+        let content_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+             VALUES ($1, 'test/abstraction-v1', $2)
+             RETURNING content_id",
+        )
+        .bind(owner)
+        .bind(vec![7_u8; 32])
+        .fetch_one(pool)
+        .await?;
+        let abstraction_handle = Uuid::now_v7();
+        let abstraction_t = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'abstraction', 'test/abstraction-v1', $2, $3)",
+        )
+        .bind(abstraction_handle)
+        .bind(owner)
+        .bind(abstraction_t)
+        .execute(pool)
+        .await?;
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.memory
+                 (handle, t, kind, owner_id, schema_id, origins, content_id)
+             VALUES ($1, $2, 'abstraction', $3, 'test/abstraction-v1',
+                     ARRAY[$4, $5]::uuid[], $6)",
+        )
+        .bind(abstraction_handle)
+        .bind(abstraction_t)
+        .bind(owner)
+        .bind(source_t)
+        .bind(goal_t)
+        .bind(content_id)
+        .execute(pool)
+        .await
+        .expect_err("a Goal cannot be an origin target");
+        assert!(
+            err.to_string().contains("origin pin")
+                || err.to_string().contains("abstraction origins"),
+            "Goal origin rejection must come from the origin-only checks: {err}"
+        );
+
+        let cooled_t = Uuid::now_v7();
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.cooled
+                 (t, handle, owner_id, kind, object_key, origins)
+             VALUES ($1, $2, $3, 'fact', 'cold/null-origin', ARRAY[NULL]::uuid[])",
+        )
+        .bind(cooled_t)
+        .bind(Uuid::now_v7())
+        .bind(owner)
+        .execute(pool)
+        .await
+        .expect_err("cooled origins must reject NULL elements");
+        assert!(
+            err.to_string().contains("cooled_origins_no_null_chk"),
+            "cooled origins constraint must name the malformed array: {err}"
+        );
+
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.cooled
+                 (t, handle, owner_id, kind, object_key, refs)
+             VALUES ($1, $2, $3, 'fact', 'cold/null-ref', ARRAY[NULL]::uuid[])",
+        )
+        .bind(Uuid::now_v7())
+        .bind(Uuid::now_v7())
+        .bind(owner)
+        .execute(pool)
+        .await
+        .expect_err("cooled refs must reject NULL elements");
+        assert!(
+            err.to_string().contains("cooled_refs_no_null_chk"),
+            "cooled refs constraint must name the malformed array: {err}"
+        );
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("reference-integrity migration test failed");
 }
 
 #[tokio::test]
@@ -1108,6 +1287,37 @@ fn generated_declaration_triggers_are_the_migration_text() {
     }
 }
 
+/// The reference-integrity lane is deliberately one additive migration. Its
+/// trigger body is pinned here so a future rewrite cannot silently collapse
+/// the origin-only and reference-capable target sets back into one check.
+#[test]
+fn reference_integrity_migration_is_set_based_and_keeps_baselines_frozen() {
+    let migration = include_str!("../migrations/0003_v010_reference_integrity.sql");
+    let baseline = include_str!("../migrations/0001_v008.sql");
+    let declaration_lane = include_str!("../migrations/0002_v009_declaration_triggers.sql");
+    assert!(
+        !baseline.contains("cooled_origins_no_null_chk")
+            && !declaration_lane.contains("cooled_origins_no_null_chk"),
+        "the new cooled witness belongs to the additive v0.0.10 migration"
+    );
+    for fragment in [
+        "CREATE OR REPLACE FUNCTION proxima_core.memory_pin_checks()",
+        "FROM unnest(NEW.origins)",
+        "FROM unnest(NEW.refs)",
+        "FROM proxima_core.goal",
+        "WHERE t = ANY (NEW.origins || NEW.refs)",
+        "ORDER BY t",
+        "FOR SHARE",
+        "cooled_origins_no_null_chk",
+        "cooled_refs_no_null_chk",
+    ] {
+        assert!(
+            migration.contains(fragment),
+            "v0.0.10 reference-integrity migration is missing {fragment:?}"
+        );
+    }
+}
+
 /// `task_goal_v1` hangs off a Goal, so no memory ever stamps it — and a
 /// trigger asking `proxima_core.memory` about it would refuse every Goal
 /// sidecar write there is.
@@ -1414,7 +1624,7 @@ async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
     Ok(())
 }
 
-/// A v0.0.8 database upgrades to v0.0.9 in place — no reset, no data loss.
+/// A v0.0.8 database upgrades through v0.0.10 in place — no reset, no data loss.
 ///
 /// This is the whole reason the declaration triggers ship as
 /// `0002_v009_declaration_triggers.sql` instead of being pasted into the
@@ -1424,11 +1634,10 @@ async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
 /// forced destructive reset with no schema reason behind it.
 ///
 /// Three things are asserted, because the upgrade is only real if all three
-/// hold: boot does not demand a reset, the ledger ends up carrying both
-/// versions, and the invariant the new migration exists to install is
-/// actually live afterwards.
+/// hold: boot does not demand a reset, the ledger carries every version, and
+/// the installed invariants are actually live afterwards.
 #[tokio::test]
-async fn a_v008_database_upgrades_to_v009_in_place() {
+async fn a_v008_database_upgrades_to_v010_in_place() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 
     if let Err(e) = create_db(&db_name).await {
@@ -1484,8 +1693,8 @@ async fn a_v008_database_upgrades_to_v009_in_place() {
         .await?;
         assert_eq!(
             versions,
-            vec![1, 2],
-            "the upgrade appends v0.0.9; it does not re-apply or replace the baseline"
+            vec![1, 2, 3],
+            "the upgrade appends v0.0.9 and v0.0.10; it does not re-apply or replace the baseline"
         );
 
         let still_there: bool =
@@ -1511,5 +1720,5 @@ async fn a_v008_database_upgrades_to_v009_in_place() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("v0.0.8 -> v0.0.9 in-place upgrade failed");
+    result.expect("v0.0.8 -> v0.0.10 in-place upgrade failed");
 }

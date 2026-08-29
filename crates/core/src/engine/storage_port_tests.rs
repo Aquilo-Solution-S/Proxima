@@ -82,6 +82,14 @@ impl crate::MemoryReadPort for ReadOnlyFake {
         Ok(Vec::new())
     }
 
+    async fn load_visible_goal_ids(
+        &self,
+        _read_owners: &[OwnerRef],
+        _goal_ids: &[crate::GoalId],
+    ) -> Result<Vec<crate::GoalId>, StorageError> {
+        Ok(Vec::new())
+    }
+
     async fn load_inbound_pin_nodes(
         &self,
         _read_owners: &[OwnerRef],

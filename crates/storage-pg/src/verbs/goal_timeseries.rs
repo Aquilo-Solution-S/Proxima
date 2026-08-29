@@ -95,7 +95,7 @@ pub async fn ingest_write_act(
         blob_id: None,
         kind: "fact".into(),
     };
-    ingest_fact_timeseries(tx, owner, &draft, &[], None).await
+    ingest_fact_timeseries(tx, owner, &draft, &[], &[], &[], None).await
 }
 
 pub async fn write_goal(

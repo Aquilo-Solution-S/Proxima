@@ -14,6 +14,7 @@
     clippy::too_many_lines
 )]
 
+use proxima_core::edge::EdgeEndpoint;
 use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
 use proxima_core::{MemoryId, Owner, StorageError};
 use sqlx::{Postgres, Transaction};
@@ -42,6 +43,8 @@ pub(crate) async fn ingest_fact_timeseries(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     draft: &FactWriteCommand,
+    origins: &[EdgeEndpoint],
+    references: &[EdgeEndpoint],
     sidecar_tables: &[String],
     content_id: Option<Uuid>,
 ) -> Result<FactIngestOutcome, StorageError> {
@@ -85,16 +88,12 @@ pub(crate) async fn ingest_fact_timeseries(
         )
     };
 
-    let mut origins: Vec<Uuid> = draft
-        .derived_from
-        .iter()
-        .filter_map(|ep| ep.memory_id().map(proxima_core::MemoryId::into_inner))
-        .collect();
-    let mut refs = draft.refs.clone();
+    let mut persisted_origins = pin_memory_ids(origins)?;
+    let mut refs = pin_entity_ids(references);
     // CHECK memory_fact_origins_chk: Facts cannot carry origins. Pins
     // a Fact declares (activation, evidence, prior request) live in refs.
     if kind == "fact" {
-        for id in origins.drain(..) {
+        for id in persisted_origins.drain(..) {
             if !refs.contains(&id) {
                 refs.push(id);
             }
@@ -133,11 +132,14 @@ pub(crate) async fn ingest_fact_timeseries(
             .map_err(map_err)?;
             // Forget keeps the `ingest_keys` row and moves the handle to the
             // `cooled` stub, so a source re-delivering a cooled admission still
-            // replays. Reading `memory` alone misses the stub.
-            let replay_handle: Uuid = sqlx::query_scalar(
-                "SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
+            // replays. Reading `memory` alone misses the stub. A legacy cooled
+            // row has NULL refs because its declaration was not persisted;
+            // accepting it as an empty vector would silently bless a changed
+            // declaration.
+            let replay_row: (Uuid, Option<Vec<Uuid>>) = sqlx::query_as(
+                "SELECT handle, refs FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
                  UNION ALL
-                 SELECT handle FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
+                 SELECT handle, refs FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
                  LIMIT 1",
             )
             .bind(replay_t)
@@ -150,13 +152,23 @@ pub(crate) async fn ingest_fact_timeseries(
                     "ingest key claims t {replay_t} with no hot or cooled row"
                 ))
             })?;
+            let Some(stored_refs) = replay_row.1 else {
+                return Err(StorageError::Conflict(
+                    "fact replay references are unavailable for cooled admission".into(),
+                ));
+            };
+            if stored_refs != refs {
+                return Err(StorageError::Conflict(
+                    "fact replay changed declared refs".into(),
+                ));
+            }
             return Ok(FactIngestOutcome {
                 receipt_id: None,
                 memory_id: MemoryId::new(replay_t),
                 change_event_seq: replay_t,
                 idempotent_replay: true,
                 cited_object_id: None,
-                handle: replay_handle,
+                handle: replay_row.0,
             });
         }
     }
@@ -199,7 +211,7 @@ pub(crate) async fn ingest_fact_timeseries(
     .bind(ingest_key.as_deref())
     .bind(draft.blob_id)
     .bind(content_id)
-    .bind(&origins)
+    .bind(&persisted_origins)
     .bind(&refs)
     .bind(sidecar_tables)
     .execute(tx.as_mut())
@@ -236,6 +248,40 @@ pub(crate) async fn ingest_fact_timeseries(
         cited_object_id: None,
         handle,
     })
+}
+
+/// Project authorized endpoints to the UUID array stored by Postgres while
+/// preserving declaration order and removing duplicate pins. Origins are a
+/// Memory-only column; a Goal origin is a malformed authorized carrier and
+/// must not be silently discarded.
+fn pin_memory_ids(pins: &[EdgeEndpoint]) -> Result<Vec<Uuid>, StorageError> {
+    let mut ids = Vec::with_capacity(pins.len());
+    for pin in pins {
+        let Some(memory_id) = pin.memory_id() else {
+            return Err(StorageError::ConstraintViolation(
+                "memory origins must target a Memory".into(),
+            ));
+        };
+        let id = memory_id.into_inner();
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+/// Project either a Memory or Goal endpoint to the stable id stored in
+/// `memory.refs`. The entity kind is carried by authorization; storage only
+/// persists the endpoint id, so Goal references must use `entity_id()` too.
+pub(crate) fn pin_entity_ids(pins: &[EdgeEndpoint]) -> Vec<Uuid> {
+    let mut ids = Vec::with_capacity(pins.len());
+    for pin in pins {
+        let id = pin.entity_id();
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
 }
 
 /// Read one admission row by `t`, inside the caller's transaction.

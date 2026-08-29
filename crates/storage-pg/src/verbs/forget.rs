@@ -491,8 +491,9 @@ async fn persist_cooled_after_put(
     let t = current.row.t;
     sqlx::query(
         "INSERT INTO proxima_core.cooled
-            (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id, ingest_key)
-         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6, $7, $8, $9)",
+            (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id, ingest_key,
+             origins, refs)
+         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(current.row.t)
     .bind(current.row.handle)
@@ -503,6 +504,8 @@ async fn persist_cooled_after_put(
     .bind(current.row.content_id)
     .bind(current.row.source_id.as_deref())
     .bind(current.row.ingest_key.as_deref())
+    .bind(&current.row.origins)
+    .bind(&current.row.refs)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;

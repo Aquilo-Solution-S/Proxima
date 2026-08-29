@@ -31,7 +31,8 @@ proxima_core.memory (
 )
 ```
 
-- Target is always a `t`. Never a handle. No follow-at-read.
+- Target is always a `t`. Never a handle. Origins target a hot or cooled
+  Memory; references may additionally target a Goal. No follow-at-read.
 - No pin id, payload, sidecar, citation, or status.
 - Ten call sites A→B are one `refs` entry and ten payload sites.
 - Rebuildable: re-derive from node content, same set.
@@ -73,7 +74,8 @@ is a Perspective whose payload names worker and request; request
 
 `docs/lean/Causa/Edges.lean` (E1–E7 in `docs/lean/COVERAGE.md`).
 
-- **E1** both endpoints exist (or cooled stub).
+- **E1** origins resolve to a hot Memory or cooled stub; references resolve to
+  a hot/cooled Memory or Goal.
 - **E2** source-owned.
 - **E3** layering.
 - **E4** kind follows operation. Zero origins is legal (interpretation).

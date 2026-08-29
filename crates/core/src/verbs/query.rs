@@ -452,6 +452,7 @@ impl From<&MemoryRow> for crate::PinNode {
             schema_id: row.schema_id.clone(),
             origins: row.origins.clone(),
             refs: row.refs.clone(),
+            goal_refs: Vec::new(),
         }
     }
 }

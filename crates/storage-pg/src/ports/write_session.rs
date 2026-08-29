@@ -96,6 +96,10 @@ impl WriteSession for PgWriteSession {
         sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
+        authorized
+            .links()
+            .validate_sidecar_references(sidecar_payloads)
+            .map_err(StorageError::ConstraintViolation)?;
         let fact_sidecars = self.sidecars.writing(authorized.draft());
         let payloads = sidecar_payloads.to_vec();
         let tables = self.sidecars.tables_for_payloads(sidecar_payloads)?;

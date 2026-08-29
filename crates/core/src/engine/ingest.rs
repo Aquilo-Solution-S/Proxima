@@ -33,6 +33,19 @@ use crate::{
 /// ask the same question.
 const TRANSIENT_BATCH_PROBE: &str = crate::llm::EMBED_LIVENESS_PROBE;
 
+fn normalize_fact_source_kind(draft: &mut FactWriteCommand) -> Result<(), ProtocolError> {
+    if draft.kind.is_empty() {
+        "fact".clone_into(&mut draft.kind);
+    }
+    if draft.kind != "fact" {
+        return Err(ProtocolError::invalid_argument(
+            "kind",
+            "Fact ingest requires a Fact source",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EmbeddingDrainOutcome {
     pub processed: usize,
@@ -108,11 +121,7 @@ impl Engine {
             .storage
             .ingest
             .fact_ingest
-            .ingest_fact_atomic(
-                authorized.owner_write_permit(),
-                authorized.draft(),
-                embedding_model_id,
-            )
+            .ingest_authorized_fact_atomic(&authorized, embedding_model_id)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -144,7 +153,7 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
-        self.authorize_fact_ingest_visible(authority, relation, draft, sidecars, &[])
+        self.authorize_fact_ingest_visible(authority, relation, draft, sidecars, &[], &[])
             .await
     }
 
@@ -154,15 +163,17 @@ impl Engine {
         &self,
         authority: &A,
         relation: Relation,
-        draft: FactWriteCommand,
+        mut draft: FactWriteCommand,
         sidecars: &[SidecarPayload],
         session_visible: &[MemoryId],
+        session_visible_kinds: &[(MemoryId, EntityKind)],
     ) -> Result<AuthorizedFactWrite, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
         let owner = self.single_write_owner_for(authority, relation)?;
         let permit = self.authorize_write(authority, &owner, relation).await?;
+        normalize_fact_source_kind(&mut draft)?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
@@ -177,7 +188,13 @@ impl Engine {
             )?;
         }
         let links = self
-            .authorize_fact_node_links(authority, &draft, sidecars, session_visible)
+            .authorize_fact_node_links(
+                authority,
+                &draft,
+                sidecars,
+                session_visible,
+                session_visible_kinds,
+            )
             .await?;
         Ok(AuthorizedFactWrite::new(
             permit.into(),
@@ -203,7 +220,7 @@ impl Engine {
         &self,
         authority: &A,
         relation: Relation,
-        draft: FactWriteCommand,
+        mut draft: FactWriteCommand,
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
         sidecars: &[SidecarPayload],
@@ -213,6 +230,7 @@ impl Engine {
     {
         let owner = self.single_write_owner_for(authority, relation)?;
         let permit = self.authorize_write(authority, &owner, relation).await?;
+        normalize_fact_source_kind(&mut draft)?;
 
         // Validate the Fact only by schema-existence, matching
         // `authorize_fact_ingest`. The Fact payload is built from a
@@ -223,7 +241,7 @@ impl Engine {
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
         let links = self
-            .authorize_fact_node_links(authority, &draft, sidecars, &[])
+            .authorize_fact_node_links(authority, &draft, sidecars, &[], &[])
             .await?;
 
         Ok(AuthorizedFactWithCitation::new(
@@ -255,7 +273,7 @@ impl Engine {
         &self,
         authority: &A,
         relation: Relation,
-        draft: FactWriteCommand,
+        mut draft: FactWriteCommand,
         cited_object_id: uuid::Uuid,
         mapping: InlineCitationMappingDraft,
         sidecars: &[SidecarPayload],
@@ -265,12 +283,13 @@ impl Engine {
     {
         let owner = self.single_write_owner_for(authority, relation)?;
         let permit = self.authorize_write(authority, &owner, relation).await?;
+        normalize_fact_source_kind(&mut draft)?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
         let (mapping, expected_object_schema) = self.authorize_citation_mapping_draft(mapping)?;
         let links = self
-            .authorize_fact_node_links(authority, &draft, sidecars, &[])
+            .authorize_fact_node_links(authority, &draft, sidecars, &[], &[])
             .await?;
 
         Ok(AuthorizedFactWithCitationRef::new(
@@ -288,18 +307,18 @@ impl Engine {
     /// Resolve the index rows a Fact write is admitted to assert: its
     /// declared origins, and the references its typed payloads carry.
     ///
-    /// A Fact sits at the bottom of the F/A/P order, so the layering rule
-    /// alone decides what it may point at — Facts, Fact-entity heads, and
-    /// Goals. Nothing here reads a kind off the caller: the origins come
-    /// from the derivation declaration and the references from payload
-    /// content, which is what keeps the edge set a function of node
-    /// content.
+    /// A Fact sits at the bottom of the F/A/P order, so its pins may target
+    /// Facts or Goals. Origins come from the derivation declaration and
+    /// references from payload content; every declared endpoint kind is
+    /// checked against the resolved target before the authorized carrier is
+    /// minted.
     async fn authorize_fact_node_links<A>(
         &self,
         authority: &A,
         draft: &FactWriteCommand,
         sidecars: &[SidecarPayload],
         session_visible: &[MemoryId],
+        session_visible_kinds: &[(MemoryId, EntityKind)],
     ) -> Result<AuthorizedNodeLinks, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
@@ -313,22 +332,76 @@ impl Engine {
                 .validate()
                 .map_err(|err| ProtocolError::invalid_argument("references", err))?;
         }
-        let references: Vec<EdgeEndpoint> = declared
+        let typed_references: Vec<EdgeEndpoint> = declared
             .into_iter()
             .map(|reference| reference.target)
-            .collect();
+            .fold(Vec::new(), |mut references, target| {
+                if !references.contains(&target) {
+                    references.push(target);
+                }
+                references
+            });
+        let payload_references = typed_references.clone();
+        let raw_references: Vec<EdgeEndpoint> = draft
+            .refs
+            .iter()
+            .copied()
+            .map(|id| EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(id)))
+            .fold(Vec::new(), |mut references, target| {
+                if !references.contains(&target) {
+                    references.push(target);
+                }
+                references
+            });
+        if !draft.refs.is_empty() && !typed_references.is_empty() {
+            let typed_ids: Vec<_> = typed_references
+                .iter()
+                .map(|reference| reference.entity_id())
+                .fold(Vec::new(), |mut ids, id| {
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                    ids
+                });
+            let raw_ids: Vec<_> = raw_references
+                .iter()
+                .map(|reference| reference.entity_id())
+                .collect();
+            if typed_ids != raw_ids {
+                return Err(ProtocolError::invalid_argument(
+                    "refs",
+                    "raw Fact references must equal the payload-declared references",
+                ));
+            }
+        }
+        let references = if typed_references.is_empty() {
+            raw_references
+        } else {
+            typed_references
+        };
         let origins = self
             .authorize_fact_link_targets(
                 authority,
                 &draft.derived_from,
                 "derived_from",
                 session_visible,
+                session_visible_kinds,
             )
             .await?;
         let references = self
-            .authorize_fact_link_targets(authority, &references, "references", session_visible)
+            .authorize_fact_link_targets(
+                authority,
+                &references,
+                "references",
+                session_visible,
+                session_visible_kinds,
+            )
             .await?;
-        Ok(AuthorizedNodeLinks::new(origins, references))
+        Ok(AuthorizedNodeLinks::new(
+            origins,
+            references,
+            payload_references,
+        ))
     }
 
     async fn authorize_fact_link_targets<A>(
@@ -337,12 +410,22 @@ impl Engine {
         targets: &[EdgeEndpoint],
         field: &str,
         session_visible: &[MemoryId],
+        session_visible_kinds: &[(MemoryId, EntityKind)],
     ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
         let mut out: Vec<EdgeEndpoint> = Vec::with_capacity(targets.len());
         for target in targets {
+            target
+                .validate_shape()
+                .map_err(|err| ProtocolError::invalid_argument(field, err))?;
+            if field == "derived_from" && matches!(target.entity, crate::EntityRef::Goal(_)) {
+                return Err(ProtocolError::invalid_argument(
+                    field,
+                    "Fact origins must target a Memory",
+                ));
+            }
             match target.kind {
                 EntityKind::Fact | EntityKind::Goal => {}
                 EntityKind::Abstraction | EntityKind::Perspective => {
@@ -356,10 +439,43 @@ impl Engine {
                 }
             }
             match target.entity {
-                crate::EntityRef::Memory(memory_id) if session_visible.contains(&memory_id) => {}
+                crate::EntityRef::Memory(memory_id) if session_visible.contains(&memory_id) => {
+                    let actual = session_visible_kinds
+                        .iter()
+                        .find_map(|(id, kind)| (*id == memory_id).then_some(*kind))
+                        .ok_or_else(|| {
+                            ProtocolError::internal(
+                                "session-visible Fact reference is missing its stored kind",
+                            )
+                        })?;
+                    if actual != target.kind {
+                        return Err(ProtocolError::invalid_argument(
+                            field,
+                            format!(
+                                "declared target kind {} does not match stored kind {}",
+                                target.kind.as_str(),
+                                actual.as_str()
+                            ),
+                        ));
+                    }
+                }
                 crate::EntityRef::Memory(memory_id) => {
-                    self.authorize_entry_read(authority, crate::EntityId::Memory(memory_id))
+                    let permit = self
+                        .authorize_entry_read(authority, crate::EntityId::Memory(memory_id))
                         .await?;
+                    let actual = self
+                        .load_required_memory_kind(permit.owner(), memory_id)
+                        .await?;
+                    if actual != target.kind {
+                        return Err(ProtocolError::invalid_argument(
+                            field,
+                            format!(
+                                "declared target kind {} does not match stored kind {}",
+                                target.kind.as_str(),
+                                actual.as_str()
+                            ),
+                        ));
+                    }
                 }
                 crate::EntityRef::Goal(goal_id) => {
                     self.authorize_entry_read(authority, crate::EntityId::Goal(goal_id))
@@ -436,6 +552,10 @@ impl Engine {
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
+        authorized
+            .links()
+            .validate_sidecar_references(sidecars)
+            .map_err(|err| ProtocolError::invalid_argument("sidecars", err))?;
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
@@ -466,6 +586,10 @@ impl Engine {
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
+        authorized
+            .links()
+            .validate_sidecar_references(sidecars)
+            .map_err(|err| ProtocolError::invalid_argument("sidecars", err))?;
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
@@ -497,6 +621,10 @@ impl Engine {
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
+        authorized
+            .links()
+            .validate_sidecar_references(sidecars)
+            .map_err(|err| ProtocolError::invalid_argument("sidecars", err))?;
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
@@ -1330,11 +1458,17 @@ impl std::fmt::Debug for SchemaIdDisplay<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+    use crate::engine::access_sets::tests::MembershipStorage;
     use crate::error::ErrorCode;
     use crate::ids::UserId;
     use crate::llm::{EMBEDDING_DIM, LlmError};
-    use crate::{AuthPath, FactPayload, FlavorRegistry, PayloadKeyBuilder, SchemaId};
+    use crate::{
+        AuthPath, FactPayload, FlavorRegistry, GroupId, PayloadKeyBuilder, PayloadReference,
+        ReferenceBinding, SchemaId,
+    };
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug)]
@@ -1377,6 +1511,325 @@ mod tests {
         fn render(&self) -> String {
             self.fact_id.clone()
         }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct ReferencedTestFact {
+        fact_id: String,
+        targets: Vec<EdgeEndpoint>,
+    }
+
+    impl FactPayload for ReferencedTestFact {
+        const SCHEMA_ID: &'static str = "test/ingest-referenced-fact";
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn receipt_key(&self) -> Vec<u8> {
+            let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+            key.field_str("fact_id", &self.fact_id);
+            key.finish()
+        }
+
+        fn render(&self) -> String {
+            self.fact_id.clone()
+        }
+
+        fn references(&self) -> Vec<PayloadReference> {
+            self.targets
+                .iter()
+                .copied()
+                .map(|target| PayloadReference {
+                    field: "target",
+                    binding: ReferenceBinding::Pin,
+                    target,
+                })
+                .collect()
+        }
+    }
+
+    fn referenced_draft(payload: &ReferencedTestFact) -> FactWriteCommand {
+        FactWriteCommand::from_payload(
+            "test/references",
+            SourceBatchId::new(uuid::Uuid::now_v7()),
+            payload,
+            time::OffsetDateTime::now_utc(),
+        )
+    }
+
+    fn reference_engine(
+        owner: Owner,
+        home_owner: Option<Owner>,
+        entity_readable: bool,
+        memory_kind: Option<EntityKind>,
+        observed_fact_writes: Arc<AtomicUsize>,
+    ) -> Engine {
+        Engine::compose_or_panic_for_tests(
+            MembershipStorage {
+                member: owner,
+                group: GroupId::new(uuid::Uuid::now_v7()),
+                membership_relation: Relation::Viewer,
+                home_owner,
+                entity_readable,
+                memory_kind,
+                goal_evidence: None,
+                observed_fact_writes,
+                observed_modify_evidence: Arc::new(std::sync::Mutex::new(None)),
+                observed_goal_authorship: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+            .storage_ports(),
+            FlavorRegistry::add_fact_schema_or_panic_for_tests::<ReferencedTestFact>,
+        )
+    }
+
+    #[tokio::test]
+    async fn fact_payload_refs_are_the_authorized_links() {
+        let owner = test_owner();
+        let fact = MemoryId::new(uuid::Uuid::now_v7());
+        let goal = crate::GoalId::new(uuid::Uuid::now_v7());
+        let payload = ReferencedTestFact {
+            fact_id: "typed-links".to_owned(),
+            targets: vec![
+                EdgeEndpoint::memory(EntityKind::Fact, fact),
+                EdgeEndpoint::goal(goal),
+                EdgeEndpoint::memory(EntityKind::Fact, fact),
+            ],
+        };
+        let sidecars = [SidecarPayload::fact(payload.clone())];
+        let engine = reference_engine(
+            owner,
+            Some(owner),
+            true,
+            Some(EntityKind::Fact),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let authorized = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                referenced_draft(&payload),
+                &sidecars,
+            )
+            .await
+            .expect("readable typed targets should authorize");
+
+        assert_eq!(
+            authorized.links().references(),
+            &[
+                EdgeEndpoint::memory(EntityKind::Fact, fact),
+                EdgeEndpoint::goal(goal),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_fact_refs_cannot_disagree_with_payload_refs() {
+        let owner = test_owner();
+        let typed = MemoryId::new(uuid::Uuid::now_v7());
+        let raw = MemoryId::new(uuid::Uuid::now_v7());
+        let payload = ReferencedTestFact {
+            fact_id: "raw-mismatch".to_owned(),
+            targets: vec![EdgeEndpoint::memory(EntityKind::Fact, typed)],
+        };
+        let sidecars = [SidecarPayload::fact(payload.clone())];
+        let engine = reference_engine(
+            owner,
+            Some(owner),
+            true,
+            Some(EntityKind::Fact),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let error = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                referenced_draft(&payload).with_refs(vec![raw.into_inner()]),
+                &sidecars,
+            )
+            .await
+            .expect_err("raw refs must not replace typed declarations");
+
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn authorized_sidecars_cannot_change_reference_declaration() {
+        let owner = test_owner();
+        let first = MemoryId::new(uuid::Uuid::now_v7());
+        let second = MemoryId::new(uuid::Uuid::now_v7());
+        let admitted = ReferencedTestFact {
+            fact_id: "bound-sidecars".to_owned(),
+            targets: vec![EdgeEndpoint::memory(EntityKind::Fact, first)],
+        };
+        let substituted = ReferencedTestFact {
+            fact_id: "bound-sidecars".to_owned(),
+            targets: vec![EdgeEndpoint::memory(EntityKind::Fact, second)],
+        };
+        let admitted_sidecars = [SidecarPayload::fact(admitted.clone())];
+        let observed = Arc::new(AtomicUsize::new(0));
+        let engine = reference_engine(
+            owner,
+            Some(owner),
+            true,
+            Some(EntityKind::Fact),
+            observed.clone(),
+        );
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authorized = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                referenced_draft(&admitted),
+                &admitted_sidecars,
+            )
+            .await
+            .expect("the original declaration should authorize");
+
+        let error = engine
+            .ingest_fact_with_typed_sidecar(&authorized, &[SidecarPayload::fact(substituted)], None)
+            .await
+            .expect_err("a substituted declaration must fail before the port");
+
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert_eq!(observed.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn fact_reference_wrong_stored_kind_stops_before_port() {
+        let owner = test_owner();
+        let target = MemoryId::new(uuid::Uuid::now_v7());
+        let payload = ReferencedTestFact {
+            fact_id: "wrong-kind".to_owned(),
+            targets: Vec::new(),
+        };
+        let observed = Arc::new(AtomicUsize::new(0));
+        let engine = reference_engine(
+            owner,
+            Some(owner),
+            true,
+            Some(EntityKind::Abstraction),
+            observed.clone(),
+        );
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let error = engine
+            .fact_ingest(
+                &authz,
+                referenced_draft(&payload).with_refs(vec![target.into_inner()]),
+            )
+            .await
+            .expect_err("a raw Fact endpoint must match the stored kind");
+
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert_eq!(observed.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn fact_reference_unreadable_stops_before_port() {
+        let owner = test_owner();
+        let target = MemoryId::new(uuid::Uuid::now_v7());
+        let payload = ReferencedTestFact {
+            fact_id: "unreadable".to_owned(),
+            targets: Vec::new(),
+        };
+        let observed = Arc::new(AtomicUsize::new(0));
+        let engine = reference_engine(
+            owner,
+            Some(owner),
+            false,
+            Some(EntityKind::Fact),
+            observed.clone(),
+        );
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let error = engine
+            .fact_ingest(
+                &authz,
+                referenced_draft(&payload).with_refs(vec![target.into_inner()]),
+            )
+            .await
+            .expect_err("an unreadable target must fail before persistence");
+
+        assert_eq!(error.code, ErrorCode::Forbidden);
+        assert_eq!(observed.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn uow_session_visible_fact_reference_checks_kind() {
+        let owner = test_owner();
+        let target = MemoryId::new(uuid::Uuid::now_v7());
+        let payload = ReferencedTestFact {
+            fact_id: "session-kind".to_owned(),
+            targets: vec![EdgeEndpoint::memory(EntityKind::Fact, target)],
+        };
+        let sidecars = [SidecarPayload::fact(payload.clone())];
+        let engine = reference_engine(owner, None, false, None, Arc::new(AtomicUsize::new(0)));
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let error = engine
+            .authorize_fact_ingest_visible(
+                &authz,
+                Relation::Ingest,
+                referenced_draft(&payload),
+                &sidecars,
+                &[target],
+                &[(target, EntityKind::Abstraction)],
+            )
+            .await
+            .expect_err("session-visible kind mismatch must fail closed");
+
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn non_fact_source_cannot_mint_authorized_fact_write() {
+        let owner = test_owner();
+        let payload = ReferencedTestFact {
+            fact_id: "wrong-source".to_owned(),
+            targets: Vec::new(),
+        };
+        let observed = Arc::new(AtomicUsize::new(0));
+        let engine = reference_engine(owner, None, false, None, observed.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let mut draft = referenced_draft(&payload);
+        "abstraction".clone_into(&mut draft.kind);
+
+        let error = engine
+            .fact_ingest(&authz, draft)
+            .await
+            .expect_err("a non-Fact source must not mint a Fact witness");
+
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert_eq!(observed.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn malformed_goal_endpoint_stops_before_port() {
+        let owner = test_owner();
+        let payload = ReferencedTestFact {
+            fact_id: "malformed-goal".to_owned(),
+            targets: Vec::new(),
+        };
+        let observed = Arc::new(AtomicUsize::new(0));
+        let engine = reference_engine(owner, None, false, None, observed.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let malformed = EdgeEndpoint {
+            kind: EntityKind::Fact,
+            entity: crate::EntityRef::Goal(crate::GoalId::new(uuid::Uuid::now_v7())),
+        };
+
+        let error = engine
+            .fact_ingest(
+                &authz,
+                referenced_draft(&payload).with_derived_from(vec![malformed]),
+            )
+            .await
+            .expect_err("a malformed Goal endpoint must fail before persistence");
+
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert_eq!(observed.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -1429,6 +1882,35 @@ mod tests {
             .expect_err("denied context must fail");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn denied_context_precedes_invalid_fact_kind() {
+        let owner = test_owner();
+        let mut registry = FlavorRegistry::new();
+        registry.add_fact_schema_or_panic_for_tests::<TestFact>();
+        let engine = Engine::new(registry.freeze_or_panic_for_tests());
+        let mut draft = FactWriteCommand::from_payload(
+            "test/source",
+            SourceBatchId::new(uuid::Uuid::now_v7()),
+            &TestFact {
+                fact_id: "fact-1".to_owned(),
+            },
+            time::OffsetDateTime::now_utc(),
+        );
+        "abstraction".clone_into(&mut draft.kind);
+
+        let error = engine
+            .authorize_fact_ingest(
+                &AuthzContext::denied_for_owner(&owner),
+                Relation::Editor,
+                draft,
+                &[],
+            )
+            .await
+            .expect_err("authorization must fail before validating the supplied kind");
+
+        assert_eq!(error.code, ErrorCode::Forbidden);
     }
 
     #[tokio::test]

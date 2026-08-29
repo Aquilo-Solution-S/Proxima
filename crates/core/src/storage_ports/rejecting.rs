@@ -27,7 +27,7 @@ use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 
 use crate::verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
-    FactIngestOutcome, FactWriteCommand,
+    FactIngestOutcome,
 };
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
@@ -44,10 +44,9 @@ pub(super) struct RejectingStorage;
 
 #[async_trait::async_trait]
 impl FactIngestPort for RejectingStorage {
-    async fn ingest_fact_atomic(
+    async fn ingest_authorized_fact_atomic(
         &self,
-        _permit: &OwnerWritePermit,
-        _draft: &FactWriteCommand,
+        _authorized: &AuthorizedFactWrite,
         _embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
@@ -209,6 +208,14 @@ impl MemoryReadPort for RejectingStorage {
         _read_owners: &[OwnerRef],
         _memory_ids: &[crate::MemoryId],
     ) -> Result<Vec<crate::PinNode>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_visible_goal_ids(
+        &self,
+        _read_owners: &[OwnerRef],
+        _goal_ids: &[crate::GoalId],
+    ) -> Result<Vec<crate::GoalId>, StorageError> {
         Ok(Vec::new())
     }
 

@@ -506,14 +506,94 @@ def require_owner_write_permit(
             findings.append(Finding(path, line_no, rule, f"{name} lacks &OwnerWritePermit: {first}"))
 
 
+def rust_function_signatures(text: str, names: set[str]):
+    """Yield ``(name, line, start, signature)`` for selected Rust functions."""
+    if not names:
+        return
+    name_pattern = "|".join(re.escape(name) for name in sorted(names))
+    rx = re.compile(
+        rf"(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(?P<name>{name_pattern})"
+        rf"(?:<[^>{{}}]*>)?\s*\("
+    )
+    for match in rx.finditer(text):
+        brace = text.find("{", match.end())
+        semi = text.find(";", match.end())
+        ends = [idx for idx in (brace, semi) if idx != -1]
+        end = min(ends) if ends else len(text)
+        yield (
+            match.group("name"),
+            text.count("\n", 0, match.start()) + 1,
+            match.start(),
+            text[match.start() : end],
+        )
+
+
+def directly_fixture_gated(text: str, start: int) -> bool:
+    """Whether a function has the fixture cfg attribute immediately above it."""
+    lines = text[:start].splitlines()
+    index = len(lines) - 1
+    while index >= 0 and (not lines[index].strip() or lines[index].lstrip().startswith("//")):
+        index -= 1
+    return index >= 0 and lines[index].strip() == '#[cfg(any(test, feature = "test-fixtures"))]'
+
+
+def check_authorized_fact_surface(findings: list[Finding]) -> None:
+    """Keep the production Fact door behind Engine's authorized carrier.
+
+    The legacy raw helper may exist only as the directly cfg-gated fixture
+    adapter in the core port. The PG verb has no raw compatibility alias.
+    """
+    positive = {
+        "crates/core/src/storage_ports/fact.rs": "ingest_authorized_fact_atomic",
+        "crates/storage-pg/src/verbs/fact_ingest.rs": "ingest_authorized_fact_atomic",
+    }
+    for rel_path, name in positive.items():
+        path = ROOT / rel_path
+        if not path.exists():
+            findings.append(Finding(path, 1, "authorized Fact write surface missing", name))
+            continue
+        text = path.read_text(encoding="utf-8")
+        found = rust_signature_for(text, name)
+        if found is None:
+            findings.append(Finding(path, 1, "authorized Fact write surface missing", name))
+        elif "AuthorizedFactWrite" not in found[1]:
+            findings.append(
+                Finding(
+                    path,
+                    found[0],
+                    "authorized Fact write surface lacks AuthorizedFactWrite",
+                    found[1].splitlines()[0],
+                )
+            )
+
+    raw_paths = [
+        ROOT / "crates/core/src/storage_ports/fact.rs",
+        ROOT / "crates/storage-pg/src/verbs/fact_ingest.rs",
+    ]
+    raw_names = {"ingest_fact_atomic", "ingest_authorized_fact_atomic"}
+    for path in raw_paths:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for name, line_no, start, signature in rust_function_signatures(text, raw_names):
+            if "OwnerWritePermit" not in signature or "FactWriteCommand" not in signature:
+                continue
+            if not directly_fixture_gated(text, start):
+                findings.append(
+                    Finding(
+                        path,
+                        line_no,
+                        "raw Fact write surface outside fixture cfg",
+                        f"{name} accepts OwnerWritePermit and FactWriteCommand",
+                    )
+                )
+
+
 def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
     storage_port_methods = {
-        "crates/core/src/storage_ports/fact.rs": [
-            "ingest_fact_atomic",
-        ],
-        # There is no MCP-call write surface to guard either: the engine logs
-        # a call through the governed typed-Fact path (`ingest_fact_atomic`
-        # above), so `storage_ports/mcp.rs` is a read port only.
+        # There is no MCP-call write surface to guard: the engine logs a call
+        # through the governed typed-Fact path, so `storage_ports/mcp.rs` is a
+        # read port only.
         # There is no edge-write surface to guard. An edge is not a thing a
         # caller appends; it is the index row a node write leaves behind, so
         # the permit that guards the node write is the only one there is.
@@ -534,14 +614,6 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
         "crates/core/src/storage_ports/cursors.rs": ["store_source_cursor"],
     }
     storage_pg_verbs = {
-        # The pool- and transaction-scoped raw tier is gone: what is left in
-        # these two files is `pub(crate)` body of the port impls. The rule
-        # still applies to it — `rust_signature_for` does not care about
-        # visibility — and the names below are the ones that still take a
-        # permit rather than an already-authorized write wrapper.
-        "crates/storage-pg/src/verbs/fact_ingest.rs": [
-            "ingest_fact_atomic",
-        ],
         "crates/storage-pg/src/verbs/derive_append.rs": [
             "append_derived_in_tx",
         ],
@@ -569,6 +641,7 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
             names,
             rule="storage-pg write verb lacks OwnerWritePermit",
         )
+    check_authorized_fact_surface(findings)
 
 
 def run_self_test() -> int:
@@ -607,6 +680,23 @@ def run_self_test() -> int:
         failures.append("OwnerWritePermit positive signature fixture not recognized")
     if bad_sig is None or OWNER_WRITE_PERMIT in bad_sig[1]:
         failures.append("OwnerWritePermit missing-signature fixture not detected")
+    gated_raw = '''#[cfg(any(test, feature = "test-fixtures"))]
+async fn ingest_fact_atomic(
+    permit: &OwnerWritePermit,
+    draft: &FactWriteCommand,
+) -> Result<(), StorageError> { Ok(()) }
+'''
+    ungated_raw = '''async fn ingest_fact_atomic(
+    permit: &OwnerWritePermit,
+    draft: &FactWriteCommand,
+) -> Result<(), StorageError> { Ok(()) }
+'''
+    gated = list(rust_function_signatures(gated_raw, {"ingest_fact_atomic"}))
+    ungated = list(rust_function_signatures(ungated_raw, {"ingest_fact_atomic"}))
+    if not gated or not directly_fixture_gated(gated_raw, gated[0][2]):
+        failures.append("fixture-gated raw Fact adapter was not recognized")
+    if not ungated or directly_fixture_gated(ungated_raw, ungated[0][2]):
+        failures.append("ungated raw Fact adapter was not detected")
     if failures:
         for failure in failures:
             print(f"self-test failed: {failure}: {rel}", file=sys.stderr)

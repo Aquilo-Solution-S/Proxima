@@ -90,8 +90,16 @@ async fn write_note(
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let write = draft(language);
-    let outcome =
-        ingest_fact_timeseries(&mut tx, &owner, &write, &[AGENT_NOTE.to_owned()], None).await?;
+    let outcome = ingest_fact_timeseries(
+        &mut tx,
+        &owner,
+        &write,
+        &[],
+        &[],
+        &[AGENT_NOTE.to_owned()],
+        None,
+    )
+    .await?;
     core_pg_sidecars()
         .writing(&write)
         .insert_memory_sidecar(&mut tx, outcome.memory_id, &note())
@@ -186,8 +194,16 @@ async fn a_per_row_schema_refuses_a_write_that_named_no_language() {
         write.lexical_language = None;
 
         let mut tx = pool.begin().await?;
-        let outcome =
-            ingest_fact_timeseries(&mut tx, &owner, &write, &[AGENT_NOTE.to_owned()], None).await?;
+        let outcome = ingest_fact_timeseries(
+            &mut tx,
+            &owner,
+            &write,
+            &[],
+            &[],
+            &[AGENT_NOTE.to_owned()],
+            None,
+        )
+        .await?;
         let err = core_pg_sidecars()
             .writing(&write)
             .insert_memory_sidecar(&mut tx, outcome.memory_id, &note())
@@ -688,7 +704,7 @@ async fn an_undeclared_sidecar_row_is_caught_and_the_finding_says_there_is_no_re
         // A legal memory row that declares NO sidecar table at all.
         let write = draft(None);
         let mut tx = pool.begin().await?;
-        let outcome = ingest_fact_timeseries(&mut tx, &owner, &write, &[], None).await?;
+        let outcome = ingest_fact_timeseries(&mut tx, &owner, &write, &[], &[], &[], None).await?;
         tx.commit().await?;
 
         sqlx::query(

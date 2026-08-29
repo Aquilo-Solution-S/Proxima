@@ -791,6 +791,7 @@ mod tests {
             entity_readable,
             memory_kind: Some(memory_kind),
             goal_evidence: None,
+            observed_fact_writes: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             observed_modify_evidence: std::sync::Arc::new(std::sync::Mutex::new(None)),
             observed_goal_authorship: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }

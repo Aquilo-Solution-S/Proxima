@@ -817,6 +817,7 @@ mod tests {
             entity_readable: true,
             memory_kind: Some(crate::EntityKind::Perspective),
             goal_evidence: None,
+            observed_fact_writes: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             observed_modify_evidence: std::sync::Arc::new(std::sync::Mutex::new(None)),
             observed_goal_authorship: observed.clone(),
         };

@@ -1,20 +1,38 @@
 use crate::SidecarPayload;
 
 use crate::storage::StorageError;
+#[cfg(any(test, feature = "test-fixtures"))]
 use crate::storage_ports::OwnerWritePermit;
+#[cfg(any(test, feature = "test-fixtures"))]
+use crate::verbs::fact_ingest::FactWriteCommand;
 use crate::verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
-    FactIngestOutcome, FactWriteCommand,
+    FactIngestOutcome,
 };
 
 #[async_trait::async_trait]
 pub trait FactIngestPort: Send + Sync {
+    async fn ingest_authorized_fact_atomic(
+        &self,
+        authorized: &AuthorizedFactWrite,
+        embedding_model_id: Option<&str>,
+    ) -> Result<FactIngestOutcome, StorageError>;
+
+    /// Compatibility adapter for storage fixtures. Production callers must
+    /// use the Engine-minted authorized carrier above.
+    #[cfg(any(test, feature = "test-fixtures"))]
     async fn ingest_fact_atomic(
         &self,
         permit: &OwnerWritePermit,
         draft: &FactWriteCommand,
         embedding_model_id: Option<&str>,
-    ) -> Result<FactIngestOutcome, StorageError>;
+    ) -> Result<FactIngestOutcome, StorageError> {
+        let permit = OwnerWritePermit::new_for_tests(*permit.owner(), permit.access_kind());
+        let authorized =
+            AuthorizedFactWrite::new_for_tests(permit, draft.clone(), None, Vec::new());
+        self.ingest_authorized_fact_atomic(&authorized, embedding_model_id)
+            .await
+    }
 
     /// Persist an authorized Fact together with every typed sidecar row it
     /// carries, in ONE transaction.

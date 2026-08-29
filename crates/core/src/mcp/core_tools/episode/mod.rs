@@ -361,7 +361,10 @@ async fn write_remembered(
         if pin {
             spec = spec.refs([act_id.into_inner()]);
         }
-        let outcome = uow.ingest_typed(spec).await?;
+        let outcome = uow
+            .ingest_typed(spec)
+            .await
+            .map_err(|err| map_bound_fact_error(err, "remember", pin))?;
         reject_bound_replay(pin, outcome.idempotent_replay, "remember")?;
         let handle = ctx.format_memory_with_class(outcome.memory_id, MemoryHandleClass::Fact);
         if pin {
@@ -661,6 +664,18 @@ fn reject_bound_replay(pin: bool, replay: bool, kind: &str) -> Result<(), McpToo
         )));
     }
     Ok(())
+}
+
+fn map_bound_fact_error(err: crate::error::ProtocolError, kind: &str, pin: bool) -> McpToolError {
+    if pin
+        && matches!(err.code, ErrorCode::InvalidArgument | ErrorCode::Internal)
+        && err.message.contains("fact replay changed declared refs")
+    {
+        return McpToolError::InvalidInput(format!(
+            "bound {kind} replayed an existing row; bind requires a new admission that pins this write-act"
+        ));
+    }
+    McpToolError::Protocol(err)
 }
 
 fn map_bound_derived_error(

@@ -19,10 +19,9 @@ struct FactIngestFake;
 
 #[async_trait::async_trait]
 impl FactIngestPort for FactIngestFake {
-    async fn ingest_fact_atomic(
+    async fn ingest_authorized_fact_atomic(
         &self,
-        _permit: &OwnerWritePermit,
-        draft: &FactWriteCommand,
+        _authorized: &AuthorizedFactWrite,
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
@@ -143,6 +142,14 @@ impl MemoryReadPort for MemoryReadFake {
         _read_owners: &[OwnerRef],
         _memory_ids: &[MemoryId],
     ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
+        fake_error()
+    }
+
+    async fn load_visible_goal_ids(
+        &self,
+        _read_owners: &[OwnerRef],
+        _goal_ids: &[proxima_core::GoalId],
+    ) -> Result<Vec<proxima_core::GoalId>, StorageError> {
         fake_error()
     }
 
