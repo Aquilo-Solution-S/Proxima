@@ -422,6 +422,13 @@ impl Engine {
         // caller met the owners is the order their mismatches surface.
         let mut deferred_kinds: Vec<(Owner, Vec<(MemoryId, EntityKind)>)> = Vec::new();
         for target in targets {
+            // A repeated declaration names the same endpoint, and the first
+            // occurrence already validated and admitted it. Skipping here and
+            // not at the push below is what keeps a duplicate off the read
+            // path: shape, layering and `authorize_entry_read` all run once.
+            if out.contains(target) {
+                continue;
+            }
             target
                 .validate_shape()
                 .map_err(|err| ProtocolError::invalid_argument(field, err))?;
@@ -482,9 +489,7 @@ impl Engine {
                         .await?;
                 }
             }
-            if !out.contains(target) {
-                out.push(*target);
-            }
+            out.push(*target);
         }
         for (owner, declared) in &deferred_kinds {
             let memory_ids: Vec<MemoryId> = declared.iter().map(|(id, _)| *id).collect();
