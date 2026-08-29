@@ -416,6 +416,11 @@ impl Engine {
         A: EngineAuthority + ?Sized,
     {
         let mut out: Vec<EdgeEndpoint> = Vec::with_capacity(targets.len());
+        // Kind comparison is deferred out of the admission loop and grouped
+        // under the permit owner that admitted each target: one kind load per
+        // owner, not one per target. A Vec and not a map because the order a
+        // caller met the owners is the order their mismatches surface.
+        let mut deferred_kinds: Vec<(Owner, Vec<(MemoryId, EntityKind)>)> = Vec::new();
         for target in targets {
             target
                 .validate_shape()
@@ -463,18 +468,13 @@ impl Engine {
                     let permit = self
                         .authorize_entry_read(authority, crate::EntityId::Memory(memory_id))
                         .await?;
-                    let actual = self
-                        .load_required_memory_kind(permit.owner(), memory_id)
-                        .await?;
-                    if actual != target.kind {
-                        return Err(ProtocolError::invalid_argument(
-                            field,
-                            format!(
-                                "declared target kind {} does not match stored kind {}",
-                                target.kind.as_str(),
-                                actual.as_str()
-                            ),
-                        ));
+                    let owner = *permit.owner();
+                    match deferred_kinds
+                        .iter_mut()
+                        .find(|(admitted, _)| *admitted == owner)
+                    {
+                        Some((_, declared)) => declared.push((memory_id, target.kind)),
+                        None => deferred_kinds.push((owner, vec![(memory_id, target.kind)])),
                     }
                 }
                 crate::EntityRef::Goal(goal_id) => {
@@ -484,6 +484,22 @@ impl Engine {
             }
             if !out.contains(target) {
                 out.push(*target);
+            }
+        }
+        for (owner, declared) in &deferred_kinds {
+            let memory_ids: Vec<MemoryId> = declared.iter().map(|(id, _)| *id).collect();
+            let stored = self.load_required_memory_kinds(owner, &memory_ids).await?;
+            for ((_, target_kind), actual) in declared.iter().zip(stored) {
+                if actual != *target_kind {
+                    return Err(ProtocolError::invalid_argument(
+                        field,
+                        format!(
+                            "declared target kind {} does not match stored kind {}",
+                            target_kind.as_str(),
+                            actual.as_str()
+                        ),
+                    ));
+                }
             }
         }
         Ok(out)
@@ -1618,6 +1634,51 @@ mod tests {
             &[
                 EdgeEndpoint::memory(EntityKind::Fact, fact),
                 EdgeEndpoint::goal(goal),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn many_readable_fact_references_batch_their_kind_load() {
+        let owner = test_owner();
+        let first = MemoryId::new(uuid::Uuid::now_v7());
+        let second = MemoryId::new(uuid::Uuid::now_v7());
+        let third = MemoryId::new(uuid::Uuid::now_v7());
+        let payload = ReferencedTestFact {
+            fact_id: "batched-kinds".to_owned(),
+            targets: vec![
+                EdgeEndpoint::memory(EntityKind::Fact, first),
+                EdgeEndpoint::memory(EntityKind::Fact, second),
+                EdgeEndpoint::memory(EntityKind::Fact, first),
+                EdgeEndpoint::memory(EntityKind::Fact, third),
+            ],
+        };
+        let sidecars = [SidecarPayload::fact(payload.clone())];
+        let engine = reference_engine(
+            owner,
+            Some(owner),
+            true,
+            Some(EntityKind::Fact),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let authorized = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                referenced_draft(&payload),
+                &sidecars,
+            )
+            .await
+            .expect("readable targets of the declared kind should authorize");
+
+        assert_eq!(
+            authorized.links().references(),
+            &[
+                EdgeEndpoint::memory(EntityKind::Fact, first),
+                EdgeEndpoint::memory(EntityKind::Fact, second),
+                EdgeEndpoint::memory(EntityKind::Fact, third),
             ]
         );
     }
