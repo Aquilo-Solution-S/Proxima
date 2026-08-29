@@ -178,7 +178,7 @@ async fn write_note(
     if call_log {
         tables.push(MCP_CALL.to_owned());
     }
-    let outcome = ingest_fact_timeseries(&mut tx, &owner, &write, &tables, None).await?;
+    let outcome = ingest_fact_timeseries(&mut tx, &owner, &write, &[], &[], &tables, None).await?;
     core_pg_sidecars()
         .writing(&write)
         .insert_memory_sidecar(&mut tx, outcome.memory_id, &note(title))
@@ -281,9 +281,9 @@ async fn cool(pool: &PgPool, t: Uuid, at: &str) -> Result<(), Box<dyn std::error
     sqlx::query(
         "INSERT INTO proxima_core.cooled
              (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id,
-              ingest_key, cooled_at)
+              ingest_key, origins, refs, cooled_at)
          SELECT m.t, m.handle, m.owner_id, m.kind, 'cold/' || m.t::text, m.blob_id,
-                m.content_id, m.source_id, m.ingest_key, $2::timestamptz
+                m.content_id, m.source_id, m.ingest_key, m.origins, m.refs, $2::timestamptz
            FROM proxima_core.memory m WHERE m.t = $1",
     )
     .bind(t)
@@ -626,6 +626,16 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
                 // business, not this file's, and it carries the note body
                 // verbatim.
                 object.remove("search_tsv");
+            }
+            if table == "cooled"
+                && let Some(object) = row.as_object_mut()
+            {
+                // The pinned pre-v0.0.10 corpus predates the nullable
+                // declaration witnesses. Their dedicated migration tests
+                // cover the new columns; this differential remains focused
+                // on transfer behavior against its historical golden.
+                object.remove("origins");
+                object.remove("refs");
             }
             out.push_str(&canonical(&row));
             out.push('\n');

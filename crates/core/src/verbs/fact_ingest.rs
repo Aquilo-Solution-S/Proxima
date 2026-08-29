@@ -6,6 +6,8 @@
 
 use uuid::Uuid;
 
+#[cfg(any(test, feature = "test-fixtures"))]
+use crate::EntityKind;
 use crate::edge::EdgeEndpoint;
 use crate::engine::MemoryPermit;
 use crate::storage_ports::OwnerWritePermit;
@@ -203,14 +205,32 @@ pub struct AuthorizedFactWrite {
 pub struct AuthorizedNodeLinks {
     origins: Vec<EdgeEndpoint>,
     references: Vec<EdgeEndpoint>,
+    /// Exact stable-deduplicated references emitted by the typed sidecars
+    /// present at authorization. Raw compatibility refs never enter this
+    /// vector, so a later persistence call cannot substitute another typed
+    /// declaration while retaining the authorized pins.
+    payload_references: Vec<EdgeEndpoint>,
 }
 
 impl AuthorizedNodeLinks {
-    pub(crate) fn new(origins: Vec<EdgeEndpoint>, references: Vec<EdgeEndpoint>) -> Self {
+    pub(crate) fn new(
+        origins: Vec<EdgeEndpoint>,
+        references: Vec<EdgeEndpoint>,
+        payload_references: Vec<EdgeEndpoint>,
+    ) -> Self {
         Self {
             origins,
             references,
+            payload_references,
         }
+    }
+
+    /// Construct links for a backend fixture. Production code can only get
+    /// this carrier from Engine authorization.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn new_for_tests(origins: Vec<EdgeEndpoint>, references: Vec<EdgeEndpoint>) -> Self {
+        Self::new(origins, references, Vec::new())
     }
 
     /// Targets the write declared it was made from.
@@ -219,10 +239,40 @@ impl AuthorizedNodeLinks {
         &self.origins
     }
 
-    /// Targets the write's typed payload points at.
+    /// Targets the authorized write points at. These may come from typed
+    /// payload declarations or the raw compatibility input.
     #[must_use]
     pub fn references(&self) -> &[EdgeEndpoint] {
         &self.references
+    }
+
+    /// Whether authorization observed a typed payload reference declaration.
+    #[must_use]
+    pub fn has_payload_references(&self) -> bool {
+        !self.payload_references.is_empty()
+    }
+
+    /// Check that persistence received the same typed reference declaration
+    /// authorization admitted. Values outside reference fields are not part
+    /// of this witness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed declarations or a changed ordered,
+    /// stable-deduplicated endpoint vector.
+    pub fn validate_sidecar_references(&self, sidecars: &[SidecarPayload]) -> Result<(), String> {
+        let mut actual = Vec::new();
+        for reference in sidecars.iter().flat_map(SidecarPayload::references) {
+            reference.validate()?;
+            reference.target.validate_shape()?;
+            if !actual.contains(&reference.target) {
+                actual.push(reference.target);
+            }
+        }
+        if actual != self.payload_references {
+            return Err("typed Fact sidecar references changed after authorization".to_owned());
+        }
+        Ok(())
     }
 }
 
@@ -239,7 +289,34 @@ impl AuthorizedFactWrite {
         fact_sidecar_table: Option<String>,
         fact_natural_key_columns: Vec<String>,
     ) -> Self {
-        let links = AuthorizedNodeLinks::new(draft.derived_from.clone(), Vec::new());
+        let origins = draft.derived_from.clone();
+        let references = draft
+            .refs
+            .iter()
+            .copied()
+            .map(|id| EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(id)))
+            .collect();
+        Self::new_with_links_for_tests(
+            owner_write,
+            draft,
+            fact_sidecar_table,
+            fact_natural_key_columns,
+            AuthorizedNodeLinks::new_for_tests(origins, references),
+        )
+    }
+
+    /// Test-only mint that intentionally accepts links independent of the
+    /// draft. Storage regression tests use it to prove that the backend
+    /// persists the authorized carrier rather than compatibility fields.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn new_with_links_for_tests(
+        owner_write: OwnerWritePermit,
+        draft: FactWriteCommand,
+        fact_sidecar_table: Option<String>,
+        fact_natural_key_columns: Vec<String>,
+        links: AuthorizedNodeLinks,
+    ) -> Self {
         Self::new(
             crate::engine::MemoryPermit::owner_scoped_with_write_for_tests(
                 owner_write,

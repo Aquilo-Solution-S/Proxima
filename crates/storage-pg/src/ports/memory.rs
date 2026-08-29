@@ -277,6 +277,14 @@ impl MemoryReadPort for PgStorage {
         verbs::query::load_pin_nodes(&self.pool, read_owners, memory_ids).await
     }
 
+    async fn load_visible_goal_ids(
+        &self,
+        read_owners: &[OwnerRef],
+        goal_ids: &[proxima_core::GoalId],
+    ) -> Result<Vec<proxima_core::GoalId>, StorageError> {
+        verbs::query::load_visible_goal_ids(&self.pool, read_owners, goal_ids).await
+    }
+
     async fn load_inbound_pin_nodes(
         &self,
         read_owners: &[OwnerRef],

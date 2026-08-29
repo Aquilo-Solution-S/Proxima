@@ -2,13 +2,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::edge::{PinNode, pin_created_at, project_listed_edge};
+use crate::edge::{
+    EdgeEndpoint, EdgeTargetProjection, PinNode, pin_created_at, project_listed_edge,
+};
 use crate::error::ProtocolError;
 use crate::storage_ports::{InboundPinQuery, MemoryReadHandle};
 use crate::verbs::query::{
     EdgeExistsRequest, EdgeExistsResponse, EdgeReadCursor, EdgeReadRequest, EdgeReadResponse,
 };
-use crate::{Edge, EdgeKind, EntityKind, EntityRef, MemoryId, OwnerRef};
+use crate::{Edge, EdgeKind, EntityKind, EntityRef, GoalId, MemoryId, OwnerRef};
 
 use super::errors::internal_storage_error;
 
@@ -21,8 +23,30 @@ type HopKey = (time::OffsetDateTime, uuid::Uuid, uuid::Uuid, &'static str);
 struct PinHop {
     source_id: MemoryId,
     source_kind: EntityKind,
-    target_id: MemoryId,
+    target: PinTarget,
     kind: EdgeKind,
+}
+
+#[derive(Clone, Copy)]
+enum PinTarget {
+    Memory(MemoryId),
+    Goal(GoalId),
+}
+
+impl PinTarget {
+    const fn id(self) -> uuid::Uuid {
+        match self {
+            Self::Memory(id) => id.into_inner(),
+            Self::Goal(id) => id.into_inner(),
+        }
+    }
+
+    const fn entity(self) -> EntityRef {
+        match self {
+            Self::Memory(id) => EntityRef::Memory(id),
+            Self::Goal(id) => EntityRef::Goal(id),
+        }
+    }
 }
 
 fn empty_read() -> EdgeReadResponse {
@@ -39,13 +63,53 @@ fn memory_ref(entity: Option<EntityRef>) -> Option<MemoryId> {
     }
 }
 
+fn entity_id(entity: Option<EntityRef>) -> Option<uuid::Uuid> {
+    Some(match entity? {
+        EntityRef::Memory(id) => id.into_inner(),
+        EntityRef::Goal(id) => id.into_inner(),
+    })
+}
+
+async fn resolve_visible_goal_refs(
+    memory_read: &MemoryReadHandle,
+    read_owners: &[OwnerRef],
+    nodes: &mut [PinNode],
+) -> Result<(), ProtocolError> {
+    let mut candidates = Vec::new();
+    for node in nodes.iter() {
+        for id in &node.refs {
+            let goal = GoalId::new(id.into_inner());
+            if !candidates.contains(&goal) {
+                candidates.push(goal);
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let visible = memory_read
+        .load_visible_goal_ids(read_owners, &candidates)
+        .await
+        .map_err(|err| internal_storage_error("load_visible_goal_ids", &err))?;
+    for node in nodes {
+        node.resolve_visible_goal_refs(&visible);
+    }
+    Ok(())
+}
+
 fn expand_hops<'a>(nodes: impl IntoIterator<Item = &'a PinNode>) -> Vec<PinHop> {
     let mut hops = Vec::new();
     for node in nodes {
         hops.extend(node.pins().map(|(target_id, kind)| PinHop {
             source_id: node.id,
             source_kind: node.kind,
-            target_id,
+            target: PinTarget::Memory(target_id),
+            kind,
+        }));
+        hops.extend(node.goal_pins().map(|(target_id, kind)| PinHop {
+            source_id: node.id,
+            source_kind: node.kind,
+            target: PinTarget::Goal(target_id),
             kind,
         }));
     }
@@ -56,7 +120,7 @@ fn hop_key(hop: &PinHop) -> HopKey {
     (
         pin_created_at(hop.source_id),
         hop.source_id.into_inner(),
-        hop.target_id.into_inner(),
+        hop.target.id(),
         hop.kind.as_str(),
     )
 }
@@ -66,7 +130,7 @@ fn cursor_key(cursor: Option<EdgeReadCursor>) -> Option<HopKey> {
     Some((
         cursor.created_at,
         memory_ref(Some(cursor.source))?.into_inner(),
-        memory_ref(Some(cursor.target))?.into_inner(),
+        entity_id(Some(cursor.target))?,
         cursor.kind.as_str(),
     ))
 }
@@ -86,26 +150,32 @@ fn page_hops(
     hops.truncate(page_len);
     let edges: Vec<Edge> = hops
         .iter()
-        .map(|hop| {
-            project_listed_edge(
-                hop.source_kind,
-                hop.source_id,
-                hop.target_id,
-                hop.kind,
-                visible,
-            )
-        })
+        .map(|hop| project_hop_edge(hop, visible))
         .collect();
     let next_cursor = truncated.then(|| {
         let last = hops.last().expect("truncated page is non-empty");
         EdgeReadCursor {
             created_at: pin_created_at(last.source_id),
             source: EntityRef::Memory(last.source_id),
-            target: EntityRef::Memory(last.target_id),
+            target: last.target.entity(),
             kind: last.kind,
         }
     });
     EdgeReadResponse { edges, next_cursor }
+}
+
+fn project_hop_edge(hop: &PinHop, visible: &HashMap<MemoryId, EntityKind>) -> Edge {
+    match hop.target {
+        PinTarget::Memory(target) => {
+            project_listed_edge(hop.source_kind, hop.source_id, target, hop.kind, visible)
+        }
+        PinTarget::Goal(target) => Edge {
+            source: EdgeEndpoint::memory(hop.source_kind, hop.source_id),
+            target: EdgeTargetProjection::visible(EdgeEndpoint::goal(target)),
+            kind: hop.kind,
+            created_at: pin_created_at(hop.source_id),
+        },
+    }
 }
 
 async fn load_visible(
@@ -129,13 +199,11 @@ pub(in crate::engine) async fn read_edges_from_nodes(
     read_owners: &[OwnerRef],
     req: &EdgeReadRequest,
 ) -> Result<EdgeReadResponse, ProtocolError> {
-    if matches!(req.filter.source, Some(EntityRef::Goal(_)))
-        || matches!(req.filter.target, Some(EntityRef::Goal(_)))
-    {
+    if matches!(req.filter.source, Some(EntityRef::Goal(_))) {
         return Ok(empty_read());
     }
     let source_id = memory_ref(req.filter.source);
-    let target_id = memory_ref(req.filter.target);
+    let target_id = entity_id(req.filter.target);
     if source_id.is_none() && target_id.is_none() {
         return Ok(empty_read());
     }
@@ -145,19 +213,36 @@ pub(in crate::engine) async fn read_edges_from_nodes(
     }
 
     let sources = if let Some(source) = source_id {
-        memory_read
+        let mut sources = memory_read
             .load_pin_nodes(read_owners, &[source])
             .await
-            .map_err(|err| internal_storage_error("load_pin_nodes", &err))?
+            .map_err(|err| internal_storage_error("load_pin_nodes", &err))?;
+        resolve_visible_goal_refs(memory_read, read_owners, &mut sources).await?;
+        sources
     } else if let Some(target) = target_id {
-        load_incoming_sources(memory_read, read_owners, target, req).await?
+        load_incoming_sources(
+            memory_read,
+            read_owners,
+            MemoryId::new(target),
+            req.filter
+                .target
+                .expect("target id came from target filter"),
+            req,
+        )
+        .await?
     } else {
         Vec::new()
     };
 
-    let hops = matching_hops(&sources, source_id, target_id, req.filter.kind);
+    let hops = matching_hops(&sources, source_id, req.filter.target, req.filter.kind);
 
-    let mut want: Vec<MemoryId> = hops.iter().map(|hop| hop.target_id).collect();
+    let mut want: Vec<MemoryId> = hops
+        .iter()
+        .filter_map(|hop| match hop.target {
+            PinTarget::Memory(id) => Some(id),
+            PinTarget::Goal(_) => None,
+        })
+        .collect();
     want.sort_unstable();
     want.dedup();
     let visible = load_visible(memory_read, read_owners, &want).await?;
@@ -199,13 +284,13 @@ fn hops_after_cursor(hops: &[PinHop], cursor: Option<EdgeReadCursor>) -> usize {
 fn matching_hops(
     sources: &[PinNode],
     source_id: Option<MemoryId>,
-    target_id: Option<MemoryId>,
+    target: Option<EntityRef>,
     kind: Option<EdgeKind>,
 ) -> Vec<PinHop> {
     expand_hops(sources)
         .into_iter()
         .filter(|hop| source_id.is_none_or(|src| hop.source_id == src))
-        .filter(|hop| target_id.is_none_or(|tgt| hop.target_id == tgt))
+        .filter(|hop| target.is_none_or(|target| hop.target.entity() == target))
         .filter(|hop| kind.is_none_or(|want| hop.kind == want))
         .collect()
 }
@@ -214,6 +299,7 @@ async fn load_incoming_sources(
     memory_read: &MemoryReadHandle,
     read_owners: &[OwnerRef],
     target: MemoryId,
+    target_filter: EntityRef,
     req: &EdgeReadRequest,
 ) -> Result<Vec<PinNode>, ProtocolError> {
     let page_limit = inbound_source_page_limit(req);
@@ -223,12 +309,12 @@ async fn load_incoming_sources(
     if let Some(cursor) = req.cursor
         && let Some(src) = memory_ref(Some(cursor.source))
     {
-        sources.extend(
-            memory_read
-                .load_pin_nodes(read_owners, &[src])
-                .await
-                .map_err(|err| internal_storage_error("load_pin_nodes", &err))?,
-        );
+        let mut cursor_sources = memory_read
+            .load_pin_nodes(read_owners, &[src])
+            .await
+            .map_err(|err| internal_storage_error("load_pin_nodes", &err))?;
+        resolve_visible_goal_refs(memory_read, read_owners, &mut cursor_sources).await?;
+        sources.extend(cursor_sources);
         after = Some(src);
     }
     let targets = [target];
@@ -247,11 +333,13 @@ async fn load_incoming_sources(
             .await
             .map_err(|err| internal_storage_error("load_inbound_pin_nodes", &err))?;
         let short = page.len() < usize::try_from(page_limit).unwrap_or(usize::MAX);
+        let mut page = page;
+        resolve_visible_goal_refs(memory_read, read_owners, &mut page).await?;
         if let Some(last) = page.last() {
             after = Some(last.id);
         }
         sources.extend(page);
-        let hops = matching_hops(&sources, None, Some(target), req.filter.kind);
+        let hops = matching_hops(&sources, None, Some(target_filter), req.filter.kind);
         if hops_after_cursor(&hops, req.cursor) >= hop_limit || short {
             break;
         }
@@ -270,12 +358,13 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
     if memory_ids.is_empty() || limit == 0 {
         return Ok(Vec::new());
     }
-    let requested = memory_read
+    let mut requested = memory_read
         .load_pin_nodes(read_owners, memory_ids)
         .await
         .map_err(|err| internal_storage_error("load_pin_nodes", &err))?;
+    resolve_visible_goal_refs(memory_read, read_owners, &mut requested).await?;
     let inbound_limit = u32::try_from(limit).unwrap_or(u32::MAX);
-    let inbound = memory_read
+    let mut inbound = memory_read
         .load_inbound_pin_nodes(
             read_owners,
             InboundPinQuery {
@@ -288,6 +377,7 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
         )
         .await
         .map_err(|err| internal_storage_error("load_inbound_pin_nodes", &err))?;
+    resolve_visible_goal_refs(memory_read, read_owners, &mut inbound).await?;
 
     let mut by_id: HashMap<MemoryId, PinNode> = HashMap::new();
     for node in requested.into_iter().chain(inbound) {
@@ -297,14 +387,18 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
     let mut hops: Vec<PinHop> = expand_hops(by_id.values())
         .into_iter()
         .filter(|hop| {
-            requested_ids.contains(&hop.source_id) || requested_ids.contains(&hop.target_id)
+            requested_ids.contains(&hop.source_id)
+                || matches!(hop.target, PinTarget::Memory(id) if requested_ids.contains(&id))
         })
         .collect();
 
     let missing: Vec<MemoryId> = {
         let mut ids: Vec<MemoryId> = hops
             .iter()
-            .map(|hop| hop.target_id)
+            .filter_map(|hop| match hop.target {
+                PinTarget::Memory(id) => Some(id),
+                PinTarget::Goal(_) => None,
+            })
             .filter(|id| !by_id.contains_key(id))
             .collect();
         ids.sort_unstable();
@@ -320,22 +414,16 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
     hops.truncate(limit);
     Ok(hops
         .iter()
-        .map(|hop| {
-            project_listed_edge(
-                hop.source_kind,
-                hop.source_id,
-                hop.target_id,
-                hop.kind,
-                &visible,
-            )
-        })
+        .map(|hop| project_hop_edge(hop, &visible))
         .collect())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PinHop, empty_read, neighbor_edges_from_nodes, page_hops, read_edges_from_nodes};
-    use crate::edge::PinNode;
+    use super::{
+        PinHop, PinTarget, empty_read, neighbor_edges_from_nodes, page_hops, read_edges_from_nodes,
+    };
+    use crate::edge::{EdgeEndpoint, PinNode};
     use crate::storage_ports::{InboundPinQuery, MemoryReadPort};
     use crate::verbs::query::{EdgeFilter, EdgeReadRequest};
     use crate::{
@@ -348,7 +436,7 @@ mod tests {
         PinHop {
             source_id: source,
             source_kind: EntityKind::Abstraction,
-            target_id: target,
+            target: PinTarget::Memory(target),
             kind,
         }
     }
@@ -412,6 +500,7 @@ mod tests {
 
     struct FakePins {
         nodes: Vec<PinNode>,
+        visible_goals: Vec<crate::GoalId>,
     }
 
     impl FakePins {
@@ -477,6 +566,18 @@ mod tests {
                 .collect())
         }
 
+        async fn load_visible_goal_ids(
+            &self,
+            _read_owners: &[OwnerRef],
+            goal_ids: &[crate::GoalId],
+        ) -> Result<Vec<crate::GoalId>, StorageError> {
+            Ok(goal_ids
+                .iter()
+                .copied()
+                .filter(|id| self.visible_goals.contains(id))
+                .collect())
+        }
+
         async fn load_inbound_pin_nodes(
             &self,
             _read_owners: &[OwnerRef],
@@ -529,6 +630,7 @@ mod tests {
             schema_id: crate::SchemaId::new("test/pin-v1".into()),
             origins: Vec::new(),
             refs: Vec::new(),
+            goal_refs: Vec::new(),
         }];
         for _ in 0..n {
             nodes.push(PinNode {
@@ -537,9 +639,17 @@ mod tests {
                 schema_id: crate::SchemaId::new("test/pin-v1".into()),
                 origins: vec![hub],
                 refs: Vec::new(),
+                goal_refs: Vec::new(),
             });
         }
-        (owner, hub, Arc::new(FakePins { nodes }))
+        (
+            owner,
+            hub,
+            Arc::new(FakePins {
+                nodes,
+                visible_goals: Vec::new(),
+            }),
+        )
     }
 
     #[tokio::test]
@@ -594,6 +704,141 @@ mod tests {
             .collect();
         for edge in &edges {
             assert!(newest.contains(&edge.source.memory_id().expect("src")));
+        }
+    }
+
+    fn goal_ref_fixture() -> (
+        OwnerRef,
+        MemoryId,
+        crate::GoalId,
+        crate::storage_ports::MemoryReadHandle,
+    ) {
+        let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
+        let source = MemoryId::new(uuid::Uuid::now_v7());
+        let first = crate::GoalId::new(uuid::Uuid::now_v7());
+        let second = crate::GoalId::new(uuid::Uuid::now_v7());
+        let fake = Arc::new(FakePins {
+            nodes: vec![PinNode {
+                id: source,
+                kind: EntityKind::Fact,
+                schema_id: crate::SchemaId::new("test/pin-v1".into()),
+                origins: Vec::new(),
+                refs: vec![
+                    MemoryId::new(first.into_inner()),
+                    MemoryId::new(second.into_inner()),
+                ],
+                goal_refs: Vec::new(),
+            }],
+            visible_goals: vec![first, second],
+        });
+        let handle: crate::storage_ports::MemoryReadHandle = fake;
+        (owner, source, first, handle)
+    }
+
+    fn assert_visible_goal(target: EdgeTargetProjection, expected: Option<crate::GoalId>) {
+        assert!(matches!(
+            target,
+            EdgeTargetProjection::Visible {
+                target: EdgeEndpoint {
+                    entity: EntityRef::Goal(id), ..
+                }
+            } if expected.is_none_or(|want| id == want)
+        ));
+    }
+
+    #[tokio::test]
+    async fn outbound_goal_references_resume_with_goal_cursor() {
+        let (owner, source, _goal, handle) = goal_ref_fixture();
+        let first_page = read_edges_from_nodes(
+            &handle,
+            &[owner],
+            &EdgeReadRequest {
+                owner,
+                filter: EdgeFilter {
+                    kind: Some(EdgeKind::Reference),
+                    source: Some(EntityRef::Memory(source)),
+                    target: None,
+                },
+                limit: 1,
+                cursor: None,
+            },
+        )
+        .await
+        .expect("outbound Goal references");
+        assert_eq!(first_page.edges.len(), 1);
+        assert_visible_goal(first_page.edges[0].target, None);
+        let cursor = first_page.next_cursor.expect("second Goal reference");
+        assert!(matches!(cursor.target, EntityRef::Goal(_)));
+
+        let second_page = read_edges_from_nodes(
+            &handle,
+            &[owner],
+            &EdgeReadRequest {
+                owner,
+                filter: EdgeFilter {
+                    kind: Some(EdgeKind::Reference),
+                    source: Some(EntityRef::Memory(source)),
+                    target: None,
+                },
+                limit: 1,
+                cursor: Some(cursor),
+            },
+        )
+        .await
+        .expect("cursor resume after Goal reference");
+        assert_eq!(second_page.edges.len(), 1);
+        assert_visible_goal(second_page.edges[0].target, None);
+        assert!(second_page.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn inbound_goal_reference_is_readable_and_exists() {
+        let (owner, _source, goal_target, handle) = goal_ref_fixture();
+        let inbound = read_edges_from_nodes(
+            &handle,
+            &[owner],
+            &EdgeReadRequest {
+                owner,
+                filter: EdgeFilter {
+                    kind: Some(EdgeKind::Reference),
+                    source: None,
+                    target: Some(EntityRef::Goal(goal_target)),
+                },
+                limit: 10,
+                cursor: None,
+            },
+        )
+        .await
+        .expect("inbound Goal reference");
+        assert_eq!(inbound.edges.len(), 1);
+        assert_visible_goal(inbound.edges[0].target, Some(goal_target));
+
+        let exists = super::edge_exists_from_nodes(
+            &handle,
+            &[owner],
+            &crate::verbs::query::EdgeExistsRequest {
+                owner,
+                filter: EdgeFilter {
+                    kind: Some(EdgeKind::Reference),
+                    source: None,
+                    target: Some(EntityRef::Goal(goal_target)),
+                },
+            },
+        )
+        .await
+        .expect("Goal reference existence");
+        assert!(exists.exists);
+    }
+
+    #[tokio::test]
+    async fn neighbor_edges_project_visible_goal_targets() {
+        let (owner, source, _goal, handle) = goal_ref_fixture();
+        let neighbors = neighbor_edges_from_nodes(&handle, &[owner], &[source], 10)
+            .await
+            .expect("neighbor Goal reference");
+        assert_eq!(neighbors.len(), 2);
+        for edge in neighbors {
+            assert_visible_goal(edge.target, None);
         }
     }
 }

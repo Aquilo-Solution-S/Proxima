@@ -27,7 +27,8 @@ structure MemoryGraphValid
   pinTargetsExist :
     ∀ m : Memory, m ∈ memories →
       (∀ id : MemoryId, id ∈ memory_origins m → pinExists memories cooled id) ∧
-      (∀ id : MemoryId, id ∈ memory_refs m → pinExists memories cooled id)
+      (∀ id : MemoryId, id ∈ memory_refs m →
+        referenceTargetExists memories goals cooled id)
   originKind : ∀ m : Memory, m ∈ memories → OriginKindValid memories cooled m
   /-- Memory `t` and Goal `t` do not collide (both globally UNIQUE). -/
   memoryGoalIdsDisjoint :

@@ -118,7 +118,10 @@ fn push_write_owner(write: &mut Vec<(OwnerRef, Relation)>, owner: OwnerRef, rela
 #[cfg(test)]
 #[allow(clippy::too_many_lines, clippy::wildcard_imports)]
 pub(crate) mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use crate::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 
@@ -140,18 +143,19 @@ pub(crate) mod tests {
         pub(crate) entity_readable: bool,
         pub(crate) memory_kind: Option<EntityKind>,
         pub(crate) goal_evidence: Option<Vec<MemoryId>>,
+        pub(crate) observed_fact_writes: Arc<AtomicUsize>,
         pub(crate) observed_modify_evidence: Arc<Mutex<Option<Vec<MemoryId>>>>,
         pub(crate) observed_goal_authorship: Arc<Mutex<Vec<GoalAuthorship>>>,
     }
 
     #[async_trait::async_trait]
     impl FactIngestPort for MembershipStorage {
-        async fn ingest_fact_atomic(
+        async fn ingest_authorized_fact_atomic(
             &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-            _draft: &FactWriteCommand,
+            _authorized: &AuthorizedFactWrite,
             _embedding_model_id: Option<&str>,
         ) -> Result<FactIngestOutcome, StorageError> {
+            self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -163,6 +167,7 @@ pub(crate) mod tests {
             _sidecar_payloads: &[SidecarPayload],
             _embedding_model_id: Option<&str>,
         ) -> Result<FactIngestOutcome, StorageError> {
+            self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -174,6 +179,7 @@ pub(crate) mod tests {
             _sidecar_payloads: &[SidecarPayload],
             _embedding_model_id: Option<&str>,
         ) -> Result<FactIngestOutcome, StorageError> {
+            self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -185,6 +191,7 @@ pub(crate) mod tests {
             _sidecar_payloads: &[SidecarPayload],
             _embedding_model_id: Option<&str>,
         ) -> Result<FactIngestOutcome, StorageError> {
+            self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -322,6 +329,14 @@ pub(crate) mod tests {
             _read_owners: &[OwnerRef],
             _memory_ids: &[MemoryId],
         ) -> Result<Vec<crate::PinNode>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_visible_goal_ids(
+            &self,
+            _read_owners: &[OwnerRef],
+            _goal_ids: &[crate::GoalId],
+        ) -> Result<Vec<crate::GoalId>, StorageError> {
             Ok(Vec::new())
         }
 

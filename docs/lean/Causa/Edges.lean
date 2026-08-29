@@ -12,7 +12,8 @@ the Goal row (`assignment_t`, `dependency_t`, `evidence_t`, `close_fact_t`,
 `write_act_t`) and never appear in `memory.refs`.
 
 E1–E7 rebase:
-  E1 existence   — every pinned t is a hot Memory.t or a cooled stub
+E1 existence   — every origin t is a hot Memory.t or a cooled stub; a
+                reference t may additionally be a Goal.t
   E2 ownership   — the pin is on the declaring row; no separate owner column
   E3 layering    — OriginKindValid (UML CHECKs)
   E4 kind follows — origins vs refs; no verb writes a pin
@@ -36,6 +37,21 @@ inductive EdgeKind where
 /-- Pins extracted from a node — THE derivation, and it is identity. -/
 def derivePins (m : Memory) : List MemoryId × List MemoryId :=
   (memory_origins m, memory_refs m)
+
+/- A reference may point at a Goal even though origins remain Memory-only.
+   Goal-declared pins still live on the Goal row; this predicate covers a
+   Memory row whose payload declares a Goal target. -/
+def referenceTargetExists
+    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (id : Id) : Prop :=
+  pinExists memories cooled id ∨
+  ∃ g : Goal, g ∈ goals ∧ goal_t g = id
+
+theorem goal_is_reference_target
+    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (g : Goal) (hg : g ∈ goals) :
+    referenceTargetExists memories goals cooled (goal_t g) := by
+  exact Or.inr ⟨g, hg, rfl⟩
 
 theorem pins_are_node_content (m : Memory) :
     derivePins m = (m.origins, m.refs) := rfl

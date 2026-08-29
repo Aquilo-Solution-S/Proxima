@@ -105,7 +105,7 @@ async fn append_derived_timeseries(
             let incoming_origins = pin_memory_ids(origins);
             if stored_origins == incoming_origins {
                 let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
-                if stored_refs != pin_memory_ids(references) {
+                if stored_refs != super::memory_timeseries::pin_entity_ids(references) {
                     return Err(StorageError::Conflict(
                         "derived replay changed declared refs".into(),
                     ));
@@ -117,10 +117,6 @@ async fn append_derived_timeseries(
             }
         }
     }
-    let refs: Vec<uuid::Uuid> = references
-        .iter()
-        .filter_map(|ep| ep.memory_id().map(MemoryId::into_inner))
-        .collect();
     let cmd = proxima_core::verbs::fact_ingest::FactWriteCommand {
         schema_id: draft.schema_id.clone(),
         schema_version: draft.schema_version,
@@ -132,8 +128,11 @@ async fn append_derived_timeseries(
         lexical_language: draft.lexical_language.map(str::to_string),
         receipt: None,
         citation: None,
-        derived_from: origins.to_vec(),
-        refs,
+        // The authorized endpoint slices below are the sole pin source. Keep
+        // compatibility fields empty so this backend cannot accidentally
+        // persist an unverified draft projection.
+        derived_from: Vec::new(),
+        refs: Vec::new(),
         blob_id: None,
         kind: kind.into(),
     };
@@ -142,6 +141,8 @@ async fn append_derived_timeseries(
         tx,
         &draft.owner,
         &cmd,
+        origins,
+        references,
         sidecar_tables,
         content_id,
     )
@@ -277,7 +278,9 @@ pub(crate) async fn assert_derived_index_rows(
         let t = outcome.memory_id.into_inner();
         let stored_origins = load_pin_ids(tx, t, PinColumn::Origins).await?;
         let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
-        if stored_origins != pin_memory_ids(origins) || stored_refs != pin_memory_ids(references) {
+        if stored_origins != pin_memory_ids(origins)
+            || stored_refs != super::memory_timeseries::pin_entity_ids(references)
+        {
             return Err(StorageError::Conflict(
                 "derived replay changed declared index rows".into(),
             ));

@@ -114,7 +114,7 @@ headline pin theorems in `Causa/Edges.lean`.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| E1 | Existence — every pinned `t` exists | def `pinExists` (hot `Memory.t` or `Cooled` stub) + `MemoryGraphValid.pinTargetsExist` |
+| E1 | Existence — every origin `t` is a Memory; a reference `t` may also be a Goal | defs `pinExists` and `referenceTargetExists` + `MemoryGraphValid.pinTargetsExist`; theorem `goal_is_reference_target` |
 | E2 | Ownership — the pin is on the declaring row | structural (no edge owner column) + `pin_write_admitted` / `cross_owner_target_admitted` |
 | E3 | Layering — UML origin CHECKs | def `OriginKindValid` + THEOREM `origin_layer_rule`; THEOREM `fact_source_reaches_only_facts` |
 | E4 | Kind follows operation; no free-standing pin write | STRUCTURAL: `origins` vs `refs` are the two fields. THEOREM `pins_are_node_content`. No verb writes a pin |
@@ -261,7 +261,7 @@ says `mixed` and names which part is which.
 |---|---|---|
 | P1 | `principle_1_facts_below_perspective` | `MemoryKind.layer` theorem: Fact layer below Perspective. |
 | P2 | `principle_2_goal_evidence_not_perspective` | `GoalEvidenceValid` over `evidence_t`; authorship-gated operator-must-have-evidence RETIRED with the authorship blob. |
-| P3 | `principle_3_operators_never_output_facts`; `principle_3b_goal_close_is_an_act`; `principle_3c_causal_closure_is_perspectival`; `principle_epistemic_operator_output_not_fact` | `operator_memory_output_not_fact`; `terminal_goal_closes_with_fact` (`close_fact_t.isSome`); P3c — Goal pins live on the Goal row, never in `Memory.refs` (`goal_declared_rows_are_references`). |
+| P3 | `principle_3_operators_never_output_facts`; `principle_3b_goal_close_is_an_act`; `principle_3c_causal_closure_is_perspectival`; `principle_epistemic_operator_output_not_fact` | `operator_memory_output_not_fact`; `terminal_goal_closes_with_fact` (`close_fact_t.isSome`); P3c — Goal pins live on the Goal row, never in `Memory.refs` (`goal_declared_rows_are_references`); a Memory reference may still target a Goal (`referenceTargetExists`). |
 | P4 | `principle_4_facts_connect_non_interpretively`; `principle_epistemic_edge_kinds_are_exactly_two`; `principle_epistemic_fact_never_interprets` | Fact origins are empty (`facts_declare_no_origins`); two closed kinds; `interpretation_is_never_a_fact`. `principle_epistemic_supersession_cannot_touch_facts` RETIRED with supersedes. |
 | P5 | `principle_5_memories_grounded_in_facts`; `principle_epistemic_abstraction_grounded_in_facts`; `principle_epistemic_perspective_is_no_view_from_nowhere` | REBASED: `MemoryGraphValid` over memories/goals/`MemoryHead`/`Cooled` — no FactEntity, no Edge table. Descent is `origins`/`refs` (`pinFrom`) + `tick` well-founded. `GroundsInFact` bottoms out at Facts or **cooled Facts**. `MemoryGraphValid.groundingSupport` rejects a graph whose only remaining pins are cooled non-Facts. Runtime: `cooled_forget_grounding` + `memory_pin_checks` (`pins_have_grounding_support`). |
 | P6 | `principle_6a_derivation_provenance_strictly_upward`; `principle_6b_personality_read_scope_removed` | `operator_origin_row_not_upward` / `pinKindFactOrAbstraction` (A origins Fact\|A, never P); structural absence of `read_scope`/`personality_may_read`; wake context deferred. |

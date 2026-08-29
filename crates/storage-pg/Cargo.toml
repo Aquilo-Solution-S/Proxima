@@ -30,7 +30,7 @@ blake3 = { workspace = true }
 [features]
 default = []
 backend-api = []
-test-fixtures = ["dep:proxima-pg-testkit"]
+test-fixtures = ["dep:proxima-pg-testkit", "proxima-core/test-fixtures"]
 
 [lints]
 workspace = true

@@ -16,7 +16,7 @@ use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphIdentity,
     MemoryGraphPayloadRow, MemoryKindRow, StorageError,
 };
-use crate::{MemoryId, Owner, OwnerRef};
+use crate::{GoalId, MemoryId, Owner, OwnerRef};
 
 /// Node writes that also assert index rows.
 ///
@@ -94,6 +94,15 @@ pub trait MemoryReadPort: Send + Sync {
         read_owners: &[OwnerRef],
         memory_ids: &[MemoryId],
     ) -> Result<Vec<PinNode>, StorageError>;
+
+    /// Resolve the subset of candidate reference ids that are readable Goal
+    /// rows for this owner set. Non-returned ids remain unresolved UUIDs, so
+    /// callers can redact them without probing one target at a time.
+    async fn load_visible_goal_ids(
+        &self,
+        read_owners: &[OwnerRef],
+        goal_ids: &[GoalId],
+    ) -> Result<Vec<GoalId>, StorageError>;
 
     /// Owner-scoped GIN page of rows that list any of `query.targets` in
     /// `origins` and/or `refs`. Newest `t` first; `after` is exclusive.

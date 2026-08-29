@@ -1,7 +1,8 @@
 use proxima_core::storage_ports::InboundPinQuery;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
-    Edge, EdgeKind, EntityKind, MemoryId, OwnerRef, PinNode, StorageError, project_window_edges,
+    Edge, EdgeKind, EntityKind, GoalId, MemoryId, OwnerRef, PinNode, StorageError,
+    project_window_edges,
 };
 use sqlx::PgPool;
 
@@ -28,8 +29,35 @@ impl PinNodeRow {
             schema_id: proxima_core::SchemaId::new(self.schema_id),
             origins: self.origins.into_iter().map(MemoryId::new).collect(),
             refs: self.refs.into_iter().map(MemoryId::new).collect(),
+            goal_refs: Vec::new(),
         })
     }
+}
+
+/// Resolve readable Goal ids in a batch. Unreadable or unknown ids are left
+/// in the raw reference carrier so the engine can redact them.
+pub(crate) async fn load_visible_goal_ids(
+    pool: &PgPool,
+    read_owners: &[OwnerRef],
+    goal_ids: &[GoalId],
+) -> Result<Vec<GoalId>, StorageError> {
+    if goal_ids.is_empty() || read_owners.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<uuid::Uuid> = goal_ids.iter().map(|id| id.into_inner()).collect();
+    let owner_ids = owner_ids(read_owners);
+    let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT t
+           FROM proxima_core.goal
+          WHERE t = ANY($1::uuid[])
+            AND owner_id = ANY($2::uuid[])",
+    )
+    .bind(&ids)
+    .bind(&owner_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(rows.into_iter().map(GoalId::new).collect())
 }
 
 /// Owner-scoped PK load of pin carriers.
@@ -172,9 +200,13 @@ fn inbound_pin_sql(heads_only: bool, kind: Option<EdgeKind>) -> &'static str {
 pub(super) fn query_edges(
     _req: &QueryRequest,
     memories: &[proxima_core::verbs::query::MemoryRow],
-    _visible_goal_ids: &[uuid::Uuid],
+    visible_goal_ids: &[uuid::Uuid],
 ) -> Vec<Edge> {
-    let nodes: Vec<PinNode> = memories.iter().map(PinNode::from).collect();
+    let visible_goal_ids: Vec<GoalId> = visible_goal_ids.iter().copied().map(GoalId::new).collect();
+    let mut nodes: Vec<PinNode> = memories.iter().map(PinNode::from).collect();
+    for node in &mut nodes {
+        node.resolve_visible_goal_refs(&visible_goal_ids);
+    }
     project_window_edges(&nodes, MAX_SNAPSHOT_EDGES)
 }
 

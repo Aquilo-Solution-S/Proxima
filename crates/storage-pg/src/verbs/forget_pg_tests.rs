@@ -60,7 +60,22 @@ async fn ingest_stamped(
         .begin()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    let outcome = ingest_fact_timeseries(&mut tx, permit.owner(), draft, tables, None).await?;
+    let references = draft
+        .refs
+        .iter()
+        .copied()
+        .map(|id| EdgeEndpoint::memory(EntityKind::Fact, proxima_core::MemoryId::new(id)))
+        .collect::<Vec<_>>();
+    let outcome = ingest_fact_timeseries(
+        &mut tx,
+        permit.owner(),
+        draft,
+        &draft.derived_from,
+        &references,
+        tables,
+        None,
+    )
+    .await?;
     tx.commit()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;

@@ -1,7 +1,7 @@
-use proxima_core::storage_ports::{FactIngestPort, McpCallReadPort, OwnerWritePermit};
+use proxima_core::storage_ports::{FactIngestPort, McpCallReadPort};
 use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
-    FactIngestOutcome, FactWriteCommand,
+    FactIngestOutcome,
 };
 use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use proxima_core::{SidecarPayload, StorageError};
@@ -11,13 +11,22 @@ use crate::{PgStorage, verbs};
 
 #[async_trait::async_trait]
 impl FactIngestPort for PgStorage {
-    async fn ingest_fact_atomic(
+    async fn ingest_authorized_fact_atomic(
         &self,
-        permit: &OwnerWritePermit,
-        draft: &FactWriteCommand,
+        authorized: &AuthorizedFactWrite,
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        verbs::fact_ingest::ingest_fact_atomic(&self.pool, permit, draft, embedding_model_id).await
+        if authorized.links().has_payload_references() {
+            return Err(StorageError::ConstraintViolation(
+                "typed Fact references require their authorized sidecars".into(),
+            ));
+        }
+        verbs::fact_ingest::ingest_authorized_fact_atomic(
+            &self.pool,
+            authorized,
+            embedding_model_id,
+        )
+        .await
     }
 
     async fn ingest_fact_with_typed_sidecar(
@@ -26,6 +35,10 @@ impl FactIngestPort for PgStorage {
         sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
+        authorized
+            .links()
+            .validate_sidecar_references(sidecar_payloads)
+            .map_err(StorageError::ConstraintViolation)?;
         // Retry the whole begin→body→commit on transient deadlock/
         // serialization. The typed sidecar is data (`SidecarPayload`), so each
         // attempt re-clones it and rebuilds the insert closure — unlike an
@@ -78,6 +91,10 @@ impl FactIngestPort for PgStorage {
         sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
+        authorized
+            .links()
+            .validate_sidecar_references(sidecar_payloads)
+            .map_err(StorageError::ConstraintViolation)?;
         // Retry the whole begin→body→commit on transient deadlock/
         // serialization; re-clone the citation sidecar payload per attempt.
         with_bounded_retry(move || {
@@ -119,6 +136,10 @@ impl FactIngestPort for PgStorage {
         sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
+        authorized
+            .links()
+            .validate_sidecar_references(sidecar_payloads)
+            .map_err(StorageError::ConstraintViolation)?;
         // Retry the whole begin→body→commit on transient deadlock/
         // serialization; re-clone the sidecar payload per attempt, same as
         // the inline-citation path above.

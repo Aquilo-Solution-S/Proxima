@@ -15,9 +15,11 @@
 //! Two deliberate exclusions, held out of BOTH sides: three relations the
 //! baseline has and this schema does not (`compliance_audit_log`,
 //! `owner_fact_retention`, `owner_legal_holds`) and one column
-//! (`cold_purge_pending.compliance_operation_id`). A table that does not exist
-//! cannot be compared to one that does. Everything else is compared, including
-//! every row of the neighbour owner that both erases must leave untouched.
+//! (`cold_purge_pending.compliance_operation_id`). The current schema also has
+//! two nullable declaration witnesses the baseline predates
+//! (`cooled.origins`, `cooled.refs`). A surface that does not exist on both
+//! sides cannot be compared. Everything else is compared, including every row
+//! of the neighbour owner that both erases must leave untouched.
 //!
 //! Determinism comes from two choices. `ORDER BY ctid` is physical insertion
 //! order, which is identical across two runs executing the same statements
@@ -571,17 +573,25 @@ fn embed_literal() -> String {
     )
 }
 
-/// Relations and columns the baseline has and this schema does not. They are
-/// held out of BOTH sides of the differential: the question this harness
-/// answers is whether the surviving rows are the same, and a table that does
-/// not exist cannot be compared to one that does. Every other difference is a
-/// failure.
+/// Relations and columns present on only one side of the pinned comparison.
+/// They are held out of BOTH sides of the differential: the question this
+/// harness answers is whether the surviving rows are the same, and a surface
+/// that does not exist on both sides cannot be compared. Every other
+/// difference is a failure.
 pub const DROPPED_TABLES: &[&str] = &[
     "compliance_audit_log",
     "owner_fact_retention",
     "owner_legal_holds",
 ];
-pub const DROPPED_COLUMNS: &[(&str, &str)] = &[("cold_purge_pending", "compliance_operation_id")];
+pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
+    ("cold_purge_pending", "compliance_operation_id"),
+    ("cooled", "origins"),
+    ("cooled", "refs"),
+];
+
+fn names_relation(table: &str, relation: &str) -> bool {
+    table == relation || table.strip_prefix("proxima_core.") == Some(relation)
+}
 
 /// Every base relation of `proxima_core`, dumped in physical insertion order
 /// and normalized: identifiers and timestamps become order-of-appearance
@@ -622,8 +632,8 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
         out.push_str(&format!("## proxima_core.{table} ({})\n", rows.len()));
         for row in rows {
             let mut row: Value = serde_json::from_str(&row)?;
-            for (dropped_table, column) in DROPPED_COLUMNS {
-                if *dropped_table == table
+            for (unpaired_table, column) in UNPAIRED_COLUMNS {
+                if names_relation(&table, unpaired_table)
                     && let Some(object) = row.as_object_mut()
                 {
                     object.remove(*column);
@@ -769,7 +779,14 @@ async fn export_dump(pg: &PgStorage, user: UserId) -> Result<String, Box<dyn std
             continue;
         }
         out.push_str(&format!("## export {table} ({})\n", rows.len()));
-        for row in rows {
+        for mut row in rows {
+            for (unpaired_table, column) in UNPAIRED_COLUMNS {
+                if names_relation(&table, unpaired_table)
+                    && let Some(object) = row.as_object_mut()
+                {
+                    object.remove(*column);
+                }
+            }
             out.push_str(&canonical(&row));
             out.push('\n');
         }

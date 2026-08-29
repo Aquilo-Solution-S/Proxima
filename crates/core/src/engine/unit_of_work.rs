@@ -179,6 +179,9 @@ pub struct UnitOfWork<'a> {
     /// Memory `t`s written in this transaction. Later writes may cite them
     /// before commit; `authorize_entry_read` only sees committed rows.
     written: Vec<MemoryId>,
+    /// Session-visible `(t, kind)` pairs. A declaration must still agree
+    /// with the kind of a row written earlier in this transaction.
+    written_kinds: Vec<(MemoryId, EntityKind)>,
 }
 
 impl std::fmt::Debug for UnitOfWork<'_> {
@@ -209,6 +212,7 @@ impl Engine {
             session: None,
             committed: false,
             written: Vec::new(),
+            written_kinds: Vec::new(),
         })
     }
 
@@ -417,6 +421,7 @@ impl UnitOfWork<'_> {
                 draft,
                 &sidecars,
                 &self.written,
+                &self.written_kinds,
             )
             .await?;
         self.engine
@@ -440,6 +445,8 @@ impl UnitOfWork<'_> {
             })?;
         if !outcome.idempotent_replay {
             self.written.push(outcome.memory_id);
+            self.written_kinds
+                .push((outcome.memory_id, EntityKind::Fact));
         }
         Ok(outcome)
     }
@@ -659,6 +666,7 @@ impl UnitOfWork<'_> {
             })?;
         if !outcome.idempotent_replay {
             self.written.push(outcome.memory_id);
+            self.written_kinds.push((outcome.memory_id, item.kind));
         }
         Ok(AuthorDerivedAuthorizedOutcome {
             memory_id: outcome.memory_id,

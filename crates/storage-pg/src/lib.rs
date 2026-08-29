@@ -381,6 +381,54 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                      AND is_nullable = 'YES'
                 )
            THEN 'cooled.blob_id must be nullable uuid'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'cooled'
+                     AND column_name = 'origins'
+                     AND data_type = 'ARRAY'
+                     AND udt_schema = 'pg_catalog'
+                     AND udt_name = '_uuid'
+                     AND is_nullable = 'YES'
+                )
+           THEN 'cooled.origins must be nullable uuid[]'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'cooled'
+                     AND column_name = 'refs'
+                     AND data_type = 'ARRAY'
+                     AND udt_schema = 'pg_catalog'
+                     AND udt_name = '_uuid'
+                     AND is_nullable = 'YES'
+                )
+           THEN 'cooled.refs must be nullable uuid[]'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_constraint c
+                    JOIN pg_class r ON r.oid = c.conrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'cooled'
+                     AND c.conname = 'cooled_origins_no_null_chk'
+                     AND c.contype = 'c'
+                     AND c.convalidated
+                )
+           THEN 'cooled.origins must reject NULL array elements'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_constraint c
+                    JOIN pg_class r ON r.oid = c.conrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'cooled'
+                     AND c.conname = 'cooled_refs_no_null_chk'
+                     AND c.contype = 'c'
+                     AND c.convalidated
+                )
+           THEN 'cooled.refs must reject NULL array elements'
          WHEN to_regclass('proxima_core.lexical_languages') IS NULL
            THEN 'missing relation proxima_core.lexical_languages'
          WHEN to_regclass('proxima_core.lexical_default') IS NULL
@@ -558,7 +606,7 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
 
     if let Some(marker_error) = marker_error {
         return Err(StorageError::Internal(format!(
-            "database is missing or has an incorrect v0.0.8 schema marker: {marker_error}; apply migrations before boot"
+            "database is missing or has an incorrect v0.0.10 schema marker: {marker_error}; apply migrations before boot"
         )));
     }
     Ok(())
@@ -1250,25 +1298,28 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2],
+            vec![1, 2, 3],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
-             v0.0.9 is 0002_v009_declaration_triggers.sql"
+             v0.0.9 is 0002_v009_declaration_triggers.sql and v0.0.10 is \
+             0003_v010_reference_integrity.sql"
         );
     }
 
     /// The v0.0.7 ALTER lane occupied versions 2..=21 and the squash to a
     /// single v008 baseline retired all of them.
     ///
-    /// Version 2 is now v0.0.9's additive migration, which reuses a retired
-    /// number. That is safe, and this is why: the tripwire for a pre-v0.0.8
-    /// database is version 1's checksum, which is the legacy `0001_init.sql`
-    /// and can never match `0001_v008.sql`. `ensure_core_ledger_compatible`
-    /// compares it first and returns `SchemaResetRequired` before version 2
-    /// is ever reached, so no pre-v008 database can mistake the v009
-    /// migration for the legacy version it recorded.
+    /// Versions 2 and 3 are the v0.0.9 and v0.0.10 additive migrations, which
+    /// reuse retired numbers. That is safe, and this is why: the tripwire for
+    /// a pre-v0.0.8 database is version 1's checksum, which is the legacy
+    /// `0001_init.sql` and can never match `0001_v008.sql`.
+    /// `ensure_core_ledger_compatible` compares it first and returns
+    /// `SchemaResetRequired` before either additive version is reached, so no
+    /// pre-v008 database can mistake a current migration for the legacy one it
+    /// recorded.
     ///
-    /// The number is asserted to be v0.0.9's, not merely absent, so the
-    /// reuse stays a decision rather than an accident.
+    /// Both reused numbers are asserted to carry their current migrations,
+    /// not merely to be present, so the reuse stays a decision rather than an
+    /// accident.
     #[test]
     fn no_legacy_alter_version_survives_the_v008_squash() {
         let migrator = super::core_migrator();
@@ -1285,7 +1336,19 @@ mod tests {
             "version 2 must be the v0.0.9 declaration-trigger migration, not a resurrected \
              legacy ALTER"
         );
-        for dead in 3..=21 {
+        let version_3 = migrator
+            .iter()
+            .find(|migration| migration.version == 3)
+            .expect("version 3 is v0.0.10's additive migration");
+        assert!(
+            version_3.sql.as_str().contains("memory_pin_checks")
+                && version_3
+                    .sql
+                    .as_str()
+                    .contains("cooled_origins_no_null_chk"),
+            "version 3 must be the v0.0.10 reference-integrity migration"
+        );
+        for dead in 4..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"

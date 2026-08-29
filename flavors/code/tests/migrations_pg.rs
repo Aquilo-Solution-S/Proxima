@@ -459,15 +459,15 @@ fn only(migrator: &sqlx::migrate::Migrator, version: i64) -> &sqlx::migrate::Mig
         .expect("the embedded set carries this version")
 }
 
-/// A v0.0.8 database with the code flavor linked upgrades to v0.0.9 in
+/// A v0.0.8 database with the code flavor linked upgrades through v0.0.10 in
 /// place, on both sides of the flavor boundary.
 ///
-/// The sibling of core's `a_v008_database_upgrades_to_v009_in_place`. It is
+/// The sibling of core's `a_v008_database_upgrades_to_v010_in_place`. It is
 /// asserted separately because the two ledgers are separate tables and the
 /// flavor's declaration triggers live in the flavor's own migration: core
 /// upgrading cleanly says nothing about whether this one does.
 #[tokio::test]
-async fn a_v008_code_database_upgrades_to_v009_in_place() {
+async fn a_v008_code_database_upgrades_to_v010_in_place() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -492,7 +492,11 @@ async fn a_v008_code_database_upgrades_to_v009_in_place() {
         )
         .fetch_all(pool)
         .await?;
-        assert_eq!(core_versions, vec![1, 2], "core appends its v0.0.9");
+        assert_eq!(
+            core_versions,
+            vec![1, 2, 3],
+            "core appends its v0.0.9 and v0.0.10 migrations"
+        );
 
         let flavor_versions: Vec<i64> = sqlx::query_scalar(
             "SELECT version FROM public._sqlx_migrations_proxima_code
@@ -522,5 +526,5 @@ async fn a_v008_code_database_upgrades_to_v009_in_place() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("v0.0.8 -> v0.0.9 in-place upgrade failed for the code flavor");
+    result.expect("v0.0.8 -> v0.0.10 in-place upgrade failed for the code flavor");
 }
