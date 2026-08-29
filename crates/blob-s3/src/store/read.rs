@@ -5,7 +5,7 @@ use time::OffsetDateTime;
 
 use super::CitedBlobStore;
 use super::dto::{CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs};
-use super::guards::{ensure_owner_access, format_time, parse_uuid, presign_config};
+use super::guards::{ensure_owner_access, format_time, parse_opaque_identifier, presign_config};
 use super::keys::locator_was_minted_here;
 use super::rows::{find_held_blobs, load_blob_location};
 use crate::error::BlobError;
@@ -62,7 +62,7 @@ impl CitedBlobStore {
     ) -> Result<CitedBlobReadUrlOutcomeTs, BlobError> {
         let owner = req.owner();
         ensure_owner_access(ctx, &owner)?;
-        let cited_object_id = parse_uuid(&req.cited_object_id)?;
+        let cited_object_id = parse_opaque_identifier(&req.cited_object_id)?;
         let row = load_blob_location(&self.pool, &owner, cited_object_id).await?;
         // The locator columns are client-writable: `core/uploaded-blob-v1`
         // is a registered cited-object schema, so an inline citation can

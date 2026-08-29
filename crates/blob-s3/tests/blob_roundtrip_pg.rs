@@ -6,19 +6,29 @@ use proxima_blob_s3::{
     BlobError, CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobStore,
     CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareTs, S3RuntimeConfig,
 };
-use proxima_core::engine::{Engine, UploadCompleted};
+use proxima_core::engine::{Engine, UploadCompleted, UploadCompletionExpectation};
 use proxima_core::error::ProtocolError;
 use proxima_core::storage_ports::{
-    CitedBlobIntegrityMismatch, CitedBlobPort, CitedBlobReadError, CitedBlobReadPort,
-    CitedBlobReconcileOutcome, CitedObjectErasePort, MAX_HELD_BLOB_DIGESTS, OwnerTransferPort,
-    OwnerWritePermit,
+    CitedBlobHeld, CitedBlobIntegrityMismatch, CitedBlobPort, CitedBlobReadError,
+    CitedBlobReadPort, CitedBlobReadUrl, CitedBlobReconcileOutcome, CitedBlobService,
+    CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadPrepared, CitedObjectErasePort,
+    MAX_HELD_BLOB_DIGESTS, OwnerTransferPort, OwnerWritePermit,
 };
 use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, ColdObjectStore, EntityId, FlavorRegistry, GroupId,
-    OwnerRef, Relation, StorageError, UserId,
+    AccessKind, AuthPath, AuthzContext, ColdObjectStore, EntityId, ErrorCode, FlavorRegistry,
+    GroupId, OwnerRef, Relation, StorageError, UserId,
 };
+use sha2::Digest;
 use std::num::NonZeroU64;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{Notify, oneshot};
 
 // Contexts here are `AuthPath::HostBearer`, matching every production
 // caller. Completion writes a Fact through the engine, and an
@@ -55,10 +65,108 @@ async fn fresh_storage() -> (PgStorage, String) {
     (pg, db_name)
 }
 
+#[derive(Clone)]
+struct BlobPortCounters {
+    stage_calls: Arc<AtomicUsize>,
+    finish_calls: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct CountingBlobPort {
+    inner: CitedBlobStore,
+    counters: BlobPortCounters,
+}
+
+impl CountingBlobPort {
+    fn new(inner: CitedBlobStore) -> (Self, BlobPortCounters) {
+        let counters = BlobPortCounters {
+            stage_calls: Arc::new(AtomicUsize::new(0)),
+            finish_calls: Arc::new(AtomicUsize::new(0)),
+        };
+        (
+            Self {
+                inner,
+                counters: counters.clone(),
+            },
+            counters,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl CitedBlobPort for CountingBlobPort {
+    async fn prepare_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        filename: &str,
+        mime: &str,
+        byte_len: u64,
+    ) -> Result<CitedBlobUploadPrepared, StorageError> {
+        CitedBlobPort::prepare_upload(&self.inner, authz, owner, filename, mime, byte_len).await
+    }
+
+    async fn stage_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        upload_id: &str,
+    ) -> Result<CitedBlobStaged, StorageError> {
+        self.counters.stage_calls.fetch_add(1, Ordering::SeqCst);
+        CitedBlobPort::stage_upload(&self.inner, authz, owner, upload_id).await
+    }
+
+    async fn finish_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        upload_id: &str,
+        cited_object_id: Uuid,
+    ) -> Result<(), StorageError> {
+        self.counters.finish_calls.fetch_add(1, Ordering::SeqCst);
+        CitedBlobPort::finish_upload(&self.inner, authz, owner, upload_id, cited_object_id).await
+    }
+
+    async fn abort_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        upload_id: &str,
+    ) -> Result<CitedBlobUploadAborted, StorageError> {
+        CitedBlobPort::abort_upload(&self.inner, authz, owner, upload_id).await
+    }
+
+    async fn read_url(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        cited_object_id: Uuid,
+    ) -> Result<CitedBlobReadUrl, StorageError> {
+        CitedBlobPort::read_url(&self.inner, authz, owner, cited_object_id).await
+    }
+
+    async fn find_held_blobs(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        content_hashes: &[[u8; 32]],
+    ) -> Result<Vec<CitedBlobHeld>, StorageError> {
+        CitedBlobPort::find_held_blobs(&self.inner, authz, owner, content_hashes).await
+    }
+}
+
+fn counted_blob_service(store: &CitedBlobStore) -> (CitedBlobService, BlobPortCounters) {
+    let (port, counters) = CountingBlobPort::new(store.clone());
+    (
+        CitedBlobService::new(Arc::new(port) as Arc<dyn CitedBlobPort>),
+        counters,
+    )
+}
+
 /// Completion as production runs it: the store stages the bytes, then ONE
 /// transaction records the artefact and the `core/upload-v1` Fact that
-/// cites it. `CitedBlobStore` persists nothing by itself, so a test that
-/// only called it would be testing half a completion.
+/// cites it. The store records transfer bookkeeping but no corpus rows, so a
+/// test that only called it would be testing half a completion.
 async fn complete_via_engine(
     pg: &PgStorage,
     store: &CitedBlobStore,
@@ -71,6 +179,20 @@ async fn complete_via_engine(
     Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(std::sync::Arc::new(pg.clone()).storage_ports())
         .complete_upload_as_fact(&service, ctx, owner, upload_id, &[])
+        .await
+}
+
+async fn complete_via_engine_with_expectation(
+    pg: &PgStorage,
+    blobs: &CitedBlobService,
+    ctx: &AuthzContext,
+    owner: OwnerRef,
+    upload_id: &str,
+    expectation: &UploadCompletionExpectation,
+) -> Result<UploadCompleted, ProtocolError> {
+    Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        .with_storage_ports(std::sync::Arc::new(pg.clone()).storage_ports())
+        .complete_upload_as_fact_with_expectation(blobs, ctx, owner, upload_id, &[], expectation)
         .await
 }
 
@@ -111,6 +233,177 @@ async fn put_object_via_sdk(config: &S3RuntimeConfig, key: &str, body: &'static 
         .send()
         .await
         .expect("put object");
+}
+
+/// A transparent HTTP/1 proxy used only to place one real S3 GET between two
+/// store calls. It forwards signed bytes unchanged, so `RustFS` remains the
+/// server under test; the gate makes the stale-pending response deterministic.
+struct PendingGetGate {
+    pending_key: String,
+    canonical_key: String,
+    pending_get_reached: Notify,
+    pending_get_seen: AtomicBool,
+    released: AtomicBool,
+    release: Notify,
+    canonical_puts: AtomicUsize,
+}
+
+impl PendingGetGate {
+    fn new(pending_key: String, canonical_key: String) -> Self {
+        Self {
+            pending_key,
+            canonical_key,
+            pending_get_reached: Notify::new(),
+            pending_get_seen: AtomicBool::new(false),
+            released: AtomicBool::new(false),
+            release: Notify::new(),
+            canonical_puts: AtomicUsize::new(0),
+        }
+    }
+
+    async fn wait_until_released(&self) {
+        while !self.released.load(Ordering::Acquire) {
+            self.release.notified().await;
+        }
+    }
+
+    async fn wait_until_pending_get_reached(&self) {
+        while !self.pending_get_seen.load(Ordering::Acquire) {
+            self.pending_get_reached.notified().await;
+        }
+    }
+
+    fn release(&self) {
+        self.released.store(true, Ordering::Release);
+        self.release.notify_waiters();
+    }
+}
+
+/// Forward one request at the byte level. Reading only the header lets the
+/// gate pause a GET before it reaches `RustFS` while `copy_bidirectional`
+/// carries every request body and response without re-signing anything.
+async fn proxy_connection(
+    mut client_stream: TcpStream,
+    upstream_addr: &str,
+    gate: Arc<PendingGetGate>,
+) -> std::io::Result<()> {
+    let mut request_head = Vec::with_capacity(1024);
+    let mut byte = [0_u8; 1];
+    loop {
+        client_stream.read_exact(&mut byte).await?;
+        request_head.push(byte[0]);
+        if request_head.ends_with(b"\r\n\r\n") {
+            break;
+        }
+        if request_head.len() > 128 * 1024 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "S3 proxy request headers exceed test bound",
+            ));
+        }
+    }
+    let request_line = request_head
+        .split(|byte| *byte == b'\n')
+        .next()
+        .and_then(|line| std::str::from_utf8(line).ok())
+        .unwrap_or_default();
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap_or_default();
+    let path = request_parts
+        .next()
+        .unwrap_or_default()
+        .split('?')
+        .next()
+        .unwrap_or_default();
+    let pending_suffix = format!("/{}", gate.pending_key);
+    let canonical_suffix = format!("/{}", gate.canonical_key);
+    if method == "GET" && path.ends_with(&pending_suffix) {
+        gate.pending_get_seen.store(true, Ordering::Release);
+        gate.pending_get_reached.notify_one();
+        gate.wait_until_released().await;
+    }
+    if method == "PUT" && path.ends_with(&canonical_suffix) {
+        gate.canonical_puts.fetch_add(1, Ordering::AcqRel);
+    }
+
+    let forwarded_head = request_head_with_connection_close(&request_head);
+    let mut upstream = TcpStream::connect(upstream_addr).await?;
+    upstream.write_all(&forwarded_head).await?;
+    tokio::io::copy_bidirectional(&mut client_stream, &mut upstream).await?;
+    Ok(())
+}
+
+fn request_head_with_connection_close(request_head: &[u8]) -> Vec<u8> {
+    let header_end = request_head.len() - 4;
+    let mut forwarded = Vec::with_capacity(request_head.len() + 20);
+    for raw_line in request_head[..header_end].split(|byte| *byte == b'\n') {
+        let line = raw_line.strip_suffix(b"\r").unwrap_or(raw_line);
+        let is_connection = line
+            .iter()
+            .position(|byte| *byte == b':')
+            .is_some_and(|colon| line[..colon].eq_ignore_ascii_case(b"connection"));
+        if !is_connection {
+            forwarded.extend_from_slice(line);
+            forwarded.extend_from_slice(b"\r\n");
+        }
+    }
+    forwarded.extend_from_slice(b"connection: close\r\n\r\n");
+    forwarded
+}
+
+/// Start a byte-transparent local proxy and return the config that points an
+/// S3 client at it. The integration target is HTTP `RustFS`; HTTPS production
+/// endpoints never use this test-only helper.
+async fn start_pending_get_proxy(
+    config: &S3RuntimeConfig,
+    pending_key: String,
+    canonical_key: String,
+) -> (
+    S3RuntimeConfig,
+    Arc<PendingGetGate>,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let endpoint = reqwest::Url::parse(
+        config
+            .endpoint_url
+            .as_deref()
+            .expect("proxy test requires an HTTP S3 endpoint"),
+    )
+    .expect("valid S3 endpoint");
+    assert_eq!(endpoint.scheme(), "http", "proxy test expects HTTP RustFS");
+    let upstream_addr = format!(
+        "{}:{}",
+        endpoint.host_str().expect("S3 endpoint host"),
+        endpoint.port_or_known_default().expect("S3 endpoint port")
+    );
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind S3 test proxy");
+    let proxy_addr = listener.local_addr().expect("proxy address");
+    let gate = Arc::new(PendingGetGate::new(pending_key, canonical_key));
+    let (shutdown, mut shutdown_rx) = oneshot::channel();
+    let proxy_gate = gate.clone();
+    let proxy_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => break,
+                accepted = listener.accept() => {
+                    let Ok((client_stream, _)) = accepted else { break };
+                    let upstream_addr = upstream_addr.clone();
+                    let gate = proxy_gate.clone();
+                    tokio::spawn(async move {
+                        let _ = proxy_connection(client_stream, &upstream_addr, gate).await;
+                    });
+                }
+            }
+        }
+    });
+    let proxy_config = S3RuntimeConfig {
+        endpoint_url: Some(format!("http://{proxy_addr}")),
+        ..config.clone()
+    };
+    (proxy_config, gate, shutdown, proxy_task)
 }
 
 #[tokio::test]
@@ -292,6 +585,559 @@ async fn verified_read_is_owner_exact_bounded_and_integrity_checked() {
     drop_db(&db_name).await.expect("drop db");
 }
 
+/// A pre-existing canonical key is never overwritten. `RustFS` must enforce the
+/// conditional write with `412 PreconditionFailed`; stage adopts only a
+/// byte-identical object and otherwise fails closed, preserving the object.
+#[tokio::test]
+async fn conflicting_canonical_object_is_not_overwritten() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let body: &'static [u8] = b"candidate canonical bytes";
+    let existing: &'static [u8] = b"different canonical bytes";
+    assert_eq!(body.len(), existing.len());
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let (upload_id, _) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "collision.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    let canonical_key = format!("objects/{upload_id}");
+    put_object_via_sdk(&config, &canonical_key, existing).await;
+    let conditional_error = s3_client(&config)
+        .await
+        .put_object()
+        .bucket(&config.bucket)
+        .key(&canonical_key)
+        .if_none_match("*")
+        .body(ByteStream::from_static(body))
+        .send()
+        .await
+        .expect_err("RustFS must reject a conditional overwrite");
+    assert_eq!(
+        conditional_error
+            .as_service_error()
+            .and_then(|service| service.meta().code()),
+        Some("PreconditionFailed")
+    );
+
+    let error = store
+        .stage_upload(
+            &ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: upload_id.clone(),
+            },
+        )
+        .await
+        .expect_err("conflicting canonical bytes must fail closed");
+    assert!(
+        matches!(error, BlobError::State(message) if message == "canonical object conflicts with staged bytes")
+    );
+    let retained = s3_client(&config)
+        .await
+        .get_object()
+        .bucket(&config.bucket)
+        .key(&canonical_key)
+        .send()
+        .await
+        .expect("retained canonical object")
+        .body
+        .collect()
+        .await
+        .expect("read retained canonical object")
+        .into_bytes();
+    assert_eq!(retained.as_ref(), existing);
+    assert_eq!(corpus_counts(&pool).await, (0, 0));
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// A byte-identical canonical object may already exist when a stage adopts
+/// it. A retry of that same upload must agree with the adopted payload and
+/// leave exactly one canonical version on a versioned bucket.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // adoption and version assertions share one fixture
+async fn versioned_conditional_adoption_is_stable_for_same_upload() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let base = s3_config_for_dev();
+    let config = S3RuntimeConfig {
+        bucket: format!("{}-adopt-{}", base.bucket, Uuid::now_v7().simple()),
+        ..base
+    };
+    let client = s3_client(&config).await;
+    let _ = client.create_bucket().bucket(&config.bucket).send().await;
+    client
+        .put_bucket_versioning()
+        .bucket(&config.bucket)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let body: &'static [u8] = b"versioned conditional adoption bytes";
+    let (upload_id, pending_key) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "adopt.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    let canonical_key = format!("objects/{upload_id}");
+    put_object_via_sdk(&config, &canonical_key, body).await;
+
+    let first = store
+        .stage_upload(
+            &ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: upload_id.clone(),
+            },
+        )
+        .await
+        .expect("first stage adopts byte-identical canonical object");
+    let second = store
+        .stage_upload(&ctx, CitedBlobUploadCompleteTs { owner, upload_id })
+        .await
+        .expect("same-upload retry reads the adopted canonical object");
+    assert_eq!(
+        (
+            first.payload.content_hash,
+            first.payload.bucket.as_str(),
+            first.payload.object_key.as_str(),
+            first.payload.sha256,
+            first.payload.byte_len,
+            first.payload.mime.as_str(),
+            first.payload.filename.as_str(),
+            first.payload.etag.as_deref(),
+        ),
+        (
+            second.payload.content_hash,
+            second.payload.bucket.as_str(),
+            second.payload.object_key.as_str(),
+            second.payload.sha256,
+            second.payload.byte_len,
+            second.payload.mime.as_str(),
+            second.payload.filename.as_str(),
+            second.payload.etag.as_deref(),
+        ),
+        "adoption and retry agree on all stored metadata",
+    );
+    assert_s3_key_versions_absent(&config, &pending_key).await;
+
+    let versions = client
+        .list_object_versions()
+        .bucket(&config.bucket)
+        .prefix(&canonical_key)
+        .send()
+        .await
+        .expect("list canonical versions");
+    assert_eq!(
+        versions
+            .versions()
+            .iter()
+            .filter(|version| version.key() == Some(canonical_key.as_str()))
+            .count(),
+        1,
+        "adoption and retry leave one canonical version"
+    );
+    assert!(
+        versions
+            .delete_markers()
+            .iter()
+            .all(|marker| marker.key() != Some(canonical_key.as_str())),
+        "adoption does not create a canonical delete marker"
+    );
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// Two calls for one upload can both finish the S3/SQL race only after their
+/// conditional publication has converged. A statement trigger holds both
+/// locator updates behind one advisory lock, so this test observes both
+/// waiters before release and proves that `RustFS` contains one canonical
+/// version afterward.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // the barrier, provider versions, and assertions are one proof
+async fn versioned_same_upload_stages_converge_behind_locator_barrier() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let base = s3_config_for_dev();
+    let config = S3RuntimeConfig {
+        bucket: format!("{}-race-{}", base.bucket, Uuid::now_v7().simple()),
+        ..base
+    };
+    let client = s3_client(&config).await;
+    client
+        .create_bucket()
+        .bucket(&config.bucket)
+        .send()
+        .await
+        .expect("create race bucket");
+    client
+        .put_bucket_versioning()
+        .bucket(&config.bucket)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let body: &'static [u8] = b"one upload, two concurrent stages, one canonical object";
+    let (upload_id, pending_key) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "same-upload.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    // Leave multiple pending versions and a marker for both cleanup callers.
+    put_object_via_sdk(&config, &pending_key, body).await;
+    client
+        .delete_object()
+        .bucket(&config.bucket)
+        .key(&pending_key)
+        .send()
+        .await
+        .expect("create pending delete marker");
+    // Keep an object current so both stages can read it; cleanup must still
+    // remove the older versions and the marker behind it.
+    put_object_via_sdk(&config, &pending_key, body).await;
+
+    let canonical_key = format!("objects/{upload_id}");
+    sqlx::query(
+        "CREATE FUNCTION upload_locator_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                PERFORM pg_advisory_xact_lock(hashtextextended(current_database(), 0));
+                RETURN NULL;
+            END
+        $$",
+    )
+    .execute(&pool)
+    .await
+    .expect("create locator barrier function");
+    sqlx::query(
+        "CREATE TRIGGER upload_locator_barrier_trigger
+         BEFORE UPDATE OF object_key ON proxima_core.blob_uploads
+         FOR EACH STATEMENT EXECUTE FUNCTION upload_locator_barrier()",
+    )
+    .execute(&pool)
+    .await
+    .expect("create locator barrier trigger");
+
+    let mut barrier = pool.begin().await.expect("begin barrier transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(current_database(), 0))")
+        .execute(&mut *barrier)
+        .await
+        .expect("hold locator barrier");
+
+    let first_store = store.clone();
+    let first_ctx = ctx.clone();
+    let first_upload_id = upload_id.clone();
+    let first = tokio::spawn(async move {
+        first_store
+            .stage_upload(
+                &first_ctx,
+                CitedBlobUploadCompleteTs {
+                    owner,
+                    upload_id: first_upload_id,
+                },
+            )
+            .await
+    });
+    let second_store = store.clone();
+    let second_ctx = ctx.clone();
+    let second_upload_id = upload_id.clone();
+    let second = tokio::spawn(async move {
+        second_store
+            .stage_upload(
+                &second_ctx,
+                CitedBlobUploadCompleteTs {
+                    owner,
+                    upload_id: second_upload_id,
+                },
+            )
+            .await
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while head(&s3_client(&config).await, &config.bucket, &canonical_key)
+        .await
+        .is_none()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "stage calls did not publish canonical bytes"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let mut waiters = 0_i64;
+    while waiters < 2 {
+        waiters = sqlx::query_scalar(
+            "SELECT count(*)::bigint
+               FROM pg_stat_activity
+              WHERE datname = current_database()
+                AND wait_event_type = 'Lock'
+                AND wait_event = 'advisory'
+                AND query LIKE '%UPDATE proxima_core.blob_uploads%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("inspect advisory waiters");
+        assert!(
+            Instant::now() < deadline,
+            "both stage calls must wait at the locator barrier (observed {waiters})"
+        );
+        if waiters < 2 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+    drop(barrier);
+
+    let first = first
+        .await
+        .expect("first stage task join")
+        .expect("first stage");
+    let second = second
+        .await
+        .expect("second stage task join")
+        .expect("second stage");
+    assert_eq!(first.payload.content_hash, second.payload.content_hash);
+    assert_eq!(first.payload.sha256, second.payload.sha256);
+    assert_eq!(first.payload.byte_len, second.payload.byte_len);
+    assert_eq!(first.payload.mime, second.payload.mime);
+    assert_eq!(first.payload.filename, second.payload.filename);
+    assert_eq!(first.payload.etag, second.payload.etag);
+    assert_s3_key_versions_absent(&config, &pending_key).await;
+
+    let canonical = client
+        .get_object()
+        .bucket(&config.bucket)
+        .key(&canonical_key)
+        .send()
+        .await
+        .expect("read canonical object")
+        .body
+        .collect()
+        .await
+        .expect("collect canonical object")
+        .into_bytes();
+    assert_eq!(
+        canonical.as_ref(),
+        body,
+        "both stages retain the exact payload"
+    );
+    let versions = client
+        .list_object_versions()
+        .bucket(&config.bucket)
+        .prefix(&canonical_key)
+        .send()
+        .await
+        .expect("list canonical versions");
+    assert_eq!(
+        versions
+            .versions()
+            .iter()
+            .filter(|version| version.key() == Some(canonical_key.as_str()))
+            .count(),
+        1,
+        "same-upload race leaves exactly one canonical version"
+    );
+    assert!(
+        versions
+            .delete_markers()
+            .iter()
+            .all(|marker| marker.key() != Some(canonical_key.as_str())),
+        "same-upload race does not create a canonical delete marker"
+    );
+
+    sqlx::query("DROP TRIGGER upload_locator_barrier_trigger ON proxima_core.blob_uploads")
+        .execute(&pool)
+        .await
+        .expect("drop locator barrier trigger");
+    sqlx::query("DROP FUNCTION upload_locator_barrier()")
+        .execute(&pool)
+        .await
+        .expect("drop locator barrier function");
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// A second stage can have loaded the pending locator just before the first
+/// stage records and purges it. The real GET therefore returns 404; this
+/// transparent proxy freezes that GET until stage A is complete, proving that
+/// stage B reloads once, reads canonical bytes, and performs no second PUT.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // proxy lifecycle and the stale-locator proof are one fixture
+async fn stale_pending_get_reloads_canonical_without_republication() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let base = s3_config_for_dev();
+    let config = S3RuntimeConfig {
+        bucket: format!("{}-stale-{}", base.bucket, Uuid::now_v7().simple()),
+        ..base
+    };
+    let client = s3_client(&config).await;
+    client
+        .create_bucket()
+        .bucket(&config.bucket)
+        .send()
+        .await
+        .expect("create stale-locator bucket");
+    client
+        .put_bucket_versioning()
+        .bucket(&config.bucket)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+
+    let store_a = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let body: &'static [u8] = b"canonical bytes survive a stale pending GET";
+    let (upload_id, pending_key) = prepare_and_put_upload(
+        &pool,
+        &store_a,
+        &config,
+        &ctx,
+        owner,
+        "stale.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    let canonical_key = format!("objects/{upload_id}");
+    let (proxy_config, gate, shutdown, proxy_task) =
+        start_pending_get_proxy(&config, pending_key.clone(), canonical_key.clone()).await;
+    let store_b = CitedBlobStore::new(pool.clone(), proxy_config).expect("proxy S3 config");
+    let b_store = store_b.clone();
+    let b_ctx = ctx.clone();
+    let b_upload_id = upload_id.clone();
+    let b_task = tokio::spawn(async move {
+        b_store
+            .stage_upload(
+                &b_ctx,
+                CitedBlobUploadCompleteTs {
+                    owner,
+                    upload_id: b_upload_id,
+                },
+            )
+            .await
+    });
+    gate.wait_until_pending_get_reached().await;
+
+    // B has loaded the pending locator and is held before its first GET
+    // reaches RustFS. A now records the canonical locator and purges every
+    // pending version, making B's released GET a genuine 404.
+    let staged_a = store_a
+        .stage_upload(
+            &ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: upload_id.clone(),
+            },
+        )
+        .await
+        .expect("stage A records canonical locator");
+    assert_s3_key_versions_absent(&config, &pending_key).await;
+    gate.release();
+
+    let staged_b = b_task
+        .await
+        .expect("stage B task join")
+        .expect("stage B reloads canonical locator");
+    assert_eq!(staged_a.payload.content_hash, staged_b.payload.content_hash);
+    assert_eq!(staged_a.payload.sha256, staged_b.payload.sha256);
+    assert_eq!(staged_a.payload.byte_len, staged_b.payload.byte_len);
+    assert_eq!(staged_a.payload.mime, staged_b.payload.mime);
+    assert_eq!(staged_a.payload.filename, staged_b.payload.filename);
+    assert_eq!(staged_a.payload.etag, staged_b.payload.etag);
+    assert_eq!(
+        gate.canonical_puts.load(Ordering::Acquire),
+        0,
+        "stale-locator retry reads canonical bytes without another PUT"
+    );
+    assert_s3_key_versions_absent(&config, &pending_key).await;
+    let canonical = client
+        .get_object()
+        .bucket(&config.bucket)
+        .key(&canonical_key)
+        .send()
+        .await
+        .expect("read canonical object")
+        .body
+        .collect()
+        .await
+        .expect("collect canonical object")
+        .into_bytes();
+    assert_eq!(
+        canonical.as_ref(),
+        body,
+        "stale retry preserves exact bytes"
+    );
+
+    shutdown.send(()).expect("stop S3 test proxy");
+    proxy_task.await.expect("S3 test proxy task");
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
 /// One response header as a string, or empty when absent.
 fn header<'a>(response: &'a reqwest::Response, name: &str) -> &'a str {
     response
@@ -455,10 +1301,19 @@ async fn a_completion_racing_an_abort_never_reports_a_committed_write_as_failed(
         Ok(outcome) => {
             assert_eq!(facts, 1, "a successful completion recorded its arrival");
             assert_eq!(objects, 1, "and its artefact");
-            assert!(
-                !outcome.blob.cited_object_id.is_empty(),
-                "the caller was handed the id it can cite"
-            );
+            let cited_object_id = Uuid::parse_str(&outcome.blob.cited_object_id)
+                .expect("the caller was handed a valid cited-object id");
+            let verified = store
+                .collect_verified(
+                    &ctx,
+                    owner,
+                    cited_object_id,
+                    NonZeroU64::new(u64::try_from(body.len()).expect("body length fits"))
+                        .expect("non-empty race fixture"),
+                )
+                .await
+                .expect("a successful completion retains the original bytes");
+            assert_eq!(verified.bytes, body, "the successful race kept exact bytes");
         }
         // The abort won before the transaction ran. Nothing may survive.
         Err(err) => {
@@ -1390,6 +2245,7 @@ async fn purge_owner_objects_removes_completed_blob() {
 /// recoverable noncurrent version. The purge must delete by `(key, version_id)`
 /// so no version survives an Art. 17 owner erasure.
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // replay cleanup and owner-purge assertions share one fixture
 async fn versioned_bucket_purge_removes_all_object_versions() {
     if !S3RuntimeConfig::present_in_env() {
         eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
@@ -1420,6 +2276,7 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
         .expect("enable versioning");
 
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let (service, counters) = counted_blob_service(&store);
     let owner = owner_fixture();
     let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let body = b"versioned-pii-bytes";
@@ -1444,10 +2301,19 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
     .await
     .expect("upload row");
     put_object_via_sdk(&config, &pending.1, body).await;
-    let completed = complete_via_engine(&pg, &store, &ctx, owner, &prepared.upload_id)
-        .await
-        .expect("complete")
-        .blob;
+    let first = complete_via_engine_with_expectation(
+        &pg,
+        &service,
+        &ctx,
+        owner,
+        &prepared.upload_id,
+        &upload_expectation(body, "application/pdf", "doc.pdf"),
+    )
+    .await
+    .expect("complete");
+    let completed = first.blob.clone();
+    assert_eq!(counters.stage_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finish_calls.load(Ordering::SeqCst), 1);
     let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
     let final_key: (String,) =
         sqlx::query_as("SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1")
@@ -1455,6 +2321,64 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
             .fetch_one(&pool)
             .await
             .expect("completed blob row");
+
+    // Finish must purge the transfer copy, including all versions and
+    // markers, before the replay-visible completion is returned.
+    assert_s3_key_versions_absent(&config, &pending.1).await;
+
+    // Recreate transfer debris after the first finish. A direct stage replay
+    // must use the completed row and retry version-aware pending cleanup even
+    // when no Engine call follows it.
+    put_object_via_sdk(&config, &pending.1, body).await;
+    put_object_via_sdk(&config, &pending.1, body).await;
+    client
+        .delete_object()
+        .bucket(&config.bucket)
+        .key(&pending.1)
+        .send()
+        .await
+        .expect("create replay cleanup marker");
+    let direct_stage = store
+        .stage_upload(
+            &ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: prepared.upload_id.clone(),
+            },
+        )
+        .await
+        .expect("direct completed stage replay");
+    assert_eq!(direct_stage.already_completed, Some(cited_object_id));
+    assert_s3_key_versions_absent(&config, &pending.1).await;
+
+    // Recreate the same debris once more. The expectation-bearing Engine
+    // replay must return the same corpus ids and perform the same cleanup.
+    put_object_via_sdk(&config, &pending.1, body).await;
+    put_object_via_sdk(&config, &pending.1, body).await;
+    client
+        .delete_object()
+        .bucket(&config.bucket)
+        .key(&pending.1)
+        .send()
+        .await
+        .expect("create engine-replay cleanup marker");
+    let replay = complete_via_engine_with_expectation(
+        &pg,
+        &service,
+        &ctx,
+        owner,
+        &prepared.upload_id,
+        &upload_expectation(body, "application/pdf", "doc.pdf"),
+    )
+    .await
+    .expect("same-expectation replay");
+    assert!(replay.blob.idempotent_replay);
+    assert!(replay.fact.idempotent_replay);
+    assert_eq!(replay.blob.cited_object_id, completed.cited_object_id);
+    assert_eq!(replay.fact.memory_id, first.fact.memory_id);
+    assert_eq!(counters.stage_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(counters.finish_calls.load(Ordering::SeqCst), 2);
+    assert_s3_key_versions_absent(&config, &pending.1).await;
 
     // Re-put the row's own canonical key to mint a second version, so a
     // key-only delete would demonstrably leave a noncurrent version behind.
@@ -1897,6 +2821,1263 @@ async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator(
         outcome.rows_scanned >= 2 && outcome.objects_scanned >= 1,
         "both sides must have been read: {brief}"
     );
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+#[allow(clippy::too_many_arguments)] // one helper carries the shared PG/S3 fixture seams
+async fn prepare_and_put_upload(
+    pool: &sqlx::PgPool,
+    store: &CitedBlobStore,
+    config: &S3RuntimeConfig,
+    ctx: &AuthzContext,
+    owner: OwnerRef,
+    filename: &str,
+    mime: &str,
+    body: &'static [u8],
+) -> (String, String) {
+    let prepared = store
+        .prepare_upload(
+            ctx,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: filename.to_owned(),
+                mime: mime.to_owned(),
+                byte_len: u64::try_from(body.len()).expect("test body length fits in u64"),
+            },
+        )
+        .await
+        .expect("prepare");
+    let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
+    let pending_key: String =
+        sqlx::query_scalar("SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1")
+            .bind(upload_id)
+            .fetch_one(pool)
+            .await
+            .expect("pending object key");
+    put_object_via_sdk(config, &pending_key, body).await;
+    (prepared.upload_id, pending_key)
+}
+
+fn upload_expectation(body: &[u8], mime: &str, filename: &str) -> UploadCompletionExpectation {
+    UploadCompletionExpectation::new(
+        *blake3::hash(body).as_bytes(),
+        u64::try_from(body.len()).expect("test body length fits in u64"),
+        mime,
+        filename,
+    )
+}
+
+async fn corpus_counts(pool: &sqlx::PgPool) -> (i64, i64) {
+    let blobs: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.blob")
+        .fetch_one(pool)
+        .await
+        .expect("blob count");
+    let facts: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.memory m
+           JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
+          WHERE m.schema_id = 'core/upload-v1'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("Fact count");
+    (blobs, facts)
+}
+
+async fn upload_status(pool: &sqlx::PgPool, upload_id: &str) -> String {
+    sqlx::query_scalar("SELECT status::text FROM proxima_core.blob_uploads WHERE upload_id = $1")
+        .bind(Uuid::parse_str(upload_id).expect("upload id"))
+        .fetch_one(pool)
+        .await
+        .expect("upload status")
+}
+
+async fn assert_s3_key_absent(config: &S3RuntimeConfig, key: &str) {
+    assert!(
+        head(&s3_client(config).await, &config.bucket, key)
+            .await
+            .is_none(),
+        "S3 key {key} must be absent"
+    );
+}
+
+async fn assert_s3_key_versions_absent(config: &S3RuntimeConfig, key: &str) {
+    let objects = s3_client(config)
+        .await
+        .list_object_versions()
+        .bucket(&config.bucket)
+        .prefix(key)
+        .send()
+        .await
+        .expect("list object versions");
+    assert!(
+        objects
+            .versions()
+            .iter()
+            .all(|version| version.key() != Some(key))
+            && objects
+                .delete_markers()
+                .iter()
+                .all(|marker| marker.key() != Some(key)),
+        "all versions and delete markers for {key} must be absent"
+    );
+}
+
+async fn exact_key_version_ids(config: &S3RuntimeConfig, key: &str) -> Vec<(String, bool)> {
+    let objects = s3_client(config)
+        .await
+        .list_object_versions()
+        .bucket(&config.bucket)
+        .prefix(key)
+        .send()
+        .await
+        .expect("list object versions");
+    let mut versions = objects
+        .versions()
+        .iter()
+        .filter(|version| version.key() == Some(key))
+        .map(|version| {
+            (
+                version
+                    .version_id()
+                    .unwrap_or("missing-version-id")
+                    .to_owned(),
+                false,
+            )
+        })
+        .chain(
+            objects
+                .delete_markers()
+                .iter()
+                .filter(|marker| marker.key() == Some(key))
+                .map(|marker| {
+                    (
+                        marker
+                            .version_id()
+                            .unwrap_or("missing-version-id")
+                            .to_owned(),
+                        true,
+                    )
+                }),
+        )
+        .collect::<Vec<_>>();
+    versions.sort_unstable();
+    versions
+}
+
+/// The expectation-bearing engine path stages through the real port exactly
+/// once, and a replay performs the same one stage call without creating a
+/// second corpus row. The finish count records the separate bookkeeping
+/// closeout for both calls.
+#[tokio::test]
+async fn expectation_completion_and_same_expectation_replay_are_counted() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let (service, counters) = counted_blob_service(&store);
+    let body: &'static [u8] = b"expectation-completion-bytes";
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let (upload_id, _) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "expected.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    let expectation = upload_expectation(body, "application/pdf", "expected.pdf");
+
+    let first =
+        complete_via_engine_with_expectation(&pg, &service, &ctx, owner, &upload_id, &expectation)
+            .await
+            .expect("expectation-bearing completion");
+    assert!(!first.fact.idempotent_replay);
+    assert!(!first.blob.idempotent_replay);
+    assert_eq!(counters.stage_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finish_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(corpus_counts(&pool).await, (1, 1));
+
+    let replay =
+        complete_via_engine_with_expectation(&pg, &service, &ctx, owner, &upload_id, &expectation)
+            .await
+            .expect("same-expectation replay");
+    assert!(replay.fact.idempotent_replay);
+    assert!(replay.blob.idempotent_replay);
+    assert_eq!(replay.fact.memory_id, first.fact.memory_id);
+    assert_eq!(replay.blob.cited_object_id, first.blob.cited_object_id);
+    assert_eq!(counters.stage_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(counters.finish_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(corpus_counts(&pool).await, (1, 1));
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// A completed upload still validates the metadata from its own exact upload
+/// row. A later upload may deduplicate the same bytes into the same blob while
+/// carrying different immutable metadata; that later row must not become the
+/// replay answer for the first upload id.
+#[tokio::test]
+async fn completed_replay_uses_exact_upload_metadata_after_deduplication() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let (service, counters) = counted_blob_service(&store);
+    let body: &'static [u8] = b"same-bytes-different-upload-metadata";
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+    let (first_id, first_pending_key) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "first.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    let first = complete_via_engine_with_expectation(
+        &pg,
+        &service,
+        &ctx,
+        owner,
+        &first_id,
+        &upload_expectation(body, "application/pdf", "first.pdf"),
+    )
+    .await
+    .expect("first completion");
+
+    // Recreate transfer debris after finish. A completed replay must use its
+    // exact upload row, never read this pending key, and must still retry the
+    // transfer cleanup.
+    s3_client(&config)
+        .await
+        .put_object()
+        .bucket(&config.bucket)
+        .key(&first_pending_key)
+        .body(ByteStream::from(vec![b'X'; body.len()]))
+        .send()
+        .await
+        .expect("recreate pending debris");
+
+    let (second_id, _) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "second.txt",
+        "text/plain",
+        body,
+    )
+    .await;
+    let second = complete_via_engine_with_expectation(
+        &pg,
+        &service,
+        &ctx,
+        owner,
+        &second_id,
+        &upload_expectation(body, "text/plain", "second.txt"),
+    )
+    .await
+    .expect("second completion");
+    assert_eq!(second.blob.cited_object_id, first.blob.cited_object_id);
+    assert!(second.blob.idempotent_replay);
+    assert!(second.fact.idempotent_replay);
+    assert_eq!(second.fact.memory_id, first.fact.memory_id);
+
+    let replay = complete_via_engine_with_expectation(
+        &pg,
+        &service,
+        &ctx,
+        owner,
+        &first_id,
+        &upload_expectation(body, "application/pdf", "first.pdf"),
+    )
+    .await
+    .expect("exact first-upload replay");
+    assert!(replay.blob.idempotent_replay);
+    assert!(replay.fact.idempotent_replay);
+    assert_eq!(replay.blob.cited_object_id, first.blob.cited_object_id);
+    assert_eq!(replay.fact.memory_id, first.fact.memory_id);
+    assert_eq!(counters.stage_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(counters.finish_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(corpus_counts(&pool).await, (1, 1));
+    assert_s3_key_absent(&config, &first_pending_key).await;
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// A changed expectation on a completed upload is rejected before finish and
+/// leaves the already committed corpus untouched.
+#[tokio::test]
+async fn changed_expectation_on_completed_upload_does_not_mutate_corpus() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let (service, counters) = counted_blob_service(&store);
+    let body: &'static [u8] = b"completed-expectation-cannot-change";
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let (upload_id, _) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "stable.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    let expectation = upload_expectation(body, "application/pdf", "stable.pdf");
+    let first =
+        complete_via_engine_with_expectation(&pg, &service, &ctx, owner, &upload_id, &expectation)
+            .await
+            .expect("first completion");
+    let before_counts = corpus_counts(&pool).await;
+    let before_stage = counters.stage_calls.load(Ordering::SeqCst);
+    let before_finish = counters.finish_calls.load(Ordering::SeqCst);
+
+    let changed = UploadCompletionExpectation::new(
+        *blake3::hash(body).as_bytes(),
+        u64::try_from(body.len()).expect("test body length fits in u64"),
+        "text/plain",
+        "stable.pdf",
+    );
+    let error =
+        complete_via_engine_with_expectation(&pg, &service, &ctx, owner, &upload_id, &changed)
+            .await
+            .expect_err("changed completed metadata must fail");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert_eq!(
+        error.message,
+        "invalid argument mime: staged upload does not match expected MIME"
+    );
+    assert_eq!(
+        counters.stage_calls.load(Ordering::SeqCst),
+        before_stage + 1
+    );
+    assert_eq!(counters.finish_calls.load(Ordering::SeqCst), before_finish);
+    assert_eq!(corpus_counts(&pool).await, before_counts);
+    assert_eq!(
+        complete_via_engine_with_expectation(&pg, &service, &ctx, owner, &upload_id, &expectation,)
+            .await
+            .expect("the original expectation remains valid")
+            .blob
+            .cited_object_id,
+        first.blob.cited_object_id
+    );
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// Every expectation mismatch happens after one real stage call but before
+/// any corpus transaction or finish call. The pending row remains available
+/// for the caller's explicit abort or corrected-expectation retry; its
+/// pending-key versions are already retired while canonical bytes remain
+/// available for erase and orphan reconciliation.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // four independent metadata mismatches share one abort proof
+async fn fresh_pending_expectation_mismatches_are_abortable_and_retain_canonical() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let (service, counters) = counted_blob_service(&store);
+    let body: &'static [u8] = b"fresh-pending-mismatch";
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let actual_hash = *blake3::hash(body).as_bytes();
+    let cases = [
+        (
+            "content_hash",
+            UploadCompletionExpectation::new(
+                [0xA5; 32],
+                u64::try_from(body.len()).expect("test body length fits in u64"),
+                "application/pdf",
+                "fresh.pdf",
+            ),
+            "staged upload does not match expected BLAKE3 content hash",
+        ),
+        (
+            "byte_len",
+            UploadCompletionExpectation::new(
+                actual_hash,
+                u64::try_from(body.len()).expect("test body length fits in u64") + 1,
+                "application/pdf",
+                "fresh.pdf",
+            ),
+            "staged upload does not match expected byte length",
+        ),
+        (
+            "mime",
+            UploadCompletionExpectation::new(
+                actual_hash,
+                u64::try_from(body.len()).expect("test body length fits in u64"),
+                "text/plain",
+                "fresh.pdf",
+            ),
+            "staged upload does not match expected MIME",
+        ),
+        (
+            "filename",
+            UploadCompletionExpectation::new(
+                actual_hash,
+                u64::try_from(body.len()).expect("test body length fits in u64"),
+                "application/pdf",
+                "other.pdf",
+            ),
+            "staged upload does not match expected filename",
+        ),
+    ];
+
+    for (field, expectation, reason) in cases {
+        let (upload_id, pending_key) = prepare_and_put_upload(
+            &pool,
+            &store,
+            &config,
+            &ctx,
+            owner,
+            "fresh.pdf",
+            "application/pdf",
+            body,
+        )
+        .await;
+        let canonical_key = format!("objects/{upload_id}");
+        let stage_before = counters.stage_calls.load(Ordering::SeqCst);
+        let finish_before = counters.finish_calls.load(Ordering::SeqCst);
+
+        let error = complete_via_engine_with_expectation(
+            &pg,
+            &service,
+            &ctx,
+            owner,
+            &upload_id,
+            &expectation,
+        )
+        .await
+        .expect_err("fresh pending mismatch");
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert_eq!(error.message, format!("invalid argument {field}: {reason}"));
+        assert_eq!(
+            counters.stage_calls.load(Ordering::SeqCst),
+            stage_before + 1
+        );
+        assert_eq!(counters.finish_calls.load(Ordering::SeqCst), finish_before);
+        assert_eq!(corpus_counts(&pool).await, (0, 0));
+        assert_eq!(upload_status(&pool, &upload_id).await, "pending");
+        assert!(
+            head(&s3_client(&config).await, &config.bucket, &canonical_key)
+                .await
+                .is_some(),
+            "staging leaves canonical bytes available for abort or recovery"
+        );
+        assert_s3_key_absent(&config, &pending_key).await;
+
+        let aborted = store
+            .abort_upload(
+                &ctx,
+                CitedBlobUploadAbortTs {
+                    owner,
+                    upload_id: upload_id.clone(),
+                },
+            )
+            .await
+            .expect("explicit abort");
+        assert!(aborted.aborted);
+        assert_eq!(upload_status(&pool, &upload_id).await, "aborted");
+        assert!(
+            head(&s3_client(&config).await, &config.bucket, &canonical_key)
+                .await
+                .is_some(),
+            "explicit abort retains canonical bytes for owner cleanup"
+        );
+        assert_s3_key_absent(&config, &pending_key).await;
+
+        let repeated = store
+            .abort_upload(
+                &ctx,
+                CitedBlobUploadAbortTs {
+                    owner,
+                    upload_id: upload_id.clone(),
+                },
+            )
+            .await
+            .expect("repeated abort");
+        assert!(repeated.aborted);
+        assert!(
+            head(&s3_client(&config).await, &config.bucket, &canonical_key)
+                .await
+                .is_some(),
+            "repeated abort retains canonical bytes"
+        );
+        assert_s3_key_absent(&config, &pending_key).await;
+    }
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// Once a first stage records the canonical locator, a later presigned PUT to
+/// the derived pending key cannot replace the bytes used by a corrected
+/// retry. The retry reads the row-selected canonical object and completes the
+/// same upload id exactly once.
+#[tokio::test]
+async fn corrected_expectation_retry_uses_recorded_canonical_bytes() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let (service, counters) = counted_blob_service(&store);
+    let original: &'static [u8] = b"canonical-retry-original";
+    let replacement: &'static [u8] = b"canonical-retry-replaced";
+    assert_eq!(original.len(), replacement.len());
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let (upload_id, pending_key) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "retry.pdf",
+        "application/pdf",
+        original,
+    )
+    .await;
+    let canonical_key = format!("objects/{upload_id}");
+
+    let mismatch = complete_via_engine_with_expectation(
+        &pg,
+        &service,
+        &ctx,
+        owner,
+        &upload_id,
+        &UploadCompletionExpectation::new(
+            [0xA5; 32],
+            u64::try_from(original.len()).expect("length fits"),
+            "application/pdf",
+            "retry.pdf",
+        ),
+    )
+    .await
+    .expect_err("first deliberately wrong expectation");
+    assert_eq!(mismatch.code, ErrorCode::InvalidArgument);
+    assert_eq!(counters.stage_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finish_calls.load(Ordering::SeqCst), 0);
+
+    // A client that reuses the original presigned URL may still overwrite
+    // the transfer key. It must not affect the canonical retry source.
+    put_object_via_sdk(&config, &pending_key, replacement).await;
+    let completed = complete_via_engine_with_expectation(
+        &pg,
+        &service,
+        &ctx,
+        owner,
+        &upload_id,
+        &upload_expectation(original, "application/pdf", "retry.pdf"),
+    )
+    .await
+    .expect("corrected expectation succeeds against canonical bytes");
+    assert_eq!(counters.stage_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(counters.finish_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(corpus_counts(&pool).await, (1, 1));
+    assert_s3_key_absent(&config, &pending_key).await;
+    assert!(
+        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+            .await
+            .is_some(),
+        "successful retry retains canonical bytes"
+    );
+    assert!(!completed.blob.cited_object_id.is_empty());
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// If the database status transition committed before the object provider
+/// cleanup, a retry observes `aborted` and runs the same pending-key cleanup;
+/// canonical bytes remain row-indexed for safe erase.
+#[tokio::test]
+async fn already_aborted_upload_retry_cleans_provider_keys() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let body: &'static [u8] = b"committed-aborted-cleanup";
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let (upload_id, pending_key) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "aborted.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    let staged = store
+        .stage_upload(
+            &ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: upload_id.clone(),
+            },
+        )
+        .await
+        .expect("stage");
+    let canonical_key = staged.payload.object_key;
+    assert_ne!(canonical_key, pending_key);
+    assert_eq!(upload_status(&pool, &upload_id).await, "pending");
+
+    // Simulate provider cleanup failing after the status transition. The
+    // retry must reclaim this recreated transfer copy without touching the
+    // canonical object.
+    put_object_via_sdk(&config, &pending_key, body).await;
+
+    sqlx::query(
+        "UPDATE proxima_core.blob_uploads
+            SET status = 'aborted', aborted_at = now()
+          WHERE owner_id = $1 AND upload_id = $2",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(Uuid::parse_str(&upload_id).expect("upload id"))
+    .execute(&pool)
+    .await
+    .expect("simulate committed abort status");
+    assert_eq!(upload_status(&pool, &upload_id).await, "aborted");
+    assert!(
+        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+            .await
+            .is_some()
+    );
+    assert!(
+        head(&s3_client(&config).await, &config.bucket, &pending_key)
+            .await
+            .is_some()
+    );
+
+    let first_retry = store
+        .abort_upload(
+            &ctx,
+            CitedBlobUploadAbortTs {
+                owner,
+                upload_id: upload_id.clone(),
+            },
+        )
+        .await
+        .expect("aborted cleanup retry");
+    assert!(first_retry.aborted);
+    assert!(
+        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+            .await
+            .is_some(),
+        "aborted retry retains canonical bytes"
+    );
+    assert_s3_key_absent(&config, &pending_key).await;
+    let second_retry = store
+        .abort_upload(&ctx, CitedBlobUploadAbortTs { owner, upload_id })
+        .await
+        .expect("repeated aborted cleanup retry");
+    assert!(second_retry.aborted);
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// Abort cleanup must use version-aware deletion for the expendable pending
+/// transfer key, while retaining the canonical bytes recorded on the upload
+/// row. The extra PUT and delete marker make a key-only delete observably
+/// insufficient on a versioned bucket.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // the versioned cleanup and entry-stage proof share one fixture
+async fn versioned_abort_purges_pending_versions_and_retains_canonical() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let base = s3_config_for_dev();
+    let config = S3RuntimeConfig {
+        bucket: format!("{}-versioned", base.bucket),
+        ..base
+    };
+    let client = s3_client(&config).await;
+    let _ = client.create_bucket().bucket(&config.bucket).send().await;
+    client
+        .put_bucket_versioning()
+        .bucket(&config.bucket)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let body: &'static [u8] = b"versioned-abort-pending-bytes";
+    let (upload_id, pending_key) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "aborted.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    let staged = store
+        .stage_upload(
+            &ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: upload_id.clone(),
+            },
+        )
+        .await
+        .expect("stage");
+    let canonical_key = staged.payload.object_key;
+
+    // Add a noncurrent pending version and a delete marker after staging.
+    // The marker must not hide cleanup of the older byte versions.
+    put_object_via_sdk(&config, &pending_key, body).await;
+    client
+        .delete_object()
+        .bucket(&config.bucket)
+        .key(&pending_key)
+        .send()
+        .await
+        .expect("create pending delete marker");
+
+    let aborted = store
+        .abort_upload(
+            &ctx,
+            CitedBlobUploadAbortTs {
+                owner,
+                upload_id: upload_id.clone(),
+            },
+        )
+        .await
+        .expect("abort");
+    assert!(aborted.aborted);
+    assert_s3_key_versions_absent(&config, &pending_key).await;
+    assert!(
+        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+            .await
+            .is_some(),
+        "aborting does not delete the canonical object"
+    );
+
+    // A stage that enters after the abort status committed must perform the
+    // same version-aware pending cleanup before returning its terminal error.
+    put_object_via_sdk(&config, &pending_key, body).await;
+    put_object_via_sdk(&config, &pending_key, body).await;
+    client
+        .delete_object()
+        .bucket(&config.bucket)
+        .key(&pending_key)
+        .send()
+        .await
+        .expect("recreate pending delete marker");
+    let stage_after_abort = store
+        .stage_upload(
+            &ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: upload_id.clone(),
+            },
+        )
+        .await
+        .expect_err("stage after an aborted entry must remain terminal");
+    assert!(matches!(
+        stage_after_abort,
+        BlobError::State(message) if message == "upload is aborted"
+    ));
+    assert_s3_key_versions_absent(&config, &pending_key).await;
+    assert!(
+        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+            .await
+            .is_some(),
+        "stage-after-abort cleanup retains canonical bytes"
+    );
+
+    let replay = store
+        .abort_upload(&ctx, CitedBlobUploadAbortTs { owner, upload_id })
+        .await
+        .expect("repeated abort");
+    assert!(replay.aborted);
+    assert_s3_key_versions_absent(&config, &pending_key).await;
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// A statement-level trigger pauses the guarded locator UPDATE after the
+/// canonical PUT, allowing a separate transaction to commit the terminal
+/// status. This exercises the lost-post-PUT race without exposing a runtime
+/// test hook in the store.
+#[allow(clippy::too_many_lines)] // one helper drives both deterministic terminal races
+async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'static str) {
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let base = s3_config_for_dev();
+    let config = S3RuntimeConfig {
+        bucket: format!("{}-versioned", base.bucket),
+        ..base
+    };
+    let client = s3_client(&config).await;
+    let _ = client.create_bucket().bucket(&config.bucket).send().await;
+    client
+        .put_bucket_versioning()
+        .bucket(&config.bucket)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let body: &'static [u8] = b"post-put-abort-race";
+    let (upload_id, pending_key) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "race.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    let upload_uuid = Uuid::parse_str(&upload_id).expect("upload id");
+    let canonical_key = format!("objects/{upload_id}");
+    sqlx::query(
+        "CREATE FUNCTION upload_locator_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                PERFORM pg_advisory_xact_lock(hashtextextended(current_database(), 0));
+                RETURN NULL;
+            END
+        $$",
+    )
+    .execute(&pool)
+    .await
+    .expect("create locator barrier function");
+    sqlx::query(
+        "CREATE TRIGGER upload_locator_barrier_trigger
+         BEFORE UPDATE OF object_key ON proxima_core.blob_uploads
+         FOR EACH STATEMENT EXECUTE FUNCTION upload_locator_barrier()",
+    )
+    .execute(&pool)
+    .await
+    .expect("create locator barrier trigger");
+
+    let mut barrier = pool.begin().await.expect("begin barrier transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(current_database(), 0))")
+        .execute(&mut *barrier)
+        .await
+        .expect("hold locator barrier");
+
+    let stage_store = store.clone();
+    let stage_ctx = ctx.clone();
+    let stage_upload_id = upload_id.clone();
+    let stage_task = tokio::spawn(async move {
+        stage_store
+            .stage_upload(
+                &stage_ctx,
+                CitedBlobUploadCompleteTs {
+                    owner,
+                    upload_id: stage_upload_id,
+                },
+            )
+            .await
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while head(&s3_client(&config).await, &config.bucket, &canonical_key)
+        .await
+        .is_none()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "stage did not write canonical bytes"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // Create a noncurrent transfer version and marker while the stage is
+    // paused. The terminal repair must reclaim all of them after release.
+    put_object_via_sdk(&config, &pending_key, body).await;
+    client
+        .delete_object()
+        .bucket(&config.bucket)
+        .key(&pending_key)
+        .send()
+        .await
+        .expect("create pending delete marker");
+    sqlx::query(
+        "UPDATE proxima_core.blob_uploads\n            SET status = $3::proxima_core.blob_upload_status, aborted_at = now()\n          WHERE owner_id = $1 AND upload_id = $2",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(upload_uuid)
+    .bind(terminal_sql)
+    .execute(&pool)
+    .await
+    .expect("commit terminal status while stage is paused");
+    drop(barrier);
+
+    let error = stage_task
+        .await
+        .expect("stage task join")
+        .expect_err("post-put aborted race returns terminal error");
+    assert!(matches!(error, BlobError::State(message) if message == expected_error));
+    assert_s3_key_versions_absent(&config, &pending_key).await;
+    assert!(
+        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+            .await
+            .is_some(),
+        "terminal repair retains canonical bytes"
+    );
+    let locator: (String, Option<Vec<u8>>, Option<String>) = sqlx::query_as(
+        "SELECT object_key, sha256, etag FROM proxima_core.blob_uploads\n          WHERE upload_id = $1",
+    )
+    .bind(upload_uuid)
+    .fetch_one(&pool)
+    .await
+    .expect("repaired upload row");
+    assert_eq!(locator.0, canonical_key);
+    let expected_sha256: [u8; 32] = sha2::Sha256::digest(body).into();
+    assert_eq!(
+        locator.1.as_deref(),
+        Some(expected_sha256.as_slice()),
+        "repair records the canonical digest"
+    );
+    assert!(locator.2.is_some(), "repair records the canonical etag");
+
+    sqlx::query("DROP TRIGGER upload_locator_barrier_trigger ON proxima_core.blob_uploads")
+        .execute(&pool)
+        .await
+        .expect("drop locator barrier trigger");
+    sqlx::query("DROP FUNCTION upload_locator_barrier()")
+        .execute(&pool)
+        .await
+        .expect("drop locator barrier function");
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+#[tokio::test]
+async fn post_put_abort_race_repairs_locator_and_purges_pending_versions() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+    post_put_terminal_race("aborted", "upload is aborted").await;
+}
+
+#[tokio::test]
+async fn post_put_expiry_race_repairs_locator_and_purges_pending_versions() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+    post_put_terminal_race("expired", "upload is expired").await;
+}
+
+/// If an owner-scoped locator CAS loses because the upload row was erased,
+/// stage purges only the derived transfer key. The canonical bytes are not
+/// inferentially orphaned: an in-place transfer or mounted row may still own
+/// them.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // the barrier fixture proves an erased-row race end to end
+async fn missing_owner_row_after_stage_keeps_canonical_and_purges_pending() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let base = s3_config_for_dev();
+    let config = S3RuntimeConfig {
+        bucket: format!("{}-versioned", base.bucket),
+        ..base
+    };
+    let client = s3_client(&config).await;
+    let _ = client.create_bucket().bucket(&config.bucket).send().await;
+    client
+        .put_bucket_versioning()
+        .bucket(&config.bucket)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let body: &'static [u8] = b"missing-owner-row-canonical-bytes";
+    let (upload_id, pending_key) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "missing.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    let upload_uuid = Uuid::parse_str(&upload_id).expect("upload id");
+    let canonical_key = format!("objects/{upload_id}");
+    sqlx::query(
+        "CREATE FUNCTION upload_locator_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                PERFORM pg_advisory_xact_lock(hashtextextended(current_database(), 0));
+                RETURN NULL;
+            END
+        $$",
+    )
+    .execute(&pool)
+    .await
+    .expect("create locator barrier function");
+    sqlx::query(
+        "CREATE TRIGGER upload_locator_barrier_trigger
+         BEFORE UPDATE OF object_key ON proxima_core.blob_uploads
+         FOR EACH STATEMENT EXECUTE FUNCTION upload_locator_barrier()",
+    )
+    .execute(&pool)
+    .await
+    .expect("create locator barrier trigger");
+    let mut barrier = pool.begin().await.expect("begin barrier transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(current_database(), 0))")
+        .execute(&mut *barrier)
+        .await
+        .expect("hold locator barrier");
+
+    let stage_store = store.clone();
+    let stage_ctx = ctx.clone();
+    let stage_upload_id = upload_id.clone();
+    let stage_task = tokio::spawn(async move {
+        stage_store
+            .stage_upload(
+                &stage_ctx,
+                CitedBlobUploadCompleteTs {
+                    owner,
+                    upload_id: stage_upload_id,
+                },
+            )
+            .await
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while head(&s3_client(&config).await, &config.bucket, &canonical_key)
+        .await
+        .is_none()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "stage did not write canonical bytes"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // Leave multiple transfer versions and a marker for the missing-row
+    // cleanup path to prove it is version-aware.
+    put_object_via_sdk(&config, &pending_key, body).await;
+    client
+        .delete_object()
+        .bucket(&config.bucket)
+        .key(&pending_key)
+        .send()
+        .await
+        .expect("create pending delete marker");
+    sqlx::query(
+        "DELETE FROM proxima_core.blob_uploads
+          WHERE owner_id = $1 AND upload_id = $2",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(upload_uuid)
+    .execute(&pool)
+    .await
+    .expect("erase upload row while stage is paused");
+    drop(barrier);
+
+    let error = stage_task
+        .await
+        .expect("stage task join")
+        .expect_err("missing owner row is not a successful stage");
+    assert!(matches!(error, BlobError::State(message) if message == "upload not found for Owner"));
+    assert_s3_key_versions_absent(&config, &pending_key).await;
+    let retained = client
+        .get_object()
+        .bucket(&config.bucket)
+        .key(&canonical_key)
+        .send()
+        .await
+        .expect("canonical bytes remain readable")
+        .body
+        .collect()
+        .await
+        .expect("read canonical bytes")
+        .into_bytes();
+    assert_eq!(retained.as_ref(), body);
+    assert_eq!(corpus_counts(&pool).await, (0, 0));
+
+    sqlx::query("DROP TRIGGER upload_locator_barrier_trigger ON proxima_core.blob_uploads")
+        .execute(&pool)
+        .await
+        .expect("drop locator barrier trigger");
+    sqlx::query("DROP FUNCTION upload_locator_barrier()")
+        .execute(&pool)
+        .await
+        .expect("drop locator barrier function");
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// An already-expired upload is lifecycle-only: neither completion nor abort
+/// performs synchronous provider cleanup. The exact version/marker set is
+/// therefore unchanged for the lifecycle worker to reclaim.
+#[tokio::test]
+async fn expired_at_entry_completion_and_abort_preserve_pending_versions() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let base = s3_config_for_dev();
+    let config = S3RuntimeConfig {
+        bucket: format!("{}-versioned", base.bucket),
+        ..base
+    };
+    let client = s3_client(&config).await;
+    let _ = client.create_bucket().bucket(&config.bucket).send().await;
+    client
+        .put_bucket_versioning()
+        .bucket(&config.bucket)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let body: &'static [u8] = b"expired-at-entry-bytes";
+    let (upload_id, pending_key) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "expired.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    put_object_via_sdk(&config, &pending_key, body).await;
+    client
+        .delete_object()
+        .bucket(&config.bucket)
+        .key(&pending_key)
+        .send()
+        .await
+        .expect("create pending delete marker");
+    sqlx::query(
+        "UPDATE proxima_core.blob_uploads\n            SET status = 'expired', error_message = 'upload expired'\n          WHERE owner_id = $1 AND upload_id = $2",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(Uuid::parse_str(&upload_id).expect("upload id"))
+    .execute(&pool)
+    .await
+    .expect("mark upload expired");
+    let before = exact_key_version_ids(&config, &pending_key).await;
+    assert!(before.len() >= 3, "fixture has two versions and a marker");
+
+    let complete_error = store
+        .stage_upload(
+            &ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: upload_id.clone(),
+            },
+        )
+        .await
+        .expect_err("expired completion is lifecycle-only");
+    assert!(matches!(complete_error, BlobError::State(message) if message == "upload is expired"));
+    assert_eq!(exact_key_version_ids(&config, &pending_key).await, before);
+
+    let aborted = store
+        .abort_upload(&ctx, CitedBlobUploadAbortTs { owner, upload_id })
+        .await
+        .expect("expired abort remains idempotent");
+    assert!(aborted.aborted);
+    assert_eq!(exact_key_version_ids(&config, &pending_key).await, before);
 
     drop(pool);
     drop_db(&db_name).await.expect("drop db");

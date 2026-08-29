@@ -78,7 +78,7 @@ pub(super) fn ensure_owner_write_access(
     }
 }
 
-pub(super) fn parse_uuid(value: &str) -> Result<Uuid, BlobError> {
+pub(super) fn parse_opaque_identifier(value: &str) -> Result<Uuid, BlobError> {
     Uuid::parse_str(value).map_err(|_| BlobError::State(format!("invalid uuid: {value}")))
 }
 

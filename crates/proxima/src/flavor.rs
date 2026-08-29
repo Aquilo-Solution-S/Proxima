@@ -24,8 +24,8 @@ pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
 /// verb: without it the result of a completion cannot be bound to a
 /// named local or returned from a flavor's own function.
 pub use proxima_core::citations::UploadedBlobPayload;
-pub use proxima_core::engine::UploadCompleted;
 pub use proxima_core::engine::{TypedFactIngest, UnitOfWork};
+pub use proxima_core::engine::{UploadCompleted, UploadCompletionExpectation};
 /// MCP tool-authoring surface: implement [`McpTool`] with typed
 /// [`McpToolCtx`] / [`McpToolError`] instead of reaching into
 /// `proxima_core::mcp`. Mirrors what `docs/tutorials/add-first-mcp-tool.md`

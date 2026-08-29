@@ -91,6 +91,16 @@ pub(super) async fn load_upload(
     owner: &Owner,
     upload_id: Uuid,
 ) -> Result<UploadRow, BlobError> {
+    load_upload_optional(pool, owner, upload_id)
+        .await?
+        .ok_or_else(|| BlobError::State("upload not found for Owner".into()))
+}
+
+pub(super) async fn load_upload_optional(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    upload_id: Uuid,
+) -> Result<Option<UploadRow>, BlobError> {
     let owner_id = owner.stored_owner_id();
     let row = sqlx::query(
         "SELECT bucket, object_key, filename, mime, expected_byte_len, \
@@ -103,10 +113,13 @@ pub(super) async fn load_upload(
     .bind(upload_id)
     .fetch_optional(pool)
     .await
-    .map_err(BlobError::Db)?
-    .ok_or_else(|| BlobError::State("upload not found for Owner".into()))?;
+    .map_err(BlobError::Db)?;
 
-    Ok(UploadRow {
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    Ok(Some(UploadRow {
         bucket: row.get("bucket"),
         object_key: row.get("object_key"),
         filename: row.get("filename"),
@@ -115,7 +128,7 @@ pub(super) async fn load_upload(
         status: row.get("status"),
         blob_id: row.get("blob_id"),
         expires_at: row.get("expires_at"),
-    })
+    }))
 }
 
 pub(super) async fn mark_upload_expired(
@@ -142,6 +155,7 @@ pub(super) async fn mark_upload_expired(
 pub(super) async fn load_staged_payload(
     pool: &sqlx::PgPool,
     owner: &Owner,
+    upload_id: Uuid,
     blob_id: Uuid,
 ) -> Result<CitedBlobStaged, BlobError> {
     let owner_id = owner.stored_owner_id();
@@ -155,12 +169,13 @@ pub(super) async fn load_staged_payload(
             AND b.owner_id = $2 \
             AND b.schema_id = $3 \
             AND u.status = 'completed' \
-          ORDER BY u.completed_at DESC NULLS LAST \
-          LIMIT 1",
+            AND u.owner_id = $2 \
+            AND u.upload_id = $4",
     )
     .bind(blob_id)
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
+    .bind(upload_id)
     .fetch_optional(pool)
     .await
     .map_err(BlobError::Db)?
