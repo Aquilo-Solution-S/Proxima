@@ -85,12 +85,25 @@ forget, and all public Edge/PinNode/MCP/REST projections; public missing
 targets keep the existing redacted/missing behavior rather than gaining an
 `Unavailable` state.
 
-Per-entity admission, hydration, forget, and single-entity erase use one
-sorted per-`t` lifecycle lock vocabulary. Goal and wake writes hold the
-complete union of their target `t`s before inserting rows. Owner, series,
-source, and repository sweeps are outside this complete-set/no-growth
-guarantee. Transfer uses the same per-`t` vocabulary with bounded retry, but
-its broader multi-round footprint is also outside this guarantee.
+Memory admission, hydration, forget, and single-entity erase use two advisory
+namespaces: a sorted/deduplicated `proxima-memory-handle:<handle>` set first,
+then a sorted/deduplicated `proxima-forget:<t>` lifecycle set. Head, row, blob,
+and content persistence follow those locks. The namespaces stay distinct
+because a caller-supplied handle may equal a caller-supplied `t`; the values
+are not the same identity. Series erase captures all seed handles, locks that
+set once, expands hot + cooled versions under those locks, then locks the
+complete version set once. The pre-lock version set witnesses each handle's
+series generation: a captured seed that disappears while siblings remain is
+still expanded through its handle, while a non-empty disjoint post-lock set
+means the handle was fully erased and reused, so the stale erase retries
+instead of deleting the replacement. A handle/t set cannot grow after its
+lifecycle lock is taken: a late version is included by expansion or the
+operation returns a retryable conflict.
+
+Goal writes that mint lifecycle Facts include those Facts' reserved Memory
+handles in the same sorted handle union before locking Goal targets. Owner,
+source, and repository sweeps, plus transfer's broader multi-round footprint,
+remain outside this complete-set guarantee.
 
 ## Computed Scores Are Abstractions
 

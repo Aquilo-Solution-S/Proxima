@@ -334,16 +334,22 @@ pub(crate) async fn lock_prepared_goal_write(
     lock_and_validate_prepared_goal_write(tx, prepared).await
 }
 
-/// Hold the complete lifecycle footprint before touching the Goal head. The
-/// head row is deliberately the second lock: owner -> lifecycle -> head is
-/// shared with Memory admission and transfer. A named predecessor that is no
-/// longer current is a caller-fixable conflict; an unnamed snapshot drift is
-/// retryable before any write-act, close Fact, wake, sidecar, Goal, sketch,
-/// or announce row is persisted.
+/// Hold reserved Memory handles and then the complete lifecycle footprint
+/// before touching the Goal head. This preserves owner -> Memory handles ->
+/// lifecycle -> head across the Goal and its lifecycle Facts. A named
+/// predecessor that is no longer current is a caller-fixable conflict; an
+/// unnamed snapshot drift is retryable before any write-act, close Fact,
+/// wake, sidecar, Goal, sketch, or announce row is persisted.
 async fn lock_and_validate_prepared_goal_write(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedGoalWrite,
 ) -> Result<(), StorageError> {
+    let handles = [prepared.write_act_identity, prepared.close_fact_identity]
+        .into_iter()
+        .flatten()
+        .map(|identity| identity.handle)
+        .collect::<Vec<_>>();
+    crate::verbs::forget::lock_memory_handles_tx(tx, &handles).await?;
     crate::verbs::forget::lock_lifecycle_targets_tx(tx, &prepared.targets).await?;
     let current_head: Option<Uuid> =
         sqlx::query_scalar("SELECT t FROM proxima_core.goal_head WHERE handle = $1 FOR UPDATE")
@@ -387,12 +393,20 @@ pub(crate) async fn lock_prepared_goal_writes(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &[&GoalWritePreparation],
 ) -> Result<(), StorageError> {
+    let mut handles = Vec::new();
     let mut targets = Vec::new();
     for item in prepared {
         if let GoalWritePreparation::New(item) = item {
+            handles.extend(
+                [item.write_act_identity, item.close_fact_identity]
+                    .into_iter()
+                    .flatten()
+                    .map(|identity| identity.handle),
+            );
             targets.extend(item.targets.iter().copied());
         }
     }
+    crate::verbs::forget::lock_memory_handles_tx(tx, &handles).await?;
     crate::verbs::forget::lock_lifecycle_targets_tx(tx, &targets).await
 }
 

@@ -8,6 +8,7 @@
 
 use crate::PgStorage;
 use crate::access::owner_columns::ensure_owner_row;
+use crate::verbs::forget::{lock_lifecycle_targets_tx, lock_memory_handles_tx};
 use crate::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use crate::verbs::memory_timeseries::{read_memory_by_t, read_memory_head};
 use crate::verbs::wake_timeseries::{WakeConfigDraft, WakeTriggerKind, insert_wake_config};
@@ -36,6 +37,96 @@ fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
         blob_id: None,
         kind: "fact".into(),
     }
+}
+
+#[tokio::test]
+async fn a_batched_lock_set_acquires_every_id_not_just_the_first() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+
+        // Deliberately unsorted, so the helper's own sort decides the order and
+        // no id keeps its caller-supplied position.
+        let mut ids = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
+        ids.reverse();
+
+        let mut holder = pool.begin().await?;
+        lock_lifecycle_targets_tx(&mut holder, &ids).await?;
+
+        // The set is taken by one statement whose rows nothing reads. If that
+        // statement were ever short-circuited — a LIMIT, a row-count cap, a
+        // planner node that stops pulling — only the leading ids would be
+        // locked. Ask the server which advisory locks the holder actually
+        // owns rather than inferring it from a contender that blocks.
+        let held: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT (classid::bigint << 32) | objid::bigint
+               FROM pg_locks
+              WHERE locktype = 'advisory'
+                AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                AND granted",
+        )
+        .fetch_all(holder.as_mut())
+        .await?;
+        let expected: Vec<i64> = sqlx::query_scalar(
+            "SELECT hashtextextended('proxima-forget:' || id::text, 0)
+               FROM unnest($1::uuid[]) AS id",
+        )
+        .bind(&ids[..])
+        .fetch_all(holder.as_mut())
+        .await?;
+
+        for key in &expected {
+            assert!(
+                held.contains(key),
+                "batched lock set is missing advisory key {key}: held {held:?}"
+            );
+        }
+
+        holder.rollback().await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("a batched advisory lock set must hold every id in the set");
+}
+
+#[tokio::test]
+async fn memory_handle_and_lifecycle_namespaces_are_distinct() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let identity = Uuid::now_v7();
+        let mut handle_holder = pool.begin().await?;
+        lock_memory_handles_tx(&mut handle_holder, &[identity]).await?;
+
+        // The same UUID is intentionally used as both identities. If the
+        // namespaces were shared, this lifecycle lock would wait on the
+        // open handle-holder transaction.
+        let mut lifecycle = pool.begin().await?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            lock_lifecycle_targets_tx(&mut lifecycle, &[identity]),
+        )
+        .await??;
+        lifecycle.commit().await?;
+        handle_holder.rollback().await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("memory advisory namespaces must not alias");
 }
 
 #[tokio::test]
