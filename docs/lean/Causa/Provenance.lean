@@ -24,15 +24,25 @@ structure MemoryGraphValid
   goalIdUnique : GoalIdUnique goals
   cooledIdUnique : CooledIdUnique cooled
   headAligned : MemoryHeadAligned memories heads
+  /-- Since v0.0.11 each reference column resolves against exactly one
+      spine: `refs` against Memory (hot or cooled) and `goal_refs` against
+      Goal. Before the split `refs` had to admit either, which is what
+      forced every reader to re-derive the target's kind. -/
   pinTargetsExist :
     ∀ m : Memory, m ∈ memories →
       (∀ id : MemoryId, id ∈ memory_origins m → pinExists memories cooled id) ∧
-      (∀ id : MemoryId, id ∈ memory_refs m →
-        referenceTargetExists memories goals cooled id)
+      (∀ id : MemoryId, id ∈ memory_refs m → pinExists memories cooled id) ∧
+      (∀ id : GoalId, id ∈ memory_goal_refs m →
+        goalReferenceTargetExists goals id)
   originKind : ∀ m : Memory, m ∈ memories → OriginKindValid memories cooled m
   /-- Memory `t` and Goal `t` do not collide (both globally UNIQUE). -/
   memoryGoalIdsDisjoint :
     ∀ (m : Memory) (g : Goal), m ∈ memories → g ∈ goals → memory_t m ≠ goal_t g
+  /-- A cooled stub keeps the Memory `t` it was cooled from, so it does not
+      collide with a Goal `t` either. Needed to rule out the cooled half of
+      `pinExists` when showing `refs` holds no Goal. -/
+  cooledGoalIdsDisjoint :
+    ∀ (c : Cooled) (g : Goal), c ∈ cooled → g ∈ goals → cooled_t c ≠ goal_t g
   /-- Every Abstraction has nonempty origins (F→A or A→A). -/
   abstractionHasOrigins :
     ∀ m : Memory, m ∈ memories → memory_kind m = .Abstraction →
@@ -119,6 +129,36 @@ theorem perspective_has_provenance :
   intro memories goals heads cooled hgraph m hm hk
   have hne : memory_kind m ≠ .Fact := by rw [hk]; intro h; exact (nomatch h)
   exact hgraph.derivedProvenance m hm hne
+
+/-- v0.0.11 — `refs` is the Memory spine, so a Goal `t` is never in it. It
+    is a theorem now rather than a case each reader had to rule out at read
+    time: the column carries the target's kind, and the two id spaces are
+    disjoint, so nothing has to be probed to know this. -/
+theorem a_goal_is_never_a_memory_reference
+    (memories : Set Memory) (goals : Set Goal)
+    (heads : Set MemoryHead) (cooled : Set Cooled)
+    (hgraph : MemoryGraphValid memories goals heads cooled)
+    (m : Memory) (hm : m ∈ memories) (g : Goal) (hg : g ∈ goals) :
+    goal_t g ∉ memory_refs m := by
+  intro hin
+  cases (hgraph.pinTargetsExist m hm).2.1 (goal_t g) hin with
+  | inl hhot =>
+    obtain ⟨m', hm', ht⟩ := hhot
+    exact hgraph.memoryGoalIdsDisjoint m' g hm' hg ht
+  | inr hcold =>
+    obtain ⟨c, hc, ht⟩ := hcold
+    exact hgraph.cooledGoalIdsDisjoint c g hc hg ht
+
+/-- The other half: a Goal reference that IS declared resolves on the Goal
+    spine, never on the Memory one. -/
+theorem a_goal_reference_resolves_on_the_goal_spine
+    (memories : Set Memory) (goals : Set Goal)
+    (heads : Set MemoryHead) (cooled : Set Cooled)
+    (hgraph : MemoryGraphValid memories goals heads cooled)
+    (m : Memory) (hm : m ∈ memories) (id : GoalId)
+    (hin : id ∈ memory_goal_refs m) :
+    goalReferenceTargetExists goals id :=
+  (hgraph.pinTargetsExist m hm).2.2 id hin
 
 theorem abstraction_grounds_in_facts :
     ∀ memories goals heads cooled,

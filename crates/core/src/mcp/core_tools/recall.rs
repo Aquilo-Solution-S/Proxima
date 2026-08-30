@@ -208,6 +208,7 @@ async fn collect_cue_touch(
             &ctx.authz,
             crate::InboundPinQuery {
                 targets: subjects,
+                goal_targets: false,
                 kind: None,
                 heads_only: true,
                 after: None,

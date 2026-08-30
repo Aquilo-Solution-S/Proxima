@@ -32,6 +32,7 @@ pub struct MemoryRow {
     pub ingest_key: Option<String>,
     pub origins: Vec<Uuid>,
     pub refs: Vec<Uuid>,
+    pub goal_refs: Vec<Uuid>,
 }
 
 /// One txn: owners upsert + ingest_keys + memory_head + memory + announce(append).
@@ -89,7 +90,7 @@ pub(crate) async fn ingest_fact_timeseries(
     };
 
     let mut persisted_origins = pin_memory_ids(origins)?;
-    let mut refs = pin_entity_ids(references);
+    let (mut refs, goal_refs) = pin_reference_ids(references);
     // CHECK memory_fact_origins_chk: Facts cannot carry origins. Pins
     // a Fact declares (activation, evidence, prior request) live in refs.
     if kind == "fact" {
@@ -136,10 +137,12 @@ pub(crate) async fn ingest_fact_timeseries(
             // row has NULL refs because its declaration was not persisted;
             // accepting it as an empty vector would silently bless a changed
             // declaration.
-            let replay_row: (Uuid, Option<Vec<Uuid>>) = sqlx::query_as(
-                "SELECT handle, refs FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
+            let replay_row: (Uuid, Option<Vec<Uuid>>, Option<Vec<Uuid>>) = sqlx::query_as(
+                "SELECT handle, refs, goal_refs FROM proxima_core.memory
+                  WHERE t = $1 AND owner_id = $2
                  UNION ALL
-                 SELECT handle, refs FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
+                 SELECT handle, refs, goal_refs FROM proxima_core.cooled
+                  WHERE t = $1 AND owner_id = $2
                  LIMIT 1",
             )
             .bind(replay_t)
@@ -152,12 +155,12 @@ pub(crate) async fn ingest_fact_timeseries(
                     "ingest key claims t {replay_t} with no hot or cooled row"
                 ))
             })?;
-            let Some(stored_refs) = replay_row.1 else {
+            let (Some(stored_refs), Some(stored_goal_refs)) = (replay_row.1, replay_row.2) else {
                 return Err(StorageError::Conflict(
                     "fact replay references are unavailable for cooled admission".into(),
                 ));
             };
-            if stored_refs != refs {
+            if stored_refs != refs || stored_goal_refs != goal_refs {
                 return Err(StorageError::Conflict(
                     "fact replay changed declared refs".into(),
                 ));
@@ -199,8 +202,9 @@ pub(crate) async fn ingest_fact_timeseries(
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
-             content_id, origins, refs, sidecar_tables)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+             content_id, origins, refs, goal_refs, sidecar_tables)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                 $13)",
     )
     .bind(handle)
     .bind(t)
@@ -213,6 +217,7 @@ pub(crate) async fn ingest_fact_timeseries(
     .bind(content_id)
     .bind(&persisted_origins)
     .bind(&refs)
+    .bind(&goal_refs)
     .bind(sidecar_tables)
     .execute(tx.as_mut())
     .await
@@ -270,18 +275,27 @@ fn pin_memory_ids(pins: &[EdgeEndpoint]) -> Result<Vec<Uuid>, StorageError> {
     Ok(ids)
 }
 
-/// Project either a Memory or Goal endpoint to the stable id stored in
-/// `memory.refs`. The entity kind is carried by authorization; storage only
-/// persists the endpoint id, so Goal references must use `entity_id()` too.
-pub(crate) fn pin_entity_ids(pins: &[EdgeEndpoint]) -> Vec<Uuid> {
-    let mut ids = Vec::with_capacity(pins.len());
+/// Split reference endpoints into the two columns that now carry them:
+/// `memory.refs` for Memory targets, `memory.goal_refs` for Goal targets.
+/// The column is the type — the trigger checks each against its own spine —
+/// so the endpoint kind survives persistence instead of being re-derived by
+/// every reader. Declaration order is preserved within each column and
+/// duplicate pins are dropped.
+pub(crate) fn pin_reference_ids(pins: &[EdgeEndpoint]) -> (Vec<Uuid>, Vec<Uuid>) {
+    let mut memory_ids = Vec::with_capacity(pins.len());
+    let mut goal_ids = Vec::new();
     for pin in pins {
         let id = pin.entity_id();
-        if !ids.contains(&id) {
-            ids.push(id);
+        let column = if matches!(pin.entity, proxima_core::EntityRef::Goal(_)) {
+            &mut goal_ids
+        } else {
+            &mut memory_ids
+        };
+        if !column.contains(&id) {
+            column.push(id);
         }
     }
-    ids
+    (memory_ids, goal_ids)
 }
 
 /// Read one admission row by `t`, inside the caller's transaction.
@@ -296,7 +310,7 @@ pub(crate) async fn read_memory_by_t(
     t: Uuid,
 ) -> Result<Option<MemoryRow>, StorageError> {
     sqlx::query_as::<_, MemoryRow>(
-        "SELECT handle, t, kind::text, owner_id, source_id, ingest_key, origins, refs
+        "SELECT handle, t, kind::text, owner_id, source_id, ingest_key, origins, refs, goal_refs
            FROM proxima_core.memory
           WHERE t = $1",
     )
@@ -315,7 +329,7 @@ pub(crate) async fn read_memory_head(
 ) -> Result<Option<MemoryRow>, StorageError> {
     sqlx::query_as::<_, MemoryRow>(
         "SELECT m.handle, m.t, m.kind::text, m.owner_id, m.source_id, m.ingest_key,
-                m.origins, m.refs
+                m.origins, m.refs, m.goal_refs
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
           WHERE h.handle = $1",

@@ -608,7 +608,7 @@ async fn hot_path_plans_use_expected_indexes() {
             .await?;
         assert_origin_overlap_index(&plan, "descendant hop");
 
-        let inbound = inbound_pin_sql_for_tests(true, Some(EdgeKind::Origin));
+        let inbound = inbound_pin_sql_for_tests(true, Some(EdgeKind::Origin), false);
         let inbound_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {inbound}");
         // SQL-POLICY: fixed-fragment
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(inbound_explain))

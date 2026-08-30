@@ -19,6 +19,7 @@ struct PinNodeRow {
     schema_id: String,
     origins: Vec<uuid::Uuid>,
     refs: Vec<uuid::Uuid>,
+    goal_refs: Vec<uuid::Uuid>,
 }
 
 impl PinNodeRow {
@@ -29,7 +30,7 @@ impl PinNodeRow {
             schema_id: proxima_core::SchemaId::new(self.schema_id),
             origins: self.origins.into_iter().map(MemoryId::new).collect(),
             refs: self.refs.into_iter().map(MemoryId::new).collect(),
-            goal_refs: Vec::new(),
+            goal_refs: self.goal_refs.into_iter().map(GoalId::new).collect(),
         })
     }
 }
@@ -72,7 +73,7 @@ pub(crate) async fn load_pin_nodes(
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
     let owner_ids = owner_ids(read_owners);
     let rows: Vec<PinNodeRow> = sqlx::query_as(
-        "SELECT t, kind::text, schema_id, origins, refs
+        "SELECT t, kind::text, schema_id, origins, refs, goal_refs
            FROM proxima_core.memory
           WHERE t = ANY($1::uuid[])
             AND owner_id = ANY($2::uuid[])",
@@ -106,7 +107,7 @@ pub(crate) async fn load_inbound_pin_nodes(
     let owner_ids = owner_ids(read_owners);
     let after = query.after.map(MemoryId::into_inner);
     let limit = i64::from(query.limit);
-    let sql = inbound_pin_sql(query.heads_only, query.kind);
+    let sql = inbound_pin_sql(query.heads_only, query.kind, query.goal_targets);
     // SQL-POLICY: fixed-fragment — from/kind arms are compile-time literals.
     let rows: Vec<PinNodeRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&ids)
@@ -125,73 +126,152 @@ pub(crate) async fn load_inbound_pin_nodes(
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 #[doc(hidden)]
 #[must_use]
-pub fn inbound_pin_sql_for_tests(heads_only: bool, kind: Option<EdgeKind>) -> &'static str {
-    inbound_pin_sql(heads_only, kind)
+pub fn inbound_pin_sql_for_tests(
+    heads_only: bool,
+    kind: Option<EdgeKind>,
+    goal_targets: bool,
+) -> &'static str {
+    inbound_pin_sql(heads_only, kind, goal_targets)
 }
 
-fn inbound_pin_sql(heads_only: bool, kind: Option<EdgeKind>) -> &'static str {
-    if heads_only {
-        match kind {
-            Some(EdgeKind::Origin) => {
-                "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs
-                   FROM proxima_core.memory_head h
-                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-                  WHERE h.owner_id = ANY($2::uuid[])
-                    AND m.origins && $1::uuid[]
-                    AND ($3::uuid IS NULL OR m.t < $3)
-                  ORDER BY m.t DESC
-                  LIMIT $4"
-            }
-            Some(EdgeKind::Reference) => {
-                "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs
-                   FROM proxima_core.memory_head h
-                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-                  WHERE h.owner_id = ANY($2::uuid[])
-                    AND m.refs && $1::uuid[]
-                    AND ($3::uuid IS NULL OR m.t < $3)
-                  ORDER BY m.t DESC
-                  LIMIT $4"
-            }
-            None => {
-                "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs
-                   FROM proxima_core.memory_head h
-                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-                  WHERE h.owner_id = ANY($2::uuid[])
-                    AND (m.origins && $1::uuid[] OR m.refs && $1::uuid[])
-                    AND ($3::uuid IS NULL OR m.t < $3)
-                  ORDER BY m.t DESC
-                  LIMIT $4"
-            }
-        }
+/// Reference pins live in `refs` for Memory targets and in `goal_refs` for
+/// Goal targets, so the target kind decides which column the overlap scan
+/// reads — one GIN index rather than a mixed array.
+fn inbound_pin_sql(heads_only: bool, kind: Option<EdgeKind>, goal_targets: bool) -> &'static str {
+    if goal_targets {
+        inbound_pin_sql_goal_targets(heads_only, kind)
     } else {
-        match kind {
-            Some(EdgeKind::Origin) => {
-                "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs
+        inbound_pin_sql_memory_targets(heads_only, kind)
+    }
+}
+
+/// Inbound pins onto a Memory target: reference hops come from `refs`.
+///
+/// SQL-POLICY: fixed-fragment
+fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'static str {
+    match (heads_only, kind) {
+        (true, Some(EdgeKind::Origin)) => {
+            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+                   FROM proxima_core.memory_head h
+                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                  WHERE h.owner_id = ANY($2::uuid[])
+                    AND m.origins && $1::uuid[]
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+        }
+        (true, Some(EdgeKind::Reference)) => {
+            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+                   FROM proxima_core.memory_head h
+                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                  WHERE h.owner_id = ANY($2::uuid[])
+                    AND m.refs && $1::uuid[]
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+        }
+        (true, None) => {
+            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+                   FROM proxima_core.memory_head h
+                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                  WHERE h.owner_id = ANY($2::uuid[])
+                    AND (m.origins && $1::uuid[] OR m.refs && $1::uuid[])
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+        }
+        (false, Some(EdgeKind::Origin)) => {
+            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND m.origins && $1::uuid[]
                     AND ($3::uuid IS NULL OR m.t < $3)
                   ORDER BY m.t DESC
                   LIMIT $4"
-            }
-            Some(EdgeKind::Reference) => {
-                "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs
+        }
+        (false, Some(EdgeKind::Reference)) => {
+            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND m.refs && $1::uuid[]
                     AND ($3::uuid IS NULL OR m.t < $3)
                   ORDER BY m.t DESC
                   LIMIT $4"
-            }
-            None => {
-                "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs
+        }
+        (false, None) => {
+            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND (m.origins && $1::uuid[] OR m.refs && $1::uuid[])
                     AND ($3::uuid IS NULL OR m.t < $3)
                   ORDER BY m.t DESC
                   LIMIT $4"
-            }
+        }
+    }
+}
+
+/// Inbound pins onto a Goal target: reference hops come from `goal_refs`, and
+/// origin pins are Memory-only so they can never name a Goal.
+///
+/// SQL-POLICY: fixed-fragment
+fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'static str {
+    match (heads_only, kind) {
+        (true, Some(EdgeKind::Origin)) => {
+            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+                   FROM proxima_core.memory_head h
+                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                  WHERE h.owner_id = ANY($2::uuid[])
+                    AND m.origins && $1::uuid[]
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+        }
+        (true, Some(EdgeKind::Reference)) => {
+            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+                   FROM proxima_core.memory_head h
+                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                  WHERE h.owner_id = ANY($2::uuid[])
+                    AND m.goal_refs && $1::uuid[]
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+        }
+        (true, None) => {
+            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+                   FROM proxima_core.memory_head h
+                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                  WHERE h.owner_id = ANY($2::uuid[])
+                    AND (m.origins && $1::uuid[] OR m.goal_refs && $1::uuid[])
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+        }
+        (false, Some(EdgeKind::Origin)) => {
+            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+                   FROM proxima_core.memory m
+                  WHERE m.owner_id = ANY($2::uuid[])
+                    AND m.origins && $1::uuid[]
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+        }
+        (false, Some(EdgeKind::Reference)) => {
+            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+                   FROM proxima_core.memory m
+                  WHERE m.owner_id = ANY($2::uuid[])
+                    AND m.goal_refs && $1::uuid[]
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+        }
+        (false, None) => {
+            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+                   FROM proxima_core.memory m
+                  WHERE m.owner_id = ANY($2::uuid[])
+                    AND (m.origins && $1::uuid[] OR m.goal_refs && $1::uuid[])
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
         }
     }
 }

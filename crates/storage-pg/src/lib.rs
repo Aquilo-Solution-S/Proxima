@@ -1298,10 +1298,10 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3],
+            vec![1, 2, 3, 4],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
-             v0.0.9 is 0002_v009_declaration_triggers.sql and v0.0.10 is \
-             0003_v010_reference_integrity.sql"
+             v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
+             0003_v010_reference_integrity.sql and v0.0.11 is 0004_v011_goal_refs.sql"
         );
     }
 
@@ -1348,7 +1348,22 @@ mod tests {
                     .contains("cooled_origins_no_null_chk"),
             "version 3 must be the v0.0.10 reference-integrity migration"
         );
-        for dead in 4..=21 {
+        let version_4 = migrator
+            .iter()
+            .find(|migration| migration.version == 4)
+            .expect("version 4 is v0.0.11's additive migration");
+        assert!(
+            version_4.sql.as_str().contains("goal_refs")
+                && version_4
+                    .sql
+                    .as_str()
+                    .contains("memory_goal_refs_no_null_chk"),
+            "version 4 must be the v0.0.11 goal-reference split, not a resurrected legacy ALTER"
+        );
+        // The legacy range shrinks as the head advances: 4 is now a real
+        // additive migration, asserted by content just above, so only 5..=21
+        // remain retired by the v0.0.8 squash.
+        for dead in 5..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"

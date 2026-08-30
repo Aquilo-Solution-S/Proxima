@@ -116,7 +116,7 @@ theorem principle_8b_long_term_knowledge_artifact_has_text_memory :
 
 /-- P9 — the pin set IS node content. No Edge table to rebuild. -/
 theorem principle_9_index_is_a_function_of_node_content :
-    ∀ m : Memory, derivePins m = (memory_origins m, memory_refs m) :=
+    ∀ m : Memory, derivePins m = (memory_origins m, memory_refs m, memory_goal_refs m) :=
   derived_table_rebuildable
 
 /-- H2 — shared payload does not collapse admission identity. -/

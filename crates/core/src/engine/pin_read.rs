@@ -75,12 +75,15 @@ async fn resolve_visible_goal_refs(
     read_owners: &[OwnerRef],
     nodes: &mut [PinNode],
 ) -> Result<(), ProtocolError> {
+    // Only the ids storage typed as Goals are candidates. Before the pin
+    // columns were split every reference had to be probed against the Goal
+    // spine because the stored array could not say; now a page whose nodes
+    // carry no Goal reference issues no query at all.
     let mut candidates = Vec::new();
     for node in nodes.iter() {
-        for id in &node.refs {
-            let goal = GoalId::new(id.into_inner());
-            if !candidates.contains(&goal) {
-                candidates.push(goal);
+        for goal in &node.goal_refs {
+            if !candidates.contains(goal) {
+                candidates.push(*goal);
             }
         }
     }
@@ -324,6 +327,10 @@ async fn load_incoming_sources(
                 read_owners,
                 InboundPinQuery {
                     targets: &targets,
+                    // The inbound target carries its own kind, and a Goal is
+                    // only ever pinned from `goal_refs`. Naming the column
+                    // keeps the scan on one GIN index instead of a mixed array.
+                    goal_targets: matches!(target_filter, EntityRef::Goal(_)),
                     kind: req.filter.kind,
                     heads_only: false,
                     after,
@@ -369,6 +376,7 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
             read_owners,
             InboundPinQuery {
                 targets: memory_ids,
+                goal_targets: false,
                 kind: None,
                 heads_only: true,
                 after: None,
@@ -501,18 +509,41 @@ mod tests {
     struct FakePins {
         nodes: Vec<PinNode>,
         visible_goals: Vec<crate::GoalId>,
+        /// One entry per `load_visible_goal_ids` round trip. The point of
+        /// the split is that a page with no Goal reference makes none.
+        goal_probes: Arc<std::sync::Mutex<Vec<Vec<crate::GoalId>>>>,
     }
 
     impl FakePins {
+        fn new(nodes: Vec<PinNode>, visible_goals: Vec<crate::GoalId>) -> Self {
+            Self {
+                nodes,
+                visible_goals,
+                goal_probes: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+
         fn inbound(&self, query: InboundPinQuery<'_>) -> Vec<PinNode> {
             let mut rows: Vec<PinNode> = self
                 .nodes
                 .iter()
                 .filter(|node| {
+                    // Mirrors the backend: reference hops onto a Goal target
+                    // come from `goal_refs`, onto a Memory target from `refs`.
+                    // Origin pins are Memory-only in both.
+                    let references = |node: &PinNode, t: &MemoryId| {
+                        if query.goal_targets {
+                            node.goal_refs
+                                .iter()
+                                .any(|goal| goal.into_inner() == t.into_inner())
+                        } else {
+                            node.refs.contains(t)
+                        }
+                    };
                     query.targets.iter().any(|t| match query.kind {
                         Some(EdgeKind::Origin) => node.origins.contains(t),
-                        Some(EdgeKind::Reference) => node.refs.contains(t),
-                        None => node.origins.contains(t) || node.refs.contains(t),
+                        Some(EdgeKind::Reference) => references(node, t),
+                        None => node.origins.contains(t) || references(node, t),
                     })
                 })
                 .cloned()
@@ -571,6 +602,10 @@ mod tests {
             _read_owners: &[OwnerRef],
             goal_ids: &[crate::GoalId],
         ) -> Result<Vec<crate::GoalId>, StorageError> {
+            self.goal_probes
+                .lock()
+                .expect("goal probe log")
+                .push(goal_ids.to_vec());
             Ok(goal_ids
                 .iter()
                 .copied()
@@ -642,14 +677,7 @@ mod tests {
                 goal_refs: Vec::new(),
             });
         }
-        (
-            owner,
-            hub,
-            Arc::new(FakePins {
-                nodes,
-                visible_goals: Vec::new(),
-            }),
-        )
+        (owner, hub, Arc::new(FakePins::new(nodes, Vec::new())))
     }
 
     #[tokio::test]
@@ -707,6 +735,34 @@ mod tests {
         }
     }
 
+    #[allow(clippy::type_complexity)]
+    fn probing_goal_ref_fixture() -> (
+        OwnerRef,
+        MemoryId,
+        crate::GoalId,
+        crate::storage_ports::MemoryReadHandle,
+        Arc<std::sync::Mutex<Vec<Vec<crate::GoalId>>>>,
+    ) {
+        let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
+        let source = MemoryId::new(uuid::Uuid::now_v7());
+        let first = crate::GoalId::new(uuid::Uuid::now_v7());
+        let second = crate::GoalId::new(uuid::Uuid::now_v7());
+        let fake = Arc::new(FakePins::new(
+            vec![PinNode {
+                id: source,
+                kind: EntityKind::Fact,
+                schema_id: crate::SchemaId::new("test/pin-v1".into()),
+                origins: Vec::new(),
+                refs: Vec::new(),
+                goal_refs: vec![first, second],
+            }],
+            vec![first, second],
+        ));
+        let probes = Arc::clone(&fake.goal_probes);
+        let handle: crate::storage_ports::MemoryReadHandle = fake;
+        (owner, source, first, handle, probes)
+    }
+
     fn goal_ref_fixture() -> (
         OwnerRef,
         MemoryId,
@@ -717,20 +773,17 @@ mod tests {
         let source = MemoryId::new(uuid::Uuid::now_v7());
         let first = crate::GoalId::new(uuid::Uuid::now_v7());
         let second = crate::GoalId::new(uuid::Uuid::now_v7());
-        let fake = Arc::new(FakePins {
-            nodes: vec![PinNode {
+        let fake = Arc::new(FakePins::new(
+            vec![PinNode {
                 id: source,
                 kind: EntityKind::Fact,
                 schema_id: crate::SchemaId::new("test/pin-v1".into()),
                 origins: Vec::new(),
-                refs: vec![
-                    MemoryId::new(first.into_inner()),
-                    MemoryId::new(second.into_inner()),
-                ],
-                goal_refs: Vec::new(),
+                refs: Vec::new(),
+                goal_refs: vec![first, second],
             }],
-            visible_goals: vec![first, second],
-        });
+            vec![first, second],
+        ));
         let handle: crate::storage_ports::MemoryReadHandle = fake;
         (owner, source, first, handle)
     }
@@ -744,6 +797,75 @@ mod tests {
                 }
             } if expected.is_none_or(|want| id == want)
         ));
+    }
+
+    /// The read-side half of the split. `refs` used to be untyped, so
+    /// every page of references had to be probed against the Goal spine
+    /// just to find out whether any of them were Goals at all -- a round
+    /// trip per page on the overwhelmingly common all-Memory page. The
+    /// typed column answers that locally, so the probe now fires only
+    /// when there is actually something to resolve.
+    #[tokio::test]
+    async fn a_page_without_goal_references_issues_no_goal_probe() {
+        let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
+        let source = MemoryId::new(uuid::Uuid::now_v7());
+        let target = MemoryId::new(uuid::Uuid::now_v7());
+        let memory_only = Arc::new(FakePins::new(
+            vec![PinNode {
+                id: source,
+                kind: EntityKind::Fact,
+                schema_id: crate::SchemaId::new("test/pin-v1".into()),
+                origins: Vec::new(),
+                refs: vec![target],
+                goal_refs: Vec::new(),
+            }],
+            Vec::new(),
+        ));
+        let probes = Arc::clone(&memory_only.goal_probes);
+        let handle: crate::storage_ports::MemoryReadHandle = memory_only;
+        let request = EdgeReadRequest {
+            owner,
+            filter: EdgeFilter {
+                kind: Some(EdgeKind::Reference),
+                source: Some(EntityRef::Memory(source)),
+                target: None,
+            },
+            limit: 10,
+            cursor: None,
+        };
+        let page = read_edges_from_nodes(&handle, &[owner], &request)
+            .await
+            .expect("Memory-only references");
+        assert_eq!(page.edges.len(), 1);
+        assert!(
+            probes.lock().expect("goal probe log").is_empty(),
+            "an all-Memory page must not touch the Goal spine"
+        );
+
+        // And the contrast: a page that does carry Goal references still
+        // resolves them, in exactly one probe naming only those ids.
+        let (_, goal_source, goal, goal_handle, goal_probes) = probing_goal_ref_fixture();
+        let goal_page = read_edges_from_nodes(
+            &goal_handle,
+            &[owner],
+            &EdgeReadRequest {
+                filter: EdgeFilter {
+                    source: Some(EntityRef::Memory(goal_source)),
+                    ..request.filter
+                },
+                ..request
+            },
+        )
+        .await
+        .expect("Goal references");
+        assert_eq!(goal_page.edges.len(), 2);
+        let probes = goal_probes.lock().expect("goal probe log");
+        assert_eq!(
+            probes.len(),
+            1,
+            "one probe for the whole page, not one per node"
+        );
+        assert!(probes[0].contains(&goal));
     }
 
     #[tokio::test]

@@ -18,6 +18,7 @@ def fact (handle : Handle) (owner : Owner) (id : MemoryId) (tick : Instant) : Me
   owner := owner
   origins := []
   refs := []
+  goal_refs := []
   blob_id := none
   content_id := none
   tick := tick
@@ -32,6 +33,7 @@ def abstraction (handle : Handle) (owner : Owner) (id : MemoryId) (tick : Instan
   owner := owner
   origins := []
   refs := []
+  goal_refs := []
   blob_id := none
   content_id := none
   tick := tick
@@ -46,6 +48,7 @@ def perspective (handle : Handle) (owner : Owner) (id : MemoryId) (tick : Instan
   owner := owner
   origins := []
   refs := []
+  goal_refs := []
   blob_id := none
   content_id := none
   tick := tick
@@ -101,7 +104,7 @@ theorem goal_sidecar_state_projection
 
 /-- Flavor pins are the node's own arrays. Rebuildability is identity. -/
 theorem flavor_declared_pins_are_node_content (m : Memory) :
-    derivePins m = (memory_origins m, memory_refs m) :=
+    derivePins m = (memory_origins m, memory_refs m, memory_goal_refs m) :=
   pins_are_node_content m
 
 theorem fact_receipt_is_fact

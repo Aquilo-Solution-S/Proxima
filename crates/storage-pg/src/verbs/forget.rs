@@ -15,7 +15,7 @@ use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::sidecars::PgSidecarRegistryFrozen;
 
-pub const COLD_FORMAT_VERSION: u8 = 4;
+pub const COLD_FORMAT_VERSION: u8 = 5;
 
 // The persisted key derivation lives in core, the lowest crate shared by
 // storage-pg and blob-s3; re-exported here so the storage path names it.
@@ -69,6 +69,7 @@ struct HotRow {
     blob_id: Option<Uuid>,
     origins: Vec<Uuid>,
     refs: Vec<Uuid>,
+    goal_refs: Vec<Uuid>,
     sidecar_tables: Vec<String>,
     content_id: Option<Uuid>,
 }
@@ -83,6 +84,11 @@ pub struct ColdRecord {
     embed_models: Vec<String>,
     /// Exact persisted one-liner. v4+; older cold objects restore from sidecar/kind.
     sketch: Option<String>,
+    /// Format version this record was decoded from, or the current version
+    /// for a record built from a live row. Hydrate consults it because a
+    /// pre-v5 object's `refs` still mixes Memory and Goal ids and has to be
+    /// separated against the Goal spine before it can be re-inserted.
+    format_version: u8,
 }
 
 fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
@@ -96,6 +102,7 @@ fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
     write_opt_uuid(&mut out, rec.row.blob_id);
     write_uuid_list(&mut out, &rec.row.origins)?;
     write_uuid_list(&mut out, &rec.row.refs)?;
+    write_uuid_list(&mut out, &rec.row.goal_refs)?;
     write_str(&mut out, &rec.schema_id)?;
     write_count(&mut out, rec.sidecar_dumps.len())?;
     for (table, json) in &rec.sidecar_dumps {
@@ -110,7 +117,7 @@ fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
 fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
     let mut i = 0;
     let version = read_u8(bytes, &mut i)?;
-    if !matches!(version, 1..=4) {
+    if !matches!(version, 1..=5) {
         return Err(StorageError::Internal(format!(
             "unknown cold format {version}"
         )));
@@ -126,6 +133,15 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         blob_id: read_opt_uuid(bytes, &mut i)?,
         origins: read_uuid_list(bytes, &mut i)?,
         refs: read_uuid_list(bytes, &mut i)?,
+        // v<=4 predates the pin split, so its `refs` is still a mixed array.
+        // It is separated on hydrate against the live Goal spine — the same
+        // predicate migration 0004 backfills hot rows with — because the
+        // object alone cannot say which ids were Goals.
+        goal_refs: if version >= 5 {
+            read_uuid_list(bytes, &mut i)?
+        } else {
+            Vec::new()
+        },
         sidecar_tables: Vec::new(),
         content_id: None,
     };
@@ -158,7 +174,37 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         sidecar_dumps,
         embed_models,
         sketch,
+        format_version: version,
     })
+}
+
+/// Split a pre-v5 mixed reference array into `(memory_refs, goal_refs)` by
+/// asking which ids exist on the Goal spine. Exact for the same reason the
+/// 0004 backfill is: a Goal id is decided by spine membership, not by
+/// anything the cold object recorded. Declaration order is preserved.
+async fn split_legacy_refs(
+    conn: &mut sqlx::PgConnection,
+    refs: &[Uuid],
+) -> Result<(Vec<Uuid>, Vec<Uuid>), StorageError> {
+    if refs.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let goals: Vec<Uuid> =
+        sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE t = ANY($1::uuid[])")
+            .bind(refs)
+            .fetch_all(conn)
+            .await
+            .map_err(map_err)?;
+    let mut memory_refs = Vec::with_capacity(refs.len());
+    let mut goal_refs = Vec::new();
+    for id in refs {
+        if goals.contains(id) {
+            goal_refs.push(*id);
+        } else {
+            memory_refs.push(*id);
+        }
+    }
+    Ok((memory_refs, goal_refs))
 }
 
 fn write_u16(out: &mut Vec<u8>, value: u16) {
@@ -393,11 +439,11 @@ async fn load_embed_models(conn: &mut PgConnection, t: Uuid) -> Result<Vec<Strin
     Ok(models)
 }
 
-const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, sidecar_tables, content_id
+const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id
            FROM proxima_core.memory
           WHERE t = $1";
 
-const HOT_ROW_FOR_UPDATE_OWNED_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, sidecar_tables, content_id
+const HOT_ROW_FOR_UPDATE_OWNED_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id
            FROM proxima_core.memory
           WHERE t = $1 AND owner_id = $2
           FOR UPDATE";
@@ -424,6 +470,7 @@ pub async fn snapshot_hot(
         sidecar_dumps,
         embed_models,
         sketch,
+        format_version: COLD_FORMAT_VERSION,
     })
 }
 
@@ -461,6 +508,7 @@ pub async fn commit_forget(
         sidecar_dumps,
         embed_models,
         sketch,
+        format_version: COLD_FORMAT_VERSION,
     };
     if current != *snapshot {
         cold.put(object_key, &encode_record(&current)?).await?;
@@ -492,8 +540,8 @@ async fn persist_cooled_after_put(
     sqlx::query(
         "INSERT INTO proxima_core.cooled
             (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id, ingest_key,
-             origins, refs)
-         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6, $7, $8, $9, $10, $11)",
+             origins, refs, goal_refs)
+         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(current.row.t)
     .bind(current.row.handle)
@@ -506,6 +554,7 @@ async fn persist_cooled_after_put(
     .bind(current.row.ingest_key.as_deref())
     .bind(&current.row.origins)
     .bind(&current.row.refs)
+    .bind(&current.row.goal_refs)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -1128,11 +1177,21 @@ pub async fn hydrate_memory(
     {
         stamped_tables.push(primary.to_owned());
     }
+    // A pre-v5 object predates the pin split and still carries Goal ids inside
+    // `refs`. Separate them here against the live spine — the same predicate
+    // migration 0004 used on hot rows — or the trigger would reject the Goal
+    // ids as Memory references and a hydrate of an old object could never land.
+    let (refs, goal_refs) = if rec.format_version >= 5 {
+        (rec.row.refs.clone(), rec.row.goal_refs.clone())
+    } else {
+        split_legacy_refs(tx.as_mut(), &rec.row.refs).await?
+    };
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
-             content_id, origins, refs, sidecar_tables)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+             content_id, origins, refs, goal_refs, sidecar_tables)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                 $13)",
     )
     .bind(rec.row.handle)
     .bind(rec.row.t)
@@ -1144,7 +1203,8 @@ pub async fn hydrate_memory(
     .bind(rec.row.blob_id)
     .bind(cooled_content)
     .bind(&rec.row.origins)
-    .bind(&rec.row.refs)
+    .bind(&refs)
+    .bind(&goal_refs)
     .bind(stamped_tables)
     .execute(tx.as_mut())
     .await
@@ -1782,6 +1842,162 @@ mod tests {
         assert!(
             forget_leg_sql("proxima_core.embeddings", "entity_id; DROP TABLE x").is_err(),
             "the identifier whitelist is what makes this %I-equivalent"
+        );
+    }
+
+    fn cold_row(refs: Vec<uuid::Uuid>, goal_refs: Vec<uuid::Uuid>) -> super::ColdRecord {
+        super::ColdRecord {
+            row: super::HotRow {
+                handle: uuid::Uuid::now_v7(),
+                t: uuid::Uuid::now_v7(),
+                kind: "fact".to_owned(),
+                owner_id: uuid::Uuid::now_v7(),
+                schema_id: String::new(),
+                source_id: Some("src".to_owned()),
+                ingest_key: None,
+                blob_id: None,
+                origins: Vec::new(),
+                refs,
+                goal_refs,
+                sidecar_tables: Vec::new(),
+                content_id: None,
+            },
+            schema_id: "core/upload-v1".to_owned(),
+            sidecar_dumps: Vec::new(),
+            embed_models: Vec::new(),
+            sketch: None,
+            format_version: super::COLD_FORMAT_VERSION,
+        }
+    }
+
+    #[test]
+    fn a_v5_cold_object_round_trips_both_pin_columns() {
+        let memory = uuid::Uuid::now_v7();
+        let goal = uuid::Uuid::now_v7();
+        let rec = cold_row(vec![memory], vec![goal]);
+        let decoded =
+            super::decode_record(&super::encode_record(&rec).expect("encode")).expect("v5 decodes");
+        assert_eq!(decoded.row.refs, vec![memory]);
+        assert_eq!(decoded.row.goal_refs, vec![goal]);
+        assert_eq!(decoded.format_version, 5);
+    }
+
+    /// Cold objects written before the split have no `goal_refs` field at
+    /// all, and their `refs` is still the mixed array. Decode must not
+    /// invent the field, and must report the version it read so hydrate
+    /// knows to separate `refs` against the live Goal spine rather than
+    /// re-inserting a Goal id into the Memory column, where the pin check
+    /// would now reject it.
+    #[test]
+    fn a_pre_split_cold_object_decodes_with_an_unsplit_refs_array() {
+        let rec = cold_row(Vec::new(), Vec::new());
+        let mixed = vec![uuid::Uuid::now_v7(), uuid::Uuid::now_v7()];
+
+        // The v4 layout, written out by hand: it is identical to v5 except
+        // that no goal_refs list follows refs.
+        let mut v4 = vec![4_u8];
+        super::write_uuid(&mut v4, rec.row.handle);
+        super::write_uuid(&mut v4, rec.row.t);
+        super::write_str(&mut v4, &rec.row.kind).expect("kind");
+        super::write_uuid(&mut v4, rec.row.owner_id);
+        super::write_opt_str(&mut v4, rec.row.source_id.as_deref()).expect("source");
+        super::write_opt_str(&mut v4, rec.row.ingest_key.as_deref()).expect("ingest key");
+        super::write_opt_uuid(&mut v4, rec.row.blob_id);
+        super::write_uuid_list(&mut v4, &rec.row.origins).expect("origins");
+        super::write_uuid_list(&mut v4, &mixed).expect("refs");
+        super::write_str(&mut v4, &rec.schema_id).expect("schema");
+        super::write_count(&mut v4, 0).expect("no sidecars");
+        super::write_str_list(&mut v4, &rec.embed_models).expect("embed models");
+        super::write_opt_str(&mut v4, None).expect("sketch");
+
+        let decoded = super::decode_record(&v4).expect("v4 decodes");
+        assert_eq!(decoded.format_version, 4);
+        assert_eq!(
+            decoded.row.refs, mixed,
+            "a pre-split object's refs must survive decode untouched"
+        );
+        assert!(
+            decoded.row.goal_refs.is_empty(),
+            "decode must not guess which legacy refs were Goals"
+        );
+    }
+
+    /// Hydrating a pre-split object is the only place a mixed `refs` array
+    /// still reaches a writer, and the pin check would reject a Goal id in
+    /// the Memory column. The separation is decided the same way the 0004
+    /// backfill decides it: by spine membership, not by anything the cold
+    /// object recorded.
+    #[tokio::test]
+    async fn legacy_refs_split_against_the_live_goal_spine() {
+        let db_name = format!("proxima_test_{}", uuid::Uuid::now_v7().simple());
+        if let Err(e) = proxima_pg_testkit::create_db(&db_name).await {
+            panic!("PG required for tests but admin connect failed: {e}");
+        }
+        let url = proxima_pg_testkit::db_url(&db_name);
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let pg = crate::PgStorage::connect(&url).await?;
+            pg.run_migrations().await?;
+            let mut conn = pg.pool_for_tests().acquire().await?;
+
+            let owner = uuid::Uuid::now_v7();
+            sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+                .bind(owner)
+                .execute(conn.as_mut())
+                .await?;
+            let goal_handle = uuid::Uuid::now_v7();
+            let goal_t = uuid::Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+                 VALUES ($1, 'test/goal-v1', $2, $3)",
+            )
+            .bind(goal_handle)
+            .bind(owner)
+            .bind(goal_t)
+            .execute(conn.as_mut())
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.goal
+                     (handle, t, owner_id, title, state, request_id)
+                 VALUES ($1, $2, $3, 'cold target', 'Active', 'cold-goal')",
+            )
+            .bind(goal_handle)
+            .bind(goal_t)
+            .bind(owner)
+            .execute(conn.as_mut())
+            .await?;
+
+            let before = uuid::Uuid::now_v7();
+            let after = uuid::Uuid::now_v7();
+            let (memory_refs, goal_refs) =
+                super::split_legacy_refs(conn.as_mut(), &[before, goal_t, after]).await?;
+            assert_eq!(
+                memory_refs,
+                vec![before, after],
+                "declaration order must survive the split"
+            );
+            assert_eq!(goal_refs, vec![goal_t]);
+
+            // Nothing on the Goal spine means nothing moves -- the common case.
+            let (memory_refs, goal_refs) =
+                super::split_legacy_refs(conn.as_mut(), &[before, after]).await?;
+            assert_eq!(memory_refs, vec![before, after]);
+            assert!(goal_refs.is_empty());
+
+            let (memory_refs, goal_refs) = super::split_legacy_refs(conn.as_mut(), &[]).await?;
+            assert!(memory_refs.is_empty() && goal_refs.is_empty());
+            Ok(())
+        }
+        .await;
+        let _ = proxima_pg_testkit::drop_db(&db_name).await;
+        result.expect("legacy cold refs split failed");
+    }
+
+    #[test]
+    fn an_unknown_cold_format_is_refused() {
+        let err = super::decode_record(&[6_u8]).expect_err("v6 is not shipped");
+        assert!(
+            matches!(err, StorageError::Internal(ref msg) if msg.contains("unknown cold format 6")),
+            "got {err:?}"
         );
     }
 

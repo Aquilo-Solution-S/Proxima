@@ -108,20 +108,27 @@ that distinguishes a carrier from a decoy.
 
 ## 16 — Edges (E) — REBASED: no Edge table (v0.0.8)
 
-Pins live on the node (`Memory.origins` / `Memory.refs`; Goal `*_t` columns).
-There is no `Edge` / `NodeRef` / `FactEntity` type. `#guard_msgs` pins the
-headline pin theorems in `Causa/Edges.lean`.
+Pins live on the node (`Memory.origins` / `Memory.refs` / `Memory.goal_refs`;
+Goal `*_t` columns). There is no `Edge` / `NodeRef` / `FactEntity` type.
+`#guard_msgs` pins the headline pin theorems in `Causa/Edges.lean`.
+
+v0.0.11 split the reference column by spine: `refs` is Memory-only and
+`goal_refs` is the Goal spine, so the column carries the target's kind
+instead of every reader re-deriving it (E1, E7, E-SPINE below).
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| E1 | Existence — every origin `t` is a Memory; a reference `t` may also be a Goal | defs `pinExists` and `referenceTargetExists` + `MemoryGraphValid.pinTargetsExist`; theorem `goal_is_reference_target` |
+| E1 | Existence — every origin `t` and every `refs` `t` is a Memory; a `goal_refs` `t` is a Goal | defs `pinExists` and `goalReferenceTargetExists` + `MemoryGraphValid.pinTargetsExist`; THEOREMs `goal_is_reference_target`, `a_goal_reference_resolves_on_the_goal_spine` |
 | E2 | Ownership — the pin is on the declaring row | structural (no edge owner column) + `pin_write_admitted` / `cross_owner_target_admitted` |
 | E3 | Layering — UML origin CHECKs | def `OriginKindValid` + THEOREM `origin_layer_rule`; THEOREM `fact_source_reaches_only_facts` |
-| E4 | Kind follows operation; no free-standing pin write | STRUCTURAL: `origins` vs `refs` are the two fields. THEOREM `pins_are_node_content`. No verb writes a pin |
+| E4 | Kind follows operation; no free-standing pin write | STRUCTURAL: `origins` vs `refs`/`goal_refs` are the fields, and the two reference columns are one kind split by spine, not a third kind. THEOREM `pins_are_node_content`. No verb writes a pin |
 | E4z | A write with ZERO origins is legal | THEOREM `declaration_without_origins_writes_no_origin_pins` + `interpretationOf`; THEOREM `invocation_without_inputs_is_complete` |
 | E5 | Structural idempotency — no pin row | STRUCTURAL ABSENCE of `Edge` / `EdgeId`. The pin set is the node's arrays |
 | E6 | No content — no pin payload | STRUCTURAL ABSENCE: arrays of `MemoryId` only |
-| E7 | Rebuildability — the pin set IS node content | def `derivePins` + THEOREMs `pins_are_node_content`, `derived_table_rebuildable`, `principle_9_index_is_a_function_of_node_content` |
+| E7 | Rebuildability — the pin set IS node content | def `derivePins` (a triple since v0.0.11) + THEOREMs `pins_are_node_content`, `derived_table_rebuildable`, `principle_9_index_is_a_function_of_node_content` |
+| E-SPINE | The reference column IS the target's spine — `refs` never holds a Goal | `MemoryGraphValid.cooledGoalIdsDisjoint` + THEOREM `a_goal_is_never_a_memory_reference` |
+| E-NODISC | Non-disclosure — an unreadable Goal reference is indistinguishable from an unreadable Memory reference | def `resolveVisibleGoalRefs` + THEOREMs `unreadable_goal_reference_resolves_like_a_memory_reference`, `readable_goal_reference_survives_resolution` |
+| E-READ | A row with no Goal reference needs no Goal-spine read to project | THEOREM `a_row_without_goal_refs_resolves_to_itself` |
 | E-KIND | Two kinds, closed, not flavor-extensible | inductive `EdgeKind` (`origin`, `reference`); THEOREM `principle_epistemic_edge_kinds_are_exactly_two` |
 | E-NODE | Interpretation is a node, not a kind | def `interpretationOf` + THEOREMs `interpretation_is_never_a_fact`, `interpretation_rows_are_references` |
 | E-TIME | `created_at` on an edge row | RETIRED: no edge row. Kernel time axis is `Memory.tick` (uuidv7 `t` order), not a `created_at` column |

@@ -139,6 +139,7 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
                 &[owner],
                 InboundPinQuery {
                     targets: &[leaf.memory_id],
+                    goal_targets: false,
                     kind: None,
                     heads_only: true,
                     after: None,
@@ -411,6 +412,7 @@ async fn inbound_pin_page_is_newest_heads_and_keyset() {
                 &[owner],
                 InboundPinQuery {
                     targets: &[hub.memory_id],
+                    goal_targets: false,
                     kind: Some(EdgeKind::Origin),
                     heads_only: true,
                     after: None,
@@ -432,6 +434,7 @@ async fn inbound_pin_page_is_newest_heads_and_keyset() {
                 &[owner],
                 InboundPinQuery {
                     targets: &[hub.memory_id],
+                    goal_targets: false,
                     kind: Some(EdgeKind::Origin),
                     heads_only: true,
                     after: page.last().map(|n| n.id),
@@ -486,6 +489,7 @@ async fn inbound_heads_only_drops_superseded_pin() {
                 &[owner],
                 InboundPinQuery {
                     targets: &[hub.memory_id],
+                    goal_targets: false,
                     kind: Some(EdgeKind::Origin),
                     heads_only: true,
                     after: None,
@@ -505,6 +509,7 @@ async fn inbound_heads_only_drops_superseded_pin() {
                 &[owner],
                 InboundPinQuery {
                     targets: &[hub.memory_id],
+                    goal_targets: false,
                     kind: Some(EdgeKind::Origin),
                     heads_only: false,
                     after: None,
