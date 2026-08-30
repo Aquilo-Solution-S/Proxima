@@ -1206,21 +1206,34 @@ pub(crate) async fn home_owner(
     pool: &PgPool,
     entity: EntityId,
 ) -> Result<Option<OwnerRef>, StorageError> {
-    let row: Option<(OwnerRefKind, uuid::Uuid)> = sqlx::query_as(
-        "SELECT o.kind::text::proxima_core.owner_kind, m.owner_id
-           FROM proxima_core.memory m
-           JOIN proxima_core.owners o ON o.owner_id = m.owner_id
-          WHERE m.t = $1
-         UNION ALL
-         SELECT o.kind::text::proxima_core.owner_kind, g.owner_id
-           FROM proxima_core.goal g
-           JOIN proxima_core.owners o ON o.owner_id = g.owner_id
-          WHERE g.t = $1
-         LIMIT 1",
-    )
-    .bind(entity.uuid())
-    .fetch_optional(pool)
-    .await
+    // The entity discriminant is authorization data, exactly as in
+    // `visible_home_owner`. A union over both spines on the bare uuid lets a
+    // caller relabel a Memory as a Goal (or vice versa) and resolve the owner
+    // space off the wrong spine, so each arm asks its own spine only.
+    let row: Option<(OwnerRefKind, uuid::Uuid)> = match entity {
+        EntityId::Memory(memory_id) => {
+            sqlx::query_as(
+                "SELECT o.kind::text::proxima_core.owner_kind, m.owner_id
+               FROM proxima_core.memory m
+               JOIN proxima_core.owners o ON o.owner_id = m.owner_id
+              WHERE m.t = $1",
+            )
+            .bind(memory_id.into_inner())
+            .fetch_optional(pool)
+            .await
+        }
+        EntityId::Goal(goal_id) => {
+            sqlx::query_as(
+                "SELECT o.kind::text::proxima_core.owner_kind, g.owner_id
+               FROM proxima_core.goal g
+               JOIN proxima_core.owners o ON o.owner_id = g.owner_id
+              WHERE g.t = $1",
+            )
+            .bind(goal_id.into_inner())
+            .fetch_optional(pool)
+            .await
+        }
+    }
     .map_err(map_err)?;
 
     Ok(row.map(|(kind, id)| kind.with_uuid(id)))

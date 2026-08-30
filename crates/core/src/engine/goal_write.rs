@@ -784,6 +784,8 @@ mod tests {
         memory_kind: EntityKind,
     ) -> MembershipStorage {
         MembershipStorage {
+            observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             member,
             group: GroupId::new(uuid::Uuid::now_v7()),
             membership_relation: Relation::Viewer,

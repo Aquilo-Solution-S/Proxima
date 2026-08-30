@@ -592,6 +592,8 @@ mod tests {
         membership_relation: Relation,
     ) -> MembershipStorage {
         MembershipStorage {
+            observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             member,
             group,
             membership_relation,
@@ -612,6 +614,8 @@ mod tests {
         entity_readable: bool,
     ) -> MembershipStorage {
         MembershipStorage {
+            observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             member,
             group,
             membership_relation: Relation::Viewer,

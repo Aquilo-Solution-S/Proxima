@@ -416,7 +416,19 @@ impl Engine {
         A: EngineAuthority + ?Sized,
     {
         let mut out: Vec<EdgeEndpoint> = Vec::with_capacity(targets.len());
+        // Kind comparison is deferred out of the admission loop and grouped
+        // under the permit owner that admitted each target: one kind load per
+        // owner, not one per target. A Vec and not a map because the order a
+        // caller met the owners is the order their mismatches surface.
+        let mut deferred_kinds: Vec<(Owner, Vec<(MemoryId, EntityKind)>)> = Vec::new();
         for target in targets {
+            // A repeated declaration names the same endpoint, and the first
+            // occurrence already validated and admitted it. Skipping here and
+            // not at the push below is what keeps a duplicate off the read
+            // path: shape, layering and `authorize_entry_read` all run once.
+            if out.contains(target) {
+                continue;
+            }
             target
                 .validate_shape()
                 .map_err(|err| ProtocolError::invalid_argument(field, err))?;
@@ -463,18 +475,13 @@ impl Engine {
                     let permit = self
                         .authorize_entry_read(authority, crate::EntityId::Memory(memory_id))
                         .await?;
-                    let actual = self
-                        .load_required_memory_kind(permit.owner(), memory_id)
-                        .await?;
-                    if actual != target.kind {
-                        return Err(ProtocolError::invalid_argument(
-                            field,
-                            format!(
-                                "declared target kind {} does not match stored kind {}",
-                                target.kind.as_str(),
-                                actual.as_str()
-                            ),
-                        ));
+                    let owner = *permit.owner();
+                    match deferred_kinds
+                        .iter_mut()
+                        .find(|(admitted, _)| *admitted == owner)
+                    {
+                        Some((_, declared)) => declared.push((memory_id, target.kind)),
+                        None => deferred_kinds.push((owner, vec![(memory_id, target.kind)])),
                     }
                 }
                 crate::EntityRef::Goal(goal_id) => {
@@ -482,8 +489,22 @@ impl Engine {
                         .await?;
                 }
             }
-            if !out.contains(target) {
-                out.push(*target);
+            out.push(*target);
+        }
+        for (owner, declared) in &deferred_kinds {
+            let memory_ids: Vec<MemoryId> = declared.iter().map(|(id, _)| *id).collect();
+            let stored = self.load_required_memory_kinds(owner, &memory_ids).await?;
+            for ((_, target_kind), actual) in declared.iter().zip(stored) {
+                if actual != *target_kind {
+                    return Err(ProtocolError::invalid_argument(
+                        field,
+                        format!(
+                            "declared target kind {} does not match stored kind {}",
+                            target_kind.as_str(),
+                            actual.as_str()
+                        ),
+                    ));
+                }
             }
         }
         Ok(out)
@@ -1562,8 +1583,38 @@ mod tests {
         memory_kind: Option<EntityKind>,
         observed_fact_writes: Arc<AtomicUsize>,
     ) -> Engine {
-        Engine::compose_or_panic_for_tests(
+        observed_reference_engine(
+            owner,
+            home_owner,
+            entity_readable,
+            memory_kind,
+            observed_fact_writes,
+        )
+        .0
+    }
+
+    /// `reference_engine` plus the two admission-path observations: the
+    /// entities handed to `visible_home_owner` and the id batch of each
+    /// `load_memory_kinds` call. Round-trip counts are a contract of this
+    /// path, so a test can assert them rather than infer them from behaviour.
+    #[allow(clippy::type_complexity)]
+    fn observed_reference_engine(
+        owner: Owner,
+        home_owner: Option<Owner>,
+        entity_readable: bool,
+        memory_kind: Option<EntityKind>,
+        observed_fact_writes: Arc<AtomicUsize>,
+    ) -> (
+        Engine,
+        Arc<std::sync::Mutex<Vec<crate::EntityId>>>,
+        Arc<std::sync::Mutex<Vec<Vec<MemoryId>>>>,
+    ) {
+        let observed_entity_reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_kind_loads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let engine = Engine::compose_or_panic_for_tests(
             MembershipStorage {
+                observed_entity_reads: observed_entity_reads.clone(),
+                observed_kind_loads: observed_kind_loads.clone(),
                 member: owner,
                 group: GroupId::new(uuid::Uuid::now_v7()),
                 membership_relation: Relation::Viewer,
@@ -1577,7 +1628,8 @@ mod tests {
             }
             .storage_ports(),
             FlavorRegistry::add_fact_schema_or_panic_for_tests::<ReferencedTestFact>,
-        )
+        );
+        (engine, observed_entity_reads, observed_kind_loads)
     }
 
     #[tokio::test]
@@ -1619,6 +1671,71 @@ mod tests {
                 EdgeEndpoint::memory(EntityKind::Fact, fact),
                 EdgeEndpoint::goal(goal),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_origins_are_admitted_once_and_batch_their_kind_load() {
+        let owner = test_owner();
+        let first = MemoryId::new(uuid::Uuid::now_v7());
+        let second = MemoryId::new(uuid::Uuid::now_v7());
+        let third = MemoryId::new(uuid::Uuid::now_v7());
+        // `derived_from` reaches the admission loop exactly as the caller
+        // wrote it — unlike payload references, which `authorize_fact_node_links`
+        // folds before it delegates — so this is the path a duplicate can
+        // actually reach.
+        let payload = ReferencedTestFact {
+            fact_id: "duplicate-origins".to_owned(),
+            targets: Vec::new(),
+        };
+        let sidecars = [SidecarPayload::fact(payload.clone())];
+        let (engine, entity_reads, kind_loads) = observed_reference_engine(
+            owner,
+            Some(owner),
+            true,
+            Some(EntityKind::Fact),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let authorized = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                referenced_draft(&payload).with_derived_from(vec![
+                    EdgeEndpoint::memory(EntityKind::Fact, first),
+                    EdgeEndpoint::memory(EntityKind::Fact, second),
+                    EdgeEndpoint::memory(EntityKind::Fact, first),
+                    EdgeEndpoint::memory(EntityKind::Fact, third),
+                ]),
+                &sidecars,
+            )
+            .await
+            .expect("readable origins of the declared kind should authorize");
+
+        assert_eq!(
+            authorized.links().origins(),
+            &[
+                EdgeEndpoint::memory(EntityKind::Fact, first),
+                EdgeEndpoint::memory(EntityKind::Fact, second),
+                EdgeEndpoint::memory(EntityKind::Fact, third),
+            ]
+        );
+        // Four declarations, three distinct endpoints: the repeat is admitted
+        // once, so it costs one entry read rather than two.
+        assert_eq!(
+            entity_reads.lock().expect("entity reads").as_slice(),
+            &[
+                crate::EntityId::Memory(first),
+                crate::EntityId::Memory(second),
+                crate::EntityId::Memory(third),
+            ]
+        );
+        // One owner, so exactly one kind load carrying every distinct target,
+        // rather than one load per declaration.
+        assert_eq!(
+            kind_loads.lock().expect("kind loads").as_slice(),
+            &[vec![first, second, third]]
         );
     }
 
