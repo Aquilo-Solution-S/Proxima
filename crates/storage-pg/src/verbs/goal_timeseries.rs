@@ -271,6 +271,10 @@ pub(crate) async fn prepare_goal_write(
     }
 
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
+    // Goal admission shares the owner fence for the entire transaction.  An
+    // owner erase therefore either waits for this complete Goal (including
+    // lifecycle Facts) or observes it in exact-scope revalidation.
+    crate::access::owner_columns::lock_owner_fence_shared_tx(tx, owner).await?;
     let write_act_identity = if draft.mint_write_act {
         Some(reserve_fact_identity(tx).await?)
     } else {
@@ -344,6 +348,7 @@ async fn lock_and_validate_prepared_goal_write(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedGoalWrite,
 ) -> Result<(), StorageError> {
+    crate::access::owner_columns::lock_owner_fence_shared_tx(tx, &prepared.owner).await?;
     let handles = [prepared.write_act_identity, prepared.close_fact_identity]
         .into_iter()
         .flatten()
@@ -393,6 +398,14 @@ pub(crate) async fn lock_prepared_goal_writes(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &[&GoalWritePreparation],
 ) -> Result<(), StorageError> {
+    let owners = prepared
+        .iter()
+        .filter_map(|item| match item {
+            GoalWritePreparation::New(item) => Some(item.owner),
+            GoalWritePreparation::Replay(_) => None,
+        })
+        .collect::<Vec<_>>();
+    crate::access::owner_columns::lock_owner_fences_shared_tx(tx, &owners).await?;
     let mut handles = Vec::new();
     let mut targets = Vec::new();
     for item in prepared {

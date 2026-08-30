@@ -194,10 +194,16 @@ multi-round footprint is not covered by this complete-set/no-growth guarantee.
 Goal and wake writes use the same union-before-row rule: assignment,
 dependencies, evidence, the expected/current Goal head, terminal/write-act
 Facts, wake trigger, hard context, and the new Goal `t` are held before
-`goal_head`, Goal, or `wake_config` insertion. Owner, series, source, and
-repository sweeps are outside this complete-set/no-growth guarantee; this is
-not a claim that broader handle or sweep operations are fenced by the same
-lock.
+`goal_head`, Goal, or `wake_config` insertion. Memory admissions share a
+distinct owner fence, and sourced admissions also share an exact source
+fence, before entering the handle/lifecycle order. A whole-owner erase takes
+the owner fence exclusively; a source-scope erase takes the owner fence
+shared and its source fence exclusively. The fence is taken before the
+selection reads anything, so the snapshot is exact by construction: it holds
+the Memory/Goal scope as of fence acquisition, and the selected handles and
+`t`s are then locked before any deletion or witness work. Transfer takes both endpoint owner fences exclusively in sorted
+owner order before its series locks. Repository sweeps and transfer's bounded multi-round
+series expansion remain outside this complete-set bulk-erase guarantee.
 
 <a id="scaling-envelope"></a>
 

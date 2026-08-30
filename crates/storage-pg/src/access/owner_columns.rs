@@ -19,6 +19,155 @@ pub fn owner_arrays(owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>)
     owners.iter().map(owner_binds).unzip()
 }
 
+/// The owner admission fence is a distinct advisory-lock namespace from
+/// lifecycle keys and Memory series handles.  Its key includes the owner kind
+/// as well as the UUID: an identity accidentally reused across owner kinds
+/// must not share a serialization lane.  Memory and Goal admission hold this
+/// lock in shared mode; an owner erase takes it exclusively.
+pub(crate) async fn lock_owner_fence_shared_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &OwnerRef,
+) -> Result<(), StorageError> {
+    lock_owner_fences(tx, std::slice::from_ref(owner), false).await
+}
+
+/// Acquire shared owner fences in the canonical owner order. Multi-owner Goal
+/// writes use this before their Memory handles; sorting prevents crossed
+/// writes from forming an owner-fence cycle.
+pub(crate) async fn lock_owner_fences_shared_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owners: &[OwnerRef],
+) -> Result<(), StorageError> {
+    lock_owner_fences(tx, owners, false).await
+}
+
+/// Acquire an exclusive owner fence for the whole-owner erase boundary.
+pub(crate) async fn lock_owner_fence_exclusive_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &OwnerRef,
+) -> Result<(), StorageError> {
+    lock_owner_fences(tx, std::slice::from_ref(owner), true).await
+}
+
+/// Acquire exclusive owner fences in canonical order for an ownership move.
+///
+/// Transfer can add a sourced series to either endpoint's source scope while
+/// it removes the same series from the other. Taking both owner boundaries
+/// exclusively makes either source-scope erase linearize wholly before or
+/// after that move, without discovering a new source lock after series locks.
+pub(crate) async fn lock_owner_fences_exclusive_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owners: &[OwnerRef],
+) -> Result<(), StorageError> {
+    lock_owner_fences(tx, owners, true).await
+}
+
+const LOCK_OWNER_FENCES_SHARED_SQL: &str = "\
+SELECT pg_advisory_xact_lock_shared(
+           hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)
+       )
+  FROM unnest($1::text[], $2::uuid[]) AS f(k, i)";
+
+const LOCK_OWNER_FENCES_EXCLUSIVE_SQL: &str = "\
+SELECT pg_advisory_xact_lock(
+           hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)
+       )
+  FROM unnest($1::text[], $2::uuid[]) AS f(k, i)";
+
+/// The one owner-fence acquisition. The four entry points above differ only in
+/// arity and lock mode; the key, the ordering rule and the bind chain are
+/// shared, so they live here rather than in four copies. SQL cannot
+/// parameterize a function name, so the mode picks between two constants that
+/// are otherwise identical — the one differing token reads side by side above.
+///
+/// Ordering comes from the Rust sort plus `unnest`, not from an `ORDER BY` —
+/// the same reasoning written on `forget::lock_advisory_ids_tx`: a bare
+/// `Function Scan` yields elements in array order, and both lock functions are
+/// `VOLATILE` + `PARALLEL RESTRICTED`, so the projection is evaluated once per
+/// element, in order. Two parallel arrays carry the key because it spans kind
+/// and id, and `unnest` over several arrays advances them together.
+async fn lock_owner_fences(
+    tx: &mut Transaction<'_, Postgres>,
+    owners: &[OwnerRef],
+    exclusive: bool,
+) -> Result<(), StorageError> {
+    if owners.is_empty() {
+        return Ok(());
+    }
+    let mut keys: Vec<(OwnerRefKind, uuid::Uuid)> = owners.iter().map(owner_binds).collect();
+    keys.sort_unstable_by_key(|(kind, id)| (kind.as_str(), *id));
+    keys.dedup();
+    let kinds: Vec<&str> = keys.iter().map(|(kind, _)| kind.as_str()).collect();
+    let ids: Vec<uuid::Uuid> = keys.iter().map(|(_, id)| *id).collect();
+    let sql = if exclusive {
+        LOCK_OWNER_FENCES_EXCLUSIVE_SQL
+    } else {
+        LOCK_OWNER_FENCES_SHARED_SQL
+    };
+    // SQL-POLICY: fixed-fragment
+    sqlx::query(sql)
+        .bind(&kinds)
+        .bind(&ids)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
+/// Source admission fence.  The owner portion is deliberately repeated in
+/// the key, so a source label shared by two owners never serializes them.
+pub(crate) async fn lock_source_fence_shared_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &OwnerRef,
+    source: &str,
+) -> Result<(), StorageError> {
+    lock_source_fence(tx, owner, source, false).await
+}
+
+/// Exclusive source-scope erase fence.  The caller must already hold the
+/// owner's shared fence, preserving owner -> source ordering.
+pub(crate) async fn lock_source_fence_exclusive_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &OwnerRef,
+    source: &str,
+) -> Result<(), StorageError> {
+    lock_source_fence(tx, owner, source, true).await
+}
+
+const LOCK_SOURCE_FENCE_SHARED_SQL: &str = "\
+SELECT pg_advisory_xact_lock_shared(
+           hashtextextended('proxima-source-fence:' || $1 || ':' || $2::text || ':' || $3, 0)
+       )";
+
+const LOCK_SOURCE_FENCE_EXCLUSIVE_SQL: &str = "\
+SELECT pg_advisory_xact_lock(
+           hashtextextended('proxima-source-fence:' || $1 || ':' || $2::text || ':' || $3, 0)
+       )";
+
+/// One key, one bind chain; only the lock function differs by mode.
+async fn lock_source_fence(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &OwnerRef,
+    source: &str,
+    exclusive: bool,
+) -> Result<(), StorageError> {
+    let (kind, owner_id) = owner_binds(owner);
+    let sql = if exclusive {
+        LOCK_SOURCE_FENCE_EXCLUSIVE_SQL
+    } else {
+        LOCK_SOURCE_FENCE_SHARED_SQL
+    };
+    // SQL-POLICY: fixed-fragment
+    sqlx::query(sql)
+        .bind(kind.as_str())
+        .bind(owner_id)
+        .bind(source)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
 /// Insert `proxima_core.owners` or confirm the stored kind matches `owner`.
 ///
 /// The only production owners upsert. Memory / goal / wake / citation /
@@ -438,6 +587,16 @@ pub(crate) async fn transfer_to_owner(
     let from_id = from_owner.stored_owner_id();
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
+        // Arbitrate the destination identity before entering the advisory
+        // queue.  The owner row is the FK prerequisite for every transfer
+        // surface; doing this first prevents a destination-fence waiter from
+        // holding a row dependency that another owner admission needs.
+        ensure_owner_row(tx.as_mut(), &to_owner).await?;
+        // Transfer changes both owner and source-scope membership. Both
+        // endpoint boundaries are exclusive and acquired in one canonical
+        // order, so neither kind of erase can pass the move half-way through
+        // and crossed transfers cannot deadlock.
+        lock_owner_fences_exclusive_tx(&mut tx, &[from_owner, to_owner]).await?;
         let transferred =
             transfer_memory_t(&mut tx, surfaces, memory_id.into_inner(), from_id, to_owner).await?;
         if !transferred {

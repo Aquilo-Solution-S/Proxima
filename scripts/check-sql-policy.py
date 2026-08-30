@@ -758,7 +758,17 @@ def run_fixture(path: Path) -> int:
 # come exclusively from the closed literal tuple matrix beside the calls, and
 # each site carries `SQL-POLICY: fixed-fragment`; executing both directions is
 # what proves the boot marker refuses a missing trigger and accepts its repair.
-EXPECTED_DYNAMIC_SQL_SITES = 99
+# 99 -> 102: three advisory/bookkeeping sites that select between a closed
+# pair of `&'static str` constants declared beside the call. SQL cannot
+# parameterize a function name, so the owner and source fences each need one
+# spelling for `pg_advisory_xact_lock` and one for
+# `pg_advisory_xact_lock_shared`; the third picks between the two bulk-erase
+# selection-count statements. Nothing caller-supplied reaches the statement
+# text at any of the three — every varying value is a bind — and each carries
+# `SQL-POLICY: fixed-fragment`. The alternative was to inline both spellings at
+# each call, which duplicates the bind chain and the ordering argument written
+# above it; keeping one call chain per fence is what these sites buy.
+EXPECTED_DYNAMIC_SQL_SITES = 102
 
 
 def run_self_test() -> int:

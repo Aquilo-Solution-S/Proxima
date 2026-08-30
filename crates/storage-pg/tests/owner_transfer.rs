@@ -1447,6 +1447,69 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
     result.expect("audit sidecar retain-at-source failed");
 }
 
+/// A retained audit row belongs to its actor even after its Memory moves, but
+/// it still keeps the Memory's source attribution. Source-scope erasure must
+/// therefore use the moved Memory only to identify the source, not to
+/// re-decide the independently stored owner of the audit row.
+#[tokio::test]
+async fn source_scope_erase_reaches_a_retained_actor_log_after_transfer() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let user_id = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(user_id);
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let destination = destination();
+        let pool = pg.pool_for_tests();
+        let written = ingest_mcp_call_fact(&pg, &permit, &[]).await?;
+        let t = written.memory_id.into_inner();
+        assert!(
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                destination,
+                &contract_sidecar_tables(),
+            )
+            .await?
+        );
+
+        let source_id = proxima_core::SourceId::new("proxima/fact");
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
+            user_id,
+            source_id: source_id.clone(),
+            drop_event_id: "erase-transferred-audit-source".into(),
+        });
+        let erased = pg
+            .erase_personal_source_scope(&auth, user_id, &source_id, &contract_sidecar_tables())
+            .await?;
+        assert!(matches!(erased, OwnerEraseOutcome::Completed { .. }));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*)::bigint
+                   FROM proxima_core.mcp_call_logged_v1
+                  WHERE t = $1 AND owner_id = $2",
+            )
+            .bind(t)
+            .bind(owner.stored_owner_id())
+            .fetch_one(pool)
+            .await?,
+            0,
+            "the source owner can erase its retained row through source attribution"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxima_core.memory WHERE t = $1",)
+                .bind(t)
+                .fetch_one(pool)
+                .await?,
+            destination.stored_owner_id(),
+            "source-scope erase does not reach the transferred Memory"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("source-scope retained audit erase failed");
+}
+
 /// The other half of "the row does not follow the Memory": nothing the
 /// RECEIVING owner does to that Memory may reach the row.
 ///

@@ -100,10 +100,21 @@ instead of deleting the replacement. A handle/t set cannot grow after its
 lifecycle lock is taken: a late version is included by expansion or the
 operation returns a retryable conflict.
 
-Goal writes that mint lifecycle Facts include those Facts' reserved Memory
-handles in the same sorted handle union before locking Goal targets. Owner,
-source, and repository sweeps, plus transfer's broader multi-round footprint,
-remain outside this complete-set guarantee.
+Goal writes share their owner fence before reserving lifecycle Facts and
+acquiring the complete sorted handle/lifecycle union. Memory admission shares
+the owner fence and, when sourced, the exact source fence before its head or
+handle snapshot. Bulk owner erase takes an exclusive owner fence; source-scope
+erase takes a shared owner fence followed by an exclusive source fence. Its
+Because the fence precedes the selection, the Memory/Goal scope it seals with
+stable `(handle, kind)` metadata cannot move under it; the selected handles and
+lifecycle `t`s are then locked in order before witness, sidecar, cold-purge, or
+row deletion work begins.
+Transfers take both endpoint owner fences exclusively in sorted owner order
+before their series work, so transfer versus owner- or source-scope erase has
+a defined linearization.
+These fences cover the supported Memory/Goal admission and transfer boundary;
+repository sweeps and transfer's bounded multi-round series expansion remain
+separate protocols.
 
 ## Computed Scores Are Abstractions
 
