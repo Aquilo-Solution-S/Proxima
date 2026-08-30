@@ -125,6 +125,19 @@ def goal_wake_id : Goal → Option WakeId := Goal.wake_id
 def goal_write_act_t : Goal → Option MemoryId := Goal.write_act_t
 def goal_tick : Goal → Instant := Goal.tick
 
+def ErasedTargetsDisjointGoals
+    (targets : Set ErasedPinTarget) (goals : Set Goal) : Prop :=
+  ∀ e : ErasedPinTarget, e ∈ targets →
+    ∀ g : Goal, g ∈ goals → erased_pin_target_t e ≠ goal_t g
+
+theorem erased_target_not_goal
+    (targets : Set ErasedPinTarget) (goals : Set Goal)
+    (hdisjoint : ErasedTargetsDisjointGoals targets goals)
+    (e : ErasedPinTarget) (he : e ∈ targets)
+    (g : Goal) (hg : g ∈ goals) :
+    erased_pin_target_t e ≠ goal_t g :=
+  hdisjoint e he g hg
+
 /-- Declared pins to other nodes (ids only). No edge table. -/
 def goalDeclaredTargetIds (g : Goal) : List Id :=
   (goal_assignment g).toList ++ goal_dependencies g ++ goal_evidence g ++
@@ -416,7 +429,52 @@ theorem situated_self_subset_owner_perspectives :
 def goalAssignedToPerspective (memories : Set Memory) (goal : Goal) (self : Memory) : Prop :=
   self ∈ memories ∧
   memory_kind self = .Perspective ∧
+  memory_owner self = goal_owner goal ∧
   goal_assignment goal = some (memory_t self)
+
+theorem goal_assignment_same_owner
+    (memories : Set Memory) (goal : Goal) (self : Memory)
+    (h : goalAssignedToPerspective memories goal self) :
+    memory_owner self = goal_owner goal :=
+  h.2.2.1
+
+def GoalAssignmentValid (memories : Set Memory) (goals : Set Goal) : Prop :=
+  ∀ g : Goal, g ∈ goals →
+    goal_assignment g = none ∨
+    ∃ self : Memory, goalAssignedToPerspective memories g self
+
+def RetainedGoalAssignmentValid
+    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled)
+  (targets : Set ErasedPinTarget) : Prop :=
+  ∀ g : Goal, g ∈ goals →
+    goal_assignment g = none ∨
+    (∃ m : Memory,
+      m ∈ memories ∧
+      goal_assignment g = some (memory_t m) ∧
+      memory_kind m = .Perspective ∧
+      memory_owner m = goal_owner g) ∨
+    (∃ c : Cooled,
+      c ∈ cooled ∧
+      goal_assignment g = some (cooled_t c) ∧
+      cooled_kind c = .Perspective ∧
+      cooled_owner c = goal_owner g) ∨
+    (∃ e : ErasedPinTarget,
+      e ∈ targets ∧
+      ∃ id : MemoryId,
+        goal_assignment g = some id ∧
+        erased_pin_target_t e = id ∧
+      erased_pin_target_kind e = .Perspective)
+
+theorem goal_assignment_valid_retained_empty
+    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled)
+    (hvalid : GoalAssignmentValid memories goals) :
+    RetainedGoalAssignmentValid goals memories cooled (fun _ => False) := by
+  intro g hg
+  cases hvalid g hg with
+  | inl hnone => exact Or.inl hnone
+  | inr hassigned =>
+      obtain ⟨self, hself⟩ := hassigned
+      exact Or.inr (Or.inl ⟨self, hself.1, hself.2.2.2, hself.2.1, hself.2.2.1⟩)
 
 theorem goal_assignment_target_perspective :
     ∀ memories goal self,
@@ -463,16 +521,76 @@ theorem active_goal_for_self_has_assignment :
 structure GoalEvidenceValid
     (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled) : Prop where
   resolved : ∀ g : Goal, g ∈ goals → ∀ i : MemoryId, i ∈ goal_evidence g →
-    (∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧ memory_kind m ≠ .Perspective) ∨
-    (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = i ∧ cooled_kind c ≠ .Perspective)
+    (∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧
+      memory_kind m ≠ .Perspective) ∨
+    (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = i ∧
+      cooled_kind c ≠ .Perspective)
 
 theorem goal_evidence_not_perspective :
     ∀ goals memories cooled,
       GoalEvidenceValid goals memories cooled →
       ∀ (g : Goal) (i : MemoryId), g ∈ goals → i ∈ goal_evidence g →
-        (∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧ memory_kind m ≠ .Perspective) ∨
-        (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = i ∧ cooled_kind c ≠ .Perspective) := by
+        (∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧
+          memory_kind m ≠ .Perspective) ∨
+        (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = i ∧
+          cooled_kind c ≠ .Perspective) := by
   intro goals memories cooled hvalid g i hg hi
   exact hvalid.resolved g hg i hi
+
+theorem memory_kind_ne_perspective_cases (kind : MemoryKind)
+    (h : kind ≠ .Perspective) : kind = .Fact ∨ kind = .Abstraction := by
+  cases kind <;> simp_all
+
+def RetainedGoalEvidenceValid
+    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled)
+    (targets : Set ErasedPinTarget) : Prop :=
+  ∀ g : Goal, g ∈ goals → ∀ i : MemoryId, i ∈ goal_evidence g →
+    (∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧
+      (memory_kind m = .Fact ∨ memory_kind m = .Abstraction)) ∨
+    (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = i ∧
+      (cooled_kind c = .Fact ∨ cooled_kind c = .Abstraction)) ∨
+    (∃ e : ErasedPinTarget, e ∈ targets ∧ erased_pin_target_t e = i ∧
+      (erased_pin_target_kind e = .Fact ∨ erased_pin_target_kind e = .Abstraction))
+
+def RetainedGoalTerminalCloseFactValid
+    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled)
+    (targets : Set ErasedPinTarget) : Prop :=
+  ∀ g : Goal, g ∈ goals → (goal_state g).terminal = true →
+    (∃ m : Memory,
+      m ∈ memories ∧
+      goal_close_fact_t g = some (memory_t m) ∧
+      memory_kind m = .Fact ∧
+      memory_owner m = goal_owner g) ∨
+    (∃ c : Cooled,
+      c ∈ cooled ∧
+      goal_close_fact_t g = some (cooled_t c) ∧
+      cooled_kind c = .Fact ∧
+      cooled_owner c = goal_owner g) ∨
+    (∃ e : ErasedPinTarget,
+      e ∈ targets ∧
+      goal_close_fact_t g = some (erased_pin_target_t e) ∧
+      erased_pin_target_kind e = .Fact)
+
+theorem goal_evidence_valid_retained_empty
+    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled)
+    (hvalid : GoalEvidenceValid goals memories cooled) :
+    RetainedGoalEvidenceValid goals memories cooled (fun _ => False) := by
+  intro g hg i hi
+  cases hvalid.resolved g hg i hi with
+  | inl hhot =>
+      obtain ⟨m, hm, hid, hk⟩ := hhot
+      exact Or.inl ⟨m, hm, hid, memory_kind_ne_perspective_cases _ hk⟩
+  | inr hcold =>
+      obtain ⟨c, hc, hid, hk⟩ := hcold
+      exact Or.inr (Or.inl ⟨c, hc, hid, memory_kind_ne_perspective_cases _ hk⟩)
+
+theorem goal_terminal_close_valid_retained_empty
+    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled)
+    (hvalid : GoalTerminalCloseFactValid goals memories cooled) :
+    RetainedGoalTerminalCloseFactValid goals memories cooled (fun _ => False) := by
+  intro g hg hterminal
+  cases hvalid g hg hterminal with
+  | inl hhot => exact Or.inl hhot
+  | inr hcold => exact Or.inr (Or.inl hcold)
 
 end Causa

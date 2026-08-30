@@ -324,6 +324,16 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             .ingest_fact_with_typed_sidecar(&authorized, &[note_payload("pub", "body")], None)
             .await?;
         let t = written.memory_id.into_inner();
+        let witness_before: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(
+            witness_before, None,
+            "a transfer must not create a hard-erase witness"
+        );
         let content_id: Uuid = sqlx::query_scalar(
             "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/test-fact-v1', $2)
@@ -408,6 +418,16 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
         .fetch_one(pool)
         .await?;
         assert_eq!(keys, 0);
+        let witness_after: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(
+            witness_after, None,
+            "a committed transfer must not create a hard-erase witness"
+        );
         let replay = pg
             .transfer_to_owner(
                 &permit,
@@ -550,6 +570,18 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             dest.stored_owner_id(),
             "Content referenced only by a cooled version must follow it"
         );
+        for witnessed_t in [first.memory_id.into_inner(), second.memory_id.into_inner()] {
+            let witness: Option<String> = sqlx::query_scalar(
+                "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+            )
+            .bind(witnessed_t)
+            .fetch_optional(pool)
+            .await?;
+            assert_eq!(
+                witness, None,
+                "transferring a cooled series must not create an erase witness"
+            );
+        }
         let personal_content_left: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.content WHERE content_id = $1",
         )
@@ -649,12 +681,12 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
     result.expect("transfer cooled remint failed");
 }
 
-/// The transfer captures the old head, then blocks on the cooled-row UPDATE.
-/// A same-handle ingest advances the head in that window. The transfer's CAS
-/// must roll back that partial attempt, retry with the grown series, and move
-/// every owner-scoped row together without adding a lock to normal ingest.
+/// The transfer captures and locks the current series before its cooled-row
+/// update. A same-handle source-owner ingest that arrives in that window must
+/// wait for the transfer, then fail cleanly once the series has moved rather
+/// than advancing a head behind the transfer's back.
 #[tokio::test]
-async fn transfer_retries_when_ingest_advances_the_captured_head() {
+async fn transfer_serializes_same_handle_ingest_after_lifecycle_lock() {
     const PROBE_LOCK: i64 = 0x5052_4f58_5055_4238;
 
     let (db_name, pg) = fresh_pg().await;
@@ -726,7 +758,31 @@ async fn transfer_retries_when_ingest_advances_the_captured_head() {
         let mut third_draft = draft();
         third_draft.handle = Some(first.handle);
         third_draft.ingest_key = Some("k3".into());
-        let third = pg.ingest_fact_atomic(&permit, &third_draft, None).await?;
+        let third_pg = pg.clone();
+        let third = tokio::spawn(async move {
+            third_pg
+                .ingest_fact_atomic(&permit, &third_draft, None)
+                .await
+        });
+
+        let mut advisory_waiting = false;
+        for _ in 0..100 {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*)::bigint FROM pg_locks
+                  WHERE locktype = 'advisory' AND NOT granted",
+            )
+            .fetch_one(pool)
+            .await?;
+            if waiting >= 2 {
+                advisory_waiting = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            advisory_waiting && !third.is_finished(),
+            "transfer and same-handle ingest must both queue on lifecycle locks"
+        );
 
         let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
             .bind(PROBE_LOCK)
@@ -739,13 +795,20 @@ async fn transfer_retries_when_ingest_advances_the_captured_head() {
             .await??
             .map_err(|err| format!("transfer failed after retry: {err}"))?;
         assert!(transferred);
+        let third_error = tokio::time::timeout(std::time::Duration::from_secs(5), third)
+            .await??
+            .expect_err("the source-owner append must lose to the completed transfer");
+        assert!(
+            !third_error.to_string().contains("40P01"),
+            "the serialized append must not deadlock: {third_error}"
+        );
 
         let head: (Uuid, Uuid) =
             sqlx::query_as("SELECT t, owner_id FROM proxima_core.memory_head WHERE handle = $1")
                 .bind(first.handle)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(head.0, third.memory_id.into_inner());
+        assert_eq!(head.0, second.memory_id.into_inner());
         assert_eq!(head.1, dest.stored_owner_id());
         let unmoved_versions: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint
@@ -760,28 +823,26 @@ async fn transfer_retries_when_ingest_advances_the_captured_head() {
         .bind(dest.stored_owner_id())
         .fetch_one(pool)
         .await?;
-        assert_eq!(unmoved_versions, 0, "the retry must move the grown series");
+        assert_eq!(
+            unmoved_versions, 0,
+            "the transfer must move the complete series"
+        );
         let stale_third_key: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE t = $1",
+            "SELECT count(*)::bigint FROM proxima_core.ingest_keys
+              WHERE owner_id = $1 AND ingest_key = 'k3'",
         )
-        .bind(third.memory_id.into_inner())
+        .bind(owner.stored_owner_id())
         .fetch_one(pool)
         .await?;
         assert_eq!(
             stale_third_key, 0,
-            "the late version's ingest key follows retry"
+            "the losing append must not leave an ingest key"
         );
-        let third_sketch_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.sketch WHERE t = $1")
-                .bind(third.memory_id.into_inner())
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(third_sketch_owner, dest.stored_owner_id());
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("transfer/ingest CAS retry failed");
+    result.expect("transfer/ingest lifecycle serialization failed");
 }
 
 /// A caller can resolve the Memory under its prior owner after the series head
@@ -1545,6 +1606,155 @@ async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
     result.expect("destination owner row minting failed");
 }
 
+/// A first-use destination owner is arbitrated before a write takes any
+/// lifecycle target lock. The trigger pauses the real transfer immediately
+/// after its owners INSERT; the destination admission then waits on that row,
+/// while a probe proves T is still freely lockable. Releasing the transfer
+/// lets both production transactions finish without an owner/advisory cycle.
+#[tokio::test]
+async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
+    const PROBE_LOCK: i64 = 0x4445_5354_4f57_4e52;
+
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let destination = destination();
+        let pool = pg.pool_for_tests().clone();
+        let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
+        let target_t = written.memory_id.into_inner();
+
+        sqlx::raw_sql(
+            "CREATE SEQUENCE public.transfer_owner_insert_probe;
+             CREATE FUNCTION public.block_destination_owner_insert() RETURNS trigger
+             LANGUAGE plpgsql AS $$
+             BEGIN
+                 PERFORM nextval('public.transfer_owner_insert_probe');
+                 PERFORM pg_advisory_xact_lock(4919429789545614930);
+                 RETURN NEW;
+             END
+             $$;
+             CREATE TRIGGER block_destination_owner_insert
+             AFTER INSERT ON proxima_core.owners
+             FOR EACH ROW
+             EXECUTE FUNCTION public.block_destination_owner_insert();",
+        )
+        .execute(&pool)
+        .await?;
+        let mut blocker = pool.acquire().await?;
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(PROBE_LOCK)
+            .execute(&mut *blocker)
+            .await?;
+
+        let transfer_pg = pg.clone();
+        let transfer = tokio::spawn(async move {
+            let transfer_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+            transfer_pg
+                .transfer_to_owner(
+                    &transfer_permit,
+                    EntityId::Memory(written.memory_id),
+                    destination,
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let called: bool =
+                    sqlx::query_scalar("SELECT is_called FROM public.transfer_owner_insert_probe")
+                        .fetch_one(&pool)
+                        .await?;
+                if called {
+                    return Ok::<(), sqlx::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await??;
+
+        let admission_pg = pg.clone();
+        let admission = tokio::spawn(async move {
+            let admission_permit = OwnerWritePermit::new_for_tests(destination, AccessKind::Fact);
+            let mut admission_draft = draft();
+            admission_draft.refs = vec![target_t];
+            admission_pg
+                .ingest_fact_atomic(&admission_permit, &admission_draft, None)
+                .await
+        });
+        let mut owner_waiting = false;
+        for _ in 0..100 {
+            if admission.is_finished() {
+                break;
+            }
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*)::bigint FROM pg_locks
+                  WHERE locktype = 'transactionid' AND NOT granted",
+            )
+            .fetch_one(&pool)
+            .await?;
+            if waiting > 0 {
+                owner_waiting = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            owner_waiting && !admission.is_finished(),
+            "destination admission must wait on transfer's uncommitted owner row"
+        );
+
+        let mut target_probe = pool.begin().await?;
+        let target_available: bool = sqlx::query_scalar(
+            "SELECT pg_try_advisory_xact_lock(
+                 hashtextextended('proxima-forget:' || $1::text, 0)
+             )",
+        )
+        .bind(target_t)
+        .fetch_one(&mut *target_probe)
+        .await?;
+        assert!(
+            target_available,
+            "owner-row arbitration must precede the destination lifecycle lock"
+        );
+        target_probe.rollback().await?;
+
+        let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
+            .bind(PROBE_LOCK)
+            .fetch_one(&mut *blocker)
+            .await?;
+        assert!(unlocked, "the trigger gate must be released");
+        drop(blocker);
+
+        let (transfer_result, admission_result) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(transfer, admission)
+            })
+            .await?;
+        assert!(transfer_result??, "the target transfer must commit");
+        let admitted = admission_result??;
+        assert!(!admitted.idempotent_replay);
+
+        let moved_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(target_t)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(moved_owner, destination.stored_owner_id());
+        let admitted_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(admitted.memory_id.into_inner())
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(admitted_owner, destination.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("destination owner/admission ordering test failed");
+}
+
 /// A transfer to the current owner is a no-op the storage layer refuses
 /// outright rather than announcing a self-transfer.
 #[tokio::test]
@@ -2227,6 +2437,7 @@ async fn erasing_the_last_admission_citing_a_blob_takes_the_blob_and_owes_its_by
         let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[31_u8; 32]).await?;
         let object_key = format!("objects/{upload_id}");
         let mine = cite(&pg, &permit, "series-erase", blob_id).await?;
+        let mine_again = cite(&pg, &permit, "series-erase-two", blob_id).await?;
 
         let mut tx = pool.begin().await?;
         let (erased, plan) = erase_memory_series(
@@ -2234,11 +2445,30 @@ async fn erasing_the_last_admission_citing_a_blob_takes_the_blob_and_owes_its_by
             &core_pg_sidecars(),
             &contract_sidecar_tables(),
             &owner,
-            &[mine.memory_id.into_inner()],
+            &[
+                mine.memory_id.into_inner(),
+                mine_again.memory_id.into_inner(),
+            ],
         )
         .await?;
         tx.commit().await?;
-        assert_eq!(erased, 1);
+        assert_eq!(erased, 2);
+        for erased_t in [
+            mine.memory_id.into_inner(),
+            mine_again.memory_id.into_inner(),
+        ] {
+            let witness: Option<String> = sqlx::query_scalar(
+                "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+            )
+            .bind(erased_t)
+            .fetch_optional(pool)
+            .await?;
+            assert_eq!(
+                witness.as_deref(),
+                Some("fact"),
+                "bulk series erase records every erased Memory kind"
+            );
+        }
         assert_eq!(
             plan.object_keys(),
             std::slice::from_ref(&object_key),
@@ -2310,6 +2540,17 @@ async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
         .await?;
         tx.commit().await?;
         assert_eq!(erased, 1);
+        let witness: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(mine.memory_id.into_inner())
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(
+            witness.as_deref(),
+            Some("fact"),
+            "series erase records the erased hot Memory kind"
+        );
         assert!(
             plan.object_keys().is_empty(),
             "the destination mounted this object; the erase owes nothing: {:?}",

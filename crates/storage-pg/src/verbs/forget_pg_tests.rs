@@ -7,13 +7,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::PgStorage;
 use crate::core_pg_sidecars;
 use crate::verbs::forget::{
-    MemoryColdStore, cold_object_key, commit_forget, erase_memory, forget_memory,
-    forget_memory_oneshot, hydrate_memory, purge_cold_objects_after_commit, snapshot_hot,
+    MemoryColdStore, cold_object_key, commit_forget, decode_record, encode_record, erase_memory,
+    erase_memory_series, forget_memory, forget_memory_oneshot, hydrate_memory,
+    lock_lifecycle_targets_tx, purge_cold_objects_after_commit, snapshot_hot,
 };
+use crate::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use crate::verbs::memory_timeseries::ingest_fact_timeseries;
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerTransferPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
+use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
     AccessKind, ColdObjectStore, EdgeEndpoint, EntityId, EntityKind, GroupId, OwnerRef, SchemaId,
     SchemaVersion, StorageError, UserId,
@@ -46,6 +49,49 @@ fn non_embeddable_schemas() -> Vec<String> {
         .to_vec()
 }
 
+/// Read the database-only historical identity witness without exposing it
+/// through a production storage API. The lifecycle tests use this one helper
+/// for both positive exact-kind assertions and negative transition checks.
+async fn erased_pin_target_kind(
+    pool: &sqlx::PgPool,
+    t: Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1")
+        .bind(t)
+        .fetch_optional(pool)
+        .await
+}
+
+async fn wait_for_advisory_waiters(
+    pool: &sqlx::PgPool,
+    expected: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for _ in 0..100 {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM pg_locks
+              WHERE locktype = 'advisory' AND NOT granted
+                AND database = (SELECT oid FROM pg_database
+                                 WHERE datname = current_database())",
+        )
+        .fetch_one(pool)
+        .await?;
+        if waiting >= expected {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Err(format!("expected {expected} advisory waiters").into())
+}
+
+type CooledIdentitySnapshot = (
+    Uuid,
+    Uuid,
+    Uuid,
+    String,
+    Option<Vec<Uuid>>,
+    Option<Vec<Uuid>>,
+);
+
 const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
 const UTTERANCE: &str = "proxima_core.utterance_v1";
 const GHOST_TABLE: &str = "proxima_core.w4_does_not_exist_v1";
@@ -60,11 +106,23 @@ async fn ingest_stamped(
         .begin()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
+    let goal_ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE t = ANY($1::uuid[])")
+            .bind(&draft.refs)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
     let references = draft
         .refs
         .iter()
         .copied()
-        .map(|id| EdgeEndpoint::memory(EntityKind::Fact, proxima_core::MemoryId::new(id)))
+        .map(|id| {
+            if goal_ids.contains(&id) {
+                EdgeEndpoint::goal(proxima_core::GoalId::new(id))
+            } else {
+                EdgeEndpoint::memory(EntityKind::Fact, proxima_core::MemoryId::new(id))
+            }
+        })
         .collect::<Vec<_>>();
     let outcome = ingest_fact_timeseries(
         &mut tx,
@@ -87,6 +145,134 @@ async fn sidecar_tables_for(pool: &sqlx::PgPool, t: Uuid) -> Result<Vec<String>,
         .bind(t)
         .fetch_one(pool)
         .await
+}
+
+async fn cool_one(
+    pool: &sqlx::PgPool,
+    owner: &OwnerRef,
+    cold: &MemoryColdStore,
+    t: Uuid,
+    key: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut tx = pool.begin().await?;
+    forget_memory(
+        &mut tx,
+        &core_pg_sidecars(),
+        &surfaces(),
+        cold,
+        key,
+        t,
+        owner.stored_owner_id(),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Fixture-only simulation of a pre-v0.0.10 cooled locator. The production
+/// append-only trigger is disabled and restored in this same transaction so a
+/// legacy NULL-array row cannot escape into ordinary runtime writes.
+async fn make_legacy_cooled(
+    pool: &sqlx::PgPool,
+    t: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("ALTER TABLE proxima_core.cooled DISABLE TRIGGER cooled_append_only")
+        .execute(tx.as_mut())
+        .await?;
+    sqlx::query(
+        "UPDATE proxima_core.cooled
+            SET origins = NULL, refs = NULL, goal_refs = NULL
+          WHERE t = $1",
+    )
+    .bind(t)
+    .execute(tx.as_mut())
+    .await?;
+    sqlx::query("ALTER TABLE proxima_core.cooled ENABLE TRIGGER cooled_append_only")
+        .execute(tx.as_mut())
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Fixture-only deletion that intentionally leaves no historical witness, to
+/// prove hydrate rejects an unknown decoded pin and rolls back atomically.
+async fn delete_memory_without_witness(
+    pool: &sqlx::PgPool,
+    t: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("ALTER TABLE proxima_core.memory DISABLE TRIGGER memory_erased_pin_target")
+        .execute(tx.as_mut())
+        .await?;
+    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await?;
+    sqlx::query("ALTER TABLE proxima_core.memory ENABLE TRIGGER memory_erased_pin_target")
+        .execute(tx.as_mut())
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Fixture-only corruption of a witness kind. The insert/delete guard stays
+/// enabled; only the witness immutability trigger is disabled for this one
+/// UPDATE and restored before the transaction commits.
+async fn change_witness_kind(
+    pool: &sqlx::PgPool,
+    t: Uuid,
+    kind: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "ALTER TABLE proxima_core.erased_pin_target
+         DISABLE TRIGGER erased_pin_target_append_only",
+    )
+    .execute(tx.as_mut())
+    .await?;
+    sqlx::query("UPDATE proxima_core.erased_pin_target SET kind = $2::proxima_core.pin_target_kind WHERE t = $1")
+        .bind(t)
+        .bind(kind)
+        .execute(tx.as_mut())
+        .await?;
+    sqlx::query(
+        "ALTER TABLE proxima_core.erased_pin_target
+         ENABLE TRIGGER erased_pin_target_append_only",
+    )
+    .execute(tx.as_mut())
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn insert_unassigned_goal(
+    pool: &sqlx::PgPool,
+    owner: OwnerRef,
+    request_id: &str,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let mut tx = pool.begin().await?;
+    let goal = write_goal(
+        &mut tx,
+        &owner,
+        &GoalWriteCommand {
+            handle: None,
+            schema_id: "core/task-goal-v1".into(),
+            title: request_id.into(),
+            state: GoalState::Active,
+            request_id: request_id.into(),
+            close_fact_t: None,
+            assignment_t: None,
+            dependency_t: vec![],
+            evidence_t: vec![],
+            wake_id: None,
+            mint_write_act: false,
+            write_act_t: None,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(goal.t)
 }
 
 fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
@@ -174,6 +360,11 @@ async fn forget_hydrate_and_erase() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(stub, 1);
+        assert_eq!(
+            erased_pin_target_kind(pool, t).await?,
+            None,
+            "forget is a reversible cooling transition, not an erase"
+        );
         let heads: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
         )
@@ -231,6 +422,11 @@ async fn forget_hydrate_and_erase() {
         .fetch_one(pool)
         .await?;
         assert_eq!(op, "append");
+        assert_eq!(
+            erased_pin_target_kind(pool, t).await?,
+            None,
+            "hydration restores the row and must not mint a witness"
+        );
 
         let mut tx = pool.begin().await?;
         forget_memory(
@@ -270,6 +466,11 @@ async fn forget_hydrate_and_erase() {
         .fetch_one(pool)
         .await?;
         assert_eq!(pending, 0, "a purged object clears its pending mark");
+        assert_eq!(
+            erased_pin_target_kind(pool, t).await?,
+            Some("fact".to_owned()),
+            "the final hard erase records the target kind"
+        );
 
         Ok(())
     }
@@ -492,6 +693,146 @@ async fn forget_non_last_t_rewinds_memory_head() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("forget rewind failed");
+}
+
+#[tokio::test]
+async fn hydrate_of_older_cooled_version_preserves_newer_head() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let mut later = draft(None);
+        later.handle = Some(first.handle);
+        let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
+
+        let cold = MemoryColdStore::default();
+        let first_t = first.memory_id.into_inner();
+        let first_key = cold_object_key(first_t);
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &surfaces(),
+            &cold,
+            &first_key,
+            first_t,
+            owner.stored_owner_id(),
+        )
+        .await?;
+        tx.commit().await?;
+
+        let mut tx = pool.begin().await?;
+        hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            first_t,
+            &non_embeddable_schemas(),
+        )
+        .await?;
+        tx.commit().await?;
+
+        let head_t: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(first.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            head_t,
+            second.memory_id.into_inner(),
+            "hydrating an older cooled version must not rewind the newer head"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("older cooled hydration head preservation failed");
+}
+
+#[tokio::test]
+async fn historical_restore_may_reuse_a_closed_handle_but_new_pins_may_not() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let target = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let source = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Fact, target.memory_id.into_inner()),
+                None,
+            )
+            .await?;
+        let source_t = source.memory_id.into_inner();
+        let cold = MemoryColdStore::default();
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &surfaces(),
+            &cold,
+            &cold_object_key(source_t),
+            source_t,
+            owner.stored_owner_id(),
+        )
+        .await?;
+        tx.commit().await?;
+
+        // The target remains live, but its series is closed. Restoring the
+        // source must reuse its exact historical pin; it is not a new edge.
+        sqlx::query("INSERT INTO proxima_core.closed_handle (handle) VALUES ($1)")
+            .bind(target.handle)
+            .execute(pool)
+            .await?;
+        let mut tx = pool.begin().await?;
+        hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            source_t,
+            &non_embeddable_schemas(),
+        )
+        .await?;
+        tx.commit().await?;
+        let restored_refs: Vec<Uuid> =
+            sqlx::query_scalar("SELECT origins || refs FROM proxima_core.memory WHERE t = $1")
+                .bind(source_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(restored_refs, vec![target.memory_id.into_inner()]);
+
+        let err = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Fact, target.memory_id.into_inner()),
+                None,
+            )
+            .await
+            .expect_err("an ordinary new pin to a closed handle must be refused");
+        assert!(
+            err.to_string().contains("closed_handle") || err.to_string().contains("23514"),
+            "got: {err}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("closed-handle restoration test failed");
 }
 
 struct UnlockOnPut {
@@ -977,6 +1318,1492 @@ fn derived_abstraction(origin_kind: EntityKind, origin: Uuid) -> FactWriteComman
     cmd
 }
 
+fn derived_perspective(origin: Uuid) -> FactWriteCommand {
+    let mut cmd = draft(None);
+    cmd.kind = "perspective".into();
+    cmd.derived_from = vec![EdgeEndpoint::memory(
+        EntityKind::Abstraction,
+        proxima_core::MemoryId::new(origin),
+    )];
+    cmd
+}
+
+#[tokio::test]
+async fn hard_erase_witnesses_each_hot_memory_kind() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let fact = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let abstraction = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
+                None,
+            )
+            .await?;
+        let perspective = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_perspective(abstraction.memory_id.into_inner()),
+                None,
+            )
+            .await?;
+        let cold = MemoryColdStore::default();
+
+        for (t, expected_kind) in [
+            (perspective.memory_id.into_inner(), "perspective"),
+            (abstraction.memory_id.into_inner(), "abstraction"),
+            (fact.memory_id.into_inner(), "fact"),
+        ] {
+            assert_eq!(erased_pin_target_kind(pool, t).await?, None);
+            let mut tx = pool.begin().await?;
+            erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
+            tx.commit().await?;
+            assert_eq!(
+                erased_pin_target_kind(pool, t).await?,
+                Some(expected_kind.to_owned()),
+                "hard erase records the exact memory kind"
+            );
+        }
+
+        // A forget transition is not abandonment. Its cooled row remains the
+        // source of truth and therefore must not mint a witness until the
+        // later hard erase deletes that row.
+        let cooled = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let cooled_t = cooled.memory_id.into_inner();
+        let cooled_key = cold_object_key(cooled_t);
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &surfaces(),
+            &cold,
+            &cooled_key,
+            cooled_t,
+            owner.stored_owner_id(),
+        )
+        .await?;
+        tx.commit().await?;
+        assert_eq!(erased_pin_target_kind(pool, cooled_t).await?, None);
+        let mut tx = pool.begin().await?;
+        let plan =
+            erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, cooled_t).await?;
+        tx.commit().await?;
+        assert_eq!(
+            erased_pin_target_kind(pool, cooled_t).await?,
+            Some("fact".to_owned())
+        );
+        purge_cold_objects_after_commit(pool, &cold, &plan).await;
+
+        // The Goal trigger has its own vocabulary and does not depend on the
+        // memory erase path. Delete a real Goal row to exercise that trigger.
+        let mut tx = pool.begin().await?;
+        let goal = write_goal(
+            &mut tx,
+            &owner,
+            &GoalWriteCommand {
+                handle: None,
+                schema_id: "core/task-goal-v1".into(),
+                title: "witness me".into(),
+                state: GoalState::Active,
+                request_id: "witness-goal".into(),
+                close_fact_t: None,
+                assignment_t: None,
+                dependency_t: vec![],
+                evidence_t: vec![],
+                wake_id: None,
+                mint_write_act: false,
+                write_act_t: None,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        assert_eq!(erased_pin_target_kind(pool, goal.t).await?, None);
+        sqlx::query("DELETE FROM proxima_core.goal WHERE t = $1")
+            .bind(goal.t)
+            .execute(pool)
+            .await?;
+        assert_eq!(
+            erased_pin_target_kind(pool, goal.t).await?,
+            Some("goal".to_owned())
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("hard erase witness matrix failed");
+}
+
+#[tokio::test]
+async fn exact_hydrate_restores_witnessed_sole_fact_origin() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let fact = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let fact_t = fact.memory_id.into_inner();
+        let abstraction = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Fact, fact_t),
+                None,
+            )
+            .await?;
+        let abstraction_t = abstraction.memory_id.into_inner();
+        let cold = MemoryColdStore::default();
+        let abstraction_key = cold_object_key(abstraction_t);
+        cool_one(pool, &owner, &cold, abstraction_t, &abstraction_key).await?;
+
+        let mut tx = pool.begin().await?;
+        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, fact_t).await?;
+        tx.commit().await?;
+        assert_eq!(
+            erased_pin_target_kind(pool, fact_t).await?,
+            Some("fact".to_owned()),
+            "hard erase preserves the sole origin's closed kind"
+        );
+
+        let before_memory: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
+                .fetch_one(pool)
+                .await?;
+        let before_heads: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory_head")
+                .fetch_one(pool)
+                .await?;
+        let err = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Fact, fact_t),
+                None,
+            )
+            .await
+            .expect_err("ordinary derivation cannot use an erased witness");
+        assert!(
+            err.to_string().contains("does not exist")
+                || err.to_string().contains("23503")
+                || err.to_string().contains("grounding")
+                || err.to_string().contains("non-fact"),
+            "got: {err}"
+        );
+        let after_memory: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
+                .fetch_one(pool)
+                .await?;
+        let after_heads: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory_head")
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(after_memory, before_memory, "failed admission is atomic");
+        assert_eq!(after_heads, before_heads, "failed admission leaves no head");
+
+        let mut tx = pool.begin().await?;
+        hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            abstraction_t,
+            &non_embeddable_schemas(),
+        )
+        .await?;
+        tx.commit().await?;
+        let restored: (Vec<Uuid>, Vec<Uuid>) =
+            sqlx::query_as("SELECT origins, refs FROM proxima_core.memory WHERE t = $1")
+                .bind(abstraction_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(restored.0, vec![fact_t]);
+        assert!(restored.1.is_empty());
+        assert_eq!(
+            erased_pin_target_kind(pool, fact_t).await?,
+            Some("fact".to_owned())
+        );
+        assert_eq!(
+            erased_pin_target_kind(pool, abstraction_t).await?,
+            None,
+            "hydrate deletes no witness and creates none"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("exact witnessed abstraction hydration failed");
+}
+
+/// Two cooled versions may recreate an empty series head concurrently. Both
+/// inserts must succeed: the unique-conflict loser re-reads the compatible
+/// winner instead of reporting a false identity mismatch.
+#[tokio::test]
+async fn concurrent_hydrates_recreate_an_empty_memory_head() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests().clone();
+        let cold = Arc::new(MemoryColdStore::default());
+
+        let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let mut second_draft = draft(None);
+        second_draft.handle = Some(first.handle);
+        second_draft.payload = vec![1];
+        let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
+        assert_ne!(first.memory_id, second.memory_id);
+        let first_t = first.memory_id.into_inner();
+        let second_t = second.memory_id.into_inner();
+        cool_one(
+            &pool,
+            &owner,
+            cold.as_ref(),
+            first_t,
+            &cold_object_key(first_t),
+        )
+        .await?;
+        cool_one(
+            &pool,
+            &owner,
+            cold.as_ref(),
+            second_t,
+            &cold_object_key(second_t),
+        )
+        .await?;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
+            )
+            .bind(first.handle)
+            .fetch_one(&pool)
+            .await?,
+            0,
+            "cooling the complete series removes its head"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*)::bigint FROM proxima_core.cooled WHERE t IN ($1, $2)",
+            )
+            .bind(first_t)
+            .bind(second_t)
+            .fetch_one(&pool)
+            .await?,
+            2,
+            "both versions are cooled before the concurrent restore"
+        );
+
+        // The trigger is created in this disposable test database only. Its
+        // transaction-scoped advisory wait forces both hydrations through the
+        // empty-head read before either INSERT can win the unique key.
+        sqlx::query(
+            "CREATE OR REPLACE FUNCTION proxima_core.test_memory_head_insert_barrier()
+             RETURNS trigger
+             LANGUAGE plpgsql
+             AS $$
+             BEGIN
+                 PERFORM pg_advisory_xact_lock(
+                     hashtextextended('proxima-test-memory-head-empty-recreate', 0)
+                 );
+                 RETURN NEW;
+             END;
+             $$",
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "CREATE TRIGGER test_memory_head_insert_barrier
+             BEFORE INSERT ON proxima_core.memory_head
+             FOR EACH ROW
+             EXECUTE FUNCTION proxima_core.test_memory_head_insert_barrier()",
+        )
+        .execute(&pool)
+        .await?;
+
+        let mut gate = pool.begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(
+                 hashtextextended('proxima-test-memory-head-empty-recreate', 0)
+             )",
+        )
+        .execute(&mut *gate)
+        .await?;
+
+        let older_pool = pool.clone();
+        let older_cold = Arc::clone(&cold);
+        let mut older_hydrate = tokio::spawn(async move {
+            let mut tx = older_pool
+                .begin()
+                .await
+                .map_err(|error| StorageError::Internal(error.to_string()))?;
+            match hydrate_memory(
+                &mut tx,
+                &core_pg_sidecars(),
+                older_cold.as_ref(),
+                first_t,
+                &non_embeddable_schemas(),
+            )
+            .await
+            {
+                Ok(()) => tx
+                    .commit()
+                    .await
+                    .map_err(|error| StorageError::Internal(error.to_string())),
+                Err(error) => {
+                    let _ = tx.rollback().await;
+                    Err(error)
+                }
+            }
+        });
+        let newer_pool = pool.clone();
+        let newer_cold = Arc::clone(&cold);
+        let mut newer_hydrate = tokio::spawn(async move {
+            let mut tx = newer_pool
+                .begin()
+                .await
+                .map_err(|error| StorageError::Internal(error.to_string()))?;
+            match hydrate_memory(
+                &mut tx,
+                &core_pg_sidecars(),
+                newer_cold.as_ref(),
+                second_t,
+                &non_embeddable_schemas(),
+            )
+            .await
+            {
+                Ok(()) => tx
+                    .commit()
+                    .await
+                    .map_err(|error| StorageError::Internal(error.to_string())),
+                Err(error) => {
+                    let _ = tx.rollback().await;
+                    Err(error)
+                }
+            }
+        });
+
+        wait_for_advisory_waiters(&pool, 2).await?;
+        assert!(!older_hydrate.is_finished() && !newer_hydrate.is_finished());
+        gate.rollback().await?;
+
+        let joined = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(&mut older_hydrate, &mut newer_hydrate)
+        })
+        .await;
+        let Ok((first_result, second_result)) = joined else {
+            older_hydrate.abort();
+            newer_hydrate.abort();
+            let _ = older_hydrate.await;
+            let _ = newer_hydrate.await;
+            return Err("concurrent hydration did not complete".into());
+        };
+        first_result??;
+        second_result??;
+
+        // Remove the fixture before checking the result; the disposable DB is
+        // also dropped below, so no test trigger can escape its database.
+        sqlx::query(
+            "DROP TRIGGER test_memory_head_insert_barrier
+               ON proxima_core.memory_head",
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query("DROP FUNCTION proxima_core.test_memory_head_insert_barrier()")
+            .execute(&pool)
+            .await?;
+
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*)::bigint FROM proxima_core.cooled WHERE t IN ($1, $2)",
+            )
+            .bind(first_t)
+            .bind(second_t)
+            .fetch_one(&pool)
+            .await?,
+            0,
+            "both cooled locators are consumed"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*)::bigint FROM proxima_core.memory WHERE handle = $1",
+            )
+            .bind(first.handle)
+            .fetch_one(&pool)
+            .await?,
+            2,
+            "both cooled versions are hot after hydration"
+        );
+        let head_t: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(first.handle)
+                .fetch_one(&pool)
+                .await?;
+        let greatest_t: Uuid = sqlx::query_scalar(
+            "SELECT t FROM proxima_core.memory
+              WHERE handle = $1
+              ORDER BY t DESC
+              LIMIT 1",
+        )
+        .bind(first.handle)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(head_t, greatest_t, "the recreated head is the greatest t");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("concurrent empty-head hydration test failed");
+}
+
+#[tokio::test]
+async fn exact_hydrate_restores_memory_and_goal_witness_refs() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let memory_target = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let memory_t = memory_target.memory_id.into_inner();
+        let goal_t = insert_unassigned_goal(pool, owner, "witness-ref-goal").await?;
+
+        let mut source_draft = draft(None);
+        source_draft.refs = vec![memory_t, goal_t];
+        let source = ingest_stamped(pool, &permit, &source_draft, &[]).await?;
+        let source_t = source.memory_id.into_inner();
+        let cold = MemoryColdStore::default();
+        let source_key = cold_object_key(source_t);
+        cool_one(pool, &owner, &cold, source_t, &source_key).await?;
+
+        let mut tx = pool.begin().await?;
+        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, memory_t).await?;
+        tx.commit().await?;
+        sqlx::query("DELETE FROM proxima_core.goal WHERE t = $1")
+            .bind(goal_t)
+            .execute(pool)
+            .await?;
+        assert_eq!(
+            erased_pin_target_kind(pool, memory_t).await?,
+            Some("fact".to_owned())
+        );
+        assert_eq!(
+            erased_pin_target_kind(pool, goal_t).await?,
+            Some("goal".to_owned())
+        );
+
+        let mut tx = pool.begin().await?;
+        hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            source_t,
+            &non_embeddable_schemas(),
+        )
+        .await?;
+        tx.commit().await?;
+        let (restored_refs, restored_goal_refs): (Vec<Uuid>, Vec<Uuid>) =
+            sqlx::query_as("SELECT refs, goal_refs FROM proxima_core.memory WHERE t = $1")
+                .bind(source_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(restored_refs, vec![memory_t]);
+        assert_eq!(restored_goal_refs, vec![goal_t]);
+        assert_eq!(
+            erased_pin_target_kind(pool, memory_t).await?,
+            Some("fact".to_owned()),
+            "hydration must not remove the Memory witness"
+        );
+        assert_eq!(
+            erased_pin_target_kind(pool, goal_t).await?,
+            Some("goal".to_owned()),
+            "hydration must not remove the Goal witness"
+        );
+        assert_eq!(erased_pin_target_kind(pool, source_t).await?, None);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("exact witnessed Memory/Goal reference hydration failed");
+}
+
+#[tokio::test]
+async fn hydrate_rejects_unknown_and_wrong_kind_witnesses_atomically() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let cold = MemoryColdStore::default();
+
+        // Fixture corruption removes the Fact without its DELETE witness. The
+        // exact cooled Abstraction remains, but hydrate must reject its
+        // unknown decoded origin and leave the locator/object untouched.
+        let unknown_target = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let unknown_t = unknown_target.memory_id.into_inner();
+        let unknown_source = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Fact, unknown_t),
+                None,
+            )
+            .await?;
+        let unknown_source_t = unknown_source.memory_id.into_inner();
+        let unknown_key = cold_object_key(unknown_source_t);
+        cool_one(pool, &owner, &cold, unknown_source_t, &unknown_key).await?;
+        delete_memory_without_witness(pool, unknown_t).await?;
+        assert_eq!(erased_pin_target_kind(pool, unknown_t).await?, None);
+        let unknown_object = cold.get(&unknown_key).await?;
+        let mut tx = pool.begin().await?;
+        let err = hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            unknown_source_t,
+            &non_embeddable_schemas(),
+        )
+        .await
+        .expect_err("unknown decoded origin must not be restored");
+        tx.rollback().await?;
+        assert!(
+            err.to_string().contains("does not exist")
+                || err.to_string().contains("23503")
+                || err.to_string().contains("origin"),
+            "got: {err}"
+        );
+        let unknown_cooled: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(unknown_source_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            unknown_cooled, 1,
+            "failed hydrate leaves the cooled locator"
+        );
+        assert_eq!(cold.get(&unknown_key).await?, unknown_object);
+        assert_eq!(erased_pin_target_kind(pool, unknown_source_t).await?, None);
+
+        // A real Abstraction witness is corrupted to Fact by disabling only
+        // witness immutability. A cooled Perspective whose origin requires an
+        // Abstraction must reject that exact-but-wrong kind atomically.
+        let fact = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let abstraction = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
+                None,
+            )
+            .await?;
+        let perspective = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_perspective(abstraction.memory_id.into_inner()),
+                None,
+            )
+            .await?;
+        let perspective_t = perspective.memory_id.into_inner();
+        let abstraction_t = abstraction.memory_id.into_inner();
+        let perspective_key = cold_object_key(perspective_t);
+        cool_one(pool, &owner, &cold, perspective_t, &perspective_key).await?;
+        let mut tx = pool.begin().await?;
+        erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &surfaces(),
+            &owner,
+            abstraction_t,
+        )
+        .await?;
+        tx.commit().await?;
+        assert_eq!(
+            erased_pin_target_kind(pool, abstraction_t).await?,
+            Some("abstraction".to_owned())
+        );
+        change_witness_kind(pool, abstraction_t, "fact").await?;
+        assert_eq!(
+            erased_pin_target_kind(pool, abstraction_t).await?,
+            Some("fact".to_owned()),
+            "fixture corruption changed only the witness kind"
+        );
+        let wrong_kind_object = cold.get(&perspective_key).await?;
+        let mut tx = pool.begin().await?;
+        let err = hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            perspective_t,
+            &non_embeddable_schemas(),
+        )
+        .await
+        .expect_err("wrong-kind origin witness must not be restored");
+        tx.rollback().await?;
+        assert!(
+            err.to_string().contains("abstraction")
+                || err.to_string().contains("23514")
+                || err.to_string().contains("origin"),
+            "got: {err}"
+        );
+        let perspective_cooled: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(perspective_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(perspective_cooled, 1);
+        assert_eq!(cold.get(&perspective_key).await?, wrong_kind_object);
+        assert_eq!(
+            erased_pin_target_kind(pool, abstraction_t).await?,
+            Some("fact".to_owned()),
+            "failed hydrate neither repairs nor deletes the witness"
+        );
+        assert_eq!(erased_pin_target_kind(pool, perspective_t).await?, None);
+
+        // The inverse mismatch is equally invalid: a Memory `refs` entry may
+        // not be rescued by a witness whose closed kind says Goal.
+        let memory_ref_target = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let memory_ref_target_t = memory_ref_target.memory_id.into_inner();
+        let mut memory_ref_source_draft = draft(None);
+        memory_ref_source_draft.refs = vec![memory_ref_target_t];
+        let memory_ref_source =
+            ingest_stamped(pool, &permit, &memory_ref_source_draft, &[]).await?;
+        let memory_ref_source_t = memory_ref_source.memory_id.into_inner();
+        let memory_ref_source_key = cold_object_key(memory_ref_source_t);
+        cool_one(
+            pool,
+            &owner,
+            &cold,
+            memory_ref_source_t,
+            &memory_ref_source_key,
+        )
+        .await?;
+        let mut tx = pool.begin().await?;
+        erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &surfaces(),
+            &owner,
+            memory_ref_target_t,
+        )
+        .await?;
+        tx.commit().await?;
+        assert_eq!(
+            erased_pin_target_kind(pool, memory_ref_target_t).await?,
+            Some("fact".to_owned())
+        );
+        change_witness_kind(pool, memory_ref_target_t, "goal").await?;
+        let mut tx = pool.begin().await?;
+        let err = hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            memory_ref_source_t,
+            &non_embeddable_schemas(),
+        )
+        .await
+        .expect_err("Goal witness must not satisfy a Memory refs target");
+        tx.rollback().await?;
+        assert!(
+            err.to_string().contains("Memory")
+                || err.to_string().contains("23503")
+                || err.to_string().contains("reference"),
+            "got: {err}"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1",
+            )
+            .bind(memory_ref_source_t)
+            .fetch_one(pool)
+            .await?,
+            1,
+            "failed Memory-reference hydration leaves its cooled locator"
+        );
+        assert_eq!(
+            erased_pin_target_kind(pool, memory_ref_target_t).await?,
+            Some("goal".to_owned()),
+            "failed hydration does not repair the wrong-kind witness"
+        );
+
+        // A Goal witness is a different closed kind. Corrupting it to a
+        // Memory kind must not let an exact cooled Goal reference hydrate.
+        let goal_t = insert_unassigned_goal(pool, owner, "wrong-kind-goal").await?;
+        let mut goal_source_draft = draft(None);
+        goal_source_draft.refs = vec![goal_t];
+        let goal_source = ingest_stamped(pool, &permit, &goal_source_draft, &[]).await?;
+        let goal_source_t = goal_source.memory_id.into_inner();
+        let goal_source_key = cold_object_key(goal_source_t);
+        cool_one(pool, &owner, &cold, goal_source_t, &goal_source_key).await?;
+        sqlx::query("DELETE FROM proxima_core.goal WHERE t = $1")
+            .bind(goal_t)
+            .execute(pool)
+            .await?;
+        assert_eq!(
+            erased_pin_target_kind(pool, goal_t).await?,
+            Some("goal".to_owned())
+        );
+        change_witness_kind(pool, goal_t, "fact").await?;
+        let mut tx = pool.begin().await?;
+        let err = hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            goal_source_t,
+            &non_embeddable_schemas(),
+        )
+        .await
+        .expect_err("wrong-kind Goal witness must not be restored");
+        tx.rollback().await?;
+        assert!(
+            err.to_string().contains("goal")
+                || err.to_string().contains("23503")
+                || err.to_string().contains("reference"),
+            "got: {err}"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1",
+            )
+            .bind(goal_source_t)
+            .fetch_one(pool)
+            .await?,
+            1,
+            "failed Goal hydration leaves its cooled locator"
+        );
+        assert_eq!(
+            erased_pin_target_kind(pool, goal_t).await?,
+            Some("fact".to_owned()),
+            "failed hydration does not repair the corrupted witness"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("unknown/wrong-kind witness rejection failed");
+}
+
+#[tokio::test]
+#[allow(clippy::type_complexity)]
+async fn legacy_nullable_pins_use_live_admission() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let cold = MemoryColdStore::default();
+
+        let live_memory = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let live_memory_t = live_memory.memory_id.into_inner();
+        let live_goal_t = insert_unassigned_goal(pool, owner, "legacy-live-goal").await?;
+        let mut live_source_draft = draft(None);
+        live_source_draft.refs = vec![live_memory_t, live_goal_t];
+        let live_source = ingest_stamped(pool, &permit, &live_source_draft, &[]).await?;
+        let live_source_t = live_source.memory_id.into_inner();
+        let live_key = cold_object_key(live_source_t);
+        cool_one(pool, &owner, &cold, live_source_t, &live_key).await?;
+        make_legacy_cooled(pool, live_source_t).await?;
+        let nullable: (Option<Vec<Uuid>>, Option<Vec<Uuid>>, Option<Vec<Uuid>>) =
+            sqlx::query_as("SELECT origins, refs, goal_refs FROM proxima_core.cooled WHERE t = $1")
+                .bind(live_source_t)
+                .fetch_one(pool)
+                .await?;
+        assert!(nullable.0.is_none() && nullable.1.is_none() && nullable.2.is_none());
+        let mut tx = pool.begin().await?;
+        hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            live_source_t,
+            &non_embeddable_schemas(),
+        )
+        .await?;
+        tx.commit().await?;
+        let (restored_live_refs, restored_live_goal_refs): (Vec<Uuid>, Vec<Uuid>) =
+            sqlx::query_as("SELECT refs, goal_refs FROM proxima_core.memory WHERE t = $1")
+                .bind(live_source_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(restored_live_refs, vec![live_memory_t]);
+        assert_eq!(restored_live_goal_refs, vec![live_goal_t]);
+        assert_eq!(erased_pin_target_kind(pool, live_memory_t).await?, None);
+        assert_eq!(erased_pin_target_kind(pool, live_goal_t).await?, None);
+        assert_eq!(erased_pin_target_kind(pool, live_source_t).await?, None);
+
+        // Legacy NULL metadata cannot authorize a missing decoded target. The
+        // ordinary live-target backstop must reject and keep the cold state.
+        let unknown_target = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let unknown_t = unknown_target.memory_id.into_inner();
+        let mut unknown_source_draft = draft(None);
+        unknown_source_draft.refs = vec![unknown_t];
+        let unknown_source = ingest_stamped(pool, &permit, &unknown_source_draft, &[]).await?;
+        let unknown_source_t = unknown_source.memory_id.into_inner();
+        let unknown_key = cold_object_key(unknown_source_t);
+        cool_one(pool, &owner, &cold, unknown_source_t, &unknown_key).await?;
+        make_legacy_cooled(pool, unknown_source_t).await?;
+        delete_memory_without_witness(pool, unknown_t).await?;
+        let object = cold.get(&unknown_key).await?;
+        let mut tx = pool.begin().await?;
+        let err = hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            unknown_source_t,
+            &non_embeddable_schemas(),
+        )
+        .await
+        .expect_err("legacy hydration must require live decoded targets");
+        tx.rollback().await?;
+        assert!(
+            err.to_string().contains("does not exist")
+                || err.to_string().contains("23503")
+                || err.to_string().contains("reference"),
+            "got: {err}"
+        );
+        let cold_row: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(unknown_source_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(cold_row, 1);
+        assert_eq!(cold.get(&unknown_key).await?, object);
+        assert_eq!(erased_pin_target_kind(pool, unknown_t).await?, None);
+        assert_eq!(erased_pin_target_kind(pool, unknown_source_t).await?, None);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("legacy nullable hydration test failed");
+}
+
+/// A legacy NULL-array source still carries decoded pins in its cold object.
+/// Hydration and hard erase of a same-owner target must serialize on the
+/// target's lifecycle lock.  The two schedules below queue the operations in
+/// opposite order behind a gate and assert the two legal linearizations: the
+/// source is restored before target erase, or target erase wins and ordinary
+/// legacy admission rejects the source's now-dangling pin.
+#[tokio::test]
+async fn legacy_null_hydrate_and_same_owner_erase_have_both_linearizations() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let cold = Arc::new(MemoryColdStore::default());
+
+        // Schedule A: queue hydrate(source) first while erase(target) waits.
+        let retained_target = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let retained_target_t = retained_target.memory_id.into_inner();
+        let mut live_source_draft = draft(None);
+        live_source_draft.refs = vec![retained_target_t];
+        let live_source = pg
+            .ingest_fact_atomic(&permit, &live_source_draft, None)
+            .await?;
+        let live_source_t = live_source.memory_id.into_inner();
+        let live_source_key = cold_object_key(live_source_t);
+        cool_one(pool, &owner, cold.as_ref(), live_source_t, &live_source_key).await?;
+        make_legacy_cooled(pool, live_source_t).await?;
+        let mut first_gate = pool.begin().await?;
+        crate::verbs::forget::lock_lifecycle_targets_tx(&mut first_gate, &[retained_target_t])
+            .await?;
+        let hydrate_pool = pool.clone();
+        let hydrate_cold = Arc::clone(&cold);
+        let hydrate_first = tokio::spawn(async move {
+            let mut tx = hydrate_pool
+                .begin()
+                .await
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let outcome = hydrate_memory(
+                &mut tx,
+                &core_pg_sidecars(),
+                hydrate_cold.as_ref(),
+                live_source_t,
+                &non_embeddable_schemas(),
+            )
+            .await;
+            match outcome {
+                Ok(()) => tx
+                    .commit()
+                    .await
+                    .map_err(|e| StorageError::Internal(e.to_string()))?,
+                Err(err) => {
+                    tx.rollback()
+                        .await
+                        .map_err(|e| StorageError::Internal(e.to_string()))?;
+                    return Err(err);
+                }
+            }
+            Ok::<_, StorageError>(())
+        });
+        wait_for_advisory_waiters(pool, 1).await?;
+        let erase_pool = pool.clone();
+        let erase_after_hydrate = tokio::spawn(async move {
+            let mut tx = erase_pool
+                .begin()
+                .await
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let outcome = erase_memory(
+                &mut tx,
+                &core_pg_sidecars(),
+                &surfaces(),
+                &owner,
+                retained_target_t,
+            )
+            .await;
+            match outcome {
+                Ok(_) => tx
+                    .commit()
+                    .await
+                    .map_err(|e| StorageError::Internal(e.to_string()))?,
+                Err(err) => {
+                    tx.rollback()
+                        .await
+                        .map_err(|e| StorageError::Internal(e.to_string()))?;
+                    return Err(err);
+                }
+            }
+            Ok::<_, StorageError>(())
+        });
+        wait_for_advisory_waiters(pool, 2).await?;
+        first_gate.rollback().await?;
+        hydrate_first.await??;
+        erase_after_hydrate.await??;
+        let live_source_refs: Vec<Uuid> =
+            sqlx::query_scalar("SELECT refs FROM proxima_core.memory WHERE t = $1")
+                .bind(live_source_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(live_source_refs, vec![retained_target_t]);
+        assert_eq!(
+            erased_pin_target_kind(pool, retained_target_t).await?,
+            Some("fact".to_owned())
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxima_core.cooled WHERE t = $1")
+                .bind(live_source_t)
+                .fetch_one(pool)
+                .await?,
+            0,
+            "hydrate-first source is hot after target erase"
+        );
+
+        // Schedule B: queue erase(target) first. Hydrate(source) waits for
+        // that target and then fails through legacy live-target admission.
+        let removed_target = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let removed_target_t = removed_target.memory_id.into_inner();
+        let mut cold_source_draft = draft(None);
+        cold_source_draft.refs = vec![removed_target_t];
+        let cold_source = pg
+            .ingest_fact_atomic(&permit, &cold_source_draft, None)
+            .await?;
+        let cold_source_t = cold_source.memory_id.into_inner();
+        let cold_source_key = cold_object_key(cold_source_t);
+        cool_one(pool, &owner, cold.as_ref(), cold_source_t, &cold_source_key).await?;
+        make_legacy_cooled(pool, cold_source_t).await?;
+        let mut second_gate = pool.begin().await?;
+        crate::verbs::forget::lock_lifecycle_targets_tx(&mut second_gate, &[removed_target_t])
+            .await?;
+        let erase_pool = pool.clone();
+        let erase_first = tokio::spawn(async move {
+            let mut tx = erase_pool
+                .begin()
+                .await
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let outcome = erase_memory(
+                &mut tx,
+                &core_pg_sidecars(),
+                &surfaces(),
+                &owner,
+                removed_target_t,
+            )
+            .await;
+            match outcome {
+                Ok(_) => tx
+                    .commit()
+                    .await
+                    .map_err(|e| StorageError::Internal(e.to_string()))?,
+                Err(err) => {
+                    tx.rollback()
+                        .await
+                        .map_err(|e| StorageError::Internal(e.to_string()))?;
+                    return Err(err);
+                }
+            }
+            Ok::<_, StorageError>(())
+        });
+        wait_for_advisory_waiters(pool, 1).await?;
+        let hydrate_pool = pool.clone();
+        let hydrate_cold = Arc::clone(&cold);
+        let hydrate_after_erase = tokio::spawn(async move {
+            let mut tx = hydrate_pool
+                .begin()
+                .await
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let outcome = hydrate_memory(
+                &mut tx,
+                &core_pg_sidecars(),
+                hydrate_cold.as_ref(),
+                cold_source_t,
+                &non_embeddable_schemas(),
+            )
+            .await;
+            match outcome {
+                Ok(()) => tx
+                    .commit()
+                    .await
+                    .map_err(|e| StorageError::Internal(e.to_string()))?,
+                Err(err) => {
+                    tx.rollback()
+                        .await
+                        .map_err(|e| StorageError::Internal(e.to_string()))?;
+                    return Err(err);
+                }
+            }
+            Ok::<_, StorageError>(())
+        });
+        wait_for_advisory_waiters(pool, 2).await?;
+        second_gate.rollback().await?;
+        erase_first.await??;
+        let hydrate_after_erase_error = hydrate_after_erase
+            .await?
+            .expect_err("erase-first legacy hydrate must reject the dangling target");
+        assert!(
+            hydrate_after_erase_error
+                .to_string()
+                .contains("does not exist")
+                || hydrate_after_erase_error.to_string().contains("23503")
+                || hydrate_after_erase_error.to_string().contains("reference"),
+            "legacy hydrate must use ordinary live-target admission: {hydrate_after_erase_error}"
+        );
+        assert_eq!(
+            erased_pin_target_kind(pool, removed_target_t).await?,
+            Some("fact".to_owned())
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxima_core.cooled WHERE t = $1")
+                .bind(cold_source_t)
+                .fetch_one(pool)
+                .await?,
+            1,
+            "erase-first failed hydrate leaves the source cooled"
+        );
+        assert!(cold.get(&cold_source_key).await.is_ok());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("legacy NULL hydrate/erase linearization test failed");
+}
+
+/// Legacy NULL declaration arrays are permissive only for the declarations;
+/// the cooled identity itself remains sealed. A mismatched replacement must
+/// fail atomically without changing the locator or its cold object.
+#[tokio::test]
+async fn legacy_cooled_mismatched_identity_rejects_atomically() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let cold = MemoryColdStore::default();
+        let original = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let t = original.memory_id.into_inner();
+        let key = cold_object_key(t);
+        cool_one(pool, &owner, &cold, t, &key).await?;
+        make_legacy_cooled(pool, t).await?;
+        let bytes_before = cold.get(&key).await?;
+
+        let replacement_handle = Uuid::now_v7();
+        let mut tx = pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-fact-v1', $2, $3)",
+        )
+        .bind(replacement_handle)
+        .bind(owner.stored_owner_id())
+        .bind(t)
+        .execute(&mut *tx)
+        .await?;
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1')",
+        )
+        .bind(replacement_handle)
+        .bind(t)
+        .bind(owner.stored_owner_id())
+        .execute(&mut *tx)
+        .await
+        .expect_err("legacy cooled identity fields remain immutable");
+        assert!(
+            err.to_string().contains("identity seal") || err.to_string().contains("cooled"),
+            "mismatched legacy identity must name the cooled seal: {err}"
+        );
+        tx.rollback().await?;
+
+        let cooled: CooledIdentitySnapshot = sqlx::query_as(
+            "SELECT t, handle, owner_id, kind::text, origins, refs
+                   FROM proxima_core.cooled WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(cooled.0, t);
+        assert_eq!(cooled.1, original.handle);
+        assert_eq!(cooled.2, owner.stored_owner_id());
+        assert_eq!(cooled.3, "fact");
+        assert_eq!(cooled.4, None);
+        assert_eq!(cooled.5, None);
+        assert_eq!(cold.get(&key).await?, bytes_before);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM proxima_core.memory_head WHERE handle = $1",
+            )
+            .bind(replacement_handle)
+            .fetch_one(pool)
+            .await?,
+            0,
+            "the failed identity insert leaves no replacement head"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("legacy cooled identity mismatch test failed");
+}
+
+/// Transfer changes the cooled source owner but not its sealed declaration.
+/// Once that source's referenced target is hard-erased, the receiving owner
+/// must still be able to perform the exact historical hydration through the
+/// database-only witness.
+#[tokio::test]
+async fn transferred_cooled_source_hydrates_after_target_erase() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let cold = MemoryColdStore::default();
+
+        let target = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let target_t = target.memory_id.into_inner();
+        let mut source_draft = draft(Some(("transferred", "source")));
+        source_draft.refs = vec![target_t];
+        let source = pg.ingest_fact_atomic(&permit, &source_draft, None).await?;
+        let source_t = source.memory_id.into_inner();
+        let source_key = cold_object_key(source_t);
+        cool_one(pool, &owner, &cold, source_t, &source_key).await?;
+        let mut successor_draft = draft(Some(("transferred", "successor")));
+        successor_draft.handle = Some(source.handle);
+        let successor = pg
+            .ingest_fact_atomic(&permit, &successor_draft, None)
+            .await?;
+
+        assert!(
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(successor.memory_id),
+                destination,
+                &transfer_surfaces(),
+            )
+            .await?
+        );
+        let transferred_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.cooled WHERE t = $1")
+                .bind(source_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(transferred_owner, destination.stored_owner_id());
+
+        // The source is now owned by the destination, while its target is
+        // still owned by the original owner. Hard erase leaves the exact
+        // kind witness needed by the source's restoration seal.
+        let mut tx = pool.begin().await?;
+        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, target_t).await?;
+        tx.commit().await?;
+        assert_eq!(
+            erased_pin_target_kind(pool, target_t).await?,
+            Some("fact".to_owned())
+        );
+
+        let mut tx = pool.begin().await?;
+        hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            source_t,
+            &non_embeddable_schemas(),
+        )
+        .await?;
+        tx.commit().await?;
+        let restored: (Uuid, Vec<Uuid>) =
+            sqlx::query_as("SELECT owner_id, refs FROM proxima_core.memory WHERE t = $1")
+                .bind(source_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(restored.0, destination.stored_owner_id());
+        assert_eq!(restored.1, vec![target_t]);
+        assert_eq!(
+            erased_pin_target_kind(pool, target_t).await?,
+            Some("fact".to_owned()),
+            "hydration preserves the target witness"
+        );
+        assert_eq!(erased_pin_target_kind(pool, source_t).await?, None);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("transferred cooled-source hydration test failed");
+}
+
+#[tokio::test]
+async fn hydrate_rejects_cold_identity_and_sealed_pin_mismatch() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let cold = MemoryColdStore::default();
+
+        let identity = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let identity_t = identity.memory_id.into_inner();
+        let identity_key = cold_object_key(identity_t);
+        cool_one(pool, &owner, &cold, identity_t, &identity_key).await?;
+        let mut identity_record = decode_record(&cold.get(&identity_key).await?)?;
+        identity_record.row.t = Uuid::now_v7();
+        let identity_bytes = encode_record(&identity_record)?;
+        cold.put(&identity_key, &identity_bytes).await?;
+        let cooled_locator: (Uuid, String, Option<Vec<Uuid>>, Option<Vec<Uuid>>) = sqlx::query_as(
+            "SELECT t, object_key, origins, refs FROM proxima_core.cooled WHERE t = $1",
+        )
+        .bind(identity_t)
+        .fetch_one(pool)
+        .await?;
+        let mut tx = pool.begin().await?;
+        let err = hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            identity_t,
+            &non_embeddable_schemas(),
+        )
+        .await
+        .expect_err("a cold object with a different t must not hydrate");
+        tx.rollback().await?;
+        assert!(
+            err.to_string().contains("identity") || err.to_string().contains("Conflict"),
+            "got: {err}"
+        );
+        let unchanged_locator: (Uuid, String, Option<Vec<Uuid>>, Option<Vec<Uuid>>) =
+            sqlx::query_as(
+                "SELECT t, object_key, origins, refs FROM proxima_core.cooled WHERE t = $1",
+            )
+            .bind(identity_t)
+            .fetch_one(pool)
+            .await?;
+        assert_eq!(unchanged_locator, cooled_locator);
+        assert_eq!(cold.get(&identity_key).await?, identity_bytes);
+        assert_eq!(erased_pin_target_kind(pool, identity_t).await?, None);
+
+        let live_target = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let live_target_t = live_target.memory_id.into_inner();
+        let mut source_draft = draft(None);
+        source_draft.refs = vec![live_target_t];
+        let source = ingest_stamped(pool, &permit, &source_draft, &[]).await?;
+        let source_t = source.memory_id.into_inner();
+        let source_key = cold_object_key(source_t);
+        cool_one(pool, &owner, &cold, source_t, &source_key).await?;
+        let mut source_record = decode_record(&cold.get(&source_key).await?)?;
+        source_record.row.refs = vec![Uuid::now_v7()];
+        let source_bytes = encode_record(&source_record)?;
+        cold.put(&source_key, &source_bytes).await?;
+        let sealed_locator: (Option<Vec<Uuid>>, Option<Vec<Uuid>>) =
+            sqlx::query_as("SELECT origins, refs FROM proxima_core.cooled WHERE t = $1")
+                .bind(source_t)
+                .fetch_one(pool)
+                .await?;
+        let mut tx = pool.begin().await?;
+        let err = hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            source_t,
+            &non_embeddable_schemas(),
+        )
+        .await
+        .expect_err("cold pins that differ from the cooled seal must not hydrate");
+        tx.rollback().await?;
+        assert!(
+            err.to_string().contains("pins") || err.to_string().contains("Conflict"),
+            "got: {err}"
+        );
+        let unchanged_seal: (Option<Vec<Uuid>>, Option<Vec<Uuid>>) =
+            sqlx::query_as("SELECT origins, refs FROM proxima_core.cooled WHERE t = $1")
+                .bind(source_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(unchanged_seal, sealed_locator);
+        assert_eq!(cold.get(&source_key).await?, source_bytes);
+        assert_eq!(erased_pin_target_kind(pool, live_target_t).await?, None);
+        assert_eq!(erased_pin_target_kind(pool, source_t).await?, None);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("cold identity/seal mismatch test failed");
+}
+
+#[tokio::test]
+async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let target = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let target_t = target.memory_id.into_inner();
+        let mut tx = pool.begin().await?;
+        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, target_t).await?;
+        tx.commit().await?;
+        assert_eq!(
+            erased_pin_target_kind(pool, target_t).await?,
+            Some("fact".to_owned())
+        );
+
+        let before_memory: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
+                .fetch_one(pool)
+                .await?;
+        let before_heads: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory_head")
+                .fetch_one(pool)
+                .await?;
+        let mut source = draft(None);
+        source.refs = vec![target_t];
+        let err = pg
+            .ingest_fact_atomic(&permit, &source, None)
+            .await
+            .expect_err("a new source cannot pin a witnessed target");
+        assert!(
+            err.to_string().contains("does not exist")
+                || err.to_string().contains("erased")
+                || err.to_string().contains("23503"),
+            "got: {err}"
+        );
+        let after_memory: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
+                .fetch_one(pool)
+                .await?;
+        let after_heads: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory_head")
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            after_memory, before_memory,
+            "new-source rejection is atomic"
+        );
+        assert_eq!(
+            after_heads, before_heads,
+            "new-source rejection leaves no head"
+        );
+
+        // Direct fixture SQL attempts to recycle the erased t itself. Use a
+        // live head so the failure reaches the target collision guard rather
+        // than the unrelated head-shape backstop.
+        let holder = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.memory
+                (handle, t, kind, owner_id, schema_id, source_id, ingest_key,
+                 blob_id, content_id, origins, refs, sidecar_tables)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', NULL, NULL,
+                     NULL, NULL, '{}', '{}', '{}')",
+        )
+        .bind(holder.handle)
+        .bind(target_t)
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await
+        .expect_err("a witnessed t cannot be recycled as a new row");
+        assert!(
+            err.to_string().contains("erased") || err.to_string().contains("23505"),
+            "got: {err}"
+        );
+        let reused: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(target_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(reused, 0);
+        assert_eq!(
+            erased_pin_target_kind(pool, target_t).await?,
+            Some("fact".to_owned())
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("witnessed target reuse test failed");
+}
+
 #[tokio::test]
 async fn forget_and_admit_preserve_grounding_support() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -1230,17 +3057,34 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
         };
         cold.first_put_entered.acquire().await?.forget();
 
-        let mut erase_tx = pool.begin().await?;
-        erase_memory(&mut erase_tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
-        erase_tx.commit().await?;
+        // Erase uses the same lifecycle lock and therefore waits for the
+        // in-flight forget to finish its cold PUT. This linearization is
+        // deliberate: the subsequent erase sees the cooled row and records
+        // the hard-erase witness itself.
+        let erase_pool = pool.clone();
+        let erase_owner = owner;
+        let erase = tokio::spawn(async move {
+            let mut erase_tx = erase_pool.begin().await.expect("erase transaction");
+            let plan = erase_memory(
+                &mut erase_tx,
+                &core_pg_sidecars(),
+                &surfaces(),
+                &erase_owner,
+                t,
+            )
+            .await
+            .expect("erase succeeds after waiting for forget");
+            erase_tx.commit().await.expect("erase commit");
+            plan
+        });
 
-        // The PUT completes only after erase committed. The forget reread is
-        // then NotFound, with no cooled locator allowed to retain the object.
+        // The PUT completes only after erase has been queued behind the
+        // lifecycle lock. Forget wins this controlled linearization.
         cold.release_first_put.add_permits(1);
-        let err = forget
-            .await?
-            .expect_err("hard erase must win the overlapping forget");
-        assert!(matches!(err, StorageError::NotFound), "got {err:?}");
+        forget.await??;
+        let plan = erase.await?;
+        let purge = purge_cold_objects_after_commit(&pool, cold.as_ref(), &plan).await;
+        assert!(purge.purged >= 1, "erase must purge the cooled payload");
         assert_eq!(cold.puts.load(Ordering::SeqCst), 1);
         assert_eq!(cold.deletes.load(Ordering::SeqCst), 1);
         assert!(
@@ -1648,10 +3492,17 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
         let a_t = abs.memory_id.into_inner();
 
         let mut tx_f = pool.begin().await?;
-        let _: Uuid = sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE t = $1 FOR UPDATE")
-            .bind(a_t)
-            .fetch_one(&mut *tx_f)
-            .await?;
+        // Hold the same lifecycle advisory that both forget and admission
+        // use. The former row-only gate allowed an admission to take the
+        // advisory first and deadlock when forget then tried to acquire it.
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(
+                 hashtextextended('proxima-forget:' || $1::text, 0)
+             )",
+        )
+        .bind(a_t)
+        .execute(&mut *tx_f)
+        .await?;
 
         let owner_id = owner.stored_owner_id();
         let handle = Uuid::now_v7();
@@ -1703,7 +3554,7 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
         }
         assert!(
             !admit.is_finished(),
-            "admit must wait on FOR SHARE, not pass B2 against the still-hot A"
+            "admit must wait on the lifecycle lock, not pass B2 against the still-hot A"
         );
 
         forget_memory(
@@ -1728,6 +3579,370 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("admit-vs-forget overlap test failed");
+}
+
+/// A production admission must take the target lifecycle lock before it can
+/// lock the existing series head. Otherwise a forget holding the target lock
+/// and this append can form a head/advisory cycle.
+#[tokio::test]
+async fn admission_locks_pins_before_series_head() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests().clone();
+        let origin = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        // T is itself the prior version on H. The next admission uses the
+        // same handle and references T, so forget(T)'s head repair and the
+        // writer's head lock are the actual overlapping production paths.
+        let target = pg
+            .ingest_fact_atomic(
+                &permit,
+                &derived_abstraction(EntityKind::Fact, origin.memory_id.into_inner()),
+                None,
+            )
+            .await?;
+        let target_t = target.memory_id.into_inner();
+        let mut append = derived_abstraction(EntityKind::Fact, target_t);
+        append.handle = Some(target.handle);
+        append.derived_from = vec![EdgeEndpoint::memory(
+            EntityKind::Fact,
+            proxima_core::MemoryId::new(origin.memory_id.into_inner()),
+        )];
+        append.refs = vec![target_t];
+
+        let cold = Arc::new(BlockingPutCold {
+            inner: MemoryColdStore::default(),
+            first_put_entered: tokio::sync::Semaphore::new(0),
+            release_first_put: tokio::sync::Semaphore::new(0),
+            puts: AtomicUsize::new(0),
+            deletes: AtomicUsize::new(0),
+        });
+        let forget_pool = pool.clone();
+        let forget_cold = Arc::clone(&cold);
+        let forget_owner = owner;
+        let forget = tokio::spawn(async move {
+            forget_memory_oneshot(
+                &forget_pool,
+                &core_pg_sidecars(),
+                &surfaces(),
+                forget_cold.as_ref(),
+                &cold_object_key(target_t),
+                target_t,
+                forget_owner.stored_owner_id(),
+            )
+            .await
+        });
+        cold.first_put_entered.acquire().await?.forget();
+
+        let writer_pg = pg.clone();
+        let writer = tokio::spawn(async move {
+            let writer_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+            writer_pg
+                .ingest_fact_atomic(&writer_permit, &append, None)
+                .await
+        });
+        wait_for_advisory_waiters(&pool, 1).await?;
+
+        // The writer is blocked on target_t's lifecycle lock and therefore
+        // must not yet hold the source series head row lock.
+        let mut head_probe = pool.begin().await?;
+        sqlx::query("SELECT 1 FROM proxima_core.memory_head WHERE handle = $1 FOR UPDATE NOWAIT")
+            .bind(target.handle)
+            .execute(&mut *head_probe)
+            .await
+            .expect("admission must not lock the series head before its pin lock");
+        head_probe.rollback().await?;
+
+        cold.release_first_put.add_permits(1);
+        let (forget_result, writer_result) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(forget, writer)
+            })
+            .await?;
+        forget_result??;
+        let written = writer_result??;
+        assert!(!written.idempotent_replay);
+        assert_eq!(written.handle, target.handle);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM proxima_core.memory WHERE handle = $1",
+            )
+            .bind(target.handle)
+            .fetch_one(&pool)
+            .await?,
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<Uuid>>(
+                "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
+            )
+            .bind(target.handle)
+            .fetch_one(&pool)
+            .await?,
+            Some(written.memory_id.into_inner())
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxima_core.cooled WHERE t = $1",)
+                .bind(target_t)
+                .fetch_one(&pool)
+                .await?,
+            1,
+            "forget linearizes before the append and leaves T cooled"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("admission/head/forget ordering test failed");
+}
+
+/// Even a same-handle append with no declared pins must arbitrate the
+/// existing head before taking its row lock. A forget holding that head's
+/// lifecycle lock may remove the old head; the append retries from the
+/// post-forget state and installs the new head without a cycle.
+#[tokio::test]
+async fn admission_locks_existing_head_without_declared_pins() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests().clone();
+        let prior = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let prior_t = prior.memory_id.into_inner();
+        let handle = prior.handle;
+        let cold = Arc::new(BlockingPutCold {
+            inner: MemoryColdStore::default(),
+            first_put_entered: tokio::sync::Semaphore::new(0),
+            release_first_put: tokio::sync::Semaphore::new(0),
+            puts: AtomicUsize::new(0),
+            deletes: AtomicUsize::new(0),
+        });
+        let forget_pool = pool.clone();
+        let forget_cold = Arc::clone(&cold);
+        let forget = tokio::spawn(async move {
+            forget_memory_oneshot(
+                &forget_pool,
+                &core_pg_sidecars(),
+                &surfaces(),
+                forget_cold.as_ref(),
+                &cold_object_key(prior_t),
+                prior_t,
+                owner.stored_owner_id(),
+            )
+            .await
+        });
+        cold.first_put_entered.acquire().await?.forget();
+
+        let writer_pg = pg.clone();
+        let writer = tokio::spawn(async move {
+            let writer_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+            let mut append = draft(None);
+            append.handle = Some(handle);
+            writer_pg
+                .ingest_fact_atomic(&writer_permit, &append, None)
+                .await
+        });
+        wait_for_advisory_waiters(&pool, 1).await?;
+
+        // The append is waiting on prior_t and has not yet touched the shared
+        // head row. This NOWAIT probe is the direct inversion guard.
+        let mut head_probe = pool.begin().await?;
+        sqlx::query("SELECT 1 FROM proxima_core.memory_head WHERE handle = $1 FOR UPDATE NOWAIT")
+            .bind(handle)
+            .execute(&mut *head_probe)
+            .await
+            .expect("append must not lock an existing head before its lifecycle set");
+        head_probe.rollback().await?;
+
+        cold.release_first_put.add_permits(1);
+        let (forget_result, writer_result) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(forget, writer)
+            })
+            .await?;
+        forget_result??;
+        let written = writer_result??;
+        assert!(!written.idempotent_replay);
+        assert_eq!(written.handle, handle);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM proxima_core.memory WHERE handle = $1",
+            )
+            .bind(handle)
+            .fetch_one(&pool)
+            .await?,
+            1,
+            "the retry leaves one new hot version"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<Uuid>>(
+                "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
+            )
+            .bind(handle)
+            .fetch_one(&pool)
+            .await?,
+            Some(written.memory_id.into_inner())
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxima_core.cooled WHERE t = $1")
+                .bind(prior_t)
+                .fetch_one(&pool)
+                .await?,
+            1,
+            "the prior head is cooled before the append retry"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("same-handle head-only admission ordering test failed");
+}
+
+/// Citation persistence also follows the lifecycle lock. A series erase may
+/// therefore lock and collect its cited blob before a concurrent append
+/// attempts to reuse that blob, without an advisory/blob inversion.
+#[tokio::test]
+async fn citation_reuse_and_series_erase_share_one_lock_order() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests().clone();
+        let mut cited_draft = draft(None);
+        cited_draft.citation = Some(
+            CitationSpec::v1(
+                "core/test-cited-object-v1",
+                [0xA7; 32],
+                "core/test-citation-mapping-v1",
+            )
+            .into(),
+        );
+        let first = pg.ingest_fact_atomic(&permit, &cited_draft, None).await?;
+        let mut second_draft = cited_draft.clone();
+        second_draft.handle = Some(first.handle);
+        let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
+        let blob_id = first.cited_object_id.expect("first citation blob");
+
+        // Hold the complete series lifecycle set in the real erase
+        // transaction, but pause before invoking the erase body. The writer
+        // must queue on T while B remains freely lockable; this proves it did
+        // not reach citation/blob persistence before its pin lock.
+        let erase_ready = Arc::new(tokio::sync::Semaphore::new(0));
+        let erase_release = Arc::new(tokio::sync::Semaphore::new(0));
+        let erase_pool = pool.clone();
+        let erase_owner = owner;
+        let erase_ready_signal = Arc::clone(&erase_ready);
+        let erase_release_wait = Arc::clone(&erase_release);
+        let first_t = first.memory_id.into_inner();
+        let second_t = second.memory_id.into_inner();
+        let erase = tokio::spawn(async move {
+            let mut tx = erase_pool
+                .begin()
+                .await
+                .map_err(|error| StorageError::Internal(error.to_string()))?;
+            lock_lifecycle_targets_tx(&mut tx, &[first_t, second_t]).await?;
+            erase_ready_signal.add_permits(1);
+            erase_release_wait
+                .acquire()
+                .await
+                .map_err(|error| StorageError::Internal(error.to_string()))?
+                .forget();
+            let result = erase_memory_series(
+                &mut tx,
+                &core_pg_sidecars(),
+                &surfaces(),
+                &erase_owner,
+                &[first_t],
+            )
+            .await?;
+            tx.commit()
+                .await
+                .map_err(|error| StorageError::Internal(error.to_string()))?;
+            Ok::<_, StorageError>(result)
+        });
+        erase_ready.acquire().await?.forget();
+        let mut writer_draft = cited_draft;
+        writer_draft.handle = Some(second.handle);
+        writer_draft.refs = vec![first_t];
+        let writer_pg = pg.clone();
+        let writer = tokio::spawn(async move {
+            let writer_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+            writer_pg
+                .ingest_fact_atomic(&writer_permit, &writer_draft, None)
+                .await
+        });
+        wait_for_advisory_waiters(&pool, 1).await?;
+
+        let mut blob_probe = pool.begin().await?;
+        sqlx::query("SELECT 1 FROM proxima_core.blob WHERE blob_id = $1 FOR UPDATE NOWAIT")
+            .bind(blob_id)
+            .execute(&mut *blob_probe)
+            .await
+            .expect("writer must not touch the citation blob before its lifecycle lock");
+        blob_probe.rollback().await?;
+        erase_release.add_permits(1);
+
+        let (erase_result, writer_result) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(erase, writer)
+            })
+            .await?;
+        let (erased_count, plan) = erase_result??;
+        assert_eq!(erased_count, 2, "the whole series was erased");
+        assert!(
+            plan.object_keys().is_empty(),
+            "hot series has no cold purge keys"
+        );
+        let writer_error = writer_result?.expect_err("erased ref must reject the append");
+        assert!(
+            !writer_error.to_string().contains("40P01"),
+            "writer must fail cleanly after erase, not deadlock: {writer_error}"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM proxima_core.memory WHERE handle = $1",
+            )
+            .bind(second.handle)
+            .fetch_one(&pool)
+            .await?,
+            0,
+            "rejected admission leaves no orphan memory"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM proxima_core.blob WHERE schema_id = $1 AND content_hash = $2",
+            )
+            .bind("core/test-cited-object-v1")
+            .bind(vec![0xA7_u8; 32])
+            .fetch_one(&pool)
+            .await?,
+            0,
+            "series erase garbage-collects the shared blob and rejected reuse adds none"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("citation/blob and series-erase ordering test failed");
 }
 
 struct FailDeleteCold;
@@ -1870,6 +4085,11 @@ async fn a_rolled_back_erase_keeps_the_cold_object_and_its_locator() {
         assert_eq!(
             pending, 0,
             "the pending mark rolls back with the erase that made it"
+        );
+        assert_eq!(
+            erased_pin_target_kind(pool, t).await?,
+            None,
+            "a rolled-back erase must not leave a historical witness"
         );
         Ok(())
     }

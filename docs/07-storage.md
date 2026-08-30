@@ -1,7 +1,9 @@
 # 07 — Storage
 
 Storage contract for identity, ownership, append-only writes, and typed
-sidecars. Exact DDL is `crates/storage-pg/migrations/0001_v008.sql`.
+sidecars. The frozen DDL is `crates/storage-pg/migrations/0001_v008.sql`;
+the hard-erase witness contract is additive in
+`crates/storage-pg/migrations/0005_v012_erased_pin_targets.sql`.
 
 <a id="id-types"></a>
 
@@ -16,6 +18,7 @@ sidecars. Exact DDL is `crates/storage-pg/migrations/0001_v008.sql`.
 | `MemoryId` | UUIDv7 | `memory.t` |
 | `ContentId` | UUIDv7 | `content.content_id` |
 | `GoalId` | UUIDv7 | `goal.t` |
+| `ErasedPinTarget` | internal `(t, closed kind)` | permanent hard-delete witness; owner-free and not a public edge/pin |
 | `ChangeEvent.seq` | UUIDv7 | `announce.seq` |
 | `EmbeddingVersion` | integer | independent of entity identity |
 
@@ -98,6 +101,7 @@ Closed vocabularies are SQL enums.
 | `owners` | `owner_id`, `kind`; no seeded rows — a fresh DB starts empty and rows are minted on first owner write |
 | `memory_head` | `handle` PK, `kind`, `schema_id`, `owner_id`, head `t` |
 | `memory` | `(handle, t)` PK, `UNIQUE(t)`, `schema_id`, `origins[]`, `refs[]`, `blob_id`, `content_id` |
+| `erased_pin_target` | permanent database-only identity witnesses for hard-erased Memory/Goal targets: `t` PK and closed `kind`, with no owner or payload |
 | `content` | owner-scoped payload; `UNIQUE (owner_id, schema_id, content_hash)` |
 | `ingest_keys` | `(owner_id, source_id, ingest_key)` → `t` |
 | `announce` | `seq`, `op` append\|forget\|erase\|transfer, `entity` memory\|goal |
@@ -112,7 +116,8 @@ Closed vocabularies are SQL enums.
 
 No `edges`, `memories`, `goals` (plural), `fact_entities`, `fact_receipts`, `cited_objects`, `citation_mappings`, `change_event` tables.
 
-Physical source of truth: `0001_v008.sql`.
+Physical schema source of truth: the ordered SQL files in
+`crates/storage-pg/migrations/`; `0001_v008.sql` is the frozen baseline.
 
 <a id="append-only"></a>
 
@@ -122,7 +127,7 @@ Physical source of truth: `0001_v008.sql`.
 |---|---|
 | `INSERT` | normal write |
 | `UPDATE` | `memory` / `goal` / `ingest_keys` / `announce` / `owners` refuse UPDATE. Heads may move `t` only. `wake_config` is the UPDATE table. |
-| `DELETE` | forget (hot row, after cold PUT); erase (abandonment only) |
+| `DELETE` | forget (hot row, after cold PUT); erase (abandonment only). Hard erase records the concrete target's `(t, kind)` witness before deleting it; witness rows are append-only. |
 
 `wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy)`.
 
@@ -169,8 +174,30 @@ Independent of entity tables.
 |---|---|
 | CDC | `announce.seq` |
 | writes are replayable | `ingest_keys`; the handle resolves through `memory` ∪ `cooled`, so a cooled admission still replays |
-| forget is cool | lock `(t, owner)`, PUT `cold/`, insert locator, delete hot; on a pre-commit error retain the PUT only when `cooled(t, object_key)` names it; retain on an ambiguous commit outcome. Last-t forget deletes `memory_head`. Refuse if a remaining hot non-Fact would lose `groundingSupport` (no hot pin and no cooled Fact). |
-| hydrate | same `t`; recreates `memory_head` when the series was empty |
+| forget is cool | lock `(t, owner)`, PUT `cold/`, insert locator, delete hot; on a pre-commit error retain the PUT only when `cooled(t, object_key)` names it; retain on an ambiguous commit outcome. Last-t forget deletes `memory_head`. Refuse if a remaining hot non-Fact would lose `groundingSupport` (no hot pin and no cooled Fact). Forget does not create an erased-target witness. |
+| hydrate | same `t`; recreates `memory_head` when the series was empty. An exact sealed cooled snapshot may restore correctly kinded erased targets; a legacy `NULL` pin array goes through ordinary live-target admission. Hydration preserves a newer existing head. |
+
+Hard erase never rewrites another Memory row's `origins[]` or `refs[]` and
+does not cascade or null those source declarations. The witness is technical
+metadata only: it is not transferred, forgotten, exported, or projected as a
+public Edge/PinNode/MCP/REST field. A public missing target remains the
+existing redacted/missing projection.
+
+## Lifecycle Lock Ordering
+
+Per-entity admission, hydration, forget, and single-entity erase share one
+per-`t` advisory lock vocabulary. Each of these paths computes its complete
+lifecycle target set, sorts and deduplicates it, and acquires that set before
+any row or blob lock.
+Transfer uses the same per-`t` vocabulary with bounded retry, but its broader
+multi-round footprint is not covered by this complete-set/no-growth guarantee.
+Goal and wake writes use the same union-before-row rule: assignment,
+dependencies, evidence, the expected/current Goal head, terminal/write-act
+Facts, wake trigger, hard context, and the new Goal `t` are held before
+`goal_head`, Goal, or `wake_config` insertion. Owner, series, source, and
+repository sweeps are outside this complete-set/no-growth guarantee; this is
+not a claim that broader handle or sweep operations are fenced by the same
+lock.
 
 <a id="scaling-envelope"></a>
 

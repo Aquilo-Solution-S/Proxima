@@ -1,6 +1,7 @@
 //! The fresh CREATE set of the core migration. Requires local PG.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::path::Path;
 
 use proxima_pg_testkit::{create_db, db_url, drop_db};
@@ -238,6 +239,7 @@ async fn migrations_apply_to_fresh_db() {
             "ingest_keys",
             "announce",
             "cold_purge_pending",
+            "erased_pin_target",
             "delegated_authority_grants",
             "source_cursors",
         ] {
@@ -283,6 +285,25 @@ async fn migrations_apply_to_fresh_db() {
         assert!(
             !column_exists(&pg, "cold_purge_pending", "compliance_operation_id").await,
             "the purge queue is the debt; it attributes itself to no journal"
+        );
+        assert!(
+            !column_exists(&pg, "erased_pin_target", "owner_id").await,
+            "erased pin witnesses are owner-free technical metadata"
+        );
+        let witness_kinds: Vec<String> = sqlx::query_scalar(
+            "SELECT e.enumlabel::text
+               FROM pg_enum e
+               JOIN pg_type t ON t.oid = e.enumtypid
+               JOIN pg_namespace n ON n.oid = t.typnamespace
+              WHERE n.nspname = 'proxima_core' AND t.typname = 'pin_target_kind'
+              ORDER BY e.enumsortorder",
+        )
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        assert_eq!(
+            witness_kinds,
+            vec!["fact", "abstraction", "perspective", "goal"],
+            "witness kind is the closed target vocabulary"
         );
 
         // A COMMENT is not a comment. `COMMENT ON` writes to pg_description,
@@ -675,6 +696,393 @@ async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = Uuid::now_v7();
+        let handle = Uuid::now_v7();
+        let t = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner)
+            .execute(pool)
+            .await?;
+        let null_cooled_t = Uuid::now_v7();
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.cooled
+                 (t, handle, owner_id, kind, object_key)
+             VALUES ($1, $2, $3, 'fact', 'cold/unsealed-null')",
+        )
+        .bind(null_cooled_t)
+        .bind(Uuid::now_v7())
+        .bind(owner)
+        .execute(pool)
+        .await
+        .expect_err("new cooled rows require a hot identity seal even with NULL pins");
+        assert!(
+            err.to_string().contains("does not seal its hot Memory"),
+            "unsealed NULL-array cooled insert must be rejected: {err}"
+        );
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
+        )
+        .bind(handle)
+        .bind(owner)
+        .bind(t)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory
+                 (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1')",
+        )
+        .bind(handle)
+        .bind(t)
+        .bind(owner)
+        .execute(pool)
+        .await?;
+
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.cooled
+                 (t, handle, owner_id, kind, object_key, origins, refs)
+             SELECT t, handle, owner_id, kind, 'cold/partial-goal-refs', origins, refs
+               FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(t)
+        .execute(pool)
+        .await
+        .expect_err("a partial cooled declaration cannot pass the exact pin seal");
+        assert!(
+            err.to_string().contains("does not seal its hot Memory"),
+            "partial cooled goal_refs must be rejected by the identity seal: {err}"
+        );
+
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.erased_pin_target (t, kind)
+             VALUES ($1, 'fact')",
+        )
+        .bind(t)
+        .execute(pool)
+        .await
+        .expect_err("a direct witness insert must be rejected");
+        assert!(
+            err.to_string()
+                .contains("written only by a target deletion trigger"),
+            "direct witness insert must name its trusted writer: {err}"
+        );
+
+        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+            .bind(t)
+            .execute(pool)
+            .await?;
+        let kind: String = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(kind, "fact");
+
+        let err =
+            sqlx::query("UPDATE proxima_core.erased_pin_target SET kind = 'goal' WHERE t = $1")
+                .bind(t)
+                .execute(pool)
+                .await
+                .expect_err("witnesses are immutable");
+        assert!(err.to_string().contains("append-only"), "got: {err}");
+
+        let err = sqlx::query("DELETE FROM proxima_core.erased_pin_target WHERE t = $1")
+            .bind(t)
+            .execute(pool)
+            .await
+            .expect_err("witnesses are permanent");
+        assert!(err.to_string().contains("append-only"), "got: {err}");
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("erased pin target writer test failed");
+}
+
+/// A witness is compatible only with the kind it records.  This deliberately
+/// corrupts that metadata inside a rolled-back fixture transaction so the
+/// database path is exercised: the attempted hard delete must fail closed and
+/// leave the original witness intact.  The same witness must also block Goal
+/// identity reuse.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = Uuid::now_v7();
+        let t = Uuid::now_v7();
+        let handle = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner)
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
+        )
+        .bind(handle)
+        .bind(owner)
+        .bind(t)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1')",
+        )
+        .bind(handle)
+        .bind(t)
+        .bind(owner)
+        .execute(pool)
+        .await?;
+        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+            .bind(t)
+            .execute(pool)
+            .await?;
+        let witness: String = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(witness, "fact");
+
+        // Goal identity reuse is a whole-transaction refusal: the temporary
+        // head must not survive the failed Goal insert.
+        let mut tx = pool.begin().await?;
+        let goal_handle = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+             VALUES ($1, 'core/task-v1', $2, $3)",
+        )
+        .bind(goal_handle)
+        .bind(owner)
+        .bind(t)
+        .execute(&mut *tx)
+        .await?;
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.goal
+                 (handle, t, owner_id, title, state, request_id)
+             VALUES ($1, $2, $3, 'reused', 'Active', 'reused-witness')",
+        )
+        .bind(goal_handle)
+        .bind(t)
+        .bind(owner)
+        .execute(&mut *tx)
+        .await
+        .expect_err("a Goal cannot reuse an erased Memory witness t");
+        assert!(
+            err.to_string().contains("collides") || err.to_string().contains("erased target"),
+            "Goal t reuse must name the witness collision: {err}"
+        );
+        tx.rollback().await?;
+        let goal_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.goal_head WHERE handle = $1",
+        )
+        .bind(goal_handle)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(goal_rows, 0, "failed Goal reuse leaves no head behind");
+
+        let replacement_handle = Uuid::now_v7();
+        let mut tx = pool.begin().await?;
+        sqlx::query("ALTER TABLE proxima_core.memory DISABLE TRIGGER memory_pin_checks")
+            .execute(&mut *tx)
+            .await?;
+        // Fixture-only resurrection creates a live row solely to drive the
+        // hard-delete trigger against a conflicting witness kind.
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
+        )
+        .bind(replacement_handle)
+        .bind(owner)
+        .bind(t)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1')",
+        )
+        .bind(replacement_handle)
+        .bind(t)
+        .bind(owner)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("ALTER TABLE proxima_core.memory ENABLE TRIGGER memory_pin_checks")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+
+        // Fixture corruption changes only the witness kind; all production
+        // append-only protection is restored before the corrupted state is
+        // committed, so the following DELETE observes a pre-existing conflict.
+        let mut tx = pool.begin().await?;
+        sqlx::query(
+            "ALTER TABLE proxima_core.erased_pin_target
+             DISABLE TRIGGER erased_pin_target_append_only",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE proxima_core.erased_pin_target SET kind = 'goal' WHERE t = $1")
+            .bind(t)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "ALTER TABLE proxima_core.erased_pin_target
+             ENABLE TRIGGER erased_pin_target_append_only",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        let mut tx = pool.begin().await?;
+        let err = sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+            .bind(t)
+            .execute(&mut *tx)
+            .await
+            .expect_err("a wrong-kind witness must abort the hard delete");
+        assert!(
+            err.to_string().contains("already records kind")
+                || err.to_string().contains("not fact"),
+            "wrong-kind deletion must fail closed: {err}"
+        );
+        tx.rollback().await?;
+        let witness_after: String = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            witness_after, "goal",
+            "a failed delete leaves the conflicting witness intact"
+        );
+        let replacement_rows: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            replacement_rows, 1,
+            "a failed delete leaves the pre-existing live row intact"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("conflicting witness rollback test failed");
+}
+
+#[tokio::test]
+async fn cooled_identity_seal_freezes_all_but_transfer_remaps() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = Uuid::now_v7();
+        let destination = Uuid::now_v7();
+        let handle = Uuid::now_v7();
+        let t = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal'), ($2, 'group')",
+        )
+        .bind(owner)
+        .bind(destination)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
+        )
+        .bind(handle)
+        .bind(owner)
+        .bind(t)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory
+                 (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1')",
+        )
+        .bind(handle)
+        .bind(t)
+        .bind(owner)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.cooled
+                 (t, handle, owner_id, kind, object_key, origins, refs, goal_refs)
+             SELECT t, handle, owner_id, kind, 'cold/sealed', origins, refs, goal_refs
+               FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(t)
+        .execute(pool)
+        .await?;
+
+        sqlx::query("UPDATE proxima_core.cooled SET owner_id = $2 WHERE t = $1")
+            .bind(t)
+            .bind(destination)
+            .execute(pool)
+            .await?;
+        let err = sqlx::query("UPDATE proxima_core.cooled SET handle = $2 WHERE t = $1")
+            .bind(t)
+            .bind(Uuid::now_v7())
+            .execute(pool)
+            .await
+            .expect_err("cooled handle is sealed");
+        assert!(err.to_string().contains("frozen"), "got: {err}");
+        let err =
+            sqlx::query("UPDATE proxima_core.cooled SET origins = ARRAY[$2]::uuid[] WHERE t = $1")
+                .bind(t)
+                .bind(Uuid::now_v7())
+                .execute(pool)
+                .await
+                .expect_err("cooled pins are sealed");
+        assert!(err.to_string().contains("frozen"), "got: {err}");
+        let err = sqlx::query(
+            "UPDATE proxima_core.cooled SET goal_refs = ARRAY[$2]::uuid[] WHERE t = $1",
+        )
+        .bind(t)
+        .bind(Uuid::now_v7())
+        .execute(pool)
+        .await
+        .expect_err("cooled Goal pins are sealed");
+        assert!(err.to_string().contains("frozen"), "got: {err}");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("cooled identity seal test failed");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn memory_is_append_only_and_head_t_only() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
@@ -804,6 +1212,24 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
         ensure_core_schema_markers(pg.pool_for_tests()).await?;
+
+        sqlx::query(
+            "ALTER TABLE proxima_core.erased_pin_target
+             ADD COLUMN marker_probe text",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        let err = ensure_core_schema_markers(pg.pool_for_tests())
+            .await
+            .expect_err("witness marker must reject an extra column");
+        assert!(
+            err.to_string().contains("exactly columns")
+                || err.to_string().contains("extra columns"),
+            "marker error must name witness shape drift: {err}"
+        );
+        sqlx::query("ALTER TABLE proxima_core.erased_pin_target DROP COLUMN marker_probe")
+            .execute(pg.pool_for_tests())
+            .await?;
 
         sqlx::query(
             "ALTER TABLE proxima_core.cold_purge_pending
@@ -1062,6 +1488,179 @@ async fn schema_markers_reject_damaged_lexical_default() {
     result.expect("lexical default schema marker checks failed");
 }
 
+/// Every lifecycle trigger is part of the boot claim, not merely an
+/// implementation detail.  Disabling one at a time must make the marker
+/// probe refuse to stamp the database, and restoring it must make the probe
+/// green again.
+#[tokio::test]
+async fn schema_markers_reject_every_reference_integrity_trigger_when_disabled() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let triggers = [
+            ("memory", "memory_pin_checks"),
+            ("erased_pin_target", "erased_pin_target_insert_guard"),
+            ("erased_pin_target", "erased_pin_target_append_only"),
+            ("cooled", "cooled_forget_grounding"),
+            ("cooled", "cooled_identity_seal"),
+            ("cooled", "cooled_append_only"),
+            ("goal", "goal_pin_target_checks"),
+            ("wake_config", "wake_pin_target_checks"),
+            ("memory", "memory_erased_pin_target"),
+            ("cooled", "cooled_erased_pin_target"),
+            ("goal", "goal_erased_pin_target"),
+        ];
+        for (table, trigger) in triggers {
+            // SQL-POLICY: fixed-fragment — both interpolations come only from
+            // the closed literal trigger tuple matrix immediately above.
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE proxima_core.{table} DISABLE TRIGGER {trigger}"
+            )))
+            .execute(pool)
+            .await?;
+            let err = ensure_core_schema_markers(pool)
+                .await
+                .expect_err("a disabled reference-integrity trigger must fail the marker probe");
+            assert!(
+                err.to_string().contains(table)
+                    || err.to_string().contains("trigger")
+                    || err.to_string().contains("marker"),
+                "marker error for {table}.{trigger} should identify the trigger: {err}"
+            );
+            // SQL-POLICY: fixed-fragment — the same closed literal tuple
+            // matrix supplies the identifiers; no external input is used.
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE proxima_core.{table} ENABLE TRIGGER {trigger}"
+            )))
+            .execute(pool)
+            .await?;
+            ensure_core_schema_markers(pool).await?;
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("reference-integrity trigger marker test failed");
+}
+
+/// Function names alone are insufficient boot markers: a replaced function
+/// can retain its signature while removing the lock, conflict, writer-marker,
+/// or retry branch that makes the schema safe. Capture the shipped definitions,
+/// corrupt each body in turn, and restore the exact text before the next probe.
+#[tokio::test]
+async fn schema_markers_reject_damaged_reference_integrity_function_bodies() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let record_definition: String = sqlx::query_scalar(
+            "SELECT pg_get_functiondef(
+                 to_regprocedure(
+                     'proxima_core.record_erased_pin_target(uuid,proxima_core.pin_target_kind)'
+                 )
+             )",
+        )
+        .fetch_one(pool)
+        .await?;
+        let grounding_definition: String = sqlx::query_scalar(
+            "SELECT pg_get_functiondef(
+                 to_regprocedure('proxima_core.cooled_forget_grounding()')
+             )",
+        )
+        .fetch_one(pool)
+        .await?;
+
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "CREATE OR REPLACE FUNCTION proxima_core.record_erased_pin_target(
+                 target uuid, target_kind proxima_core.pin_target_kind
+             ) RETURNS void LANGUAGE plpgsql AS $$
+             BEGIN RETURN; END;
+             $$;"
+            .to_owned(),
+        ))
+        .execute(pool)
+        .await?;
+        let err = ensure_core_schema_markers(pool)
+            .await
+            .expect_err("a signature-compatible witness writer body must fail the marker probe");
+        assert!(
+            err.to_string().contains("record_erased_pin_target body"),
+            "witness writer body marker should be named: {err}"
+        );
+        // SQL-POLICY: fixed-fragment — this is the exact definition captured
+        // from the database immediately before the closed mutation above.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(record_definition.clone()))
+            .execute(pool)
+            .await?;
+        ensure_core_schema_markers(pool).await?;
+
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "CREATE OR REPLACE FUNCTION proxima_core.cooled_forget_grounding()
+             RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN RETURN NEW; END;
+             $$;"
+            .to_owned(),
+        ))
+        .execute(pool)
+        .await?;
+        let err = ensure_core_schema_markers(pool)
+            .await
+            .expect_err("a signature-compatible grounding body must fail the marker probe");
+        assert!(
+            err.to_string().contains("cooled_forget_grounding body"),
+            "grounding body marker should be named: {err}"
+        );
+
+        // Keep all required tokens but put them in the wrong order. This
+        // proves the marker checks the lock-before-growth-before-row-lock law,
+        // not just the presence of a familiar error phrase.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "CREATE OR REPLACE FUNCTION proxima_core.cooled_forget_grounding()
+             RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN
+                 -- for update
+                 -- using errcode = '40001'
+                 -- footprint grew
+                 -- not (m.t = any (dependent_ids))
+                 -- lock_pin_targets
+                 RETURN NEW;
+             END;
+             $$;"
+            .to_owned(),
+        ))
+        .execute(pool)
+        .await?;
+        let err = ensure_core_schema_markers(pool)
+            .await
+            .expect_err("a reordered grounding body must fail the marker probe");
+        assert!(
+            err.to_string().contains("cooled_forget_grounding body"),
+            "grounding order marker should be named: {err}"
+        );
+        // SQL-POLICY: fixed-fragment — this is the exact definition captured
+        // from the database immediately before the closed mutation above.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(grounding_definition))
+            .execute(pool)
+            .await?;
+        ensure_core_schema_markers(pool).await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("reference-integrity function body marker test failed");
+}
+
 #[tokio::test]
 async fn pre_v008_database_fails_closed() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -1293,12 +1892,18 @@ fn generated_declaration_triggers_are_the_migration_text() {
 #[test]
 fn reference_integrity_migration_is_set_based_and_keeps_baselines_frozen() {
     let migration = include_str!("../migrations/0003_v010_reference_integrity.sql");
+    let goal_refs_lane = include_str!("../migrations/0004_v011_goal_refs.sql");
+    let erased_targets_lane = include_str!("../migrations/0005_v012_erased_pin_targets.sql");
     let baseline = include_str!("../migrations/0001_v008.sql");
     let declaration_lane = include_str!("../migrations/0002_v009_declaration_triggers.sql");
     assert!(
         !baseline.contains("cooled_origins_no_null_chk")
             && !declaration_lane.contains("cooled_origins_no_null_chk"),
         "the new cooled witness belongs to the additive v0.0.10 migration"
+    );
+    assert!(
+        !migration.contains("erased_pin_target") && !goal_refs_lane.contains("erased_pin_target"),
+        "0003 and 0004 are frozen; erased-target behavior belongs in 0005"
     );
     for fragment in [
         "CREATE OR REPLACE FUNCTION proxima_core.memory_pin_checks()",
@@ -1316,6 +1921,56 @@ fn reference_integrity_migration_is_set_based_and_keeps_baselines_frozen() {
             "v0.0.10 reference-integrity migration is missing {fragment:?}"
         );
     }
+    for fragment in [
+        "CREATE TYPE proxima_core.pin_target_kind",
+        "CREATE TABLE proxima_core.erased_pin_target",
+        "CREATE OR REPLACE FUNCTION proxima_core.lock_pin_targets",
+        "CREATE TRIGGER memory_erased_pin_target",
+        "CREATE TRIGGER cooled_erased_pin_target",
+        "CREATE TRIGGER goal_erased_pin_target",
+        "CREATE TRIGGER cooled_identity_seal",
+        "CREATE TRIGGER cooled_append_only",
+        "NEW.goal_refs",
+        "historical_restore",
+        "e.kind = 'goal'",
+    ] {
+        assert!(
+            erased_targets_lane.contains(fragment),
+            "0005_v012_erased_pin_targets.sql is missing {fragment:?}"
+        );
+    }
+}
+
+/// `SQLx` records SHA-384 checksums. Pin the two already-landed files here so
+/// moving their behavior into a new additive lane cannot silently rewrite the
+/// bytes that a live database may already have recorded.
+#[test]
+fn frozen_reference_integrity_migration_checksums_are_unchanged() {
+    fn hex(bytes: &[u8]) -> String {
+        let mut text = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            write!(&mut text, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        text
+    }
+
+    let migrator = proxima_storage_pg::core_migrator();
+    let v3 = migrator
+        .iter()
+        .find(|migration| migration.version == 3)
+        .expect("version 3 is the frozen reference-integrity migration");
+    let v4 = migrator
+        .iter()
+        .find(|migration| migration.version == 4)
+        .expect("version 4 is the frozen Goal-reference migration");
+    assert_eq!(
+        hex(v3.checksum.as_ref()),
+        "12f6791f63499f45a6af1233b3702a838af7ee8c06b23564a683bf3a6a363f743cc10c922427e3dfc1c2c1c37fd7fab2"
+    );
+    assert_eq!(
+        hex(v4.checksum.as_ref()),
+        "625f7bf3e2fff4064df91be7be755b9455914f8366bcaa5b80b32afa2d802cdc487ba558851074d6602a1877494db119"
+    );
 }
 
 /// `task_goal_v1` hangs off a Goal, so no memory ever stamps it — and a
@@ -1624,7 +2279,7 @@ async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
     Ok(())
 }
 
-/// A v0.0.8 database upgrades through v0.0.10 in place — no reset, no data loss.
+/// A v0.0.8 database upgrades through v0.0.12 in place — no reset, no data loss.
 ///
 /// This is the whole reason the declaration triggers ship as
 /// `0002_v009_declaration_triggers.sql` instead of being pasted into the
@@ -1637,7 +2292,8 @@ async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
 /// hold: boot does not demand a reset, the ledger carries every version, and
 /// the installed invariants are actually live afterwards.
 #[tokio::test]
-async fn a_v008_database_upgrades_to_v011_in_place() {
+#[allow(clippy::too_many_lines)]
+async fn a_v008_database_upgrades_to_v012_in_place() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 
     if let Err(e) = create_db(&db_name).await {
@@ -1693,9 +2349,45 @@ async fn a_v008_database_upgrades_to_v011_in_place() {
         .await?;
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4],
-            "the upgrade appends v0.0.9, v0.0.10 and v0.0.11; it does not re-apply or replace the \
+            vec![1, 2, 3, 4, 5],
+            "the upgrade appends v0.0.9 through v0.0.12; it does not re-apply or replace the \
              baseline"
+        );
+
+        let memory_pin_checks: String = sqlx::query_scalar(
+            "SELECT pg_get_functiondef(
+                 'proxima_core.memory_pin_checks()'::regprocedure
+             )",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            memory_pin_checks.contains("historical_restore")
+                && memory_pin_checks.contains("NEW.goal_refs"),
+            "the final migration must compose erased-target restore with typed Goal refs"
+        );
+        let cooled_seal: String = sqlx::query_scalar(
+            "SELECT pg_get_functiondef(
+                 'proxima_core.cooled_identity_seal()'::regprocedure
+             )",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            cooled_seal.contains("m.goal_refs") && cooled_seal.contains("NEW.goal_refs"),
+            "the final cooled seal must cover the split Goal-reference column"
+        );
+        let cooled_append_only: String = sqlx::query_scalar(
+            "SELECT pg_get_functiondef(
+                 'proxima_core.cooled_append_only()'::regprocedure
+             )",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            cooled_append_only.contains("NEW.goal_refs")
+                && cooled_append_only.contains("OLD.goal_refs"),
+            "the final cooled append-only guard must freeze the split Goal-reference column"
         );
 
         let still_there: bool =
@@ -1721,7 +2413,7 @@ async fn a_v008_database_upgrades_to_v011_in_place() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("v0.0.8 -> v0.0.10 in-place upgrade failed");
+    result.expect("v0.0.8 -> v0.0.12 in-place upgrade failed");
 }
 
 /// Applies the embedded core migrations in `versions`, straight from the
@@ -1880,6 +2572,18 @@ async fn goal_refs_migration_backfills_goals_out_of_the_legacy_refs_column() {
         assert!(
             stale.is_empty(),
             "the backfill must move Goal ids out of refs, not copy them: {stale:?}"
+        );
+
+        // A database paused at the frozen v0.0.11 split must reach the same
+        // final catalog as a fresh apply when the witness lane is replayed.
+        apply_core_migrations(&pool, 5..=5).await?;
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT to_regclass('proxima_core.erased_pin_target') IS NOT NULL",
+            )
+            .fetch_one(&pool)
+            .await?,
+            "the v0.0.12 witness lane must apply after the frozen v0.0.11 split"
         );
 
         // The backfill drops the append-only guard for one statement. It has

@@ -3,7 +3,8 @@ use super::{
     MemoryId, PayloadKind, Postgres, StorageError, Transaction, WakeConfigShape, WakeWrite,
     map_err,
 };
-use crate::verbs::wake_timeseries::{WakeConfigDraft, WakeTriggerKind, insert_wake_config};
+use crate::verbs::goal_timeseries::{GoalWakePlan, load_goal_wake_plan};
+use crate::verbs::wake_timeseries::{WakeConfigDraft, WakeTriggerKind};
 
 type WakeShapeRow = (
     String,
@@ -14,19 +15,19 @@ type WakeShapeRow = (
     Vec<uuid::Uuid>,
 );
 
-pub(super) async fn write_goal_wake_config(
+pub(super) async fn prepare_goal_wake_plan(
     tx: &mut Transaction<'_, Postgres>,
     context: GoalAtomicContext<'_>,
     owner: &proxima_core::Owner,
     wake_write: WakeWrite<'_>,
-) -> Result<Option<uuid::Uuid>, StorageError> {
+) -> Result<GoalWakePlan, StorageError> {
     match wake_write {
         WakeWrite::Explicit(Some(config)) => {
             validate_wake_config_storage(tx, context, config).await?;
             let draft = wake_draft_from_config(config);
-            Ok(Some(insert_wake_config(tx, owner, &draft).await?))
+            Ok(GoalWakePlan::New(draft))
         }
-        WakeWrite::Explicit(None) => Ok(None),
+        WakeWrite::Explicit(None) => Ok(GoalWakePlan::None),
         WakeWrite::CarryFrom(source_goal_id) => {
             let wake_id: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
                 "SELECT wake_id FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
@@ -36,7 +37,10 @@ pub(super) async fn write_goal_wake_config(
             .fetch_optional(&mut **tx)
             .await
             .map_err(map_err)?;
-            Ok(wake_id.flatten())
+            match wake_id.flatten() {
+                Some(wake_id) => load_goal_wake_plan(tx, wake_id).await,
+                None => Ok(GoalWakePlan::None),
+            }
         }
     }
 }

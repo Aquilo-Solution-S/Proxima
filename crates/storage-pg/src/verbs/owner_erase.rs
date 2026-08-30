@@ -436,6 +436,7 @@ async fn open_erase_bookkeeping(
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
     create_selected_sets(tx, owner, scope).await?;
+    lock_selected_lifecycle_targets(tx).await?;
     capture_selected_handles(tx).await?;
     sqlx::query("CREATE TEMP TABLE erase_counts(name text PRIMARY KEY, count bigint NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)
@@ -445,6 +446,21 @@ async fn open_erase_bookkeeping(
         record_count(tx, counter, 0).await?;
     }
     Ok(())
+}
+
+/// Lock the complete Memory ∪ Goal erase footprint before any generated
+/// surface or core row lock. The witness DELETE triggers re-enter these same
+/// locks as a database backstop.
+async fn lock_selected_lifecycle_targets(tx: &mut Tx<'_>) -> Result<(), StorageError> {
+    let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT memory_id FROM selected_memories
+         UNION
+         SELECT goal_id FROM selected_goals",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    super::forget::lock_lifecycle_targets_tx(tx, &ids).await
 }
 
 async fn create_selected_sets(

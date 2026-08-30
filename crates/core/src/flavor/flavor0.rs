@@ -607,6 +607,28 @@ const KERNEL_SURFACES: &[Surface] = &[
         completeness: None,
     },
     Surface {
+        table: "proxima_core.erased_pin_target",
+        key: KeyShape::EntityT { column: "t" },
+        // This is an owner-free historical witness. It is not a Memory
+        // sidecar and must not enter the flavor_surface stamp registry.
+        owner_column: None,
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::Never {
+            why: "a hard-erase witness is permanent technical metadata",
+        },
+        export: ExportRule::Excluded {
+            why: "export must not disclose historical erasure metadata",
+        },
+        forget: ForgetRule::Keep {
+            why: "forget is a reversible cool transition and creates no witness",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "the witness is not an owned entity or a counted sidecar row",
+        },
+        completeness: None,
+    },
+    Surface {
         table: "proxima_core.sketch",
         // A memory t OR a goal t, in one column, with no discriminator —
         // which is exactly what `EntityT` names, and what `Custom` (the arm

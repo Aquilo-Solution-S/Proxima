@@ -281,9 +281,10 @@ async fn cool(pool: &PgPool, t: Uuid, at: &str) -> Result<(), Box<dyn std::error
     sqlx::query(
         "INSERT INTO proxima_core.cooled
              (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id,
-              ingest_key, origins, refs, cooled_at)
+              ingest_key, origins, refs, goal_refs, cooled_at)
          SELECT m.t, m.handle, m.owner_id, m.kind, 'cold/' || m.t::text, m.blob_id,
-                m.content_id, m.source_id, m.ingest_key, m.origins, m.refs, $2::timestamptz
+                m.content_id, m.source_id, m.ingest_key, m.origins, m.refs, m.goal_refs,
+                $2::timestamptz
            FROM proxima_core.memory m WHERE m.t = $1",
     )
     .bind(t)
@@ -605,6 +606,7 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
                 ))::text[]
            FROM information_schema.tables t
           WHERE t.table_schema = 'proxima_core' AND t.table_type = 'BASE TABLE'
+            AND t.table_name <> 'erased_pin_target'
           ORDER BY t.table_name",
     )
     .fetch_all(pool)
@@ -631,11 +633,13 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
                 && let Some(object) = row.as_object_mut()
             {
                 // The pinned pre-v0.0.10 corpus predates the nullable
-                // declaration witnesses. Their dedicated migration tests
-                // cover the new columns; this differential remains focused
-                // on transfer behavior against its historical golden.
+                // declaration witnesses (including the v0.0.11 split).
+                // Dedicated migration tests cover the new columns; this
+                // differential remains focused on transfer behavior against
+                // its historical golden.
                 object.remove("origins");
                 object.remove("refs");
+                object.insert("goal_refs".to_owned(), Value::Null);
             }
             out.push_str(&canonical(&row));
             out.push('\n');

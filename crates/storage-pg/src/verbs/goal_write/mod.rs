@@ -32,7 +32,9 @@ use edges::{assert_goal_topology_references, goal_topology_edge_count};
 use evidence::{
     load_goal_evidence_exact, validate_evidence_in_owner, validate_operator_goal_evidence,
 };
-use insert::insert_or_replay_goal;
+use insert::{
+    PreparedGoalInsert, insert_or_replay_goal, persist_prepared_goal_insert, prepare_goal_insert,
+};
 use lifecycle::{LifecycleWrite, lifecycle_outcome};
 use prior::{
     DraftFromPayload, child_draft, draft_from_payload, draft_from_stored, load_prior_goal,
@@ -44,6 +46,11 @@ use replay::{
 };
 use types::{EvidenceTarget, InsertedGoal, StoredGoal, WakeConfigShape, WakeWrite};
 use wake::goal_wake_matches;
+
+pub(crate) use crate::verbs::goal_timeseries::{
+    GoalWritePreparation, lock_prepared_goal_write, lock_prepared_goal_writes,
+    persist_prepared_goal_write, prepare_goal_write,
+};
 
 pub(crate) use commands::{
     achieve_goal_atomic, create_goal_atomic, create_goal_in_tx, decompose_goal_atomic,

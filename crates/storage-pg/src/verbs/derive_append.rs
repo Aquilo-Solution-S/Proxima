@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
     DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRefKind,
-    SchemaId, SchemaVersion, StorageError,
+    SchemaId, SchemaVersion, SidecarPayload, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -53,13 +53,24 @@ pub(crate) struct DerivedOutcome {
     pub idempotent_replay: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ContentResolution<'a> {
+    pub(crate) content_id: Option<uuid::Uuid>,
+    pub(crate) payloads: Option<&'a [SidecarPayload]>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DerivedAdmissionInput<'a> {
+    pub(crate) origins: &'a [EdgeEndpoint],
+    pub(crate) references: &'a [EdgeEndpoint],
+    pub(crate) sidecar_tables: &'a [String],
+    pub(crate) content: ContentResolution<'a>,
+}
+
 async fn append_derived_timeseries(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
-    origins: &[EdgeEndpoint],
-    references: &[EdgeEndpoint],
-    sidecar_tables: &[String],
-    content_id: Option<uuid::Uuid>,
+    input: DerivedAdmissionInput<'_>,
     sidecar: impl for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
         &'t DerivedOutcome,
@@ -102,11 +113,12 @@ async fn append_derived_timeseries(
                 .map_err(map_err)?;
         if let Some(t) = existing {
             let stored_origins = load_pin_ids(tx, t, PinColumn::Origins).await?;
-            let incoming_origins = pin_memory_ids(origins);
+            let incoming_origins = pin_memory_ids(input.origins);
             if stored_origins == incoming_origins {
                 let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
                 let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
-                let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(references);
+                let (refs, goal_refs) =
+                    super::memory_timeseries::pin_reference_ids(input.references);
                 if stored_refs != refs || stored_goal_refs != goal_refs {
                     return Err(StorageError::Conflict(
                         "derived replay changed declared refs".into(),
@@ -119,7 +131,53 @@ async fn append_derived_timeseries(
             }
         }
     }
-    let cmd = proxima_core::verbs::fact_ingest::FactWriteCommand {
+    let cmd = derived_memory_command(draft, handle, kind);
+    let supersedes_targets = draft
+        .supersedes
+        .map(MemoryId::into_inner)
+        .into_iter()
+        .collect::<Vec<_>>();
+    let prepared = super::memory_timeseries::prepare_memory_admission_with_extra_targets(
+        tx,
+        &draft.owner,
+        &cmd,
+        input.origins,
+        input.references,
+        input.sidecar_tables,
+        &supersedes_targets,
+    )
+    .await?;
+    super::memory_timeseries::lock_prepared_memory_admission(tx, &prepared).await?;
+    let prepared = super::memory_timeseries::claim_prepared_memory_admission(tx, prepared).await?;
+    let content_id = resolve_derived_content_id(
+        tx,
+        draft,
+        kind,
+        input.content.content_id,
+        input.content.payloads,
+    )
+    .await?;
+    let ingested = super::memory_timeseries::materialize_prepared_memory_admission(
+        tx, prepared, None, content_id,
+    )
+    .await?;
+    let outcome = DerivedOutcome {
+        memory_id: ingested.memory_id,
+        idempotent_replay: ingested.idempotent_replay,
+    };
+    sidecar(tx, &outcome).await?;
+    if !outcome.idempotent_replay {
+        settle_derived_embedding(tx, draft, outcome.memory_id).await?;
+    }
+    Ok(outcome)
+}
+
+fn derived_memory_command(
+    draft: &DerivedDraft<'_>,
+    handle: uuid::Uuid,
+    kind: &str,
+) -> proxima_core::verbs::fact_ingest::FactWriteCommand {
+    proxima_core::verbs::fact_ingest::FactWriteCommand {
         schema_id: draft.schema_id.clone(),
         schema_version: draft.schema_version,
         handle: Some(handle),
@@ -137,27 +195,7 @@ async fn append_derived_timeseries(
         refs: Vec::new(),
         blob_id: None,
         kind: kind.into(),
-    };
-    let content_id = resolve_derived_content_id(tx, draft, kind, content_id).await?;
-    let ingested = super::memory_timeseries::ingest_fact_timeseries(
-        tx,
-        &draft.owner,
-        &cmd,
-        origins,
-        references,
-        sidecar_tables,
-        content_id,
-    )
-    .await?;
-    let outcome = DerivedOutcome {
-        memory_id: ingested.memory_id,
-        idempotent_replay: ingested.idempotent_replay,
-    };
-    sidecar(tx, &outcome).await?;
-    if !outcome.idempotent_replay {
-        settle_derived_embedding(tx, draft, outcome.memory_id).await?;
     }
-    Ok(outcome)
 }
 
 async fn settle_derived_embedding(
@@ -199,6 +237,7 @@ async fn resolve_derived_content_id(
     draft: &DerivedDraft<'_>,
     kind: &str,
     content_id: Option<uuid::Uuid>,
+    content_payloads: Option<&[SidecarPayload]>,
 ) -> Result<Option<uuid::Uuid>, StorageError> {
     if let Some(id) = content_id {
         return Ok(Some(id));
@@ -208,6 +247,15 @@ async fn resolve_derived_content_id(
     }
     let owner_id =
         crate::access::owner_columns::ensure_owner_row(tx.as_mut(), &draft.owner).await?;
+    if let Some(payloads) = content_payloads {
+        return crate::verbs::content::ensure_content_from_payloads(
+            tx,
+            owner_id,
+            draft.schema_id.as_str(),
+            payloads,
+        )
+        .await;
+    }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"proxima-content-text-v1\0");
     hasher.update(draft.schema_id.as_str().as_bytes());
@@ -230,6 +278,7 @@ async fn resolve_derived_content_id(
 ///
 /// Returns storage constraint/internal errors from Postgres.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) async fn append_derived_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     permit: &OwnerWritePermit,
@@ -243,17 +292,39 @@ pub(crate) async fn append_derived_in_tx(
         &'t DerivedOutcome,
     ) -> PgSidecarFuture<'t>,
 ) -> Result<DerivedOutcome, StorageError> {
-    validate_permit_owner(permit, &draft.owner)?;
-    append_derived_timeseries(
+    append_derived_with_content_payloads_in_tx(
         tx,
+        permit,
         draft,
-        origins,
-        references,
-        sidecar_tables,
-        content_id,
+        DerivedAdmissionInput {
+            origins,
+            references,
+            sidecar_tables,
+            content: ContentResolution {
+                content_id,
+                payloads: None,
+            },
+        },
         sidecar,
     )
     .await
+}
+
+/// Append a derived row while resolving typed Content from its sidecar after
+/// the complete lifecycle target set is held. The ordinary entry point above
+/// remains available for callers that use text-derived Content.
+pub(crate) async fn append_derived_with_content_payloads_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    permit: &OwnerWritePermit,
+    draft: &DerivedDraft<'_>,
+    input: DerivedAdmissionInput<'_>,
+    sidecar: impl for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t DerivedOutcome,
+    ) -> PgSidecarFuture<'t>,
+) -> Result<DerivedOutcome, StorageError> {
+    validate_permit_owner(permit, &draft.owner)?;
+    append_derived_timeseries(tx, draft, input, sidecar).await
 }
 
 /// Count declared pins; on replay, re-read stored `origins`/`refs` and

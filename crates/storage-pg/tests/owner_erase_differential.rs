@@ -129,6 +129,15 @@ fn draft(
 const TARGET_UPN: &str = "target@example.test";
 const NEIGHBOUR_UPN: &str = "neighbour@example.test";
 
+// Keep these direct-SQL goals after the runtime Memory UUIDv7 values: a
+// PostgreSQL/Rust same-millisecond ordering can otherwise flake the golden
+// export while the corpus still has the same logical insertion order.
+const FIXTURE_GOAL_HANDLES: [Uuid; 3] = [
+    Uuid::from_u128(0xffff_ffff_ffff_7000_8000_0000_0000_0001),
+    Uuid::from_u128(0xffff_ffff_ffff_7000_8000_0000_0000_0002),
+    Uuid::from_u128(0xffff_ffff_ffff_7000_8000_0000_0000_0003),
+];
+
 /// The corpus's admissions, as the write port takes them.
 ///
 /// `lexical_language` is set here rather than in [`draft`]: `agent-note-v1`
@@ -421,9 +430,10 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     for (t, at) in [(t4, "2026-02-02 00:00:00Z"), (t5, "2026-02-03 00:00:00Z")] {
         sqlx::query(
             "INSERT INTO proxima_core.cooled
-                 (t, handle, owner_id, kind, object_key, source_id, ingest_key, cooled_at)
+                 (t, handle, owner_id, kind, object_key, source_id, ingest_key,
+                 origins, refs, goal_refs, cooled_at)
              SELECT m.t, m.handle, m.owner_id, m.kind, 'cold/' || m.t::text, m.source_id,
-                    m.ingest_key, $2::timestamptz
+                    m.ingest_key, m.origins, m.refs, m.goal_refs, $2::timestamptz
                FROM proxima_core.memory m WHERE m.t = $1",
         )
         .bind(t)
@@ -468,11 +478,14 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     }
 
     // Goals, goal heads, wake configs.
-    for (owner_ref, request, prompt) in [
+    for ((owner_ref, request, prompt), goal_handle) in [
         (owner, "req-1", "target prompt"),
         (owner, "req-2", "target prompt two"),
         (other, "req-n", "neighbour prompt"),
-    ] {
+    ]
+    .into_iter()
+    .zip(FIXTURE_GOAL_HANDLES)
+    {
         let wake_id: Uuid = sqlx::query_scalar(
             "INSERT INTO proxima_core.wake_config
                  (owner_id, trigger_kind, trigger_schema_id, tool_ids, prompt)
@@ -483,7 +496,6 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .bind(prompt)
         .fetch_one(pool)
         .await?;
-        let goal_handle = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
              VALUES ($1, 'core/task-goal-v1', $2, $1)",
@@ -606,6 +618,9 @@ fn names_relation(table: &str, relation: &str) -> bool {
 /// have put two dynamic-SQL sites in the tree for a harness, and the whole
 /// point of a harness is that it costs nothing to keep.
 pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::Error>> {
+    // The witness is permanent owner-free erase metadata: the erase-side
+    // snapshot legitimately gains rows that a transfer-side snapshot cannot.
+    // Exclude it so this harness compares only mutable owner-scoped state.
     let relations: Vec<(String, Vec<String>)> = sqlx::query_as(
         "SELECT t.table_name::text,
                 (xpath(
@@ -620,6 +635,7 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
                 ))::text[]
            FROM information_schema.tables t
           WHERE t.table_schema = 'proxima_core' AND t.table_type = 'BASE TABLE'
+            AND t.table_name <> 'erased_pin_target'
           ORDER BY t.table_name",
     )
     .fetch_all(pool)
@@ -638,6 +654,14 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
                 {
                     object.remove(*column);
                 }
+            }
+            if table == "cooled"
+                && let Some(object) = row.as_object_mut()
+            {
+                // The pinned corpus predates the v0.0.11 split. Keep the
+                // column in the normalized shape expected by its golden,
+                // while the migration suite checks its real value.
+                object.insert("goal_refs".to_owned(), Value::Null);
             }
             out.push_str(&canonical(&row));
             out.push('\n');
@@ -786,6 +810,11 @@ async fn export_dump(pg: &PgStorage, user: UserId) -> Result<String, Box<dyn std
                 {
                     object.remove(*column);
                 }
+            }
+            if names_relation(&table, "cooled")
+                && let Some(object) = row.as_object_mut()
+            {
+                object.insert("goal_refs".to_owned(), Value::Null);
             }
             out.push_str(&canonical(&row));
             out.push('\n');

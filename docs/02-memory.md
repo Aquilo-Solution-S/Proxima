@@ -68,6 +68,23 @@ Fact identity is `t`, not content hash or ingest key. Same `(owner, source, inge
 A/P provenance is `origins` (from `derived_from`). Authorship is not a row
 column or pin kind; a write-act Fact may be named in `refs`.
 
+## Historical erase witnesses
+
+Hard erase removes the selected admission and appends one permanent,
+database-only identity witness: the erased `t` and its closed kind
+(`Fact`, `Abstraction`, `Perspective`, or `Goal`). The witness is owner-free
+and carries no payload. It is not a node, a fourth Memory kind, or a third pin
+kind.
+
+Rows that declared the erased `t` keep their `origins[]` and `refs[]` exactly
+as written; hard erase neither cascades into those arrays nor nulls them.
+Ordinary new writes still require live targets and cannot name or reuse a
+witness. Exact cooled restoration is the one historical path that may use a
+correctly kinded witness under the database seal; legacy cooled rows with
+`NULL` pin arrays use ordinary live-target admission. Public graph reads keep
+their existing missing-target/redaction behavior; the witness does not create
+an `Unavailable` state.
+
 ## Edges
 
 Pins connect Memories (and Goal columns pin `t`s). There is no edge table. [16](16-edges.md) is the reference.
@@ -132,13 +149,25 @@ announce
 
 Wake config is `wake_config` (N Goals share `wake_id`). Fire writes a `core/write-act-v1` Fact; produced Memory `refs` += that `t`.
 
+Per-entity admission, hydration, forget, single-entity erase, and the
+supported Goal/wake write paths use one per-`t` lifecycle lock vocabulary. Each
+path derives its complete target union, sorts it, and holds it before row or
+blob locks or persistence. Owner, series, source, and repository sweeps are outside this
+complete-set/no-growth guarantee.
+
 ## Re-derivation and Supersession
 
 Facts have no later version. A/P/Goals may append a later `t` on the same
 `handle`. The old row stays; head `t` moves. No row stores a supersession
 pointer.
 
-Hard delete is abandonment-only (13). Forget cools to `cold/` and leaves `ingest_keys`.
+Hard delete is abandonment-only (13), and retains the historical identity
+witness described above. Forget cools to `cold/` and leaves `ingest_keys`.
+
+`MemoryGraphValid` and the Fact-grounding theorems describe live write and
+operator admission. A committed post-erase graph may use retained validity
+for recorded target kinds, but an erased witness cannot reconstruct an owner
+or establish Fact grounding.
 
 Stateful Fact current-state is head-by-natural-key on the sidecar (03), not supersession.
 

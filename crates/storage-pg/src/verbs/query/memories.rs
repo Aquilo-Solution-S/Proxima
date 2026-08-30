@@ -157,6 +157,19 @@ pub(crate) async fn query_memories(
             (Vec::new(), None)
         };
     let visible_goal_ids: Vec<Uuid> = goals.iter().map(|row| row.id.into_inner()).collect();
+    let visible_goal_set: std::collections::HashSet<Uuid> =
+        visible_goal_ids.iter().copied().collect();
+    for memory in &mut memories {
+        let mut visible = Vec::with_capacity(memory.goal_refs.len());
+        for goal in memory.goal_refs.drain(..) {
+            if visible_goal_set.contains(&goal.into_inner()) {
+                visible.push(goal);
+            } else {
+                memory.refs.push(MemoryId::new(goal.into_inner()));
+            }
+        }
+        memory.goal_refs = visible;
+    }
     let edges = query_edges(req, &memories, &visible_goal_ids);
     let seq_high_water = read_seq_high_water(pool, &owner_ids).await?;
 
@@ -236,7 +249,7 @@ fn memory_page_sql(
                 COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
                 o.kind::text::proxima_core.owner_kind AS owner_kind, \
                 m.owner_id, m.schema_id, m.sidecar_tables, \
-                m.kind::text AS kind, m.origins, m.refs \
+                m.kind::text AS kind, m.origins, m.refs, m.goal_refs \
          {from} \
          JOIN proxima_core.owners o ON o.owner_id = m.owner_id \
          WHERE {owner_pred}"

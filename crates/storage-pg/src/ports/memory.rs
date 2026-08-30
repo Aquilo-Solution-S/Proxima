@@ -52,26 +52,23 @@ impl MemoryAuthoringPort for PgStorage {
                 .await?;
             let sidecars = self.sidecars.writing_derived(&draft);
             let sidecar_payload = req.sidecar_payload.clone();
+            let content_payload = sidecar_payload.clone();
             let tables = self
                 .sidecars
                 .tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
-            let owner_id =
-                crate::access::owner_columns::ensure_owner_row(tx.as_mut(), permit.owner()).await?;
-            let content_id = verbs::content::ensure_content_from_payloads(
-                &mut tx,
-                owner_id,
-                req.schema_id.as_str(),
-                std::slice::from_ref(&sidecar_payload),
-            )
-            .await?;
-            let outcome = verbs::derive_append::append_derived_in_tx(
+            let outcome = verbs::derive_append::append_derived_with_content_payloads_in_tx(
                 &mut tx,
                 permit,
                 &draft,
-                req.origins,
-                req.references,
-                &tables,
-                content_id,
+                verbs::derive_append::DerivedAdmissionInput {
+                    origins: req.origins,
+                    references: req.references,
+                    sidecar_tables: &tables,
+                    content: verbs::derive_append::ContentResolution {
+                        content_id: None,
+                        payloads: Some(std::slice::from_ref(&content_payload)),
+                    },
+                },
                 move |tx, outcome| {
                     Box::pin(async move {
                         sidecars
@@ -90,7 +87,7 @@ impl MemoryAuthoringPort for PgStorage {
                 };
                 verbs::sketch::upsert_sketch(
                     &mut tx,
-                    owner_id,
+                    permit.owner().stored_owner_id(),
                     outcome.memory_id.into_inner(),
                     kind,
                     &verbs::sketch::sketch_line(
