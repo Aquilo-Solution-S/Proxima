@@ -283,6 +283,13 @@ async fn stored_refs(pg: &PgStorage, memory_id: MemoryId) -> Result<Vec<Uuid>, s
         .await
 }
 
+async fn stored_goal_refs(pg: &PgStorage, memory_id: MemoryId) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar("SELECT goal_refs FROM proxima_core.memory WHERE t = $1")
+        .bind(memory_id.into_inner())
+        .fetch_one(pg.pool_for_tests())
+        .await
+}
+
 fn direct_draft(logical_id: &str, raw_refs: Vec<Uuid>) -> FactWriteCommand {
     let mut draft = draft(logical_id, Uuid::now_v7(), Uuid::now_v7());
     draft.schema_id = SchemaId::new("core/upload-v1".into());
@@ -393,8 +400,14 @@ async fn authorized_links_are_persisted_by_engine_uow() {
         let mut uow = engine.unit_of_work(&authz).await?;
         let outcome = uow.ingest_fact("test/uow", &uow_payload).await?;
         uow.commit().await?;
-        let refs = stored_refs(&pg, outcome.memory_id).await?;
-        assert_eq!(refs, vec![fact_id.into_inner(), goal.into_inner()]);
+        assert_eq!(
+            stored_refs(&pg, outcome.memory_id).await?,
+            vec![fact_id.into_inner()]
+        );
+        assert_eq!(
+            stored_goal_refs(&pg, outcome.memory_id).await?,
+            vec![goal.into_inner()]
+        );
         let sidecar_row: (String, Uuid, Uuid) = sqlx::query_as(
             "SELECT logical_id, fact_id, goal_id
                FROM test_refs.referenced_fact_v1
@@ -430,7 +443,11 @@ async fn authorized_links_are_persisted_by_engine_uow() {
             .await?;
         assert_eq!(
             stored_refs(&pg, pool_typed.memory_id).await?,
-            vec![fact_id.into_inner(), goal.into_inner()]
+            vec![fact_id.into_inner()]
+        );
+        assert_eq!(
+            stored_goal_refs(&pg, pool_typed.memory_id).await?,
+            vec![goal.into_inner()]
         );
 
         let outbound = engine
@@ -531,7 +548,11 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
             .await?;
         assert_eq!(
             stored_refs(&pg, inline.memory_id).await?,
-            vec![fact_id.into_inner(), goal_id.into_inner()]
+            vec![fact_id.into_inner()]
+        );
+        assert_eq!(
+            stored_goal_refs(&pg, inline.memory_id).await?,
+            vec![goal_id.into_inner()]
         );
         let cited_object_id = inline.cited_object_id.expect("inline citation blob");
 
@@ -566,7 +587,11 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
             .await?;
         assert_eq!(
             stored_refs(&pg, by_ref.memory_id).await?,
-            vec![fact_id.into_inner(), goal_id.into_inner()]
+            vec![fact_id.into_inner()]
+        );
+        assert_eq!(
+            stored_goal_refs(&pg, by_ref.memory_id).await?,
+            vec![goal_id.into_inner()]
         );
         Ok(())
     }
@@ -841,7 +866,7 @@ async fn uow_rejects_session_visible_target_kind_mismatch() {
 }
 
 #[tokio::test]
-async fn sql_accepts_goal_references_but_rejects_goal_origins() {
+async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
     let (db_name, pg, registry) = bootstrap().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner();
@@ -860,14 +885,78 @@ async fn sql_accepts_goal_references_but_rejects_goal_origins() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                (handle, t, kind, owner_id, schema_id, origins, refs, sidecar_tables)
-             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', $3, '{}')",
+                (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
+                 sidecar_tables)
+             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}')",
         )
         .bind(reference_handle)
         .bind(owner.stored_owner_id())
         .bind(vec![goal.into_inner()])
         .execute(pool)
         .await?;
+
+        // `refs` is the Memory spine now, so it rejects a Goal t exactly as
+        // `origins` always did. Before the split this same insert succeeded.
+        let memory_ref_handle = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/upload-v1', $2, $1)",
+        )
+        .bind(memory_ref_handle)
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+        let error = sqlx::query(
+            "INSERT INTO proxima_core.memory
+                (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
+                 sidecar_tables)
+             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', $3, '{}', '{}')",
+        )
+        .bind(memory_ref_handle)
+        .bind(owner.stored_owner_id())
+        .bind(vec![goal.into_inner()])
+        .execute(pool)
+        .await
+        .expect_err("Goal t must not be accepted in refs");
+        assert_eq!(
+            error
+                .as_database_error()
+                .and_then(sqlx::error::DatabaseError::code)
+                .map(|code| code.to_string()),
+            Some("23503".to_owned())
+        );
+
+        // And the mirror image: `goal_refs` is the Goal spine, so a Memory
+        // t is not a Goal reference either. Neither column is a place to
+        // put an id of the other kind.
+        let goal_ref_handle = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/upload-v1', $2, $1)",
+        )
+        .bind(goal_ref_handle)
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+        let error = sqlx::query(
+            "INSERT INTO proxima_core.memory
+                (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
+                 sidecar_tables)
+             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}')",
+        )
+        .bind(goal_ref_handle)
+        .bind(owner.stored_owner_id())
+        .bind(vec![perspective.into_inner()])
+        .execute(pool)
+        .await
+        .expect_err("a Memory t must not be accepted in goal_refs");
+        assert_eq!(
+            error
+                .as_database_error()
+                .and_then(sqlx::error::DatabaseError::code)
+                .map(|code| code.to_string()),
+            Some("23503".to_owned())
+        );
 
         let origin_handle = Uuid::now_v7();
         sqlx::query(
@@ -900,7 +989,7 @@ async fn sql_accepts_goal_references_but_rejects_goal_origins() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("Goal reference/origin SQL distinction failed");
+    result.expect("Goal reference column SQL distinction failed");
 }
 
 #[tokio::test]
@@ -938,8 +1027,9 @@ async fn goal_erase_serializes_against_reference_admission() {
                 .map_err(|_| sqlx::Error::Protocol("lock-wait observer was dropped".to_owned()))?;
             sqlx::query(
                 "INSERT INTO proxima_core.memory
-                    (handle, t, kind, owner_id, schema_id, origins, refs, sidecar_tables)
-                 VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', $3, '{}')",
+                    (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
+                     sidecar_tables)
+                 VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}')",
             )
             .bind(handle)
             .bind(owner_id)
@@ -1116,7 +1206,11 @@ async fn storage_persists_authorized_links_not_draft_refs() {
         let outcome = pg.ingest_authorized_fact_atomic(&authorized, None).await?;
         assert_eq!(
             stored_refs(&pg, outcome.memory_id).await?,
-            vec![fact_a.into_inner(), goal.into_inner()]
+            vec![fact_a.into_inner()]
+        );
+        assert_eq!(
+            stored_goal_refs(&pg, outcome.memory_id).await?,
+            vec![goal.into_inner()]
         );
 
         // The engine keeps the storage conflict's caller-fixable class when
@@ -1202,7 +1296,11 @@ async fn receipt_replay_requires_identical_authorized_refs() {
         assert!(matches!(error, StorageError::Conflict(message) if message.contains("refs")));
         assert_eq!(
             stored_refs(&pg, outcome.memory_id).await?,
-            vec![fact_a.into_inner(), goal.into_inner()]
+            vec![fact_a.into_inner()]
+        );
+        assert_eq!(
+            stored_goal_refs(&pg, outcome.memory_id).await?,
+            vec![goal.into_inner()]
         );
         Ok(())
     }

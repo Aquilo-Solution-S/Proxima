@@ -194,11 +194,13 @@ pub struct PinNode {
     /// that crossed the authorization boundary.
     pub schema_id: SchemaId,
     pub origins: Vec<MemoryId>,
-    /// Raw reference ids that have not been resolved as readable Goals. A
-    /// missing target stays here so edge projection can redact it without
-    /// disclosing whether it was a Memory or Goal.
+    /// Memory reference ids, plus any Goal reference the reader may not see.
+    /// An unreadable target stays here so edge projection can redact it
+    /// without disclosing whether it was a Memory or Goal.
     pub refs: Vec<MemoryId>,
-    /// Goal references resolved by an owner-scoped batch read.
+    /// Goal references. Storage now stores these in their own column, so
+    /// they arrive already typed; [`Self::resolve_visible_goal_refs`] then
+    /// keeps only the ones this reader may see.
     pub goal_refs: Vec<GoalId>,
 }
 
@@ -225,22 +227,30 @@ impl PinNode {
             .map(|id| (id, EdgeKind::Reference))
     }
 
-    /// Move readable Goal references out of the raw UUID carrier.
+    /// Drop the Goal references this reader may not see into the raw
+    /// carrier, keeping only the readable ones typed as Goals.
+    ///
+    /// NON-DISCLOSURE. Storage knows which references are Goals, but a
+    /// reader must not learn that about a target it cannot read: an
+    /// unreadable Goal and an unreadable Memory have to be indistinguishable.
+    /// So an unreadable Goal is pushed back into `refs`, where projection
+    /// redacts it through the very same path as an unreadable Memory. The
+    /// stored column narrows which spine gets probed and nothing else — it
+    /// is never an authorization or projection input.
     pub fn resolve_visible_goal_refs(&mut self, visible: &[GoalId]) {
-        if visible.is_empty() || self.refs.is_empty() {
+        if self.goal_refs.is_empty() {
             return;
         }
         let visible: std::collections::HashSet<_> = visible.iter().copied().collect();
-        let mut unresolved = Vec::with_capacity(self.refs.len());
-        for id in self.refs.drain(..) {
-            let goal = GoalId::new(id.into_inner());
+        let mut readable = Vec::with_capacity(self.goal_refs.len());
+        for goal in self.goal_refs.drain(..) {
             if visible.contains(&goal) {
-                self.goal_refs.push(goal);
+                readable.push(goal);
             } else {
-                unresolved.push(id);
+                self.refs.push(MemoryId::new(goal.into_inner()));
             }
         }
-        self.refs = unresolved;
+        self.goal_refs = readable;
     }
 }
 
@@ -488,11 +498,12 @@ mod tests {
             kind: EntityKind::Fact,
             schema_id: crate::SchemaId::new("test/pin-v1".into()),
             origins: Vec::new(),
-            refs: vec![MemoryId::new(goal.into_inner())],
-            goal_refs: Vec::new(),
+            refs: Vec::new(),
+            goal_refs: vec![goal],
         };
         node.resolve_visible_goal_refs(&[goal]);
         assert!(node.refs.is_empty());
+        assert_eq!(node.goal_refs, vec![goal]);
         let edges = project_window_edges(&[node], 50);
         assert_eq!(edges.len(), 1);
         assert!(matches!(
@@ -514,10 +525,15 @@ mod tests {
             kind: EntityKind::Fact,
             schema_id: crate::SchemaId::new("test/pin-v1".into()),
             origins: Vec::new(),
-            refs: vec![MemoryId::new(goal.into_inner())],
-            goal_refs: Vec::new(),
+            refs: Vec::new(),
+            goal_refs: vec![goal],
         };
+        // Storage typed it as a Goal, but this reader cannot see it, so it
+        // falls back into the raw carrier and redacts exactly as an
+        // unreadable Memory would. The stored column must not leak.
         node.resolve_visible_goal_refs(&[]);
+        assert!(node.goal_refs.is_empty());
+        assert_eq!(node.refs, vec![MemoryId::new(goal.into_inner())]);
         let edges = project_listed_edge(
             node.kind,
             node.id,
@@ -526,6 +542,87 @@ mod tests {
             &std::collections::HashMap::new(),
         );
         assert!(matches!(edges.target, EdgeTargetProjection::Redacted));
+    }
+
+    /// The non-disclosure invariant the split exists to preserve: after
+    /// `resolve_visible_goal_refs`, an unreadable Goal and an unreadable
+    /// Memory must be indistinguishable downstream. If the typed column
+    /// short-circuited straight to projection, a reader could tell a
+    /// withheld Goal from a withheld Memory and learn which spine a
+    /// target they may not read lives on -- the discriminant itself is
+    /// the leak, even with the id withheld.
+    #[test]
+    fn an_unreadable_goal_and_an_unreadable_memory_project_identically() {
+        let source = MemoryId::new(uuid::Uuid::now_v7());
+        // One raw id, read down each spine, so the projections can only
+        // differ by the spine and never by the target's value.
+        let raw = uuid::Uuid::now_v7();
+
+        let mut from_goal_spine = PinNode {
+            id: source,
+            kind: EntityKind::Fact,
+            schema_id: crate::SchemaId::new("test/pin-v1".into()),
+            origins: Vec::new(),
+            refs: Vec::new(),
+            goal_refs: vec![GoalId::new(raw)],
+        };
+        from_goal_spine.resolve_visible_goal_refs(&[]);
+
+        let from_memory_spine = PinNode {
+            id: source,
+            kind: EntityKind::Fact,
+            schema_id: crate::SchemaId::new("test/pin-v1".into()),
+            origins: Vec::new(),
+            refs: vec![MemoryId::new(raw)],
+            goal_refs: Vec::new(),
+        };
+
+        // The carrier itself must already be identical -- that is what
+        // makes every downstream reader identical for free.
+        assert_eq!(from_goal_spine.refs, from_memory_spine.refs);
+        assert_eq!(from_goal_spine.goal_refs, from_memory_spine.goal_refs);
+
+        let nothing_visible = std::collections::HashMap::new();
+        let project = |node: &PinNode| {
+            project_listed_edge(
+                node.kind,
+                node.id,
+                node.refs[0],
+                EdgeKind::Reference,
+                &nothing_visible,
+            )
+        };
+        let goal_edge = project(&from_goal_spine);
+        let memory_edge = project(&from_memory_spine);
+        assert_eq!(goal_edge, memory_edge);
+        assert!(matches!(goal_edge.target, EdgeTargetProjection::Redacted));
+        // Serialized too: the wire form is what actually reaches a reader.
+        assert_eq!(
+            serde_json::to_string(&goal_edge.target).expect("projection serializes"),
+            serde_json::to_string(&memory_edge.target).expect("projection serializes"),
+        );
+    }
+
+    /// The window projection trusts `goal_refs` to hold only readable
+    /// Goals, so an unresolved node must not reach it. Resolution is the
+    /// step that enforces that, and dropping it is the way the leak
+    /// above gets reintroduced.
+    #[test]
+    fn resolution_is_what_empties_goal_refs_of_unreadable_goals() {
+        let mut node = PinNode {
+            id: MemoryId::new(uuid::Uuid::now_v7()),
+            kind: EntityKind::Fact,
+            schema_id: crate::SchemaId::new("test/pin-v1".into()),
+            origins: Vec::new(),
+            refs: Vec::new(),
+            goal_refs: vec![GoalId::new(uuid::Uuid::now_v7())],
+        };
+        assert_eq!(project_window_edges(&[node.clone()], 50).len(), 1);
+        node.resolve_visible_goal_refs(&[]);
+        assert!(
+            project_window_edges(&[node], 50).is_empty(),
+            "a resolved-away Goal must leave nothing for the window to project"
+        );
     }
 
     #[test]

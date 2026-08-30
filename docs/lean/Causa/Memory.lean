@@ -84,7 +84,14 @@ structure Memory where
   kind       : MemoryKind
   owner      : Owner
   origins    : List MemoryId
+  /-- Reference pins onto the Memory spine. Since v0.0.11 this column is
+      Memory-only: a Goal reference lives in `goal_refs`, so the column
+      itself carries the target's kind and no reader has to re-derive it. -/
   refs       : List MemoryId
+  /-- Reference pins onto the Goal spine, kept apart from `refs` so that
+      `refs` is typed. Goal-declared pins still live on the Goal row; this
+      is the Memory row's own reference to a Goal. -/
+  goal_refs  : List GoalId
   blob_id    : Option BlobId
   content_id : Option ContentId
   tick       : Instant
@@ -103,20 +110,22 @@ def memory_kind : Memory → MemoryKind := Memory.kind
 def memory_owner : Memory → Owner := Memory.owner
 def memory_origins : Memory → List MemoryId := Memory.origins
 def memory_refs : Memory → List MemoryId := Memory.refs
+def memory_goal_refs : Memory → List GoalId := Memory.goal_refs
 def memory_blob_id : Memory → Option BlobId := Memory.blob_id
 def memory_content_id : Memory → Option ContentId := Memory.content_id
 def memory_tick : Memory → Instant := Memory.tick
 
 theorem memory_field_projection
     (handle : Handle) (t : MemoryId) (kind : MemoryKind) (owner : Owner)
-    (origins refs : List MemoryId) (blob_id : Option BlobId)
+    (origins refs : List MemoryId) (goal_refs : List GoalId)
+    (blob_id : Option BlobId)
     (content_id : Option ContentId) (tick : Instant)
     (fact_origins_empty : kind = .Fact → origins = [])
     (perspective_never_cites : kind = .Perspective → blob_id = none)
     (blob_fa_only : blob_id ≠ none → kind = .Fact ∨ kind = .Abstraction) :
     memory_t
-      (Memory.mk handle t kind owner origins refs blob_id content_id tick
-        fact_origins_empty perspective_never_cites blob_fa_only) = t := rfl
+      (Memory.mk handle t kind owner origins refs goal_refs blob_id content_id
+        tick fact_origins_empty perspective_never_cites blob_fa_only) = t := rfl
 
 /-- `t` uniqueness is a table/store invariant. -/
 def MemoryIdUnique (memories : Set Memory) : Prop :=

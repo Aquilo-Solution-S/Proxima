@@ -105,7 +105,9 @@ async fn append_derived_timeseries(
             let incoming_origins = pin_memory_ids(origins);
             if stored_origins == incoming_origins {
                 let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
-                if stored_refs != super::memory_timeseries::pin_entity_ids(references) {
+                let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
+                let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(references);
+                if stored_refs != refs || stored_goal_refs != goal_refs {
                     return Err(StorageError::Conflict(
                         "derived replay changed declared refs".into(),
                     ));
@@ -278,8 +280,11 @@ pub(crate) async fn assert_derived_index_rows(
         let t = outcome.memory_id.into_inner();
         let stored_origins = load_pin_ids(tx, t, PinColumn::Origins).await?;
         let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
+        let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
+        let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(references);
         if stored_origins != pin_memory_ids(origins)
-            || stored_refs != super::memory_timeseries::pin_entity_ids(references)
+            || stored_refs != refs
+            || stored_goal_refs != goal_refs
         {
             return Err(StorageError::Conflict(
                 "derived replay changed declared index rows".into(),
@@ -292,12 +297,23 @@ pub(crate) async fn assert_derived_index_rows(
 enum PinColumn {
     Origins,
     Refs,
+    GoalRefs,
 }
 
+/// Origins as the write path persists them: declaration order, duplicates
+/// dropped. Comparing a replay against a non-deduplicating projection would
+/// miss the replay and append a second version of the same declaration.
 fn pin_memory_ids(pins: &[EdgeEndpoint]) -> Vec<uuid::Uuid> {
-    pins.iter()
+    let mut ids = Vec::with_capacity(pins.len());
+    for id in pins
+        .iter()
         .filter_map(|ep| ep.memory_id().map(MemoryId::into_inner))
-        .collect()
+    {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
 }
 
 async fn load_pin_ids(
@@ -308,6 +324,7 @@ async fn load_pin_ids(
     let sql = match column {
         PinColumn::Origins => "SELECT unnest(origins) FROM proxima_core.memory WHERE t = $1",
         PinColumn::Refs => "SELECT unnest(refs) FROM proxima_core.memory WHERE t = $1",
+        PinColumn::GoalRefs => "SELECT unnest(goal_refs) FROM proxima_core.memory WHERE t = $1",
     };
     // SQL-POLICY: fixed-fragment
     sqlx::query_scalar(sql)

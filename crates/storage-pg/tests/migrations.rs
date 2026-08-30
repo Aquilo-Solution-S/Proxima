@@ -558,7 +558,7 @@ async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id, refs)
+                 (handle, t, kind, owner_id, schema_id, goal_refs)
              VALUES ($1, $2, 'fact', $3, 'test/fact-v1', ARRAY[$4]::uuid[])",
         )
         .bind(fact_handle)
@@ -1637,7 +1637,7 @@ async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
 /// hold: boot does not demand a reset, the ledger carries every version, and
 /// the installed invariants are actually live afterwards.
 #[tokio::test]
-async fn a_v008_database_upgrades_to_v010_in_place() {
+async fn a_v008_database_upgrades_to_v011_in_place() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 
     if let Err(e) = create_db(&db_name).await {
@@ -1693,8 +1693,9 @@ async fn a_v008_database_upgrades_to_v010_in_place() {
         .await?;
         assert_eq!(
             versions,
-            vec![1, 2, 3],
-            "the upgrade appends v0.0.9 and v0.0.10; it does not re-apply or replace the baseline"
+            vec![1, 2, 3, 4],
+            "the upgrade appends v0.0.9, v0.0.10 and v0.0.11; it does not re-apply or replace the \
+             baseline"
         );
 
         let still_there: bool =
@@ -1721,4 +1722,193 @@ async fn a_v008_database_upgrades_to_v010_in_place() {
 
     let _ = drop_db(&db_name).await;
     result.expect("v0.0.8 -> v0.0.10 in-place upgrade failed");
+}
+
+/// Applies the embedded core migrations in `versions`, straight from the
+/// shipped files, so a test can stand a database up at an older schema and
+/// then step it forward one migration at a time. The ledger is deliberately
+/// not written: nothing here goes on to call `run_migrations`.
+async fn apply_core_migrations(
+    pool: &sqlx::PgPool,
+    versions: std::ops::RangeInclusive<i64>,
+) -> Result<(), sqlx::Error> {
+    let migrator = proxima_storage_pg::core_migrator();
+    for migration in migrator.iter().filter(|m| versions.contains(&m.version)) {
+        sqlx::raw_sql(migration.sql.clone()).execute(pool).await?;
+    }
+    Ok(())
+}
+
+/// v0.0.11 splits Goal references out of `refs` into their own column. The
+/// rows already on disk were written when `refs` was the only place a Goal
+/// reference could go, so the migration has to move them -- and move only
+/// them, leaving Memory references where they are.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn goal_refs_migration_backfills_goals_out_of_the_legacy_refs_column() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = sqlx::PgPool::connect(&url).await?;
+        // Stop one short of the split: this is the v0.0.10 schema, where a
+        // Goal t in `refs` is exactly what the writer produced.
+        apply_core_migrations(&pool, 1..=3).await?;
+        assert!(
+            !sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (
+                     SELECT 1 FROM information_schema.columns
+                      WHERE table_schema = 'proxima_core'
+                        AND table_name = 'memory'
+                        AND column_name = 'goal_refs'
+                 )",
+            )
+            .fetch_one(&pool)
+            .await?,
+            "the fixture must be seeded before the column exists"
+        );
+
+        let owner = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner)
+            .execute(&pool)
+            .await?;
+
+        let goal_handle = Uuid::now_v7();
+        let goal_t = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+             VALUES ($1, 'test/goal-v1', $2, $3)",
+        )
+        .bind(goal_handle)
+        .bind(owner)
+        .bind(goal_t)
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.goal
+                 (handle, t, owner_id, title, state, request_id)
+             VALUES ($1, $2, $3, 'legacy target', 'Active', 'legacy-goal')",
+        )
+        .bind(goal_handle)
+        .bind(goal_t)
+        .bind(owner)
+        .execute(&pool)
+        .await?;
+
+        let seed_fact = async |refs: Vec<Uuid>| -> Result<Uuid, sqlx::Error> {
+            let handle = Uuid::now_v7();
+            let t = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                 VALUES ($1, 'fact', 'test/fact-v1', $2, $3)",
+            )
+            .bind(handle)
+            .bind(owner)
+            .bind(t)
+            .execute(&pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.memory
+                     (handle, t, kind, owner_id, schema_id, refs)
+                 VALUES ($1, $2, 'fact', $3, 'test/fact-v1', $4)",
+            )
+            .bind(handle)
+            .bind(t)
+            .bind(owner)
+            .bind(&refs)
+            .execute(&pool)
+            .await?;
+            Ok(t)
+        };
+
+        let plain = seed_fact(Vec::new()).await?;
+        let memory_only = seed_fact(vec![plain]).await?;
+        // The row the migration exists for: one Goal and one Memory in the
+        // same untyped array.
+        let mixed = seed_fact(vec![plain, goal_t]).await?;
+        let goal_only = seed_fact(vec![goal_t]).await?;
+
+        apply_core_migrations(&pool, 4..=4).await?;
+
+        let stored = async |t: Uuid| -> Result<(Vec<Uuid>, Vec<Uuid>), sqlx::Error> {
+            sqlx::query_as("SELECT refs, goal_refs FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(&pool)
+                .await
+        };
+        assert_eq!(stored(plain).await?, (vec![], vec![]));
+        assert_eq!(
+            stored(memory_only).await?,
+            (vec![plain], vec![]),
+            "a Memory reference must stay in refs and must not be re-typed as a Goal"
+        );
+        assert_eq!(
+            stored(mixed).await?,
+            (vec![plain], vec![goal_t]),
+            "the split must partition a mixed array, not move the whole of it"
+        );
+        assert_eq!(stored(goal_only).await?, (vec![], vec![goal_t]));
+
+        // A backfilled row has to be findable on the spine the reader now
+        // queries -- that is what makes it project Visible rather than
+        // silently disappear. The Goal-target read lane scans `goal_refs`,
+        // so this is the predicate that decides it.
+        let mut found: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT t FROM proxima_core.memory WHERE goal_refs && ARRAY[$1]::uuid[]",
+        )
+        .bind(goal_t)
+        .fetch_all(&pool)
+        .await?;
+        found.sort();
+        let mut want = vec![mixed, goal_only];
+        want.sort();
+        assert_eq!(
+            found, want,
+            "every backfilled row must be found on the Goal spine"
+        );
+
+        // And the move is a move, not a copy: the pre-split predicate finds
+        // nothing, so no reader can reach the Goal through `refs` any more.
+        let stale: Vec<Uuid> =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE refs && ARRAY[$1]::uuid[]")
+                .bind(goal_t)
+                .fetch_all(&pool)
+                .await?;
+        assert!(
+            stale.is_empty(),
+            "the backfill must move Goal ids out of refs, not copy them: {stale:?}"
+        );
+
+        // The backfill drops the append-only guard for one statement. It has
+        // to be back afterwards, or the split would leave `memory` writable.
+        let err = sqlx::query("UPDATE proxima_core.memory SET refs = '{}' WHERE t = $1")
+            .bind(mixed)
+            .execute(&pool)
+            .await
+            .expect_err("append-only must be restored after the backfill");
+        assert!(
+            err.to_string().contains("append-only"),
+            "the restored guard must be the append-only one: {err}"
+        );
+
+        // And the new column joins that guard rather than becoming the one
+        // mutable pin array.
+        let err = sqlx::query("UPDATE proxima_core.memory SET goal_refs = '{}' WHERE t = $1")
+            .bind(mixed)
+            .execute(&pool)
+            .await
+            .expect_err("goal_refs must be append-only too");
+        assert!(
+            err.to_string().contains("append-only"),
+            "goal_refs must be covered by the append-only guard: {err}"
+        );
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("goal_refs backfill test failed");
 }

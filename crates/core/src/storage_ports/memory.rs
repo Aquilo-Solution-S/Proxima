@@ -8,6 +8,10 @@ pub struct InboundPinQuery<'a> {
     pub heads_only: bool,
     pub after: Option<MemoryId>,
     pub limit: u32,
+    /// Whether `targets` name Goals rather than Memories. Reference pins now
+    /// live in two columns, so the backend searches exactly the one this
+    /// target kind can appear in instead of scanning a mixed array.
+    pub goal_targets: bool,
 }
 
 use crate::edge::{EdgeKind, PinNode};

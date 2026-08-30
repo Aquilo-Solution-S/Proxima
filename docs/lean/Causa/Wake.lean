@@ -143,6 +143,7 @@ def mkFact (handle : Handle) (id : MemoryId) (o : Owner) (tick : Instant) : Memo
   owner := o
   origins := []
   refs := []
+  goal_refs := []
   blob_id := none
   content_id := none
   tick := tick

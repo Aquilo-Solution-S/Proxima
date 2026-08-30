@@ -6,8 +6,8 @@
 {"blob_id":"<id007>","content_hash":"\\x1515151515151515151515151515151515151515151515151515151515151515","schema_id":"core/bytes-v1"}
 {"blob_id":"<id008>","content_hash":"\\x1616161616161616161616161616161616161616161616161616161616161616","schema_id":"core/bytes-v1"}
 ## export proxima_core.cooled (2)
-{"blob_id":null,"content_id":null,"cooled_at":"<ts009>","handle":"<id010>","ingest_key":"k4","kind":"fact","object_key":"cold/<id011>","owner_id":"<id012>","source_id":"src-a","t":"<id011>"}
-{"blob_id":null,"content_id":null,"cooled_at":"<ts013>","handle":"<id014>","ingest_key":"k5","kind":"fact","object_key":"cold/<id015>","owner_id":"<id012>","source_id":"src-b","t":"<id015>"}
+{"blob_id":null,"content_id":null,"cooled_at":"<ts009>","goal_refs":null,"handle":"<id010>","ingest_key":"k4","kind":"fact","object_key":"cold/<id011>","owner_id":"<id012>","source_id":"src-a","t":"<id011>"}
+{"blob_id":null,"content_id":null,"cooled_at":"<ts013>","goal_refs":null,"handle":"<id014>","ingest_key":"k5","kind":"fact","object_key":"cold/<id015>","owner_id":"<id012>","source_id":"src-b","t":"<id015>"}
 ## export proxima_core.delegated_authority_grants (1)
 {"action_name":null,"auth_epoch":1,"expires_at":"<ts016>","issued_at":"<ts017>","owner_id":"<id012>","owner_kind":"personal","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id012>","tool_name":"core_remember","write_ceiling":"fact"}
 ## export proxima_core.goal (2)
@@ -23,9 +23,9 @@
 {"actor_oid":"oid","actor_upn":"target@example.test","error":null,"io_byte_len":11,"io_content_hash":"\\x2929292929292929292929292929292929292929292929292929292929292929","io_truncated":false,"latency_ms":7,"ok":true,"owner_id":"<id012>","t":"<id002>","tool_name":"core_remember"}
 {"actor_oid":"oid","actor_upn":"target@example.test","error":null,"io_byte_len":11,"io_content_hash":"\\x2929292929292929292929292929292929292929292929292929292929292929","io_truncated":false,"latency_ms":7,"ok":true,"owner_id":"<id012>","t":"<id006>","tool_name":"core_remember"}
 ## export proxima_core.memory (3)
-{"blob_id":null,"content_id":"<id022>","handle":"<id023>","ingest_key":"k1","kind":"fact","origins":[],"owner_id":"<id012>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-a","t":"<id002>"}
-{"blob_id":"<id007>","content_id":"<id024>","handle":"<id023>","ingest_key":"k2","kind":"fact","origins":[],"owner_id":"<id012>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id004>"}
-{"blob_id":null,"content_id":"<id022>","handle":"<id025>","ingest_key":"k3","kind":"fact","origins":[],"owner_id":"<id012>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-b","t":"<id006>"}
+{"blob_id":null,"content_id":"<id022>","goal_refs":[],"handle":"<id023>","ingest_key":"k1","kind":"fact","origins":[],"owner_id":"<id012>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-a","t":"<id002>"}
+{"blob_id":"<id007>","content_id":"<id024>","goal_refs":[],"handle":"<id023>","ingest_key":"k2","kind":"fact","origins":[],"owner_id":"<id012>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id004>"}
+{"blob_id":null,"content_id":"<id022>","goal_refs":[],"handle":"<id025>","ingest_key":"k3","kind":"fact","origins":[],"owner_id":"<id012>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-b","t":"<id006>"}
 ## export proxima_core.sketch (7)
 {"kind":"fact","owner_id":"<id012>","t":"<id002>","text":"fact"}
 {"kind":"fact","owner_id":"<id012>","t":"<id004>","text":"fact"}
@@ -85,7 +85,7 @@
 ## proxima_core.mcp_call_logged_v1 (1)
 {"actor_oid":"oid","actor_upn":"neighbour@example.test","error":null,"io_byte_len":11,"io_content_hash":"\\x2929292929292929292929292929292929292929292929292929292929292929","io_truncated":false,"latency_ms":7,"ok":true,"owner_id":"<id031>","t":"<id029>","tool_name":"core_remember"}
 ## proxima_core.memory (1)
-{"blob_id":null,"content_id":null,"handle":"<id030>","ingest_key":"n1","kind":"fact","origins":[],"owner_id":"<id031>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-a","t":"<id029>"}
+{"blob_id":null,"content_id":null,"goal_refs":[],"handle":"<id030>","ingest_key":"n1","kind":"fact","origins":[],"owner_id":"<id031>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-a","t":"<id029>"}
 ## proxima_core.memory_head (1)
 {"handle":"<id030>","kind":"fact","owner_id":"<id031>","schema_id":"core/test-fact-v1","t":"<id029>"}
 ## proxima_core.owners (2)

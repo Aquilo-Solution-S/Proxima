@@ -16,7 +16,7 @@ pub async fn query_heads(
 ) -> Result<Vec<MemoryRow>, StorageError> {
     sqlx::query_as(
         "SELECT m.handle, m.t, m.kind::text, m.owner_id, m.source_id, m.ingest_key,
-                m.origins, m.refs
+                m.origins, m.refs, m.goal_refs
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
           WHERE h.owner_id = $1 AND h.schema_id = $2

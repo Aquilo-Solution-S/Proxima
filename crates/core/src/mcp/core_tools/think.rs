@@ -336,6 +336,7 @@ async fn next_hop(
                     &ctx.authz,
                     InboundPinQuery {
                         targets: frontier,
+                        goal_targets: false,
                         kind: Some(EdgeKind::Origin),
                         heads_only: false,
                         after: None,
@@ -434,6 +435,7 @@ async fn episode_siblings(
             &ctx.authz,
             InboundPinQuery {
                 targets: &targets,
+                goal_targets: false,
                 kind: Some(crate::EdgeKind::Reference),
                 heads_only: false,
                 after,
