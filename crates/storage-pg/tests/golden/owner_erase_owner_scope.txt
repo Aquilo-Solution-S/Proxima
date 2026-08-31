@@ -74,6 +74,7 @@
 {"assignment_t":null,"close_fact_t":null,"dependency_t":[],"evidence_t":[],"handle":"<id037>","owner_id":"<id031>","request_id":"req-n","state":"Active","t":"<id037>","title":"a goal","wake_id":"<id038>","write_act_t":null}
 ## proxima_core.goal_head (1)
 {"handle":"<id037>","owner_id":"<id031>","schema_id":"core/task-goal-v1","t":"<id037>"}
+## proxima_core.goal_replay_declaration (0)
 ## proxima_core.group_memberships (0)
 ## proxima_core.ingest_keys (1)
 {"ingest_key":"n1","owner_id":"<id031>","source_id":"src-a","t":"<id029>"}

@@ -88,6 +88,7 @@
 {"handle":"<id018>","owner_id":"<id012>","schema_id":"core/task-goal-v1","t":"<id018>"}
 {"handle":"<id020>","owner_id":"<id012>","schema_id":"core/task-goal-v1","t":"<id020>"}
 {"handle":"<id043>","owner_id":"<id032>","schema_id":"core/task-goal-v1","t":"<id043>"}
+## proxima_core.goal_replay_declaration (0)
 ## proxima_core.group_memberships (0)
 ## proxima_core.ingest_keys (3)
 {"ingest_key":"k3","owner_id":"<id012>","source_id":"src-b","t":"<id006>"}

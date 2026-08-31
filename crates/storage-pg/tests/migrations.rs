@@ -1214,6 +1214,72 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         ensure_core_schema_markers(pg.pool_for_tests()).await?;
 
         sqlx::query(
+            "DROP TRIGGER goal_replay_declaration_append_only
+               ON proxima_core.goal_replay_declaration",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        let err = ensure_core_schema_markers(pg.pool_for_tests())
+            .await
+            .expect_err("missing Goal replay append-only trigger must reject --stamp");
+        assert!(
+            err.to_string().contains("append-only trigger"),
+            "marker error must name the missing Goal replay trigger: {err}"
+        );
+        sqlx::query(
+            "CREATE TRIGGER goal_replay_declaration_append_only
+             BEFORE UPDATE ON proxima_core.goal_replay_declaration
+             FOR EACH ROW
+             EXECUTE FUNCTION proxima_core.enforce_row_append_only()",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+
+        sqlx::query(
+            "ALTER TABLE proxima_core.goal_replay_declaration
+             DROP CONSTRAINT goal_replay_declaration_object_chk",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        let err = ensure_core_schema_markers(pg.pool_for_tests())
+            .await
+            .expect_err("missing Goal replay declaration check must reject --stamp");
+        assert!(
+            err.to_string().contains("object check"),
+            "marker error must name the missing Goal replay check: {err}"
+        );
+        sqlx::query(
+            "ALTER TABLE proxima_core.goal_replay_declaration
+             ADD CONSTRAINT goal_replay_declaration_object_chk
+             CHECK (jsonb_typeof(declaration) = 'object')",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+
+        sqlx::query(
+            "ALTER TABLE proxima_core.goal_replay_declaration
+             DROP CONSTRAINT goal_replay_declaration_goal_t_fkey",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        let err = ensure_core_schema_markers(pg.pool_for_tests())
+            .await
+            .expect_err("missing Goal replay Goal foreign key must reject --stamp");
+        assert!(
+            err.to_string().contains("goal_t foreign key"),
+            "marker error must name the missing Goal replay foreign key: {err}"
+        );
+        sqlx::query(
+            "ALTER TABLE proxima_core.goal_replay_declaration
+             ADD CONSTRAINT goal_replay_declaration_goal_t_fkey
+             FOREIGN KEY (goal_t) REFERENCES proxima_core.goal(t)
+             ON DELETE CASCADE",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        ensure_core_schema_markers(pg.pool_for_tests()).await?;
+
+        sqlx::query(
             "ALTER TABLE proxima_core.erased_pin_target
              ADD COLUMN marker_probe text",
         )
@@ -1941,6 +2007,39 @@ fn reference_integrity_migration_is_set_based_and_keeps_baselines_frozen() {
     }
 }
 
+/// Exact Goal replay is new persisted state, so it gets one additive lane;
+/// no already-shipped file may absorb it without invalidating `SQLx` checksums.
+#[test]
+fn goal_replay_declaration_is_an_additive_immutable_lane() {
+    let migration = include_str!("../migrations/0006_v013_goal_replay_declaration.sql");
+    for frozen in [
+        include_str!("../migrations/0001_v008.sql"),
+        include_str!("../migrations/0002_v009_declaration_triggers.sql"),
+        include_str!("../migrations/0003_v010_reference_integrity.sql"),
+        include_str!("../migrations/0004_v011_goal_refs.sql"),
+        include_str!("../migrations/0005_erased_pin_targets.sql"),
+    ] {
+        assert!(
+            !frozen.contains("goal_replay_declaration"),
+            "Goal replay declarations belong only in the additive v0.0.13 lane"
+        );
+    }
+    for fragment in [
+        "CREATE TABLE proxima_core.goal_replay_declaration",
+        "goal_t uuid PRIMARY KEY",
+        "REFERENCES proxima_core.goal (t) ON DELETE CASCADE",
+        "goal_replay_declaration_object_chk",
+        "goal_replay_edge_count_chk",
+        "CREATE TRIGGER goal_replay_declaration_append_only",
+        "EXECUTE FUNCTION proxima_core.enforce_row_append_only()",
+    ] {
+        assert!(
+            migration.contains(fragment),
+            "0006_v013_goal_replay_declaration.sql is missing {fragment:?}"
+        );
+    }
+}
+
 /// `SQLx` records SHA-384 checksums. Pin the two already-landed files here so
 /// moving their behavior into a new additive lane cannot silently rewrite the
 /// bytes that a live database may already have recorded.
@@ -2279,8 +2378,7 @@ async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
     Ok(())
 }
 
-/// A v0.0.8 database upgrades through the current head in place — no reset,
-/// no data loss.
+/// A v0.0.8 database upgrades through v0.0.13 in place — no reset, no data loss.
 ///
 /// This is the whole reason the declaration triggers ship as
 /// `0002_v009_declaration_triggers.sql` instead of being pasted into the
@@ -2294,7 +2392,7 @@ async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
 /// the installed invariants are actually live afterwards.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn a_v008_database_upgrades_to_head_in_place() {
+async fn a_v008_database_upgrades_to_v013_in_place() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 
     if let Err(e) = create_db(&db_name).await {
@@ -2350,8 +2448,8 @@ async fn a_v008_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5],
-            "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
+            vec![1, 2, 3, 4, 5, 6],
+            "the upgrade appends v0.0.9 through v0.0.13; it does not re-apply or replace the \
              baseline"
         );
 
@@ -2414,7 +2512,7 @@ async fn a_v008_database_upgrades_to_head_in_place() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("v0.0.8 -> head in-place upgrade failed");
+    result.expect("v0.0.8 -> v0.0.13 in-place upgrade failed");
 }
 
 /// Applies the embedded core migrations in `versions`, straight from the

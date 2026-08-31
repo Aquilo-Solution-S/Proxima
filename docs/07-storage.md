@@ -3,7 +3,9 @@
 Storage contract for identity, ownership, append-only writes, and typed
 sidecars. The frozen DDL is `crates/storage-pg/migrations/0001_v008.sql`;
 the hard-erase witness contract is additive in
-`crates/storage-pg/migrations/0005_erased_pin_targets.sql`.
+`crates/storage-pg/migrations/0005_erased_pin_targets.sql`, and exact
+Goal command replay state is additive in
+`crates/storage-pg/migrations/0006_v013_goal_replay_declaration.sql`.
 
 <a id="id-types"></a>
 
@@ -108,6 +110,7 @@ Closed vocabularies are SQL enums.
 | `blob` | cited artefact |
 | `closed_handle` | no new pin to any `t` of that handle |
 | `goal_head` / `goal` | Goal timeseries; `wake_id`, `write_act_t`, `dependency_t`, `evidence_t` |
+| `goal_replay_declaration` | Goal-keyed immutable command snapshot and prior edge count for exact request-id replay |
 | `wake_config` | the one UPDATE table; N Goals share `wake_id`; DELETE RESTRICT |
 | `cooled` | forget stub; object key `cold/<t>` — owner-free, so a transfer re-homes the row and never the bytes; `blob_id`, `source_id`, and `ingest_key` copied from the hot row for replay and for source-scope erase |
 | `sketch` | hot one-liner for recall/think (`t` PK = Memory.t or Goal.t); forget deletes |
@@ -126,7 +129,7 @@ Physical schema source of truth: the ordered SQL files in
 | Operation | Rule |
 |---|---|
 | `INSERT` | normal write |
-| `UPDATE` | `memory` / `goal` / `ingest_keys` / `announce` / `owners` refuse UPDATE. Heads may move `t` only. `wake_config` is the UPDATE table. |
+| `UPDATE` | `memory` / `goal` / `goal_replay_declaration` / `ingest_keys` / `announce` / `owners` refuse UPDATE. Heads may move `t` only. `wake_config` is the UPDATE table. |
 | `DELETE` | forget (hot row, after cold PUT); erase (abandonment only). Hard erase records the concrete target's `(t, kind)` witness before deleting it; witness rows are append-only. |
 
 `wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy)`.

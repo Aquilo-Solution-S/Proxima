@@ -505,6 +505,24 @@ const STATE_SURFACES: &[Surface] = &[
         completeness: None,
     },
     Surface {
+        table: "proxima_core.goal_replay_declaration",
+        key: KeyShape::GoalT { column: "goal_t" },
+        owner_column: None,
+        transfer: GOAL_NOT_TRANSFERABLE,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Excluded {
+            why: "request replay metadata is protocol bookkeeping, not portable owner content",
+        },
+        forget: ForgetRule::Keep {
+            why: "Goal replay remains exact after a referenced Memory is cooled",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "one replay row accounts for no entity beyond its Goal",
+        },
+        completeness: None,
+    },
+    Surface {
         table: "proxima_core.goal_head",
         key: KeyShape::Custom(&["handle"]),
         owner_column: Some("owner_id"),

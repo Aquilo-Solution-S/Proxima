@@ -760,6 +760,39 @@ pub struct DecomposeGoalAtomicRequest<'a> {
     pub children: Vec<ChildGoalDraft>,
 }
 
+/// One already-normalized Goal command whose request-id replay may be
+/// resolved without renewing admission of the mutable rows it originally
+/// referenced.
+#[derive(Debug, Clone, Copy)]
+pub enum GoalReplayRequest<'request, 'context> {
+    Create(&'request CreateGoalAtomicRequest<'context>),
+    Transition(&'request TransitionGoalAtomicRequest<'context>),
+    Achieve(&'request AchieveGoalAtomicRequest<'context>),
+    Modify(&'request ModifyGoalAtomicRequest<'context>),
+    Decompose(&'request DecomposeGoalAtomicRequest<'context>),
+}
+
+impl GoalReplayRequest<'_, '_> {
+    /// The Owner namespace in which the request id is interpreted.
+    #[must_use]
+    pub fn owner(self) -> Owner {
+        match self {
+            Self::Create(req) => req.draft.owner(),
+            Self::Transition(req) => req.owner,
+            Self::Achieve(req) => req.owner,
+            Self::Modify(req) => req.owner,
+            Self::Decompose(req) => req.owner,
+        }
+    }
+}
+
+/// Stored response recovered by an exact Goal-command replay probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoalReplayOutcome {
+    Goal(GoalWriteOutcome),
+    Decompose(DecomposeGoalOutcome),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecomposedGoalOutcome {
     pub outcome: GoalWriteOutcome,

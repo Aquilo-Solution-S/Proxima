@@ -127,8 +127,8 @@ pub(crate) mod tests {
 
     use crate::goal_write::{
         AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-        DecomposeGoalOutcome, GoalAuthorship, GoalWriteOutcome, ModifyGoalAtomicRequest,
-        TransitionGoalAtomicRequest,
+        DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAuthorship, GoalReplayOutcome,
+        GoalReplayRequest, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
     };
     use crate::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
     use crate::storage_ports::{StoragePorts, WriteSession, WriteSessionFactory};
@@ -569,6 +569,52 @@ pub(crate) mod tests {
 
     #[async_trait::async_trait]
     impl GoalWritePort for MembershipStorage {
+        async fn resolve_goal_replay(
+            &self,
+            req: GoalReplayRequest<'_, '_>,
+            _permit: &crate::storage_ports::OwnerWritePermit,
+        ) -> Result<Option<GoalReplayOutcome>, StorageError> {
+            let replay = |ordinal: u128| GoalWriteOutcome {
+                goal_id: GoalId::new(uuid::Uuid::from_u128(ordinal)),
+                change_event_seq: uuid::Uuid::from_u128(ordinal),
+                lifecycle_memory_id: None,
+                edge_count: 3,
+                idempotent_replay: true,
+            };
+            let single_key = match req {
+                GoalReplayRequest::Create(req) => Some(req.draft.request_id.as_str()),
+                GoalReplayRequest::Transition(req) => Some(req.request_id.as_str()),
+                GoalReplayRequest::Achieve(req) => Some(req.request_id.as_str()),
+                GoalReplayRequest::Modify(req) => Some(req.request_id.as_str()),
+                GoalReplayRequest::Decompose(_) => None,
+            };
+            if single_key.is_some_and(|key| key.starts_with("exact-replay-")) {
+                return Ok(Some(GoalReplayOutcome::Goal(replay(1))));
+            }
+            let GoalReplayRequest::Decompose(req) = req else {
+                return Ok(None);
+            };
+            if req.children.is_empty()
+                || !req
+                    .children
+                    .iter()
+                    .all(|child| child.request_id.as_str().starts_with("exact-replay-"))
+            {
+                return Ok(None);
+            }
+            Ok(Some(GoalReplayOutcome::Decompose(DecomposeGoalOutcome {
+                children: req
+                    .children
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| DecomposedGoalOutcome {
+                        outcome: replay((index + 1) as u128),
+                    })
+                    .collect(),
+                idempotent_replay: true,
+            })))
+        }
+
         async fn create_goal_atomic(
             &self,
             req: &CreateGoalAtomicRequest<'_>,

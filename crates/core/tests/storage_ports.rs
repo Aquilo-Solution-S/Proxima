@@ -5,7 +5,8 @@ use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryRes
 
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    DecomposeGoalOutcome, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
+    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use proxima_core::*;
@@ -389,6 +390,14 @@ struct GoalWriteFake;
 
 #[async_trait::async_trait]
 impl GoalWritePort for GoalWriteFake {
+    async fn resolve_goal_replay(
+        &self,
+        req: GoalReplayRequest<'_, '_>,
+        _permit: &OwnerWritePermit,
+    ) -> Result<Option<GoalReplayOutcome>, StorageError> {
+        fake_error()
+    }
+
     async fn create_goal_atomic(
         &self,
         req: &CreateGoalAtomicRequest<'_>,

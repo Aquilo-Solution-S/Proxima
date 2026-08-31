@@ -8,7 +8,9 @@ use crate::error::ProtocolError;
 use crate::storage::{AuthorDerivedRequest, DerivedEmbedding};
 use crate::storage_ports::{SidecarSessionRead, WriteSession};
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
-use crate::verbs::goal_write::{CreateGoalAtomicRequest, GoalDraft, GoalWriteOutcome};
+use crate::verbs::goal_write::{
+    CreateGoalAtomicRequest, GoalDraft, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
+};
 use crate::verbs::query::SidecarAtom;
 use crate::{
     AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, FactPayload, MemoryId,
@@ -694,21 +696,6 @@ impl UnitOfWork<'_> {
             .authorize_write(self.authz, &req.owner, Relation::Editor)
             .await?;
         let payload = self.engine.normalize_payload_write(req.payload.clone())?;
-        self.engine
-            .validate_goal_topology_authorized_visible(
-                self.authz,
-                permit.owner(),
-                &req.topology,
-                &self.written,
-            )
-            .await?;
-        let author_self_perspective_id = self
-            .engine
-            .author_self_perspective_authorized(self.authz, req.author_self_perspective_id)
-            .await?;
-        self.engine
-            .validate_wake_config_for_write(self.authz, req.wake.as_ref())
-            .await?;
         let draft = GoalDraft::active_from_payload_write(
             *permit.owner(),
             payload,
@@ -720,18 +707,54 @@ impl UnitOfWork<'_> {
         let embedding_client = self.engine.embed_client();
         let context = self
             .engine
-            .goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
+            .goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+        let atomic = CreateGoalAtomicRequest {
+            draft,
+            context,
+            write_act_t,
+        };
+        let replay = self
+            .ensure_session()
+            .await?
+            .resolve_goal_replay(
+                GoalReplayRequest::Create(&atomic),
+                permit.owner_write_permit(),
+            )
+            .await
+            .map_err(|err| {
+                super::errors::map_write_storage_error(
+                    err,
+                    "goal",
+                    "goal write referenced row not found",
+                )
+            })?;
+        match replay {
+            Some(GoalReplayOutcome::Goal(outcome)) => return Ok(outcome),
+            Some(GoalReplayOutcome::Decompose(_)) => {
+                return Err(ProtocolError::internal(
+                    "Goal replay session returned a decomposition for create",
+                ));
+            }
+            None => {}
+        }
+        self.engine
+            .validate_goal_topology_authorized_visible(
+                self.authz,
+                permit.owner(),
+                &req.topology,
+                &self.written,
+            )
+            .await?;
+        self.engine
+            .author_self_perspective_authorized(self.authz, req.author_self_perspective_id)
+            .await?;
+        self.engine
+            .validate_wake_config_for_write(self.authz, req.wake.as_ref())
+            .await?;
         let outcome = self
             .ensure_session()
             .await?
-            .create_goal(
-                &CreateGoalAtomicRequest {
-                    draft,
-                    context,
-                    write_act_t,
-                },
-                permit.owner_write_permit(),
-            )
+            .create_goal(&atomic, permit.owner_write_permit())
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(

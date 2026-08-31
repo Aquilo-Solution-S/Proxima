@@ -27,17 +27,6 @@ pub(super) struct EvidenceTarget {
     pub(super) memory_id: MemoryId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct WakeConfigShape {
-    pub(super) trigger_kind: String,
-    pub(super) trigger_schema_id: Option<String>,
-    pub(super) trigger_schema_version: Option<i32>,
-    pub(super) trigger_memory_id: Option<uuid::Uuid>,
-    pub(super) tool_ids: Vec<String>,
-    pub(super) prompt: String,
-    pub(super) hard_memory_ids: Vec<uuid::Uuid>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(super) enum WakeWrite<'a> {
     Explicit(Option<&'a GoalWakeConfigWrite>),

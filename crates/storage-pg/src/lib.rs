@@ -318,6 +318,110 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'missing relation proxima_core.announce'
          WHEN to_regclass('proxima_core.goal') IS NULL
            THEN 'missing relation proxima_core.goal'
+         WHEN to_regclass('proxima_core.goal_replay_declaration') IS NULL
+           THEN 'missing relation proxima_core.goal_replay_declaration'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'goal_replay_declaration'
+                     AND column_name = 'goal_t'
+                     AND data_type = 'uuid'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'goal_replay_declaration.goal_t must be uuid NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'goal_replay_declaration'
+                     AND column_name = 'declaration'
+                     AND data_type = 'jsonb'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'goal_replay_declaration.declaration must be jsonb NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'goal_replay_declaration'
+                     AND column_name = 'edge_count'
+                     AND data_type = 'integer'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'goal_replay_declaration.edge_count must be integer NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'goal_replay_declaration'
+                     AND column_name = 'created_at'
+                     AND data_type = 'timestamp with time zone'
+                     AND is_nullable = 'NO'
+                     AND column_default = 'now()'
+                )
+           THEN 'goal_replay_declaration.created_at must be timestamptz NOT NULL DEFAULT now()'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_constraint c
+                   WHERE c.conrelid = 'proxima_core.goal_replay_declaration'::regclass
+                     AND c.conname = 'goal_replay_declaration_pkey'
+                     AND c.contype = 'p'
+                     AND pg_get_constraintdef(c.oid, true) = 'PRIMARY KEY (goal_t)'
+                )
+           THEN 'goal_replay_declaration primary key is missing or incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_constraint c
+                   WHERE c.conrelid = 'proxima_core.goal_replay_declaration'::regclass
+                     AND c.conname = 'goal_replay_declaration_goal_t_fkey'
+                     AND c.contype = 'f'
+                     AND c.confrelid = 'proxima_core.goal'::regclass
+                     AND c.confdeltype = 'c'
+                     AND cardinality(c.conkey) = 1
+                     AND cardinality(c.confkey) = 1
+                     AND (
+                           SELECT a.attname
+                             FROM pg_attribute a
+                            WHERE a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+                         ) = 'goal_t'
+                     AND (
+                           SELECT a.attname
+                             FROM pg_attribute a
+                            WHERE a.attrelid = c.confrelid AND a.attnum = c.confkey[1]
+                         ) = 't'
+                )
+           THEN 'goal_replay_declaration.goal_t foreign key is missing or incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_constraint c
+                   WHERE c.conrelid = 'proxima_core.goal_replay_declaration'::regclass
+                     AND c.conname = 'goal_replay_declaration_object_chk'
+                     AND c.contype = 'c'
+                     AND c.convalidated
+                     AND strpos(lower(pg_get_constraintdef(c.oid, true)),
+                                'jsonb_typeof(declaration) = ''object''::text') > 0
+                )
+           THEN 'goal_replay_declaration object check is missing or incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_constraint c
+                   WHERE c.conrelid = 'proxima_core.goal_replay_declaration'::regclass
+                     AND c.conname = 'goal_replay_edge_count_chk'
+                     AND c.contype = 'c'
+                     AND c.convalidated
+                     AND strpos(lower(pg_get_constraintdef(c.oid, true)), 'edge_count >= 0') > 0
+                )
+           THEN 'goal_replay_declaration edge-count check is missing or incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                   WHERE tr.tgrelid = 'proxima_core.goal_replay_declaration'::regclass
+                     AND tr.tgname = 'goal_replay_declaration_append_only'
+                     AND tr.tgenabled = 'O'
+                     AND NOT tr.tgisinternal
+                     AND (tr.tgtype & 2) = 2
+                     AND (tr.tgtype & 16) = 16
+                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
+                         '%execute function proxima_core.enforce_row_append_only%'
+                )
+           THEN 'goal_replay_declaration append-only trigger is missing or incorrect'
          WHEN to_regclass('proxima_core.wake_config') IS NULL
            THEN 'missing relation proxima_core.wake_config'
          WHEN to_regclass('proxima_core.embeddings') IS NULL
@@ -967,7 +1071,7 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
 
     if let Some(marker_error) = marker_error {
         return Err(StorageError::Internal(format!(
-            "database is missing or has an incorrect reference-integrity schema marker: {marker_error}; apply migrations before boot"
+            "database is missing or has an incorrect current schema marker: {marker_error}; apply migrations before boot"
         )));
     }
     Ok(())
@@ -1659,27 +1763,28 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5],
-            "v0.0.8 is one frozen file (0001_v008.sql) and v0.0.9 appended \
-             0002_v009_declaration_triggers.sql; 0003_v010_reference_integrity.sql, \
-             0004_v011_goal_refs.sql and 0005_erased_pin_targets.sql are the unreleased \
-             additive lanes on top of them"
+            vec![1, 2, 3, 4, 5, 6],
+            "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
+             v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
+             0003_v010_reference_integrity.sql, v0.0.11 is 0004_v011_goal_refs.sql, \
+             the hard-erase witness is 0005_erased_pin_targets.sql and v0.0.13 is \
+             0006_v013_goal_replay_declaration.sql"
         );
     }
 
     /// The v0.0.7 ALTER lane occupied versions 2..=21 and the squash to a
     /// single v008 baseline retired all of them.
     ///
-    /// Versions 2 and 3 are additive migrations that reuse retired numbers.
-    /// That is safe, and this is why: the tripwire for
+    /// Versions 2 through 6 are current additive migrations which reuse
+    /// retired numbers. That is safe, and this is why: the tripwire for
     /// a pre-v0.0.8 database is version 1's checksum, which is the legacy
     /// `0001_init.sql` and can never match `0001_v008.sql`.
     /// `ensure_core_ledger_compatible` compares it first and returns
-    /// `SchemaResetRequired` before either additive version is reached, so no
+    /// `SchemaResetRequired` before any additive version is reached, so no
     /// pre-v008 database can mistake a current migration for the legacy one it
     /// recorded.
     ///
-    /// Both reused numbers are asserted to carry their current migrations,
+    /// Every reused number is asserted to carry its current migration,
     /// not merely to be present, so the reuse stays a decision rather than an
     /// accident.
     #[test]
@@ -1732,10 +1837,22 @@ mod tests {
                 && version_5.sql.as_str().contains("cooled_identity_seal"),
             "version 5 must restore witness-aware typed pin checks"
         );
-        // The legacy range shrinks as the head advances: 4 is now a real
-        // additive migration, asserted by content just above, so only 6..=21
+        let version_6 = migrator
+            .iter()
+            .find(|migration| migration.version == 6)
+            .expect("version 6 is v0.0.13's exact Goal replay migration");
+        assert!(
+            version_6.sql.as_str().contains("goal_replay_declaration")
+                && version_6
+                    .sql
+                    .as_str()
+                    .contains("goal_replay_declaration_append_only"),
+            "version 6 must persist immutable Goal replay declarations"
+        );
+        // The legacy range shrinks as the head advances: 6 is now a real
+        // additive migration, asserted by content just above, so only 7..=21
         // remain retired by the v0.0.8 squash.
-        for dead in 6..=21 {
+        for dead in 7..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"

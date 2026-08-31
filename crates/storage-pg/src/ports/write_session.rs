@@ -4,7 +4,9 @@ use proxima_core::storage_ports::{
     OwnerWritePermit, SidecarSessionRead, WriteSession, WriteSessionFactory,
 };
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
-use proxima_core::verbs::goal_write::{CreateGoalAtomicRequest, GoalWriteOutcome};
+use proxima_core::verbs::goal_write::{
+    CreateGoalAtomicRequest, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
+};
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, ColdObjectStore, MemoryId, SidecarPayload,
@@ -223,6 +225,15 @@ impl WriteSession for PgWriteSession {
             edge_count,
             embedding_deferred: req.embedding.is_deferred() && !outcome.idempotent_replay,
         })
+    }
+
+    async fn resolve_goal_replay(
+        &mut self,
+        req: GoalReplayRequest<'_, '_>,
+        permit: &OwnerWritePermit,
+    ) -> Result<Option<GoalReplayOutcome>, StorageError> {
+        super::validate_permit_owner(permit, &req.owner())?;
+        verbs::goal_write::resolve_goal_command_replay_in_tx(&mut self.tx, req).await
     }
 
     async fn create_goal(

@@ -6,9 +6,9 @@ use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalDraft,
-    GoalEvidenceRef, GoalLifecycleFact, GoalPayloadWrite, GoalState, GoalWakeConfigWrite,
-    GoalWakeToolId, GoalWakeTrigger, GoalWriteOutcome, ModifyGoalAtomicRequest, SystemOrigin,
-    TransitionGoalAtomicRequest,
+    GoalEvidenceRef, GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalState,
+    GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteOutcome,
+    ModifyGoalAtomicRequest, SystemOrigin, TransitionGoalAtomicRequest,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
@@ -28,7 +28,7 @@ mod replay;
 mod types;
 mod wake;
 
-use edges::{assert_goal_topology_references, goal_topology_edge_count};
+use edges::assert_goal_topology_references;
 use evidence::{
     load_goal_evidence_exact, validate_evidence_in_owner, validate_operator_goal_evidence,
 };
@@ -41,11 +41,12 @@ use prior::{
     validate_active_head, validate_goal_achievement, validate_goal_transition,
 };
 use replay::{
-    CreateGoalReplayExpectation, ensure_create_goal_replay_side_effects_match,
-    goal_evidence_matches, idempotency_conflict,
+    achieve_replay_declaration, create_replay_declaration, decompose_replay_declarations,
+    idempotency_conflict, modify_replay_declaration, record_goal_replay_declaration,
+    require_goal_replay, resolve_decompose_replay_set, resolve_goal_replay,
+    transition_replay_declaration,
 };
-use types::{EvidenceTarget, InsertedGoal, StoredGoal, WakeConfigShape, WakeWrite};
-use wake::goal_wake_matches;
+use types::{EvidenceTarget, InsertedGoal, StoredGoal, WakeWrite};
 
 pub(crate) use crate::verbs::goal_timeseries::{
     GoalWritePreparation, lock_prepared_goal_write, lock_prepared_goal_writes,
@@ -56,3 +57,4 @@ pub(crate) use commands::{
     achieve_goal_atomic, create_goal_atomic, create_goal_in_tx, decompose_goal_atomic,
     modify_goal_atomic, transition_goal_atomic,
 };
+pub(crate) use replay::{resolve_goal_command_replay, resolve_goal_command_replay_in_tx};

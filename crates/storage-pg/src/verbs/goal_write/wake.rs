@@ -1,19 +1,9 @@
 use super::{
-    EntityKind, GoalAtomicContext, GoalId, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger,
-    MemoryId, PayloadKind, Postgres, StorageError, Transaction, WakeConfigShape, WakeWrite,
-    map_err,
+    EntityKind, GoalAtomicContext, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, MemoryId,
+    PayloadKind, Postgres, StorageError, Transaction, WakeWrite, map_err,
 };
 use crate::verbs::goal_timeseries::{GoalWakePlan, load_goal_wake_plan};
 use crate::verbs::wake_timeseries::{WakeConfigDraft, WakeTriggerKind};
-
-type WakeShapeRow = (
-    String,
-    Option<String>,
-    Option<uuid::Uuid>,
-    Vec<String>,
-    String,
-    Vec<uuid::Uuid>,
-);
 
 pub(super) async fn prepare_goal_wake_plan(
     tx: &mut Transaction<'_, Postgres>,
@@ -159,87 +149,5 @@ fn wake_draft_from_config(config: &GoalWakeConfigWrite) -> WakeConfigDraft {
                 .map(|id| id.into_inner())
                 .collect(),
         },
-    }
-}
-
-pub(super) async fn goal_wake_matches(
-    tx: &mut Transaction<'_, Postgres>,
-    goal_id: GoalId,
-    wake_write: WakeWrite<'_>,
-    expected_prior: Option<GoalId>,
-) -> Result<bool, StorageError> {
-    let expected = match wake_write {
-        WakeWrite::Explicit(config) => config.map(wake_shape_from_config),
-        WakeWrite::CarryFrom(source_goal_id) => load_wake_shape(tx, source_goal_id).await?,
-    };
-    let _ = expected_prior;
-    Ok(load_wake_shape(tx, goal_id).await? == expected)
-}
-
-async fn load_wake_shape(
-    tx: &mut Transaction<'_, Postgres>,
-    goal_id: GoalId,
-) -> Result<Option<WakeConfigShape>, StorageError> {
-    let row: Option<WakeShapeRow> = sqlx::query_as(
-        "SELECT w.trigger_kind::text, w.trigger_schema_id, w.trigger_t,
-                    w.tool_ids, w.prompt, w.hard_memory_t
-               FROM proxima_core.goal g
-               JOIN proxima_core.wake_config w ON w.wake_id = g.wake_id
-              WHERE g.t = $1",
-    )
-    .bind(goal_id.into_inner())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(row.map(
-        |(trigger_kind, trigger_schema_id, trigger_t, tool_ids, prompt, hard_memory_t)| {
-            WakeConfigShape {
-                trigger_kind,
-                trigger_schema_id,
-                trigger_schema_version: None,
-                trigger_memory_id: trigger_t,
-                tool_ids,
-                prompt,
-                hard_memory_ids: hard_memory_t,
-            }
-        },
-    ))
-}
-
-fn wake_shape_from_config(config: &GoalWakeConfigWrite) -> WakeConfigShape {
-    let (trigger_kind, trigger_schema_id, trigger_schema_version, trigger_memory_id) =
-        match config.trigger() {
-            GoalWakeTrigger::FactSchema {
-                schema_id,
-                schema_version,
-            } => (
-                "fact_schema".to_string(),
-                Some(schema_id.as_str().to_string()),
-                Some(schema_version.into_inner().cast_signed()),
-                None,
-            ),
-            GoalWakeTrigger::FactMemory { memory_id } => (
-                "fact_memory".to_string(),
-                None,
-                None,
-                Some(memory_id.into_inner()),
-            ),
-        };
-    WakeConfigShape {
-        trigger_kind,
-        trigger_schema_id,
-        trigger_schema_version,
-        trigger_memory_id,
-        tool_ids: config
-            .tool_ids()
-            .iter()
-            .map(|tool| tool.as_str().to_string())
-            .collect(),
-        prompt: config.prompt().to_string(),
-        hard_memory_ids: config
-            .hard_memory_ids()
-            .iter()
-            .map(|id| id.into_inner())
-            .collect(),
     }
 }
