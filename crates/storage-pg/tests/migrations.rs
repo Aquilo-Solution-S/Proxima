@@ -2040,6 +2040,44 @@ fn goal_replay_declaration_is_an_additive_immutable_lane() {
     }
 }
 
+/// Staged upload identity is new persisted state and therefore lives only in
+/// the additive 0007 lane; no frozen migration may absorb the column.
+#[test]
+fn upload_content_identity_is_an_additive_immutable_lane() {
+    let migration = include_str!("../migrations/0007_upload_content_identity.sql");
+    for frozen in [
+        include_str!("../migrations/0001_v008.sql"),
+        include_str!("../migrations/0002_v009_declaration_triggers.sql"),
+        include_str!("../migrations/0003_v010_reference_integrity.sql"),
+        include_str!("../migrations/0004_v011_goal_refs.sql"),
+        include_str!("../migrations/0005_erased_pin_targets.sql"),
+        include_str!("../migrations/0006_v013_goal_replay_declaration.sql"),
+    ] {
+        assert!(
+            !frozen.contains("blob_uploads_content_hash_chk"),
+            "upload content identity belongs only in the additive 0007 lane"
+        );
+    }
+    for fragment in [
+        "ADD COLUMN content_hash bytea",
+        "blob_uploads_content_hash_chk",
+        "octet_length(content_hash) = 32",
+        "SET content_hash = b.content_hash",
+        "WHERE u.blob_id = b.blob_id",
+        "u.owner_id = b.owner_id",
+        "u.status = 'completed'",
+        "u.completed_at IS NOT NULL",
+        "octet_length(u.sha256) = 32",
+        "COALESCE(u.mounted_from_upload_id, u.upload_id)::text",
+        "blob_uploads_terminal_content_idx",
+    ] {
+        assert!(
+            migration.contains(fragment),
+            "0007_upload_content_identity.sql is missing {fragment:?}"
+        );
+    }
+}
+
 /// `SQLx` records SHA-384 checksums. Pin the two already-landed files here so
 /// moving their behavior into a new additive lane cannot silently rewrite the
 /// bytes that a live database may already have recorded.
@@ -2378,7 +2416,8 @@ async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
     Ok(())
 }
 
-/// A v0.0.8 database upgrades through v0.0.13 in place — no reset, no data loss.
+/// A v0.0.8 database upgrades through the current head in place — no reset,
+/// no data loss.
 ///
 /// This is the whole reason the declaration triggers ship as
 /// `0002_v009_declaration_triggers.sql` instead of being pasted into the
@@ -2392,7 +2431,7 @@ async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
 /// the installed invariants are actually live afterwards.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn a_v008_database_upgrades_to_v013_in_place() {
+async fn a_v008_database_upgrades_to_head_in_place() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 
     if let Err(e) = create_db(&db_name).await {
@@ -2448,8 +2487,8 @@ async fn a_v008_database_upgrades_to_v013_in_place() {
         .await?;
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6],
-            "the upgrade appends v0.0.9 through v0.0.13; it does not re-apply or replace the \
+            vec![1, 2, 3, 4, 5, 6, 7],
+            "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
              baseline"
         );
 
@@ -2512,7 +2551,7 @@ async fn a_v008_database_upgrades_to_v013_in_place() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("v0.0.8 -> v0.0.13 in-place upgrade failed");
+    result.expect("v0.0.8 -> head in-place upgrade failed");
 }
 
 /// Applies the embedded core migrations in `versions`, straight from the
@@ -2528,6 +2567,194 @@ async fn apply_core_migrations(
         sqlx::raw_sql(migration.sql.clone()).execute(pool).await?;
     }
     Ok(())
+}
+
+struct UploadContentIdentityFixture {
+    completed_upload: Uuid,
+    pending_upload: Uuid,
+    terminal_upload: Uuid,
+    cross_owner_upload: Uuid,
+    noncanonical_upload: Uuid,
+    hash: Vec<u8>,
+}
+
+async fn seed_upload_content_identity_fixture(
+    pool: &sqlx::PgPool,
+) -> Result<UploadContentIdentityFixture, sqlx::Error> {
+    let owner = Uuid::now_v7();
+    let blob_id = Uuid::now_v7();
+    let completed_upload = Uuid::now_v7();
+    let pending_upload = Uuid::now_v7();
+    let terminal_upload = Uuid::now_v7();
+    let cross_owner_upload = Uuid::now_v7();
+    let noncanonical_upload = Uuid::now_v7();
+    let other_owner = Uuid::now_v7();
+    let hash = vec![91_u8; 32];
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal'), ($2, 'personal')",
+    )
+    .bind(owner)
+    .bind(other_owner)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.blob (blob_id, owner_id, schema_id, content_hash)
+         VALUES ($1, $2, 'core/uploaded-blob-v1', $3)",
+    )
+    .bind(blob_id)
+    .bind(owner)
+    .bind(&hash)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.blob_uploads
+            (upload_id, owner_id, bucket, object_key, filename, mime,
+             expected_byte_len, status, blob_id, sha256, expires_at, completed_at)
+         VALUES
+            ($1, $3, 'bucket', 'objects/' || $1::text, 'a', 'application/octet-stream',
+             1, 'completed', $4, $5, now() + interval '1 day', now()),
+            ($2, $3, 'bucket', 'pending/pending', 'b', 'application/octet-stream',
+             1, 'pending', NULL, NULL, now() + interval '1 day', NULL)",
+    )
+    .bind(completed_upload)
+    .bind(pending_upload)
+    .bind(owner)
+    .bind(blob_id)
+    .bind(&hash)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.blob_uploads
+            (upload_id, owner_id, bucket, object_key, filename, mime,
+             expected_byte_len, status, blob_id, sha256, expires_at, completed_at)
+         VALUES
+            ($1, $2, 'bucket', 'objects/not-the-minting-id', 'e',
+             'application/octet-stream', 1, 'completed', $3, $4,
+             now() + interval '1 day', now())",
+    )
+    .bind(noncanonical_upload)
+    .bind(owner)
+    .bind(blob_id)
+    .bind(&hash)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.blob_uploads
+            (upload_id, owner_id, bucket, object_key, filename, mime,
+             expected_byte_len, status, blob_id, sha256, expires_at, completed_at)
+         VALUES
+            ($1, $3, 'bucket', 'objects/' || $1::text, 'c',
+             'application/octet-stream', 1, 'aborted', $4, $6,
+             now() + interval '1 day', NULL),
+            ($2, $5, 'bucket', 'objects/' || $2::text, 'd',
+             'application/octet-stream', 1, 'completed', $4, $6,
+             now() + interval '1 day', now())",
+    )
+    .bind(terminal_upload)
+    .bind(cross_owner_upload)
+    .bind(owner)
+    .bind(blob_id)
+    .bind(other_owner)
+    .bind(&hash)
+    .execute(pool)
+    .await?;
+    Ok(UploadContentIdentityFixture {
+        completed_upload,
+        pending_upload,
+        terminal_upload,
+        cross_owner_upload,
+        noncanonical_upload,
+        hash,
+    })
+}
+
+/// Migration 0007 learns exact staged content identity without guessing
+/// interrupted uploads. Rows already carrying a complete, canonical publication inherit
+/// its address; every incomplete or malformed row remains unknown.
+#[tokio::test]
+async fn upload_content_identity_backfills_only_rows_with_an_exact_blob() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
+        apply_core_migrations(&pool, 1..=6).await?;
+        let UploadContentIdentityFixture {
+            completed_upload,
+            pending_upload,
+            terminal_upload,
+            cross_owner_upload,
+            noncanonical_upload,
+            hash,
+        } = seed_upload_content_identity_fixture(&pool).await?;
+
+        apply_core_migrations(&pool, 7..=7).await?;
+        let completed_hash: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT content_hash FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        )
+        .bind(completed_upload)
+        .fetch_one(&pool)
+        .await?;
+        let pending_hash: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT content_hash FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        )
+        .bind(pending_upload)
+        .fetch_one(&pool)
+        .await?;
+        let terminal_hash: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT content_hash FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        )
+        .bind(terminal_upload)
+        .fetch_one(&pool)
+        .await?;
+        let cross_owner_hash: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT content_hash FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        )
+        .bind(cross_owner_upload)
+        .fetch_one(&pool)
+        .await?;
+        let noncanonical_hash: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT content_hash FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        )
+        .bind(noncanonical_upload)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(completed_hash, Some(hash));
+        assert_eq!(pending_hash, None, "an interrupted upload is not guessed");
+        assert_eq!(
+            terminal_hash, None,
+            "terminal cleanup is not promoted back into publication authority"
+        );
+        assert_eq!(
+            cross_owner_hash, None,
+            "a legacy cross-owner pointer is not blessed as content authority"
+        );
+        assert_eq!(
+            noncanonical_hash, None,
+            "a completed row with an unminted locator is not blessed"
+        );
+
+        let malformed = sqlx::query(
+            "UPDATE proxima_core.blob_uploads SET content_hash = decode('00', 'hex')
+              WHERE upload_id = $1",
+        )
+        .bind(pending_upload)
+        .execute(&pool)
+        .await
+        .expect_err("content identity is exactly 32 bytes");
+        assert_eq!(
+            malformed
+                .as_database_error()
+                .and_then(sqlx::error::DatabaseError::code),
+            Some("23514".into())
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("upload content identity migration failed");
 }
 
 /// Migration 0004 splits Goal references out of `refs` into their own column. The

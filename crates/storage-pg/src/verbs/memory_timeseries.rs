@@ -223,17 +223,19 @@ async fn prepare_memory_admission_at(
         return Ok(PreparedMemoryAdmission::Replay(replay));
     }
 
-    // Owner identity is arbitrated before any lifecycle lock, matching
-    // transfer's owner -> lifecycle order and preventing an owner-row cycle.
-    let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
-    // A new admission shares the owner fence, and a sourced admission also
-    // shares its exact source fence.  These are held through commit, so a
-    // whole-owner/source erase either waits for this write or observes it in
-    // the exact-scope revalidation before deleting anything.
+    // A new admission takes the owner fence BEFORE arbitrating the owner row.
+    // This is the absent-owner half of the transfer order: a transfer may
+    // already hold the destination fence while it creates that row, so an
+    // append must wait on the fence rather than insert the row and then wait
+    // behind its own uncommitted owner row.
     crate::access::owner_columns::lock_owner_fence_shared_tx(tx, owner).await?;
     if let Some(source_id) = source_id.as_deref() {
         crate::access::owner_columns::lock_source_fence_shared_tx(tx, owner, source_id).await?;
     }
+    let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
+    // These fences are held through commit, so a whole-owner/source erase
+    // either waits for this write or observes it in the exact-scope
+    // revalidation before deleting anything.
 
     let handle = options
         .identity

@@ -34,6 +34,7 @@ pub async fn insert_wake_config(
     owner: &Owner,
     draft: &WakeConfigDraft,
 ) -> Result<Uuid, StorageError> {
+    crate::access::owner_columns::lock_owner_fence_shared_tx(tx, owner).await?;
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
     let mut targets =
         Vec::with_capacity(usize::from(draft.trigger_t.is_some()) + draft.hard_memory_t.len());

@@ -398,10 +398,9 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
 
         // (c) Admin + manage on the DESTINATION only. This caller selects
         // the destination — the one owner it can select — so the served
-        // palette does admit `core_transfer` and the refusal comes from the
-        // engine's SOURCE gate, not from the edge hiding the tool. Manage on
-        // the receiving side is consent to receive, never authority to pull
-        // another owner's memory.
+        // palette admits `core_transfer`. The engine must still collapse the
+        // foreign source to NotFound: receiving-side consent is neither pull
+        // authority nor an existence oracle for another owner's memory.
         let bearer = format!("Bearer {}", mint(&signing, "transfer-destination-side"));
         let session = initialize(&client, &url, &bearer, &destination_key).await?;
         initialized(&client, &url, &session, &bearer).await?;
@@ -419,8 +418,8 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
         )
         .await?;
         let message = rpc_error_message(&refused)?;
-        assert!(
-            message.contains("requires admin on this owner"),
+        assert_eq!(
+            message, "NotFound: entity not found",
             "manage on the destination alone must not move another owner's memory, got: {refused}"
         );
 

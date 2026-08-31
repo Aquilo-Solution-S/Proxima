@@ -3,8 +3,9 @@
 //! What this pins is not "the transfer works" — `owner_transfer.rs` does that,
 //! case by case. It pins that the declaration-driven transfer agrees with the
 //! pinned baseline — every relation holding the same multiset of rows, every
-//! column of every row equal — over a corpus that touches every table
-//! `owner_columns.rs`'s transfer path names.
+//! baseline column of every row equal — over a corpus that touches every table
+//! `owner_columns.rs`'s transfer path names. Post-baseline columns are omitted
+//! only beside a dedicated assertion of the new invariant.
 //!
 //! The goldens were produced by running the shared half of this file verbatim
 //! against a worktree at `eef54c8e`, where a hand-written per-table transfer
@@ -42,8 +43,8 @@
 //! and the export bundle's row order comes off `KeyShape::columns()` — so
 //! the property is a proxy for determinism rather than a claim about
 //! behaviour. What is NOT given up is the whole of the claim that matters:
-//! every relation, every row, every column, every owner, on both sides of
-//! the move.
+//! every baseline relation, row and column, every owner, on both sides of the
+//! move, plus the explicitly asserted post-baseline invariants.
 //!
 //! ## What this does NOT cover
 //!
@@ -56,8 +57,9 @@
 //!   never created — `source_cursors` and `delegated_authority_grants` are
 //!   seeded precisely so `StaysOnKey` is witnessed rather than assumed.
 //! - **Concurrency is out of scope.** The three head-advanced races, the
-//!   advisory-lock rounds and the bounded retry are single-threaded here and
-//!   compare equal trivially. `owner_transfer.rs` carries those.
+//!   complete owner/handle/lifecycle lock boundary and the bounded retry are
+//!   single-threaded here and compare equal trivially. `owner_transfer.rs`
+//!   carries those.
 //! - **Object storage is out of scope.** A transfer performs no S3 work by
 //!   construction (cold keys are owner-free, and the mount arm copies
 //!   metadata only), so there is nothing for a dump to compare.
@@ -117,6 +119,10 @@ pub struct Corpus {
     /// it covers.
     #[expect(dead_code, reason = "seeded participant, asserted through the dump")]
     pub bystander: OwnerRef,
+    /// Stable baseline labels for the upload ids that actually mint objects.
+    /// The live rows use canonical `objects/<upload_id>` locators; only the
+    /// normalized dump substitutes these historical labels.
+    object_key_labels: BTreeMap<Uuid, String>,
 }
 
 fn draft(
@@ -207,31 +213,37 @@ async fn blob_row(
     pool: &PgPool,
     owner: OwnerRef,
     hash: u8,
-    object_key: &str,
-) -> Result<Uuid, Box<dyn std::error::Error>> {
+    baseline_object_key: &str,
+) -> Result<(Uuid, Uuid), Box<dyn std::error::Error>> {
+    let content_hash = vec![hash; 32];
     let blob_id: Uuid = sqlx::query_scalar(
         "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
     )
     .bind(owner.stored_owner_id())
-    .bind(vec![hash; 32])
+    .bind(&content_hash)
     .fetch_one(pool)
     .await?;
+    let upload_id = Uuid::now_v7();
+    let object_key = format!("objects/{upload_id}");
     sqlx::query(
         "INSERT INTO proxima_core.blob_uploads
-             (owner_id, bucket, object_key, filename, mime, expected_byte_len,
-              status, blob_id, sha256, etag, expires_at, completed_at)
-         VALUES ($1, 'bucket', $2, 'f.pdf', 'application/pdf', 1,
-                 'completed'::proxima_core.blob_upload_status, $3, $4, 'etag-1',
+             (upload_id, owner_id, bucket, object_key, filename, mime, expected_byte_len,
+              status, blob_id, sha256, content_hash, etag, expires_at, completed_at)
+         VALUES ($1, $2, 'bucket', $3, 'f.pdf', 'application/pdf', 1,
+                 'completed'::proxima_core.blob_upload_status, $4, $5, $6, 'etag-1',
                  TIMESTAMPTZ '2030-01-01 00:00:00Z', TIMESTAMPTZ '2026-01-01 00:00:00Z')",
     )
+    .bind(upload_id)
     .bind(owner.stored_owner_id())
-    .bind(object_key)
+    .bind(&object_key)
     .bind(blob_id)
     .bind(vec![31u8; 32])
+    .bind(&content_hash)
     .execute(pool)
     .await?;
-    Ok(blob_id)
+    debug_assert!(baseline_object_key.starts_with("objects/"));
+    Ok((blob_id, upload_id))
 }
 
 fn embed_literal() -> String {
@@ -326,13 +338,19 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     // of owning the dedupe blob, which is after the corpus needs it.
 
     // ── Blobs, one per arm of FollowOrDedupe ────────────────────────────
-    let blob_in_place = blob_row(pool, source, 21, "objects/in-place").await?;
-    let blob_dedupe = blob_row(pool, source, 22, "objects/dedupe").await?;
-    let blob_mount = blob_row(pool, source, 23, "objects/mount").await?;
+    let mut object_key_labels = BTreeMap::new();
+    let (blob_in_place, in_place_upload) = blob_row(pool, source, 21, "objects/in-place").await?;
+    object_key_labels.insert(in_place_upload, "objects/in-place".to_owned());
+    let (blob_dedupe, dedupe_upload) = blob_row(pool, source, 22, "objects/dedupe").await?;
+    object_key_labels.insert(dedupe_upload, "objects/dedupe".to_owned());
+    let (blob_mount, mount_upload) = blob_row(pool, source, 23, "objects/mount").await?;
+    object_key_labels.insert(mount_upload, "objects/mount".to_owned());
     // The destination already holds these bytes under the same
     // (schema_id, content_hash): case 1, remap rather than move.
     owner_row(pool, destination).await?;
-    blob_row(pool, destination, 22, "objects/dedupe-destination").await?;
+    let (_, destination_upload) =
+        blob_row(pool, destination, 22, "objects/dedupe-destination").await?;
+    object_key_labels.insert(destination_upload, "objects/dedupe-destination".to_owned());
 
     // ── The three transferred series ────────────────────────────────────
     // Each is two hot versions plus a cooled tail, on a named source so the
@@ -573,6 +591,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
         source,
         destination,
         bystander,
+        object_key_labels,
     })
 }
 
@@ -591,7 +610,10 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
 /// `embeddings.vec` is dropped: a 1024-dimension vector renders as
 /// kilobytes of text per row and says nothing a transfer could get wrong
 /// that `owner_id` does not already say.
-pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::Error>> {
+pub async fn dump_database(
+    pool: &PgPool,
+    object_key_labels: &BTreeMap<Uuid, String>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let relations: Vec<(String, Vec<String>)> = sqlx::query_as(
         "SELECT t.table_name::text,
                 (xpath(
@@ -640,6 +662,27 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
                 object.remove("origins");
                 object.remove("refs");
                 object.insert("goal_refs".to_owned(), Value::Null);
+            }
+            if table == "blob_uploads"
+                && let Some(object) = row.as_object_mut()
+            {
+                let minting_id = object
+                    .get("mounted_from_upload_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| object.get("upload_id").and_then(Value::as_str))
+                    .ok_or("upload row has no minting identity")?;
+                let minting_id = Uuid::parse_str(minting_id)?;
+                let baseline_key = object_key_labels
+                    .get(&minting_id)
+                    .ok_or("upload row names an unknown minting identity")?;
+                object.insert("object_key".to_owned(), Value::String(baseline_key.clone()));
+                // 0007 added the staged BLAKE3 identity after the pinned
+                // baseline. `assert_upload_content_identities` below checks
+                // that transfer preserved it and the canonical locator
+                // exactly. The stable key substitution above lets the frozen
+                // baseline compare the same logical objects without retaining
+                // its pre-locator-integrity fixture bug.
+                object.remove("content_hash");
             }
             out.push_str(&canonical(&row));
             out.push('\n');
@@ -837,6 +880,39 @@ async fn run_transfers(
     Ok(out)
 }
 
+async fn assert_upload_content_identities(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    let (completed, mismatched, noncanonical): (i64, i64, i64) = sqlx::query_as(
+        "SELECT count(*)::bigint,
+                count(*) FILTER (
+                    WHERE u.content_hash IS DISTINCT FROM b.content_hash
+                )::bigint,
+                count(*) FILTER (
+                    WHERE u.object_key IS DISTINCT FROM
+                        'objects/' || COALESCE(
+                            u.mounted_from_upload_id, u.upload_id
+                        )::text
+                )::bigint
+           FROM proxima_core.blob_uploads u
+           JOIN proxima_core.blob b ON b.blob_id = u.blob_id
+          WHERE u.status = 'completed'",
+    )
+    .fetch_one(pool)
+    .await?;
+    assert_eq!(
+        completed, 5,
+        "the corpus must exercise every upload transfer arm"
+    );
+    assert_eq!(
+        mismatched, 0,
+        "every completed upload must retain its blob's exact 0007 content identity"
+    );
+    assert_eq!(
+        noncanonical, 0,
+        "every completed upload must retain its minting upload's canonical locator"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn transfer_differential() {
     let (db_name, url) = fresh_db("proxima_xfer_diff").await;
@@ -845,7 +921,8 @@ async fn transfer_differential() {
         let pool = pg.pool_for_tests();
         let corpus = seed(pool).await?;
         let mut text = run_transfers(&pg, &corpus).await?;
-        text.push_str(&dump_database(pool).await?);
+        assert_upload_content_identities(pool).await?;
+        text.push_str(&dump_database(pool, &corpus.object_key_labels).await?);
         let actual = normalize(&text);
         if let Ok(dir) = std::env::var("PROXIMA_DIFFERENTIAL_DIR") {
             std::fs::write(format!("{dir}/owner_transfer.txt"), &actual)?;
