@@ -104,6 +104,13 @@ pub use proxima_core::verbs::goal_write::{
     GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS, MAX_GOAL_TITLE_CHARS,
     MAX_WAKE_TOOL_ID_CHARS, OperatorKind, SystemOrigin,
 };
+/// Typed result of the owner-authorized cold-memory hydration command. The
+/// facade exposes only ids and classifications; Postgres transactions,
+/// locators, and cold-store keys remain backend implementation details.
+pub use proxima_core::{
+    MAX_MEMORY_HYDRATION_BATCH, MemoryHydrationBatchOutcome, MemoryHydrationOutcome,
+    MemoryHydrationStatus,
+};
 /// Frozen-registry catalog element. [`FlavorRegistryFrozen::list_mcp_tools`]
 /// already returns `&[McpToolDescriptor]`; without these names a host
 /// depending only on `proxima` cannot write a typed signature or match

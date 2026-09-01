@@ -117,6 +117,18 @@ impl PgSidecarRegistryFrozen {
         })
     }
 
+    /// Whether a memory sidecar has the complete generic restore contract.
+    /// Read-only registrations cannot safely be reconstructed from an
+    /// untrusted cold object, even when they expose a memory-key column.
+    #[must_use]
+    pub(crate) fn is_hydratable_memory_sidecar_table(&self, table: &str) -> bool {
+        self.entries.values().any(|entry| {
+            entry.memory_insert.is_some()
+                && entry.memory_key_column.is_some()
+                && entry.sidecar_table == table
+        })
+    }
+
     /// Test-only: a registered memory table that does not exist in PG.
     /// Forget must not SELECT it unless the row stamped it.
     #[must_use]
@@ -196,33 +208,6 @@ impl PgSidecarRegistryFrozen {
             entry.sidecar_table == table
                 && entry.owner_pinned
                 && (entry.memory_insert.is_some() || entry.memory_load_batch.is_some())
-        })
-    }
-
-    /// Resolve the primary memory sidecar table by the stored `(kind,
-    /// schema_id)` selector. Memory rows do not carry a schema version, and
-    /// F/A/P registry freeze guarantees this lookup is unique.
-    #[must_use]
-    pub(crate) fn memory_sidecar_table_for_schema(
-        &self,
-        kind: proxima_core::EntityKind,
-        schema_id: &str,
-    ) -> Option<&str> {
-        let kind = match kind {
-            proxima_core::EntityKind::Fact => proxima_core::verbs::schema::PayloadKind::Fact,
-            proxima_core::EntityKind::Abstraction => {
-                proxima_core::verbs::schema::PayloadKind::Abstraction
-            }
-            proxima_core::EntityKind::Perspective => {
-                proxima_core::verbs::schema::PayloadKind::Perspective
-            }
-            proxima_core::EntityKind::Goal => return None,
-        };
-        self.entries.values().find_map(|entry| {
-            (entry.key.kind == kind
-                && entry.key.schema_id.as_str() == schema_id
-                && entry.memory_insert.is_some())
-            .then_some(entry.sidecar_table.as_str())
         })
     }
 

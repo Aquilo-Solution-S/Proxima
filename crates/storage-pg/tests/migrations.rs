@@ -349,6 +349,29 @@ async fn migrations_apply_to_fresh_db() {
             "cooled carries nullable refs for exact replay"
         );
         assert!(
+            column_exists(&pg, "cooled", "cold_digest").await,
+            "cooled carries the nullable cold-object integrity witness"
+        );
+        let digest_constraint: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1
+                   FROM pg_constraint c
+                   JOIN pg_class r ON r.oid = c.conrelid
+                   JOIN pg_namespace n ON n.oid = r.relnamespace
+                  WHERE n.nspname = 'proxima_core'
+                    AND r.relname = 'cooled'
+                    AND c.conname = 'cooled_cold_digest_len_chk'
+                    AND c.contype = 'c'
+                    AND c.convalidated
+             )",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert!(
+            digest_constraint,
+            "cooled digest witness length is constrained"
+        );
+        assert!(
             column_exists(&pg, "memory", "schema_id").await,
             "schema_id is on each memory row (same value as the handle)"
         );
@@ -1073,6 +1096,13 @@ async fn cooled_identity_seal_freezes_all_but_transfer_remaps() {
         .execute(pool)
         .await
         .expect_err("cooled Goal pins are sealed");
+        assert!(err.to_string().contains("frozen"), "got: {err}");
+        let err = sqlx::query("UPDATE proxima_core.cooled SET cold_digest = $2 WHERE t = $1")
+            .bind(t)
+            .bind(vec![7_u8; 32])
+            .execute(pool)
+            .await
+            .expect_err("cooled cold digest is sealed");
         assert!(err.to_string().contains("frozen"), "got: {err}");
         Ok(())
     }
@@ -2487,7 +2517,7 @@ async fn a_v008_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7],
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
             "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
              baseline"
         );
@@ -2524,7 +2554,9 @@ async fn a_v008_database_upgrades_to_head_in_place() {
         .await?;
         assert!(
             cooled_append_only.contains("NEW.goal_refs")
-                && cooled_append_only.contains("OLD.goal_refs"),
+                && cooled_append_only.contains("OLD.goal_refs")
+                && cooled_append_only.contains("NEW.cold_digest")
+                && cooled_append_only.contains("OLD.cold_digest"),
             "the final cooled append-only guard must freeze the split Goal-reference column"
         );
 

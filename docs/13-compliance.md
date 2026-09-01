@@ -75,8 +75,9 @@ payload and is not an additional node or edge. Other rows that point at the
 target retain their `origins[]` and `refs[]` byte-for-byte; erase does not
 cascade into or null source declarations. New writes must resolve live target
 rows and cannot use or reuse witnesses. An exact cooled restoration may use a
-correctly kinded witness under the sealed historical path; legacy cooled rows
-with `NULL` pin arrays use ordinary live-target admission.
+correctly kinded witness under the sealed historical path; legacy or
+unwitnessed cooled rows remain unsupported until an operator supplies an
+independent integrity witness.
 
 ## The authority seam
 

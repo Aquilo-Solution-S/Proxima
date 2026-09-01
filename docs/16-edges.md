@@ -63,8 +63,9 @@ disclosure, so a redacted target says nothing about which spine it was on.
 
 **Migrating.** `refs` written before the split still mixes the two. Migration
 `0004_v011_goal_refs.sql` partitions hot and cooled rows by Goal-spine
-membership; cold objects below format version 5 are partitioned the same way
-on hydrate, since the object itself cannot say which ids were Goals.
+membership. Cold objects below the current integrity-witness format remain
+operator-visible but unsupported on hydrate; they cannot be admitted from an
+object whose bytes have no database-side witness.
 
 Two kinds only. A third kind fails the node-home test.
 
@@ -79,8 +80,8 @@ Hard erase does not repair the declaring row: its `origins[]` and `refs[]`
 remain byte-for-byte, with no cascade or nulling. It appends the permanent
 owner-free `(t, closed kind)` witness needed only for exact sealed cooled
 restoration. Ordinary writes still require live targets and cannot use or
-reuse that witness. Legacy cooled rows whose pin arrays are `NULL` use the
-ordinary live-target path. The witness is excluded from export, transfer,
+reuse that witness. Legacy or unwitnessed cooled rows remain unsupported until
+an operator supplies an independently verified witness. The witness is excluded from export, transfer,
 forget, and all public Edge/PinNode/MCP/REST projections; public missing
 targets keep the existing redacted/missing behavior rather than gaining an
 `Unavailable` state.

@@ -768,7 +768,16 @@ def run_fixture(path: Path) -> int:
 # `SQL-POLICY: fixed-fragment`. The alternative was to inline both spellings at
 # each call, which duplicates the bind chain and the ordering argument written
 # above it; keeping one call chain per fence is what these sites buy.
-EXPECTED_DYNAMIC_SQL_SITES = 102
+#
+# 102 -> 106: four cold-record sites in `storage-pg/src/verbs/forget.rs` make
+# preservation a function of the frozen flavor contract rather than a table
+# list compiled into storage: dump a declared cascaded detail relation, probe
+# ordinary-sidecar and detail-row shapes behind savepoints, and restore the
+# declared detail rows. Every schema/table/key fragment passes through
+# `PgIdent`; every row value is a bind. Literal SQL cannot express this lane
+# because out-of-tree flavors supply the relation and key declarations, while
+# the contract stamp is precisely what hydration must verify before writing.
+EXPECTED_DYNAMIC_SQL_SITES = 106
 
 
 def run_self_test() -> int:

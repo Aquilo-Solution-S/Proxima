@@ -9,7 +9,10 @@ use std::collections::BTreeSet;
 
 use proxima_core::flavor::ForgetLeg;
 use proxima_core::owner_inverse::OwnerSurfaces;
-use proxima_core::{ColdObjectStore, Owner, StorageError};
+use proxima_core::{
+    ColdObjectStore, MemoryHydrationBatchOutcome, MemoryHydrationOutcome, MemoryHydrationStatus,
+    Owner, StorageError,
+};
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -17,7 +20,14 @@ use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::sidecars::PgSidecarRegistryFrozen;
 
-pub const COLD_FORMAT_VERSION: u8 = 5;
+/// Version 6 adds the exact `memory.sidecar_tables` stamp to each object.
+/// Version 7 adds contract-declared cascaded detail declarations and their
+/// exact rows. A v6 object can only be hydrated for a schema with no such
+/// detail surfaces; accepting it for a schema that has one would silently
+/// discard rows deleted by the parent FK.
+/// Hydration refuses older records because a dump list alone cannot prove
+/// which sidecars the original Memory admission declared.
+pub const COLD_FORMAT_VERSION: u8 = 7;
 
 // The persisted key derivation lives in core, the lowest crate shared by
 // storage-pg and blob-s3; re-exported here so the storage path names it.
@@ -90,6 +100,7 @@ struct CooledRow {
     origins: Option<Vec<Uuid>>,
     refs: Option<Vec<Uuid>>,
     goal_refs: Option<Vec<Uuid>>,
+    cold_digest: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +108,10 @@ pub struct ColdRecord {
     row: HotRow,
     schema_id: String,
     sidecar_dumps: Vec<(String, String)>,
+    /// Contract-declared `ON DELETE CASCADE` detail rows. Each declaration is
+    /// present even when it has zero rows, so a cold record cannot add a
+    /// forged table or omit a surface during restore.
+    detail_dumps: Vec<(String, Vec<String>)>,
     /// Model ids that had vectors. Vectors stay out of the object; hydrate
     /// enqueues embed jobs for these ids.
     embed_models: Vec<String>,
@@ -105,7 +120,10 @@ pub struct ColdRecord {
     /// Format version this record was decoded from, or the current version
     /// for a record built from a live row. Hydrate consults it because a
     /// pre-v5 object's `refs` still mixes Memory and Goal ids and has to be
-    /// separated against the Goal spine before it can be re-inserted.
+    /// separated against the Goal spine before it can be re-inserted, while
+    /// pre-v6 objects have no authenticated sidecar stamp and fail closed;
+    /// pre-v7 objects have no exact cascaded-detail declaration and fail
+    /// closed for schemas that declare one.
     format_version: u8,
 }
 
@@ -122,6 +140,10 @@ fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
     write_uuid_list(&mut out, &rec.row.refs)?;
     write_uuid_list(&mut out, &rec.row.goal_refs)?;
     write_str(&mut out, &rec.schema_id)?;
+    // The dump names are data from the cold boundary. Persist the original
+    // Memory stamp separately so a caller cannot mint a new valid sidecar by
+    // appending its name to the dump list during hydration.
+    write_str_list(&mut out, &rec.row.sidecar_tables)?;
     write_count(&mut out, rec.sidecar_dumps.len())?;
     for (table, json) in &rec.sidecar_dumps {
         write_str(&mut out, table)?;
@@ -129,18 +151,30 @@ fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
     }
     write_str_list(&mut out, &rec.embed_models)?;
     write_opt_str(&mut out, rec.sketch.as_deref())?;
+    write_count(&mut out, rec.detail_dumps.len())?;
+    for (table, rows) in &rec.detail_dumps {
+        write_str(&mut out, table)?;
+        write_count(&mut out, rows.len())?;
+        for row in rows {
+            write_str(&mut out, row)?;
+        }
+    }
     Ok(out)
+}
+
+fn cold_digest(bytes: &[u8]) -> Vec<u8> {
+    blake3::hash(bytes).as_bytes().to_vec()
 }
 
 fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
     let mut i = 0;
     let version = read_u8(bytes, &mut i)?;
-    if !matches!(version, 1..=5) {
+    if !matches!(version, 1..=COLD_FORMAT_VERSION) {
         return Err(StorageError::Internal(format!(
             "unknown cold format {version}"
         )));
     }
-    let row = HotRow {
+    let mut row = HotRow {
         handle: read_uuid(bytes, &mut i)?,
         t: read_uuid(bytes, &mut i)?,
         kind: read_str(bytes, &mut i)?,
@@ -164,6 +198,12 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         content_id: None,
     };
     let schema_id = read_str(bytes, &mut i)?;
+    let sidecar_tables = if version >= 6 {
+        read_str_list(bytes, &mut i)?
+    } else {
+        Vec::new()
+    };
+    row.sidecar_tables = sidecar_tables;
     let sidecar_dumps = if version >= 3 {
         let n = usize::from(read_u16(bytes, &mut i)?);
         let mut dumps = Vec::with_capacity(n);
@@ -186,10 +226,32 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
     } else {
         None
     };
+    let detail_dumps = if version >= 7 {
+        let n = usize::from(read_u16(bytes, &mut i)?);
+        let mut dumps = Vec::with_capacity(n);
+        for _ in 0..n {
+            let table = read_str(bytes, &mut i)?;
+            let rows = usize::from(read_u16(bytes, &mut i)?);
+            let mut values = Vec::with_capacity(rows);
+            for _ in 0..rows {
+                values.push(read_str(bytes, &mut i)?);
+            }
+            dumps.push((table, values));
+        }
+        dumps
+    } else {
+        Vec::new()
+    };
+    if i != bytes.len() {
+        return Err(StorageError::Internal(
+            "cold object has trailing bytes".into(),
+        ));
+    }
     Ok(ColdRecord {
         row,
         schema_id,
         sidecar_dumps,
+        detail_dumps,
         embed_models,
         sketch,
         format_version: version,
@@ -439,6 +501,105 @@ async fn dump_stamped_sidecars(
     Ok(dumps)
 }
 
+/// Dump every contract-declared cascaded MemoryT detail relation, including
+/// an explicit empty entry. The parent sidecar's FK will delete these rows
+/// during cooling, so a cold record that only carries the parent row is not a
+/// complete representation of the Memory payload.
+async fn dump_cascaded_details(
+    conn: &mut PgConnection,
+    surfaces: &OwnerSurfaces,
+    schema_id: &str,
+    t: Uuid,
+) -> Result<Vec<(String, Vec<String>)>, StorageError> {
+    let details = surfaces.cascaded_details_for_schema(schema_id);
+    let mut dumps = Vec::with_capacity(details.len());
+    for detail in details {
+        let table = PgIdent::table(detail.table)?;
+        let key = PgIdent::column(detail.key_column)?;
+        let sql = format!(
+            "SELECT COALESCE(jsonb_agg(row_json ORDER BY row_json::text), '[]'::jsonb)
+               FROM (
+                 SELECT to_jsonb(s) - COALESCE((
+                     SELECT array_agg(a.attname::text)
+                       FROM pg_attribute a
+                       JOIN pg_class c ON c.oid = a.attrelid
+                       JOIN pg_namespace n ON n.oid = c.relnamespace
+                      WHERE n.nspname = split_part('{tbl}', '.', 1)
+                        AND c.relname = split_part('{tbl}', '.', 2)
+                        AND a.attgenerated <> ''
+                   ), '{{}}'::text[]) AS row_json
+                   FROM {tbl} s
+                  WHERE s.{key} = $1
+               ) dumped",
+            tbl = table.as_str(),
+            key = key.as_str(),
+        );
+        // SQL-POLICY: PgIdent
+        let json: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            .bind(t)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(map_err)?;
+        let rows = json
+            .as_array()
+            .ok_or_else(|| {
+                StorageError::Internal(format!(
+                    "cascaded detail dump for {} is not an array",
+                    detail.table
+                ))
+            })?
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect();
+        dumps.push((detail.table.to_owned(), rows));
+    }
+    Ok(dumps)
+}
+
+/// The row stamp is the authority for which movable sidecars belong to an
+/// admission. A v6 object carries that list beside the row dumps. The
+/// registry's retained owner-pinned tables are intentionally absent from the
+/// dumps, so they are removed from the expected list before comparison; an
+/// owner-pinned dump itself still fails the sidecar preflight below.
+fn cold_sidecar_stamp_matches(rec: &ColdRecord, sidecars: &PgSidecarRegistryFrozen) -> bool {
+    if rec.format_version < 6 {
+        return false;
+    }
+    let mut seen_stamp = BTreeSet::new();
+    if rec
+        .row
+        .sidecar_tables
+        .iter()
+        .any(|table| !seen_stamp.insert(table.as_str()))
+    {
+        return false;
+    }
+    let expected = rec
+        .row
+        .sidecar_tables
+        .iter()
+        .filter(|table| !is_owner_pinned(sidecars, table))
+        .map(String::as_str);
+    let actual = rec.sidecar_dumps.iter().map(|(table, _)| table.as_str());
+    expected.eq(actual)
+}
+
+/// A detail stamp is a declaration, not merely a list of rows. Every
+/// contract-declared cascaded table is represented, including an empty one;
+/// anything else would let an external object add a table or quietly omit a
+/// table whose parent FK deleted rows during cooling.
+fn cold_detail_stamp_matches(rec: &ColdRecord, surfaces: &OwnerSurfaces) -> bool {
+    let expected = surfaces.cascaded_details_for_schema(&rec.schema_id);
+    if rec.format_version < 7 {
+        return expected.is_empty() && rec.detail_dumps.is_empty();
+    }
+    expected.len() == rec.detail_dumps.len()
+        && expected
+            .iter()
+            .zip(&rec.detail_dumps)
+            .all(|(expected, (actual_table, _))| expected.table == actual_table)
+}
+
 async fn load_sketch_text(
     conn: &mut PgConnection,
     t: Uuid,
@@ -475,6 +636,7 @@ const HOT_ROW_FOR_UPDATE_OWNED_SQL: &str = "SELECT handle, t, kind::text, owner_
 pub async fn snapshot_hot(
     conn: &mut PgConnection,
     sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
     t: Uuid,
 ) -> Result<ColdRecord, StorageError> {
     let row: HotRow = sqlx::query_as(HOT_ROW_SQL)
@@ -485,12 +647,14 @@ pub async fn snapshot_hot(
         .ok_or(StorageError::NotFound)?;
     let schema_id = row.schema_id.clone();
     let sidecar_dumps = dump_stamped_sidecars(conn, sidecars, &row.sidecar_tables, t).await?;
+    let detail_dumps = dump_cascaded_details(conn, surfaces, &schema_id, t).await?;
     let embed_models = load_embed_models(conn, t).await?;
     let sketch = load_sketch_text(conn, t).await?;
     Ok(ColdRecord {
         row,
         schema_id,
         sidecar_dumps,
+        detail_dumps,
         embed_models,
         sketch,
         format_version: COLD_FORMAT_VERSION,
@@ -533,12 +697,14 @@ pub async fn commit_forget(
     let schema_id = locked.schema_id.clone();
     let sidecar_dumps =
         dump_stamped_sidecars(tx.as_mut(), sidecars, &locked.sidecar_tables, t).await?;
+    let detail_dumps = dump_cascaded_details(tx.as_mut(), surfaces, &schema_id, t).await?;
     let embed_models = load_embed_models(tx.as_mut(), t).await?;
     let sketch = load_sketch_text(tx.as_mut(), t).await?;
     let current = ColdRecord {
         row: locked,
         schema_id,
         sidecar_dumps,
+        detail_dumps,
         embed_models,
         sketch,
         format_version: COLD_FORMAT_VERSION,
@@ -573,8 +739,8 @@ async fn persist_cooled_after_put(
     sqlx::query(
         "INSERT INTO proxima_core.cooled
             (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id, ingest_key,
-             origins, refs, goal_refs)
-         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6, $7, $8, $9, $10, $11, $12)",
+             origins, refs, goal_refs, cold_digest)
+         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(current.row.t)
     .bind(current.row.handle)
@@ -588,6 +754,7 @@ async fn persist_cooled_after_put(
     .bind(&current.row.origins)
     .bind(&current.row.refs)
     .bind(&current.row.goal_refs)
+    .bind(cold_digest(&encode_record(current)?))
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -963,6 +1130,290 @@ async fn insertable_columns(
     Ok(columns)
 }
 
+/// Validate every sidecar dump before the hydration atom writes its Memory
+/// row. The dump is normally produced by [`dump_stamped_sidecars`], but the
+/// cold store is an external durability boundary and must be treated as
+/// untrusted input on restore.
+///
+/// This checks the properties a generic `jsonb_populate_record` call cannot:
+/// one table only, a registered and hydratable surface, the declared memory
+/// key naming this exact `t`, no owner-bearing audit payload, no unknown
+/// columns, and every required column present and non-null. The final
+/// `jsonb_populate_record` probe makes PostgreSQL validate UUID, array, enum,
+/// and other column types without inserting a row.
+async fn validate_cold_sidecars(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    dumps: &[(String, String)],
+    t: Uuid,
+) -> Result<bool, StorageError> {
+    let mut seen_tables = BTreeSet::new();
+    for (table, json) in dumps {
+        if !sidecars.is_hydratable_memory_sidecar_table(table)
+            || is_owner_pinned(sidecars, table)
+            || !seen_tables.insert(table.as_str())
+        {
+            return Ok(false);
+        }
+        let Some(key_column) = sidecars.memory_key_column(table) else {
+            return Ok(false);
+        };
+        let Ok(ident) = PgIdent::table(table) else {
+            return Ok(false);
+        };
+        let Some((schema_name, table_name)) = table.split_once('.') else {
+            return Ok(false);
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+            return Ok(false);
+        };
+        let Some(object) = value.as_object() else {
+            return Ok(false);
+        };
+        let Some(key_value) = object.get(key_column).and_then(serde_json::Value::as_str) else {
+            return Ok(false);
+        };
+        if key_value.parse::<Uuid>().ok() != Some(t) || object.contains_key("owner_id") {
+            return Ok(false);
+        }
+
+        let columns: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT column_name, is_nullable, is_generated
+               FROM information_schema.columns
+              WHERE table_schema = $1 AND table_name = $2",
+        )
+        .bind(schema_name)
+        .bind(table_name)
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+        if columns.is_empty() {
+            return Ok(false);
+        }
+        let insertable = columns
+            .iter()
+            .filter(|(_, _, generated)| generated == "NEVER")
+            .map(|(name, _, _)| name.as_str())
+            .collect::<BTreeSet<_>>();
+        if object
+            .keys()
+            .any(|name| !insertable.contains(name.as_str()))
+        {
+            return Ok(false);
+        }
+        if columns.iter().any(|(name, nullable, generated)| {
+            generated == "NEVER"
+                && nullable == "NO"
+                && object.get(name).is_none_or(serde_json::Value::is_null)
+        }) {
+            return Ok(false);
+        }
+
+        let sql = format!(
+            "SELECT jsonb_populate_record(NULL::{table}, $1::jsonb)",
+            table = ident.as_str()
+        );
+        // PostgreSQL aborts the surrounding transaction after a deterministic
+        // cast error. Probe behind a savepoint so a malformed external object
+        // can become a typed preflight result and the remaining set can still
+        // be rolled back cleanly rather than surfacing "current transaction
+        // is aborted" from an unrelated statement.
+        sqlx::query("SAVEPOINT cold_sidecar_shape")
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+        // SQL-POLICY: PgIdent
+        match sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(json)
+            .fetch_optional(tx.as_mut())
+            .await
+        {
+            Ok(Some(_)) => {
+                sqlx::query("RELEASE SAVEPOINT cold_sidecar_shape")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+            }
+            Ok(None) => {
+                sqlx::query("ROLLBACK TO SAVEPOINT cold_sidecar_shape")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+                sqlx::query("RELEASE SAVEPOINT cold_sidecar_shape")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+                return Ok(false);
+            }
+            Err(sqlx::Error::Database(db))
+                if db.code().as_deref().is_some_and(is_cold_data_shape_code) =>
+            {
+                sqlx::query("ROLLBACK TO SAVEPOINT cold_sidecar_shape")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+                sqlx::query("RELEASE SAVEPOINT cold_sidecar_shape")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+                return Ok(false);
+            }
+            Err(error) => {
+                sqlx::query("ROLLBACK TO SAVEPOINT cold_sidecar_shape")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+                sqlx::query("RELEASE SAVEPOINT cold_sidecar_shape")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+                return Err(map_err(error));
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Validate the exact rows in every contract-declared cascaded detail dump.
+/// The table/key declaration comes from the frozen schema contract; the
+/// external record may supply only the row values. PostgreSQL's recordset
+/// probe checks the concrete column types and constraints without allowing a
+/// malformed object to abort the caller's transaction.
+async fn validate_cold_details(
+    tx: &mut Transaction<'_, Postgres>,
+    surfaces: &OwnerSurfaces,
+    rec: &ColdRecord,
+    t: Uuid,
+) -> Result<bool, StorageError> {
+    let expected = surfaces.cascaded_details_for_schema(&rec.schema_id);
+    if !cold_detail_stamp_matches(rec, surfaces) {
+        return Ok(false);
+    }
+    for (detail, (table_name, rows)) in expected.iter().zip(&rec.detail_dumps) {
+        if detail.table != table_name {
+            return Ok(false);
+        }
+        let table = PgIdent::table(detail.table)?;
+        let key_column = PgIdent::column(detail.key_column)?;
+        let Some((schema_name, relation_name)) = detail.table.split_once('.') else {
+            return Ok(false);
+        };
+        let columns: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT column_name, is_nullable, is_generated
+               FROM information_schema.columns
+              WHERE table_schema = $1 AND table_name = $2",
+        )
+        .bind(schema_name)
+        .bind(relation_name)
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+        if columns.is_empty()
+            || !columns
+                .iter()
+                .any(|(name, _, generated)| name == detail.key_column && generated == "NEVER")
+        {
+            return Ok(false);
+        }
+        let insertable = columns
+            .iter()
+            .filter(|(_, _, generated)| generated == "NEVER")
+            .map(|(name, _, _)| name.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut values = Vec::with_capacity(rows.len());
+        for row in rows {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(row) else {
+                return Ok(false);
+            };
+            let Some(object) = value.as_object() else {
+                return Ok(false);
+            };
+            let Some(key_value) = object
+                .get(detail.key_column)
+                .and_then(serde_json::Value::as_str)
+            else {
+                return Ok(false);
+            };
+            if key_value.parse::<Uuid>().ok() != Some(t) || object.contains_key("owner_id") {
+                return Ok(false);
+            }
+            if object
+                .keys()
+                .any(|name| !insertable.contains(name.as_str()))
+                || columns.iter().any(|(name, nullable, generated)| {
+                    generated == "NEVER"
+                        && nullable == "NO"
+                        && object.get(name).is_none_or(serde_json::Value::is_null)
+                })
+            {
+                return Ok(false);
+            }
+            values.push(value);
+        }
+        if values.is_empty() {
+            continue;
+        }
+        let json = serde_json::Value::Array(values).to_string();
+        let sql = format!(
+            "SELECT 1 FROM jsonb_populate_recordset(NULL::{table}, $1::jsonb) AS p
+              WHERE p.{key} IS NULL
+              LIMIT 1",
+            table = table.as_str(),
+            key = key_column.as_str(),
+        );
+        sqlx::query("SAVEPOINT cold_detail_shape")
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+        // SQL-POLICY: PgIdent
+        match sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(&json)
+            .fetch_optional(tx.as_mut())
+            .await
+        {
+            Ok(_) => {
+                sqlx::query("RELEASE SAVEPOINT cold_detail_shape")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+            }
+            Err(sqlx::Error::Database(db))
+                if db.code().as_deref().is_some_and(is_cold_data_shape_code) =>
+            {
+                sqlx::query("ROLLBACK TO SAVEPOINT cold_detail_shape")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+                sqlx::query("RELEASE SAVEPOINT cold_detail_shape")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+                return Ok(false);
+            }
+            Err(error) => {
+                sqlx::query("ROLLBACK TO SAVEPOINT cold_detail_shape")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+                sqlx::query("RELEASE SAVEPOINT cold_detail_shape")
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
+                return Err(map_err(error));
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// SQLSTATE families produced by a deterministic cold-record/sidecar shape
+/// failure. Mapping these before the generic storage mapper keeps a damaged
+/// external object typed as `InvalidColdObject` instead of leaking an
+/// implementation-shaped `Internal` error through the Engine.
+fn is_cold_data_shape_code(code: &str) -> bool {
+    code.starts_with("22") || code.starts_with("23")
+}
+
 async fn restore_registered_sidecars(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -970,9 +1421,12 @@ async fn restore_registered_sidecars(
 ) -> Result<(), StorageError> {
     let allowed = sidecars.memory_sidecar_tables();
     for (table, json) in dumps {
-        if !allowed.contains(&table.as_str()) {
+        if !allowed.contains(&table.as_str())
+            || !sidecars.is_hydratable_memory_sidecar_table(table)
+            || is_owner_pinned(sidecars, table)
+        {
             return Err(StorageError::ConstraintViolation(format!(
-                "cold sidecar table {table} is not registered"
+                "cold sidecar table {table} is not hydratable"
             )));
         }
         let ident = PgIdent::table(table)?;
@@ -990,11 +1444,84 @@ async fn restore_registered_sidecars(
             cols = col_list
         );
         // SQL-POLICY: PgIdent
-        sqlx::query(sqlx::AssertSqlSafe(sql))
+        let result = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(json)
             .execute(tx.as_mut())
-            .await
-            .map_err(map_err)?;
+            .await;
+        if let Err(error) = result {
+            if matches!(&error, sqlx::Error::Database(db) if db
+                .code()
+                .as_deref()
+                .is_some_and(is_cold_data_shape_code))
+            {
+                return Err(StorageError::ConstraintViolation(
+                    "cold sidecar payload is not hydratable".into(),
+                ));
+            }
+            return Err(map_err(error));
+        }
+    }
+    Ok(())
+}
+
+async fn restore_cascaded_details(
+    tx: &mut Transaction<'_, Postgres>,
+    surfaces: &OwnerSurfaces,
+    rec: &ColdRecord,
+) -> Result<(), StorageError> {
+    let expected = surfaces.cascaded_details_for_schema(&rec.schema_id);
+    if !cold_detail_stamp_matches(rec, surfaces) {
+        return Err(StorageError::ConstraintViolation(
+            "cold detail declaration is not supported".into(),
+        ));
+    }
+    for (detail, (_, rows)) in expected.iter().zip(&rec.detail_dumps) {
+        if rows.is_empty() {
+            continue;
+        }
+        let table = PgIdent::table(detail.table)?;
+        let columns = insertable_columns(tx, detail.table).await?;
+        if columns.is_empty() {
+            return Err(StorageError::Internal(format!(
+                "no insertable columns for {}",
+                detail.table
+            )));
+        }
+        let col_list = columns.join(", ");
+        let values = serde_json::Value::Array(
+            rows.iter()
+                .map(|row| serde_json::from_str(row))
+                .collect::<Result<Vec<serde_json::Value>, _>>()
+                .map_err(|_| {
+                    StorageError::ConstraintViolation(
+                        "cold detail payload is not hydratable".into(),
+                    )
+                })?,
+        )
+        .to_string();
+        let sql = format!(
+            "INSERT INTO {tbl} ({cols})
+             SELECT {cols} FROM jsonb_populate_recordset(NULL::{tbl}, $1::jsonb) AS p",
+            tbl = table.as_str(),
+            cols = col_list,
+        );
+        // SQL-POLICY: PgIdent
+        let result = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(values)
+            .execute(tx.as_mut())
+            .await;
+        if let Err(error) = result {
+            if matches!(&error, sqlx::Error::Database(db) if db
+                .code()
+                .as_deref()
+                .is_some_and(is_cold_data_shape_code))
+            {
+                return Err(StorageError::ConstraintViolation(
+                    "cold detail payload is not hydratable".into(),
+                ));
+            }
+            return Err(map_err(error));
+        }
     }
     Ok(())
 }
@@ -1117,7 +1644,10 @@ async fn delete_memory_dependents(
                      so the forget cannot honour it; freeze_against must refuse this registry"
                 )));
             }
-            ForgetLeg::Deleted { .. } | ForgetLeg::Cascaded { .. } | ForgetLeg::Unreachable => "t",
+            ForgetLeg::Deleted { .. }
+            | ForgetLeg::DumpedCascade { .. }
+            | ForgetLeg::Cascaded { .. }
+            | ForgetLeg::Unreachable => "t",
         };
         legs.push((table.as_str(), key_column));
     }
@@ -1300,7 +1830,7 @@ pub async fn forget_memory(
         .await?
         .ok_or(StorageError::NotFound)?;
     lock_forget_footprint_tx(tx, t, handle).await?;
-    let rec = snapshot_hot(tx.as_mut(), sidecars, t).await?;
+    let rec = snapshot_hot(tx.as_mut(), sidecars, surfaces, t).await?;
     if rec.row.owner_id != expected_owner_id {
         return Err(StorageError::NotFound);
     }
@@ -1339,7 +1869,7 @@ pub async fn forget_memory_oneshot(
         .await?
         .ok_or(StorageError::NotFound)?;
     lock_forget_footprint_tx(&mut tx, t, handle).await?;
-    let rec = snapshot_hot(tx.as_mut(), sidecars, t).await?;
+    let rec = snapshot_hot(tx.as_mut(), sidecars, surfaces, t).await?;
     if rec.row.owner_id != expected_owner_id {
         return Err(StorageError::NotFound);
     }
@@ -1370,20 +1900,69 @@ pub async fn forget_memory_oneshot(
     Ok(())
 }
 
-pub async fn hydrate_memory(
+#[allow(dead_code)]
+pub(crate) async fn hydrate_memory(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     cold: &dyn ColdObjectStore,
     t: Uuid,
     non_embeddable_schemas: &[String],
 ) -> Result<(), StorageError> {
+    hydrate_memory_inner(
+        tx,
+        sidecars,
+        &OwnerSurfaces::default(),
+        cold,
+        t,
+        non_embeddable_schemas,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Owner-fenced variant used by the Engine storage port. The older raw atom
+/// remains available to the internal maintenance/test paths; this wrapper
+/// adds the permit owner to both the initial probe and the locked re-read, so
+/// a transfer cannot turn a stale owner permit into a hydrate for the new
+/// owner.
+pub(crate) async fn hydrate_memory_for_owner(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
+    cold: &dyn ColdObjectStore,
+    t: Uuid,
+    expected_owner_id: Uuid,
+    non_embeddable_schemas: &[String],
+) -> Result<u32, StorageError> {
+    hydrate_memory_inner(
+        tx,
+        sidecars,
+        surfaces,
+        cold,
+        t,
+        non_embeddable_schemas,
+        Some(expected_owner_id),
+    )
+    .await
+}
+
+async fn hydrate_memory_inner(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
+    cold: &dyn ColdObjectStore,
+    t: Uuid,
+    non_embeddable_schemas: &[String],
+    expected_owner_id: Option<Uuid>,
+) -> Result<u32, StorageError> {
     // Read the locator without a lock, then decode the object without holding
     // a database lock. The cooled row is authoritative for current owner and
     // blob/content ownership; transfer may rewrite those fields while the
     // object bytes remain at the owner-free key.
     let cooled: CooledRow = sqlx::query_as(
         "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
-                source_id, ingest_key, origins, refs, goal_refs
+                source_id, ingest_key, origins, refs, goal_refs, cold_digest
            FROM proxima_core.cooled
           WHERE t = $1",
     )
@@ -1392,8 +1971,47 @@ pub async fn hydrate_memory(
     .await
     .map_err(map_err)?
     .ok_or(StorageError::NotFound)?;
+    if expected_owner_id.is_some_and(|owner_id| cooled.owner_id != owner_id) {
+        return Err(StorageError::NotFound);
+    }
     let object_key = cooled.object_key.clone();
-    let rec = decode_record(&cold.get(&object_key).await?)?;
+    let Some(expected_digest) = cooled.cold_digest.as_deref() else {
+        return Err(StorageError::ConstraintViolation(
+            "cold object has no integrity witness".into(),
+        ));
+    };
+    if expected_owner_id.is_some()
+        && (cooled.origins.is_none() || cooled.refs.is_none() || cooled.goal_refs.is_none())
+    {
+        return Err(StorageError::ConstraintViolation(
+            "cold object has no complete pin integrity witness".into(),
+        ));
+    }
+    let bytes = cold.get(&object_key).await.map_err(|error| match error {
+        StorageError::NotFound => {
+            StorageError::ConstraintViolation("cold object is missing".into())
+        }
+        other => other,
+    })?;
+    if expected_digest.len() != 32 || cold_digest(&bytes).as_slice() != expected_digest {
+        return Err(StorageError::Conflict(
+            "cold object digest does not match the cooled witness".into(),
+        ));
+    }
+    if bytes
+        .first()
+        .is_none_or(|version| !(1..=COLD_FORMAT_VERSION).contains(version))
+    {
+        return Err(StorageError::ConstraintViolation(
+            "unsupported cold object format".into(),
+        ));
+    }
+    let rec = decode_record(&bytes)?;
+    if rec.format_version < 6 {
+        return Err(StorageError::ConstraintViolation(
+            "cold object has no sidecar integrity witness".into(),
+        ));
+    }
     if rec.row.t != cooled.t
         || rec.row.handle != cooled.handle
         || rec.row.kind != cooled.kind
@@ -1438,6 +2056,26 @@ pub async fn hydrate_memory(
             "cold object pins do not match cooled locator".into(),
         ));
     }
+    if !cold_sidecar_stamp_matches(&rec, sidecars) {
+        return Err(StorageError::ConstraintViolation(
+            "cold object has an unsupported sidecar stamp".into(),
+        ));
+    }
+    if !validate_cold_sidecars(tx, sidecars, &rec.sidecar_dumps, rec.row.t).await? {
+        return Err(StorageError::ConstraintViolation(
+            "cold sidecar payload is not hydratable".into(),
+        ));
+    }
+    if !cold_detail_stamp_matches(&rec, surfaces) {
+        return Err(StorageError::ConstraintViolation(
+            "unsupported cold detail declaration".into(),
+        ));
+    }
+    if !validate_cold_details(tx, surfaces, &rec, rec.row.t).await? {
+        return Err(StorageError::ConstraintViolation(
+            "cold detail payload is not hydratable".into(),
+        ));
+    }
 
     // The series handle is the first lock. Only after it is held do we take
     // the source and every chosen pin in the sorted lifecycle set, re-read
@@ -1452,7 +2090,7 @@ pub async fn hydrate_memory(
     lock_lifecycle_targets_tx(tx, &targets).await?;
     let current: CooledRow = sqlx::query_as(
         "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
-                source_id, ingest_key, origins, refs, goal_refs
+                source_id, ingest_key, origins, refs, goal_refs, cold_digest
            FROM proxima_core.cooled
           WHERE t = $1
           FOR UPDATE",
@@ -1462,17 +2100,21 @@ pub async fn hydrate_memory(
     .await
     .map_err(map_err)?
     .ok_or(StorageError::NotFound)?;
+    if expected_owner_id.is_some_and(|owner_id| current.owner_id != owner_id) {
+        return Err(StorageError::NotFound);
+    }
     if current.object_key != object_key
         || current.handle != rec.row.handle
         || current.kind != rec.row.kind
         || current.source_id != rec.row.source_id
         || current.ingest_key != rec.row.ingest_key
+        || current.cold_digest != cooled.cold_digest
         || current.origins != cooled.origins
         || current.refs != cooled.refs
         || current.goal_refs != cooled.goal_refs
     {
-        return Err(StorageError::Conflict(
-            "cooled locator changed while hydrating".into(),
+        return Err(StorageError::Retryable(
+            "cooled hydration witness changed while locking".into(),
         ));
     }
     // No per-column comparison follows. The re-read above already pins every
@@ -1480,25 +2122,23 @@ pub async fn hydrate_memory(
     // `origins`/`refs`/`goal_refs` are derived from those same `Option`s, so
     // a column check could never fail. The locator check is the whole guard.
 
+    // Witnesses are lifecycle state, not cold-object metadata. Count them
+    // only after the complete source/pin lock set is held, so an erase cannot
+    // remove one between the reported count and this commit.
+    let preserved_witnesses = cold_witness_count(
+        tx,
+        &origins.iter().chain(&refs).copied().collect::<Vec<_>>(),
+        &goal_refs,
+    )
+    .await?
+    .map_err(|()| {
+        StorageError::ConstraintViolation("cold object has an invalid pin witness kind".into())
+    })?;
+
     // `ensure_memory_head` must stay after the lifecycle lock: a bulk erase
     // takes the same set before any head or row lock.
     ensure_memory_head(tx, &rec, current.owner_id).await?;
-    let mut stamped_tables = rec
-        .sidecar_dumps
-        .iter()
-        .map(|(table, _)| table.clone())
-        .collect::<Vec<_>>();
-    if let Some(primary) = sidecars.memory_sidecar_table_for_schema(
-        match rec.row.kind.as_str() {
-            "abstraction" => proxima_core::EntityKind::Abstraction,
-            "perspective" => proxima_core::EntityKind::Perspective,
-            _ => proxima_core::EntityKind::Fact,
-        },
-        &rec.schema_id,
-    ) && !stamped_tables.iter().any(|table| table == primary)
-    {
-        stamped_tables.push(primary.to_owned());
-    }
+    let stamped_tables = rec.row.sidecar_tables.clone();
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
@@ -1523,6 +2163,7 @@ pub async fn hydrate_memory(
     .await
     .map_err(map_err)?;
     restore_registered_sidecars(tx, sidecars, &rec.sidecar_dumps).await?;
+    restore_cascaded_details(tx, surfaces, &rec).await?;
     // The cold record carries no `lexical_language`: the stamp lives on the
     // projection row, and the projection is rebuilt here rather than
     // restored. A hydrated row therefore re-derives its vector at the
@@ -1598,7 +2239,464 @@ pub async fn hydrate_memory(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-    Ok(())
+    Ok(preserved_witnesses)
+}
+
+#[derive(Debug)]
+enum HydrationPlan {
+    Hot,
+    NotFound,
+    Cooled,
+    Failed(MemoryHydrationStatus),
+}
+
+fn hydration_failure_status(error: &StorageError) -> Option<MemoryHydrationStatus> {
+    match error {
+        StorageError::NotFound => Some(MemoryHydrationStatus::NotFound),
+        StorageError::ConstraintViolation(message)
+            if message.contains("cold object is missing") =>
+        {
+            Some(MemoryHydrationStatus::MissingColdObject)
+        }
+        StorageError::ConstraintViolation(message)
+            if message.contains("no integrity witness")
+                || message.contains("unsupported cold object format")
+                || message.contains("no sidecar integrity witness")
+                || message.contains("no complete pin integrity witness")
+                || message.contains("unsupported cold detail") =>
+        {
+            Some(MemoryHydrationStatus::UnsupportedColdObject)
+        }
+        StorageError::ConstraintViolation(message)
+            if message.contains("unsupported sidecar stamp") =>
+        {
+            Some(MemoryHydrationStatus::UnsupportedColdSidecar)
+        }
+        StorageError::ConstraintViolation(_) | StorageError::Conflict(_) => {
+            Some(MemoryHydrationStatus::InvalidColdObject)
+        }
+        StorageError::Internal(message)
+            if message.contains("cold") || message.contains("sidecar") =>
+        {
+            Some(MemoryHydrationStatus::InvalidColdObject)
+        }
+        _ => None,
+    }
+}
+
+async fn owned_cooled_row_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    t: Uuid,
+    owner_id: Uuid,
+) -> Result<Option<CooledRow>, StorageError> {
+    sqlx::query_as(
+        "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
+                source_id, ingest_key, origins, refs, goal_refs, cold_digest
+           FROM proxima_core.cooled
+          WHERE t = $1 AND owner_id = $2
+          FOR UPDATE",
+    )
+    .bind(t)
+    .bind(owner_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)
+}
+
+fn hydration_plan_outcome(
+    memory_id: proxima_core::MemoryId,
+    plan: &HydrationPlan,
+) -> MemoryHydrationOutcome {
+    match plan {
+        HydrationPlan::Hot => {
+            MemoryHydrationOutcome::simple(memory_id, MemoryHydrationStatus::AlreadyHot)
+        }
+        HydrationPlan::NotFound => {
+            MemoryHydrationOutcome::simple(memory_id, MemoryHydrationStatus::NotFound)
+        }
+        HydrationPlan::Cooled => {
+            MemoryHydrationOutcome::simple(memory_id, MemoryHydrationStatus::NotAttempted)
+        }
+        HydrationPlan::Failed(status) => MemoryHydrationOutcome::simple(memory_id, *status),
+    }
+}
+
+async fn owned_cooled_row(
+    tx: &mut Transaction<'_, Postgres>,
+    t: Uuid,
+    owner_id: Uuid,
+) -> Result<Option<CooledRow>, StorageError> {
+    sqlx::query_as(
+        "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
+                source_id, ingest_key, origins, refs, goal_refs, cold_digest
+           FROM proxima_core.cooled
+          WHERE t = $1 AND owner_id = $2",
+    )
+    .bind(t)
+    .bind(owner_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)
+}
+
+async fn owned_hot_exists(
+    tx: &mut Transaction<'_, Postgres>,
+    t: Uuid,
+    owner_id: Uuid,
+) -> Result<bool, StorageError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
+         )",
+    )
+    .bind(t)
+    .bind(owner_id)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)
+}
+
+/// Count the historical target witnesses that exact hydration will preserve,
+/// and reject a witness whose closed kind contradicts the cold declaration.
+/// Witness rows have no owner by design; the cooled source owner is already
+/// established by the permit and the owner-scoped cooled probe.
+async fn cold_witness_count(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_targets: &[Uuid],
+    goal_targets: &[Uuid],
+) -> Result<Result<u32, ()>, StorageError> {
+    let memory_targets = memory_targets.to_vec();
+    let goal_targets = goal_targets.to_vec();
+    let invalid: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM proxima_core.erased_pin_target e
+              WHERE (e.t = ANY($1::uuid[]) AND e.kind = 'goal'::proxima_core.pin_target_kind)
+                 OR (e.t = ANY($2::uuid[]) AND e.kind <> 'goal'::proxima_core.pin_target_kind)
+         )",
+    )
+    .bind(&memory_targets)
+    .bind(&goal_targets)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    if invalid {
+        return Ok(Err(()));
+    }
+    let mut all = BTreeSet::new();
+    all.extend(memory_targets);
+    all.extend(goal_targets);
+    let all = all.into_iter().collect::<Vec<_>>();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.erased_pin_target
+          WHERE t = ANY($1::uuid[])",
+    )
+    .bind(&all)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    let count = u32::try_from(count)
+        .map_err(|_| StorageError::Internal("hydration witness count overflow".into()))?;
+    Ok(Ok(count))
+}
+
+/// Owner-authorized, bounded, all-or-nothing hydration command.
+///
+/// The existing single-memory atom remains the only mutation implementation;
+/// this wrapper performs the owner-scoped probe and preflight, then invokes
+/// that atom once per selected id in one transaction. Missing/invisible ids
+/// collapse to `NotFound`. A missing, unsupported, or corrupt item aborts the
+/// whole set and reports otherwise-valid cooled items as `NotAttempted`, never
+/// as a false success.
+pub(crate) async fn hydrate_memories_oneshot(
+    pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
+    cold: &dyn ColdObjectStore,
+    owner_id: Uuid,
+    memory_ids: &[proxima_core::MemoryId],
+    non_embeddable_schemas: &[String],
+) -> Result<MemoryHydrationBatchOutcome, StorageError> {
+    if memory_ids.len() > proxima_core::MAX_MEMORY_HYDRATION_BATCH {
+        return Err(StorageError::ConstraintViolation(format!(
+            "hydration request exceeds {} ids",
+            proxima_core::MAX_MEMORY_HYDRATION_BATCH
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    if memory_ids
+        .iter()
+        .any(|memory_id| !seen.insert(memory_id.into_inner()))
+    {
+        return Err(StorageError::ConstraintViolation(
+            "hydration request contains duplicate memory ids".into(),
+        ));
+    }
+
+    let mut tx = pool.begin().await.map_err(map_err)?;
+    let mut plans = Vec::with_capacity(memory_ids.len());
+    let mut candidates = Vec::with_capacity(memory_ids.len());
+    let mut preflight_failed = false;
+    for memory_id in memory_ids {
+        let t = memory_id.into_inner();
+        if owned_hot_exists(&mut tx, t, owner_id).await? {
+            plans.push(HydrationPlan::Hot);
+            candidates.push(None);
+            continue;
+        }
+        let Some(cooled) = owned_cooled_row(&mut tx, t, owner_id).await? else {
+            plans.push(HydrationPlan::NotFound);
+            candidates.push(None);
+            continue;
+        };
+        if cooled.origins.is_none() || cooled.refs.is_none() || cooled.goal_refs.is_none() {
+            preflight_failed = true;
+            plans.push(HydrationPlan::Failed(
+                MemoryHydrationStatus::UnsupportedColdObject,
+            ));
+            candidates.push(None);
+            continue;
+        }
+        let Some(expected_digest) = cooled.cold_digest.as_deref() else {
+            preflight_failed = true;
+            plans.push(HydrationPlan::Failed(
+                MemoryHydrationStatus::UnsupportedColdObject,
+            ));
+            candidates.push(None);
+            continue;
+        };
+        let bytes = match cold.get(&cooled.object_key).await {
+            Ok(bytes) => bytes,
+            Err(StorageError::NotFound) => {
+                preflight_failed = true;
+                plans.push(HydrationPlan::Failed(
+                    MemoryHydrationStatus::MissingColdObject,
+                ));
+                candidates.push(None);
+                continue;
+            }
+            Err(error) => {
+                let _ = tx.rollback().await;
+                return Err(error);
+            }
+        };
+        if expected_digest.len() != 32 || cold_digest(&bytes).as_slice() != expected_digest {
+            preflight_failed = true;
+            plans.push(HydrationPlan::Failed(
+                MemoryHydrationStatus::InvalidColdObject,
+            ));
+            candidates.push(None);
+            continue;
+        }
+        if bytes
+            .first()
+            .is_none_or(|version| !(1..=COLD_FORMAT_VERSION).contains(version))
+        {
+            preflight_failed = true;
+            plans.push(HydrationPlan::Failed(
+                MemoryHydrationStatus::UnsupportedColdObject,
+            ));
+            candidates.push(None);
+            continue;
+        }
+        let Ok(rec) = decode_record(&bytes) else {
+            preflight_failed = true;
+            plans.push(HydrationPlan::Failed(
+                MemoryHydrationStatus::InvalidColdObject,
+            ));
+            candidates.push(None);
+            continue;
+        };
+        if rec.format_version < 6 {
+            preflight_failed = true;
+            plans.push(HydrationPlan::Failed(
+                MemoryHydrationStatus::UnsupportedColdObject,
+            ));
+            candidates.push(None);
+            continue;
+        }
+        let (object_refs, object_goal_refs) = if rec.format_version >= 5 {
+            (rec.row.refs.clone(), rec.row.goal_refs.clone())
+        } else {
+            split_legacy_refs(tx.as_mut(), &rec.row.refs).await?
+        };
+        let identity_matches = rec.row.t == cooled.t
+            && rec.row.handle == cooled.handle
+            && rec.row.kind == cooled.kind
+            && rec.row.source_id == cooled.source_id
+            && rec.row.ingest_key == cooled.ingest_key
+            && cooled.origins.as_ref() == Some(&rec.row.origins)
+            && cooled.refs.as_ref() == Some(&object_refs)
+            && cooled.goal_refs.as_ref() == Some(&object_goal_refs);
+        if !identity_matches {
+            preflight_failed = true;
+            plans.push(HydrationPlan::Failed(
+                MemoryHydrationStatus::InvalidColdObject,
+            ));
+            candidates.push(None);
+        } else if !cold_sidecar_stamp_matches(&rec, sidecars) {
+            preflight_failed = true;
+            plans.push(HydrationPlan::Failed(
+                MemoryHydrationStatus::UnsupportedColdSidecar,
+            ));
+            candidates.push(None);
+        } else if !validate_cold_sidecars(&mut tx, sidecars, &rec.sidecar_dumps, t).await? {
+            preflight_failed = true;
+            plans.push(HydrationPlan::Failed(
+                MemoryHydrationStatus::InvalidColdObject,
+            ));
+            candidates.push(None);
+        } else if !cold_detail_stamp_matches(&rec, surfaces) {
+            preflight_failed = true;
+            plans.push(HydrationPlan::Failed(
+                MemoryHydrationStatus::UnsupportedColdObject,
+            ));
+            candidates.push(None);
+        } else if !validate_cold_details(&mut tx, surfaces, &rec, t).await? {
+            preflight_failed = true;
+            plans.push(HydrationPlan::Failed(
+                MemoryHydrationStatus::InvalidColdObject,
+            ));
+            candidates.push(None);
+        } else {
+            plans.push(HydrationPlan::Cooled);
+            candidates.push(Some(cooled));
+        }
+    }
+
+    if preflight_failed {
+        tx.rollback().await.map_err(map_err)?;
+        let outcomes = memory_ids
+            .iter()
+            .zip(&plans)
+            .map(|(memory_id, plan)| hydration_plan_outcome(*memory_id, plan))
+            .collect();
+        return Ok(MemoryHydrationBatchOutcome {
+            outcomes,
+            committed: false,
+        });
+    }
+
+    // The transfer/forget lock law is transaction-wide: all series handles
+    // precede all lifecycle targets. Acquiring one atom's set per loop would
+    // retain the first set while extending it for the next item and lets two
+    // reversed batches deadlock. Every preflight candidate is immutable under
+    // the cooled seal, so one union pass is both sufficient and bounded.
+    let handles = candidates
+        .iter()
+        .flatten()
+        .map(|candidate| candidate.handle)
+        .collect::<Vec<_>>();
+    lock_memory_handles_tx(&mut tx, &handles).await?;
+    let targets = candidates
+        .iter()
+        .flatten()
+        .flat_map(|candidate| {
+            std::iter::once(candidate.t)
+                .chain(
+                    candidate
+                        .origins
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .copied(),
+                )
+                .chain(
+                    candidate
+                        .refs
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .copied(),
+                )
+                .chain(
+                    candidate
+                        .goal_refs
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .copied(),
+                )
+        })
+        .collect::<Vec<_>>();
+    lock_lifecycle_targets_tx(&mut tx, &targets).await?;
+
+    // Re-read every candidate after the complete lock union. A changed or
+    // disappeared footprint means this transaction did not lock the rows it
+    // would mutate; restart the whole bounded operation instead of extending
+    // an already-held advisory set out of order.
+    for candidate in candidates.iter().flatten() {
+        let current = owned_cooled_row_for_update(&mut tx, candidate.t, owner_id).await?;
+        if current.as_ref() != Some(candidate) {
+            let _ = tx.rollback().await;
+            return Err(StorageError::Retryable(
+                "cooled hydration footprint changed while locking".into(),
+            ));
+        }
+    }
+
+    let mut preserved_witnesses = vec![None; memory_ids.len()];
+    for (index, (memory_id, plan)) in memory_ids.iter().zip(&plans).enumerate() {
+        if !matches!(plan, HydrationPlan::Cooled) {
+            continue;
+        }
+        match hydrate_memory_for_owner(
+            &mut tx,
+            sidecars,
+            surfaces,
+            cold,
+            memory_id.into_inner(),
+            owner_id,
+            non_embeddable_schemas,
+        )
+        .await
+        {
+            Ok(count) => preserved_witnesses[index] = Some(count),
+            Err(error) => {
+                let failure = hydration_failure_status(&error);
+                let Some(failure) = failure else {
+                    let _ = tx.rollback().await;
+                    return Err(error);
+                };
+                tx.rollback().await.map_err(map_err)?;
+                let outcomes = memory_ids
+                    .iter()
+                    .zip(&plans)
+                    .enumerate()
+                    .map(|(candidate_index, (candidate_id, candidate_plan))| {
+                        if candidate_index == index {
+                            MemoryHydrationOutcome::simple(*candidate_id, failure)
+                        } else {
+                            hydration_plan_outcome(*candidate_id, candidate_plan)
+                        }
+                    })
+                    .collect();
+                return Ok(MemoryHydrationBatchOutcome {
+                    outcomes,
+                    committed: false,
+                });
+            }
+        }
+    }
+    tx.commit().await.map_err(map_err)?;
+    let outcomes = memory_ids
+        .iter()
+        .zip(&plans)
+        .enumerate()
+        .map(|(index, (memory_id, plan))| match plan {
+            HydrationPlan::Cooled => MemoryHydrationOutcome::hydrated(
+                *memory_id,
+                preserved_witnesses[index]
+                    .expect("a cooled item commits only after its witness count is returned"),
+            ),
+            _ => hydration_plan_outcome(*memory_id, plan),
+        })
+        .collect();
+    Ok(MemoryHydrationBatchOutcome {
+        outcomes,
+        committed: true,
+    })
 }
 
 /// Hard-delete one admission of an abandoned owner.
@@ -2310,7 +3408,9 @@ mod tests {
                         panic!("{} is a leg this crate cannot build: {e}", surface.table)
                     });
                 }
-                ForgetLeg::Cascaded { .. } | ForgetLeg::Kept { .. } => {}
+                ForgetLeg::DumpedCascade { .. }
+                | ForgetLeg::Cascaded { .. }
+                | ForgetLeg::Kept { .. } => {}
             }
         }
     }
@@ -2347,6 +3447,7 @@ mod tests {
             },
             schema_id: "core/upload-v1".to_owned(),
             sidecar_dumps: Vec::new(),
+            detail_dumps: Vec::new(),
             embed_models: Vec::new(),
             sketch: None,
             format_version: super::COLD_FORMAT_VERSION,
@@ -2354,15 +3455,29 @@ mod tests {
     }
 
     #[test]
-    fn a_v5_cold_object_round_trips_both_pin_columns() {
+    fn a_v7_cold_object_round_trips_pins_and_sidecar_stamp() {
         let memory = uuid::Uuid::now_v7();
         let goal = uuid::Uuid::now_v7();
-        let rec = cold_row(vec![memory], vec![goal]);
+        let mut rec = cold_row(vec![memory], vec![goal]);
+        rec.row.sidecar_tables = vec!["proxima_core.agent_note_v1".to_owned()];
+        rec.sidecar_dumps = vec![(rec.row.sidecar_tables[0].clone(), "{}".to_owned())];
         let decoded =
-            super::decode_record(&super::encode_record(&rec).expect("encode")).expect("v5 decodes");
+            super::decode_record(&super::encode_record(&rec).expect("encode")).expect("v7 decodes");
         assert_eq!(decoded.row.refs, vec![memory]);
         assert_eq!(decoded.row.goal_refs, vec![goal]);
-        assert_eq!(decoded.format_version, 5);
+        assert_eq!(decoded.row.sidecar_tables, rec.row.sidecar_tables);
+        assert_eq!(decoded.format_version, 7);
+        let sidecars = crate::core_pg_sidecars();
+        assert!(super::cold_sidecar_stamp_matches(&decoded, &sidecars));
+        let mut retained = decoded.clone();
+        retained
+            .row
+            .sidecar_tables
+            .push("proxima_core.mcp_call_logged_v1".to_owned());
+        assert!(
+            super::cold_sidecar_stamp_matches(&retained, &sidecars),
+            "declared retained owner-pinned dumps are intentionally omitted"
+        );
     }
 
     /// Cold objects written before the split have no `goal_refs` field at
@@ -2510,10 +3625,38 @@ mod tests {
     }
 
     #[test]
+    fn a_legacy_cold_object_has_no_authenticated_sidecar_stamp() {
+        let rec = cold_row(Vec::new(), Vec::new());
+        let mut v5 = vec![5_u8];
+        super::write_uuid(&mut v5, rec.row.handle);
+        super::write_uuid(&mut v5, rec.row.t);
+        super::write_str(&mut v5, &rec.row.kind).expect("kind");
+        super::write_uuid(&mut v5, rec.row.owner_id);
+        super::write_opt_str(&mut v5, rec.row.source_id.as_deref()).expect("source");
+        super::write_opt_str(&mut v5, rec.row.ingest_key.as_deref()).expect("ingest key");
+        super::write_opt_uuid(&mut v5, rec.row.blob_id);
+        super::write_uuid_list(&mut v5, &rec.row.origins).expect("origins");
+        super::write_uuid_list(&mut v5, &rec.row.refs).expect("refs");
+        super::write_uuid_list(&mut v5, &rec.row.goal_refs).expect("goal refs");
+        super::write_str(&mut v5, &rec.schema_id).expect("schema");
+        super::write_count(&mut v5, 0).expect("no sidecars");
+        super::write_str_list(&mut v5, &rec.embed_models).expect("embed models");
+        super::write_opt_str(&mut v5, None).expect("sketch");
+        let decoded = super::decode_record(&v5).expect("v5 decodes");
+        assert_eq!(decoded.format_version, 5);
+        assert!(decoded.row.sidecar_tables.is_empty());
+        assert!(!super::cold_sidecar_stamp_matches(
+            &decoded,
+            &crate::core_pg_sidecars()
+        ));
+    }
+
+    #[test]
     fn an_unknown_cold_format_is_refused() {
-        let err = super::decode_record(&[6_u8]).expect_err("v6 is not shipped");
+        let future = super::COLD_FORMAT_VERSION.saturating_add(1);
+        let err = super::decode_record(&[future]).expect_err("future format is not shipped");
         assert!(
-            matches!(err, StorageError::Internal(ref msg) if msg.contains("unknown cold format 6")),
+            matches!(err, StorageError::Internal(ref msg) if msg.contains(&format!("unknown cold format {future}"))),
             "got {err:?}"
         );
     }

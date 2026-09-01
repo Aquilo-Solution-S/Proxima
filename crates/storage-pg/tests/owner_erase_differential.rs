@@ -602,6 +602,7 @@ pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     ("cold_purge_pending", "compliance_operation_id"),
     ("cooled", "origins"),
     ("cooled", "refs"),
+    ("cooled", "cold_digest"),
 ];
 
 fn names_relation(table: &str, relation: &str) -> bool {

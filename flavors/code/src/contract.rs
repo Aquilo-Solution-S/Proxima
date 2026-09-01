@@ -170,9 +170,9 @@ const fn memory_sidecar(table: &'static str, t_fkey: &'static str) -> Surface {
 }
 
 /// A detail table keyed off another sidecar's `t` with `ON DELETE CASCADE`.
-/// It emits no ERASE statement: the constraint is the proof. It does emit an
-/// export statement, because a cascade says who deletes the row, not who the
-/// row belongs to.
+/// Its rows are part of the parent payload, so forget dumps them before the
+/// FK cascade and hydrate restores the exact zero-or-many set. It emits no
+/// ERASE statement: the constraint is still the deletion proof.
 ///
 /// `key_column` is the column carrying that `t`, and each detail table names
 /// it differently: `criteria_memory_id`, `plan_memory_id`,
@@ -199,7 +199,7 @@ const fn detail_table(
             },
         },
         export: ExportRule::Rows,
-        forget: ForgetRule::DeleteWithMemory,
+        forget: ForgetRule::DumpThenCascade,
         lexical_language_column: None,
         counter: CounterRule::Uncounted {
             why: "a detail table's rows go with the parent sidecar row, and the \

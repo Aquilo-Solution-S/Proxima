@@ -18,7 +18,7 @@ use crate::edge::{EdgeKind, PinNode};
 use crate::read_models::{MemorySchemaSpec, MemorySnapshot};
 use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphIdentity,
-    MemoryGraphPayloadRow, MemoryKindRow, StorageError,
+    MemoryGraphPayloadRow, MemoryHydrationBatchOutcome, MemoryKindRow, StorageError,
 };
 use crate::{GoalId, MemoryId, Owner, OwnerRef};
 
@@ -67,6 +67,24 @@ pub trait MemoryAuthoringPort: Send + Sync {
         permit: &OwnerWritePermit,
         memory_id: MemoryId,
     ) -> Result<(), StorageError>;
+
+    /// Hydrate a bounded owner-scoped set of cooled admissions.
+    ///
+    /// The permit is the only owner authority accepted by storage. Backends
+    /// must make the set atomic over visible cooled items: a malformed,
+    /// unsupported, or missing cold object may produce a typed item outcome,
+    /// but must not
+    /// leave a subset of the set hydrated. Implementations may omit no ids;
+    /// absent and foreign ids are represented as `NotFound`.
+    async fn hydrate_memories(
+        &self,
+        _permit: &OwnerWritePermit,
+        _memory_ids: &[MemoryId],
+    ) -> Result<MemoryHydrationBatchOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement memory hydration".into(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]

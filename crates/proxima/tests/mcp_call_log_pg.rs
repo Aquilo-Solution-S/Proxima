@@ -10,7 +10,9 @@
 use proxima::flavor::{FlavorBundle, NamedMigrator};
 use proxima::{AppInfo, AuthPath, AuthzContext, FlavorApp, Proxima, ToolScope, company_owner};
 use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallRecord};
-use proxima_core::{Engine, McpCallLogInput, Owner, ProtocolError, Role, UserId};
+use proxima_core::{
+    Engine, McpCallLogInput, MemoryHydrationStatus, Owner, ProtocolError, Role, UserId,
+};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::core_pg_sidecars;
 use uuid::Uuid;
@@ -157,6 +159,37 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
         let calls = history(&engine, &authz, owner).await?;
         assert_eq!(calls.len(), 2, "{calls:?}");
         assert_eq!(calls[0].memory_id, later.fact_memory_id, "newest first");
+
+        // The normal persist_mcp_call path stamps the retained audit sidecar
+        // on the Memory. Forgetting and hydrating that admission must omit the
+        // owner-pinned dump while preserving the exact stamp and history row.
+        engine
+            .forget_memory(&authz, owner, first.fact_memory_id)
+            .await?;
+        let hydrated = engine
+            .hydrate_memory(&authz, owner, first.fact_memory_id)
+            .await?;
+        assert_eq!(hydrated.status, MemoryHydrationStatus::Hydrated);
+        let hydrated_stamp: Vec<String> =
+            sqlx::query_scalar("SELECT sidecar_tables FROM proxima_core.memory WHERE t = $1")
+                .bind(first.fact_memory_id.into_inner())
+                .fetch_one(built.pool_for_tests())
+                .await?;
+        assert!(hydrated_stamp.iter().any(|table| table == LOGGED_TABLE));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*)::bigint
+                   FROM proxima_core.mcp_call_logged_v1
+                  WHERE t = $1",
+            )
+            .bind(first.fact_memory_id.into_inner())
+            .fetch_one(built.pool_for_tests())
+            .await?,
+            1,
+            "hydration must not duplicate the retained audit row"
+        );
+        let calls = history(&engine, &authz, owner).await?;
+        assert_eq!(calls.len(), 2, "retained audit history survives hydrate");
 
         // A stranger to this owner reads nothing.
         let stranger = admin_authz_for(company_owner(Uuid::now_v7()));

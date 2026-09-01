@@ -32,6 +32,18 @@ Rust embedding has two public tiers:
 Transport adapters (MCP/HTTP) project the Host API. Flavor crates target
 the Flavor SDK and typed services only.
 
+The Host API also exposes `Engine::hydrate_memory` and
+`Engine::hydrate_memories` for owner-authorized cold-memory repair. The
+single-id and bounded-set methods accept only `MemoryId`s and return typed
+`MemoryHydrationOutcome`s; storage transactions, locators, and object keys do
+not cross the facade. A set is atomic over owner-visible cooled items:
+missing/invisible ids return `NotFound`, hot ids return `AlreadyHot`, and a
+missing, unsupported, or invalid cold object aborts the set with
+`NotAttempted` for otherwise valid cooled ids. The outcome distinguishes a
+missing object, an unsupported cold format or integrity witness, an unsupported
+sidecar stamp, and an invalid object. A successful hydration reports the count
+of erased-target witnesses preserved by exact restore.
+
 ## Core Memory MCP Surface
 
 Agent long-term memory is core substrate. MCP tools are thin callers of

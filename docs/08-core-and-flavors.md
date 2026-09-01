@@ -366,6 +366,11 @@ declaration, and a `DeleteWithMemory` surface the forget cannot reach is
 `FlavorRegistryError::UnforgettableSurface` at boot. `Surface::completeness`
 is what separates the two: a `DeleteWithMemory` surface whose parent FK
 already cascades generates no statement, because the constraint is the list.
+The explicit `DumpThenCascade` arm is different: it marks a MemoryT child as
+durable payload, so the forget dump records its exact rows before that same
+parent FK cascades them; hydrate restores the declaration and rows
+transactionally. A generic `Cascaded` surface remains disposable and is not
+included in the cold payload.
 
 **`Provenance` is the lineage walk.** `core_think`'s `ancestors` direction
 expanded `memory.origins` for every node, which is right for the schemas

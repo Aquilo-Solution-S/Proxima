@@ -57,6 +57,81 @@ pub struct MemoryKindRow {
     pub kind: EntityKind,
 }
 
+/// Maximum number of Memory ids accepted by one hydration command.
+///
+/// Hydration is a bounded repair operation: callers must not be able to turn
+/// an owner-scoped request into an unbounded object-store walk.
+pub const MAX_MEMORY_HYDRATION_BATCH: usize = 64;
+
+/// Result classification for an owner-authorized hydration request.
+///
+/// `NotFound` deliberately covers both an absent id and an id outside the
+/// permit's owner. The distinction is not observable through this API.
+/// `Hydrated` may preserve erased-target witnesses; the count is carried by
+/// [`MemoryHydrationOutcome`] without exposing witness metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryHydrationStatus {
+    Hydrated,
+    AlreadyHot,
+    NotFound,
+    MissingColdObject,
+    /// The cold record predates the database integrity witness or uses a
+    /// format this binary does not understand. Operators must migrate or
+    /// discard the record; it is not evidence of corrupt bytes.
+    UnsupportedColdObject,
+    /// The cold record names a sidecar declaration this registry cannot
+    /// safely restore (for example, an unsupported sidecar version/stamp).
+    UnsupportedColdSidecar,
+    InvalidColdObject,
+    /// The batch could not commit because another requested id was invalid.
+    /// No item with this status was changed.
+    NotAttempted,
+}
+
+/// One id's typed hydration result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryHydrationOutcome {
+    pub memory_id: MemoryId,
+    pub status: MemoryHydrationStatus,
+    /// Number of correctly kinded erased-target witnesses retained while
+    /// hydrating. Zero is the ordinary case and says nothing about whether a
+    /// target was ever present.
+    pub preserved_witnesses: u32,
+}
+
+impl MemoryHydrationOutcome {
+    #[must_use]
+    pub const fn hydrated(memory_id: MemoryId, preserved_witnesses: u32) -> Self {
+        Self {
+            memory_id,
+            status: MemoryHydrationStatus::Hydrated,
+            preserved_witnesses,
+        }
+    }
+
+    #[must_use]
+    pub const fn simple(memory_id: MemoryId, status: MemoryHydrationStatus) -> Self {
+        Self {
+            memory_id,
+            status,
+            preserved_witnesses: 0,
+        }
+    }
+}
+
+/// Results for one bounded hydration command.
+///
+/// The transaction is atomic over every owner-visible cooled item in the
+/// request. If a cold object is missing, unsupported, or invalid, the command
+/// commits no hydration and valid cooled items are reported as `NotAttempted`;
+/// hot and absent/invisible classifications remain useful and unchanged. An
+/// absent or foreign id is returned as `NotFound`, matching owner-scoped reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryHydrationBatchOutcome {
+    pub outcomes: Vec<MemoryHydrationOutcome>,
+    pub committed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactSourceBatchRow {
     pub memory_id: MemoryId,
