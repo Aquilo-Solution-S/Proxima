@@ -43,6 +43,7 @@ pub(crate) enum PreparedMemoryAdmission {
 
 #[derive(Debug)]
 pub(crate) struct PreparedMemoryAdmissionNew {
+    owner: Owner,
     owner_id: Uuid,
     draft: FactWriteCommand,
     origins: Vec<Uuid>,
@@ -225,6 +226,14 @@ async fn prepare_memory_admission_at(
     // Owner identity is arbitrated before any lifecycle lock, matching
     // transfer's owner -> lifecycle order and preventing an owner-row cycle.
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
+    // A new admission shares the owner fence, and a sourced admission also
+    // shares its exact source fence.  These are held through commit, so a
+    // whole-owner/source erase either waits for this write or observes it in
+    // the exact-scope revalidation before deleting anything.
+    crate::access::owner_columns::lock_owner_fence_shared_tx(tx, owner).await?;
+    if let Some(source_id) = source_id.as_deref() {
+        crate::access::owner_columns::lock_source_fence_shared_tx(tx, owner, source_id).await?;
+    }
 
     let handle = options
         .identity
@@ -263,6 +272,7 @@ async fn prepare_memory_admission_at(
     targets.extend(options.extra_targets.iter().copied());
     Ok(PreparedMemoryAdmission::New(Box::new(
         PreparedMemoryAdmissionNew {
+            owner: *owner,
             owner_id,
             draft: draft.clone(),
             origins: persisted_origins,
@@ -398,15 +408,20 @@ async fn lock_and_validate_prepared_memory(
     validate_prepared_memory_head(tx, prepared).await
 }
 
-/// Handle lock first, then the sorted lifecycle set. Split from
-/// [`validate_prepared_memory_head`] so a caller that already owns both locks
-/// can still run the validation: the two are separate obligations, and
-/// bundling them let the reserved-identity path drop the head check while it
-/// was only trying to avoid re-acquiring the locks.
+/// Scope fences first, then the handle lock, then the sorted lifecycle set.
+/// Split from [`validate_prepared_memory_head`] so a caller that already owns
+/// these locks can still run the validation: the two are separate obligations,
+/// and bundling them let the reserved-identity path drop the head check while
+/// it was only trying to avoid re-acquiring the locks.
 async fn lock_prepared_memory_targets(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedMemoryAdmissionNew,
 ) -> Result<(), StorageError> {
+    crate::access::owner_columns::lock_owner_fence_shared_tx(tx, &prepared.owner).await?;
+    if let Some(source_id) = prepared.draft.source_id.as_deref() {
+        crate::access::owner_columns::lock_source_fence_shared_tx(tx, &prepared.owner, source_id)
+            .await?;
+    }
     crate::verbs::forget::lock_memory_handles_tx(tx, &[prepared.handle]).await?;
     crate::verbs::forget::lock_lifecycle_targets_tx(tx, &prepared.targets).await
 }

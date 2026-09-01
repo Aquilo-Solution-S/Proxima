@@ -173,14 +173,23 @@ not claim Fact grounding or reconstruct the erased target's owner. Public
 reads retain their existing redacted/missing-target behavior, and the internal
 witness does not introduce an `Unavailable` projection state.
 
-Per-entity admission, hydration, forget, and single-entity erase use one per-`t`
-advisory vocabulary: their complete target set is sorted and held before
-row/blob locks or persistence. Goal and wake paths acquire their complete union before
-inserting Goal, `goal_head`, or `wake_config` rows. Owner, series, source, and
-repository sweeps are explicitly outside this complete-set/no-growth claim;
-transfer uses the same vocabulary with bounded retry but its multi-round
-footprint is likewise outside it. This is the supported lifecycle order only;
-it does not promise broader handle or sweep fencing.
+Memory and Goal admission share a distinct owner fence (and sourced Memory
+admission also shares its exact source fence) before taking the sorted Memory
+handle and per-`t` lifecycle locks. Owner erase takes that owner fence
+exclusively; source-scope erase takes the owner fence shared and its source
+fence exclusively. The resulting order is owner → source → Memory handle →
+lifecycle `t` → rows. A bulk erase takes its scope fence first and only then
+selects, so the Memory and Goal scope it erases is exactly the scope in place
+when the fence was acquired; it locks the complete selected handle/`t` sets
+before deletion, witness, sidecar, or cold-purge work. An admission or
+transfer that commits before the fence is inside the erase; one that commits
+after it is a write that follows a completed erase. Either way the writer is
+whole — the erase never observes a partial one. Transfer takes both
+endpoint owner fences exclusively in sorted owner order before its series
+locks, so owner- and source-scope erase have defined boundaries. Per-entity hydration,
+forget, and single-entity erase retain their existing per-`t`/handle contract;
+repository sweeps and transfer's multi-round series expansion remain outside
+this bulk-erase exact-snapshot claim.
 
 ## Outcomes
 

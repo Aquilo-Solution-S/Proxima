@@ -2,18 +2,20 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use proxima_core::owner_inverse::{
     EraseAuthorization, OwnerEraseOutcome, OwnerEraseRefusal, OwnerEraseTarget, OwnerSurfaces,
 };
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{
-    MemoryAuthoringPort, OwnerInversePort, OwnerMembershipAdminPort, OwnerWritePermit,
+    MemoryAuthoringPort, OwnerInversePort, OwnerMembershipAdminPort, OwnerTransferPort,
+    OwnerWritePermit,
 };
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    AccessKind, ColdObjectStore, GroupId, OwnerRef, SchemaId, SchemaVersion, SourceId,
+    AccessKind, ColdObjectStore, EntityId, GroupId, OwnerRef, SchemaId, SchemaVersion, SourceId,
     StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
@@ -23,6 +25,7 @@ use proxima_storage_pg::verbs::wake_timeseries::{
     WakeConfigDraft, WakeTriggerKind, insert_wake_config, write_armed_goal,
 };
 use proxima_storage_pg::{ColdPurgeRetryOptions, PgStorage};
+use sqlx::{PgPool, Postgres};
 use uuid::Uuid;
 
 /// The five sidecar legs exactly as the engine assembles them: from the
@@ -269,6 +272,216 @@ fn embed_literal() -> String {
             .collect::<Vec<_>>()
             .join(",")
     )
+}
+
+fn owner_kind(owner: OwnerRef) -> &'static str {
+    match owner {
+        OwnerRef::Personal(_) => "personal",
+        OwnerRef::Group(_) => "group",
+    }
+}
+
+fn owner_fence_key(owner: OwnerRef) -> String {
+    format!(
+        "proxima-owner-fence:{}:{}",
+        owner_kind(owner),
+        owner.stored_owner_id()
+    )
+}
+
+fn source_fence_key(owner: OwnerRef, source: &str) -> String {
+    format!(
+        "proxima-source-fence:{}:{}:{source}",
+        owner_kind(owner),
+        owner.stored_owner_id()
+    )
+}
+
+/// Wait for the exact advisory lock named by a production fence. Looking at
+/// all advisory waiters is racy when another test happens to be busy; the
+/// `pg_locks` split representation lets this probe identify only this key.
+async fn wait_for_ungranted_advisory_label(
+    pool: &PgPool,
+    label: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "WITH lock_key AS (
+                     SELECT hashtextextended($1, 0) AS key
+                 )
+                 SELECT EXISTS (
+                     SELECT 1
+                       FROM pg_locks l
+                       CROSS JOIN lock_key k
+                      WHERE l.locktype = 'advisory'
+                        AND NOT l.granted
+                        AND l.classid::bigint = ((k.key >> 32) & 4294967295)
+                        AND l.objid::bigint = (k.key & 4294967295)
+                 )",
+            )
+            .bind(label)
+            .fetch_one(pool)
+            .await?;
+            if waiting {
+                return Ok::<(), sqlx::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    Ok(())
+}
+
+async fn wait_for_ungranted_advisory_key(
+    pool: &PgPool,
+    key: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "WITH lock_key AS (
+                     SELECT $1::bigint AS key
+                 )
+                 SELECT EXISTS (
+                     SELECT 1
+                       FROM pg_locks l
+                       CROSS JOIN lock_key k
+                      WHERE l.locktype = 'advisory'
+                        AND NOT l.granted
+                        AND l.classid::bigint = ((k.key >> 32) & 4294967295)
+                        AND l.objid::bigint = (k.key & 4294967295)
+                 )",
+            )
+            .bind(key)
+            .fetch_one(pool)
+            .await?;
+            if waiting {
+                return Ok::<(), sqlx::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    Ok(())
+}
+
+async fn hold_session_advisory_lock(
+    pool: &PgPool,
+    key: i64,
+) -> Result<sqlx::pool::PoolConnection<Postgres>, sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(key)
+        .execute(&mut *connection)
+        .await?;
+    Ok(connection)
+}
+
+async fn release_session_advisory_lock(
+    connection: &mut sqlx::pool::PoolConnection<Postgres>,
+    key: i64,
+) -> Result<(), sqlx::Error> {
+    let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
+        .bind(key)
+        .fetch_one(&mut **connection)
+        .await?;
+    assert!(unlocked, "the test must release its session advisory lock");
+    Ok(())
+}
+
+async fn fresh_owner_erase_pg() -> (String, PgStorage) {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let pg = PgStorage::connect(&db_url(&db_name))
+        .await
+        .expect("connect");
+    pg.run_migrations().await.expect("migrate");
+    (db_name, pg)
+}
+
+async fn install_memory_insert_gate(pool: &PgPool, key: i64) -> Result<(), sqlx::Error> {
+    let sql = format!(
+        "CREATE OR REPLACE FUNCTION public.test_owner_erase_memory_insert_gate()
+         RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             PERFORM pg_advisory_xact_lock({key});
+             RETURN NEW;
+         END
+         $$;
+         DROP TRIGGER IF EXISTS test_owner_erase_memory_insert_gate
+             ON proxima_core.memory;
+         CREATE TRIGGER test_owner_erase_memory_insert_gate
+         AFTER INSERT ON proxima_core.memory
+         FOR EACH ROW EXECUTE FUNCTION public.test_owner_erase_memory_insert_gate();"
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn install_goal_insert_gate(pool: &PgPool, key: i64) -> Result<(), sqlx::Error> {
+    let sql = format!(
+        "CREATE OR REPLACE FUNCTION public.test_owner_erase_goal_insert_gate()
+         RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             PERFORM pg_advisory_xact_lock({key});
+             RETURN NEW;
+         END
+         $$;
+         DROP TRIGGER IF EXISTS test_owner_erase_goal_insert_gate
+             ON proxima_core.goal;
+         CREATE TRIGGER test_owner_erase_goal_insert_gate
+         AFTER INSERT ON proxima_core.goal
+         FOR EACH ROW EXECUTE FUNCTION public.test_owner_erase_goal_insert_gate();"
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn install_transfer_update_gate(pool: &PgPool, key: i64) -> Result<(), sqlx::Error> {
+    let sql = format!(
+        "CREATE OR REPLACE FUNCTION public.test_owner_erase_transfer_gate()
+         RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             PERFORM pg_advisory_xact_lock({key});
+             RETURN NEW;
+         END
+         $$;
+         DROP TRIGGER IF EXISTS test_owner_erase_transfer_gate
+             ON proxima_core.memory;
+         CREATE TRIGGER test_owner_erase_transfer_gate
+         BEFORE UPDATE OF owner_id ON proxima_core.memory
+         FOR EACH ROW
+         WHEN (OLD.owner_id IS DISTINCT FROM NEW.owner_id)
+         EXECUTE FUNCTION public.test_owner_erase_transfer_gate();"
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+fn goal_draft(request_id: &str) -> GoalWriteCommand {
+    GoalWriteCommand {
+        handle: None,
+        schema_id: "core/task-goal-v1".into(),
+        title: "late goal".into(),
+        state: GoalState::Active,
+        request_id: request_id.into(),
+        close_fact_t: None,
+        assignment_t: None,
+        dependency_t: vec![],
+        evidence_t: vec![],
+        wake_id: None,
+        mint_write_act: true,
+        write_act_t: None,
+    }
 }
 
 #[tokio::test]
@@ -1538,4 +1751,701 @@ async fn erasing_a_member_leaves_the_memberships_that_name_it() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("erasing_a_member_leaves_the_memberships_that_name_it failed");
+}
+
+/// An admission that crossed the shared owner fence before an owner erase
+/// asked for its exclusive fence commits as a whole, and is then inside the
+/// scope the erase selects once it holds the fence. The erase waits for the
+/// writer rather than refusing, so it always makes progress.
+///
+/// The insert trigger holds the writer transaction after the real Memory row
+/// is materialized, avoiding any dependence on advisory-lock waiter fairness
+/// when the erase queues its exclusive request.
+#[tokio::test]
+async fn owner_erase_includes_a_fact_that_committed_before_its_fence() {
+    const ADMISSION_GATE: i64 = 7_514_001;
+
+    let (db_name, pg) = fresh_owner_erase_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let seed = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("same-source", "seed-owner"))), None)
+            .await?;
+        let seed_t = seed.memory_id.into_inner();
+        install_memory_insert_gate(pool, ADMISSION_GATE).await?;
+
+        let mut admission_gate = hold_session_advisory_lock(pool, ADMISSION_GATE).await?;
+        let late_pg = pg.clone();
+        let late_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let late = tokio::spawn(async move {
+            late_pg
+                .ingest_fact_atomic(
+                    &late_permit,
+                    &draft(Some(("same-source", "late-owner"))),
+                    None,
+                )
+                .await
+        });
+        wait_for_ungranted_advisory_key(pool, ADMISSION_GATE).await?;
+
+        let erase_pg = pg.clone();
+        let erase = tokio::spawn(async move {
+            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+                user_id: match owner {
+                    OwnerRef::Personal(user_id) => user_id,
+                    OwnerRef::Group(_) => unreachable!(),
+                },
+                drop_event_id: "owner-late-fact".into(),
+            });
+            erase_pg
+                .erase_personal_owner(
+                    &auth,
+                    match owner {
+                        OwnerRef::Personal(user_id) => user_id,
+                        OwnerRef::Group(_) => unreachable!(),
+                    },
+                    false,
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+        wait_for_ungranted_advisory_label(pool, &owner_fence_key(owner)).await?;
+        assert!(!erase.is_finished(), "the owner fence must still be held");
+
+        release_session_advisory_lock(&mut admission_gate, ADMISSION_GATE).await?;
+        drop(admission_gate);
+        let late_outcome = tokio::time::timeout(Duration::from_secs(10), late).await???;
+        assert!(!late_outcome.idempotent_replay);
+        let late_t = late_outcome.memory_id.into_inner();
+
+        let erase_result = tokio::time::timeout(Duration::from_secs(10), erase).await??;
+        assert!(
+            erase_result.is_ok(),
+            "the erase must wait for the in-flight admission, not refuse: {erase_result:?}"
+        );
+
+        // The late Fact committed before the erase took its fence, so it is
+        // inside the scope the erase then selected and goes with it. The
+        // writer is still all-or-nothing: it committed whole, and was then
+        // erased whole.
+        let memories: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory WHERE t IN ($1, $2)",
+        )
+        .bind(seed_t)
+        .bind(late_t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(memories, 0, "both hot Memory rows are erased");
+        let keys: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.ingest_keys
+              WHERE ingest_key IN ('seed-owner', 'late-owner')",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(keys, 0, "neither ingest key survives the erase");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("owner erase vs late same-owner Fact failed");
+}
+
+/// The source fence is narrower than the owner fence. A same-source writer
+/// already inside that shared lane must finish before source erase can acquire
+/// its exclusive fence; the failed erase leaves both admissions and all
+/// lifecycle evidence untouched.
+#[tokio::test]
+async fn source_erase_includes_a_fact_that_committed_before_its_fence() {
+    const ADMISSION_GATE: i64 = 7_514_002;
+
+    let (db_name, pg) = fresh_owner_erase_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let seed = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("source-race", "seed-source"))), None)
+            .await?;
+        let seed_t = seed.memory_id.into_inner();
+        install_memory_insert_gate(pool, ADMISSION_GATE).await?;
+
+        let mut admission_gate = hold_session_advisory_lock(pool, ADMISSION_GATE).await?;
+        let late_pg = pg.clone();
+        let late_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let late = tokio::spawn(async move {
+            late_pg
+                .ingest_fact_atomic(
+                    &late_permit,
+                    &draft(Some(("source-race", "late-source"))),
+                    None,
+                )
+                .await
+        });
+        wait_for_ungranted_advisory_key(pool, ADMISSION_GATE).await?;
+
+        let erase_pg = pg.clone();
+        let erase = tokio::spawn(async move {
+            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
+                user_id: match owner {
+                    OwnerRef::Personal(user_id) => user_id,
+                    OwnerRef::Group(_) => unreachable!(),
+                },
+                source_id: SourceId::new("source-race"),
+                drop_event_id: "source-late-fact".into(),
+            });
+            erase_pg
+                .erase_personal_source_scope(
+                    &auth,
+                    match owner {
+                        OwnerRef::Personal(user_id) => user_id,
+                        OwnerRef::Group(_) => unreachable!(),
+                    },
+                    &SourceId::new("source-race"),
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+        wait_for_ungranted_advisory_label(pool, &source_fence_key(owner, "source-race")).await?;
+        assert!(!erase.is_finished(), "the source fence must still be held");
+
+        release_session_advisory_lock(&mut admission_gate, ADMISSION_GATE).await?;
+        drop(admission_gate);
+        let late_outcome = tokio::time::timeout(Duration::from_secs(10), late).await???;
+        assert!(!late_outcome.idempotent_replay);
+        let late_t = late_outcome.memory_id.into_inner();
+
+        let erase_result = tokio::time::timeout(Duration::from_secs(10), erase).await??;
+        assert!(
+            erase_result.is_ok(),
+            "the source erase must wait for the in-flight admission: {erase_result:?}"
+        );
+
+        let memories: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory WHERE t IN ($1, $2)",
+        )
+        .bind(seed_t)
+        .bind(late_t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(memories, 0, "both same-source rows are erased");
+        let keys: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.ingest_keys
+              WHERE ingest_key IN ('seed-source', 'late-source')",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(keys, 0, "neither source ingest key survives the erase");
+        // A hard erase records a kind witness per entity it removes, so both
+        // the seed and the late admission are witnessed. Under the old
+        // refuse-and-retry contract this count was 0 only because nothing was
+        // erased at all.
+        let witnesses: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.erased_pin_target
+              WHERE t IN ($1, $2)",
+        )
+        .bind(seed_t)
+        .bind(late_t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(witnesses, 2, "both erased same-source rows are witnessed");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("source erase vs late same-source Fact failed");
+}
+
+/// Source-A erase holds its owner fence shared and source-A fence exclusive
+/// while waiting on one selected lifecycle target. Source-B admission uses a
+/// different source and handle, so it commits before the lifecycle gate is
+/// released and survives the completed source-A erase.
+#[tokio::test]
+async fn source_erase_allows_different_source_admission_while_lifecycle_locked() {
+    let (db_name, pg) = fresh_owner_erase_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let erased_admission = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("source-a", "key-a"))), None)
+            .await?;
+        let erased_t = erased_admission.memory_id.into_inner();
+
+        let mut lifecycle_gate = pool.begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('proxima-forget:' || $1::text, 0))",
+        )
+        .bind(erased_t)
+        .execute(&mut *lifecycle_gate)
+        .await?;
+
+        let erase_pg = pg.clone();
+        let erase = tokio::spawn(async move {
+            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
+                user_id: match owner {
+                    OwnerRef::Personal(user_id) => user_id,
+                    OwnerRef::Group(_) => unreachable!(),
+                },
+                source_id: SourceId::new("source-a"),
+                drop_event_id: "source-a-erase".into(),
+            });
+            erase_pg
+                .erase_personal_source_scope(
+                    &auth,
+                    match owner {
+                        OwnerRef::Personal(user_id) => user_id,
+                        OwnerRef::Group(_) => unreachable!(),
+                    },
+                    &SourceId::new("source-a"),
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+        wait_for_ungranted_advisory_label(pool, &format!("proxima-forget:{erased_t}")).await?;
+
+        let survivor_pg = pg.clone();
+        let survivor_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let survivor = tokio::spawn(async move {
+            survivor_pg
+                .ingest_fact_atomic(&survivor_permit, &draft(Some(("source-b", "key-b"))), None)
+                .await
+        });
+        let surviving_admission =
+            tokio::time::timeout(Duration::from_secs(10), survivor).await???;
+        assert!(!surviving_admission.idempotent_replay);
+        let surviving_t = surviving_admission.memory_id.into_inner();
+        assert_ne!(erased_admission.handle, surviving_admission.handle);
+
+        lifecycle_gate.commit().await?;
+        let erase_result = tokio::time::timeout(Duration::from_secs(10), erase).await??;
+        assert!(
+            matches!(erase_result, Ok(OwnerEraseOutcome::Completed { .. })),
+            "source-A erase should complete after its lifecycle gate opens: {erase_result:?}"
+        );
+
+        let erased_rows: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(erased_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(erased_rows, 0, "source-A's selected row is erased");
+        let surviving_rows: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(surviving_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(surviving_rows, 1, "source-B admission survives");
+        let erased_witness: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(erased_t)
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(erased_witness.as_deref(), Some("fact"));
+        let surviving_witness: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(surviving_t)
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(surviving_witness, None, "source-B gets no erase witness");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("source erase different-source barrier failed");
+}
+
+/// Transfer is an exclusive owner-fence participant. The update trigger pauses it
+/// after the real transfer has acquired both owner fences and the series
+/// lifecycle lock; owner erase then snapshots the old owner and queues its
+/// exclusive fence. Releasing the trigger lets transfer commit, so erase
+/// returns Retryable without deleting the destination's hot series.
+#[tokio::test]
+async fn owner_erase_excludes_a_memory_transferred_away_before_its_fence() {
+    const TRANSFER_GATE: i64 = 7_514_004;
+
+    let (db_name, pg) = fresh_owner_erase_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let written = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft(Some(("transfer-source", "transfer-key"))),
+                None,
+            )
+            .await?;
+        let t = written.memory_id.into_inner();
+        install_transfer_update_gate(pool, TRANSFER_GATE).await?;
+        let mut transfer_gate = hold_session_advisory_lock(pool, TRANSFER_GATE).await?;
+
+        let transfer_pg = pg.clone();
+        let transfer = tokio::spawn(async move {
+            transfer_pg
+                .transfer_to_owner(
+                    &OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
+                    EntityId::Memory(proxima_core::MemoryId::new(t)),
+                    destination,
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+        wait_for_ungranted_advisory_key(pool, TRANSFER_GATE).await?;
+
+        let erase_pg = pg.clone();
+        let erase = tokio::spawn(async move {
+            let user_id = match owner {
+                OwnerRef::Personal(user_id) => user_id,
+                OwnerRef::Group(_) => unreachable!(),
+            };
+            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+                user_id,
+                drop_event_id: "owner-transfer-race".into(),
+            });
+            erase_pg
+                .erase_personal_owner(&auth, user_id, false, &contract_sidecar_tables())
+                .await
+        });
+        wait_for_ungranted_advisory_label(pool, &owner_fence_key(owner)).await?;
+        assert!(
+            !erase.is_finished(),
+            "the transfer must still hold its fence"
+        );
+
+        release_session_advisory_lock(&mut transfer_gate, TRANSFER_GATE).await?;
+        drop(transfer_gate);
+        let transferred = tokio::time::timeout(Duration::from_secs(10), transfer).await??;
+        assert!(
+            transferred?,
+            "the transfer should commit after its trigger opens"
+        );
+
+        let erase_result = tokio::time::timeout(Duration::from_secs(10), erase).await??;
+        // The transfer holds both endpoint fences when the erase queues, so
+        // the erase waits and then selects a scope the Memory has already left.
+        // It succeeds having erased nothing of the moved series.
+        assert!(
+            erase_result.is_ok(),
+            "owner erase must complete once the transfer releases its fences: {erase_result:?}"
+        );
+
+        let moved_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(moved_owner, destination.stored_owner_id());
+        let destination_head: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(written.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(destination_head, destination.stored_owner_id());
+        let witness: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(
+            witness, None,
+            "an erase ordered after the transfer leaves no witness"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("owner erase vs transfer barrier failed");
+}
+
+/// The destination half of transfer's two-owner fence is observable too. An
+/// initially empty destination erase queues after transfer has minted the
+/// destination owner and acquired its exclusive fence; transfer then commits the
+/// moved series, making the destination erase's empty snapshot stale.
+#[tokio::test]
+async fn destination_erase_includes_a_memory_transferred_in_before_its_fence() {
+    const TRANSFER_GATE: i64 = 7_514_006;
+
+    let (db_name, pg) = fresh_owner_erase_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let written = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft(Some(("destination-race", "destination-key"))),
+                None,
+            )
+            .await?;
+        let t = written.memory_id.into_inner();
+        install_transfer_update_gate(pool, TRANSFER_GATE).await?;
+        let mut transfer_gate = hold_session_advisory_lock(pool, TRANSFER_GATE).await?;
+
+        let transfer_pg = pg.clone();
+        let transfer = tokio::spawn(async move {
+            transfer_pg
+                .transfer_to_owner(
+                    &OwnerWritePermit::new_for_tests(source, AccessKind::Fact),
+                    EntityId::Memory(proxima_core::MemoryId::new(t)),
+                    destination,
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+        wait_for_ungranted_advisory_key(pool, TRANSFER_GATE).await?;
+
+        let erase_pg = pg.clone();
+        let erase = tokio::spawn(async move {
+            let group_id = match destination {
+                OwnerRef::Group(group_id) => group_id,
+                OwnerRef::Personal(_) => unreachable!(),
+            };
+            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
+            erase_pg
+                .erase_group_owner(&auth, group_id, false, &contract_sidecar_tables())
+                .await
+        });
+        wait_for_ungranted_advisory_label(pool, &owner_fence_key(destination)).await?;
+        assert!(
+            !erase.is_finished(),
+            "the destination erase must still be fenced"
+        );
+
+        release_session_advisory_lock(&mut transfer_gate, TRANSFER_GATE).await?;
+        drop(transfer_gate);
+        let transferred = tokio::time::timeout(Duration::from_secs(10), transfer).await??;
+        assert!(
+            transferred?,
+            "the transfer should commit after its trigger opens"
+        );
+
+        let erase_result = tokio::time::timeout(Duration::from_secs(10), erase).await??;
+        // The erase acquires the destination fence only after the transfer
+        // commits, so the moved Memory is outside the scope it then selects.
+        assert!(
+            erase_result.is_ok(),
+            "destination erase must complete after the transfer commits: {erase_result:?}"
+        );
+        // The transfer committed before the erase reached its fence, so the
+        // arriving Memory is part of the destination scope the erase then
+        // selected, and goes with it — head included.
+        let rows: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(rows, 0, "the transferred-in Memory is erased");
+        let heads: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
+        )
+        .bind(written.handle)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(heads, 0, "its head is erased with it");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("destination erase vs transfer barrier failed");
+}
+
+/// A transfer also changes the destination's source scope. Holding both owner
+/// boundaries exclusively makes the source-scope erase wait until the move
+/// commits; it then selects a scope that already contains the arriving series
+/// and erases it, rather than acting on a snapshot taken before the move.
+#[tokio::test]
+async fn destination_source_erase_includes_a_series_transferred_in_before_its_fence() {
+    const TRANSFER_GATE: i64 = 7_514_007;
+
+    let (db_name, pg) = fresh_owner_erase_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let destination_id = GroupId::new(Uuid::now_v7());
+        let destination = OwnerRef::Group(destination_id);
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let source_id = SourceId::new("destination-source-race");
+        let written = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft(Some((source_id.as_str(), "destination-source-key"))),
+                None,
+            )
+            .await?;
+        let t = written.memory_id.into_inner();
+        install_transfer_update_gate(pool, TRANSFER_GATE).await?;
+        let mut transfer_gate = hold_session_advisory_lock(pool, TRANSFER_GATE).await?;
+
+        let transfer_pg = pg.clone();
+        let transfer = tokio::spawn(async move {
+            transfer_pg
+                .transfer_to_owner(
+                    &OwnerWritePermit::new_for_tests(source, AccessKind::Fact),
+                    EntityId::Memory(proxima_core::MemoryId::new(t)),
+                    destination,
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+        wait_for_ungranted_advisory_key(pool, TRANSFER_GATE).await?;
+
+        let erase_pg = pg.clone();
+        let erase_source_id = source_id.clone();
+        let erase = tokio::spawn(async move {
+            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupSourceScope {
+                group_id: destination_id,
+                source_id: erase_source_id.clone(),
+            });
+            erase_pg
+                .erase_group_source_scope(
+                    &auth,
+                    destination_id,
+                    &erase_source_id,
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+        wait_for_ungranted_advisory_label(pool, &owner_fence_key(destination)).await?;
+        assert!(
+            !erase.is_finished(),
+            "the destination source erase must wait at the transfer boundary"
+        );
+
+        release_session_advisory_lock(&mut transfer_gate, TRANSFER_GATE).await?;
+        drop(transfer_gate);
+        assert!(tokio::time::timeout(Duration::from_secs(10), transfer).await???);
+        let erase_result = tokio::time::timeout(Duration::from_secs(10), erase).await??;
+        assert!(
+            erase_result.is_ok(),
+            "destination source erase must complete after the transfer commits: {erase_result:?}"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1",
+            )
+            .bind(t)
+            .fetch_one(pool)
+            .await?,
+            0,
+            "the series transferred into the erased source scope is erased"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("destination source erase vs transfer barrier failed");
+}
+
+/// Goal admission shares the owner fence just like Memory admission. This is
+/// the compact owner-level proof that a Goal committing while a whole-owner
+/// erase waits for its fence is inside that erase, together with the lifecycle
+/// write-act Fact it minted — neither is left behind.
+#[tokio::test]
+async fn owner_erase_includes_a_goal_that_committed_before_its_fence() {
+    const ADMISSION_GATE: i64 = 7_514_005;
+
+    let (db_name, pg) = fresh_owner_erase_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let seed = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("goal-seed", "goal-seed-key"))), None)
+            .await?;
+        let seed_t = seed.memory_id.into_inner();
+        install_goal_insert_gate(pool, ADMISSION_GATE).await?;
+
+        let mut admission_gate = hold_session_advisory_lock(pool, ADMISSION_GATE).await?;
+        let goal_pool = pool.clone();
+        let goal_owner = owner;
+        let goal = tokio::spawn(async move {
+            let mut tx = goal_pool.begin().await?;
+            let outcome =
+                write_goal(&mut tx, &goal_owner, &goal_draft("late-goal-request")).await?;
+            tx.commit().await?;
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(outcome)
+        });
+        wait_for_ungranted_advisory_key(pool, ADMISSION_GATE).await?;
+
+        let erase_pg = pg.clone();
+        let erase = tokio::spawn(async move {
+            let user_id = match owner {
+                OwnerRef::Personal(user_id) => user_id,
+                OwnerRef::Group(_) => unreachable!(),
+            };
+            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+                user_id,
+                drop_event_id: "owner-late-goal".into(),
+            });
+            erase_pg
+                .erase_personal_owner(&auth, user_id, false, &contract_sidecar_tables())
+                .await
+        });
+        wait_for_ungranted_advisory_label(pool, &owner_fence_key(owner)).await?;
+
+        release_session_advisory_lock(&mut admission_gate, ADMISSION_GATE).await?;
+        drop(admission_gate);
+        let goal_outcome = tokio::time::timeout(Duration::from_secs(10), goal).await??;
+        let goal_outcome =
+            goal_outcome.map_err(|error| std::io::Error::other(error.to_string()))?;
+        let goal_t = goal_outcome.t;
+        let write_act_t = goal_outcome
+            .write_act_t
+            .expect("the Goal admission must return its lifecycle write-act");
+
+        let erase_result = tokio::time::timeout(Duration::from_secs(10), erase).await??;
+        assert!(
+            erase_result.is_ok(),
+            "the erase must wait for the in-flight Goal write: {erase_result:?}"
+        );
+
+        // The Goal and its lifecycle write-act Fact commit together under the
+        // shared owner fence, so the erase sees both or neither. Here it saw
+        // both, and took both.
+        let goal_rows: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.goal WHERE t = $1")
+                .bind(goal_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(goal_rows, 0, "the late Goal is erased");
+        let seed_rows: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(seed_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(seed_rows, 0, "the preexisting Memory is erased");
+        let write_act_rows: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(write_act_t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            write_act_rows, 0,
+            "the Goal's write-act Fact is erased with it"
+        );
+        let witnesses: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.erased_pin_target
+              WHERE t IN ($1, $2, $3)",
+        )
+        .bind(seed_t)
+        .bind(goal_t)
+        .bind(write_act_t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            witnesses, 3,
+            "the seed, the late Goal and its write-act Fact are each witnessed"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("owner erase vs late Goal barrier failed");
 }

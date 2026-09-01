@@ -11,7 +11,10 @@ use proxima_core::owner_inverse::{
 use proxima_core::{ColdObjectStore, GroupId, OwnerRef, SourceId, StorageError, UserId};
 use sqlx::{PgPool, Postgres, Transaction};
 
-use crate::access::owner_columns::{lock_group_membership_tx, owner_binds};
+use crate::access::owner_columns::{
+    lock_group_membership_tx, lock_owner_fence_exclusive_tx, lock_owner_fence_shared_tx,
+    lock_source_fence_exclusive_tx, owner_binds,
+};
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::verbs::forget::ColdPurgePlan;
@@ -22,6 +25,23 @@ type Tx<'a> = Transaction<'a, Postgres>;
 enum SelectionScope<'a> {
     Owner,
     Source(&'a SourceId),
+}
+
+impl<'a> SelectionScope<'a> {
+    /// The source bind every scope-narrowed statement carries. A whole-owner
+    /// erase binds `NULL`, which the `$n IS NULL` arm of each predicate admits
+    /// unconditionally, so one statement serves both scopes instead of a
+    /// matched pair that differs by a single `AND`.
+    ///
+    /// Safe for the source scope too: a non-NULL bind compares with `=`, which
+    /// is false for a NULL `source_id`, so unsourced rows stay out of a source
+    /// erase exactly as the paired statements had them.
+    fn source_bind(self) -> Option<&'a str> {
+        match self {
+            Self::Owner => None,
+            Self::Source(source_id) => Some(source_id.as_str()),
+        }
+    }
 }
 
 /// Begin a bulk-erase transaction.
@@ -232,6 +252,12 @@ async fn delete_keyed_surfaces(
     surfaces: &OwnerSurfaces,
     set: KeyedSet,
 ) -> Result<u64, StorageError> {
+    // Keyed sidecars deliberately use the sealed selection alone: the scope
+    // fence, sorted handle/t locks, and exact owner/source revalidation above
+    // prove that every selected key still belongs to this erase.  Their
+    // declarations provide only the key column, so manufacturing a second
+    // owner predicate here would either be impossible or silently assume a
+    // column the sidecar contract does not promise.
     let mut total = 0;
     for surface in surfaces.surfaces() {
         let EraseLeg::Keyed(key) = surfaces.erase_leg(surface.table) else {
@@ -387,27 +413,27 @@ async fn erase_selected(
 
     delete_owned_surfaces(tx, surfaces, owner, scope).await?;
 
-    let content_ids = selected_content_ids(tx).await?;
-    let memories = delete_fixed_by_selected(
-        tx,
-        "proxima_core.memory",
-        "t",
-        "selected_memories",
-        "memory_id",
-    )
-    .await?;
-    let (cooled, cold_purge) = delete_selected_cooled(tx).await?;
+    let content_ids = selected_content_ids(tx, owner, scope).await?;
+    let memories = delete_selected_memories(tx, owner, scope).await?;
+    let (cooled, cold_purge) = delete_selected_cooled(tx, owner, scope).await?;
     super::content::gc_unreferenced_content_batch(tx, &content_ids).await?;
+    // The three deletes above and the Goal delete below repeat the
+    // owner/source predicate as a backstop. Under the scope fence that
+    // predicate cannot exclude anything the selection holds, so a short count
+    // means the backstop fired and rows were left behind. Say so instead of
+    // reporting a smaller erase as a complete one — this receipt is what a
+    // compliance answer is built from.
+    assert_selection_fully_deleted(tx, Selection::Memories, memories + cooled).await?;
     record_count(tx, "memories", memories.saturating_add(cooled)).await?;
-    let goals =
-        delete_fixed_by_selected(tx, "proxima_core.goal", "t", "selected_goals", "goal_id").await?;
+    let goals = delete_selected_goals(tx, owner).await?;
+    assert_selection_fully_deleted(tx, Selection::Goals, goals).await?;
     record_count(tx, "goals", goals).await?;
     let wake_configs = delete_wake_configs(tx, owner, scope).await?;
     record_count(tx, "wake_configs", wake_configs).await?;
     let blobs = delete_blobs(tx, owner, scope, surfaces).await?;
     record_count(tx, "blob_uploads", blobs.uploads).await?;
     record_count(tx, "blobs", blobs.blobs).await?;
-    sync_selected_heads(tx).await?;
+    sync_selected_heads(tx, owner.stored_owner_id()).await?;
     let mut object_keys = cold_purge.object_keys().to_vec();
     object_keys.extend_from_slice(blobs.cold_purge.object_keys());
     object_keys.sort_unstable();
@@ -435,7 +461,32 @@ async fn open_erase_bookkeeping(
     owner: OwnerRef,
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
+    // The scope fence comes first, before the selection reads anything. Held
+    // this way the snapshot is exact by construction: an admission for this
+    // owner needs the fence shared, and a transfer needs both endpoints
+    // exclusively, so neither can commit into the scope between the selection
+    // and the deletes. Source scope is exact one level down for the same
+    // reason — the shared owner fence excludes transfer, the exclusive source
+    // fence excludes same-source admission, and a different-source admission
+    // was never in scope.
+    //
+    // Selecting first and revalidating afterwards was the earlier shape, and
+    // it could not make progress under load. The window between the selection
+    // and the fence is a full scan of the owner, so on a busy owner some
+    // writer had almost always crossed it; every attempt paid two scans to
+    // discover that and handed the caller back a `Retryable` it could only
+    // answer by starting over.
+    match scope {
+        SelectionScope::Owner => lock_owner_fence_exclusive_tx(tx, &owner).await?,
+        SelectionScope::Source(source_id) => {
+            // Source erase remains compatible with other source admissions;
+            // the owner shared fence only excludes a full-owner erase.
+            lock_owner_fence_shared_tx(tx, &owner).await?;
+            lock_source_fence_exclusive_tx(tx, &owner, source_id.as_str()).await?;
+        }
+    }
     create_selected_sets(tx, owner, scope).await?;
+    lock_selected_memory_handles(tx).await?;
     lock_selected_lifecycle_targets(tx).await?;
     capture_selected_handles(tx).await?;
     sqlx::query("CREATE TEMP TABLE erase_counts(name text PRIMARY KEY, count bigint NOT NULL) ON COMMIT DROP")
@@ -446,6 +497,19 @@ async fn open_erase_bookkeeping(
         record_count(tx, counter, 0).await?;
     }
     Ok(())
+}
+
+/// Acquire the complete series-handle footprint from the immutable selection
+/// snapshot.  The selected `handle` column is part of the snapshot precisely
+/// so this step does not consult a mutable hot/cooled row after the scope
+/// fence has been acquired.
+async fn lock_selected_memory_handles(tx: &mut Tx<'_>) -> Result<(), StorageError> {
+    let handles: Vec<uuid::Uuid> =
+        sqlx::query_scalar("SELECT handle FROM selected_memories ORDER BY handle")
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(map_err)?;
+    super::forget::lock_memory_handles_tx(tx, &handles).await
 }
 
 /// Lock the complete Memory ∪ Goal erase footprint before any generated
@@ -479,19 +543,19 @@ async fn create_selected_sets(
     // `proxima_core.owners` refuses a second kind for an id already stored.
     let (_owner_kind, owner_id) = owner_binds(&owner);
 
-    sqlx::query("CREATE TEMP TABLE selected_memories(memory_id uuid PRIMARY KEY, kind text NOT NULL) ON COMMIT DROP")
+    sqlx::query("CREATE TEMP TABLE selected_memories(memory_id uuid PRIMARY KEY, handle uuid NOT NULL, kind text NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
     match scope {
         SelectionScope::Owner => {
             sqlx::query(
-                "INSERT INTO selected_memories(memory_id, kind)
-                 SELECT t, kind::text
+                "INSERT INTO selected_memories(memory_id, handle, kind)
+                 SELECT t, handle, kind::text
                    FROM proxima_core.memory
                   WHERE owner_id = $1
                  UNION ALL
-                 SELECT t, kind::text
+                 SELECT t, handle, kind::text
                    FROM proxima_core.cooled
                   WHERE owner_id = $1",
             )
@@ -502,13 +566,13 @@ async fn create_selected_sets(
         }
         SelectionScope::Source(source_id) => {
             sqlx::query(
-                "INSERT INTO selected_memories(memory_id, kind)
-                 SELECT m.t, m.kind::text
+                "INSERT INTO selected_memories(memory_id, handle, kind)
+                 SELECT m.t, m.handle, m.kind::text
                    FROM proxima_core.memory m
                   WHERE m.owner_id = $1
                     AND m.source_id = $2
                  UNION ALL
-                 SELECT c.t, c.kind::text
+                 SELECT c.t, c.handle, c.kind::text
                    FROM proxima_core.cooled c
                   WHERE c.owner_id = $1
                     AND c.source_id = $2",
@@ -557,14 +621,14 @@ async fn create_selected_sets(
         }
     }
 
-    sqlx::query("CREATE TEMP TABLE selected_goals(goal_id uuid PRIMARY KEY) ON COMMIT DROP")
+    sqlx::query("CREATE TEMP TABLE selected_goals(goal_id uuid PRIMARY KEY, handle uuid NOT NULL, kind text NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
     if matches!(scope, SelectionScope::Owner) {
         sqlx::query(
-            "INSERT INTO selected_goals(goal_id)
-             SELECT t FROM proxima_core.goal
+            "INSERT INTO selected_goals(goal_id, handle, kind)
+             SELECT t, handle, 'goal'::text FROM proxima_core.goal
               WHERE owner_id = $1",
         )
         .bind(owner_id)
@@ -585,15 +649,7 @@ async fn capture_selected_handles(tx: &mut Tx<'_>) -> Result<(), StorageError> {
     .map_err(map_err)?;
     sqlx::query(
         "INSERT INTO selected_memory_handles(handle)
-         SELECT DISTINCT handle FROM (
-             SELECT m.handle
-               FROM proxima_core.memory m
-               JOIN selected_memories sm ON sm.memory_id = m.t
-             UNION
-             SELECT c.handle
-               FROM proxima_core.cooled c
-               JOIN selected_memories sm ON sm.memory_id = c.t
-         ) h",
+         SELECT DISTINCT handle FROM selected_memories",
     )
     .execute(&mut **tx)
     .await
@@ -604,9 +660,7 @@ async fn capture_selected_handles(tx: &mut Tx<'_>) -> Result<(), StorageError> {
         .map_err(map_err)?;
     sqlx::query(
         "INSERT INTO selected_goal_handles(handle)
-         SELECT DISTINCT g.handle
-           FROM proxima_core.goal g
-           JOIN selected_goals sg ON sg.goal_id = g.t",
+         SELECT DISTINCT handle FROM selected_goals",
     )
     .execute(&mut **tx)
     .await
@@ -614,7 +668,7 @@ async fn capture_selected_handles(tx: &mut Tx<'_>) -> Result<(), StorageError> {
     Ok(())
 }
 
-async fn sync_selected_heads(tx: &mut Tx<'_>) -> Result<(), StorageError> {
+async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<(), StorageError> {
     sqlx::query(
         "UPDATE proxima_core.memory_head h
             SET t = r.t
@@ -624,22 +678,28 @@ async fn sync_selected_heads(tx: &mut Tx<'_>) -> Result<(), StorageError> {
                     SELECT handle, t,
                            row_number() OVER (PARTITION BY handle ORDER BY t DESC) AS n
                       FROM proxima_core.memory
-                     WHERE handle IN (SELECT handle FROM selected_memory_handles)
+                     WHERE owner_id = $1
+                       AND handle IN (SELECT handle FROM selected_memory_handles)
                   ) ranked
                  WHERE n = 1
            ) r
-          WHERE h.handle = r.handle",
+          WHERE h.handle = r.handle
+            AND h.owner_id = $1",
     )
+    .bind(owner_id)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
     sqlx::query(
         "DELETE FROM proxima_core.memory_head h
-          WHERE h.handle IN (SELECT handle FROM selected_memory_handles)
+          WHERE h.owner_id = $1
+            AND h.handle IN (SELECT handle FROM selected_memory_handles)
             AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.memory m WHERE m.handle = h.handle
+                SELECT 1 FROM proxima_core.memory m
+                 WHERE m.handle = h.handle AND m.owner_id = $1
             )",
     )
+    .bind(owner_id)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -652,22 +712,28 @@ async fn sync_selected_heads(tx: &mut Tx<'_>) -> Result<(), StorageError> {
                     SELECT handle, t,
                            row_number() OVER (PARTITION BY handle ORDER BY t DESC) AS n
                       FROM proxima_core.goal
-                     WHERE handle IN (SELECT handle FROM selected_goal_handles)
+                     WHERE owner_id = $1
+                       AND handle IN (SELECT handle FROM selected_goal_handles)
                   ) ranked
                  WHERE n = 1
            ) r
-          WHERE h.handle = r.handle",
+          WHERE h.handle = r.handle
+            AND h.owner_id = $1",
     )
+    .bind(owner_id)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
     sqlx::query(
         "DELETE FROM proxima_core.goal_head h
-          WHERE h.handle IN (SELECT handle FROM selected_goal_handles)
+          WHERE h.owner_id = $1
+            AND h.handle IN (SELECT handle FROM selected_goal_handles)
             AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.goal g WHERE g.handle = h.handle
+                SELECT 1 FROM proxima_core.goal g
+                 WHERE g.handle = h.handle AND g.owner_id = $1
             )",
     )
+    .bind(owner_id)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -738,29 +804,131 @@ async fn delete_fixed_by_selected(
     Ok(result.rows_affected())
 }
 
+/// The sealed selections a delete is checked against.
+#[derive(Debug, Clone, Copy)]
+enum Selection {
+    Memories,
+    Goals,
+}
+
+impl Selection {
+    /// A closed pair of literals, not a formatted table name: the selection
+    /// tables are fixed by this module, so the count statement never carries a
+    /// caller-supplied identifier.
+    const fn count_sql(self) -> &'static str {
+        match self {
+            Self::Memories => "SELECT count(*)::bigint FROM selected_memories",
+            Self::Goals => "SELECT count(*)::bigint FROM selected_goals",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Memories => "selected_memories",
+            Self::Goals => "selected_goals",
+        }
+    }
+}
+
+/// Every row the selection sealed must have been deleted.
+///
+/// `deleted` is summed across the hot and cooled legs for Memory, because the
+/// selection holds both and each leg deletes its own table.
+async fn assert_selection_fully_deleted(
+    tx: &mut Tx<'_>,
+    selection: Selection,
+    deleted: u64,
+) -> Result<(), StorageError> {
+    // SQL-POLICY: fixed-fragment
+    let selected: i64 = sqlx::query_scalar(selection.count_sql())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    let selected = u64::try_from(selected).unwrap_or(0);
+    if deleted == selected {
+        return Ok(());
+    }
+    Err(StorageError::Internal(format!(
+        "bulk erase deleted {deleted} of {selected} rows in {}; \
+         the scope fence should have made these equal",
+        selection.label()
+    )))
+}
+
+/// Delete the core hot spine only while it still belongs to the erased
+/// owner/scope.  The sealed selection is the primary race barrier; repeating
+/// the owner/source predicate here is a defensive backstop against a stale
+/// `t` ever being routed to this primitive by a future caller.
+async fn delete_selected_memories(
+    tx: &mut Tx<'_>,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+) -> Result<u64, StorageError> {
+    let result = sqlx::query(
+        "DELETE FROM proxima_core.memory m
+          USING selected_memories s
+          WHERE m.t = s.memory_id
+            AND m.owner_id = $1
+            AND ($2::text IS NULL OR m.source_id = $2)",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(scope.source_bind())
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(result.rows_affected())
+}
+
+async fn delete_selected_goals(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, StorageError> {
+    let result = sqlx::query(
+        "DELETE FROM proxima_core.goal g
+          USING selected_goals s
+          WHERE g.t = s.goal_id
+            AND g.owner_id = $1",
+    )
+    .bind(owner.stored_owner_id())
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(result.rows_affected())
+}
+
 /// Delete cooled stubs for selected admissions and mark their cold objects
 /// pending destruction. The objects themselves are destroyed after this
 /// transaction commits (see [`super::forget::purge_cold_objects_after_commit`]):
 /// deleting them here would destroy the payload of an admission that a
 /// rollback puts back.
-async fn delete_selected_cooled(tx: &mut Tx<'_>) -> Result<(u64, ColdPurgePlan), StorageError> {
+async fn delete_selected_cooled(
+    tx: &mut Tx<'_>,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+) -> Result<(u64, ColdPurgePlan), StorageError> {
+    let owner_id = owner.stored_owner_id();
     let keys: Vec<String> = sqlx::query_scalar(
         "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
          SELECT c.object_key, c.owner_id
            FROM proxima_core.cooled c
            JOIN selected_memories sm ON sm.memory_id = c.t
+          WHERE c.owner_id = $1
+            AND ($2::text IS NULL OR c.source_id = $2)
          ON CONFLICT (object_key) DO UPDATE SET enqueued_at = now()
          RETURNING object_key",
     )
+    .bind(owner_id)
+    .bind(scope.source_bind())
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)?;
     let deleted = sqlx::query(
         "DELETE FROM proxima_core.cooled c
-          WHERE EXISTS (
+          WHERE c.owner_id = $1
+            AND ($2::text IS NULL OR c.source_id = $2)
+            AND EXISTS (
                 SELECT 1 FROM selected_memories sm WHERE sm.memory_id = c.t
-          )",
+            )",
     )
+    .bind(owner_id)
+    .bind(scope.source_bind())
     .execute(&mut **tx)
     .await
     .map_err(map_err)?
@@ -768,20 +936,30 @@ async fn delete_selected_cooled(tx: &mut Tx<'_>) -> Result<(u64, ColdPurgePlan),
     Ok((deleted, ColdPurgePlan::from_keys(keys)))
 }
 
-async fn selected_content_ids(tx: &mut Tx<'_>) -> Result<Vec<uuid::Uuid>, StorageError> {
+async fn selected_content_ids(
+    tx: &mut Tx<'_>,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+) -> Result<Vec<uuid::Uuid>, StorageError> {
     sqlx::query_scalar(
         "SELECT DISTINCT content_id FROM (
              SELECT m.content_id
                FROM proxima_core.memory m
                JOIN selected_memories sm ON sm.memory_id = m.t
-              WHERE m.content_id IS NOT NULL
+              WHERE m.owner_id = $1
+                AND ($2::text IS NULL OR m.source_id = $2)
+                AND m.content_id IS NOT NULL
              UNION
              SELECT c.content_id
                FROM proxima_core.cooled c
                JOIN selected_memories sm ON sm.memory_id = c.t
-              WHERE c.content_id IS NOT NULL
+              WHERE c.owner_id = $1
+                AND ($2::text IS NULL OR c.source_id = $2)
+                AND c.content_id IS NOT NULL
          ) x",
     )
+    .bind(owner.stored_owner_id())
+    .bind(scope.source_bind())
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)
@@ -934,11 +1112,13 @@ async fn delete_blobs(
         sqlx::query(
             "DELETE FROM selected_blobs sb
               WHERE EXISTS (
-                    SELECT 1 FROM proxima_core.memory m WHERE m.blob_id = sb.blob_id
+                    SELECT 1 FROM proxima_core.memory m
+                     WHERE m.blob_id = sb.blob_id
               )
                  OR EXISTS (
-                    SELECT 1 FROM proxima_core.cooled c WHERE c.blob_id = sb.blob_id
-              )",
+                    SELECT 1 FROM proxima_core.cooled c
+                     WHERE c.blob_id = sb.blob_id
+                 )",
         )
         .execute(&mut **tx)
         .await
