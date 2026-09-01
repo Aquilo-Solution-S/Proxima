@@ -137,7 +137,7 @@ impl Engine {
     /// Two things sit outside it, both deliberately, and neither is corpus
     /// content. Staging performs one bounded object read, records the
     /// transfer's canonical locator and SHA-256 audit digest, carries the
-    /// BLAKE3 content address forward, and retires the redundant
+    /// BLAKE3 content address forward, and best-effort retires the redundant
     /// pending copy — no transaction may be held open across that. Finishing
     /// marks the upload row and retries the same cleanup. A crash before
     /// finishing leaves an upload row still saying `pending` whose artefact

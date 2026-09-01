@@ -165,10 +165,11 @@ pub trait CitedBlobPort: Send + Sync {
     /// it never overwrites it — and a caller that crashes before persisting
     /// may stage again.
     ///
-    /// The pending object is retired after the canonical locator is recorded.
-    /// A retry re-reads those canonical bytes if corpus persistence fails;
-    /// `finish_upload` repeats pending-key cleanup after the artefact is in
-    /// the corpus.
+    /// The pending object is retired, best-effort, after the canonical locator
+    /// is recorded — a provider failure there never fails a stage that already
+    /// succeeded. A retry re-reads those canonical bytes if corpus persistence
+    /// fails; `finish_upload` repeats pending-key cleanup after the artefact is
+    /// in the corpus.
     ///
     /// # Errors
     ///

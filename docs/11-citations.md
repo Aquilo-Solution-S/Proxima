@@ -153,7 +153,9 @@ Direct upload:
    compute BLAKE3 + SHA-256 and its length, conditionally publishes those
    exact bytes to `objects/<upload-id>`, records the canonical locator and
    SHA-256 audit digest, and carries the BLAKE3 content address into the corpus
-   transaction. It retires the pending transfer copy, then inserts or reuses
+   transaction. It retires the pending transfer copy on a best-effort basis —
+   a provider failure there never fails a completion that already succeeded, and
+   the bucket lifecycle rule reclaims the leftovers — then inserts or reuses
    `blob` and marks the upload completed.
 4. Same Owner + same bytes returns the existing CitedObject and marks
    the result as an idempotent replay.

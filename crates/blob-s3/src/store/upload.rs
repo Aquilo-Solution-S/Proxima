@@ -14,7 +14,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::CitedBlobStore;
-use super::digest::hash_uploaded_object;
+use super::digest::{LengthExpectation, hash_uploaded_object};
 use super::dto::{
     CitedBlobUploadAbortOutcomeTs, CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs,
     CitedBlobUploadPrepareOutcomeTs, CitedBlobUploadPrepareTs, PresignedHeaderTs,
@@ -52,7 +52,7 @@ async fn read_hashed_object(
     client: &aws_sdk_s3::Client,
     bucket: &str,
     key: &str,
-    expected_byte_len: i64,
+    expected: LengthExpectation,
     max_blob_bytes: Option<u64>,
 ) -> Result<(super::digest::StreamedObject, Option<String>), ObjectReadError> {
     let object = client
@@ -76,13 +76,9 @@ async fn read_hashed_object(
             }
         })?;
     let etag = object.e_tag().map(ToString::to_string);
-    let streamed = Box::pin(hash_uploaded_object(
-        object.body,
-        expected_byte_len,
-        max_blob_bytes,
-    ))
-    .await
-    .map_err(ObjectReadError::Other)?;
+    let streamed = Box::pin(hash_uploaded_object(object.body, expected, max_blob_bytes))
+        .await
+        .map_err(ObjectReadError::Other)?;
     Ok((streamed, etag))
 }
 
@@ -131,6 +127,7 @@ async fn publish_canonical(
     bucket: &str,
     canonical_key: &str,
     candidate: &super::digest::StreamedObject,
+    body: Vec<u8>,
     max_blob_bytes: Option<u64>,
 ) -> Result<(String, Option<String>), BlobError> {
     let result = client
@@ -138,7 +135,7 @@ async fn publish_canonical(
         .bucket(bucket)
         .key(canonical_key)
         .if_none_match("*")
-        .body(ByteStream::from(candidate.bytes.clone()))
+        .body(ByteStream::from(body))
         .send()
         .await;
     match result {
@@ -158,7 +155,10 @@ async fn publish_canonical(
                     client,
                     bucket,
                     canonical_key,
-                    i64::try_from(candidate.byte_len).unwrap_or(i64::MAX),
+                    // Nothing to enforce here: the object that won the key may
+                    // differ in length, and that difference is a canonical
+                    // conflict, not a client length error.
+                    LengthExpectation::CapOnly,
                     max_blob_bytes,
                 )
                 .await
@@ -177,6 +177,33 @@ async fn publish_canonical(
             }
         }
     }
+}
+
+/// The answer a terminal upload row gives. Shared so the entry check, the
+/// reload after a vanished pending key, and the post-write repair cannot drift
+/// apart.
+const fn terminal_status_message(status: UploadStatus) -> &'static str {
+    match status {
+        UploadStatus::Aborted => "upload is aborted",
+        UploadStatus::Expired => "upload is expired",
+        UploadStatus::Completed | UploadStatus::Pending => {
+            "upload has reached an unexpected terminal state"
+        }
+    }
+}
+
+/// Where a stage reads its bytes from, once the pending key it expected has
+/// gone missing underneath it.
+enum StageSource {
+    /// The upload already reached the corpus; replay from its row.
+    Replay { bucket: String, blob_id: Uuid },
+    /// The row is terminal: report that rather than stage.
+    Terminal {
+        bucket: String,
+        status: UploadStatus,
+    },
+    /// Read the object the reloaded row now points at.
+    Read(super::rows::UploadRow),
 }
 
 impl CitedBlobStore {
@@ -261,13 +288,13 @@ impl CitedBlobStore {
     ///
     /// On the first stage the row's locator changes to the canonical key, so a
     /// retry re-reads that canonical copy even if the presigned pending key is
-    /// overwritten. The redundant pending transfer copy is retired before a
-    /// successful stage returns; `finish_upload` retries that cleanup.
+    /// overwritten. Retiring the redundant pending transfer copy is
+    /// best-effort hygiene, never an outcome: `finish_upload` retries it, and
+    /// the bucket lifecycle rule reclaims whatever every attempt missed.
     ///
     /// # Errors
     /// Returns `BlobError` when the upload is missing, expired,
     /// malformed, or any S3/database operation fails.
-    #[allow(clippy::too_many_lines)] // the stage/repair ordering is one protocol boundary
     pub async fn stage_upload(
         &self,
         ctx: &AuthzContext,
@@ -277,6 +304,98 @@ impl CitedBlobStore {
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_opaque_identifier(&req.upload_id)?;
         let row = load_upload(&self.pool, &owner, upload_id).await?;
+        if let Some(replay) = self.stage_entry_shortcut(&owner, upload_id, &row).await? {
+            return Ok(replay);
+        }
+
+        let client = self.client().await?;
+        let pending_key = pending_object_key(upload_id);
+        let mut source_object_key = row.object_key.clone();
+        let (mut streamed, source_etag) = match read_hashed_object(
+            client,
+            &row.bucket,
+            &row.object_key,
+            LengthExpectation::Declared(row.expected_byte_len),
+            self.config.max_blob_bytes,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(ObjectReadError::Missing) if row.object_key == pending_key => {
+                let Some(source) = self
+                    .resolve_missing_pending(&owner, upload_id, &pending_key)
+                    .await?
+                else {
+                    self.purge_pending_upload_best_effort(&row.bucket, upload_id)
+                        .await;
+                    return Err(BlobError::State("upload not found for Owner".into()));
+                };
+                match source {
+                    StageSource::Replay { bucket, blob_id } => {
+                        self.purge_pending_upload_best_effort(&bucket, upload_id)
+                            .await;
+                        return load_staged_payload(&self.pool, &owner, upload_id, blob_id).await;
+                    }
+                    StageSource::Terminal { bucket, status } => {
+                        // An expired row's transfer key is left to the bucket
+                        // lifecycle rule, exactly as the entry check leaves it.
+                        if status == UploadStatus::Aborted {
+                            self.purge_pending_upload_best_effort(&bucket, upload_id)
+                                .await;
+                        }
+                        return Err(BlobError::State(terminal_status_message(status).into()));
+                    }
+                    StageSource::Read(reloaded) => {
+                        source_object_key = reloaded.object_key.clone();
+                        read_hashed_object(
+                            client,
+                            &reloaded.bucket,
+                            &reloaded.object_key,
+                            LengthExpectation::Declared(reloaded.expected_byte_len),
+                            self.config.max_blob_bytes,
+                        )
+                        .await
+                        .map_err(ObjectReadError::into_blob_error)?
+                    }
+                }
+            }
+            Err(error) => return Err(error.into_blob_error()),
+        };
+        // Derived from this upload row's own primary key, not from its
+        // bytes or its owner: the key the read gate will re-derive and
+        // compare against for the life of the row.
+        let canonical_key = canonical_object_key(upload_id);
+        let (canonical_key, etag) = if source_object_key == pending_key {
+            let body = streamed.take_bytes();
+            publish_canonical(
+                client,
+                &row.bucket,
+                &canonical_key,
+                &streamed,
+                body,
+                self.config.max_blob_bytes,
+            )
+            .await?
+        } else {
+            // A prior mismatch already recorded the canonical locator. The
+            // immutable object is the source of truth and must not be PUT
+            // again, even if a client has recreated the pending key.
+            (source_object_key.clone(), source_etag)
+        };
+
+        self.record_stage_locator(&owner, upload_id, &row, canonical_key, etag, &streamed)
+            .await
+    }
+
+    /// The row states a stage can answer before it touches the object store.
+    ///
+    /// `Ok(None)` means the row is pending and unexpired, so staging proceeds.
+    async fn stage_entry_shortcut(
+        &self,
+        owner: &OwnerRef,
+        upload_id: Uuid,
+        row: &super::rows::UploadRow,
+    ) -> Result<Option<CitedBlobStaged>, BlobError> {
         match row.status {
             UploadStatus::Completed => {
                 let Some(blob_id) = row.blob_id else {
@@ -288,105 +407,47 @@ impl CitedBlobStore {
                 // cleanup before reading back what was stored: the row is
                 // the truth about this artefact, and replay must not depend
                 // on bytes a client can recreate through its presigned URL.
-                self.purge_pending_upload(&row.bucket, upload_id).await?;
-                return load_staged_payload(&self.pool, &owner, upload_id, blob_id).await;
+                self.purge_pending_upload_best_effort(&row.bucket, upload_id)
+                    .await;
+                return load_staged_payload(&self.pool, owner, upload_id, blob_id)
+                    .await
+                    .map(Some);
             }
             UploadStatus::Aborted => {
-                self.purge_pending_upload(&row.bucket, upload_id).await?;
-                return Err(BlobError::State("upload is aborted".into()));
+                self.purge_pending_upload_best_effort(&row.bucket, upload_id)
+                    .await;
+                return Err(BlobError::State(
+                    terminal_status_message(UploadStatus::Aborted).into(),
+                ));
             }
             UploadStatus::Expired => {
-                return Err(BlobError::State("upload is expired".into()));
+                return Err(BlobError::State(
+                    terminal_status_message(UploadStatus::Expired).into(),
+                ));
             }
             UploadStatus::Pending => {}
         }
         if row.expires_at < OffsetDateTime::now_utc() {
-            mark_upload_expired(&self.pool, &owner, upload_id).await?;
-            return Err(BlobError::State("upload is expired".into()));
+            mark_upload_expired(&self.pool, owner, upload_id).await?;
+            return Err(BlobError::State(
+                terminal_status_message(UploadStatus::Expired).into(),
+            ));
         }
+        Ok(None)
+    }
 
-        let client = self.client().await?;
-        let pending_key = pending_object_key(upload_id);
-        let mut source_object_key = row.object_key.clone();
-        let (streamed, source_etag) = match read_hashed_object(
-            client,
-            &row.bucket,
-            &row.object_key,
-            row.expected_byte_len,
-            self.config.max_blob_bytes,
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(ObjectReadError::Missing) if row.object_key == pending_key => {
-                // A concurrent stage may have already recorded and retired
-                // the pending copy. Reload exactly once and continue from the
-                // canonical locator it recorded; never fall back to a new
-                // pending GET that can be overwritten by a presigned client.
-                let Some(reloaded) =
-                    super::rows::load_upload_optional(&self.pool, &owner, upload_id).await?
-                else {
-                    self.purge_pending_upload(&row.bucket, upload_id).await?;
-                    return Err(BlobError::State("upload not found for Owner".into()));
-                };
-                match reloaded.status {
-                    UploadStatus::Completed => {
-                        let Some(blob_id) = reloaded.blob_id else {
-                            return Err(BlobError::State(
-                                "completed upload is missing blob_id".into(),
-                            ));
-                        };
-                        self.purge_pending_upload(&reloaded.bucket, upload_id)
-                            .await?;
-                        return load_staged_payload(&self.pool, &owner, upload_id, blob_id).await;
-                    }
-                    UploadStatus::Aborted => {
-                        self.purge_pending_upload(&reloaded.bucket, upload_id)
-                            .await?;
-                        return Err(BlobError::State("upload is aborted".into()));
-                    }
-                    UploadStatus::Expired => {
-                        return Err(BlobError::State("upload is expired".into()));
-                    }
-                    UploadStatus::Pending if reloaded.object_key != pending_key => {
-                        source_object_key = reloaded.object_key.clone();
-                        read_hashed_object(
-                            client,
-                            &reloaded.bucket,
-                            &reloaded.object_key,
-                            reloaded.expected_byte_len,
-                            self.config.max_blob_bytes,
-                        )
-                        .await
-                        .map_err(ObjectReadError::into_blob_error)?
-                    }
-                    UploadStatus::Pending => {
-                        return Err(ObjectReadError::Missing.into_blob_error());
-                    }
-                }
-            }
-            Err(error) => return Err(error.into_blob_error()),
-        };
-        // Derived from this upload row's own primary key, not from its
-        // bytes or its owner: the key the read gate will re-derive and
-        // compare against for the life of the row.
-        let canonical_key = canonical_object_key(upload_id);
-        let (canonical_key, etag) = if source_object_key == pending_key {
-            publish_canonical(
-                client,
-                &row.bucket,
-                &canonical_key,
-                &streamed,
-                self.config.max_blob_bytes,
-            )
-            .await?
-        } else {
-            // A prior mismatch already recorded the canonical locator. The
-            // immutable object is the source of truth and must not be PUT
-            // again, even if a client has recreated the pending key.
-            (source_object_key.clone(), source_etag)
-        };
-
+    /// Record the canonical locator against the still-pending row, then decide
+    /// what a zero-row update meant. A stage that lost its guard while the
+    /// provider write was in flight is repaired, not reported as a failure.
+    async fn record_stage_locator(
+        &self,
+        owner: &OwnerRef,
+        upload_id: Uuid,
+        row: &super::rows::UploadRow,
+        canonical_key: String,
+        etag: Option<String>,
+        streamed: &super::digest::StreamedObject,
+    ) -> Result<CitedBlobStaged, BlobError> {
         let rows_affected = sqlx::query(
             "UPDATE proxima_core.blob_uploads \
                 SET object_key = $1, sha256 = $2, etag = $3 \
@@ -418,13 +479,14 @@ impl CitedBlobStore {
         };
         let decision = if rows_affected == 0 {
             let Some(observed) =
-                super::rows::load_upload_optional(&self.pool, &owner, upload_id).await?
+                super::rows::load_upload_optional(&self.pool, owner, upload_id).await?
             else {
                 // The owner row may have been erased while the provider write
                 // was in flight. The derived pending key is the only key this
                 // upload owns without a row; canonical bytes must remain for
                 // an in-place transfer or mounted reference.
-                self.purge_pending_upload(&row.bucket, upload_id).await?;
+                self.purge_pending_upload_best_effort(&row.bucket, upload_id)
+                    .await;
                 return Err(BlobError::State("upload not found for Owner".into()));
             };
             stage_locator_decision(observed.status, observed.blob_id, rows_affected)?
@@ -433,17 +495,60 @@ impl CitedBlobStore {
         };
         match decision {
             StageLocatorDecision::Staged => {
-                self.purge_pending_upload(&row.bucket, upload_id).await?;
+                self.purge_pending_upload_best_effort(&row.bucket, upload_id)
+                    .await;
                 Ok(staged)
             }
             StageLocatorDecision::Replay(blob_id) => {
-                load_staged_payload(&self.pool, &owner, upload_id, blob_id).await
+                load_staged_payload(&self.pool, owner, upload_id, blob_id).await
             }
             StageLocatorDecision::RepairTerminal(status) => {
-                self.repair_terminal_stage(&owner, upload_id, &row, status, &staged, &canonical_key)
+                self.repair_terminal_stage(owner, upload_id, row, status, &staged, &canonical_key)
                     .await
             }
         }
+    }
+
+    /// A concurrent stage may already have recorded the canonical locator and
+    /// retired the pending copy under us. Reload the row exactly once and say
+    /// what its current state means; never fall back to a second pending GET,
+    /// which a presigned client can overwrite between the two reads.
+    ///
+    /// `None` means the owner row is gone.
+    async fn resolve_missing_pending(
+        &self,
+        owner: &OwnerRef,
+        upload_id: Uuid,
+        pending_key: &str,
+    ) -> Result<Option<StageSource>, BlobError> {
+        let Some(reloaded) =
+            super::rows::load_upload_optional(&self.pool, owner, upload_id).await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(match reloaded.status {
+            UploadStatus::Completed => {
+                let Some(blob_id) = reloaded.blob_id else {
+                    return Err(BlobError::State(
+                        "completed upload is missing blob_id".into(),
+                    ));
+                };
+                StageSource::Replay {
+                    bucket: reloaded.bucket,
+                    blob_id,
+                }
+            }
+            UploadStatus::Aborted | UploadStatus::Expired => StageSource::Terminal {
+                bucket: reloaded.bucket,
+                status: reloaded.status,
+            },
+            UploadStatus::Pending if reloaded.object_key != pending_key => {
+                StageSource::Read(reloaded)
+            }
+            // Still pending against the pending key: nobody moved the object,
+            // so it really is gone.
+            UploadStatus::Pending => return Err(ObjectReadError::Missing.into_blob_error()),
+        }))
     }
 
     /// A stage can lose its pending-row guard after writing the canonical
@@ -481,7 +586,8 @@ impl CitedBlobStore {
             let Some(observed) =
                 super::rows::load_upload_optional(&self.pool, owner, upload_id).await?
             else {
-                self.purge_pending_upload(&row.bucket, upload_id).await?;
+                self.purge_pending_upload_best_effort(&row.bucket, upload_id)
+                    .await;
                 return Err(BlobError::State("upload not found for Owner".into()));
             };
             terminal_locator_repair_decision(
@@ -499,16 +605,29 @@ impl CitedBlobStore {
                 load_staged_payload(&self.pool, owner, upload_id, blob_id).await
             }
             TerminalLocatorRepairDecision::Terminal(status) => {
-                self.purge_pending_upload(&row.bucket, upload_id).await?;
-                Err(BlobError::State(
-                    match status {
-                        UploadStatus::Aborted => "upload is aborted",
-                        UploadStatus::Expired => "upload is expired",
-                        _ => "upload has reached an unexpected terminal state",
-                    }
-                    .into(),
-                ))
+                self.purge_pending_upload_best_effort(&row.bucket, upload_id)
+                    .await;
+                Err(BlobError::State(terminal_status_message(status).into()))
             }
+        }
+    }
+
+    /// Reclaim the expendable transfer key without ever deciding an outcome.
+    ///
+    /// Nothing reads `pending/<upload_id>` once a row records a canonical
+    /// locator, and the presigned PUT stays usable until it expires — so this
+    /// is hygiene, not a guarantee. A provider failure here must not turn an
+    /// already-decided completion, replay or abort into an error for the
+    /// caller: `finish_upload` retries the purge, and the bucket lifecycle
+    /// rule reclaims whatever every attempt missed.
+    async fn purge_pending_upload_best_effort(&self, bucket: &str, upload_id: Uuid) {
+        if let Err(error) = self.purge_pending_upload(bucket, upload_id).await {
+            tracing::warn!(
+                bucket,
+                %upload_id,
+                %error,
+                "leaving the pending transfer key to the bucket lifecycle rule"
+            );
         }
     }
 
@@ -606,7 +725,8 @@ impl CitedBlobStore {
         // The pending transfer copy is expendable only after the transition
         // decision has been resolved. Replays run this too, so provider
         // failures after a successful status write are retryable.
-        self.purge_pending_upload(&row.bucket, upload_id).await?;
+        self.purge_pending_upload_best_effort(&row.bucket, upload_id)
+            .await;
         Ok(())
     }
 
@@ -629,7 +749,7 @@ impl CitedBlobStore {
                 return Ok(CitedBlobUploadAbortOutcomeTs { aborted: false });
             }
             UploadStatus::Aborted => {
-                self.cleanup_aborted_upload(&owner, upload_id).await?;
+                self.cleanup_aborted_upload(&owner, upload_id).await;
                 return Ok(CitedBlobUploadAbortOutcomeTs { aborted: true });
             }
             UploadStatus::Expired => {
@@ -660,7 +780,7 @@ impl CitedBlobStore {
         };
         match abort_transition_decision(decision_status, rows_affected)? {
             AbortTransitionDecision::WonPending | AbortTransitionDecision::AlreadyAborted => {
-                self.cleanup_aborted_upload(&owner, upload_id).await?;
+                self.cleanup_aborted_upload(&owner, upload_id).await;
                 Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
             }
             AbortTransitionDecision::Completed => {
@@ -681,19 +801,26 @@ impl CitedBlobStore {
     /// update wins the database race before provider cleanup; keeping this
     /// helper retryable closes the window where a provider failure after
     /// that update would strand either copy.
-    async fn cleanup_aborted_upload(
-        &self,
-        owner: &proxima_core::Owner,
-        upload_id: Uuid,
-    ) -> Result<(), BlobError> {
+    async fn cleanup_aborted_upload(&self, owner: &proxima_core::Owner, upload_id: Uuid) {
         // Re-read after the status transition so a finish that overtook the
         // abort is never mistaken for an aborted row whose transfer copy is
         // ours to clean.
-        let row = load_upload(&self.pool, owner, upload_id).await?;
+        let row = match load_upload(&self.pool, owner, upload_id).await {
+            Ok(row) => row,
+            Err(error) => {
+                tracing::warn!(
+                    %upload_id,
+                    %error,
+                    "could not re-read an aborted upload row for transfer-key cleanup"
+                );
+                return;
+            }
+        };
         if row.status != UploadStatus::Aborted {
-            return Ok(());
+            return;
         }
-        self.purge_pending_upload(&row.bucket, upload_id).await
+        self.purge_pending_upload_best_effort(&row.bucket, upload_id)
+            .await;
     }
 }
 

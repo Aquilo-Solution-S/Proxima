@@ -600,8 +600,11 @@ async fn conflicting_canonical_object_is_not_overwritten() {
     let config = s3_config_for_dev();
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
     let body: &'static [u8] = b"candidate canonical bytes";
-    let existing: &'static [u8] = b"different canonical bytes";
-    assert_eq!(body.len(), existing.len());
+    // Deliberately a different length. A canonical object that differs in size
+    // is still a canonical conflict, and must be reported as one rather than
+    // as a byte-length error attributed to this client's upload.
+    let existing: &'static [u8] = b"a canonical object of an entirely different size";
+    assert_ne!(body.len(), existing.len());
     let owner = owner_fixture();
     let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let (upload_id, _) = prepare_and_put_upload(
