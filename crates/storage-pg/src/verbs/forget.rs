@@ -5,6 +5,8 @@
     clippy::too_many_lines
 )]
 
+use std::collections::BTreeSet;
+
 use proxima_core::flavor::ForgetLeg;
 use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::{ColdObjectStore, Owner, StorageError};
@@ -498,9 +500,16 @@ pub async fn snapshot_hot(
 /// `FOR UPDATE` + cooled stub + hot delete. Re-PUTs only when the locked
 /// dump differs from `snapshot` (late sidecar). Owner is the permit owner;
 /// a concurrent owner transfer that rewrote `owner_id` is `NotFound`.
-/// Production callers hold the per-memory forget advisory lock across their
-/// PUT, but do not hold this row lock across cold I/O. This function
+/// Production callers hold the complete series/grounding advisory set across
+/// their PUT, but do not hold this row lock across cold I/O. This function
 /// compensates the object if the locator write fails.
+///
+/// The caller must already hold `snapshot.row.handle`'s handle lock and the
+/// grounding lifecycle set — `forget_memory` and `forget_memory_oneshot` take
+/// both before the PUT this commits. Re-taking them here would sort a freshly
+/// queried set while this transaction already holds locks from the first
+/// acquisition, which is exactly the out-of-order extension
+/// `lock_forget_footprint_tx` refuses to do.
 pub async fn commit_forget(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -511,6 +520,9 @@ pub async fn commit_forget(
     expected_owner_id: Uuid,
 ) -> Result<(), StorageError> {
     let t = snapshot.row.t;
+    if snapshot.row.owner_id != expected_owner_id {
+        return Err(StorageError::NotFound);
+    }
     let locked: HotRow = sqlx::query_as(HOT_ROW_FOR_UPDATE_OWNED_SQL)
         .bind(t)
         .bind(expected_owner_id)
@@ -758,41 +770,111 @@ pub(crate) async fn delete_cold_object(cold: &dyn ColdObjectStore, object_key: &
     }
 }
 
+/// Take a sorted, deduplicated advisory-lock set in one round-trip.
+///
+/// The ordering guarantee — the whole point of these locks — comes from two
+/// facts, not from an `ORDER BY`. `unnest` over an array plans as a bare
+/// `Function Scan` that yields elements in array order with no sort node
+/// above it, and `pg_advisory_xact_lock` is `VOLATILE` and `PARALLEL
+/// RESTRICTED`, so the planner can neither hoist the call nor push it into a
+/// worker that would evaluate it out of order. The array is therefore sorted
+/// here, in Rust, and the statement carries no `ORDER BY`: one would sort the
+/// returned rows, which nothing reads, and imply an ordering guarantee the
+/// projection does not get from it.
+///
+/// A per-id statement would be the same locks in the same order; it would
+/// just pay a network round-trip for each one, and these sets are as large as
+/// an admission's pin count or a series erase's version count.
+async fn lock_advisory_ids_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    namespace: &str,
+    ids: &[Uuid],
+) -> Result<(), StorageError> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut sorted = ids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1::text || id::text, 0))
+           FROM unnest($2::uuid[]) AS id",
+    )
+    .bind(namespace)
+    .bind(&sorted)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+/// Acquire the one advisory lock vocabulary used by Memory series handles.
+///
+/// Handle locks are deliberately a different namespace from the `t` locks
+/// below: a caller-supplied handle may equal a caller-supplied `t`, and
+/// conflating those identities would make an unrelated series and admission
+/// serialize. Memory admission, per-entity lifecycle, and series erase acquire
+/// their complete handle set in sorted order before any lifecycle `t` lock.
+pub(crate) async fn lock_memory_handles_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    handles: &[Uuid],
+) -> Result<(), StorageError> {
+    lock_advisory_ids_tx(tx, "proxima-memory-handle:", handles).await
+}
+
 /// Acquire the one lifecycle lock vocabulary used by admission, hydration,
 /// transfer, forget and erase. Callers hand in the complete target set before
 /// taking any row/blob lock; sorting makes crossed declarations wait rather
-/// than deadlock.
+/// than deadlock. Memory callers acquire all handle locks before entering this
+/// helper; this helper itself never acquires a handle lock.
 pub(crate) async fn lock_lifecycle_targets_tx(
     tx: &mut Transaction<'_, Postgres>,
     targets: &[Uuid],
 ) -> Result<(), StorageError> {
-    let mut sorted = targets.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-    for target in sorted {
-        sqlx::query(
-            "SELECT pg_advisory_xact_lock(
-                 hashtextextended('proxima-forget:' || $1::text, 0)
-             )",
-        )
-        .bind(target)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    }
-    Ok(())
+    lock_advisory_ids_tx(tx, "proxima-forget:", targets).await
 }
 
-/// Lock the source and every hot non-Fact depender before the source row is
-/// locked or cooled. `cooled_forget_grounding` takes the same set as a SQL
-/// backstop; the re-read rejects a growing set rather than extending an
+/// Lock the source and every hot or cooled non-Fact depender before the source
+/// row is locked or cooled. `cooled_forget_grounding` takes the hot set as a
+/// SQL backstop; the re-read rejects a growing set rather than extending an
 /// already-held advisory set out of UUID order.
 async fn lock_forget_footprint_tx(
     tx: &mut Transaction<'_, Postgres>,
     source_t: Uuid,
+    source_handle: Uuid,
 ) -> Result<(), StorageError> {
-    let dependents: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory
+    // Resolve every dependent handle before taking any lifecycle lock. A
+    // dependent append takes its handle first and may name `source_t`; taking
+    // only the source handle here would invert the order and leave the
+    // dependent handle outside this operation's serialization domain.
+    let dependent_handles: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT handle FROM proxima_core.memory
+          WHERE kind <> 'fact'
+            AND t <> $1
+            AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
+        UNION
+        SELECT handle FROM proxima_core.cooled
+          WHERE kind <> 'fact'
+            AND t <> $1
+            AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
+          ORDER BY handle",
+    )
+    .bind(source_t)
+    .fetch_all(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    let mut handles = Vec::with_capacity(1 + dependent_handles.len());
+    handles.push(source_handle);
+    handles.extend(dependent_handles.iter().copied());
+    lock_memory_handles_tx(tx, &handles).await?;
+
+    let grounded: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT t, handle FROM proxima_core.memory
+          WHERE kind <> 'fact'
+            AND t <> $1
+            AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
+        UNION
+        SELECT t, handle FROM proxima_core.cooled
           WHERE kind <> 'fact'
             AND t <> $1
             AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
@@ -802,13 +884,24 @@ async fn lock_forget_footprint_tx(
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
+    if grounded.iter().any(|(_, handle)| !handles.contains(handle)) {
+        return Err(StorageError::Retryable(
+            "forget depender handle set grew before lifecycle lock acquisition".into(),
+        ));
+    }
+    let dependents: Vec<Uuid> = grounded.into_iter().map(|(t, _)| t).collect();
     let mut targets = Vec::with_capacity(1 + dependents.len());
     targets.push(source_t);
     targets.extend(dependents.iter().copied());
     lock_lifecycle_targets_tx(tx, &targets).await?;
 
-    let after: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory
+    let after: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT t, handle FROM proxima_core.memory
+          WHERE kind <> 'fact'
+            AND t <> $1
+            AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
+        UNION
+        SELECT t, handle FROM proxima_core.cooled
           WHERE kind <> 'fact'
             AND t <> $1
             AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
@@ -818,12 +911,11 @@ async fn lock_forget_footprint_tx(
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
-    // Both queries `ORDER BY t` and exclude `source_t`, so membership is a
-    // binary search over `dependents` rather than a scan of `targets`.
-    if after
-        .iter()
-        .all(|target| dependents.binary_search(target).is_ok())
-    {
+    // Both queries `ORDER BY t` and exclude `source_t`, so target membership is
+    // a binary search over `dependents` rather than a scan of `targets`.
+    if after.iter().all(|(target, handle)| {
+        dependents.binary_search(target).is_ok() && handles.contains(handle)
+    }) {
         return Ok(());
     }
     Err(StorageError::Retryable(
@@ -1062,7 +1154,9 @@ fn forget_leg_sql(table: &str, key_column: &str) -> Result<String, StorageError>
 
 /// Rewind `memory_head.t` to the latest remaining hot row, or delete the
 /// head when the series is empty. `memory.handle` FK requires the memory
-/// row to be gone first.
+/// row to be gone first. The caller must already hold the complete advisory
+/// lock for this handle; with that contract, the head is present exactly when
+/// a hot row exists and always names the greatest surviving hot `t`.
 pub(crate) async fn sync_memory_head(
     tx: &mut Transaction<'_, Postgres>,
     handle: Uuid,
@@ -1097,6 +1191,8 @@ pub(crate) async fn sync_memory_head(
 /// `owner_id` comes from the `cooled` ROW, never from `rec`. The dump is a
 /// snapshot of the memory as it was when it cooled; an owner transfer
 /// afterwards updates the row and deliberately does not rewrite the bytes.
+/// The caller already holds `rec.row.handle`'s advisory lock, so an absent
+/// head cannot be recreated concurrently with another series transition.
 async fn ensure_memory_head(
     tx: &mut Transaction<'_, Postgres>,
     rec: &ColdRecord,
@@ -1171,6 +1267,26 @@ async fn ensure_memory_head(
     }
 }
 
+async fn probe_memory_handle_for_owner(
+    tx: &mut Transaction<'_, Postgres>,
+    t: Uuid,
+    owner_id: Uuid,
+) -> Result<Option<Uuid>, StorageError> {
+    sqlx::query_scalar(
+        "SELECT handle FROM proxima_core.memory
+          WHERE t = $1 AND owner_id = $2
+         UNION ALL
+         SELECT handle FROM proxima_core.cooled
+          WHERE t = $1 AND owner_id = $2
+         LIMIT 1",
+    )
+    .bind(t)
+    .bind(owner_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)
+}
+
 pub async fn forget_memory(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -1180,7 +1296,10 @@ pub async fn forget_memory(
     t: Uuid,
     expected_owner_id: Uuid,
 ) -> Result<(), StorageError> {
-    lock_forget_footprint_tx(tx, t).await?;
+    let handle = probe_memory_handle_for_owner(tx, t, expected_owner_id)
+        .await?
+        .ok_or(StorageError::NotFound)?;
+    lock_forget_footprint_tx(tx, t, handle).await?;
     let rec = snapshot_hot(tx.as_mut(), sidecars, t).await?;
     if rec.row.owner_id != expected_owner_id {
         return Err(StorageError::NotFound);
@@ -1216,7 +1335,10 @@ pub async fn forget_memory_oneshot(
     expected_owner_id: Uuid,
 ) -> Result<(), StorageError> {
     let mut tx = pool.begin().await.map_err(map_err)?;
-    lock_forget_footprint_tx(&mut tx, t).await?;
+    let handle = probe_memory_handle_for_owner(&mut tx, t, expected_owner_id)
+        .await?
+        .ok_or(StorageError::NotFound)?;
+    lock_forget_footprint_tx(&mut tx, t, handle).await?;
     let rec = snapshot_hot(tx.as_mut(), sidecars, t).await?;
     if rec.row.owner_id != expected_owner_id {
         return Err(StorageError::NotFound);
@@ -1317,9 +1439,11 @@ pub async fn hydrate_memory(
         ));
     }
 
-    // The source and every chosen pin are one sorted lifecycle set. Only
-    // after it is held do we re-read the locator and establish the exact
-    // cooled seal that the database trigger will evaluate on INSERT.
+    // The series handle is the first lock. Only after it is held do we take
+    // the source and every chosen pin in the sorted lifecycle set, re-read
+    // the locator, and establish the exact cooled seal that the database
+    // trigger will evaluate on INSERT.
+    lock_memory_handles_tx(tx, &[cooled.handle]).await?;
     let mut targets = Vec::with_capacity(1 + origins.len() + refs.len() + goal_refs.len());
     targets.push(t);
     targets.extend(origins.iter().copied());
@@ -1491,28 +1615,21 @@ pub async fn erase_memory(
     owner: &Owner,
     t: Uuid,
 ) -> Result<ColdPurgePlan, StorageError> {
-    // Take the lifecycle lock before reading any target row, blob locator, or
-    // sidecar. This is the single-admission half of the same ordering used by
-    // series and owner-scope erase.
+    // Probe the series identity first. The handle lock is the first
+    // serialization boundary; a missing target is not a successful no-op.
+    let probed_handle = probe_memory_handle_for_owner(tx, t, owner.stored_owner_id())
+        .await?
+        .ok_or(StorageError::NotFound)?;
+    lock_memory_handles_tx(tx, &[probed_handle]).await?;
     lock_lifecycle_targets_tx(tx, &[t]).await?;
-    let handle: Option<Uuid> =
-        sqlx::query_scalar("SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
-            .bind(t)
-            .bind(owner.stored_owner_id())
-            .fetch_optional(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-    let handle = match handle {
-        Some(handle) => Some(handle),
-        None => sqlx::query_scalar(
-            "SELECT handle FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2",
-        )
-        .bind(t)
-        .bind(owner.stored_owner_id())
-        .fetch_optional(tx.as_mut())
-        .await
-        .map_err(map_err)?,
-    };
+    let handle = probe_memory_handle_for_owner(tx, t, owner.stored_owner_id())
+        .await?
+        .ok_or(StorageError::NotFound)?;
+    if handle != probed_handle {
+        return Err(StorageError::Retryable(
+            "memory target changed series while erasing".into(),
+        ));
+    }
     let content_id = sqlx::query_scalar::<_, Option<Uuid>>(
         "SELECT content_id FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
          UNION ALL
@@ -1562,9 +1679,7 @@ pub async fn erase_memory(
     if let Some(id) = content_id {
         super::content::gc_unreferenced_content(tx, id).await?;
     }
-    if let Some(handle) = handle {
-        sync_memory_head(tx, handle).await?;
-    }
+    sync_memory_head(tx, handle).await?;
     sqlx::query("DELETE FROM proxima_core.ingest_keys WHERE t = $1 AND owner_id = $2")
         .bind(t)
         .bind(owner.stored_owner_id())
@@ -1577,9 +1692,8 @@ pub async fn erase_memory(
     )
     .bind(owner.stored_owner_id())
     // The series handle, not t: a ChangeHistory reader pages by handle, and a
-    // t-shaped handle matches no series. Keyless rows (no hot or cooled row
-    // left to read it from) fall back to t.
-    .bind(handle.unwrap_or(t))
+    // t-shaped handle matches no series.
+    .bind(handle)
     .bind(t)
     .execute(tx.as_mut())
     .await
@@ -1641,7 +1755,31 @@ pub async fn erase_memory_series(
         return Ok((0, ColdPurgePlan::default()));
     }
     let owner_id = owner.stored_owner_id();
-    let versions = expand_series_for_erase(tx, owner, ts).await?;
+    // Capture handles and membership in one statement before waiting. The
+    // membership is the generation witness: handles are reusable after a
+    // complete erase, so a non-empty post-lock series disjoint from this
+    // snapshot is a replacement, not a late version of the requested series.
+    let before = snapshot_series_for_erase_tx(tx, owner_id, ts).await?;
+    erase_memory_series_after_snapshot(tx, sidecars, surfaces, owner, before).await
+}
+
+async fn erase_memory_series_after_snapshot(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
+    owner: &Owner,
+    before: MemorySeriesSnapshot,
+) -> Result<(u64, ColdPurgePlan), StorageError> {
+    let owner_id = owner.stored_owner_id();
+    let handles = before.handles();
+    lock_memory_handles_tx(tx, &handles).await?;
+    let after = snapshot_series_for_handles_tx(tx, owner_id, &handles).await?;
+    if generation_replaced(&before, &after) {
+        return Err(StorageError::Retryable(
+            "memory series was replaced while erase waited for its handle lock".into(),
+        ));
+    }
+    let versions = after.versions();
 
     // Expansion includes every hot and cooled version before any cited blob
     // or row lock. Re-entering these locks in erase_memory is intentional: it
@@ -1690,29 +1828,126 @@ pub async fn expand_series_for_erase(
     if ts.is_empty() {
         return Ok(Vec::new());
     }
-    sqlx::query_scalar(EXPAND_SERIES_SQL)
-        .bind(ts)
-        .bind(owner.stored_owner_id())
-        .fetch_all(tx.as_mut())
-        .await
-        .map_err(map_err)
+    Ok(
+        snapshot_series_for_erase_tx(tx, owner.stored_owner_id(), ts)
+            .await?
+            .versions(),
+    )
 }
 
-const EXPAND_SERIES_SQL: &str = "\
+#[derive(Debug)]
+struct MemorySeriesSnapshot {
+    members: BTreeSet<(Uuid, Uuid)>,
+}
+
+impl MemorySeriesSnapshot {
+    fn handles(&self) -> Vec<Uuid> {
+        self.members
+            .iter()
+            .map(|(handle, _)| *handle)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    fn versions(&self) -> Vec<Uuid> {
+        self.members
+            .iter()
+            .map(|(_, t)| *t)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+}
+
+/// Did any handle in `after` turn over completely since `before` was taken?
+///
+/// Arguments are in chronological order. A handle is *witnessed* when at
+/// least one of its `(handle, t)` members survived from `before`: the erase
+/// is still looking at the same generation of that series, and the members
+/// `before` did not have are late versions the expansion legitimately picks
+/// up. A handle present in `after` with no surviving member was erased down
+/// to nothing and re-admitted under the same handle, so `after` describes a
+/// replacement series that this erase was never authorized to touch.
+fn generation_replaced(before: &MemorySeriesSnapshot, after: &MemorySeriesSnapshot) -> bool {
+    let witnessed = after
+        .members
+        .intersection(&before.members)
+        .map(|(handle, _)| *handle)
+        .collect::<BTreeSet<_>>();
+    after
+        .members
+        .iter()
+        .any(|(handle, _)| !witnessed.contains(handle))
+}
+
+/// Resolve every series and version named by target admissions in one
+/// statement snapshot. Callers that mutate acquire `handles` in sorted order
+/// and use the member pairs to distinguish late members from handle reuse.
+async fn snapshot_series_for_erase_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner_id: Uuid,
+    ts: &[Uuid],
+) -> Result<MemorySeriesSnapshot, StorageError> {
+    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(SNAPSHOT_SERIES_FOR_ERASE_SQL)
+        .bind(ts)
+        .bind(owner_id)
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    Ok(MemorySeriesSnapshot {
+        members: rows.into_iter().collect(),
+    })
+}
+
+const SNAPSHOT_SERIES_FOR_ERASE_SQL: &str = "\
 WITH handles AS (
     SELECT handle FROM proxima_core.memory
      WHERE t = ANY($1::uuid[]) AND owner_id = $2
     UNION
     SELECT handle FROM proxima_core.cooled
      WHERE t = ANY($1::uuid[]) AND owner_id = $2
+), versions AS (
+    SELECT m.handle, m.t FROM proxima_core.memory m
+      JOIN handles h ON h.handle = m.handle
+     WHERE m.owner_id = $2
+    UNION
+    SELECT c.handle, c.t FROM proxima_core.cooled c
+      JOIN handles h ON h.handle = c.handle
+     WHERE c.owner_id = $2
 )
-SELECT m.t FROM proxima_core.memory m
-  JOIN handles h ON h.handle = m.handle
+SELECT handle, t FROM versions ORDER BY handle, t";
+
+async fn snapshot_series_for_handles_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner_id: Uuid,
+    handles: &[Uuid],
+) -> Result<MemorySeriesSnapshot, StorageError> {
+    if handles.is_empty() {
+        return Ok(MemorySeriesSnapshot {
+            members: BTreeSet::new(),
+        });
+    }
+    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(SNAPSHOT_SERIES_BY_HANDLES_SQL)
+        .bind(handles)
+        .bind(owner_id)
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    Ok(MemorySeriesSnapshot {
+        members: rows.into_iter().collect(),
+    })
+}
+
+const SNAPSHOT_SERIES_BY_HANDLES_SQL: &str = "\
+SELECT m.handle, m.t FROM proxima_core.memory m
+  JOIN unnest($1::uuid[]) h(handle) ON h.handle = m.handle
  WHERE m.owner_id = $2
 UNION
-SELECT c.t FROM proxima_core.cooled c
-  JOIN handles h ON h.handle = c.handle
- WHERE c.owner_id = $2";
+SELECT c.handle, c.t FROM proxima_core.cooled c
+  JOIN unnest($1::uuid[]) h(handle) ON h.handle = c.handle
+ WHERE c.owner_id = $2
+ ORDER BY handle, t";
 
 /// Which of `ts` are NOT admissions of `owner`.
 ///
@@ -1787,21 +2022,68 @@ SELECT c.t
 /// and locking it in one statement shrinks that window to the inside of
 /// this statement.
 ///
-/// `ORDER BY t` is the other half: two erases whose sets overlap then take
-/// the shared rows in the same order and one waits instead of both dying.
+/// The series handles are acquired before this lifecycle set. `ORDER BY t` is
+/// the other half: two erases whose sets overlap then take the shared rows in
+/// the same order and one waits instead of both dying.
 /// It does not help against a writer, which takes its own locks in its own
 /// order — nothing does, which is why a caller must also be prepared to
 /// retry a `40P01`.
+///
+/// Handle resolution and the post-lock presence check are both scoped to
+/// `owner`. If transfer wins after the caller's earlier ownership check, the
+/// stale erase returns [`StorageError::Retryable`] without serializing the
+/// destination owner's series behind its transaction lifetime.
 ///
 /// # Errors
 ///
 /// Returns storage errors from the lock statement.
 pub async fn lock_admissions_for_erase(
     tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
     ts: &[Uuid],
 ) -> Result<(), StorageError> {
     if ts.is_empty() {
         return Ok(());
+    }
+    // This is the mandatory seam before any admission `t` or row lock. The
+    // caller has computed its complete footprint but has not started locking
+    // it yet; acquire every named series handle here so a later series erase
+    // only re-enters handles this transaction already owns.
+    let handles: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT handle FROM proxima_core.memory
+          WHERE t = ANY($1::uuid[]) AND owner_id = $2
+        UNION
+        SELECT handle FROM proxima_core.cooled
+          WHERE t = ANY($1::uuid[]) AND owner_id = $2
+          ORDER BY handle",
+    )
+    .bind(ts)
+    .bind(owner.stored_owner_id())
+    .fetch_all(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    lock_memory_handles_tx(tx, &handles).await?;
+
+    let present: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.memory
+          WHERE t = ANY($1::uuid[]) AND owner_id = $2
+        UNION
+        SELECT t FROM proxima_core.cooled
+          WHERE t = ANY($1::uuid[]) AND owner_id = $2
+          ORDER BY t",
+    )
+    .bind(ts)
+    .bind(owner.stored_owner_id())
+    .fetch_all(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    let mut expected = ts.to_vec();
+    expected.sort_unstable();
+    expected.dedup();
+    if present != expected {
+        return Err(StorageError::Retryable(
+            "erase admission footprint changed before lifecycle lock acquisition".into(),
+        ));
     }
     lock_lifecycle_targets_tx(tx, ts).await?;
     sqlx::query(LOCK_ADMISSIONS_SQL)

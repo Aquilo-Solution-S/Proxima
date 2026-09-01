@@ -8,8 +8,9 @@ use crate::PgStorage;
 use crate::core_pg_sidecars;
 use crate::verbs::forget::{
     MemoryColdStore, cold_object_key, commit_forget, decode_record, encode_record, erase_memory,
-    erase_memory_series, forget_memory, forget_memory_oneshot, hydrate_memory,
-    lock_lifecycle_targets_tx, purge_cold_objects_after_commit, snapshot_hot,
+    erase_memory_series, erase_memory_series_after_snapshot, forget_memory, forget_memory_oneshot,
+    hydrate_memory, lock_admissions_for_erase, lock_lifecycle_targets_tx, lock_memory_handles_tx,
+    purge_cold_objects_after_commit, snapshot_hot, snapshot_series_for_erase_tx,
 };
 use crate::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use crate::verbs::memory_timeseries::ingest_fact_timeseries;
@@ -138,6 +139,34 @@ async fn ingest_stamped(
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     Ok(outcome)
+}
+
+async fn append_in_own_transaction(
+    pool: &sqlx::PgPool,
+    owner: OwnerRef,
+    draft: FactWriteCommand,
+) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
+    let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    let outcome =
+        ingest_fact_timeseries(&mut tx, permit.owner(), &draft, &[], &[], &[], None).await;
+    match outcome {
+        Ok(outcome) => {
+            tx.commit()
+                .await
+                .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(outcome)
+        }
+        Err(err) => {
+            tx.rollback()
+                .await
+                .map_err(|rollback| StorageError::Internal(rollback.to_string()))?;
+            Err(err)
+        }
+    }
 }
 
 async fn sidecar_tables_for(pool: &sqlx::PgPool, t: Uuid) -> Result<Vec<String>, sqlx::Error> {
@@ -693,6 +722,471 @@ async fn forget_non_last_t_rewinds_memory_head() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("forget rewind failed");
+}
+
+#[tokio::test]
+async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let mut second_draft = draft(None);
+        second_draft.handle = Some(first.handle);
+        let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
+        let first_t = first.memory_id.into_inner();
+
+        // Hold the series lock while the erase transaction captures the seed
+        // and waits. The append is committed in the holder transaction, so
+        // the erase's post-lock expansion must include its new version.
+        let mut append_holder = pool.begin().await?;
+        lock_memory_handles_tx(&mut append_holder, &[first.handle]).await?;
+        let erase_pool = pool.clone();
+        let erase_owner = owner;
+        let erase = tokio::spawn(async move {
+            let mut tx = erase_pool
+                .begin()
+                .await
+                .map_err(|err| StorageError::Internal(format!("begin series erase: {err}")))?;
+            let result = erase_memory_series(
+                &mut tx,
+                &core_pg_sidecars(),
+                &surfaces(),
+                &erase_owner,
+                &[first_t],
+            )
+            .await?;
+            tx.commit()
+                .await
+                .map_err(|err| StorageError::Internal(format!("commit series erase: {err}")))?;
+            Ok::<_, StorageError>(result)
+        });
+        wait_for_advisory_waiters(pool, 1).await?;
+
+        let mut append_draft = draft(None);
+        append_draft.handle = Some(first.handle);
+        let append = ingest_fact_timeseries(
+            &mut append_holder,
+            permit.owner(),
+            &append_draft,
+            &[],
+            &[],
+            &[],
+            None,
+        )
+        .await?;
+        append_holder.commit().await?;
+        let (erased, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), erase).await???;
+        assert_eq!(
+            erased, 3,
+            "the append committed before erase must be included"
+        );
+
+        let rows: i64 = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*)::bigint FROM proxima_core.memory
+              WHERE handle = $1
+             UNION ALL
+             SELECT count(*)::bigint FROM proxima_core.cooled
+              WHERE handle = $1",
+        )
+        .bind(first.handle)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .sum();
+        assert_eq!(rows, 0);
+        let heads: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
+        )
+        .bind(first.handle)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(heads, 0);
+        assert_ne!(append.memory_id, second.memory_id);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("hot append-before-erase linearization failed");
+}
+
+#[tokio::test]
+async fn series_erase_wins_hot_handle_and_append_retries_then_survives() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let first_t = first.memory_id.into_inner();
+
+        let mut erase_holder = pool.begin().await?;
+        lock_memory_handles_tx(&mut erase_holder, &[first.handle]).await?;
+        let append_pool = pool.clone();
+        let append_owner = owner;
+        let mut append_draft = draft(None);
+        append_draft.handle = Some(first.handle);
+        let append = tokio::spawn(async move {
+            append_in_own_transaction(&append_pool, append_owner, append_draft).await
+        });
+        wait_for_advisory_waiters(pool, 1).await?;
+
+        let (erased, _) = erase_memory_series(
+            &mut erase_holder,
+            &core_pg_sidecars(),
+            &surfaces(),
+            &owner,
+            &[first_t],
+        )
+        .await?;
+        assert_eq!(erased, 1);
+        erase_holder.commit().await?;
+        let append_result =
+            tokio::time::timeout(std::time::Duration::from_secs(10), append).await??;
+        let append_err = append_result.expect_err("stale append must retry");
+        assert!(
+            matches!(append_err, StorageError::Retryable(_)),
+            "append was prepared against the erased head: {append_err:?}"
+        );
+
+        let mut retry_draft = draft(None);
+        retry_draft.handle = Some(first.handle);
+        let survivor = pg.ingest_fact_atomic(&permit, &retry_draft, None).await?;
+        let head_t: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(first.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(head_t, survivor.memory_id.into_inner());
+        let rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory WHERE handle = $1",
+        )
+        .bind(first.handle)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(rows, 1);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("hot erase-before-append linearization failed");
+}
+
+#[tokio::test]
+async fn series_erase_linearizes_with_fully_cooled_headless_series() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let cold = MemoryColdStore::default();
+        let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let mut second_draft = draft(None);
+        second_draft.handle = Some(first.handle);
+        let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
+        let first_t = first.memory_id.into_inner();
+        let second_t = second.memory_id.into_inner();
+        cool_one(pool, &owner, &cold, first_t, &cold_object_key(first_t)).await?;
+        cool_one(pool, &owner, &cold, second_t, &cold_object_key(second_t)).await?;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
+            )
+            .bind(first.handle)
+            .fetch_one(pool)
+            .await?,
+            0,
+            "a fully cooled series has no head"
+        );
+
+        // Append wins: the series erase captures the cooled handle and waits;
+        // the append recreates a head, and expansion after the lock must see
+        // both cooled versions plus the new hot version.
+        let mut append_holder = pool.begin().await?;
+        lock_memory_handles_tx(&mut append_holder, &[first.handle]).await?;
+        let erase_pool = pool.clone();
+        let erase_owner = owner;
+        let erase = tokio::spawn(async move {
+            let mut tx = erase_pool.begin().await.map_err(|err| {
+                StorageError::Internal(format!("begin cooled series erase: {err}"))
+            })?;
+            let result = erase_memory_series(
+                &mut tx,
+                &core_pg_sidecars(),
+                &surfaces(),
+                &erase_owner,
+                &[first_t],
+            )
+            .await?;
+            tx.commit().await.map_err(|err| {
+                StorageError::Internal(format!("commit cooled series erase: {err}"))
+            })?;
+            Ok::<_, StorageError>(result)
+        });
+        wait_for_advisory_waiters(pool, 1).await?;
+        let mut append_draft = draft(None);
+        append_draft.handle = Some(first.handle);
+        ingest_fact_timeseries(
+            &mut append_holder,
+            permit.owner(),
+            &append_draft,
+            &[],
+            &[],
+            &[],
+            None,
+        )
+        .await?;
+        append_holder.commit().await?;
+        let (erased, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), erase).await???;
+        assert_eq!(erased, 3);
+
+        // Recreate a fully cooled, headless series for the opposite
+        // linearization. A prepared append may have observed the empty head;
+        // if erase wins the handle it is allowed to survive after the erase.
+        let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let mut second_draft = draft(None);
+        second_draft.handle = Some(first.handle);
+        let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
+        let first_t = first.memory_id.into_inner();
+        let second_t = second.memory_id.into_inner();
+        cool_one(pool, &owner, &cold, first_t, &cold_object_key(first_t)).await?;
+        cool_one(pool, &owner, &cold, second_t, &cold_object_key(second_t)).await?;
+        let mut erase_holder = pool.begin().await?;
+        lock_memory_handles_tx(&mut erase_holder, &[first.handle]).await?;
+        let append_pool = pool.clone();
+        let append_owner = owner;
+        let mut append_draft = draft(None);
+        append_draft.handle = Some(first.handle);
+        let append = tokio::spawn(async move {
+            append_in_own_transaction(&append_pool, append_owner, append_draft).await
+        });
+        wait_for_advisory_waiters(pool, 1).await?;
+        let (erased, _) = erase_memory_series(
+            &mut erase_holder,
+            &core_pg_sidecars(),
+            &surfaces(),
+            &owner,
+            &[first_t],
+        )
+        .await?;
+        assert_eq!(erased, 2);
+        erase_holder.commit().await?;
+        let survivor = tokio::time::timeout(std::time::Duration::from_secs(10), append).await???;
+        let head_t: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(first.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(head_t, survivor.memory_id.into_inner());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*)::bigint FROM proxima_core.memory WHERE handle = $1",
+            )
+            .bind(first.handle)
+            .fetch_one(pool)
+            .await?,
+            1
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("headless cooled series linearization failed");
+}
+
+#[tokio::test]
+async fn series_erase_does_not_cross_one_reused_handle_in_a_batch() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let reused = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let untouched = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let reused_t = reused.memory_id.into_inner();
+        let untouched_t = untouched.memory_id.into_inner();
+
+        // Pause the first erase at its real discovery/lock seam. Another
+        // transaction can erase every observed version and then a writer can
+        // reuse the now-empty handle before this transaction asks for its
+        // advisory lock. The saved membership must distinguish that
+        // replacement from a late append to the original series. Keeping a
+        // second original handle in the batch proves the witness is checked
+        // per handle rather than as one global version-set intersection.
+        let mut waiting = pool.begin().await?;
+        let before = snapshot_series_for_erase_tx(
+            &mut waiting,
+            owner.stored_owner_id(),
+            &[reused_t, untouched_t],
+        )
+        .await?;
+
+        let mut replacement_erase = pool.begin().await?;
+        let (erased, plan) = erase_memory_series(
+            &mut replacement_erase,
+            &core_pg_sidecars(),
+            &surfaces(),
+            &owner,
+            &[reused_t],
+        )
+        .await?;
+        assert_eq!(erased, 1);
+        assert!(plan.is_empty());
+        replacement_erase.commit().await?;
+
+        let mut replacement_draft = draft(None);
+        replacement_draft.handle = Some(reused.handle);
+        let replacement = pg
+            .ingest_fact_atomic(&permit, &replacement_draft, None)
+            .await?;
+
+        let err = erase_memory_series_after_snapshot(
+            &mut waiting,
+            &core_pg_sidecars(),
+            &surfaces(),
+            &owner,
+            before,
+        )
+        .await
+        .expect_err("a reused handle is a replacement series");
+        assert!(
+            matches!(err, StorageError::Retryable(_)),
+            "replacement detection must retry the stale erase: {err:?}"
+        );
+        waiting.rollback().await?;
+
+        let head_t: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(reused.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(head_t, replacement.memory_id.into_inner());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*)::bigint FROM proxima_core.memory WHERE handle = $1",
+            )
+            .bind(reused.handle)
+            .fetch_one(pool)
+            .await?,
+            1
+        );
+        let untouched_head: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(untouched.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(untouched_head, untouched_t);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("series erase crossed a complete handle reuse in a batch");
+}
+
+#[tokio::test]
+async fn non_head_erase_racing_append_preserves_the_greatest_head() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let mut second_draft = draft(None);
+        second_draft.handle = Some(first.handle);
+        let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
+        let mut append_holder = pool.begin().await?;
+        lock_memory_handles_tx(&mut append_holder, &[first.handle]).await?;
+        let erase_pool = pool.clone();
+        let erase_owner = owner;
+        let erase_t = first.memory_id.into_inner();
+        let erase = tokio::spawn(async move {
+            let mut tx = erase_pool
+                .begin()
+                .await
+                .map_err(|err| StorageError::Internal(format!("begin non-head erase: {err}")))?;
+            let plan = erase_memory(
+                &mut tx,
+                &core_pg_sidecars(),
+                &surfaces(),
+                &erase_owner,
+                erase_t,
+            )
+            .await?;
+            tx.commit()
+                .await
+                .map_err(|err| StorageError::Internal(format!("commit non-head erase: {err}")))?;
+            Ok::<_, StorageError>(plan)
+        });
+        wait_for_advisory_waiters(pool, 1).await?;
+
+        let mut append_draft = draft(None);
+        append_draft.handle = Some(first.handle);
+        let append = ingest_fact_timeseries(
+            &mut append_holder,
+            permit.owner(),
+            &append_draft,
+            &[],
+            &[],
+            &[],
+            None,
+        )
+        .await?;
+        append_holder.commit().await?;
+        let plan = tokio::time::timeout(std::time::Duration::from_secs(10), erase).await???;
+        assert!(plan.is_empty());
+        let appended = append;
+        let head_t: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(first.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(head_t, appended.memory_id.into_inner());
+        assert_ne!(head_t, first.memory_id.into_inner());
+        assert_ne!(head_t, second.memory_id.into_inner());
+        let remaining: Vec<Uuid> =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE handle = $1 ORDER BY t")
+                .bind(first.handle)
+                .fetch_all(pool)
+                .await?;
+        assert_eq!(remaining, vec![second.memory_id.into_inner(), head_t]);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("non-head erase raced append incorrectly");
 }
 
 #[tokio::test]
@@ -3842,10 +4336,11 @@ async fn citation_reuse_and_series_erase_share_one_lock_order() {
         let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
         let blob_id = first.cited_object_id.expect("first citation blob");
 
-        // Hold the complete series lifecycle set in the real erase
+        // Hold the complete series handle and lifecycle set in the real erase
         // transaction, but pause before invoking the erase body. The writer
-        // must queue on T while B remains freely lockable; this proves it did
-        // not reach citation/blob persistence before its pin lock.
+        // must queue on the handle before T; the blob remains freely lockable,
+        // proving it did not reach citation/blob persistence before lifecycle
+        // arbitration.
         let erase_ready = Arc::new(tokio::sync::Semaphore::new(0));
         let erase_release = Arc::new(tokio::sync::Semaphore::new(0));
         let erase_pool = pool.clone();
@@ -3854,11 +4349,13 @@ async fn citation_reuse_and_series_erase_share_one_lock_order() {
         let erase_release_wait = Arc::clone(&erase_release);
         let first_t = first.memory_id.into_inner();
         let second_t = second.memory_id.into_inner();
+        let series_handle = second.handle;
         let erase = tokio::spawn(async move {
             let mut tx = erase_pool
                 .begin()
                 .await
                 .map_err(|error| StorageError::Internal(error.to_string()))?;
+            lock_memory_handles_tx(&mut tx, &[series_handle]).await?;
             lock_lifecycle_targets_tx(&mut tx, &[first_t, second_t]).await?;
             erase_ready_signal.add_permits(1);
             erase_release_wait
@@ -4025,6 +4522,74 @@ async fn commit_forget_aborts_when_owner_transferred() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("forget-after-transfer must abort");
+}
+
+#[tokio::test]
+async fn stale_source_erase_does_not_lock_transferred_series() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let source_permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let first = pg
+            .ingest_fact_atomic(&source_permit, &draft(None), None)
+            .await?;
+        let first_t = first.memory_id.into_inner();
+        assert!(
+            pg.transfer_to_owner(
+                &source_permit,
+                EntityId::Memory(first.memory_id),
+                destination,
+                &transfer_surfaces(),
+            )
+            .await?
+        );
+
+        // Model the source erase after its earlier ownership probe but after
+        // transfer won. It must reject before taking the destination's handle
+        // lock; Rust-level retry errors leave this transaction usable and its
+        // already-acquired advisory locks live until rollback.
+        let mut stale_source_erase = pool.begin().await?;
+        let err = lock_admissions_for_erase(&mut stale_source_erase, &source, &[first_t])
+            .await
+            .expect_err("a transferred admission is no longer the source owner's footprint");
+        assert!(
+            matches!(err, StorageError::Retryable(_)),
+            "stale source erase must retry: {err:?}"
+        );
+
+        let mut append_draft = draft(None);
+        append_draft.handle = Some(first.handle);
+        let destination_permit = OwnerWritePermit::new_for_tests(destination, AccessKind::Fact);
+        let mut destination_append = pool.begin().await?;
+        sqlx::query("SET LOCAL lock_timeout = '1s'")
+            .execute(destination_append.as_mut())
+            .await?;
+        let appended = ingest_fact_timeseries(
+            &mut destination_append,
+            destination_permit.owner(),
+            &append_draft,
+            &[],
+            &[],
+            &[],
+            None,
+        )
+        .await?;
+        assert_eq!(appended.handle, first.handle);
+        destination_append.commit().await?;
+        stale_source_erase.rollback().await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("stale source erase ownership fence test failed");
 }
 
 /// An erase that destroyed its cold object inside the caller's transaction lost

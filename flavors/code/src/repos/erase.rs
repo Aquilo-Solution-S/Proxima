@@ -618,7 +618,7 @@ pub async fn erase_footprint(
 
     // Sorted, because `seen` was a BTreeSet: two erases whose footprints
     // overlap ask for the shared rows in the same order.
-    lock_admissions_for_erase(tx, &footprint).await?;
+    lock_admissions_for_erase(tx, owner, &footprint).await?;
     Ok(footprint)
 }
 

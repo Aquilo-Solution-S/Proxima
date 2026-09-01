@@ -130,8 +130,9 @@ pub(crate) async fn prepare_memory_admission_with_extra_targets(
 }
 
 /// Insert an unpinned lifecycle Fact at an identity reserved before a Goal's
-/// union lock. The caller already owns that lock; this helper still uses the
-/// same prepare/claim/materialize phases as ordinary admission.
+/// union lock. The caller already owns the reserved handle and lifecycle
+/// union; this helper still uses the same prepare/claim/materialize phases as
+/// ordinary admission.
 pub(crate) async fn ingest_unpinned_fact_at(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
@@ -151,8 +152,15 @@ pub(crate) async fn ingest_unpinned_fact_at(
         },
     )
     .await?;
-    let prepared = claim_prepared_memory_admission(tx, prepared).await?;
-    materialize_prepared_memory_admission(tx, prepared, draft.blob_id, None).await
+    let prepared = match claim_prepared_memory_admission(tx, prepared).await? {
+        PreparedMemoryAdmission::New(prepared) => prepared,
+        PreparedMemoryAdmission::Replay(outcome) => return Ok(outcome),
+    };
+    // Goal writes acquire this reserved handle together with their complete
+    // lifecycle union before persistence. Re-entering the Memory lifecycle
+    // lock here would acquire a new handle after the Goal `t` locks and invert
+    // the cross-entity order.
+    materialize_prepared_memory_admission_after_locks(tx, prepared, draft.blob_id, None).await
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -386,7 +394,30 @@ async fn lock_and_validate_prepared_memory(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedMemoryAdmissionNew,
 ) -> Result<(), StorageError> {
-    crate::verbs::forget::lock_lifecycle_targets_tx(tx, &prepared.targets).await?;
+    lock_prepared_memory_targets(tx, prepared).await?;
+    validate_prepared_memory_head(tx, prepared).await
+}
+
+/// Handle lock first, then the sorted lifecycle set. Split from
+/// [`validate_prepared_memory_head`] so a caller that already owns both locks
+/// can still run the validation: the two are separate obligations, and
+/// bundling them let the reserved-identity path drop the head check while it
+/// was only trying to avoid re-acquiring the locks.
+async fn lock_prepared_memory_targets(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedMemoryAdmissionNew,
+) -> Result<(), StorageError> {
+    crate::verbs::forget::lock_memory_handles_tx(tx, &[prepared.handle]).await?;
+    crate::verbs::forget::lock_lifecycle_targets_tx(tx, &prepared.targets).await
+}
+
+/// The head this admission prepared against must still be the head under the
+/// lock. Run by every materialization path, including callers that acquired
+/// the locks themselves.
+async fn validate_prepared_memory_head(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedMemoryAdmissionNew,
+) -> Result<(), StorageError> {
     let current_head: Option<Uuid> =
         sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1 FOR UPDATE")
             .bind(prepared.handle)
@@ -407,17 +438,30 @@ pub(crate) async fn materialize_prepared_memory_admission(
     blob_id: Option<Uuid>,
     content_id: Option<Uuid>,
 ) -> Result<FactIngestOutcome, StorageError> {
-    let PreparedMemoryAdmission::New(prepared) = prepared else {
-        let PreparedMemoryAdmission::Replay(outcome) = prepared else {
-            unreachable!()
-        };
-        return Ok(outcome);
+    let prepared = match prepared {
+        PreparedMemoryAdmission::New(prepared) => prepared,
+        PreparedMemoryAdmission::Replay(outcome) => return Ok(outcome),
     };
     // Keep this materialization primitive safe for every direct crate-internal
     // caller, not only the ordinary prepare/lock/claim wrapper above. The
     // advisory lock is re-entrant in this transaction and precedes all
     // Content/head/Memory persistence below.
-    lock_and_validate_prepared_memory(tx, &prepared).await?;
+    lock_prepared_memory_targets(tx, &prepared).await?;
+    materialize_prepared_memory_admission_after_locks(tx, prepared, blob_id, content_id).await
+}
+
+/// Materialize an admission after the caller has acquired its complete
+/// handle/lifecycle union. The reserved Goal lifecycle Fact uses this path so
+/// it cannot acquire a Memory handle after the Goal transaction already holds
+/// lifecycle `t` locks. The head validation still runs here — only the lock
+/// acquisition is the caller's.
+async fn materialize_prepared_memory_admission_after_locks(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: Box<PreparedMemoryAdmissionNew>,
+    blob_id: Option<Uuid>,
+    content_id: Option<Uuid>,
+) -> Result<FactIngestOutcome, StorageError> {
+    validate_prepared_memory_head(tx, &prepared).await?;
     let mut draft = prepared.draft;
     if blob_id.is_some() {
         draft.blob_id = blob_id;
@@ -447,10 +491,17 @@ pub(crate) async fn materialize_prepared_memory_admission(
         )
     };
 
+    // `GREATEST`, not `EXCLUDED.t`: the head only ever moves forward. Every
+    // path that could rewind it is already refused — `validate_prepared_memory_head`
+    // rejects an admission whose prepared head is no longer current, and the
+    // reserved-identity path always carries a handle freshly minted by
+    // `reserve_fact_identity`, so it has no head to rewind. This is the
+    // invariant those checks add up to, written where the head is actually
+    // assigned rather than left implicit across two modules.
     let head = sqlx::query(
         "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
          VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)
-         ON CONFLICT (handle) DO UPDATE SET t = EXCLUDED.t
+         ON CONFLICT (handle) DO UPDATE SET t = GREATEST(proxima_core.memory_head.t, EXCLUDED.t)
          WHERE proxima_core.memory_head.kind = EXCLUDED.kind
            AND proxima_core.memory_head.schema_id = EXCLUDED.schema_id
            AND proxima_core.memory_head.owner_id = EXCLUDED.owner_id
