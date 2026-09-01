@@ -152,8 +152,11 @@ Wake config is `wake_config` (N Goals share `wake_id`). Fire writes a `core/writ
 Per-entity admission, hydration, forget, single-entity erase, and the
 supported Goal/wake write paths use one per-`t` lifecycle lock vocabulary. Each
 path derives its complete target union, sorts it, and holds it before row or
-blob locks or persistence. Owner, series, source, and repository sweeps are outside this
-complete-set/no-growth guarantee.
+blob locks or persistence. Memory admission takes its owner fence before
+first-use owner-row arbitration. Owner and repository sweeps are outside this
+complete-set/no-growth guarantee; a transfer exclusively fences both endpoints
+in sorted owner order, then
+locks its complete sorted series handle/`t` sets and rechecks membership.
 
 ## Re-derivation and Supersession
 

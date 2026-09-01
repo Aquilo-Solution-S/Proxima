@@ -6,13 +6,16 @@ mod pg_tests {
     use std::sync::Arc;
 
     use proxima_core::llm::{EmbeddingClient, EmbeddingRuntimePolicy, LlmError};
-    use proxima_core::storage_ports::{EmbeddingWritePort, EmbeddingWriteProof, OwnerWritePermit};
+    use proxima_core::storage_ports::{
+        EmbeddingWritePort, EmbeddingWriteProof, OwnerTransferPort, OwnerWritePermit,
+    };
     use proxima_core::test_fixtures::owner_fixture;
     use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
     use proxima_core::verbs::schema::MemoryEmbedUnit;
     use proxima_core::{
-        AccessKind, AuthPath, AuthzContext, Engine, EntityKind, FactIngestPort, FlavorRegistry,
-        GoalId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
+        AccessKind, AuthPath, AuthzContext, Engine, EntityId, EntityKind, FactIngestPort,
+        FlavorRegistry, GoalId, GroupId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+        StorageError,
     };
     use proxima_pg_testkit::drop_db;
     use uuid::Uuid;
@@ -1930,6 +1933,93 @@ mod pg_tests {
             .fetch_one(pool)
             .await?;
             assert_eq!(remaining, 0, "the successor can finalize its own claim");
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn source_claim_cannot_finalize_a_job_after_owner_transfer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let source = owner_fixture();
+            let permit = owner_fact_write_permit(&source).await?;
+            let written = pg
+                .ingest_fact_atomic(
+                    &permit,
+                    &fact_draft("claim crosses transfer"),
+                    Some("stub-fact-embed"),
+                )
+                .await?;
+            let pool = pg.pool_for_tests();
+            let claims = claim_pending_embedding_jobs(pool, "stub-fact-embed", 1).await?;
+            let stale = claims[0].clone();
+            let destination = Owner::Group(GroupId::new(Uuid::now_v7()));
+            let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+            let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
+
+            assert!(
+                pg.transfer_to_owner(
+                    &permit,
+                    EntityId::Memory(written.memory_id),
+                    destination,
+                    &surfaces,
+                )
+                .await?,
+                "the transfer moves the processing job with its Memory"
+            );
+            let (job_owner, job_token): (Uuid, Option<Uuid>) = sqlx::query_as(
+                "SELECT owner_id, claim_token
+                   FROM proxima_core.embedding_jobs
+                  WHERE job_id = $1",
+            )
+            .bind(stale.job_id)
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(job_owner, destination.stored_owner_id());
+            assert_eq!(job_token, Some(stale.claim_token));
+
+            assert_eq!(
+                renew_embedding_jobs(pool, std::slice::from_ref(&stale)).await?,
+                0,
+                "a source-owner heartbeat cannot renew the destination's job"
+            );
+            for transition in [
+                complete_embedding_job(pool, &stale).await,
+                fail_embedding_job(pool, &stale, "stale source failure").await,
+                release_embedding_jobs(pool, std::slice::from_ref(&stale), "stale source release")
+                    .await,
+            ] {
+                assert!(
+                    matches!(transition, Err(StorageError::Conflict(_))),
+                    "a pre-transfer claim cannot mutate the rehomed job: {transition:?}"
+                );
+            }
+
+            sqlx::query(
+                "UPDATE proxima_core.embedding_jobs
+                    SET claimed_at = now() - make_interval(secs => $2::double precision)
+                  WHERE job_id = $1",
+            )
+            .bind(stale.job_id)
+            .bind(f64::from(u32::try_from(stale_claim_seconds())?) * 2.0)
+            .execute(pool)
+            .await?;
+            assert_eq!(
+                reclaim_stale_embedding_jobs(pool, stale_claim_seconds()).await?,
+                1,
+                "the destination can reclaim the abandoned source claim"
+            );
+            let successor = claim_pending_embedding_jobs(pool, "stub-fact-embed", 1).await?;
+            assert_eq!(successor.len(), 1);
+            assert_eq!(successor[0].owner, destination);
+            insert_claimed_fact_embedding(&pg, &successor[0], [0.4, 0.5, 0.6]).await?;
+            complete_embedding_job(pool, &successor[0]).await?;
+            assert_eq!(count_fact_embeddings(pool, written.memory_id).await?, 1);
             Ok(())
         }
         .await;

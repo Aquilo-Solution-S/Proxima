@@ -291,7 +291,9 @@ async fn delete_keyed_surfaces(
 /// Source-scoped erase still asks the Memory which source a call belongs to,
 /// deliberately without an owner predicate on that lookup: the row being
 /// erased is already proven to be this owner's, and the Memory is only being
-/// consulted for its `source_id`.
+/// consulted for its `source_id`. A retained audit row can name a Memory that
+/// has since transferred, so adding the source owner's predicate here would
+/// make the row permanently undeletable by the actor who created it.
 async fn delete_owned_surfaces(
     tx: &mut Tx<'_>,
     surfaces: &OwnerSurfaces,

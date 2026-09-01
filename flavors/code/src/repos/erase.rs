@@ -451,6 +451,13 @@ async fn erase_repo_once(
         .execute(&mut *tx)
         .await?;
 
+    // Transfer takes both endpoint owner fences exclusively before it moves
+    // any Memory. Holding the source fence shared from before repository
+    // discovery through commit makes the footprint one ownership snapshot:
+    // a series cannot leave after the owner check and before its flavor rows
+    // are deleted.
+    proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner).await?;
+
     let exists: Option<(Uuid,)> = sqlx::query_as(REPO_EXISTS_SQL)
         .bind(kind)
         .bind(principal_id)

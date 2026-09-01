@@ -406,6 +406,148 @@ async fn start_pending_get_proxy(
     (proxy_config, gate, shutdown, proxy_task)
 }
 
+async fn owner_fence_waiting(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM pg_locks
+              WHERE locktype = 'advisory'
+                AND NOT granted
+                AND mode = 'ExclusiveLock'
+                AND classid::bigint = ((hashtextextended(
+                    'proxima-owner-fence:' || $1 || ':' || $2::text, 0
+                ) >> 32) & 4294967295)
+                AND objid::bigint = (hashtextextended(
+                    'proxima-owner-fence:' || $1 || ':' || $2::text, 0
+                ) & 4294967295)
+         )",
+    )
+    .bind(match owner {
+        OwnerRef::Personal(_) => "personal",
+        OwnerRef::Group(_) => "group",
+    })
+    .bind(owner.stored_owner_id())
+    .fetch_one(pool)
+    .await
+}
+
+async fn owner_fence_exclusive(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: OwnerRef,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(
+             hashtextextended('proxima-owner-fence:' || $1 || ':' || $2::text, 0)
+         )",
+    )
+    .bind(match owner {
+        OwnerRef::Personal(_) => "personal",
+        OwnerRef::Group(_) => "group",
+    })
+    .bind(owner.stored_owner_id())
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
+}
+
+async fn wait_for_upload_status_probe(
+    pool: &sqlx::PgPool,
+    expected: i64,
+) -> Result<(), sqlx::Error> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let reached: bool = sqlx::query_scalar(
+                "SELECT is_called AND last_value >= $1
+                   FROM public.upload_status_probe",
+            )
+            .bind(expected)
+            .fetch_one(pool)
+            .await?;
+            if reached {
+                return Ok::<(), sqlx::Error>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| sqlx::Error::Protocol("upload status probe timed out".into()))??;
+    Ok(())
+}
+
+async fn wait_for_s3_object(
+    config: &S3RuntimeConfig,
+    key: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = s3_client(config).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if client
+                .head_object()
+                .bucket(&config.bucket)
+                .key(key)
+                .send()
+                .await
+                .is_ok()
+            {
+                return Ok::<(), Box<dyn std::error::Error>>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| "S3 object probe timed out")??;
+    Ok(())
+}
+
+const UPLOAD_STATUS_PROBE_LOCK: i64 = 0x0055_504c_4f41_4453;
+
+async fn run_fenced_upload_transition<T, Fut>(
+    pool: &sqlx::PgPool,
+    owner: OwnerRef,
+    expected_probe: i64,
+    transition: Fut,
+) -> Result<Result<T, BlobError>, Box<dyn std::error::Error>>
+where
+    T: Send + 'static,
+    Fut: std::future::Future<Output = Result<T, BlobError>> + Send + 'static,
+{
+    let mut blocker = pool.acquire().await?;
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(UPLOAD_STATUS_PROBE_LOCK)
+        .execute(&mut *blocker)
+        .await?;
+    let task = tokio::spawn(transition);
+    wait_for_upload_status_probe(pool, expected_probe).await?;
+
+    let fence_pool = pool.clone();
+    let fence = tokio::spawn(async move {
+        let mut tx = fence_pool.begin().await?;
+        owner_fence_exclusive(&mut tx, owner).await?;
+        tx.rollback().await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if owner_fence_waiting(pool, owner).await? {
+                return Ok::<(), sqlx::Error>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| sqlx::Error::Protocol("upload owner-fence probe timed out".into()))??;
+    sqlx::query_scalar::<_, bool>("SELECT pg_advisory_unlock($1)")
+        .bind(UPLOAD_STATUS_PROBE_LOCK)
+        .fetch_one(&mut *blocker)
+        .await?;
+    let result = task
+        .await
+        .map_err(|err| sqlx::Error::Protocol(format!("upload transition task failed: {err}")))?;
+    fence
+        .await
+        .map_err(|err| sqlx::Error::Protocol(format!("upload fence task failed: {err}")))??;
+    Ok(result)
+}
+
 #[tokio::test]
 async fn prepare_then_complete_then_read_roundtrip() {
     // Opt-in integration test: needs a reachable S3 target. Skip
@@ -492,6 +634,303 @@ async fn prepare_then_complete_then_read_roundtrip() {
 
     drop(pool);
     drop_db(&db_name).await.expect("drop db");
+}
+
+/// Every database-side upload transition holds the owner fence through its
+/// status decision. The trigger pauses each real transition, and a competing
+/// exclusive owner fence must queue on that exact key; this pins finish,
+/// abort, and expiry without relying on task scheduling.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn upload_transitions_join_the_owner_fence() -> Result<(), Box<dyn std::error::Error>> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return Ok(());
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "CREATE SEQUENCE public.upload_status_probe;
+         CREATE FUNCTION public.block_upload_status_update() RETURNS trigger
+         LANGUAGE plpgsql AS $$
+         BEGIN
+             PERFORM nextval('public.upload_status_probe');
+             PERFORM pg_advisory_xact_lock({UPLOAD_STATUS_PROBE_LOCK});
+             RETURN NEW;
+         END
+         $$;
+         CREATE TRIGGER block_upload_status_update
+         BEFORE UPDATE OF status ON proxima_core.blob_uploads
+         FOR EACH ROW
+         WHEN (OLD.status IS DISTINCT FROM NEW.status)
+         EXECUTE FUNCTION public.block_upload_status_update();"
+    )))
+    .execute(&pool)
+    .await
+    .expect("upload status probe");
+
+    let finish_upload = staged_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "finish.pdf",
+        b"finish-bytes",
+    )
+    .await;
+    // `staged_upload` only prepares and PUTs the bytes. Finish refuses a row
+    // with no exact staged identity, so the row must actually be staged before
+    // this test can drive its status transition. Staging writes no status, so
+    // the probe trigger above does not fire on it.
+    let finish_content_hash = store
+        .stage_upload(
+            &ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: finish_upload.clone(),
+            },
+        )
+        .await
+        .expect("stage the finish fixture")
+        .payload
+        .content_hash
+        .to_vec();
+    let finish_blob: Uuid = sqlx::query_scalar(
+        "INSERT INTO proxima_core.blob (schema_id, owner_id, content_hash)
+         VALUES ('core/uploaded-blob-v1', $1, $2)
+         RETURNING blob_id",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(finish_content_hash)
+    .fetch_one(&pool)
+    .await
+    .expect("finish blob");
+    let finish_store = store.clone();
+    let finish_ctx = ctx.clone();
+    let finish_id = finish_upload.clone();
+    let finish_result = Box::pin(run_fenced_upload_transition(&pool, owner, 1, async move {
+        finish_store
+            .finish_upload(&finish_ctx, owner, &finish_id, finish_blob)
+            .await
+    }))
+    .await?;
+    finish_result?;
+
+    let abort_upload = staged_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "abort.pdf",
+        b"abort-bytes",
+    )
+    .await;
+    let abort_store = store.clone();
+    let abort_ctx = ctx.clone();
+    let abort_id = abort_upload.clone();
+    let abort_result = Box::pin(run_fenced_upload_transition(&pool, owner, 2, async move {
+        abort_store
+            .abort_upload(
+                &abort_ctx,
+                CitedBlobUploadAbortTs {
+                    owner,
+                    upload_id: abort_id,
+                },
+            )
+            .await
+    }))
+    .await?;
+    assert!(abort_result?.aborted);
+
+    let expiry_upload = staged_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "expiry.pdf",
+        b"expiry-bytes",
+    )
+    .await;
+    sqlx::query(
+        "UPDATE proxima_core.blob_uploads
+            SET expires_at = now() - interval '1 second'
+          WHERE upload_id = $1",
+    )
+    .bind(Uuid::parse_str(&expiry_upload).expect("expiry upload id"))
+    .execute(&pool)
+    .await
+    .expect("expire fixture");
+    let expiry_store = store.clone();
+    let expiry_ctx = ctx.clone();
+    let expiry_id = expiry_upload.clone();
+    let expiry_result = Box::pin(run_fenced_upload_transition(&pool, owner, 3, async move {
+        expiry_store
+            .stage_upload(
+                &expiry_ctx,
+                CitedBlobUploadCompleteTs {
+                    owner,
+                    upload_id: expiry_id,
+                },
+            )
+            .await
+    }))
+    .await?;
+    assert!(matches!(
+        expiry_result,
+        Err(BlobError::State(message)) if message.contains("expired")
+    ));
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+    Ok(())
+}
+
+/// Stage's S3 work may finish after a terminal transition has already locked
+/// the upload row. The locator publication must then refuse the terminal row
+/// and remove the just-created canonical object; an ignored zero-row UPDATE
+/// would report a staged payload whose locator was never committed.
+///
+/// The assertion is right, and this currently fails. Making it pass needs the
+/// locator publication to take the upload row `FOR UPDATE`, so it blocks on a
+/// mid-flight abort instead of reading `pending` through its own `WHERE`
+/// guard. That contradicts this module's standing rule that stage's S3 work
+/// stays outside every database critical section, and adding the lock here
+/// fails five of the races below. Reconciling the two is its own change.
+#[ignore = "needs the lock-first stage publication described above"]
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn stage_rechecks_terminal_upload_before_publishing_locator()
+-> Result<(), Box<dyn std::error::Error>> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return Ok(());
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let upload_id = staged_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "terminal-race.pdf",
+        b"terminal-race-bytes",
+    )
+    .await;
+
+    // Abort owns the row lock while its status trigger is paused. Stage can
+    // still perform its S3 GET/PUT, but its final locator UPDATE must wait for
+    // the row and then observe the committed terminal status.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "CREATE SEQUENCE public.upload_status_probe;
+         CREATE FUNCTION public.block_abort_status_update() RETURNS trigger
+         LANGUAGE plpgsql AS $$
+         BEGIN
+             PERFORM nextval('public.upload_status_probe');
+             PERFORM pg_advisory_xact_lock({UPLOAD_STATUS_PROBE_LOCK});
+             RETURN NEW;
+         END
+         $$;
+         CREATE TRIGGER block_abort_status_update
+         BEFORE UPDATE OF status ON proxima_core.blob_uploads
+         FOR EACH ROW
+         WHEN (OLD.status = 'pending' AND NEW.status = 'aborted')
+         EXECUTE FUNCTION public.block_abort_status_update();"
+    )))
+    .execute(&pool)
+    .await?;
+
+    let mut probe = pool.acquire().await?;
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(UPLOAD_STATUS_PROBE_LOCK)
+        .execute(&mut *probe)
+        .await?;
+    let abort_store = store.clone();
+    let abort_ctx = ctx.clone();
+    let abort_id = upload_id.clone();
+    let abort_task = tokio::spawn(async move {
+        abort_store
+            .abort_upload(
+                &abort_ctx,
+                CitedBlobUploadAbortTs {
+                    owner,
+                    upload_id: abort_id,
+                },
+            )
+            .await
+    });
+    wait_for_upload_status_probe(&pool, 1).await?;
+
+    let stage_store = store.clone();
+    let stage_ctx = ctx.clone();
+    let stage_id = upload_id.clone();
+    let stage_task = tokio::spawn(async move {
+        stage_store
+            .stage_upload(
+                &stage_ctx,
+                CitedBlobUploadCompleteTs {
+                    owner,
+                    upload_id: stage_id,
+                },
+            )
+            .await
+    });
+    let canonical_key = format!("objects/{upload_id}");
+    wait_for_s3_object(&config, &canonical_key).await?;
+
+    sqlx::query_scalar::<_, bool>("SELECT pg_advisory_unlock($1)")
+        .bind(UPLOAD_STATUS_PROBE_LOCK)
+        .fetch_one(&mut *probe)
+        .await?;
+    let abort_result =
+        tokio::time::timeout(std::time::Duration::from_secs(10), abort_task).await??;
+    assert!(abort_result?.aborted);
+    let stage_result =
+        tokio::time::timeout(std::time::Duration::from_secs(10), stage_task).await??;
+    assert!(
+        matches!(stage_result, Err(BlobError::State(ref message)) if message.contains("aborted")),
+        "stage must refuse the terminal row, got {stage_result:?}"
+    );
+
+    let (status, locator): (String, String) = sqlx::query_as(
+        "SELECT status::text, object_key
+           FROM proxima_core.blob_uploads
+          WHERE upload_id = $1",
+    )
+    .bind(Uuid::parse_str(&upload_id)?)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(status, "aborted");
+    assert_eq!(locator, format!("pending/{upload_id}"));
+    let client = s3_client(&config).await;
+    assert!(
+        client
+            .head_object()
+            .bucket(&config.bucket)
+            .key(&canonical_key)
+            .send()
+            .await
+            .is_err(),
+        "terminal stage must clean the canonical object it just created"
+    );
+
+    drop(pool);
+    drop_db(&db_name).await?;
+    Ok(())
 }
 
 #[tokio::test]

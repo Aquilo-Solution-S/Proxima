@@ -173,9 +173,10 @@ not claim Fact grounding or reconstruct the erased target's owner. Public
 reads retain their existing redacted/missing-target behavior, and the internal
 witness does not introduce an `Unavailable` projection state.
 
-Memory and Goal admission share a distinct owner fence (and sourced Memory
-admission also shares its exact source fence) before taking the sorted Memory
-handle and per-`t` lifecycle locks. Owner erase takes that owner fence
+Memory and Goal admission take a distinct owner fence (and sourced Memory
+admission also shares its exact source fence) before first-use owner-row
+arbitration and before taking the sorted Memory handle/per-`t` lifecycle locks.
+Owner erase takes that owner fence
 exclusively; source-scope erase takes the owner fence shared and its source
 fence exclusively. The resulting order is owner → source → Memory handle →
 lifecycle `t` → rows. A bulk erase takes its scope fence first and only then
@@ -184,12 +185,13 @@ when the fence was acquired; it locks the complete selected handle/`t` sets
 before deletion, witness, sidecar, or cold-purge work. An admission or
 transfer that commits before the fence is inside the erase; one that commits
 after it is a write that follows a completed erase. Either way the writer is
-whole — the erase never observes a partial one. Transfer takes both
-endpoint owner fences exclusively in sorted owner order before its series
-locks, so owner- and source-scope erase have defined boundaries. Per-entity hydration,
+whole — the erase never observes a partial one. Transfer exclusively fences
+both endpoints in sorted owner order before its complete sorted series
+handle/`t` locks and membership reread, so owner- and source-scope erase have
+defined boundaries. Per-entity hydration,
 forget, and single-entity erase retain their existing per-`t`/handle contract;
-repository sweeps and transfer's multi-round series expansion remain outside
-this bulk-erase exact-snapshot claim.
+repository sweeps share their source-owner boundary through commit but remain
+outside this bulk-erase exact-snapshot claim.
 
 ## Outcomes
 

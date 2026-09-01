@@ -596,6 +596,9 @@ pub const DROPPED_TABLES: &[&str] = &[
     "owner_legal_holds",
 ];
 pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
+    // 0007 added staged BLAKE3 identity after this frozen baseline;
+    // migration and transfer differentials assert the live value directly.
+    ("blob_uploads", "content_hash"),
     ("cold_purge_pending", "compliance_operation_id"),
     ("cooled", "origins"),
     ("cooled", "refs"),

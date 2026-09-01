@@ -220,11 +220,11 @@ impl Engine {
     /// transaction (`ensure_owner_row`), so the paired announce rows'
     /// `owner_id` FKs hold without any migration-seeded owner.
     ///
-    /// The ownership oracle is closed by ordering: the `to_owner ==
-    /// current_owner` refusal fires only AFTER both sides authorize, so a
-    /// caller with no authority cannot tell `InvalidArgument` (the entity
-    /// already lives at the owner they named) from `Forbidden` (it does
-    /// not) and probe entity→owner mappings.
+    /// The ownership oracle is closed by resolving the home only through the
+    /// caller's readable-owner set. Missing and foreign-owned entities are
+    /// therefore both invisible (`NotFound`) before the source manage gate;
+    /// the `to_owner == current_owner` refusal fires only AFTER both sides
+    /// authorize, so an authorized caller still gets the useful distinction.
     ///
     /// # Errors
     ///
@@ -256,13 +256,20 @@ impl Engine {
                  group-manage authority, which no personal owner can grant",
             ));
         }
+        // A transfer needs source manage authority, but looking up the bare
+        // owner first would reveal whether a random entity exists to a caller
+        // who cannot read it. Resolve through the same read-owner set as the
+        // ordinary visibility path: absent and foreign rows collapse to the
+        // same public NotFound outcome, while an authorized source remains
+        // visible because admin roles include read access.
+        let access = self.resolve_access(authz).await?;
         let current_owner = self
             .storage()
             .access_admin
             .owner_access_read
-            .home_owner(entity)
+            .visible_home_owner(entity, access.read_owners())
             .await
-            .map_err(|err| storage_error("home_owner", &err))?
+            .map_err(|err| storage_error("visible_home_owner", &err))?
             .ok_or_else(|| ProtocolError::not_found("entity not found"))?;
 
         let permit = self
@@ -738,6 +745,40 @@ mod tests {
             "refusal must name the destination rule: {}",
             err.message
         );
+    }
+
+    #[tokio::test]
+    async fn access_admin_transfer_collapses_missing_and_foreign_to_not_found() {
+        let caller = UserId::new(Uuid::now_v7());
+        let source_group = GroupId::new(Uuid::now_v7());
+        let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let entity = EntityId::Memory(MemoryId::new(Uuid::now_v7()));
+        let authz = AuthzContext::for_subject(caller, AuthPath::HostBearer);
+
+        let missing = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(
+                membership_storage_with_home(caller, source_group, None).storage_ports(),
+            )
+            .transfer_to_owner(&authz, entity, destination)
+            .await
+            .expect_err("an absent entity must not be transferable");
+
+        let foreign_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let mut foreign_storage =
+            membership_storage_with_home(caller, source_group, Some(foreign_owner));
+        // The storage double models a real row outside the caller's read set.
+        // The old bare home-owner lookup returned it and leaked Forbidden;
+        // the visibility lookup must collapse it to the same miss as above.
+        foreign_storage.entity_readable = false;
+        let foreign = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(foreign_storage.storage_ports())
+            .transfer_to_owner(&authz, entity, destination)
+            .await
+            .expect_err("a foreign entity must be indistinguishable from absent");
+
+        assert_eq!(missing.code, ErrorCode::NotFound);
+        assert_eq!(foreign.code, ErrorCode::NotFound);
+        assert_eq!(missing.message, foreign.message);
     }
 
     #[tokio::test]

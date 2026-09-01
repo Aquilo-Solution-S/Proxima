@@ -422,6 +422,26 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                          '%execute function proxima_core.enforce_row_append_only%'
                 )
            THEN 'goal_replay_declaration append-only trigger is missing or incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'blob_uploads'
+                     AND column_name = 'content_hash'
+                     AND data_type = 'bytea'
+                     AND is_nullable = 'YES'
+                )
+           THEN 'blob_uploads.content_hash must be nullable bytea'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_constraint c
+                   WHERE c.conrelid = 'proxima_core.blob_uploads'::regclass
+                     AND c.conname = 'blob_uploads_content_hash_chk'
+                     AND c.contype = 'c'
+                     AND c.convalidated
+                     AND strpos(lower(pg_get_constraintdef(c.oid, true)),
+                                'octet_length(content_hash) = 32') > 0
+                )
+           THEN 'blob_uploads content-hash check is missing or incorrect'
          WHEN to_regclass('proxima_core.wake_config') IS NULL
            THEN 'missing relation proxima_core.wake_config'
          WHEN to_regclass('proxima_core.embeddings') IS NULL
@@ -1763,19 +1783,20 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6],
+            vec![1, 2, 3, 4, 5, 6, 7],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
-             0003_v010_reference_integrity.sql, v0.0.11 is 0004_v011_goal_refs.sql, \
-             the hard-erase witness is 0005_erased_pin_targets.sql and v0.0.13 is \
-             0006_v013_goal_replay_declaration.sql"
+             0003_v010_reference_integrity.sql, 0004_v011_goal_refs.sql, \
+             the hard-erase witness is 0005_erased_pin_targets.sql, \
+             0006_v013_goal_replay_declaration.sql and \
+             0007_upload_content_identity.sql"
         );
     }
 
     /// The v0.0.7 ALTER lane occupied versions 2..=21 and the squash to a
     /// single v008 baseline retired all of them.
     ///
-    /// Versions 2 through 6 are current additive migrations which reuse
+    /// Versions 2 through 7 are current additive migrations which reuse
     /// retired numbers. That is safe, and this is why: the tripwire for
     /// a pre-v0.0.8 database is version 1's checksum, which is the legacy
     /// `0001_init.sql` and can never match `0001_v008.sql`.
@@ -1849,10 +1870,25 @@ mod tests {
                     .contains("goal_replay_declaration_append_only"),
             "version 6 must persist immutable Goal replay declarations"
         );
-        // The legacy range shrinks as the head advances: 6 is now a real
-        // additive migration, asserted by content just above, so only 7..=21
+        let version_7 = migrator
+            .iter()
+            .find(|migration| migration.version == 7)
+            .expect("version 7 is the upload-content migration");
+        assert!(
+            version_7
+                .sql
+                .as_str()
+                .contains("blob_uploads_content_hash_chk")
+                && version_7
+                    .sql
+                    .as_str()
+                    .contains("blob_uploads_terminal_content_idx"),
+            "version 7 must persist exact pre-publication upload content identity"
+        );
+        // The legacy range shrinks as the head advances: 7 is now a real
+        // additive migration, asserted by content just above, so only 8..=21
         // remain retired by the v0.0.8 squash.
-        for dead in 7..=21 {
+        for dead in 8..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"

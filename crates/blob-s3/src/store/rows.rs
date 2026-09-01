@@ -6,7 +6,7 @@
 
 use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::storage_ports::{CitedBlobHeld, CitedBlobStaged};
-use proxima_core::{Owner, StorageError, UPLOADED_BLOB_SCHEMA_ID};
+use proxima_core::{Owner, UPLOADED_BLOB_SCHEMA_ID};
 use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -20,6 +20,7 @@ pub(super) struct UploadRow {
     pub(super) filename: String,
     pub(super) mime: String,
     pub(super) expected_byte_len: i64,
+    pub(super) content_hash: Option<Vec<u8>>,
     pub(super) status: UploadStatus,
     pub(super) blob_id: Option<Uuid>,
     pub(super) expires_at: OffsetDateTime,
@@ -69,23 +70,6 @@ pub(super) struct BlobReadRecord {
     pub(super) filename: String,
 }
 
-pub(super) async fn ensure_owner_row(
-    pool: &sqlx::PgPool,
-    owner: &Owner,
-) -> Result<Uuid, BlobError> {
-    let mut conn = pool.acquire().await?;
-    proxima_storage_pg::access::owner_columns::ensure_owner_row(&mut conn, owner)
-        .await
-        .map_err(map_owner_row)
-}
-
-fn map_owner_row(err: StorageError) -> BlobError {
-    match err {
-        StorageError::ConstraintViolation(msg) => BlobError::State(msg),
-        other => BlobError::State(format!("db error: {other}")),
-    }
-}
-
 pub(super) async fn load_upload(
     pool: &sqlx::PgPool,
     owner: &Owner,
@@ -103,7 +87,7 @@ pub(super) async fn load_upload_optional(
 ) -> Result<Option<UploadRow>, BlobError> {
     let owner_id = owner.stored_owner_id();
     let row = sqlx::query(
-        "SELECT bucket, object_key, filename, mime, expected_byte_len, \
+        "SELECT bucket, object_key, filename, mime, expected_byte_len, content_hash, \
                 status, blob_id, expires_at \
            FROM proxima_core.blob_uploads \
           WHERE owner_id = $1 \
@@ -125,6 +109,60 @@ pub(super) async fn load_upload_optional(
         filename: row.get("filename"),
         mime: row.get("mime"),
         expected_byte_len: row.get("expected_byte_len"),
+        content_hash: row.get("content_hash"),
+        status: row.get("status"),
+        blob_id: row.get("blob_id"),
+        expires_at: row.get("expires_at"),
+    }))
+}
+
+/// Read an upload row while the caller holds the owner admission fence.
+/// `FOR UPDATE` makes the status decision and its owner-scoped transition one
+/// row-level critical section; the fence then serializes it with owner
+/// transfer and citation admission.
+pub(super) async fn load_upload_for_update(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    upload_id: Uuid,
+) -> Result<UploadRow, BlobError> {
+    load_upload_optional_for_update(tx, owner, upload_id)
+        .await?
+        .ok_or_else(|| BlobError::State("upload not found for Owner".into()))
+}
+
+/// The same locked read for callers that must tell an erased owner row from a
+/// terminal one rather than collapsing both into an error.
+pub(super) async fn load_upload_optional_for_update(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    upload_id: Uuid,
+) -> Result<Option<UploadRow>, BlobError> {
+    let owner_id = owner.stored_owner_id();
+    let row = sqlx::query(
+        "SELECT bucket, object_key, filename, mime, expected_byte_len, content_hash, \
+                status, blob_id, expires_at \
+           FROM proxima_core.blob_uploads \
+          WHERE owner_id = $1 \
+            AND upload_id = $2 \
+          FOR UPDATE",
+    )
+    .bind(owner_id)
+    .bind(upload_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(BlobError::Db)?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    Ok(Some(UploadRow {
+        bucket: row.get("bucket"),
+        object_key: row.get("object_key"),
+        filename: row.get("filename"),
+        mime: row.get("mime"),
+        expected_byte_len: row.get("expected_byte_len"),
+        content_hash: row.get("content_hash"),
         status: row.get("status"),
         blob_id: row.get("blob_id"),
         expires_at: row.get("expires_at"),
@@ -135,21 +173,34 @@ pub(super) async fn mark_upload_expired(
     pool: &sqlx::PgPool,
     owner: &Owner,
     upload_id: Uuid,
-) -> Result<(), BlobError> {
-    let owner_id = owner.stored_owner_id();
-    sqlx::query(
-        "UPDATE proxima_core.blob_uploads \
-            SET status = 'expired', error_message = 'upload expired' \
-          WHERE owner_id = $1 \
-            AND upload_id = $2 \
-            AND status = 'pending'",
-    )
-    .bind(owner_id)
-    .bind(upload_id)
-    .execute(pool)
-    .await
-    .map_err(BlobError::Db)?;
-    Ok(())
+) -> Result<UploadStatus, BlobError> {
+    let mut tx = pool.begin().await.map_err(BlobError::Db)?;
+    proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
+        .await
+        .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
+    // The caller's expiry observation may be stale. Re-read the owner and
+    // status under the same fence used by finish/abort and transfer, then
+    // expire only a still-pending row.
+    let row = load_upload_for_update(&mut tx, owner, upload_id).await?;
+    let status = if row.status == UploadStatus::Pending {
+        sqlx::query(
+            "UPDATE proxima_core.blob_uploads \
+                SET status = 'expired', error_message = 'upload expired' \
+              WHERE owner_id = $1 \
+                AND upload_id = $2 \
+                AND status = 'pending'",
+        )
+        .bind(owner.stored_owner_id())
+        .bind(upload_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(BlobError::Db)?;
+        UploadStatus::Expired
+    } else {
+        row.status
+    };
+    tx.commit().await.map_err(BlobError::Db)?;
+    Ok(status)
 }
 
 pub(super) async fn load_staged_payload(
@@ -167,6 +218,7 @@ pub(super) async fn load_staged_payload(
            JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id \
           WHERE b.blob_id = $1 \
             AND b.owner_id = $2 \
+            AND u.owner_id = $2 \
             AND b.schema_id = $3 \
             AND u.status = 'completed' \
             AND u.owner_id = $2 \

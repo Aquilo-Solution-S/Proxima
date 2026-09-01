@@ -109,12 +109,13 @@ Because the fence precedes the selection, the Memory/Goal scope it seals with
 stable `(handle, kind)` metadata cannot move under it; the selected handles and
 lifecycle `t`s are then locked in order before witness, sidecar, cold-purge, or
 row deletion work begins.
-Transfers take both endpoint owner fences exclusively in sorted owner order
-before their series work, so transfer versus owner- or source-scope erase has
-a defined linearization.
+Transfers exclusively fence both endpoints in sorted owner order, then lock
+the complete sorted series handle and `t` sets and re-read membership before
+rehoming, so transfer versus owner- or source-scope erase has a defined
+linearization.
 These fences cover the supported Memory/Goal admission and transfer boundary;
-repository sweeps and transfer's bounded multi-round series expansion remain
-separate protocols.
+repository sweeps share their source-owner boundary through commit but remain
+a separate protocol.
 
 ## Computed Scores Are Abstractions
 

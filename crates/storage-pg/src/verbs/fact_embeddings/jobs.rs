@@ -170,7 +170,11 @@ pub async fn claim_pending_embedding_jobs(
     Ok(rows.into_iter().map(EmbeddingJobClaim::from).collect())
 }
 
-/// Delete a completed embedding job, fenced by the claim token.
+/// Delete a completed embedding job, fenced by the claim token and owner.
+///
+/// Provider work runs outside a transaction, so the Memory may transfer after
+/// claim. The original owner predicate makes that move invalidate the claim;
+/// otherwise the source worker could delete the destination's rehomed job.
 ///
 /// # Errors
 ///
@@ -184,10 +188,16 @@ pub async fn complete_embedding_job(
         "DELETE FROM proxima_core.embedding_jobs
           WHERE job_id = $1
             AND claim_token = $2
-            AND status = 'processing'",
+            AND status = 'processing'
+            AND owner_id = $3
+            AND entity_id = $4
+            AND model_id = $5",
     )
     .bind(claim.job_id)
     .bind(claim.claim_token)
+    .bind(claim.owner.stored_owner_id())
+    .bind(claim.entity_id.into_inner())
+    .bind(&claim.model_id)
     .execute(pool)
     .await
     .map_err(map_err)?;
@@ -199,7 +209,7 @@ pub async fn complete_embedding_job(
     Ok(())
 }
 
-/// Refresh the lease timestamp for token-matching processing claims.
+/// Refresh the lease timestamp for token- and owner-matching processing claims.
 ///
 /// Missing claims are skipped rather than treated as a conflict: a batch
 /// heartbeat includes claims that earlier steps may already have completed.
@@ -218,16 +228,23 @@ pub async fn renew_embedding_jobs(
     }
     let job_ids: Vec<uuid::Uuid> = claims.iter().map(|claim| claim.job_id).collect();
     let claim_tokens: Vec<uuid::Uuid> = claims.iter().map(|claim| claim.claim_token).collect();
+    let owner_ids: Vec<uuid::Uuid> = claims
+        .iter()
+        .map(|claim| claim.owner.stored_owner_id())
+        .collect();
     let result = sqlx::query(
         "UPDATE proxima_core.embedding_jobs j
             SET claimed_at = now()
-           FROM unnest($1::uuid[], $2::uuid[]) AS claim(job_id, claim_token)
+           FROM unnest($1::uuid[], $2::uuid[], $3::uuid[])
+                AS claim(job_id, claim_token, owner_id)
           WHERE j.job_id = claim.job_id
             AND j.claim_token = claim.claim_token
+            AND j.owner_id = claim.owner_id
             AND j.status = 'processing'",
     )
     .bind(&job_ids)
     .bind(&claim_tokens)
+    .bind(&owner_ids)
     .execute(pool)
     .await
     .map_err(map_err)?;
@@ -261,11 +278,17 @@ pub async fn fail_embedding_job(
                 last_error = $3
           WHERE job_id = $1
             AND claim_token = $2
-            AND status = 'processing'",
+            AND status = 'processing'
+            AND owner_id = $4
+            AND entity_id = $5
+            AND model_id = $6",
     )
     .bind(claim.job_id)
     .bind(claim.claim_token)
     .bind(error)
+    .bind(claim.owner.stored_owner_id())
+    .bind(claim.entity_id.into_inner())
+    .bind(&claim.model_id)
     .execute(pool)
     .await
     .map_err(map_err)?;
@@ -302,11 +325,17 @@ pub async fn fail_embedding_job_permanently(
                 last_error = $3
           WHERE job_id = $1
             AND claim_token = $2
-            AND status = 'processing'",
+            AND status = 'processing'
+            AND owner_id = $4
+            AND entity_id = $5
+            AND model_id = $6",
     )
     .bind(claim.job_id)
     .bind(claim.claim_token)
     .bind(error)
+    .bind(claim.owner.stored_owner_id())
+    .bind(claim.entity_id.into_inner())
+    .bind(&claim.model_id)
     .execute(pool)
     .await
     .map_err(map_err)?;
@@ -343,11 +372,17 @@ pub async fn release_embedding_jobs(
                     last_error = $3
               WHERE job_id = $1
                 AND claim_token = $2
-                AND status = 'processing'",
+                AND status = 'processing'
+                AND owner_id = $4
+                AND entity_id = $5
+                AND model_id = $6",
         )
         .bind(claim.job_id)
         .bind(claim.claim_token)
         .bind(error)
+        .bind(claim.owner.stored_owner_id())
+        .bind(claim.entity_id.into_inner())
+        .bind(&claim.model_id)
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;

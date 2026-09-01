@@ -1721,6 +1721,119 @@ async fn a_transferred_admission_stops_the_erase_instead_of_being_swept() {
     result.expect("a_transferred_admission_stops_the_erase_instead_of_being_swept failed");
 }
 
+/// Repository erase owns one source-owner snapshot from discovery through
+/// deletion. A transfer that starts after that snapshot must wait and then
+/// observe the erased admission, rather than moving it between the ownership
+/// check and the flavor sweep.
+///
+/// The repository row lock is a deterministic pause after erase has joined
+/// the shared owner fence. Transfer needs that fence exclusively, so it stays
+/// queued until the blocker releases erase; without the shared fence the move
+/// completes in this window and turns a valid erase into a cross-owner
+/// refusal.
+#[tokio::test]
+async fn repository_erase_holds_the_owner_boundary_against_transfer() {
+    let (db_name, pg) = migrated_db().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = test_owner();
+        let repo_id = Uuid::now_v7();
+        let WorkItemFixture { work_item, .. } =
+            seed_work_item_fixture(pool, &owner, repo_id).await?;
+        let destination = proxima_core::OwnerRef::Group(proxima_core::GroupId::new(Uuid::now_v7()));
+        let permit = common::owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
+        let (owner_kind, owner_id) = owner.columns();
+
+        // Pause erase on the repository row. Its owner fence is acquired
+        // immediately before this lock, which leaves a visible queueing point
+        // without adding a production test hook.
+        let mut blocker = pool.begin().await?;
+        sqlx::query(
+            "SELECT repo_id FROM proxima_code.repos
+              WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3
+              FOR UPDATE",
+        )
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(repo_id)
+        .execute(&mut *blocker)
+        .await?;
+
+        let erase_pool = pool.clone();
+        let erase_owner = owner;
+        let erase = tokio::spawn(async move {
+            let store = CodeFlavorStore::from_backend_pool_for_tests(erase_pool);
+            erase_repo(&store, &erase_owner, repo_id).await
+        });
+
+        let mut erase_waiting = false;
+        for _ in 0..100 {
+            erase_waiting = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (
+                     SELECT 1 FROM pg_stat_activity
+                      WHERE datname = current_database()
+                        AND wait_event_type = 'Lock'
+                 )",
+            )
+            .fetch_one(pool)
+            .await?;
+            if erase_waiting {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            erase_waiting,
+            "erase never reached the repository-row pause"
+        );
+
+        let transfer_pg = pg.clone();
+        let transfer = tokio::spawn(async move {
+            proxima_core::storage_ports::OwnerTransferPort::transfer_to_owner(
+                &transfer_pg,
+                &permit,
+                proxima_core::EntityId::Memory(proxima_core::MemoryId::new(work_item)),
+                destination,
+                &transfer_surfaces(),
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !transfer.is_finished(),
+            "transfer crossed the owner boundary while repository erase held its snapshot"
+        );
+
+        blocker.rollback().await?;
+        let receipt = tokio::time::timeout(std::time::Duration::from_secs(10), erase)
+            .await
+            .expect("repository erase timed out")??;
+        assert!(receipt.repo_record_deleted);
+
+        let moved = tokio::time::timeout(std::time::Duration::from_secs(10), transfer)
+            .await
+            .expect("queued transfer timed out")??;
+        assert!(
+            !moved,
+            "the queued transfer must observe that erase removed its captured admission"
+        );
+
+        let survivors: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint
+               FROM proxima_code.work_requested_v1
+              WHERE t = $1",
+        )
+        .bind(work_item)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(survivors, 0, "erase owns the complete flavor footprint");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("repository_erase_holds_the_owner_boundary_against_transfer failed");
+}
+
 /// Waiting for a lock is bounded, and giving up is retried.
 ///
 /// Without `lock_timeout` on the erase path the wait is bounded only by the

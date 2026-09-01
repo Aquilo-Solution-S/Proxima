@@ -270,11 +270,14 @@ pub(crate) async fn prepare_goal_write(
         }));
     }
 
-    let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
-    // Goal admission shares the owner fence for the entire transaction.  An
-    // owner erase therefore either waits for this complete Goal (including
-    // lifecycle Facts) or observes it in exact-scope revalidation.
+    // Goal admission takes the owner fence before owner-row arbitration. An
+    // absent destination owner must never be inserted while a transfer holds
+    // its exclusive fence and then wait on that fence with an uncommitted row.
     crate::access::owner_columns::lock_owner_fence_shared_tx(tx, owner).await?;
+    let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
+    // The fence is held for the entire transaction. An owner erase therefore
+    // either waits for this complete Goal (including lifecycle Facts) or
+    // observes it in exact-scope revalidation.
     let write_act_identity = if draft.mint_write_act {
         Some(reserve_fact_identity(tx).await?)
     } else {

@@ -64,8 +64,8 @@ pub(super) async fn prepare_goal_insert<'a>(
     // preparation repeats this re-entrantly, which keeps this decomposition
     // entry point safe when its prior/head and wake preparation spans a bulk
     // owner erase.
-    crate::access::owner_columns::ensure_owner_row(tx.as_mut(), &owner).await?;
     crate::access::owner_columns::lock_owner_fence_shared_tx(tx, &owner).await?;
+    crate::access::owner_columns::ensure_owner_row(tx.as_mut(), &owner).await?;
     validate_goal_schema(context, draft)?;
 
     let handle = if let Some(prior) = expected_prior {

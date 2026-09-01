@@ -5,7 +5,9 @@ sidecars. The frozen DDL is `crates/storage-pg/migrations/0001_v008.sql`;
 the hard-erase witness contract is additive in
 `crates/storage-pg/migrations/0005_erased_pin_targets.sql`, and exact
 Goal command replay state is additive in
-`crates/storage-pg/migrations/0006_v013_goal_replay_declaration.sql`.
+`crates/storage-pg/migrations/0006_v013_goal_replay_declaration.sql`, and
+pre-publication upload content identity is additive in
+`crates/storage-pg/migrations/0007_upload_content_identity.sql`.
 
 <a id="id-types"></a>
 
@@ -192,8 +194,9 @@ Per-entity admission, hydration, forget, and single-entity erase share one
 per-`t` advisory lock vocabulary. Each of these paths computes its complete
 lifecycle target set, sorts and deduplicates it, and acquires that set before
 any row or blob lock.
-Transfer uses the same per-`t` vocabulary with bounded retry, but its broader
-multi-round footprint is not covered by this complete-set/no-growth guarantee.
+Transfer uses the same per-`t` vocabulary with bounded retry: it exclusively
+fences both endpoints in sorted owner order, locks the complete sorted series
+handle/`t` sets, and rechecks membership before rehoming.
 Goal and wake writes use the same union-before-row rule: assignment,
 dependencies, evidence, the expected/current Goal head, terminal/write-act
 Facts, wake trigger, hard context, and the new Goal `t` are held before
@@ -204,9 +207,13 @@ the owner fence exclusively; a source-scope erase takes the owner fence
 shared and its source fence exclusively. The fence is taken before the
 selection reads anything, so the snapshot is exact by construction: it holds
 the Memory/Goal scope as of fence acquisition, and the selected handles and
-`t`s are then locked before any deletion or witness work. Transfer takes both endpoint owner fences exclusively in sorted
-owner order before its series locks. Repository sweeps and transfer's bounded multi-round
-series expansion remain outside this complete-set bulk-erase guarantee.
+`t`s are then locked before any deletion or witness work. Memory/Goal and
+upload admission take their shared owner fence before first-use owner-row
+arbitration. Transfer exclusively fences both endpoints in sorted owner order
+before its series locks, then locks its complete sorted series handle/`t` set
+and rechecks membership before rehoming. Repository sweeps share the
+source-owner boundary across discovery and deletion, but remain outside this
+complete-set bulk-erase guarantee.
 
 <a id="scaling-envelope"></a>
 

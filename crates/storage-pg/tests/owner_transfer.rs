@@ -23,9 +23,9 @@ use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::persist_mcp_call::McpCallLoggedV1;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
-    AccessKind, AgentNoteV1, ChangeEventKind, ColdObjectStore, EntityId, EntityRef, GoalId,
-    GroupId, MemoryId, OwnerRef, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
-    StorageError, UserId,
+    AccessKind, AgentNoteV1, AuthPath, AuthzContext, ChangeEventKind, ColdObjectStore, Engine,
+    EntityId, EntityRef, FlavorRegistry, GoalId, GroupId, MemoryId, OwnerRef, SchemaId,
+    SchemaVersion, SidecarPayload, SourceBatchId, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory_series, hydrate_memory};
@@ -76,6 +76,110 @@ fn non_embeddable_schemas() -> Vec<String> {
         .freeze_or_panic_for_tests()
         .non_embeddable_schema_ids()
         .to_vec()
+}
+
+/// Observe one specific advisory waiter/holder, including its mode and lock
+/// key. Counting all advisory waiters is racy when a test has more than one
+/// transaction in flight; matching PostgreSQL's two-word advisory-key view
+/// makes the rendezvous prove the lock vocabulary under test.
+async fn owner_fence_lock_state(
+    pool: &sqlx::PgPool,
+    owner: OwnerRef,
+    mode: &str,
+    granted: bool,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM pg_locks
+              WHERE locktype = 'advisory'
+                AND granted = $3
+                AND mode = $4
+                AND classid::bigint = ((hashtextextended(
+                    'proxima-owner-fence:' || $1 || ':' || $2::text, 0
+                ) >> 32) & 4294967295)
+                AND objid::bigint = (hashtextextended(
+                    'proxima-owner-fence:' || $1 || ':' || $2::text, 0
+                ) & 4294967295)
+         )",
+    )
+    .bind(match owner {
+        OwnerRef::Personal(_) => "personal",
+        OwnerRef::Group(_) => "group",
+    })
+    .bind(owner.stored_owner_id())
+    .bind(granted)
+    .bind(mode)
+    .fetch_one(pool)
+    .await
+}
+
+async fn handle_lock_held(pool: &sqlx::PgPool, handle: Uuid) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM pg_locks
+              WHERE locktype = 'advisory'
+                AND granted
+                AND mode = 'ExclusiveLock'
+                AND classid::bigint = ((hashtextextended(
+                    'proxima-memory-handle:' || $1::text, 0
+                ) >> 32) & 4294967295)
+                AND objid::bigint = (hashtextextended(
+                    'proxima-memory-handle:' || $1::text, 0
+                ) & 4294967295)
+         )",
+    )
+    .bind(handle)
+    .fetch_one(pool)
+    .await
+}
+
+async fn owner_fence_waiter_count(
+    pool: &sqlx::PgPool,
+    owner: OwnerRef,
+    mode: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND NOT granted
+            AND mode = $3
+            AND classid::bigint = ((hashtextextended(
+                'proxima-owner-fence:' || $1 || ':' || $2::text, 0
+            ) >> 32) & 4294967295)
+            AND objid::bigint = (hashtextextended(
+                'proxima-owner-fence:' || $1 || ':' || $2::text, 0
+            ) & 4294967295)",
+    )
+    .bind(match owner {
+        OwnerRef::Personal(_) => "personal",
+        OwnerRef::Group(_) => "group",
+    })
+    .bind(owner.stored_owner_id())
+    .bind(mode)
+    .fetch_one(pool)
+    .await
+}
+
+async fn lifecycle_waiter_count(pool: &sqlx::PgPool, t: Uuid) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND NOT granted
+            AND mode = 'ExclusiveLock'
+            AND classid::bigint = ((hashtextextended(
+                'proxima-forget:' || $1::text, 0
+            ) >> 32) & 4294967295)
+            AND objid::bigint = (hashtextextended(
+                'proxima-forget:' || $1::text, 0
+            ) & 4294967295)",
+    )
+    .bind(t)
+    .fetch_one(pool)
+    .await
 }
 
 fn draft() -> FactWriteCommand {
@@ -681,12 +785,216 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
     result.expect("transfer cooled remint failed");
 }
 
-/// The transfer captures and locks the current series before its cooled-row
-/// update. A same-handle source-owner ingest that arrives in that window must
-/// wait for the transfer, then fail cleanly once the series has moved rather
-/// than advancing a head behind the transfer's back.
+/// A caller may retain only an older cooled admission id while the series is
+/// still live. The cooled row supplies the handle, but the transfer must still
+/// move the hot head through its normal owner compare-and-set.
 #[tokio::test]
-async fn transfer_serializes_same_handle_ingest_after_lifecycle_lock() {
+async fn transfer_accepts_a_cooled_input_for_a_live_series() {
+    let (db_name, pg, _cold) = fresh_pg_with_cold().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+        let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
+
+        let mut later = draft();
+        later.handle = Some(first.handle);
+        later.ingest_key = Some("cooled-input-live-head".into());
+        let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
+
+        assert!(
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(first.memory_id),
+                dest,
+                &contract_sidecar_tables(),
+            )
+            .await?
+        );
+
+        let cooled_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.cooled WHERE t = $1")
+                .bind(first.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(cooled_owner, dest.stored_owner_id());
+        let hot_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(second.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(hot_owner, dest.stored_owner_id());
+        let head: (Uuid, Uuid) =
+            sqlx::query_as("SELECT t, owner_id FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(first.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            head,
+            (second.memory_id.into_inner(), dest.stored_owner_id())
+        );
+
+        let announced_t: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT t FROM proxima_core.announce
+              WHERE op = 'transfer' ORDER BY seq",
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(announced_t, vec![second.memory_id.into_inner(); 2]);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("cooled input live-series transfer failed");
+}
+
+/// A series can be entirely cooled, leaving no `memory` or `memory_head` row.
+/// The cooled identity still names the series boundary, and every cooled stub
+/// moves atomically with the transfer.
+#[tokio::test]
+async fn transfer_moves_a_fully_cooled_headless_series() {
+    let (db_name, pg, _cold) = fresh_pg_with_cold().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+        let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
+
+        let mut later = draft();
+        later.handle = Some(first.handle);
+        later.ingest_key = Some("cooled-input-headless".into());
+        let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, second.memory_id).await?;
+
+        let before: (i64, i64, i64) = sqlx::query_as(
+            "SELECT
+                 (SELECT count(*) FROM proxima_core.memory WHERE handle = $1),
+                 (SELECT count(*) FROM proxima_core.memory_head WHERE handle = $1),
+                 (SELECT count(*) FROM proxima_core.cooled WHERE handle = $1)",
+        )
+        .bind(first.handle)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(before, (0, 0, 2));
+
+        assert!(
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(first.memory_id),
+                dest,
+                &contract_sidecar_tables(),
+            )
+            .await?
+        );
+
+        let owners: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT owner_id FROM proxima_core.cooled
+              WHERE handle = $1 ORDER BY t",
+        )
+        .bind(first.handle)
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(owners, vec![dest.stored_owner_id(); 2]);
+        let after: (i64, i64, i64) = sqlx::query_as(
+            "SELECT
+                 (SELECT count(*) FROM proxima_core.memory WHERE handle = $1),
+                 (SELECT count(*) FROM proxima_core.memory_head WHERE handle = $1),
+                 (SELECT count(*) FROM proxima_core.cooled WHERE handle = $1)",
+        )
+        .bind(first.handle)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(after, (0, 0, 2));
+
+        let announced: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+            "SELECT owner_id, handle, t FROM proxima_core.announce
+              WHERE op = 'transfer' ORDER BY seq",
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(announced.len(), 2);
+        assert!(announced.iter().all(|(owner_id, announced_handle, t)| {
+            *announced_handle == first.handle
+                && *t == second.memory_id.into_inner()
+                && (*owner_id == owner.stored_owner_id() || *owner_id == dest.stored_owner_id())
+        }));
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("fully cooled headless transfer failed");
+}
+
+/// The public Engine must use the cooled identity for authorization too. A
+/// direct storage transfer can prove the move, but an Engine call first asks
+/// `visible_home_owner`; omitting `cooled` there turns a valid headless Memory
+/// into a false public NotFound.
+#[tokio::test]
+async fn engine_transfer_accepts_a_fully_cooled_headless_memory() {
+    let (db_name, pg, _cold) = fresh_pg_with_cold().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let destination = destination();
+        let pool = pg.pool_for_tests();
+        let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
+
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'group'::proxima_core.owner_kind)",
+        )
+        .bind(destination.stored_owner_id())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.group_memberships
+                (group_id, member_user_id, relation)
+             VALUES ($1, $2, 'admin'::proxima_core.membership_relation)",
+        )
+        .bind(destination.stored_owner_id())
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+        let authz =
+            AuthzContext::for_subject(UserId::new(owner.stored_owner_id()), AuthPath::HostBearer);
+        engine
+            .transfer_to_owner(&authz, EntityId::Memory(written.memory_id), destination)
+            .await?;
+
+        let cooled_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.cooled WHERE t = $1")
+                .bind(written.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(cooled_owner, destination.stored_owner_id());
+        let head_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
+        )
+        .bind(written.handle)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(head_count, 0, "headless transfer must not invent a head");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("Engine headless transfer failed");
+}
+
+/// The transfer captures and locks the complete series handle before its
+/// cooled-row update. A same-handle source-owner ingest that arrives in that
+/// window must wait for the transfer, then fail cleanly once the series has
+/// moved rather than advancing a head behind the transfer's back.
+#[tokio::test]
+async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
     const PROBE_LOCK: i64 = 0x5052_4f58_5055_4238;
 
     let (db_name, pg) = fresh_pg().await;
@@ -755,6 +1063,11 @@ async fn transfer_serializes_same_handle_ingest_after_lifecycle_lock() {
         })
         .await??;
 
+        assert!(
+            handle_lock_held(pool, first.handle).await?,
+            "transfer must hold the exact series-handle advisory lock before moving rows"
+        );
+
         let mut third_draft = draft();
         third_draft.handle = Some(first.handle);
         third_draft.ingest_key = Some("k3".into());
@@ -765,23 +1078,17 @@ async fn transfer_serializes_same_handle_ingest_after_lifecycle_lock() {
                 .await
         });
 
-        let mut advisory_waiting = false;
+        let mut owner_waiting = false;
         for _ in 0..100 {
-            let waiting: i64 = sqlx::query_scalar(
-                "SELECT count(*)::bigint FROM pg_locks
-                  WHERE locktype = 'advisory' AND NOT granted",
-            )
-            .fetch_one(pool)
-            .await?;
-            if waiting >= 2 {
-                advisory_waiting = true;
+            if owner_fence_lock_state(pool, owner, "ShareLock", false).await? {
+                owner_waiting = true;
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(
-            advisory_waiting && !third.is_finished(),
-            "transfer and same-handle ingest must both queue on lifecycle locks"
+            owner_waiting && !third.is_finished(),
+            "same-handle append must queue on the source owner fence held by transfer"
         );
 
         let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
@@ -845,11 +1152,1128 @@ async fn transfer_serializes_same_handle_ingest_after_lifecycle_lock() {
     result.expect("transfer/ingest lifecycle serialization failed");
 }
 
-/// A caller can resolve the Memory under its prior owner after the series head
-/// has already moved elsewhere. Transfer must return clean `false` and leave
-/// every hot/cold row and announce lane untouched. The head DELETE variant is
-/// not statically constructible (`memory.handle` FK-references `memory_head`),
-/// so the probe diverges the head owner, which `memory_head_t_only` admits.
+/// A citation-bearing source admission holds the source owner fence while it
+/// materializes a Memory. The transfer's exclusive source fence must wait for
+/// that admission, then observe the committed citation and mount the object
+/// instead of moving the source row out from under it.
+#[tokio::test]
+async fn transfer_serializes_source_citation_before_moving_a_blob() {
+    const PROBE_LOCK: i64 = 0x4349_5445_4f57_4e52;
+
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let destination = destination();
+        let pool = pg.pool_for_tests();
+
+        let mut target_draft = draft();
+        target_draft.citation = Some(
+            CitationSpec::v1(
+                "core/test-cited-object-v1",
+                [17_u8; 32],
+                "core/test-citation-mapping-v1",
+            )
+            .into(),
+        );
+        let target = pg.ingest_fact_atomic(&permit, &target_draft, None).await?;
+        let blob_id = target
+            .cited_object_id
+            .ok_or("citation-bearing target did not return its blob")?;
+
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "CREATE SEQUENCE public.transfer_citation_probe;
+             CREATE FUNCTION public.block_source_citation_insert() RETURNS trigger
+             LANGUAGE plpgsql AS $$
+             BEGIN
+                 PERFORM nextval('public.transfer_citation_probe');
+                 PERFORM pg_advisory_xact_lock({PROBE_LOCK});
+                 RETURN NEW;
+             END
+             $$;
+             CREATE TRIGGER block_source_citation_insert
+             BEFORE INSERT ON proxima_core.memory
+             FOR EACH ROW
+             EXECUTE FUNCTION public.block_source_citation_insert();",
+        )))
+        .execute(pool)
+        .await?;
+
+        let mut blocker = pool.acquire().await?;
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(PROBE_LOCK)
+            .execute(&mut *blocker)
+            .await?;
+
+        let append_pg = pg.clone();
+        let append_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let mut append_draft = draft();
+        append_draft.ingest_key = Some("source-citation".into());
+        append_draft.blob_id = Some(blob_id);
+        let append = tokio::spawn(async move {
+            append_pg
+                .ingest_fact_atomic(&append_permit, &append_draft, None)
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let called: bool =
+                    sqlx::query_scalar("SELECT is_called FROM public.transfer_citation_probe")
+                        .fetch_one(pool)
+                        .await?;
+                if called {
+                    return Ok::<(), sqlx::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await??;
+
+        let transfer_pg = pg.clone();
+        let transfer_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let transfer = tokio::spawn(async move {
+            transfer_pg
+                .transfer_to_owner(
+                    &transfer_permit,
+                    EntityId::Memory(target.memory_id),
+                    destination,
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+
+        // The append is paused while holding the source shared fence. Once
+        // the transfer has queued for the exclusive fence, the blob must
+        // still be source-owned: source citation and the row move are
+        // serialized.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if owner_fence_lock_state(pool, owner, "ExclusiveLock", false).await? {
+                    return Ok::<(), sqlx::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await??;
+        let owner_before_release: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+                .bind(blob_id)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(owner_before_release, owner.stored_owner_id());
+
+        let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
+            .bind(PROBE_LOCK)
+            .fetch_one(&mut *blocker)
+            .await?;
+        assert!(unlocked);
+        drop(blocker);
+
+        let appended = tokio::time::timeout(std::time::Duration::from_secs(10), append).await??;
+        let appended = appended?;
+        let transferred =
+            tokio::time::timeout(std::time::Duration::from_secs(10), transfer).await??;
+        assert!(transferred?);
+
+        let source_blob_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+                .bind(blob_id)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(source_blob_owner, owner.stored_owner_id());
+        let source_citation_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(appended.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(source_citation_owner, owner.stored_owner_id());
+        let source_citation_blob: Uuid =
+            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+                .bind(appended.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(source_citation_blob, blob_id);
+
+        let target_owner_and_blob: (Uuid, Uuid) = sqlx::query_as(
+            "SELECT m.owner_id, m.blob_id
+               FROM proxima_core.memory m
+              WHERE m.t = $1",
+        )
+        .bind(target.memory_id.into_inner())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(target_owner_and_blob.0, destination.stored_owner_id());
+        assert_ne!(
+            target_owner_and_blob.1, blob_id,
+            "the transferred citation must use the destination mount"
+        );
+        let mounted_blob_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+                .bind(target_owner_and_blob.1)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(mounted_blob_owner, destination.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("transfer/source citation serialization failed");
+}
+
+/// Destination citation admission holds the destination owner fence in
+/// shared mode while it creates the unique `(owner, schema, content_hash)`
+/// blob row. A transfer must wait for the exclusive destination fence, then
+/// reread the dedupe key and remap to the row the citation just created.
+#[tokio::test]
+async fn transfer_serializes_destination_citation_dedupe() {
+    const PROBE_LOCK: i64 = 0x0044_4553_5442_4c4f;
+
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source_permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let destination = destination();
+        let pool = pg.pool_for_tests();
+
+        let mut source_draft = draft();
+        source_draft.citation = Some(
+            CitationSpec::v1(
+                "core/test-cited-object-v1",
+                [29_u8; 32],
+                "core/test-citation-mapping-v1",
+            )
+            .into(),
+        );
+        let source_row = pg
+            .ingest_fact_atomic(&source_permit, &source_draft, None)
+            .await?;
+        let source_blob = source_row.cited_object_id.ok_or("source blob missing")?;
+
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "CREATE SEQUENCE public.destination_blob_probe;
+             CREATE FUNCTION public.block_destination_blob_insert() RETURNS trigger
+             LANGUAGE plpgsql AS $$
+             BEGIN
+                 IF NEW.owner_id = '{destination}'::uuid THEN
+                     PERFORM nextval('public.destination_blob_probe');
+                     PERFORM pg_advisory_xact_lock({PROBE_LOCK});
+                 END IF;
+                 RETURN NEW;
+             END
+             $$;
+             CREATE TRIGGER block_destination_blob_insert
+             BEFORE INSERT ON proxima_core.blob
+             FOR EACH ROW
+             EXECUTE FUNCTION public.block_destination_blob_insert();",
+            destination = destination.stored_owner_id(),
+        )))
+        .execute(pool)
+        .await?;
+
+        let mut blocker = pool.acquire().await?;
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(PROBE_LOCK)
+            .execute(&mut *blocker)
+            .await?;
+
+        let destination_pg = pg.clone();
+        let destination_citation = tokio::spawn(async move {
+            let permit = OwnerWritePermit::new_for_tests(destination, AccessKind::Fact);
+            let mut citation = draft();
+            citation.citation = Some(
+                CitationSpec::v1(
+                    "core/test-cited-object-v1",
+                    [29_u8; 32],
+                    "core/test-citation-mapping-v1",
+                )
+                .into(),
+            );
+            destination_pg
+                .ingest_fact_atomic(&permit, &citation, None)
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let called: bool =
+                    sqlx::query_scalar("SELECT is_called FROM public.destination_blob_probe")
+                        .fetch_one(pool)
+                        .await?;
+                if called {
+                    return Ok::<(), sqlx::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await??;
+
+        let transfer_pg = pg.clone();
+        let transfer_permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let transfer = tokio::spawn(async move {
+            transfer_pg
+                .transfer_to_owner(
+                    &transfer_permit,
+                    EntityId::Memory(source_row.memory_id),
+                    destination,
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let waiting = owner_fence_waiter_count(pool, destination, "ExclusiveLock").await?;
+                if waiting >= 1 {
+                    return Ok::<(), sqlx::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await??;
+        let owner_before_release: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+                .bind(source_blob)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(owner_before_release, source.stored_owner_id());
+
+        let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
+            .bind(PROBE_LOCK)
+            .fetch_one(&mut *blocker)
+            .await?;
+        assert!(unlocked);
+        drop(blocker);
+
+        let destination_result =
+            tokio::time::timeout(std::time::Duration::from_secs(10), destination_citation)
+                .await??;
+        let destination_row = destination_result?;
+        let transferred =
+            tokio::time::timeout(std::time::Duration::from_secs(10), transfer).await??;
+        assert!(
+            transferred?,
+            "transfer must reread the destination dedupe row"
+        );
+
+        let (target_owner, target_blob): (Uuid, Uuid) =
+            sqlx::query_as("SELECT owner_id, blob_id FROM proxima_core.memory WHERE t = $1")
+                .bind(source_row.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(target_owner, destination.stored_owner_id());
+        assert_eq!(target_blob, destination_row.cited_object_id.unwrap());
+        assert_ne!(target_blob, source_blob);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("transfer/destination citation serialization failed");
+}
+
+/// A committed cited Fact can precede the upload bookkeeping transition. An
+/// unresolved upload row must stop transfer from moving its blob until finish
+/// (or an explicit terminal cleanup) publishes the row; otherwise a later
+/// source-owner finish could create a cross-owner upload locator.
+#[tokio::test]
+async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let destination = destination();
+        let pool = pg.pool_for_tests();
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+        )
+        .bind(source.stored_owner_id())
+        .bind(proxima_core::OwnerRefKind::of(&source).as_str())
+        .execute(pool)
+        .await?;
+        let content_hash = vec![37_u8; 32];
+        let blob_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+             VALUES ($1, 'core/uploaded-blob-v1', $2)
+             RETURNING blob_id",
+        )
+        .bind(source.stored_owner_id())
+        .bind(&content_hash)
+        .fetch_one(pool)
+        .await?;
+        let upload_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.blob_uploads
+                (owner_id, upload_id, bucket, object_key, filename, mime,
+                 expected_byte_len, status, content_hash, expires_at)
+             VALUES ($1, $2, 'test', 'pending/test', 'test.pdf',
+                     'application/pdf', 1, 'pending', $3,
+                     now() + interval '1 hour')",
+        )
+        .bind(source.stored_owner_id())
+        .bind(upload_id)
+        .bind(&content_hash)
+        .execute(pool)
+        .await?;
+        let written = cite(&pg, &permit, "unpublished-upload", blob_id).await?;
+
+        let error = pg
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                destination,
+                &contract_sidecar_tables(),
+            )
+            .await
+            .expect_err("transfer must wait for unresolved upload publication");
+        assert!(
+            matches!(error, StorageError::Conflict(ref message) if message.contains("publication")),
+            "unpublished upload refusal must be a caller-retryable conflict: {error}"
+        );
+        let source_blob_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+                .bind(blob_id)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(source_blob_owner, source.stored_owner_id());
+
+        // Model finish's database half after the Fact committed. The real
+        // upload service performs this transition under the same owner fence;
+        // stage has already pinned the digest and canonical object key.
+        sqlx::query(
+            "UPDATE proxima_core.blob_uploads
+                SET status = 'completed', blob_id = $2, completed_at = now(),
+                    object_key = 'objects/' || upload_id::text, sha256 = $4
+              WHERE owner_id = $1 AND upload_id = $3",
+        )
+        .bind(source.stored_owner_id())
+        .bind(blob_id)
+        .bind(upload_id)
+        .bind(&content_hash)
+        .execute(pool)
+        .await?;
+        assert!(
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                destination,
+                &contract_sidecar_tables()
+            )
+            .await?,
+            "transfer proceeds once finish published the upload row"
+        );
+        let (blob_owner, upload_owner): (Uuid, Uuid) = sqlx::query_as(
+            "SELECT b.owner_id, u.owner_id
+               FROM proxima_core.blob b
+               JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id
+              WHERE b.blob_id = $1 AND u.upload_id = $2",
+        )
+        .bind(blob_id)
+        .bind(upload_id)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(blob_owner, destination.stored_owner_id());
+        assert_eq!(upload_owner, destination.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("unpublished upload transfer fence failed");
+}
+
+/// 0007 cannot infer BLAKE3 for a row staged under the previous schema.
+/// Its canonical locator and SHA-256 prove staging happened, but do not say
+/// which cited blob the later Fact committed. Transfer therefore fences the
+/// owner until the ordinary completion retry re-hashes and finishes the row.
+#[tokio::test]
+async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let destination = destination();
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, $2::proxima_core.owner_kind)",
+        )
+        .bind(source.stored_owner_id())
+        .bind(proxima_core::OwnerRefKind::of(&source).as_str())
+        .execute(pool)
+        .await?;
+        let content_hash = vec![38_u8; 32];
+        let blob_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+             VALUES ($1, 'core/uploaded-blob-v1', $2)
+             RETURNING blob_id",
+        )
+        .bind(source.stored_owner_id())
+        .bind(&content_hash)
+        .fetch_one(pool)
+        .await?;
+        let upload_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.blob_uploads
+                (upload_id, owner_id, bucket, object_key, filename, mime,
+                 expected_byte_len, status, sha256, expires_at)
+             VALUES ($1, $2, 'test', 'objects/' || $1::text, 'legacy.pdf',
+                     'application/pdf', 1, 'pending', $3,
+                     now() + interval '1 hour')",
+        )
+        .bind(upload_id)
+        .bind(source.stored_owner_id())
+        .bind(&content_hash)
+        .execute(pool)
+        .await?;
+        let written = cite(&pg, &permit, "legacy-staged-upload", blob_id).await?;
+
+        let error = pg
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                destination,
+                &contract_sidecar_tables(),
+            )
+            .await
+            .expect_err("an identity-ambiguous legacy stage must fence transfer");
+        assert!(
+            matches!(error, StorageError::Conflict(ref message) if message.contains("publication")),
+            "legacy staged upload refusal must be retryable: {error}"
+        );
+        let owner_before_retry: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+                .bind(blob_id)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(owner_before_retry, source.stored_owner_id());
+
+        // Model the retry's restage and finish database transitions after it
+        // re-hashed the retained object under the 0007 schema.
+        sqlx::query(
+            "UPDATE proxima_core.blob_uploads
+                SET content_hash = $4, status = 'completed', blob_id = $2,
+                    completed_at = now()
+              WHERE owner_id = $1 AND upload_id = $3",
+        )
+        .bind(source.stored_owner_id())
+        .bind(blob_id)
+        .bind(upload_id)
+        .bind(&content_hash)
+        .execute(pool)
+        .await?;
+        assert!(
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                destination,
+                &contract_sidecar_tables(),
+            )
+            .await?,
+            "transfer proceeds after the retry publishes exact identity"
+        );
+        let (blob_owner, upload_owner): (Uuid, Uuid) = sqlx::query_as(
+            "SELECT b.owner_id, u.owner_id
+               FROM proxima_core.blob b
+               JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id
+              WHERE b.blob_id = $1 AND u.upload_id = $2",
+        )
+        .bind(blob_id)
+        .bind(upload_id)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(blob_owner, destination.stored_owner_id());
+        assert_eq!(upload_owner, destination.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("legacy staged upload transfer fence failed");
+}
+
+/// A prepare that never staged bytes has no content identity and therefore
+/// cannot claim every series under its owner. A staged upload is equally
+/// irrelevant to a different series: the owner fence serializes publication,
+/// while the content/handle join supplies the exact transfer boundary.
+#[tokio::test]
+async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let destination = destination();
+        let pool = pg.pool_for_tests();
+        let moving = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
+
+        let unrelated_hash = vec![91_u8; 32];
+        let unrelated_blob: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+             VALUES ($1, 'core/uploaded-blob-v1', $2)
+             RETURNING blob_id",
+        )
+        .bind(source.stored_owner_id())
+        .bind(&unrelated_hash)
+        .fetch_one(pool)
+        .await?;
+        let unrelated = cite(&pg, &permit, "unrelated-upload", unrelated_blob).await?;
+
+        sqlx::query(
+            "INSERT INTO proxima_core.blob_uploads
+                (owner_id, bucket, object_key, filename, mime,
+                 expected_byte_len, status, content_hash, expires_at)
+             VALUES
+                ($1, 'test', 'pending/unstaged', 'lost.bin',
+                 'application/octet-stream', 1, 'pending', NULL,
+                 now() + interval '1 hour'),
+                ($1, 'test', 'objects/unrelated', 'other.bin',
+                 'application/octet-stream', 1, 'pending', $2,
+                 now() + interval '1 hour')",
+        )
+        .bind(source.stored_owner_id())
+        .bind(&unrelated_hash)
+        .execute(pool)
+        .await?;
+
+        assert!(
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(moving.memory_id),
+                destination,
+                &contract_sidecar_tables(),
+            )
+            .await?,
+            "neither an abandoned prepare nor another series' staged upload may pin this series"
+        );
+        let unrelated_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(unrelated.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            unrelated_owner,
+            source.stored_owner_id(),
+            "the series whose staged upload stayed pending remains at the source"
+        );
+        let pending_source_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint
+               FROM proxima_core.blob_uploads
+              WHERE owner_id = $1 AND status = 'pending'",
+        )
+        .bind(source.stored_owner_id())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(pending_source_rows, 2, "transfer does not consume uploads");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("unrelated pending upload transfer failed");
+}
+
+/// Terminal upload cleanup has abandoned publication and must not pin an
+/// owner's transfer boundary forever. The terminal row has no blob id, so it
+/// remains in the source scope while the cited blob itself moves; a later
+/// completed publication is handled by the upload service against the blob's
+/// current owner.
+#[tokio::test]
+async fn transfer_allows_aborted_and_expired_upload_cleanup() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        for (ordinal, status) in [(0_u8, "aborted"), (1_u8, "expired")] {
+            let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+            let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+            let destination = destination();
+            let mut cited = draft();
+            cited.citation = Some(
+                CitationSpec::v1(
+                    "core/test-cited-object-v1",
+                    [71_u8 + ordinal; 32],
+                    "core/test-citation-mapping-v1",
+                )
+                .into(),
+            );
+            let written = pg.ingest_fact_atomic(&permit, &cited, None).await?;
+            let blob_id = written.cited_object_id.ok_or("cited blob missing")?;
+            let upload_id = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO proxima_core.blob_uploads
+                    (owner_id, upload_id, bucket, object_key, filename, mime,
+                     expected_byte_len, status, expires_at)
+                 VALUES ($1, $2, 'test', 'pending/test', 'test.pdf',
+                     'application/pdf', 1, $3::proxima_core.blob_upload_status,
+                         now() + interval '1 hour')",
+            )
+            .bind(source.stored_owner_id())
+            .bind(upload_id)
+            .bind(status)
+            .execute(pool)
+            .await?;
+
+            assert!(
+                pg.transfer_to_owner(
+                    &permit,
+                    EntityId::Memory(written.memory_id),
+                    destination,
+                    &contract_sidecar_tables(),
+                )
+                .await?,
+                "transfer must proceed after {status} cleanup"
+            );
+            let moved_blob_owner: Uuid =
+                sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+                    .bind(blob_id)
+                    .fetch_one(pool)
+                    .await?;
+            assert_eq!(moved_blob_owner, destination.stored_owner_id());
+            let (terminal_owner, observed_status): (Uuid, String) = sqlx::query_as(
+                "SELECT owner_id, status::text
+                   FROM proxima_core.blob_uploads
+                  WHERE upload_id = $1",
+            )
+            .bind(upload_id)
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(terminal_owner, source.stored_owner_id());
+            assert_eq!(observed_status, status);
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("terminal upload cleanup must not block transfer");
+}
+
+/// A terminal row is ordinarily abandoned cleanup, but not when this exact
+/// series already carries its canonical uploaded-blob cited object. That
+/// shape means the Fact committed before finish; moving the blob would make
+/// the source-owned finish publish across an owner boundary.
+#[tokio::test]
+async fn transfer_waits_for_terminal_uploaded_blob_publication() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let destination = destination();
+        let pool = pg.pool_for_tests();
+        let digest = vec![81_u8; 32];
+        let (blob_id, upload_id) = seed_cited_blob(pool, source, &digest).await?;
+        sqlx::query(
+            "UPDATE proxima_core.blob_uploads
+                SET status = 'aborted', blob_id = NULL, completed_at = NULL
+              WHERE upload_id = $1",
+        )
+        .bind(upload_id)
+        .execute(pool)
+        .await?;
+        let written = cite(&pg, &permit, "terminal-publication", blob_id).await?;
+
+        let error = pg
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                destination,
+                &contract_sidecar_tables(),
+            )
+            .await
+            .expect_err("a committed uploaded-blob Fact must finish before transfer");
+        assert!(
+            matches!(error, StorageError::Conflict(ref message) if message.contains("publication")),
+            "terminal publication refusal must be retryable: {error}"
+        );
+
+        sqlx::query(
+            "UPDATE proxima_core.blob_uploads
+                SET status = 'completed', blob_id = $2, completed_at = now()
+              WHERE upload_id = $1",
+        )
+        .bind(upload_id)
+        .bind(blob_id)
+        .execute(pool)
+        .await?;
+        assert!(
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                destination,
+                &contract_sidecar_tables(),
+            )
+            .await?,
+            "transfer proceeds after terminal publication is resolved"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("terminal uploaded-blob publication transfer fence failed");
+}
+
+/// A failed attempt at bytes that were later published successfully is only
+/// cleanup. The exact completed row is the readable publication; letting an
+/// older same-hash terminal row fence forever would make abort-and-retry a
+/// permanent transfer denial.
+#[tokio::test]
+async fn terminal_same_hash_retry_does_not_pin_an_exactly_published_blob() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let destination = destination();
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let hash = vec![82_u8; 32];
+        let (blob_id, completed_upload) = seed_cited_blob(pool, source, &hash).await?;
+        let terminal_upload = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.blob_uploads
+                (upload_id, owner_id, bucket, object_key, filename, mime,
+                 expected_byte_len, status, sha256, content_hash, expires_at,
+                 aborted_at)
+             VALUES ($1, $2, 'test', 'objects/' || $1::text, 'first.pdf',
+                     'application/pdf', 3, 'aborted', $3, $3,
+                     now() + interval '1 hour', now())",
+        )
+        .bind(terminal_upload)
+        .bind(source.stored_owner_id())
+        .bind(&hash)
+        .execute(pool)
+        .await?;
+        let written = cite(&pg, &permit, "same-hash-retry", blob_id).await?;
+
+        assert!(
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                destination,
+                &contract_sidecar_tables(),
+            )
+            .await?,
+            "a superseded terminal attempt must not pin an exact publication"
+        );
+        let (memory_owner, blob_owner, completed_owner): (Uuid, Uuid, Uuid) = sqlx::query_as(
+            "SELECT m.owner_id, b.owner_id, u.owner_id
+               FROM proxima_core.memory m
+               JOIN proxima_core.blob b ON b.blob_id = m.blob_id
+               JOIN proxima_core.blob_uploads u ON u.upload_id = $2
+              WHERE m.t = $1",
+        )
+        .bind(written.memory_id.into_inner())
+        .bind(completed_upload)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(memory_owner, destination.stored_owner_id());
+        assert_eq!(blob_owner, destination.stored_owner_id());
+        assert_eq!(completed_owner, destination.stored_owner_id());
+        let (terminal_owner, terminal_status): (Uuid, String) = sqlx::query_as(
+            "SELECT owner_id, status::text
+               FROM proxima_core.blob_uploads
+              WHERE upload_id = $1",
+        )
+        .bind(terminal_upload)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(terminal_owner, source.stored_owner_id());
+        assert_eq!(terminal_status, "aborted");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("same-hash terminal cleanup transfer failed");
+}
+
+/// A transfer locks the series handle before its lifecycle set. A row that
+/// crosses the lifecycle seam is therefore rejected before any transfer leg
+/// runs, and the atomic port retries from a fresh snapshot rather than
+/// transferring only the rows it happened to lock first.
+#[tokio::test]
+async fn transfer_retries_when_series_membership_drifts_before_mutation() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+        let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
+        let first_t = first.memory_id.into_inner();
+
+        // Hold the first lifecycle key so the transfer has a deterministic
+        // window after its membership snapshot and before the exact reread.
+        let mut blocker = pool.begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(
+                 hashtextextended('proxima-forget:' || $1::text, 0)
+             )",
+        )
+        .bind(first_t)
+        .execute(&mut *blocker)
+        .await?;
+
+        let transfer_pg = pg.clone();
+        let transfer = tokio::spawn(async move {
+            let transfer_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+            transfer_pg
+                .transfer_to_owner(
+                    &transfer_permit,
+                    EntityId::Memory(first.memory_id),
+                    dest,
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+
+        // The handle is not blocked, so a waiter here means the transfer has
+        // taken its complete membership snapshot and is waiting for the
+        // lifecycle set. This avoids sleeping for a race with the test row.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if lifecycle_waiter_count(pool, first_t).await? >= 1 {
+                    return Ok::<(), sqlx::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await??;
+
+        let drift_t = Uuid::now_v7();
+        // This direct insert is the deterministic seam probe. Production
+        // appenders take the handle lock; bypassing the advisory lock here
+        // lets the test prove that the exact reread is still a safety net if
+        // a writer crosses the boundary.
+        sqlx::query(
+            "INSERT INTO proxima_core.memory
+                (handle, t, kind, owner_id, schema_id, origins, refs,
+                 goal_refs, sidecar_tables)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', '{}', '{}',
+                     '{}', '{}')",
+        )
+        .bind(first.handle)
+        .bind(drift_t)
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+        sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+            .bind(first.handle)
+            .bind(drift_t)
+            .execute(pool)
+            .await?;
+        // Keep the seam row a valid series append: the head advances with
+        // the membership, exactly as the ordinary append path does.
+
+        blocker.rollback().await?;
+        let moved = tokio::time::timeout(std::time::Duration::from_secs(10), transfer).await??;
+        assert!(moved?, "the retry must transfer the complete series");
+
+        let source_rows: i64 = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*)::bigint
+               FROM proxima_core.memory
+              WHERE handle = $1 AND owner_id = $2
+             UNION ALL
+             SELECT count(*)::bigint
+               FROM proxima_core.cooled
+              WHERE handle = $1 AND owner_id = $2",
+        )
+        .bind(first.handle)
+        .bind(owner.stored_owner_id())
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .sum();
+        assert_eq!(
+            source_rows, 0,
+            "no source-owned version may escape the retry"
+        );
+        let destination_rows: i64 = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*)::bigint
+               FROM proxima_core.memory
+              WHERE handle = $1 AND owner_id = $2
+             UNION ALL
+             SELECT count(*)::bigint
+               FROM proxima_core.cooled
+              WHERE handle = $1 AND owner_id = $2",
+        )
+        .bind(first.handle)
+        .bind(dest.stored_owner_id())
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .sum();
+        assert_eq!(destination_rows, 2, "the retry must move both versions");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("transfer membership drift retry failed");
+}
+
+/// Opposite transfers acquire both endpoint fences in one canonical order.
+/// Canonical ordering deliberately means both transactions contend on the
+/// same minimum endpoint; they cannot each hold a distinct first endpoint.
+/// This test holds that exact first fence, waits for both transfer requests
+/// in `ExclusiveLock` mode, and then releases it to prove the actual wait
+/// order rather than relying on scheduler timing. It calls the storage
+/// transfer primitive directly with personal endpoints; the Engine's public
+/// port restricts destinations to groups, but this lock-order regression is
+/// about the storage boundary itself.
+#[tokio::test]
+async fn crossed_transfers_do_not_deadlock_on_owner_fences() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let left = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let right = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let left_permit = OwnerWritePermit::new_for_tests(left, AccessKind::Fact);
+        let right_permit = OwnerWritePermit::new_for_tests(right, AccessKind::Fact);
+        let left_row = pg.ingest_fact_atomic(&left_permit, &draft(), None).await?;
+        let right_row = pg.ingest_fact_atomic(&right_permit, &draft(), None).await?;
+
+        let pool = pg.pool_for_tests();
+        let first_fenced_owner = if left.stored_owner_id() < right.stored_owner_id() {
+            left
+        } else {
+            right
+        };
+        let mut fence_blocker = pool.begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(
+                 hashtextextended('proxima-owner-fence:' || $1 || ':' || $2::text, 0)
+             )",
+        )
+        .bind("personal")
+        .bind(first_fenced_owner.stored_owner_id())
+        .execute(&mut *fence_blocker)
+        .await?;
+
+        let left_pg = pg.clone();
+        let right_pg = pg.clone();
+        let left_transfer = tokio::spawn(async move {
+            left_pg
+                .transfer_to_owner(
+                    &left_permit,
+                    EntityId::Memory(left_row.memory_id),
+                    right,
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+        let right_transfer = tokio::spawn(async move {
+            right_pg
+                .transfer_to_owner(
+                    &right_permit,
+                    EntityId::Memory(right_row.memory_id),
+                    left,
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let waiting =
+                    owner_fence_waiter_count(pool, first_fenced_owner, "ExclusiveLock").await?;
+                if waiting >= 2 {
+                    return Ok::<(), sqlx::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await??;
+        fence_blocker.rollback().await?;
+        let (left_result, right_result) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(left_transfer, right_transfer)
+            })
+            .await?;
+        assert!(left_result??, "left-to-right transfer must complete");
+        assert!(right_result??, "right-to-left transfer must complete");
+
+        let left_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE handle = $1")
+                .bind(left_row.handle)
+                .fetch_one(pool)
+                .await?;
+        let right_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE handle = $1")
+                .bind(right_row.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(left_owner, right.stored_owner_id());
+        assert_eq!(right_owner, left.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("crossed transfer fence ordering failed");
+}
+
+/// A completed erase removes the original admission and leaves the handle
+/// available for a new series. A later transfer request for the erased `t`
+/// must be a no-op and must not move the replacement series that reuses the
+/// handle.
+#[tokio::test]
+async fn transfer_does_not_move_a_handle_reused_after_complete_erase() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let destination = destination();
+        let pool = pg.pool_for_tests();
+        let original = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
+
+        let mut erase = pool.begin().await?;
+        let (erased, plan) = erase_memory_series(
+            &mut erase,
+            &core_pg_sidecars(),
+            &contract_sidecar_tables(),
+            &owner,
+            &[original.memory_id.into_inner()],
+        )
+        .await?;
+        assert_eq!(erased, 1);
+        assert!(plan.is_empty());
+        erase.commit().await?;
+
+        let mut replacement_draft = draft();
+        replacement_draft.handle = Some(original.handle);
+        replacement_draft.ingest_key = Some("replacement".into());
+        let replacement = pg
+            .ingest_fact_atomic(&permit, &replacement_draft, None)
+            .await?;
+        assert_eq!(replacement.handle, original.handle);
+
+        let moved = pg
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(original.memory_id),
+                destination,
+                &contract_sidecar_tables(),
+            )
+            .await?;
+        assert!(
+            !moved,
+            "an erased admission cannot transfer its replacement"
+        );
+
+        let replacement_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(replacement.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(replacement_owner, owner.stored_owner_id());
+        let head: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(original.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(head, replacement.memory_id.into_inner());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("handle reuse after complete erase was not fenced");
+}
+
+/// A caller can resolve a cooled Memory under its prior owner after the series
+/// head has already moved elsewhere. Transfer must return clean `false` and
+/// leave every hot/cold row and announce lane untouched. The head DELETE
+/// variant is not statically constructible (`memory.handle` FK-references
+/// `memory_head`), so the probe diverges the head owner, which
+/// `memory_head_t_only` admits.
 #[tokio::test]
 async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
     let (db_name, pg) = fresh_pg().await;
@@ -882,6 +2306,12 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
             .bind(usurper.stored_owner_id())
             .execute(pool)
             .await?;
+        let destination_owner_before: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.owners WHERE owner_id = $1",
+        )
+        .bind(dest.stored_owner_id())
+        .fetch_one(pool)
+        .await?;
         let announces_before: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.announce")
                 .fetch_one(pool)
@@ -890,7 +2320,7 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
         let transferred = pg
             .transfer_to_owner(
                 &permit,
-                EntityId::Memory(second.memory_id),
+                EntityId::Memory(first.memory_id),
                 dest,
                 &contract_sidecar_tables(),
             )
@@ -933,6 +2363,16 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
         assert_eq!(
             announces_after, announces_before,
             "a rolled-back transfer leaves the log exactly as it was"
+        );
+        let destination_owner_after: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.owners WHERE owner_id = $1",
+        )
+        .bind(dest.stored_owner_id())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            destination_owner_after, destination_owner_before,
+            "a rejected transfer must not leave a destination owner row"
         );
         Ok(())
     }
@@ -1669,11 +3109,140 @@ async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
     result.expect("destination owner row minting failed");
 }
 
-/// A first-use destination owner is arbitrated before a write takes any
-/// lifecycle target lock. The trigger pauses the real transfer immediately
-/// after its owners INSERT; the destination admission then waits on that row,
-/// while a probe proves T is still freely lockable. Releasing the transfer
-/// lets both production transactions finish without an owner/advisory cycle.
+/// An absent destination must have one owner-row/fence order. Hold the
+/// destination fence first, then start a real append: the append must wait on
+/// its shared fence before attempting the owner INSERT. The inverse order —
+/// INSERT first, then shared fence — would leave an uncommitted owner row
+/// between the two transactions and deadlock transfer against append.
+#[tokio::test]
+async fn absent_destination_append_waits_before_owner_insert() {
+    const PROBE_LOCK: i64 = 0x4142_5345_4e54_4f57;
+
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let destination = destination();
+        let source_permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let destination_permit = OwnerWritePermit::new_for_tests(destination, AccessKind::Fact);
+        let written = pg
+            .ingest_fact_atomic(&source_permit, &draft(), None)
+            .await?;
+        let pool = pg.pool_for_tests().clone();
+
+        // The transfer is deliberately held at the destination's first-use
+        // owner fence. This creates the inverse-order window in which the old
+        // append path inserted the owner before waiting on that fence.
+        let mut fence_blocker = pool.begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(
+                 hashtextextended('proxima-owner-fence:' || $1 || ':' || $2::text, 0)
+             )",
+        )
+        .bind("group")
+        .bind(destination.stored_owner_id())
+        .execute(&mut *fence_blocker)
+        .await?;
+
+        let transfer_pg = pg.clone();
+        let transfer = tokio::spawn(async move {
+            transfer_pg
+                .transfer_to_owner(
+                    &source_permit,
+                    EntityId::Memory(written.memory_id),
+                    destination,
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if owner_fence_waiter_count(&pool, destination, "ExclusiveLock").await? >= 1 {
+                    return Ok::<(), sqlx::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await??;
+
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "CREATE SEQUENCE public.absent_owner_insert_probe;
+             CREATE FUNCTION public.note_absent_owner_insert() RETURNS trigger
+             LANGUAGE plpgsql AS $$
+             BEGIN
+                 PERFORM nextval('public.absent_owner_insert_probe');
+                 PERFORM pg_advisory_xact_lock({PROBE_LOCK});
+                 RETURN NEW;
+             END
+             $$;
+             CREATE TRIGGER note_absent_owner_insert
+             AFTER INSERT ON proxima_core.owners
+             FOR EACH ROW
+             EXECUTE FUNCTION public.note_absent_owner_insert();"
+        )))
+        .execute(&pool)
+        .await?;
+
+        let mut probe = pool.acquire().await?;
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(PROBE_LOCK)
+            .execute(&mut *probe)
+            .await?;
+        let append_pg = pg.clone();
+        let append = tokio::spawn(async move {
+            append_pg
+                .ingest_fact_atomic(&destination_permit, &draft(), None)
+                .await
+        });
+
+        // The append's shared owner-fence waiter is the required rendezvous.
+        // If it inserted first, the trigger sequence is called and the test
+        // fails before releasing the blocker into the deadlock shape.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let inserted: bool =
+                    sqlx::query_scalar("SELECT is_called FROM public.absent_owner_insert_probe")
+                        .fetch_one(&pool)
+                        .await?;
+                assert!(
+                    !inserted,
+                    "append inserted an owner before its shared fence"
+                );
+                if owner_fence_waiter_count(&pool, destination, "ShareLock").await? >= 1 {
+                    return Ok::<(), sqlx::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await??;
+
+        fence_blocker.rollback().await?;
+        sqlx::query_scalar::<_, bool>("SELECT pg_advisory_unlock($1)")
+            .bind(PROBE_LOCK)
+            .fetch_one(&mut *probe)
+            .await?;
+        let (append_result, transfer_result) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(append, transfer)
+            })
+            .await?;
+        append_result??;
+        assert!(
+            transfer_result??,
+            "transfer completes after the append owner row"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("absent destination owner/fence order deadlocked");
+}
+
+/// A first-use destination owner is fenced before a write takes any lifecycle
+/// target lock. The trigger pauses the real transfer immediately after its
+/// owner INSERT, while it still holds the destination fence exclusively; the
+/// destination admission waits on that fence in shared mode, and a probe
+/// proves T is still freely lockable. Releasing the transfer lets both
+/// production transactions finish without an owner/advisory cycle.
 #[tokio::test]
 async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
     const PROBE_LOCK: i64 = 0x4445_5354_4f57_4e52;
@@ -1751,13 +3320,7 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
             if admission.is_finished() {
                 break;
             }
-            let waiting: i64 = sqlx::query_scalar(
-                "SELECT count(*)::bigint FROM pg_locks
-                  WHERE locktype = 'transactionid' AND NOT granted",
-            )
-            .fetch_one(&pool)
-            .await?;
-            if waiting > 0 {
+            if owner_fence_waiter_count(&pool, destination, "ShareLock").await? >= 1 {
                 owner_waiting = true;
                 break;
             }
@@ -1765,7 +3328,7 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
         }
         assert!(
             owner_waiting && !admission.is_finished(),
-            "destination admission must wait on transfer's uncommitted owner row"
+            "destination admission must wait on transfer's exclusive owner fence"
         );
 
         let mut target_probe = pool.begin().await?;
@@ -1779,7 +3342,7 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
         .await?;
         assert!(
             target_available,
-            "owner-row arbitration must precede the destination lifecycle lock"
+            "owner fencing must precede the destination lifecycle lock"
         );
         target_probe.rollback().await?;
 
@@ -1883,9 +3446,9 @@ async fn seed_cited_blob(
     let upload_id: Uuid = sqlx::query_scalar(
         "INSERT INTO proxima_core.blob_uploads
              (owner_id, bucket, object_key, filename, mime, expected_byte_len,
-              status, blob_id, sha256, expires_at, completed_at)
+              status, blob_id, sha256, content_hash, expires_at, completed_at)
          VALUES ($1, 'bucket', 'placeholder', 'f.bin', 'application/octet-stream', 3,
-                 'completed', $2, $3, now() + interval '1 day', now())
+                 'completed', $2, $3, $3, now() + interval '1 day', now())
          RETURNING upload_id",
     )
     .bind(owner.stored_owner_id())
@@ -1902,6 +3465,34 @@ async fn seed_cited_blob(
     .execute(pool)
     .await?;
     Ok((blob_id, upload_id))
+}
+
+/// Add a canonical, same-owner completed row whose blank filename makes the
+/// publication metadata unreadable. Every other witness is exact so tests
+/// cannot pass because a different validation predicate happened to fail.
+async fn seed_malformed_completed_upload(
+    pool: &sqlx::PgPool,
+    owner: OwnerRef,
+    blob_id: Uuid,
+    hash: &[u8],
+) -> Result<Uuid, sqlx::Error> {
+    let upload_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.blob_uploads
+             (upload_id, owner_id, bucket, object_key, filename, mime,
+              expected_byte_len, status, blob_id, sha256, content_hash,
+              expires_at, completed_at)
+         VALUES ($1, $2, 'bucket', 'objects/' || $1::text, '',
+                 'application/octet-stream', 3, 'completed', $3, $4, $4,
+                 now() + interval '1 day', now() + interval '1 minute')",
+    )
+    .bind(upload_id)
+    .bind(owner.stored_owner_id())
+    .bind(blob_id)
+    .bind(hash)
+    .execute(pool)
+    .await?;
+    Ok(upload_id)
 }
 
 async fn cite(
@@ -1930,6 +3521,440 @@ async fn cite_from(
     cited.ingest_key = Some(key.into());
     cited.blob_id = Some(blob_id);
     pg.ingest_fact_atomic(permit, &cited, None).await
+}
+
+#[tokio::test]
+async fn transfer_refuses_a_series_citing_another_owners_blob() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let foreign = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        for owner in [source, foreign] {
+            sqlx::query(
+                "INSERT INTO proxima_core.owners (owner_id, kind)
+                 VALUES ($1, $2::proxima_core.owner_kind)",
+            )
+            .bind(owner.stored_owner_id())
+            .bind(proxima_core::OwnerRefKind::of(&owner).as_str())
+            .execute(pool)
+            .await?;
+        }
+        let content_hash = vec![43_u8; 32];
+        let source_blob: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+             VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
+        )
+        .bind(source.stored_owner_id())
+        .bind(&content_hash)
+        .fetch_one(pool)
+        .await?;
+        let foreign_blob: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+             VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
+        )
+        .bind(foreign.stored_owner_id())
+        .bind(&content_hash)
+        .fetch_one(pool)
+        .await?;
+        let written = cite(&pg, &permit, "foreign-blob", source_blob).await?;
+        sqlx::query("UPDATE proxima_core.memory SET blob_id = $2 WHERE t = $1")
+            .bind(written.memory_id.into_inner())
+            .bind(foreign_blob)
+            .execute(pool)
+            .await?;
+
+        let error = pg
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                destination(),
+                &contract_sidecar_tables(),
+            )
+            .await
+            .expect_err("a source series cannot move another owner's blob");
+        assert!(
+            matches!(error, StorageError::ConstraintViolation(ref message)
+                if message.contains("outside its source owner")),
+            "the malformed cross-owner citation must fail closed: {error}"
+        );
+        let (memory_owner, blob_owner): (Uuid, Uuid) = sqlx::query_as(
+            "SELECT m.owner_id, b.owner_id
+               FROM proxima_core.memory m
+               JOIN proxima_core.blob b ON b.blob_id = m.blob_id
+              WHERE m.t = $1",
+        )
+        .bind(written.memory_id.into_inner())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(memory_owner, source.stored_owner_id());
+        assert_eq!(blob_owner, foreign.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("cross-owner cited blob transfer refusal failed");
+}
+
+#[tokio::test]
+async fn transfer_refuses_an_uploaded_blob_with_a_noncanonical_source_locator() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let hash = vec![44_u8; 32];
+        let (blob_id, upload_id) = seed_cited_blob(pool, source, &hash).await?;
+        sqlx::query(
+            "UPDATE proxima_core.blob_uploads
+                SET object_key = 'objects/not-the-minting-id'
+              WHERE upload_id = $1",
+        )
+        .bind(upload_id)
+        .execute(pool)
+        .await?;
+        let moving = cite(&pg, &permit, "noncanonical-source-locator", blob_id).await?;
+
+        let error = pg
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(moving.memory_id),
+                destination(),
+                &contract_sidecar_tables(),
+            )
+            .await
+            .expect_err("a locator not minted by its upload lineage must not transfer");
+        assert!(
+            matches!(error, StorageError::ConstraintViolation(ref message)
+                if message.contains("exact-only completed source-owner publication set")),
+            "the malformed source publication must fail closed: {error}"
+        );
+        let (memory_owner, blob_owner): (Uuid, Uuid) = sqlx::query_as(
+            "SELECT m.owner_id, b.owner_id
+               FROM proxima_core.memory m
+               JOIN proxima_core.blob b ON b.blob_id = m.blob_id
+              WHERE m.t = $1",
+        )
+        .bind(moving.memory_id.into_inner())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(memory_owner, source.stored_owner_id());
+        assert_eq!(blob_owner, source.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("noncanonical source upload transfer refusal failed");
+}
+
+#[tokio::test]
+async fn transfer_refuses_a_mixed_valid_and_malformed_source_publication_set() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let hash = vec![45_u8; 32];
+        let (blob_id, _) = seed_cited_blob(pool, source, &hash).await?;
+        let malformed = seed_malformed_completed_upload(pool, source, blob_id, &hash).await?;
+        let moving = cite(&pg, &permit, "mixed-source-publications", blob_id).await?;
+
+        let error = pg
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(moving.memory_id),
+                destination(),
+                &contract_sidecar_tables(),
+            )
+            .await
+            .expect_err("one valid upload row must not mask a malformed completed row");
+        assert!(
+            matches!(error, StorageError::ConstraintViolation(ref message)
+                if message.contains("exact-only completed source-owner publication set")),
+            "the mixed source publication set must fail closed: {error}"
+        );
+        let (memory_owner, malformed_owner): (Uuid, Uuid) = sqlx::query_as(
+            "SELECT m.owner_id, u.owner_id
+               FROM proxima_core.memory m
+               JOIN proxima_core.blob_uploads u ON u.upload_id = $2
+              WHERE m.t = $1",
+        )
+        .bind(moving.memory_id.into_inner())
+        .bind(malformed)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(memory_owner, source.stored_owner_id());
+        assert_eq!(malformed_owner, source.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("mixed source publication transfer refusal failed");
+}
+
+#[tokio::test]
+async fn transfer_refuses_an_unpublished_destination_dedupe_blob() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let destination = destination();
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let hash = vec![45_u8; 32];
+        let (source_blob, _) = seed_cited_blob(pool, source, &hash).await?;
+        let moving = cite(&pg, &permit, "unpublished-destination-dedupe", source_blob).await?;
+
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, $2::proxima_core.owner_kind)",
+        )
+        .bind(destination.stored_owner_id())
+        .bind(proxima_core::OwnerRefKind::of(&destination).as_str())
+        .execute(pool)
+        .await?;
+        let destination_blob: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+             VALUES ($1, 'core/uploaded-blob-v1', $2)
+             RETURNING blob_id",
+        )
+        .bind(destination.stored_owner_id())
+        .bind(&hash)
+        .fetch_one(pool)
+        .await?;
+
+        let error = pg
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(moving.memory_id),
+                destination,
+                &contract_sidecar_tables(),
+            )
+            .await
+            .expect_err("dedupe must not remap onto a blob without a readable publication");
+        assert!(
+            matches!(error, StorageError::ConstraintViolation(ref message)
+                if message.contains("destination uploaded blob does not have an exact-only")),
+            "the unreadable destination dedupe row must fail closed: {error}"
+        );
+        let (memory_owner, cited_blob): (Uuid, Uuid) =
+            sqlx::query_as("SELECT owner_id, blob_id FROM proxima_core.memory WHERE t = $1")
+                .bind(moving.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(memory_owner, source.stored_owner_id());
+        assert_eq!(cited_blob, source_blob);
+        let destination_blob_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+                .bind(destination_blob)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(destination_blob_owner, destination.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("unpublished destination dedupe refusal failed");
+}
+
+#[tokio::test]
+async fn transfer_refuses_a_mixed_valid_and_malformed_destination_publication_set() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let destination = destination();
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let hash = vec![46_u8; 32];
+        let (source_blob, _) = seed_cited_blob(pool, source, &hash).await?;
+        let moving = cite(&pg, &permit, "mixed-destination-publications", source_blob).await?;
+        let (destination_blob, _) = seed_cited_blob(pool, destination, &hash).await?;
+        let malformed =
+            seed_malformed_completed_upload(pool, destination, destination_blob, &hash).await?;
+
+        let error = pg
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(moving.memory_id),
+                destination,
+                &contract_sidecar_tables(),
+            )
+            .await
+            .expect_err("destination dedupe must reject a mixed publication set");
+        assert!(
+            matches!(error, StorageError::ConstraintViolation(ref message)
+                if message.contains("destination uploaded blob does not have an exact-only")),
+            "the mixed destination publication set must fail closed: {error}"
+        );
+        let (memory_owner, cited_blob): (Uuid, Uuid) =
+            sqlx::query_as("SELECT owner_id, blob_id FROM proxima_core.memory WHERE t = $1")
+                .bind(moving.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(memory_owner, source.stored_owner_id());
+        assert_eq!(cited_blob, source_blob);
+        let malformed_owner: Uuid = sqlx::query_scalar(
+            "SELECT owner_id FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        )
+        .bind(malformed)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(malformed_owner, destination.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("mixed destination publication transfer refusal failed");
+}
+
+#[tokio::test]
+async fn a_blob_mount_copies_only_source_owned_upload_rows() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let foreign = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let destination = destination();
+        let pool = pg.pool_for_tests();
+        let hash = vec![47_u8; 32];
+        let (blob_id, _) = seed_cited_blob(pool, source, &hash).await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, $2::proxima_core.owner_kind)",
+        )
+        .bind(foreign.stored_owner_id())
+        .bind(proxima_core::OwnerRefKind::of(&foreign).as_str())
+        .execute(pool)
+        .await?;
+        let foreign_upload = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.blob_uploads
+                (upload_id, owner_id, bucket, object_key, filename, mime,
+                 expected_byte_len, status, blob_id, sha256, content_hash,
+                 expires_at, completed_at)
+             VALUES ($1, $2, 'foreign', 'objects/foreign', 'foreign.bin',
+                     'application/octet-stream', 3, 'completed', $3, $4, $4,
+                     now() + interval '1 day', now())",
+        )
+        .bind(foreign_upload)
+        .bind(foreign.stored_owner_id())
+        .bind(blob_id)
+        .bind(&hash)
+        .execute(pool)
+        .await?;
+
+        let moving = cite(&pg, &permit, "mount-owned", blob_id).await?;
+        let _source_shadow = cite(&pg, &permit, "mount-owned-shadow", blob_id).await?;
+        assert!(
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(moving.memory_id),
+                destination,
+                &contract_sidecar_tables(),
+            )
+            .await?
+        );
+        let moved_blob: Uuid =
+            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+                .bind(moving.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        let destination_uploads: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint
+               FROM proxima_core.blob_uploads
+              WHERE blob_id = $1 AND owner_id = $2",
+        )
+        .bind(moved_blob)
+        .bind(destination.stored_owner_id())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            destination_uploads, 1,
+            "only the source owner's exact publication may be mounted"
+        );
+        let foreign_owner: Uuid = sqlx::query_scalar(
+            "SELECT owner_id FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        )
+        .bind(foreign_upload)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(foreign_owner, foreign.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("source-owned upload mount failed");
+}
+
+#[tokio::test]
+async fn an_in_place_blob_move_refuses_a_foreign_upload_pointer() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let foreign = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let hash = vec![53_u8; 32];
+        let (blob_id, _) = seed_cited_blob(pool, source, &hash).await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, $2::proxima_core.owner_kind)",
+        )
+        .bind(foreign.stored_owner_id())
+        .bind(proxima_core::OwnerRefKind::of(&foreign).as_str())
+        .execute(pool)
+        .await?;
+        let foreign_upload = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.blob_uploads
+                (upload_id, owner_id, bucket, object_key, filename, mime,
+                 expected_byte_len, status, blob_id, sha256, content_hash,
+                 expires_at, completed_at)
+             VALUES ($1, $2, 'foreign', 'objects/foreign-in-place', 'foreign.bin',
+                     'application/octet-stream', 3, 'completed', $3, $4, $4,
+                     now() + interval '1 day', now())",
+        )
+        .bind(foreign_upload)
+        .bind(foreign.stored_owner_id())
+        .bind(blob_id)
+        .bind(&hash)
+        .execute(pool)
+        .await?;
+        let moving = cite(&pg, &permit, "foreign-upload-in-place", blob_id).await?;
+
+        let error = pg
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(moving.memory_id),
+                destination(),
+                &contract_sidecar_tables(),
+            )
+            .await
+            .expect_err("a malformed foreign upload pointer must stop an in-place move");
+        assert!(
+            matches!(error, StorageError::ConstraintViolation(ref message)
+                if message.contains("upload row outside its source owner")),
+            "the move must fail closed rather than strand the foreign row: {error}"
+        );
+        let (memory_owner, blob_owner, foreign_upload_owner): (Uuid, Uuid, Uuid) = sqlx::query_as(
+            "SELECT m.owner_id, b.owner_id, u.owner_id
+                   FROM proxima_core.memory m
+                   JOIN proxima_core.blob b ON b.blob_id = m.blob_id
+                   JOIN proxima_core.blob_uploads u ON u.upload_id = $2
+                  WHERE m.t = $1",
+        )
+        .bind(moving.memory_id.into_inner())
+        .bind(foreign_upload)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(memory_owner, source.stored_owner_id());
+        assert_eq!(blob_owner, source.stored_owner_id());
+        assert_eq!(foreign_upload_owner, foreign.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("foreign upload in-place move refusal failed");
 }
 
 /// The dedupe arm, in place of a refusal.
