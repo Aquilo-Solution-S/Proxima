@@ -5,7 +5,7 @@ use super::{
     PgSidecarRegistryFrozen, PreparedGoalInsert, StorageError, SystemOrigin,
     TransitionGoalAtomicRequest, WakeWrite, achieve_replay_declaration, child_draft,
     create_replay_declaration, decompose_replay_declarations, draft_from_payload,
-    draft_from_stored, idempotency_conflict, insert_or_replay_goal, internal, lifecycle_outcome,
+    draft_from_stored, insert_or_replay_goal, internal, lifecycle_outcome,
     load_goal_evidence_exact, load_prior_goal, lock_prepared_goal_writes, map_err,
     modify_replay_declaration, persist_prepared_goal_insert, prepare_goal_insert,
     record_goal_replay_declaration, require_goal_replay, resolve_decompose_replay_set,
@@ -101,7 +101,7 @@ pub(crate) async fn create_goal_in_tx(
     let owner = req.draft.owner();
     let declaration = create_replay_declaration(req)?;
     if let Some(replay) =
-        resolve_goal_replay(tx, &owner, &req.draft.request_id, &declaration).await?
+        resolve_goal_replay(tx.as_mut(), &owner, &req.draft.request_id, &declaration).await?
     {
         return Ok(replay);
     }
@@ -118,7 +118,7 @@ pub(crate) async fn create_goal_in_tx(
     )
     .await?;
     if inserted.idempotent_replay {
-        return require_goal_replay(tx, &owner, &req.draft.request_id, &declaration).await;
+        return require_goal_replay(tx.as_mut(), &owner, &req.draft.request_id, &declaration).await;
     }
     let dependencies = draft_dependency_ids(&req.draft);
     let outcome = lifecycle_outcome(
@@ -132,7 +132,7 @@ pub(crate) async fn create_goal_in_tx(
         },
     )
     .await?;
-    record_goal_replay_declaration(tx, &declaration, &outcome).await?;
+    record_goal_replay_declaration(tx.as_mut(), &declaration, &outcome).await?;
     Ok(outcome)
 }
 
@@ -142,14 +142,9 @@ pub(crate) async fn transition_goal_atomic_in_pool(
     req: &TransitionGoalAtomicRequest<'_>,
     _permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let declaration = transition_replay_declaration(req);
-    if let Some(replay) =
-        resolve_goal_replay(&mut tx, &req.owner, req.request_id.as_str(), &declaration).await?
-    {
-        tx.commit().await.map_err(map_err)?;
-        return Ok(replay);
-    }
+    // Constant-time command validation stays ahead of the replay probe: these
+    // two rejections ran before every prior write, so no stored declaration can
+    // ever carry a shape they refuse, and probing for one is pure cost.
     if matches!(req.next_state, GoalState::Achieved) {
         return Err(StorageError::ConstraintViolation(
             "use achieve_goal_atomic for Achieved transitions".into(),
@@ -162,6 +157,19 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         return Err(StorageError::ConstraintViolation(
             "operator-authored Goal transition requires explicit Abstraction evidence".into(),
         ));
+    }
+    let mut tx = pool.begin().await.map_err(internal)?;
+    let declaration = transition_replay_declaration(req);
+    if let Some(replay) = resolve_goal_replay(
+        tx.as_mut(),
+        &req.owner,
+        req.request_id.as_str(),
+        &declaration,
+    )
+    .await?
+    {
+        tx.commit().await.map_err(map_err)?;
+        return Ok(replay);
     }
     let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
     validate_goal_transition(prior.state, req.next_state)?;
@@ -187,8 +195,13 @@ pub(crate) async fn transition_goal_atomic_in_pool(
     )
     .await?;
     if inserted.idempotent_replay {
-        let replay =
-            require_goal_replay(&mut tx, &req.owner, req.request_id.as_str(), &declaration).await?;
+        let replay = require_goal_replay(
+            tx.as_mut(),
+            &req.owner,
+            req.request_id.as_str(),
+            &declaration,
+        )
+        .await?;
         tx.commit().await.map_err(map_err)?;
         return Ok(replay);
     }
@@ -203,7 +216,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         },
     )
     .await?;
-    record_goal_replay_declaration(&mut tx, &declaration, &outcome).await?;
+    record_goal_replay_declaration(tx.as_mut(), &declaration, &outcome).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -214,18 +227,25 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
     req: &AchieveGoalAtomicRequest<'_>,
     _permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let declaration = achieve_replay_declaration(req);
-    if let Some(replay) =
-        resolve_goal_replay(&mut tx, &req.owner, req.request_id.as_str(), &declaration).await?
-    {
-        tx.commit().await.map_err(map_err)?;
-        return Ok(replay);
-    }
+    // See `transition_goal_atomic_in_pool`: an empty-evidence achievement was
+    // never written, so no declaration can match one.
     if req.evidence.is_empty() {
         return Err(StorageError::ConstraintViolation(
             "achievement evidence must be nonempty".into(),
         ));
+    }
+    let mut tx = pool.begin().await.map_err(internal)?;
+    let declaration = achieve_replay_declaration(req);
+    if let Some(replay) = resolve_goal_replay(
+        tx.as_mut(),
+        &req.owner,
+        req.request_id.as_str(),
+        &declaration,
+    )
+    .await?
+    {
+        tx.commit().await.map_err(map_err)?;
+        return Ok(replay);
     }
     let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &req.evidence).await?;
     let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
@@ -250,8 +270,13 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
     )
     .await?;
     if inserted.idempotent_replay {
-        let replay =
-            require_goal_replay(&mut tx, &req.owner, req.request_id.as_str(), &declaration).await?;
+        let replay = require_goal_replay(
+            tx.as_mut(),
+            &req.owner,
+            req.request_id.as_str(),
+            &declaration,
+        )
+        .await?;
         tx.commit().await.map_err(map_err)?;
         return Ok(replay);
     }
@@ -266,7 +291,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
         },
     )
     .await?;
-    record_goal_replay_declaration(&mut tx, &declaration, &outcome).await?;
+    record_goal_replay_declaration(tx.as_mut(), &declaration, &outcome).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -289,8 +314,13 @@ pub(crate) async fn modify_goal_atomic_in_pool(
 ) -> Result<GoalWriteOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
     let declaration = modify_replay_declaration(req)?;
-    if let Some(replay) =
-        resolve_goal_replay(&mut tx, &req.owner, req.request_id.as_str(), &declaration).await?
+    if let Some(replay) = resolve_goal_replay(
+        tx.as_mut(),
+        &req.owner,
+        req.request_id.as_str(),
+        &declaration,
+    )
+    .await?
     {
         tx.commit().await.map_err(map_err)?;
         return Ok(replay);
@@ -335,8 +365,13 @@ pub(crate) async fn modify_goal_atomic_in_pool(
     )
     .await?;
     if inserted.idempotent_replay {
-        let replay =
-            require_goal_replay(&mut tx, &req.owner, req.request_id.as_str(), &declaration).await?;
+        let replay = require_goal_replay(
+            tx.as_mut(),
+            &req.owner,
+            req.request_id.as_str(),
+            &declaration,
+        )
+        .await?;
         tx.commit().await.map_err(map_err)?;
         return Ok(replay);
     }
@@ -352,7 +387,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
         },
     )
     .await?;
-    record_goal_replay_declaration(&mut tx, &declaration, &outcome).await?;
+    record_goal_replay_declaration(tx.as_mut(), &declaration, &outcome).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -365,7 +400,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
 ) -> Result<DecomposeGoalOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
     let declarations = decompose_replay_declarations(req)?;
-    if let Some(replay) = resolve_decompose_replay_set(&mut tx, req, &declarations).await? {
+    if let Some(replay) = resolve_decompose_replay_set(tx.as_mut(), req, &declarations).await? {
         tx.commit().await.map_err(map_err)?;
         return Ok(replay);
     }
@@ -404,7 +439,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
             super::GoalWritePreparation::Replay(_)
         )
     }) {
-        let replay = resolve_decompose_replay_set(&mut tx, req, &declarations)
+        let replay = resolve_decompose_replay_set(tx.as_mut(), req, &declarations)
             .await?
             .ok_or_else(|| internal("prepared Goal replay disappeared before declaration proof"))?;
         tx.commit().await.map_err(map_err)?;
@@ -427,10 +462,9 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
 
     let mut children = Vec::with_capacity(prepared_children.len());
     for (prepared, evidence, declaration) in prepared_children {
+        // A replayed child was already returned above; `lifecycle_outcome`
+        // holds the single guard for the state that cannot happen here.
         let inserted = persist_prepared_goal_insert(&mut tx, sidecars, &prepared).await?;
-        if inserted.idempotent_replay {
-            return Err(idempotency_conflict(&prepared.draft.request_id));
-        }
         let dependencies = draft_dependency_ids(&prepared.draft);
         let outcome = lifecycle_outcome(
             &mut tx,
@@ -443,7 +477,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
             },
         )
         .await?;
-        record_goal_replay_declaration(&mut tx, declaration, &outcome).await?;
+        record_goal_replay_declaration(tx.as_mut(), declaration, &outcome).await?;
         children.push(DecomposedGoalOutcome { outcome });
     }
 

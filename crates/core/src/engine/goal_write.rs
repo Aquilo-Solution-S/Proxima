@@ -182,15 +182,6 @@ impl Engine {
             request_id: req.request_id.clone(),
             context,
         };
-        if let Some(replay) = resolve_single_goal_replay(
-            &self.storage().goal_command,
-            GoalReplayRequest::Transition(&atomic),
-            permit.owner_write_permit(),
-        )
-        .await?
-        {
-            return Ok(replay);
-        }
         // `Achieved` is never a legal plain-transition target (achievement
         // carries mandatory evidence via `mark_goal_achieved`); the
         // authoritative matrix is `GoalState::{may_transition_to, may_achieve}`,
@@ -201,6 +192,17 @@ impl Engine {
                 "next_state",
                 "Achieved is not a valid transition target; use mark_goal_achieved with evidence",
             ));
+        }
+        // Constant-time rejection first: this check ran before every prior
+        // write, so no stored declaration can name `Achieved`.
+        if let Some(replay) = resolve_single_goal_replay(
+            &self.storage().goal_command,
+            GoalReplayRequest::Transition(&atomic),
+            permit.owner_write_permit(),
+        )
+        .await?
+        {
+            return Ok(replay);
         }
         self.author_self_perspective_authorized(authz, req.author_self_perspective_id)
             .await?;
@@ -593,9 +595,12 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         memory_id: Option<MemoryId>,
-    ) -> Result<Option<MemoryId>, ProtocolError> {
+    ) -> Result<(), ProtocolError> {
+        // Callers build `GoalAtomicContext` from the raw request value before
+        // the replay probe, so this admits rather than normalizes. Returning
+        // `()` keeps a future normalization from being silently discarded.
         let Some(memory_id) = memory_id else {
-            return Ok(None);
+            return Ok(());
         };
         let home_owner = self
             .storage()
@@ -609,7 +614,7 @@ impl Engine {
             .await?;
         self.require_perspective_kind(&home_owner, memory_id, "author_self_perspective_id")
             .await?;
-        Ok(Some(memory_id))
+        Ok(())
     }
 
     pub(in crate::engine) async fn validate_wake_config_for_write(
@@ -725,18 +730,7 @@ async fn resolve_single_goal_replay(
     req: GoalReplayRequest<'_, '_>,
     permit: &OwnerWritePermit,
 ) -> Result<Option<GoalWriteOutcome>, ProtocolError> {
-    match ports
-        .goal_write
-        .resolve_goal_replay(req, permit)
-        .await
-        .map_err(map_goal_storage_error)?
-    {
-        None => Ok(None),
-        Some(GoalReplayOutcome::Goal(outcome)) => Ok(Some(outcome)),
-        Some(GoalReplayOutcome::Decompose(_)) => Err(ProtocolError::internal(
-            "Goal replay port returned a decomposition for a single Goal command",
-        )),
-    }
+    resolve_goal_replay_shaped(ports, req, permit, GoalReplayOutcome::into_goal).await
 }
 
 async fn resolve_decompose_goal_replay(
@@ -744,18 +738,24 @@ async fn resolve_decompose_goal_replay(
     req: GoalReplayRequest<'_, '_>,
     permit: &OwnerWritePermit,
 ) -> Result<Option<DecomposeGoalOutcome>, ProtocolError> {
-    match ports
+    resolve_goal_replay_shaped(ports, req, permit, GoalReplayOutcome::into_decompose).await
+}
+
+async fn resolve_goal_replay_shaped<T>(
+    ports: &GoalCommandStoragePorts,
+    req: GoalReplayRequest<'_, '_>,
+    permit: &OwnerWritePermit,
+    shape: fn(GoalReplayOutcome) -> Result<T, &'static str>,
+) -> Result<Option<T>, ProtocolError> {
+    let Some(outcome) = ports
         .goal_write
         .resolve_goal_replay(req, permit)
         .await
         .map_err(map_goal_storage_error)?
-    {
-        None => Ok(None),
-        Some(GoalReplayOutcome::Decompose(outcome)) => Ok(Some(outcome)),
-        Some(GoalReplayOutcome::Goal(_)) => Err(ProtocolError::internal(
-            "Goal replay port returned one Goal for a decomposition",
-        )),
-    }
+    else {
+        return Ok(None);
+    };
+    shape(outcome).map(Some).map_err(ProtocolError::internal)
 }
 
 pub(in crate::engine) async fn transition_goal_authorized(
@@ -933,15 +933,13 @@ mod tests {
             EntityKind::Perspective,
         ));
 
-        let authorized = engine
+        engine
             .author_self_perspective_authorized(
                 &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 Some(memory_id),
             )
             .await
             .expect("writable Perspective should authorize");
-
-        assert_eq!(authorized, Some(memory_id));
     }
 
     #[tokio::test]
@@ -1045,14 +1043,18 @@ mod tests {
                 &GoalTransitionRequest {
                     owner,
                     prior_goal_id: goal_id(),
-                    next_state: GoalState::Achieved,
+                    // Not `Achieved`: that rejection is constant-time command
+                    // validation, so it precedes the probe rather than being
+                    // bypassed by it. What a replay skips is the live
+                    // prior-head and target admission below.
+                    next_state: GoalState::Abandoned,
                     authorship: GoalAuthorship::User,
                     request_id: request_id("exact-replay-transition"),
                     author_self_perspective_id: Some(retired_target),
                 },
             )
             .await
-            .expect("transition replay must precede renewed state and target checks");
+            .expect("transition replay must precede renewed prior-head and target checks");
         assert!(transition.idempotent_replay);
 
         let achieve = engine

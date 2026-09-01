@@ -233,7 +233,7 @@ impl WriteSession for PgWriteSession {
         permit: &OwnerWritePermit,
     ) -> Result<Option<GoalReplayOutcome>, StorageError> {
         super::validate_permit_owner(permit, &req.owner())?;
-        verbs::goal_write::resolve_goal_command_replay_in_tx(&mut self.tx, req).await
+        verbs::goal_write::resolve_goal_command_replay_on(self.tx.as_mut(), req).await
     }
 
     async fn create_goal(

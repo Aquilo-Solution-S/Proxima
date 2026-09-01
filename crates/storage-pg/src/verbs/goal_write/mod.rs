@@ -14,7 +14,7 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     EdgeEndpoint, EntityKind, GoalId, MemoryId, Owner, SchemaId, SchemaVersion, StorageError,
 };
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
 use crate::error::{internal, map_err};
 use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
@@ -42,9 +42,8 @@ use prior::{
 };
 use replay::{
     achieve_replay_declaration, create_replay_declaration, decompose_replay_declarations,
-    idempotency_conflict, modify_replay_declaration, record_goal_replay_declaration,
-    require_goal_replay, resolve_decompose_replay_set, resolve_goal_replay,
-    transition_replay_declaration,
+    modify_replay_declaration, record_goal_replay_declaration, require_goal_replay,
+    resolve_decompose_replay_set, resolve_goal_replay, transition_replay_declaration,
 };
 use types::{EvidenceTarget, InsertedGoal, StoredGoal, WakeWrite};
 
@@ -57,4 +56,4 @@ pub(crate) use commands::{
     achieve_goal_atomic, create_goal_atomic, create_goal_in_tx, decompose_goal_atomic,
     modify_goal_atomic, transition_goal_atomic,
 };
-pub(crate) use replay::{resolve_goal_command_replay, resolve_goal_command_replay_in_tx};
+pub(crate) use replay::{resolve_goal_command_replay, resolve_goal_command_replay_on};

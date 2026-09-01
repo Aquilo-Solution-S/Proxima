@@ -2,7 +2,7 @@ use super::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAuthorship, GoalDraft, GoalId,
     GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalWakeConfigWrite, GoalWriteOutcome,
-    ModifyGoalAtomicRequest, Owner, PgPool, Postgres, StorageError, SystemOrigin, Transaction,
+    ModifyGoalAtomicRequest, Owner, PgConnection, PgPool, StorageError, SystemOrigin,
     TransitionGoalAtomicRequest, internal, map_err,
 };
 
@@ -16,6 +16,20 @@ fn authorship_declaration(authorship: &GoalAuthorship) -> &'static str {
         GoalAuthorship::System(SystemOrigin::Tool { .. }) => "system_tool",
         GoalAuthorship::External => "external",
     }
+}
+
+/// Every Goal command declaration carries the same envelope: the format
+/// version and the verb that authored it. Only the body differs, so a sixth
+/// verb cannot forget a field of the envelope.
+fn command_declaration<const N: usize>(
+    verb: &'static str,
+    body: [(&'static str, serde_json::Value); N],
+) -> serde_json::Value {
+    let mut declaration = serde_json::Map::with_capacity(N + 2);
+    declaration.insert("version".to_owned(), serde_json::json!(1));
+    declaration.insert("verb".to_owned(), serde_json::json!(verb));
+    declaration.extend(body.into_iter().map(|(key, value)| (key.to_owned(), value)));
+    serde_json::Value::Object(declaration)
 }
 
 fn sidecar_declaration(
@@ -66,47 +80,61 @@ pub(super) fn create_replay_declaration(
     // `write_act_t` is an episode binding attempt, not Goal content. A replay
     // returns the stored row without rewriting it so the episode layer can
     // reject a bound replay with its protocol-specific error.
-    Ok(serde_json::json!({
-        "version": 1,
-        "verb": "create",
-        "draft": draft_declaration(&req.draft)?,
-    }))
+    Ok(command_declaration(
+        "create",
+        [("draft", draft_declaration(&req.draft)?)],
+    ))
 }
 
 pub(super) fn transition_replay_declaration(
     req: &TransitionGoalAtomicRequest<'_>,
 ) -> serde_json::Value {
-    serde_json::json!({
-        "version": 1,
-        "verb": "transition",
-        "prior_goal_id": req.prior_goal_id.into_inner(),
-        "next_state": req.next_state,
-        "authorship": authorship_declaration(&req.authorship),
-    })
+    let prior = req.prior_goal_id.into_inner();
+    command_declaration(
+        "transition",
+        [
+            ("prior_goal_id", serde_json::json!(prior)),
+            ("next_state", serde_json::json!(req.next_state)),
+            (
+                "authorship",
+                serde_json::json!(authorship_declaration(&req.authorship)),
+            ),
+        ],
+    )
 }
 
 pub(super) fn achieve_replay_declaration(req: &AchieveGoalAtomicRequest<'_>) -> serde_json::Value {
-    serde_json::json!({
-        "version": 1,
-        "verb": "achieve",
-        "prior_goal_id": req.prior_goal_id.into_inner(),
-        "authorship": authorship_declaration(&req.authorship),
-        "evidence": req.evidence,
-    })
+    let prior = req.prior_goal_id.into_inner();
+    command_declaration(
+        "achieve",
+        [
+            ("prior_goal_id", serde_json::json!(prior)),
+            (
+                "authorship",
+                serde_json::json!(authorship_declaration(&req.authorship)),
+            ),
+            ("evidence", serde_json::json!(req.evidence)),
+        ],
+    )
 }
 
 pub(super) fn modify_replay_declaration(
     req: &ModifyGoalAtomicRequest<'_>,
 ) -> Result<serde_json::Value, StorageError> {
-    Ok(serde_json::json!({
-        "version": 1,
-        "verb": "modify",
-        "prior_goal_id": req.prior_goal_id.into_inner(),
-        "replacement": payload_declaration(&req.replacement)?,
-        "wake": modify_wake_declaration(req.wake.as_ref()),
-        "authorship": authorship_declaration(&req.authorship),
-        "evidence": req.evidence,
-    }))
+    let prior = req.prior_goal_id.into_inner();
+    Ok(command_declaration(
+        "modify",
+        [
+            ("prior_goal_id", serde_json::json!(prior)),
+            ("replacement", payload_declaration(&req.replacement)?),
+            ("wake", modify_wake_declaration(req.wake.as_ref())),
+            (
+                "authorship",
+                serde_json::json!(authorship_declaration(&req.authorship)),
+            ),
+            ("evidence", serde_json::json!(req.evidence)),
+        ],
+    ))
 }
 
 fn modify_wake_declaration(wake: Option<&Option<GoalWakeConfigWrite>>) -> serde_json::Value {
@@ -124,17 +152,22 @@ pub(super) fn decompose_child_replay_declaration(
     child: &ChildGoalDraft,
     child_index: usize,
 ) -> Result<serde_json::Value, StorageError> {
-    Ok(serde_json::json!({
-        "version": 1,
-        "verb": "decompose_child",
-        "parent_goal_id": req.parent_goal_id.into_inner(),
-        "authorship": authorship_declaration(&req.authorship),
-        "topology": req.topology,
-        "child_index": child_index,
-        "payload": payload_declaration(&child.payload)?,
-        "evidence": child.evidence,
-        "wake": child.wake,
-    }))
+    let parent = req.parent_goal_id.into_inner();
+    Ok(command_declaration(
+        "decompose_child",
+        [
+            ("parent_goal_id", serde_json::json!(parent)),
+            (
+                "authorship",
+                serde_json::json!(authorship_declaration(&req.authorship)),
+            ),
+            ("topology", serde_json::json!(req.topology)),
+            ("child_index", serde_json::json!(child_index)),
+            ("payload", payload_declaration(&child.payload)?),
+            ("evidence", serde_json::json!(child.evidence)),
+            ("wake", serde_json::json!(child.wake)),
+        ],
+    ))
 }
 
 pub(super) fn decompose_replay_declarations(
@@ -148,7 +181,7 @@ pub(super) fn decompose_replay_declarations(
 }
 
 pub(super) async fn resolve_decompose_replay_set(
-    tx: &mut Transaction<'_, Postgres>,
+    conn: &mut PgConnection,
     req: &DecomposeGoalAtomicRequest<'_>,
     declarations: &[serde_json::Value],
 ) -> Result<Option<DecomposeGoalOutcome>, StorageError> {
@@ -175,7 +208,7 @@ pub(super) async fn resolve_decompose_replay_set(
     .bind(req.owner.stored_owner_id())
     .bind(&request_ids)
     .bind(&declaration_json)
-    .fetch_all(tx.as_mut())
+    .fetch_all(&mut *conn)
     .await
     .map_err(map_err)?;
     if rows.len() != req.children.len() {
@@ -184,6 +217,7 @@ pub(super) async fn resolve_decompose_replay_set(
         ));
     }
     let mut replayed = Vec::with_capacity(rows.len());
+    let mut reused: Option<&str> = None;
     for (child, (_, goal_t, edge_count, matches)) in req.children.iter().zip(rows) {
         let Some(goal_t) = goal_t else {
             replayed.push(None);
@@ -192,77 +226,76 @@ pub(super) async fn resolve_decompose_replay_set(
         if matches != Some(true) {
             return Err(idempotency_conflict(child.request_id.as_str()));
         }
+        reused.get_or_insert(child.request_id.as_str());
         replayed.push(Some(replay_outcome(goal_t, edge_count)?));
     }
-    let replay_count = replayed.iter().filter(|outcome| outcome.is_some()).count();
-    if replay_count == 0 {
+    // Nothing was reused, so the whole set is fresh.
+    let Some(reused) = reused else {
         return Ok(None);
+    };
+    // A decomposition is one idempotency unit. A request-id set that is only
+    // partly present resolves as neither a fresh write nor an exact replay.
+    let mut children = Vec::with_capacity(replayed.len());
+    for outcome in replayed {
+        let Some(outcome) = outcome else {
+            return Err(idempotency_conflict(reused));
+        };
+        children.push(DecomposedGoalOutcome { outcome });
     }
-    if replay_count != req.children.len() {
-        let reused = req
-            .children
-            .iter()
-            .zip(&replayed)
-            .find_map(|(child, outcome)| outcome.as_ref().map(|_| child.request_id.as_str()))
-            .expect("a partial replay contains one reused request id");
-        return Err(idempotency_conflict(reused));
-    }
-    let children = replayed
-        .into_iter()
-        .map(|outcome| DecomposedGoalOutcome {
-            outcome: outcome.expect("every child replay was resolved"),
-        })
-        .collect();
     Ok(Some(DecomposeGoalOutcome {
         children,
         idempotent_replay: true,
     }))
 }
 
-/// Pool-scoped public-boundary replay probe. It is read-only, but uses one
-/// transaction so a decomposed child set is observed from one snapshot.
+/// Pool-scoped public-boundary replay probe. Every arm below is exactly one
+/// statement, and one statement already observes one snapshot — including the
+/// decomposed child set — so this needs a connection, not a transaction.
 pub(crate) async fn resolve_goal_command_replay(
     pool: &PgPool,
     req: GoalReplayRequest<'_, '_>,
 ) -> Result<Option<GoalReplayOutcome>, StorageError> {
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome = resolve_goal_command_replay_in_tx(&mut tx, req).await?;
-    tx.commit().await.map_err(map_err)?;
-    Ok(outcome)
+    let mut conn = pool.acquire().await.map_err(internal)?;
+    resolve_goal_command_replay_on(&mut conn, req).await
 }
 
-pub(crate) async fn resolve_goal_command_replay_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
+pub(crate) async fn resolve_goal_command_replay_on(
+    conn: &mut PgConnection,
     req: GoalReplayRequest<'_, '_>,
 ) -> Result<Option<GoalReplayOutcome>, StorageError> {
     match req {
         GoalReplayRequest::Create(req) => {
             let declaration = create_replay_declaration(req)?;
-            resolve_goal_replay(tx, &req.draft.owner(), &req.draft.request_id, &declaration)
-                .await
-                .map(|outcome| outcome.map(GoalReplayOutcome::Goal))
+            resolve_goal_replay(
+                conn,
+                &req.draft.owner(),
+                &req.draft.request_id,
+                &declaration,
+            )
+            .await
+            .map(|outcome| outcome.map(GoalReplayOutcome::Goal))
         }
         GoalReplayRequest::Transition(req) => {
             let declaration = transition_replay_declaration(req);
-            resolve_goal_replay(tx, &req.owner, req.request_id.as_str(), &declaration)
+            resolve_goal_replay(conn, &req.owner, req.request_id.as_str(), &declaration)
                 .await
                 .map(|outcome| outcome.map(GoalReplayOutcome::Goal))
         }
         GoalReplayRequest::Achieve(req) => {
             let declaration = achieve_replay_declaration(req);
-            resolve_goal_replay(tx, &req.owner, req.request_id.as_str(), &declaration)
+            resolve_goal_replay(conn, &req.owner, req.request_id.as_str(), &declaration)
                 .await
                 .map(|outcome| outcome.map(GoalReplayOutcome::Goal))
         }
         GoalReplayRequest::Modify(req) => {
             let declaration = modify_replay_declaration(req)?;
-            resolve_goal_replay(tx, &req.owner, req.request_id.as_str(), &declaration)
+            resolve_goal_replay(conn, &req.owner, req.request_id.as_str(), &declaration)
                 .await
                 .map(|outcome| outcome.map(GoalReplayOutcome::Goal))
         }
         GoalReplayRequest::Decompose(req) => {
             let declarations = decompose_replay_declarations(req)?;
-            resolve_decompose_replay_set(tx, req, &declarations)
+            resolve_decompose_replay_set(conn, req, &declarations)
                 .await
                 .map(|outcome| outcome.map(GoalReplayOutcome::Decompose))
         }
@@ -272,7 +305,7 @@ pub(crate) async fn resolve_goal_command_replay_in_tx(
 /// Resolve one exact command replay from its persisted declaration before any
 /// live assignment, evidence, prior-head, or wake probe.
 pub(super) async fn resolve_goal_replay(
-    tx: &mut Transaction<'_, Postgres>,
+    conn: &mut PgConnection,
     owner: &Owner,
     request_id: &str,
     declaration: &serde_json::Value,
@@ -287,7 +320,7 @@ pub(super) async fn resolve_goal_replay(
     .bind(owner.stored_owner_id())
     .bind(request_id)
     .bind(declaration)
-    .fetch_optional(tx.as_mut())
+    .fetch_optional(&mut *conn)
     .await
     .map_err(map_err)?;
     let Some((goal_t, edge_count, matches)) = row else {
@@ -316,18 +349,18 @@ fn replay_outcome(
 }
 
 pub(super) async fn require_goal_replay(
-    tx: &mut Transaction<'_, Postgres>,
+    conn: &mut PgConnection,
     owner: &Owner,
     request_id: &str,
     declaration: &serde_json::Value,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    resolve_goal_replay(tx, owner, request_id, declaration)
+    resolve_goal_replay(conn, owner, request_id, declaration)
         .await?
         .ok_or_else(|| internal("Goal replay row disappeared after request-id match"))
 }
 
 pub(super) async fn record_goal_replay_declaration(
-    tx: &mut Transaction<'_, Postgres>,
+    conn: &mut PgConnection,
     declaration: &serde_json::Value,
     outcome: &GoalWriteOutcome,
 ) -> Result<(), StorageError> {
@@ -341,7 +374,7 @@ pub(super) async fn record_goal_replay_declaration(
     .bind(outcome.goal_id.into_inner())
     .bind(declaration)
     .bind(edge_count)
-    .execute(tx.as_mut())
+    .execute(&mut *conn)
     .await
     .map_err(map_err)?;
     Ok(())

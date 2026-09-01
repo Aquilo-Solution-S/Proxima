@@ -793,6 +793,33 @@ pub enum GoalReplayOutcome {
     Decompose(DecomposeGoalOutcome),
 }
 
+impl GoalReplayOutcome {
+    /// The shape a single-Goal verb asked for. `Err` names the mismatch a
+    /// port would have to have produced to get here.
+    ///
+    /// # Errors
+    /// The probe answered a single-Goal command with a decomposition.
+    pub fn into_goal(self) -> Result<GoalWriteOutcome, &'static str> {
+        match self {
+            Self::Goal(outcome) => Ok(outcome),
+            Self::Decompose(_) => {
+                Err("Goal replay port returned a decomposition for a single Goal command")
+            }
+        }
+    }
+
+    /// The shape a decomposition asked for.
+    ///
+    /// # Errors
+    /// The probe answered a decomposition with one Goal.
+    pub fn into_decompose(self) -> Result<DecomposeGoalOutcome, &'static str> {
+        match self {
+            Self::Decompose(outcome) => Ok(outcome),
+            Self::Goal(_) => Err("Goal replay port returned one Goal for a decomposition"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecomposedGoalOutcome {
     pub outcome: GoalWriteOutcome,

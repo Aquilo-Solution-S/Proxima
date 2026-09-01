@@ -9,7 +9,7 @@ use crate::storage::{AuthorDerivedRequest, DerivedEmbedding};
 use crate::storage_ports::{SidecarSessionRead, WriteSession};
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 use crate::verbs::goal_write::{
-    CreateGoalAtomicRequest, GoalDraft, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
+    CreateGoalAtomicRequest, GoalDraft, GoalReplayRequest, GoalWriteOutcome,
 };
 use crate::verbs::query::SidecarAtom;
 use crate::{
@@ -728,14 +728,8 @@ impl UnitOfWork<'_> {
                     "goal write referenced row not found",
                 )
             })?;
-        match replay {
-            Some(GoalReplayOutcome::Goal(outcome)) => return Ok(outcome),
-            Some(GoalReplayOutcome::Decompose(_)) => {
-                return Err(ProtocolError::internal(
-                    "Goal replay session returned a decomposition for create",
-                ));
-            }
-            None => {}
+        if let Some(outcome) = replay {
+            return outcome.into_goal().map_err(ProtocolError::internal);
         }
         self.engine
             .validate_goal_topology_authorized_visible(
