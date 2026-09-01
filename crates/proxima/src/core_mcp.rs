@@ -5,7 +5,7 @@ use proxima_core::{
     McpToolDescriptor, McpToolErrorKind, Owner, ToolScope, provider_safe_tool_name,
     tool_name_matches,
 };
-use proxima_mcp_server::{McpAuthContext, McpToolHost, ToolInvocationError};
+use proxima_mcp_server::{DynamicHandler, McpAuthContext, McpToolHost, ToolInvocationError};
 
 /// Facade handle for listing and dispatching the composed engine MCP tools
 /// from an embedding host's own authenticated endpoint.
@@ -95,6 +95,16 @@ impl CoreMcpTools {
         Self {
             host: McpToolHost::from_parts(registry, services).with_engine(engine),
         }
+    }
+
+    /// Consume this boot-wired facade and expose the exact native MCP handler.
+    ///
+    /// The handler retains the complete service bag assembled during Proxima
+    /// boot. Embedding hosts can wrap it while preserving Proxima's native
+    /// request, authorization, and session semantics.
+    #[must_use]
+    pub fn into_dynamic_handler(self) -> DynamicHandler {
+        DynamicHandler { server: self.host }
     }
 
     /// List all build-time registered MCP tools from the frozen registry.
@@ -230,7 +240,103 @@ fn tool_info_from_descriptor(descriptor: &McpToolDescriptor) -> CoreToolInfo {
 mod tests {
     use super::*;
     use futures::FutureExt as _;
-    use proxima_core::{McpToolCtx, McpToolError, StorageError};
+    use proxima_core::{
+        AuthPath, FlavorRegistry, McpTool, McpToolCtx, McpToolError, OwnerRef, StorageError, UserId,
+    };
+
+    #[derive(Clone)]
+    struct MarkerService(&'static str);
+
+    struct MarkerTool;
+
+    impl McpTool for MarkerTool {
+        const NAME: &'static str = "test_marker";
+        const DESCRIPTION: &'static str = "test marker";
+        const ANNOTATIONS: Option<proxima_core::McpToolAnnotations> = Some(
+            proxima_core::McpToolAnnotations::new()
+                .read_only(true)
+                .open_world(false),
+        );
+
+        type Args = serde_json::Value;
+        type Output = String;
+
+        fn call(
+            ctx: McpToolCtx,
+            _args: Self::Args,
+        ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
+            async move {
+                Ok(ctx
+                    .service::<MarkerService>()
+                    .expect("boot service must survive handler conversion")
+                    .0
+                    .to_string())
+            }
+            .boxed()
+        }
+    }
+
+    fn marker_auth() -> McpAuthContext {
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let authz = proxima_core::AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        McpAuthContext {
+            owner,
+            authz,
+            model_id: Some("marker-test".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn into_dynamic_handler_preserves_boot_services_in_per_call_context() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<MarkerTool>("test");
+        let registry = Arc::new(registry.freeze_or_panic_for_tests());
+        let tools = CoreMcpTools::new(
+            registry.clone(),
+            Arc::new(proxima_core::Engine::new((*registry).clone())),
+            FlavorServices::with(MarkerService("boot-wired")),
+        );
+        let handler = tools.into_dynamic_handler();
+        let auth = marker_auth();
+        let author = McpAuthorContext {
+            model_id: "marker-test".into(),
+            client_name: "test".into(),
+            client_version: "1".into(),
+            caller_self_perspective: None,
+        };
+
+        let ctx = handler.server.ctx_for(author.clone(), &auth);
+        assert_eq!(
+            ctx.service::<MarkerService>().as_deref().map(|v| v.0),
+            Some("boot-wired")
+        );
+
+        let answer = handler
+            .server
+            .call_tool("test_marker", serde_json::json!({}), author, Some(auth))
+            .await
+            .expect("authorized marker call");
+        assert_eq!(answer, serde_json::json!("boot-wired"));
+
+        let denied = handler
+            .server
+            .call_tool(
+                "test_marker",
+                serde_json::json!({}),
+                McpAuthorContext {
+                    model_id: "marker-test".into(),
+                    client_name: "test".into(),
+                    client_version: "1".into(),
+                    caller_self_perspective: None,
+                },
+                None,
+            )
+            .await;
+        assert!(matches!(
+            denied,
+            Err(ToolInvocationError::NotAuthorized(name)) if name == "test_marker"
+        ));
+    }
 
     #[test]
     fn facade_error_mapping_preserves_invalid_input_kind() {
