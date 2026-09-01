@@ -92,6 +92,9 @@ async fn seed_note(
     .bind(t)
     .execute(pool)
     .await?;
+    // The stamp and the row it promises land in one transaction: a memory row
+    // that names a sidecar table it has no row in is refused at COMMIT.
+    let mut stamped = pool.begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
              (handle, t, kind, owner_id, schema_id, sidecar_tables)
@@ -101,7 +104,7 @@ async fn seed_note(
     .bind(handle)
     .bind(t)
     .bind(owner_id)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
@@ -111,8 +114,9 @@ async fn seed_note(
     .bind(Uuid::now_v7())
     .bind(title)
     .bind(body)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     Ok(t)
 }
 
@@ -192,6 +196,8 @@ async fn seed_projection_corpus(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<
     .bind(CORPUS_ROWS)
     .execute(pool)
     .await?;
+    // The stamp and the rows it promises land in one transaction.
+    let mut stamped = pool.begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
              (handle, t, kind, owner_id, schema_id, sidecar_tables)
@@ -202,7 +208,7 @@ async fn seed_projection_corpus(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<
             AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)",
     )
     .bind(owner_id)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
     sqlx::query(
         "WITH ids AS MATERIALIZED (
@@ -222,9 +228,9 @@ async fn seed_projection_corpus(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<
            FROM ids",
     )
     .bind(owner_id)
-    .execute(pool)
-    .await
-    .map(|_| ())
+    .execute(&mut *stamped)
+    .await?;
+    stamped.commit().await
 }
 
 /// The first plan node scanning `relation`, or `None`.

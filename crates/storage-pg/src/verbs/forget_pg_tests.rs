@@ -90,11 +90,19 @@ const WRITE_ACT: &str = "proxima_core.write_act_v1";
 const UTTERANCE: &str = "proxima_core.utterance_v1";
 const GHOST_TABLE: &str = "proxima_core.w4_does_not_exist_v1";
 
+/// Ingest a Fact under an explicit `sidecar_tables` stamp, and write the rows
+/// that stamp promises, in the one transaction.
+///
+/// `sidecar_rows` is not garnish. Since `0009_declared_sidecar_presence.sql` a
+/// memory row that stamps a registered table and has no row in it is refused
+/// at `COMMIT`, so a fixture that stamps `AGENT_NOTE` inserts the note here
+/// rather than after this returns. Each statement binds `$1` to the new `t`.
 async fn ingest_stamped(
     pool: &sqlx::PgPool,
     permit: &OwnerWritePermit,
     draft: &FactWriteCommand,
     tables: &[String],
+    sidecar_rows: &[&str],
 ) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
     let mut tx = pool
         .begin()
@@ -128,6 +136,15 @@ async fn ingest_stamped(
         None,
     )
     .await?;
+    for sql in sidecar_rows {
+        // SQL-POLICY: fixed-fragment — a literal from the test that asked
+        // for the stamp, with the new `t` bound.
+        sqlx::query(sqlx::AssertSqlSafe(*sql))
+            .bind(outcome.memory_id.into_inner())
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+    }
     tx.commit()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
@@ -677,16 +694,19 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         let origin = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let mut sourced = draft(Some(("src", "k-held")));
         sourced.refs = vec![origin.memory_id.into_inner()];
-        let written = ingest_stamped(pool, &permit, &sourced, &[AGENT_NOTE.to_owned()]).await?;
+        let written = ingest_stamped(
+            pool,
+            &permit,
+            &sourced,
+            &[AGENT_NOTE.to_owned()],
+            &[
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             VALUES ($1, $1, 'n', 'sidecar body', ARRAY['tag'])",
+            ],
+        )
+        .await?;
         let t = written.memory_id.into_inner();
         assert_eq!(sidecar_tables_for(pool, t).await?, vec![AGENT_NOTE]);
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
-             VALUES ($1, $1, 'n', 'sidecar body', ARRAY['tag'])",
-        )
-        .bind(t)
-        .execute(pool)
-        .await?;
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_id, model_id, embedding_version, vec, owner_id)
@@ -1659,16 +1679,18 @@ async fn commit_forget_reputs_when_a_sidecar_row_lands_after_the_snapshot() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let written = ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
-        let t = written.memory_id.into_inner();
-
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+        let written = ingest_stamped(
+            pool,
+            &permit,
+            &draft(None),
+            &[AGENT_NOTE.to_owned()],
+            &[
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $1, 'n', 'snapshot body', ARRAY['tag'])",
+            ],
         )
-        .bind(t)
-        .execute(pool)
         .await?;
+        let t = written.memory_id.into_inner();
 
         // The unlocked snapshot is taken, and then the record changes under
         // it. A sidecar row cannot supply that change — sidecars are
@@ -1761,15 +1783,18 @@ async fn forget_dumps_only_stamped_tables_and_skips_unregistered_scan() {
         let pool = pg.pool_for_tests();
         let sidecars = core_pg_sidecars().with_unusable_memory_table("w4/ghost-v1", GHOST_TABLE);
 
-        let written = ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
-        let t = written.memory_id.into_inner();
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+        let written = ingest_stamped(
+            pool,
+            &permit,
+            &draft(None),
+            &[AGENT_NOTE.to_owned()],
+            &[
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $1, 'n', 'stamped', ARRAY['tag'])",
+            ],
         )
-        .bind(t)
-        .execute(pool)
         .await?;
+        let t = written.memory_id.into_inner();
 
         let cold = MemoryColdStore::default();
         let key = cold_object_key(t);
@@ -1836,23 +1861,21 @@ async fn forget_dumps_every_stamped_extra() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let tables = [AGENT_NOTE.to_owned(), UTTERANCE.to_owned()];
-        let written = ingest_stamped(pool, &permit, &draft(None), &tables).await?;
+        let written = ingest_stamped(
+            pool,
+            &permit,
+            &draft(None),
+            &tables,
+            &[
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             VALUES ($1, $1, 'n', 'note', ARRAY['tag'])",
+                "INSERT INTO proxima_core.utterance_v1 (t, speaker, conversation_id, text)
+             VALUES ($1, 'user', 'c1', 'said')",
+            ],
+        )
+        .await?;
         let t = written.memory_id.into_inner();
         assert_eq!(sidecar_tables_for(pool, t).await?, tables);
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
-             VALUES ($1, $1, 'n', 'note', ARRAY['tag'])",
-        )
-        .bind(t)
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.utterance_v1 (t, speaker, conversation_id, text)
-             VALUES ($1, 'user', 'c1', 'said')",
-        )
-        .bind(t)
-        .execute(pool)
-        .await?;
 
         let cold = MemoryColdStore::default();
         let key = cold_object_key(t);
@@ -2609,7 +2632,7 @@ async fn exact_hydrate_restores_memory_and_goal_witness_refs() {
 
         let mut source_draft = draft(None);
         source_draft.refs = vec![memory_t, goal_t];
-        let source = ingest_stamped(pool, &permit, &source_draft, &[]).await?;
+        let source = ingest_stamped(pool, &permit, &source_draft, &[], &[]).await?;
         let source_t = source.memory_id.into_inner();
         let cold = MemoryColdStore::default();
         let source_key = cold_object_key(source_t);
@@ -2808,7 +2831,7 @@ async fn hydrate_rejects_unknown_and_wrong_kind_witnesses_atomically() {
         let mut memory_ref_source_draft = draft(None);
         memory_ref_source_draft.refs = vec![memory_ref_target_t];
         let memory_ref_source =
-            ingest_stamped(pool, &permit, &memory_ref_source_draft, &[]).await?;
+            ingest_stamped(pool, &permit, &memory_ref_source_draft, &[], &[]).await?;
         let memory_ref_source_t = memory_ref_source.memory_id.into_inner();
         let memory_ref_source_key = cold_object_key(memory_ref_source_t);
         cool_one(
@@ -2869,7 +2892,7 @@ async fn hydrate_rejects_unknown_and_wrong_kind_witnesses_atomically() {
         let goal_t = insert_unassigned_goal(pool, owner, "wrong-kind-goal").await?;
         let mut goal_source_draft = draft(None);
         goal_source_draft.refs = vec![goal_t];
-        let goal_source = ingest_stamped(pool, &permit, &goal_source_draft, &[]).await?;
+        let goal_source = ingest_stamped(pool, &permit, &goal_source_draft, &[], &[]).await?;
         let goal_source_t = goal_source.memory_id.into_inner();
         let goal_source_key = cold_object_key(goal_source_t);
         cool_one(pool, &owner, &cold, goal_source_t, &goal_source_key).await?;
@@ -2937,10 +2960,44 @@ async fn a_stamped_sidecar_with_no_row_stops_the_forget() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
-        // Stamped, never written: exactly the state the writer and the
-        // verifier used to disagree about.
-        let written = ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
+        // Stamped, and then the row taken away: exactly the state the writer
+        // and the verifier used to disagree about. Since
+        // `0009_declared_sidecar_presence.sql` the database refuses both ways
+        // in, so the fixture writes the pair and then deletes the row with
+        // the orphan guard switched off on a raw connection.
+        //
+        // That is the shape of the evidence, not a workaround. With the guard
+        // installed this state arises only in a database whose trigger someone
+        // removed, or in rows written before it existed — and forget has to
+        // refuse both. Disabling the trigger is exactly those conditions.
+        let written = ingest_stamped(
+            pool,
+            &permit,
+            &draft(None),
+            &[AGENT_NOTE.to_owned()],
+            &[
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+                 VALUES ($1, $1, 'n', 'orphaned', ARRAY['tag'])",
+            ],
+        )
+        .await?;
         let t = written.memory_id.into_inner();
+        sqlx::query(
+            "ALTER TABLE proxima_core.agent_note_v1
+                 DISABLE TRIGGER agent_note_v1_declared_by_memory_on_delete",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
+            .bind(t)
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "ALTER TABLE proxima_core.agent_note_v1
+                 ENABLE TRIGGER agent_note_v1_declared_by_memory_on_delete",
+        )
+        .execute(pool)
+        .await?;
 
         let cold = MemoryColdStore::default();
         let key = cold_object_key(t);
@@ -3212,7 +3269,7 @@ async fn hydrate_rejects_cold_identity_and_sealed_pin_mismatch() {
         let live_target_t = live_target.memory_id.into_inner();
         let mut source_draft = draft(None);
         source_draft.refs = vec![live_target_t];
-        let source = ingest_stamped(pool, &permit, &source_draft, &[]).await?;
+        let source = ingest_stamped(pool, &permit, &source_draft, &[], &[]).await?;
         let source_t = source.memory_id.into_inner();
         let source_key = cold_object_key(source_t);
         cool_one(pool, &owner, &cold, source_t, &source_key).await?;
@@ -4955,15 +5012,18 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
         assert_eq!(rewritten, 1, "the note sidecar is a declared surface");
         let kept_surfaces = proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(declared);
 
-        let written = ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
-        let t = written.memory_id.into_inner();
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+        let written = ingest_stamped(
+            pool,
+            &permit,
+            &draft(None),
+            &[AGENT_NOTE.to_owned()],
+            &[
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $1, 'n', 'kept', ARRAY['tag'])",
+            ],
         )
-        .bind(t)
-        .execute(pool)
         .await?;
+        let t = written.memory_id.into_inner();
 
         let cold = MemoryColdStore::default();
         let key = cold_object_key(t);
@@ -5140,6 +5200,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
             &permit,
             &witness_source_draft,
             &[],
+            &[],
         )
         .await?;
         let witness_source_t = witness_source.memory_id.into_inner();
@@ -5187,15 +5248,14 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
         let mut sidecar_ids = Vec::new();
         for (field, value) in sidecar_mutations {
             let sidecar_source =
-                ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
-            let sidecar_t = sidecar_source.memory_id.into_inner();
-            sqlx::query(
+                ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()],
+            &[
                 "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
                  VALUES ($1, $1, 'n', 'body', ARRAY['tag'])",
-            )
-            .bind(sidecar_t)
-            .execute(pool)
-            .await?;
+            ],
+        )
+        .await?;
+            let sidecar_t = sidecar_source.memory_id.into_inner();
             let sidecar_key = cold_object_key(sidecar_t);
             cool_one(
                 pool,
@@ -5223,15 +5283,14 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
         // not part of this admission. The v6 stamp must reject it before the
         // restore can turn the valid dump into a new sidecar row.
         let extra_source =
-            ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
-        let extra_t = extra_source.memory_id.into_inner();
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+            ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()],
+            &[
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $1, 'n', 'body', ARRAY['tag'])",
+            ],
         )
-        .bind(extra_t)
-        .execute(pool)
         .await?;
+        let extra_t = extra_source.memory_id.into_inner();
         let extra_key = cold_object_key(extra_t);
         cool_one(pool, &owner, cold.as_ref(), extra_t, &extra_key).await?;
         let mut extra_record = decode_record(&cold.get(&extra_key).await?)?;
@@ -5247,15 +5306,14 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
         sidecar_ids.push(extra_source.memory_id);
 
         let duplicate_source =
-            ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
-        let duplicate_t = duplicate_source.memory_id.into_inner();
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+            ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()],
+            &[
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $1, 'n', 'body', ARRAY['tag'])",
+            ],
         )
-        .bind(duplicate_t)
-        .execute(pool)
         .await?;
+        let duplicate_t = duplicate_source.memory_id.into_inner();
         let duplicate_key = cold_object_key(duplicate_t);
         cool_one(
             pool,
@@ -5283,15 +5341,14 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
         sidecar_ids.push(duplicate_source.memory_id);
 
         let owner_pinned_source =
-            ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
-        let owner_pinned_t = owner_pinned_source.memory_id.into_inner();
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+            ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()],
+            &[
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $1, 'n', 'body', ARRAY['tag'])",
+            ],
         )
-        .bind(owner_pinned_t)
-        .execute(pool)
         .await?;
+        let owner_pinned_t = owner_pinned_source.memory_id.into_inner();
         let owner_pinned_key = cold_object_key(owner_pinned_t);
         cool_one(
             pool,
@@ -5564,7 +5621,7 @@ async fn authorized_hydration_reports_witness_count_after_erase_race() {
         let target_t = target.memory_id.into_inner();
         let mut source_draft = draft(None);
         source_draft.refs = vec![target_t];
-        let source = ingest_stamped(pool, &permit, &source_draft, &[]).await?;
+        let source = ingest_stamped(pool, &permit, &source_draft, &[], &[]).await?;
         let source_t = source.memory_id.into_inner();
         let source_key = cold_object_key(source_t);
         cool_one(pool, &owner, cold.as_ref(), source_t, &source_key).await?;

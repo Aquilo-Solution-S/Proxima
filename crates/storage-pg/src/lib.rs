@@ -1810,14 +1810,14 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
              0003_v010_reference_integrity.sql, 0004_v011_goal_refs.sql, \
              the hard-erase witness is 0005_erased_pin_targets.sql, \
              0006_v013_goal_replay_declaration.sql, \
-             0007_upload_content_identity.sql and \
-             0008_cold_integrity_digest.sql"
+             0007_upload_content_identity.sql, 0008_cold_integrity_digest.sql \
+             and 0009_declared_sidecar_presence.sql"
         );
     }
 
@@ -1929,10 +1929,10 @@ mod tests {
                     .contains("NEW.cold_digest IS DISTINCT FROM OLD.cold_digest"),
             "version 8 must persist the exact cold-object digest witness"
         );
-        // The legacy range shrinks as the head advances: versions 7 and 8
-        // are current additive migrations asserted above, so only 9..=21
-        // remain retired by the v0.0.8 squash.
-        for dead in 9..=21 {
+        // The legacy range shrinks as the head advances: versions 7, 8 and 9
+        // are current additive migrations, so only 10..=21 remain retired by
+        // the v0.0.8 squash.
+        for dead in 10..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"

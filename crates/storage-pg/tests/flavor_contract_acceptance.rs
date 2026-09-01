@@ -580,6 +580,10 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
             ("core/interpretation-v1", "perspective", Uuid::now_v7()),
         ];
 
+        // The stamp and the rows it promises land in one transaction: a
+        // memory row that names a sidecar table it has no row in is refused
+        // at COMMIT.
+        let mut stamped = pool.begin().await?;
         for (schema_id, kind, t) in &seeds {
             let handle = Uuid::now_v7();
             sqlx::query(
@@ -591,7 +595,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
             .bind(schema_id)
             .bind(owner_id)
             .bind(t)
-            .execute(pool)
+            .execute(&mut *stamped)
             .await?;
             let content_id: Option<Uuid> = if *kind == "fact" {
                 None
@@ -606,7 +610,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
                 .bind(owner_id)
                 .bind(schema_id)
                 .bind(content_id.as_bytes().as_slice())
-                .execute(pool)
+                .execute(&mut *stamped)
                 .await?;
                 Some(content_id)
             };
@@ -638,7 +642,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
             .bind(content_id)
             .bind(&origins)
             .bind(sidecar)
-            .execute(pool)
+            .execute(&mut *stamped)
             .await?;
         }
 
@@ -650,7 +654,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
         .bind(Uuid::now_v7())
         .bind(title)
         .bind(body)
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.utterance_v1 (t, speaker, conversation_id, text)
@@ -658,7 +662,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
         )
         .bind(seeds[1].2)
         .bind(utterance)
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.agent_derivation_v1
@@ -668,7 +672,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
         .bind(seeds[2].2)
         .bind(title)
         .bind(body)
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.interpretation_v1
@@ -677,8 +681,9 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
         )
         .bind(seeds[3].2)
         .bind(claim)
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
+        stamped.commit().await?;
 
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let owner = proxima_core::Owner::Personal(proxima_core::UserId::new(owner_id));

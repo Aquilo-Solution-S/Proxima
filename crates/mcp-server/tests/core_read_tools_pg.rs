@@ -741,8 +741,11 @@ async fn insert_fact(
     owner: &Owner,
     text: &str,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
+    // The stamp and the row it promises land in one transaction: a memory row
+    // that names a sidecar table it has no row in is refused at COMMIT.
+    let mut stamped = pg.pool_for_tests().begin().await?;
     let t = insert_memory_row(
-        pg,
+        &mut stamped,
         owner,
         "fact",
         "core/agent-note-v1",
@@ -757,8 +760,9 @@ async fn insert_fact(
     )
     .bind(t)
     .bind(text)
-    .execute(pg.pool_for_tests())
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     Ok(t)
 }
 
@@ -864,7 +868,7 @@ async fn arm_goal_for_fact(
 /// through, and since the declaration trigger the database refuses an
 /// unstamped one outright.
 async fn insert_memory_row(
-    pg: &PgStorage,
+    conn: &mut sqlx::PgConnection,
     owner: &Owner,
     kind: &str,
     schema_id: &str,
@@ -876,7 +880,7 @@ async fn insert_memory_row(
     let mut origins = origins.to_vec();
     if kind != "fact" && origins.is_empty() {
         let fact_t = Box::pin(insert_memory_row(
-            pg,
+            &mut *conn,
             owner,
             "fact",
             "core/test-fact-v1",
@@ -886,7 +890,7 @@ async fn insert_memory_row(
         .await?;
         if kind == "perspective" {
             let abs_t = Box::pin(insert_memory_row(
-                pg,
+                &mut *conn,
                 owner,
                 "abstraction",
                 "core/test-abs-v1",
@@ -906,7 +910,7 @@ async fn insert_memory_row(
     )
     .bind(owner_id)
     .bind(proxima_core::OwnerRefKind::of(owner).as_str())
-    .execute(pg.pool_for_tests())
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
@@ -917,7 +921,7 @@ async fn insert_memory_row(
     .bind(schema_id)
     .bind(owner_id)
     .bind(t)
-    .execute(pg.pool_for_tests())
+    .execute(&mut *conn)
     .await?;
     let content_id: Option<uuid::Uuid> = if kind == "fact" {
         None
@@ -934,7 +938,7 @@ async fn insert_memory_row(
             .bind(owner_id)
             .bind(schema_id)
             .bind(hash.as_slice())
-            .fetch_one(pg.pool_for_tests())
+            .fetch_one(&mut *conn)
             .await?,
         )
     };
@@ -952,7 +956,7 @@ async fn insert_memory_row(
     .bind(origins)
     .bind(content_id)
     .bind(&sidecars)
-    .execute(pg.pool_for_tests())
+    .execute(&mut *conn)
     .await?;
     Ok(t)
 }
@@ -963,8 +967,10 @@ async fn insert_memory(
     text: &str,
     origins: &[uuid::Uuid],
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
+    // The stamp and the row it promises land in one transaction: see above.
+    let mut stamped = pg.pool_for_tests().begin().await?;
     let t = insert_memory_row(
-        pg,
+        &mut stamped,
         owner,
         "abstraction",
         "core/agent-derivation-v1",
@@ -981,8 +987,9 @@ async fn insert_memory(
     )
     .bind(t)
     .bind(text)
-    .execute(pg.pool_for_tests())
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     Ok(t)
 }
 

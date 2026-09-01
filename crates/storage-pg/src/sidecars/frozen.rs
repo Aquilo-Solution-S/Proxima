@@ -133,6 +133,26 @@ impl PgSidecarRegistryFrozen {
     /// Forget must not SELECT it unless the row stamped it.
     #[must_use]
     pub fn with_unusable_memory_table(&self, schema_id: &str, table: &str) -> Self {
+        self.with_memory_sidecar_for_tests(schema_id, table, "t")
+    }
+
+    /// Test-only: register `table`, keyed on `memory_key_column`, as a memory
+    /// sidecar of this registry.
+    ///
+    /// Every memory sidecar in the tree happens to key on `t`, so the
+    /// declaration lane's `KeyShape::MemoryT { column }` freedom is otherwise
+    /// exercised by nothing that
+    /// [`crate::integrity::ensure_declaration_triggers`] ever sees — and that
+    /// guardrail compares whole rendered trigger definitions, which a key
+    /// column appears in three times. A registry with one differently-keyed
+    /// table is what lets a test put a real one in front of it.
+    #[must_use]
+    pub fn with_memory_sidecar_for_tests(
+        &self,
+        schema_id: &str,
+        table: &str,
+        memory_key_column: &'static str,
+    ) -> Self {
         use proxima_core::verbs::schema::PayloadKind;
         use proxima_core::{SchemaId, SchemaVersion};
         let mut entries = (*self.entries).clone();
@@ -147,7 +167,7 @@ impl PgSidecarRegistryFrozen {
                 key,
                 sidecar_table: table.to_owned(),
                 owner_pinned: false,
-                memory_key_column: Some("t"),
+                memory_key_column: Some(memory_key_column),
                 memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
                 memory_load: None,
                 memory_load_batch: Some(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
@@ -341,6 +361,18 @@ impl PgSidecarRegistryFrozen {
         &self,
         flavor_id: &str,
     ) -> Result<Vec<crate::projection::Artifact>, StorageError> {
+        self.memory_sidecars_of_flavor(flavor_id)?
+            .into_iter()
+            .map(|(table, column)| crate::integrity::declaration_trigger(table, column))
+            .collect()
+    }
+
+    /// The `(table, memory-key column)` pairs one flavor registers, in table
+    /// order. The selection every per-flavor trigger generator shares.
+    fn memory_sidecars_of_flavor(
+        &self,
+        flavor_id: &str,
+    ) -> Result<Vec<(&str, &'static str)>, StorageError> {
         let mut tables: Vec<(&str, &'static str)> = self
             .entries
             .values()
@@ -366,10 +398,50 @@ impl PgSidecarRegistryFrozen {
             .collect::<Result<Vec<_>, StorageError>>()?;
         tables.sort_unstable();
         tables.dedup();
-        tables
-            .into_iter()
-            .map(|(table, column)| crate::integrity::declaration_trigger(table, column))
-            .collect()
+        Ok(tables)
+    }
+
+    /// The presence-lane declaration-integrity DDL one flavor's migration
+    /// carries, in table order: for every memory sidecar this flavor
+    /// registers that is not owner-pinned, the stamp ⊆ rows presence trigger
+    /// and the orphan guard that refuses a `DELETE` of the row it promises;
+    /// then the `UPDATE OF <key>` half of the row ⊆ stamp guard for every one
+    /// of them, owner-pinned included.
+    ///
+    /// The sibling of [`Self::declaration_trigger_artifacts`], one migration
+    /// lane later, and split from it rather than folded into it because
+    /// `0002_v009_declaration_triggers.sql` and each flavor's declaration
+    /// migration are already applied: a generator whose output grew would
+    /// make the pin on those files unsatisfiable.
+    ///
+    /// [`crate::integrity::PRESENCE_TRIGGER_FUNCTION`] is deliberately NOT
+    /// part of this list, for the reason
+    /// [`Self::declaration_trigger_artifacts`] gives about its own function.
+    ///
+    /// Owner-pinned sidecars get the `UPDATE` guard but neither the presence
+    /// trigger nor the orphan guard. See
+    /// [`crate::integrity::ensure_declaration_triggers`] for why their stamp
+    /// is a record rather than a claim.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::declaration_trigger_artifacts`].
+    pub fn presence_trigger_artifacts(
+        &self,
+        flavor_id: &str,
+    ) -> Result<Vec<crate::projection::Artifact>, StorageError> {
+        let tables = self.memory_sidecars_of_flavor(flavor_id)?;
+        let mut artifacts = Vec::with_capacity(tables.len() * 3);
+        for (table, column) in &tables {
+            if !self.is_owner_pinned_memory_sidecar_table(table) {
+                artifacts.push(crate::integrity::presence_trigger(table, column)?);
+                artifacts.push(crate::integrity::delete_guard_trigger(table, column)?);
+            }
+        }
+        for (table, column) in &tables {
+            artifacts.push(crate::integrity::key_repoint_trigger(table, column)?);
+        }
+        Ok(artifacts)
     }
 
     /// The sibling of [`Self::rebuild_projection_for_table`]: what rebuild
@@ -390,6 +462,18 @@ impl PgSidecarRegistryFrozen {
     ///    With the declaration trigger installed this class is unreachable
     ///    through `INSERT`; the check exists for rows written before it, and
     ///    for a database whose trigger someone dropped.
+    /// 3. A memory row that declares a registered sidecar table it has no
+    ///    row in — the other direction of class two, and the one the
+    ///    presence trigger closes at write time. NOT repairable
+    ///    either, and the finding says so. The orphaning delete that would
+    ///    otherwise produce this class is refused at `DELETE` by the orphan
+    ///    guard, so what is left for the check is rows written before those
+    ///    triggers, a database whose triggers someone dropped, and the
+    ///    statements that fire no row trigger at all: `TRUNCATE`, and any
+    ///    `DELETE` under `session_replication_role = replica`. Owner-pinned
+    ///    tables are excluded:
+    ///    their rows are erased on their own owner's schedule, so their stamp
+    ///    is a record of a past write rather than a claim about the present.
     ///
     /// Every registered flavor is checked, so a downstream flavor's CI can
     /// run this once after its own ingest suite and assert zero drift.
@@ -477,6 +561,27 @@ impl PgSidecarRegistryFrozen {
             declared_tables.push(table.to_owned());
             if rows > 0 {
                 findings.push(IntegrityFinding::UndeclaredSidecarRows {
+                    sidecar_table: table.to_owned(),
+                    rows,
+                });
+            }
+
+            // Class three, the other direction of class two. Skipped for an
+            // owner-pinned table, whose stamp records what was written
+            // rather than claiming the row is still there — see
+            // `ensure_declaration_triggers`.
+            if self.is_owner_pinned_memory_sidecar_table(table) {
+                continue;
+            }
+            let sql = crate::integrity::missing_stamped_rows_sql(table, key)?;
+            // SQL-POLICY: generated
+            let rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                .bind(table)
+                .fetch_one(pool)
+                .await
+                .map_err(crate::error::map_err)?;
+            if rows > 0 {
+                findings.push(IntegrityFinding::MissingStampedSidecarRows {
                     sidecar_table: table.to_owned(),
                     rows,
                 });

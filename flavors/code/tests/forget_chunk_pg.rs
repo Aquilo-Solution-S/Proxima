@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{migrated_db, owner_write_permit, seed_memory_with_sidecars, test_owner};
+use common::{migrated_db, owner_write_permit, seed_memory_with_sidecars_in_tx, test_owner};
 use proxima_code::{CodeChunkV1, CodeExecutionPlanV1};
 use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerWritePermit};
 use proxima_core::{AbstractionPayload, AccessKind, ColdObjectStore, MemoryId};
@@ -123,8 +123,12 @@ async fn forget_hydrate_restores_code_chunk_sidecar() {
         let owner = test_owner();
         let permit: OwnerWritePermit = owner_write_permit(&owner, AccessKind::Fact).await?;
         let pool = pg.pool_for_tests();
-        let (_handle, memory_id) = seed_memory_with_sidecars(
-            pool,
+        // The stamp and the rows it promises land in one transaction: a
+        // memory row that names a sidecar table it has no row in is refused
+        // at COMMIT.
+        let mut stamped = pool.begin().await?;
+        let (_handle, memory_id) = seed_memory_with_sidecars_in_tx(
+            &mut stamped,
             &owner,
             <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
             "abstraction",
@@ -143,8 +147,9 @@ async fn forget_hydrate_restores_code_chunk_sidecar() {
         )
         .bind(memory_id)
         .bind(Uuid::now_v7())
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
+        stamped.commit().await?;
 
         let callee = Uuid::now_v7();
         for (site_index, byte_start, byte_end, callee_name, is_dynamic) in [
@@ -309,8 +314,12 @@ async fn forged_detail_case(
         let owner = test_owner();
         let permit: OwnerWritePermit = owner_write_permit(&owner, AccessKind::Fact).await?;
         let pool = pg.pool_for_tests();
-        let (_handle, memory_id) = seed_memory_with_sidecars(
-            pool,
+        // The stamp and the rows it promises land in one transaction: a
+        // memory row that names a sidecar table it has no row in is refused
+        // at COMMIT.
+        let mut stamped = pool.begin().await?;
+        let (_handle, memory_id) = seed_memory_with_sidecars_in_tx(
+            &mut stamped,
             &owner,
             <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
             "abstraction",
@@ -329,7 +338,7 @@ async fn forged_detail_case(
         )
         .bind(memory_id)
         .bind(Uuid::now_v7())
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
         sqlx::query(
             "INSERT INTO proxima_code.code_chunk_call_v1
@@ -339,8 +348,9 @@ async fn forged_detail_case(
         )
         .bind(memory_id)
         .bind(Uuid::now_v7())
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
+        stamped.commit().await?;
 
         MemoryAuthoringPort::forget_memory(&pg, &permit, MemoryId::new(memory_id)).await?;
         let key = proxima_storage_pg::verbs::forget::cold_object_key(memory_id);
@@ -456,8 +466,11 @@ async fn forget_hydrate_restores_execution_plan_details() {
         let owner = test_owner();
         let permit: OwnerWritePermit = owner_write_permit(&owner, AccessKind::Fact).await?;
         let pool = pg.pool_for_tests();
-        let (_handle, memory_id) = seed_memory_with_sidecars(
-            pool,
+        // The stamp and the row it promises land in one transaction: a memory
+        // row that names a sidecar table it has no row in is refused at COMMIT.
+        let mut stamped = pool.begin().await?;
+        let (_handle, memory_id) = seed_memory_with_sidecars_in_tx(
+            &mut stamped,
             &owner,
             <CodeExecutionPlanV1 as AbstractionPayload>::SCHEMA_ID,
             "abstraction",
@@ -478,8 +491,9 @@ async fn forget_hydrate_restores_execution_plan_details() {
         .bind(memory_id)
         .bind(repo_id)
         .bind(activation)
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
+        stamped.commit().await?;
         for (item_index, item_key, title, depends_on) in [
             (0_i32, "compile", "Compile the crate", Vec::<String>::new()),
             (1_i32, "test", "Run the tests", vec!["compile".to_owned()]),

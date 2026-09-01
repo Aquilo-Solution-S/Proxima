@@ -2058,8 +2058,12 @@ async fn seed_perspective(
     label: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
-    let _ = common::seed_memory_with_sidecars(
-        pg.pool_for_tests(),
+    // The stamp and the rows it promises land in one transaction: a
+    // memory row that names a sidecar table it has no row in is refused
+    // at COMMIT.
+    let mut stamped = pg.pool_for_tests().begin().await?;
+    let _ = common::seed_memory_with_sidecars_in_tx(
+        &mut stamped,
         owner,
         "core/interpretation-v1",
         "perspective",
@@ -2076,8 +2080,9 @@ async fn seed_perspective(
     )
     .bind(memory_id)
     .bind(label)
-    .execute(pg.pool_for_tests())
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     Ok(memory_id)
 }
 
@@ -2104,8 +2109,11 @@ async fn ingest_execution_request_fixture(
     repo_id: Uuid,
     request_key: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let memory_id = fact_memory(
-        pool,
+    // The stamp and the row it promises land in one transaction: a memory row
+    // that names a sidecar table it has no row in is refused at COMMIT.
+    let mut stamped = pool.begin().await?;
+    let memory_id = fact_memory_in_tx(
+        &mut stamped,
         owner,
         ExecutionRequestV1::SCHEMA_ID,
         &["proxima_code.work_requested_v1"],
@@ -2121,8 +2129,9 @@ async fn ingest_execution_request_fixture(
     .bind("Prior execution request")
     .bind("Implement the prior request; this run is being retried.")
     .bind(request_key)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     Ok(memory_id)
 }
 
@@ -2474,27 +2483,27 @@ async fn hybrid_without_an_embedding_model_answers_lexically_and_says_so()
     Ok(())
 }
 
-async fn fact_memory(
-    pool: &PgPool,
+async fn fact_memory_in_tx(
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
     owner: Owner,
     schema_id: &str,
     sidecars: &[&str],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    fact_memory_on_handle(pool, owner, schema_id, None, sidecars).await
+    fact_memory_on_handle_in_tx(tx, owner, schema_id, None, sidecars).await
 }
 
 /// Seeded, not ingested: `Engine::fact_ingest` writes no flavor sidecar and
 /// so stamps none, and these fixtures write theirs by hand — which without
 /// the stamp is a row `sidecar_tables` cannot reach.
-async fn fact_memory_on_handle(
-    pool: &PgPool,
+async fn fact_memory_on_handle_in_tx(
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
     owner: Owner,
     schema_id: &str,
     handle: Option<Uuid>,
     sidecars: &[&str],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let (_, t) = common::seed_memory_with_sidecars(
-        pool,
+    let (_, t) = common::seed_memory_with_sidecars_in_tx(
+        tx,
         &owner,
         schema_id,
         "fact",
@@ -2513,8 +2522,12 @@ async fn abstraction_memory(
     payload: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let t = Uuid::new_v5(&Uuid::NAMESPACE_OID, payload.as_bytes());
-    let _ = common::seed_memory_with_sidecars(
-        pool,
+    // The stamp and the rows it promises land in one transaction: a
+    // memory row that names a sidecar table it has no row in is refused
+    // at COMMIT.
+    let mut stamped = pool.begin().await?;
+    let _ = common::seed_memory_with_sidecars_in_tx(
+        &mut stamped,
         owner,
         "core/agent-derivation-v1",
         "abstraction",
@@ -2531,8 +2544,9 @@ async fn abstraction_memory(
     )
     .bind(t)
     .bind(payload)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     Ok(t)
 }
 
@@ -2659,8 +2673,11 @@ async fn ingest_file_revision(
     let payload = format!("{file_path}:{indexed_commit_sha}");
     register_repo_row(pool, owner, repo_id).await?;
     let handle = existing_file_revision_handle(pool, &owner, repo_id, file_path).await?;
-    let memory_id = fact_memory_on_handle(
-        pool,
+    // The stamp and the row it promises land in one transaction: a memory row
+    // that names a sidecar table it has no row in is refused at COMMIT.
+    let mut stamped = pool.begin().await?;
+    let memory_id = fact_memory_on_handle_in_tx(
+        &mut stamped,
         owner,
         FileRevisionV1::SCHEMA_ID,
         handle,
@@ -2679,8 +2696,9 @@ async fn ingest_file_revision(
     .bind(blake3::hash(payload.as_bytes()).as_bytes().to_vec())
     .bind(i64::try_from(payload.len())?)
     .bind(indexed_commit_sha)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     Ok(memory_id)
 }
 
@@ -2692,8 +2710,11 @@ async fn ingest_file_revision_tombstone(
     indexed_commit_sha: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let handle = existing_file_revision_handle(pool, &owner, repo_id, file_path).await?;
-    let memory_id = fact_memory_on_handle(
-        pool,
+    // The stamp and the row it promises land in one transaction: see
+    // `ingest_file_revision`.
+    let mut stamped = pool.begin().await?;
+    let memory_id = fact_memory_on_handle_in_tx(
+        &mut stamped,
         owner,
         FileRevisionV1::SCHEMA_ID,
         handle,
@@ -2711,8 +2732,9 @@ async fn ingest_file_revision_tombstone(
     .bind(file_path)
     .bind([0u8; 32].to_vec())
     .bind(indexed_commit_sha)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     Ok(memory_id)
 }
 
@@ -2762,7 +2784,10 @@ async fn ingest_code_chunk_with_type(
         )
         .as_bytes(),
     );
-    let memory_id = code_chunk_memory(pool, &owner, handle, &[file_revision]).await?;
+    // The stamp and the row it promises land in one transaction: a memory row
+    // that names a sidecar table it has no row in is refused at COMMIT.
+    let mut stamped = pool.begin().await?;
+    let memory_id = code_chunk_memory_in_tx(&mut stamped, &owner, handle, &[file_revision]).await?;
     let line_count = i64::try_from(chunk.text.lines().count().max(1))?;
     sqlx::query(
         "INSERT INTO proxima_code.code_chunk_v1
@@ -2780,8 +2805,9 @@ async fn ingest_code_chunk_with_type(
     .bind(chunk.chunk_type)
     .bind(i64::try_from(chunk.text.len())?)
     .bind(line_count)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     // Hand-seeded sidecar, hand-kept projection. Without this the chunk is
     // invisible to the ranked arm, and every assertion below was in fact
     // being served by the substring fallback — which is exactly the state
@@ -2809,7 +2835,9 @@ async fn ingest_code_chunk_tombstone(
         &Uuid::NAMESPACE_OID,
         format!("{repo_id}:{file_path}:{chunk_index}").as_bytes(),
     );
-    let memory_id = code_chunk_memory(pool, &owner, handle, &[file_revision]).await?;
+    // The stamp and the row it promises land in one transaction: see above.
+    let mut stamped = pool.begin().await?;
+    let memory_id = code_chunk_memory_in_tx(&mut stamped, &owner, handle, &[file_revision]).await?;
     sqlx::query(
         "INSERT INTO proxima_code.code_chunk_v1
             (t, repo_id, file_path, chunk_index, text, language,
@@ -2822,8 +2850,9 @@ async fn ingest_code_chunk_tombstone(
     .bind(repo_id)
     .bind(file_path)
     .bind(chunk_index)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     common::project_code(
         pool,
         memory_id,
@@ -2921,15 +2950,15 @@ async fn ensure_tombstone_file_revision(
     .await
 }
 
-async fn code_chunk_memory(
-    pool: &PgPool,
+async fn code_chunk_memory_in_tx(
+    stamped: &mut sqlx::Transaction<'static, sqlx::Postgres>,
     owner: &Owner,
     handle: Uuid,
     origins: &[Uuid],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let t = Uuid::now_v7();
-    let _ = common::seed_memory_with_sidecars(
-        pool,
+    let _ = common::seed_memory_with_sidecars_in_tx(
+        stamped,
         owner,
         <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
         "abstraction",
@@ -2967,8 +2996,10 @@ async fn ingest_commit(
     sha: &str,
     message: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let memory_id = fact_memory(
-        pool,
+    // The stamp and the row it promises land in one transaction: see above.
+    let mut stamped = pool.begin().await?;
+    let memory_id = fact_memory_in_tx(
+        &mut stamped,
         owner,
         CommitV1::SCHEMA_ID,
         &["proxima_code.commit_v1"],
@@ -2987,8 +3018,9 @@ async fn ingest_commit(
     .bind(sha)
     .bind(now)
     .bind(message)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     common::project_code(
         pool,
         memory_id,
@@ -3008,8 +3040,10 @@ async fn ingest_commit_summary(
     key_files: &[&str],
     change_kind: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let (_, memory_id) = common::seed_memory_with_sidecars(
-        pool,
+    // The stamp and the row it promises land in one transaction: see above.
+    let mut stamped = pool.begin().await?;
+    let (_, memory_id) = common::seed_memory_with_sidecars_in_tx(
+        &mut stamped,
         owner,
         <proxima_code::CommitSummaryV1 as AbstractionPayload>::SCHEMA_ID,
         "abstraction",
@@ -3032,8 +3066,9 @@ async fn ingest_commit_summary(
     .bind(summary)
     .bind(files)
     .bind(change_kind)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     // Hand-seeded sidecar, hand-kept projection: the read path ranks on the
     // projection now, so a fixture that skips it is invisible to search.
     common::project_code(
@@ -3195,8 +3230,12 @@ async fn a_work_assignment_walk_reaches_both_subjects_its_payload_names()
 
     let (_, work_item_t) =
         common::seed_memory(pool, &owner, "core/test-fact-v1", "fact", None, None, &[]).await?;
-    let (_, target_t) = common::seed_memory_with_sidecars(
-        pool,
+    // The stamp and the rows it promises land in one transaction: a
+    // memory row that names a sidecar table it has no row in is refused
+    // at COMMIT.
+    let mut stamped = pool.begin().await?;
+    let (_, target_t) = common::seed_memory_with_sidecars_in_tx(
+        &mut stamped,
         &owner,
         "core/interpretation-v1",
         "perspective",
@@ -3212,11 +3251,16 @@ async fn a_work_assignment_walk_reaches_both_subjects_its_payload_names()
          VALUES ($1, 'the assignment target', 100, 'test-model', 'test', '1')",
     )
     .bind(target_t)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
 
-    let (_, assignment_t) = common::seed_memory_with_sidecars(
-        pool,
+    // The stamp and the rows it promises land in one transaction: a
+    // memory row that names a sidecar table it has no row in is refused
+    // at COMMIT.
+    let mut stamped = pool.begin().await?;
+    let (_, assignment_t) = common::seed_memory_with_sidecars_in_tx(
+        &mut stamped,
         &owner,
         "proxima-code/work-assignment-v1",
         "perspective",
@@ -3235,8 +3279,9 @@ async fn a_work_assignment_walk_reaches_both_subjects_its_payload_names()
     .bind(Uuid::now_v7())
     .bind(target_t)
     .bind(work_item_t)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
 
     let assignment_origins: Vec<Uuid> =
         sqlx::query_scalar("SELECT origins FROM proxima_core.memory WHERE t = $1")

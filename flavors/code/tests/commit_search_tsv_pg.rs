@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{migrated_db, project_code, seed_memory_with_sidecars, test_owner};
+use common::{migrated_db, project_code, seed_memory_with_sidecars_in_tx, test_owner};
 use proxima_code::payloads::{CommitSummaryV1, CommitV1};
 use proxima_core::{AbstractionPayload, FactPayload};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
@@ -69,8 +69,13 @@ async fn commit_and_summary_search_accept_non_english_prose() {
         let pool = pg.pool_for_tests();
         let owner = test_owner();
         let repo_id = Uuid::now_v7();
-        let (_, commit_t) = seed_memory_with_sidecars(
-            pool,
+        let now = time::OffsetDateTime::now_utc();
+        // The stamp and the rows it promises land in one transaction: a
+        // memory row that names a sidecar table it has no row in is refused
+        // at COMMIT.
+        let mut stamped = pool.begin().await?;
+        let (_, commit_t) = seed_memory_with_sidecars_in_tx(
+            &mut stamped,
             &owner,
             CommitV1::SCHEMA_ID,
             "fact",
@@ -80,19 +85,6 @@ async fn commit_and_summary_search_accept_non_english_prose() {
             &["proxima_code.commit_v1"],
         )
         .await?;
-        let (_, summary_t) = seed_memory_with_sidecars(
-            pool,
-            &owner,
-            CommitSummaryV1::SCHEMA_ID,
-            "abstraction",
-            None,
-            None,
-            &[],
-            &["proxima_code.commit_summary_v1"],
-        )
-        .await?;
-
-        let now = time::OffsetDateTime::now_utc();
         sqlx::query(
             "INSERT INTO proxima_code.commit_v1
                 (t, repo_id, sha, parents, author_name, author_email,
@@ -104,7 +96,18 @@ async fn commit_and_summary_search_accept_non_english_prose() {
         .bind(repo_id)
         .bind(now)
         .bind("Änderungen für Übertragung")
-        .execute(pool)
+        .execute(&mut *stamped)
+        .await?;
+        let (_, summary_t) = seed_memory_with_sidecars_in_tx(
+            &mut stamped,
+            &owner,
+            CommitSummaryV1::SCHEMA_ID,
+            "abstraction",
+            None,
+            None,
+            &[],
+            &["proxima_code.commit_summary_v1"],
+        )
         .await?;
         sqlx::query(
             "INSERT INTO proxima_code.commit_summary_v1
@@ -114,8 +117,9 @@ async fn commit_and_summary_search_accept_non_english_prose() {
         .bind(summary_t)
         .bind(repo_id)
         .bind("Änderungen für Übertragung")
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
+        stamped.commit().await?;
 
         let config: String = sqlx::query_scalar(
             "SELECT proxima_code.commit_search_lexical_config()::text",

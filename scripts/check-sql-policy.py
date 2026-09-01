@@ -777,7 +777,41 @@ def run_fixture(path: Path) -> int:
 # `PgIdent`; every row value is a bind. Literal SQL cannot express this lane
 # because out-of-tree flavors supply the relation and key declarations, while
 # the contract stamp is precisely what hydration must verify before writing.
-EXPECTED_DYNAMIC_SQL_SITES = 106
+#
+# 106 -> 111: the third direction of the declaration invariant, stamp <= rows.
+# Three `DROP TRIGGER` inverses in `storage-pg/src/integrity.rs` — the presence
+# trigger's, the key-repoint trigger's, and the split that gave the existing
+# declaration trigger its own — one reader in `sidecars/frozen.rs` running the
+# `MissingStampedSidecarRows` count, and one fixture statement in
+# `verbs/forget_pg_tests.rs` that seeds the row a stamp promises. Every
+# relation and column fragment passes through `PgIdent` off the frozen
+# registry; the only runtime value is the memory key, which is a bind. Literal
+# SQL cannot express these because the guarded set is exactly the
+# non-owner-pinned sidecars an out-of-tree flavor declares.
+#
+# 111 -> 112: `a_key_repoint_onto_an_undeclared_memory_is_refused` installs the
+# generated `_on_update` trigger on a hand-made table, because every sidecar
+# core ships is append-only and would refuse the UPDATE before the guard runs.
+# Same generator, same `PgIdent` path as its `BEFORE INSERT` sibling one test
+# above.
+#
+# 112 -> 114: the orphan guard — direction 3 against a DELETE. One `DROP
+# TRIGGER` inverse in `storage-pg/src/integrity.rs` for the new family, and
+# two in `a_damaged_presence_trigger_fails_the_boot_guardrail`: the fixed
+# `DROP` it damages the database with, and the generator's own artifact it
+# repairs the database with between cases. Same `PgIdent` path as the three
+# families above it.
+#
+# 114 -> 116: the boot guardrail renders `pg_get_triggerdef` and compares it
+# whole, and that rendering is a function of `search_path` and
+# `quote_all_identifiers` as well as of the trigger. Two sites: the `SET LOCAL`
+# loop in `ensure_declaration_triggers` that pins both for its own read, and
+# the `ALTER DATABASE <uuid-name> SET ...` loop in
+# `the_boot_guardrail_ignores_the_callers_session_settings` that hands it a
+# database where both are hostile. Both splice only literals from the array
+# immediately above them, plus — in the test — the uuid-derived database name
+# the test itself just created.
+EXPECTED_DYNAMIC_SQL_SITES = 116
 
 
 def run_self_test() -> int:

@@ -750,3 +750,192 @@ async fn an_undeclared_sidecar_row_is_caught_and_the_finding_says_there_is_no_re
     })
     .await;
 }
+
+/// The third class, at write time: a memory that stamps a table it never
+/// writes a row into is refused at COMMIT, not silently accepted.
+///
+/// This is the direction `assert_memory_declares_sidecar` cannot see. Its
+/// check runs on the sidecar row, so a write that inserts no sidecar row at
+/// all passes it — and the memory it leaves behind cools into a cold object
+/// whose sidecar dump can never equal its own stamp, so forget refuses and
+/// hydration is impossible forever.
+#[tokio::test]
+async fn a_stamp_with_no_row_is_refused_at_commit() {
+    with_db("proxima_presence_write", async |pg| {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let pool = pg.pool_for_tests();
+
+        // The admission alone, stamping the note table and writing no note.
+        let mut tx = pool.begin().await?;
+        let write = draft(None);
+        let outcome = ingest_fact_timeseries(
+            &mut tx,
+            &owner,
+            &write,
+            &[],
+            &[],
+            &[AGENT_NOTE.to_owned()],
+            None,
+        )
+        .await?;
+        let memory_id = outcome.memory_id.into_inner();
+        // Deferred, so the statements above all succeeded: the refusal is
+        // the COMMIT itself.
+        let err = tx
+            .commit()
+            .await
+            .expect_err("a stamp with no row must not reach durable state");
+        let message = err.to_string();
+        assert!(
+            message.contains(AGENT_NOTE) && message.contains(&memory_id.to_string()),
+            "the refusal names the table and the memory: {message}"
+        );
+        let sqlx::Error::Database(db) = &err else {
+            panic!("the refusal is a database error: {err}");
+        };
+        let hint = db
+            .downcast_ref::<sqlx::postgres::PgDatabaseError>()
+            .hint()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            hint.contains("unit_of_work"),
+            "…and the hint names the write path that gets the pair right: {hint}"
+        );
+
+        // Nothing landed: the transaction that stamped is the one that was
+        // refused.
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE t = $1")
+            .bind(memory_id)
+            .fetch_one(pool)
+            .await?;
+        assert_eq!(rows, 0, "the refused write left no memory row");
+        Ok(())
+    })
+    .await;
+}
+
+/// The third class, after the fact. The orphan guard refuses this DELETE now,
+/// so the fixture switches it off to make the state — and that IS the state
+/// the check exists for: a database whose trigger someone removed, or rows
+/// written before `0009` existed. An in-place upgrade validates nothing, so
+/// `integrity_check` is the only thing that can find what a shipped database
+/// already carries.
+#[tokio::test]
+async fn an_orphaned_stamp_is_caught_and_the_finding_says_there_is_no_repair() {
+    with_db("proxima_presence_orphan", async |pg| {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let pool = pg.pool_for_tests();
+        let t = write_note(pool, owner, None).await?;
+
+        sqlx::query(
+            "ALTER TABLE proxima_core.agent_note_v1
+                 DISABLE TRIGGER agent_note_v1_declared_by_memory_on_delete",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
+            .bind(t.into_inner())
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "ALTER TABLE proxima_core.agent_note_v1
+                 ENABLE TRIGGER agent_note_v1_declared_by_memory_on_delete",
+        )
+        .execute(pool)
+        .await?;
+
+        let err = core_pg_sidecars()
+            .integrity_check(pool)
+            .await
+            .expect_err("a stamp whose row was deleted is drift");
+        let IntegrityViolation::Drift(findings) = &err else {
+            panic!("an orphaned stamp is drift, not a storage failure: {err}");
+        };
+        assert!(
+            findings.contains(&IntegrityFinding::MissingStampedSidecarRows {
+                sidecar_table: AGENT_NOTE.to_owned(),
+                rows: 1,
+            }),
+            "the orphaned stamp is found: {findings:?}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains(AGENT_NOTE) && message.contains("NO repair"),
+            "the finding names the table and says the stamp cannot be repaired: {message}"
+        );
+        Ok(())
+    })
+    .await;
+}
+
+/// The other end of direction 3, at write time: a stamped sidecar row may not
+/// be deleted while its stamp still stands.
+///
+/// The pair with `a_stamp_with_no_row_is_refused_at_commit`. Both reach the
+/// same unrepairable state; this one is worse, because the row's bytes are
+/// gone. Deferred, so the legitimate case — delete the row and the memory
+/// that stamps it together, which is what forget does — passes, and the
+/// second half of this test is that case.
+#[tokio::test]
+async fn deleting_a_stamped_row_is_refused_unless_its_memory_goes_too() {
+    with_db("proxima_orphan_guard", async |pg| {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let pool = pg.pool_for_tests();
+        let t = write_note(pool, owner, None).await?;
+        let memory_id = t.into_inner();
+
+        // The row alone. Deferred, so the DELETE itself succeeds and the
+        // COMMIT is what refuses.
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
+            .bind(memory_id)
+            .execute(&mut *tx)
+            .await?;
+        let err = tx
+            .commit()
+            .await
+            .expect_err("a stamped row may not be deleted out from under its stamp");
+        let message = err.to_string();
+        assert!(
+            message.contains(AGENT_NOTE) && message.contains(&memory_id.to_string()),
+            "the refusal names the table and the memory that still declares it: {message}"
+        );
+
+        // The row is still there: the refused transaction took nothing with
+        // it.
+        let rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_core.agent_note_v1 WHERE t = $1")
+                .bind(memory_id)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(rows, 1, "the refused delete left the row alone");
+
+        // The same DELETE, with the memory row going in the same
+        // transaction. This is forget's order — the sidecar FK to
+        // `proxima_core.memory` has no ON DELETE CASCADE, so the sidecar row
+        // has to go first — and it is exactly why the guard is deferred.
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
+            .bind(memory_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
+            .bind(memory_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+            .bind(memory_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM proxima_core.memory_head WHERE t = $1")
+            .bind(memory_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit()
+            .await
+            .expect("deleting the stamp with its row is what forget does");
+        Ok(())
+    })
+    .await;
+}

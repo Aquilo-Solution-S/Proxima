@@ -15,7 +15,7 @@ use std::time::Duration;
 
 mod common;
 
-use common::{migrated_db, seed_memory_with_sidecars};
+use common::{migrated_db, seed_memory_with_sidecars_in_tx};
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 use proxima_core::engine::Engine;
 use proxima_core::verbs::fact_ingest::{
@@ -150,8 +150,11 @@ async fn seed_file_revision_state(
     state: FileState,
     handle: Option<Uuid>,
 ) -> Result<Seeded, Box<dyn std::error::Error>> {
-    let (handle, t) = seed_memory_with_sidecars(
-        pool,
+    // The stamp and the row it promises land in one transaction: a memory row
+    // that names a sidecar table it has no row in is refused at COMMIT.
+    let mut stamped = pool.begin().await?;
+    let (handle, t) = seed_memory_with_sidecars_in_tx(
+        &mut stamped,
         &owner,
         FileRevisionV1::SCHEMA_ID,
         "fact",
@@ -176,8 +179,9 @@ async fn seed_file_revision_state(
     .bind(i64::try_from(seed.len()).unwrap_or(i64::MAX))
     .bind("0000000000000000000000000000000000000000")
     .bind(state)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
 
     Ok(Seeded { handle, t })
 }

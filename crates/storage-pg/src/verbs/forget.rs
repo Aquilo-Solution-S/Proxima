@@ -399,11 +399,13 @@ fn read_uuid_list(bytes: &[u8], i: &mut usize) -> Result<Vec<Uuid>, StorageError
 /// via a cold-object erase, permanently destroy — another owner's audit
 /// trail. They simply stay in the hot table, which is safe because they hold
 /// no foreign key into `memory`.
+///
+/// The same predicate decides which stamps get a presence trigger: an
+/// owner-pinned stamp is a record of a past write, not a claim about the
+/// present, so `stamp ⊆ rows` cannot be asked of it. One function, so the
+/// forget lane and the write-time constraint cannot drift apart.
 fn is_owner_pinned(sidecars: &PgSidecarRegistryFrozen, table: &str) -> bool {
-    sidecars
-        .owner_pinned_memory_sidecar_tables()
-        .iter()
-        .any(|pinned| pinned == table)
+    sidecars.is_owner_pinned_memory_sidecar_table(table)
 }
 
 /// The tables a cold record must carry a dump for: the row's own stamp, minus

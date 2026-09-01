@@ -174,12 +174,46 @@ pub async fn seed_memory_with_sidecars(
     origins: &[Uuid],
     sidecar_tables: &[&str],
 ) -> Result<(Uuid, Uuid), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let seeded = seed_memory_with_sidecars_in_tx(
+        &mut tx,
+        owner,
+        schema_id,
+        kind,
+        t,
+        handle,
+        origins,
+        sidecar_tables,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(seeded)
+}
+
+/// [`seed_memory_with_sidecars`] inside a caller's transaction, for a fixture
+/// that has to write the sidecar rows its stamp promises.
+///
+/// Since `0009_declared_sidecar_presence.sql` a memory row that names a
+/// registered sidecar table it has no row in is refused at `COMMIT`, so the
+/// stamp and the rows have to land together and the caller's inserts need the
+/// same transaction the memory row went into.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub async fn seed_memory_with_sidecars_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    schema_id: &str,
+    kind: &str,
+    t: Option<Uuid>,
+    handle: Option<Uuid>,
+    origins: &[Uuid],
+    sidecar_tables: &[&str],
+) -> Result<(Uuid, Uuid), sqlx::Error> {
     let handle = handle.unwrap_or_else(Uuid::now_v7);
     let t = t.unwrap_or_else(Uuid::now_v7);
     let mut origins = origins.to_vec();
     if kind != "fact" && origins.is_empty() {
-        let (_, fact_t) = Box::pin(seed_memory_with_sidecars(
-            pool,
+        let (_, fact_t) = Box::pin(seed_memory_with_sidecars_in_tx(
+            tx,
             owner,
             "core/test-fact-v1",
             "fact",
@@ -190,8 +224,8 @@ pub async fn seed_memory_with_sidecars(
         ))
         .await?;
         if kind == "perspective" {
-            let (_, abs_t) = Box::pin(seed_memory_with_sidecars(
-                pool,
+            let (_, abs_t) = Box::pin(seed_memory_with_sidecars_in_tx(
+                tx,
                 owner,
                 "core/test-abs-v1",
                 "abstraction",
@@ -213,19 +247,19 @@ pub async fn seed_memory_with_sidecars(
     )
     .bind(owner_id)
     .bind(proxima_core::OwnerRefKind::of(owner).as_str())
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
     let head_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM proxima_core.memory_head WHERE handle = $1)",
     )
     .bind(handle)
-    .fetch_one(pool)
+    .fetch_one(&mut **tx)
     .await?;
     if head_exists {
         sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
             .bind(handle)
             .bind(t)
-            .execute(pool)
+            .execute(&mut **tx)
             .await?;
     } else {
         sqlx::query(
@@ -237,7 +271,7 @@ pub async fn seed_memory_with_sidecars(
         .bind(schema_id)
         .bind(owner_id)
         .bind(t)
-        .execute(pool)
+        .execute(&mut **tx)
         .await?;
     }
     let tables: Vec<String> = sidecar_tables.iter().map(|s| (*s).to_string()).collect();
@@ -256,7 +290,7 @@ pub async fn seed_memory_with_sidecars(
             .bind(owner_id)
             .bind(schema_id)
             .bind(hash.as_slice())
-            .fetch_one(pool)
+            .fetch_one(&mut **tx)
             .await?,
         )
     };
@@ -273,7 +307,7 @@ pub async fn seed_memory_with_sidecars(
     .bind(origins)
     .bind(&tables)
     .bind(content_id)
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
     Ok((handle, t))
 }

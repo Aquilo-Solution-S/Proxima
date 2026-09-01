@@ -34,6 +34,23 @@ Proxima owns exactly two durable stores; back up both:
 - Embeddings are rebuildable rows, not source of truth: a lost embedding row
   re-enqueues (see the backlog signals below), so a PG-only restore is
   functionally complete for search once the drainer catches up.
+- **A logical restore MUST be one transaction, or run with triggers off.**
+  `proxima_core.memory` and the sidecar tables it stamps are held together by
+  deferred constraint triggers (`docs/09-developing-flavors.md`,
+  §Declaration triggers): a memory row that names a sidecar table must have its
+  row in that table by `COMMIT`. Default `pg_restore` commits per table with
+  triggers enabled, so it loads `memory` — stamps and all — before the sidecar
+  tables exist, and every stamped row is refused. Use
+  `pg_restore --single-transaction`, or set
+  `session_replication_role = replica` for the load and reset it afterwards.
+  `pg_basebackup` and PITR are unaffected: they restore files, not statements.
+  After a `session_replication_role = replica` load, run
+  `PgSidecarRegistryFrozen::integrity_check` — with the triggers off, nothing
+  verified the pairs the dump carried. `TRUNCATE` on a sidecar table is the
+  same class — it fires no row trigger — as is any `DELETE` run under
+  `session_replication_role = replica` or after `ALTER TABLE ... DISABLE
+  TRIGGER`. All of them are owner-only, and all of them leave a state
+  `integrity_check` reports and nothing repairs.
 
 ## Failed migration on boot
 

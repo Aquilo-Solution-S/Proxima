@@ -132,6 +132,9 @@ async fn seed_note_lang(
     .bind(t)
     .execute(pool)
     .await?;
+    // The stamp and the row it promises land in one transaction: a memory row
+    // that names a sidecar table it has no row in is refused at COMMIT.
+    let mut stamped = pool.begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
              (handle, t, kind, owner_id, schema_id, sidecar_tables)
@@ -141,7 +144,7 @@ async fn seed_note_lang(
     .bind(handle)
     .bind(t)
     .bind(owner_id)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
@@ -151,8 +154,9 @@ async fn seed_note_lang(
     .bind(Uuid::now_v7())
     .bind(title)
     .bind(body)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    stamped.commit().await?;
     project(pool, t, "core/agent-note-v1", language).await?;
     Ok(t)
 }
@@ -1138,6 +1142,8 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
                 (superseded, "the cartography of the archive"),
                 (head, "this revision says nothing"),
             ] {
+                // The stamp and the row it promises land in one transaction.
+                let mut stamped = pool.begin().await?;
                 sqlx::query(
                     "INSERT INTO proxima_core.memory
                          (handle, t, kind, owner_id, schema_id, sidecar_tables)
@@ -1147,7 +1153,7 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
                 .bind(handle)
                 .bind(t)
                 .bind(owner_id)
-                .execute(pool)
+                .execute(&mut *stamped)
                 .await?;
                 sqlx::query(
                     "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
@@ -1157,8 +1163,9 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
                 .bind(t)
                 .bind(format!("Backlog {index}"))
                 .bind(body)
-                .execute(pool)
+                .execute(&mut *stamped)
                 .await?;
+                stamped.commit().await?;
                 project(pool, t, "core/agent-note-v1", None).await?;
             }
             sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
