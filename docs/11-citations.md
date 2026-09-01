@@ -149,19 +149,25 @@ Direct upload:
 
 1. `prepare` inserts a pending upload and returns a presigned S3 `PUT`.
 2. Client uploads bytes directly to `pending/<upload-id>`.
-3. `complete` verifies the pending object, streams bytes to compute
-   BLAKE3 + SHA-256, copies to `objects/<upload-id>`,
-   deletes the pending object, inserts or reuses `blob`,
-   marks upload completed.
+3. `complete` performs one bounded read of the row-selected object to
+   compute BLAKE3 + SHA-256 and its length, conditionally publishes those
+   exact bytes to `objects/<upload-id>`, records the canonical locator and
+   SHA-256 audit digest, and carries the BLAKE3 content address into the corpus
+   transaction. It retires the pending transfer copy on a best-effort basis —
+   a provider failure there never fails a completion that already succeeded, and
+   the bucket lifecycle rule reclaims the leftovers — then inserts or reuses
+   `blob` and marks the upload completed.
 4. Same Owner + same bytes returns the existing CitedObject and marks
    the result as an idempotent replay.
-5. `abort` deletes the pending object when present and marks the
-   upload aborted.
+5. `abort` purges every version of the pending transfer key when present and
+   marks the upload aborted. It retains a canonical object because a finish
+   may have committed the corpus before an abort observes the row.
 
 Keys carry no owner. `upload_id` is the server-minted primary key of
-the `blob_uploads` row, so a key names exactly one row and never has to
-change: an owner transfer is an `owner_id` update on `blob` and
-`blob_uploads` and performs no object-store work at all.
+the minting `blob_uploads` row, so that row's canonical key is unique;
+mounted rows may intentionally share the source row's canonical key. An
+owner transfer is an `owner_id` update on `blob` and `blob_uploads` and
+performs no object-store work at all.
 
 The upload lane is the only writer the presigner trusts. An inline
 `core/uploaded-blob-v1` citation payload is a caller-asserted locator:
@@ -254,17 +260,33 @@ What cannot be inside that transaction is the object-store work. Streaming,
 hashing, and copying an S3 object is not a database statement and must not
 hold a transaction open while it runs. Completion is therefore three steps:
 
-1. **stage** — verify the bytes, move them to the canonical key derived from
-   their `upload_id`, record nothing. Idempotent; the pending object is
-   left in place so a retry can re-read it.
+1. **stage** — verify the bytes with one bounded object read, publish them
+   conditionally to the canonical key derived from their `upload_id`, record
+   the transfer locator and SHA-256 audit digest, and carry the BLAKE3 content
+   address forward. It writes no corpus rows. The
+   redundant pending object is retired before stage returns; a retry reads
+   the recorded canonical key. `finish` repeats the pending-key purge, so a
+   provider failure during either cleanup is repaired by a later retry.
 2. **the transaction** — everything above.
 3. **finish** — mark the upload row completed against the cited object and
-   delete the now-redundant pending object.
+   retry deleting the now-redundant pending object.
 
 A crash before step 3 leaves an upload row still saying `pending` whose
 artefact is already recorded. That is bookkeeping for the transfer
 protocol, invisible in the corpus, and resolved by completing the same
 upload again.
+
+A host or flavor that already computed the immutable metadata before the PUT
+may call `complete_upload_as_fact_with_expectation` with an
+`UploadCompletionExpectation`. After the one staging call, core compares the
+BLAKE3 content hash, byte length, MIME, and filename in that order, before
+authorization or the Fact transaction. A mismatch is a redacted
+`InvalidArgument`; no corpus rows are written, `finish` is not called, and
+an upload that was still pending remains pending for an explicit abort or a
+retry with the corrected expectation. Replacement bytes require abort plus a
+new prepare. The ordinary `complete_upload_as_fact` method has no caller
+expectation and remains the path used by MCP's unchanged
+`complete(upload_id)` action.
 
 <a id="mcp-surface"></a>
 ## MCP surface

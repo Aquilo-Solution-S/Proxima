@@ -58,10 +58,13 @@ pub struct CitedBlobUploadCompleted {
     pub idempotent_replay: bool,
 }
 
-/// An artefact that is in the object store, and in nothing else.
+/// An artefact that is in the object store and has transfer bookkeeping, but
+/// has not yet entered the corpus.
 ///
 /// The bytes have been verified and moved to the canonical key derived
-/// from their `upload_id`; no row in the substrate refers to them yet.
+/// from their `upload_id`; the upload row records that locator and its
+/// SHA-256 audit digest, while the staged payload carries the BLAKE3 content
+/// address. No corpus row refers to either yet.
 /// Everything after this point is one database transaction, which is why
 /// staging stops here rather than persisting what it staged.
 ///
@@ -76,8 +79,8 @@ pub struct CitedBlobStaged {
     /// `core/uploaded-blob-v1` cited object.
     pub payload: crate::citations::UploadedBlobPayload,
     /// Set when this upload was already completed on an earlier call: the
-    /// artefact is in the corpus under this id, and staging touched no
-    /// object storage. `None` on the first completion.
+    /// artefact is in the corpus under this id, and staging only retried
+    /// cleanup of the expendable pending key. `None` on the first completion.
     pub already_completed: Option<uuid::Uuid>,
 }
 
@@ -151,18 +154,22 @@ pub trait CitedBlobPort: Send + Sync {
     ) -> Result<CitedBlobUploadPrepared, StorageError>;
 
     /// Verify the uploaded bytes and move them to the canonical key derived
-    /// from their `upload_id`, WITHOUT recording anything about them.
+    /// from their `upload_id`, recording only the transfer locator and
+    /// digests — never corpus rows.
     ///
     /// The split exists so that persisting the artefact and recording its
     /// arrival can be one transaction. This half is the part that cannot
     /// be: it streams, hashes, and copies in the object store. It is
     /// idempotent — the canonical key is a function of the `upload_id`
-    /// alone, so a repeat writes the same key — and a caller that crashes
-    /// before persisting may stage again.
+    /// alone. A repeat verifies and reads that immutable canonical object —
+    /// it never overwrites it — and a caller that crashes before persisting
+    /// may stage again.
     ///
-    /// The pending object is deliberately NOT deleted here. It is the
-    /// only copy a retry can re-read if persistence fails; `finish_upload`
-    /// removes it once the artefact is in the corpus.
+    /// The pending object is retired, best-effort, after the canonical locator
+    /// is recorded — a provider failure there never fails a stage that already
+    /// succeeded. A retry re-reads those canonical bytes if corpus persistence
+    /// fails; `finish_upload` repeats pending-key cleanup after the artefact is
+    /// in the corpus.
     ///
     /// # Errors
     ///
@@ -178,7 +185,7 @@ pub trait CitedBlobPort: Send + Sync {
 
     /// Close out a staged upload whose artefact is now in the corpus:
     /// mark the pending upload completed against `cited_object_id` and
-    /// drop the redundant pending object.
+    /// retry dropping the redundant pending object.
     ///
     /// Called after the artefact and its Fact are committed, never
     /// before — so a crash in between leaves an upload row that still

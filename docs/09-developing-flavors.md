@@ -378,13 +378,38 @@ arrived, and a flavor records what it intends to do with it.
 Register the extension schema and its PG sidecar exactly as you would
 your own, then pass its payload alongside the substrate's:
 
+When a flavor computed the immutable file metadata before the presigned PUT,
+freeze those values in `UploadCompletionExpectation` and use the expectation-
+bearing completion method. Core stages once, compares the BLAKE3 hash, byte
+length, MIME, and filename in that order, and only then authorizes the Fact
+write. When the upload is still pending, a mismatch leaves it pending for an
+explicit abort or a retry with the corrected expectation; replacement bytes
+require abort plus a new prepare. The ordinary method remains available when
+the caller has no separate expectation (the MCP `complete` action uses that
+path):
+
 ```rust
+let expectation = UploadCompletionExpectation::new(
+    content_hash,
+    byte_len,
+    mime.clone(),
+    filename.clone(),
+);
+
 engine
-    .complete_upload_as_fact(blobs, &authz, owner, &upload_id, &[
-        SidecarPayload::fact(AcmeIngestQueuedV1 { queue: "ocr".into() }),
-    ])
+    .complete_upload_as_fact_with_expectation(
+        blobs,
+        &authz,
+        owner,
+        &upload_id,
+        &[SidecarPayload::fact(AcmeIngestQueuedV1 { queue: "ocr".into() })],
+        &expectation,
+    )
     .await?;
 ```
+
+`UploadCompletionExpectation` is core-owned and non-serializable; its
+constructor and read-only accessors are available from `proxima::flavor`.
 
 What the mechanism guarantees, and why it is data rather than a callback:
 

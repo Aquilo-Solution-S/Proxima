@@ -18,6 +18,7 @@ proxima-core = { path = "../core" }
 proxima-storage-pg = { path = "../storage-pg" }
 sqlx = { workspace = true }
 time = { workspace = true }
+tracing = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
@@ -33,4 +34,4 @@ proxima-pg-testkit = { path = "../pg-testkit" }
 # Without a client here no test ever dereferences one, and the only hop that
 # actually carries bytes goes unexecuted.
 reqwest = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }

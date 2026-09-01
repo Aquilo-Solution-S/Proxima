@@ -361,6 +361,13 @@ enumerates the keys named by that owner's rows rather than listing a prefix, so
 an object whose row is already gone is reclaimed by the lifecycle rule and the
 `maintain-blobs` orphan report instead.
 
+Canonical publication uses `PutObject` with `If-None-Match: *`. The configured
+S3-compatible provider MUST enforce that condition and return `412
+PreconditionFailed` for an existing key; a provider that rejects or ignores
+the condition is unsupported because it could overwrite immutable canonical
+bytes. A conditional collision is adopted only after the existing canonical
+object's BLAKE3, SHA-256, and length match the staged response.
+
 In-process byte consumers use `CitedBlobReadService::collect_verified` with a
 required non-zero ceiling. Ordinary callers pass `AuthzContext`; queued
 workers redeem `DelegatedPhase` from the runtime's shared

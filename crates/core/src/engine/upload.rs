@@ -1,10 +1,12 @@
 //! Completing an upload: the artefact and the record of its arrival, in
 //! one write.
 //!
-//! [`Engine::complete_upload_as_fact`] is the whole completion verb. There
-//! is no other: [`CitedBlobPort`] stages bytes and is told what they were
-//! recorded as, but it persists nothing, so a caller reaching past this
-//! verb would leave the corpus with nothing in it.
+//! [`Engine::complete_upload_as_fact`] and its expectation-bearing sibling
+//! are the two entries to one completion verb. [`CitedBlobPort`] stages bytes
+//! and records the transfer locator and SHA-256 audit digest while returning
+//! the BLAKE3 content address, but it writes no corpus
+//! rows, so a caller reaching past the Engine would leave the corpus with
+//! nothing in it.
 //!
 //! The shape follows from where the transaction has to be. Persisting a
 //! cited object is a Fact write with an inline citation — storage already
@@ -33,7 +35,7 @@ use crate::citations::{
     UploadedBlobWholeV1,
 };
 use crate::error::ProtocolError;
-use crate::storage_ports::{CitedBlobService, CitedBlobUploadCompleted};
+use crate::storage_ports::{CitedBlobService, CitedBlobStaged, CitedBlobUploadCompleted};
 use crate::verbs::fact_ingest::{
     FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
@@ -47,6 +49,62 @@ use crate::{
 /// the receipt key (see [`UploadV1::receipt_key`]). A per-call source id
 /// would make every completion a distinct receipt and defeat replay.
 const UPLOAD_SOURCE_ID: &str = "core/upload";
+
+/// Immutable metadata a caller may use to validate the bytes staged for one
+/// upload before core authorizes or persists the upload Fact.
+///
+/// The fields stay private so the frozen values cannot be mutated after
+/// construction. The type carries no storage locator, upload status, or
+/// completion claim; it is deliberately not serializable because this is an
+/// in-process assertion to compare, not a backend witness or wire argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadCompletionExpectation {
+    content_hash: [u8; 32],
+    byte_len: u64,
+    mime: String,
+    filename: String,
+}
+
+impl UploadCompletionExpectation {
+    /// Freeze the metadata the caller computed before uploading the bytes.
+    /// MIME and filename use the same surrounding-whitespace
+    /// canonicalization as upload preparation; case and interior whitespace
+    /// remain part of the immutable expectation.
+    #[must_use]
+    pub fn new(
+        content_hash: [u8; 32],
+        byte_len: u64,
+        mime: impl Into<String>,
+        filename: impl Into<String>,
+    ) -> Self {
+        Self {
+            content_hash,
+            byte_len,
+            mime: mime.into().trim().to_owned(),
+            filename: filename.into().trim().to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub const fn content_hash(&self) -> &[u8; 32] {
+        &self.content_hash
+    }
+
+    #[must_use]
+    pub const fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+
+    #[must_use]
+    pub fn mime(&self) -> &str {
+        &self.mime
+    }
+
+    #[must_use]
+    pub fn filename(&self) -> &str {
+        &self.filename
+    }
+}
 
 /// A finished upload: the stored artefact, and the Fact that records it.
 /// Both were written together, so neither exists without the other.
@@ -77,19 +135,21 @@ impl Engine {
     /// not a state this verb can leave behind.
     ///
     /// Two things sit outside it, both deliberately, and neither is corpus
-    /// content. Staging streams and copies an S3 object — no transaction
-    /// may be held open across that. Finishing marks the upload row and
-    /// deletes the redundant pending object. A crash before finishing
-    /// leaves an upload row still saying `pending` whose artefact is
-    /// already recorded; completing the same upload again resolves it.
+    /// content. Staging performs one bounded object read, records the
+    /// transfer's canonical locator and SHA-256 audit digest, carries the
+    /// BLAKE3 content address forward, and best-effort retires the redundant
+    /// pending copy — no transaction may be held open across that. Finishing
+    /// marks the upload row and retries the same cleanup. A crash before
+    /// finishing leaves an upload row still saying `pending` whose artefact
+    /// is already recorded; completing the same upload again resolves it.
     ///
     /// # Idempotency
     ///
     /// Safe to call again with the same `upload_id`. Staging derives its
-    /// destination key from that `upload_id`, so a repeat lands on exactly
-    /// the same object; the Fact replays on its receipt and returns the
-    /// same `memory_id` and cited object, and finishing tolerates an
-    /// upload already completed against the same artefact.
+    /// canonical key from that `upload_id`, so a repeat verifies and reads
+    /// exactly the same immutable object; the Fact replays on its receipt and
+    /// returns the same `memory_id` and cited object, and finishing tolerates
+    /// an upload already completed against the same artefact.
     ///
     /// # Errors
     ///
@@ -110,15 +170,89 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
+        self.complete_upload_as_fact_inner(blobs, authority, owner, upload_id, extensions, None)
+            .await
+    }
+
+    /// Complete a pending upload after checking caller-supplied immutable
+    /// metadata against the bytes staged by the blob service.
+    ///
+    /// The expectation-bearing path stages exactly once. A mismatch returns
+    /// before citation authorization or persistence; staging records the
+    /// canonical locator and SHA-256 audit digest, carries the BLAKE3 content
+    /// address forward but writes no corpus rows, and retires
+    /// the pending transfer copy. A corrected expectation can retry against
+    /// those canonical bytes. Replacing the bytes requires abort plus a new
+    /// prepare.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidArgument` naming the first mismatched metadata field,
+    /// or the same completion errors as [`Self::complete_upload_as_fact`].
+    pub async fn complete_upload_as_fact_with_expectation<A>(
+        &self,
+        blobs: &CitedBlobService,
+        authority: &A,
+        owner: OwnerRef,
+        upload_id: &str,
+        extensions: &[SidecarPayload],
+        expectation: &UploadCompletionExpectation,
+    ) -> Result<UploadCompleted, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        self.complete_upload_as_fact_inner(
+            blobs,
+            authority,
+            owner,
+            upload_id,
+            extensions,
+            Some(expectation),
+        )
+        .await
+    }
+
+    async fn complete_upload_as_fact_inner<A>(
+        &self,
+        blobs: &CitedBlobService,
+        authority: &A,
+        owner: OwnerRef,
+        upload_id: &str,
+        extensions: &[SidecarPayload],
+        expectation: Option<&UploadCompletionExpectation>,
+    ) -> Result<UploadCompleted, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let _operation = self.operation_authority(authority)?;
         // Staging does the object-store half and stops: bytes verified,
-        // moved to the canonical key derived from `upload_id`, nothing
-        // recorded. Everything below this line is one transaction.
+        // moved to the canonical key derived from `upload_id`; no corpus rows
+        // are written here. Everything below this line is one transaction.
         let staged = blobs
             .stage_upload(authority, owner, upload_id)
             .await
             .map_err(|err| map_write_storage_error(err, "upload_id", "upload not found"))?;
 
+        if let Some(expectation) = expectation {
+            validate_staged_payload(expectation, &staged.payload)?;
+        }
+
+        self.persist_staged_upload_as_fact(blobs, authority, owner, upload_id, extensions, staged)
+            .await
+    }
+
+    async fn persist_staged_upload_as_fact<A>(
+        &self,
+        blobs: &CitedBlobService,
+        authority: &A,
+        owner: OwnerRef,
+        upload_id: &str,
+        extensions: &[SidecarPayload],
+        staged: CitedBlobStaged,
+    ) -> Result<UploadCompleted, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let content_hash = hex::encode(staged.payload.content_hash);
         let payload = UploadV1 {
             filename: staged.payload.filename.clone(),
@@ -215,6 +349,37 @@ impl Engine {
     }
 }
 
+fn validate_staged_payload(
+    expectation: &UploadCompletionExpectation,
+    staged: &crate::citations::UploadedBlobPayload,
+) -> Result<(), ProtocolError> {
+    if staged.content_hash != *expectation.content_hash() {
+        return Err(ProtocolError::invalid_argument(
+            "content_hash",
+            "staged upload does not match expected BLAKE3 content hash",
+        ));
+    }
+    if staged.byte_len != expectation.byte_len() {
+        return Err(ProtocolError::invalid_argument(
+            "byte_len",
+            "staged upload does not match expected byte length",
+        ));
+    }
+    if staged.mime != expectation.mime() {
+        return Err(ProtocolError::invalid_argument(
+            "mime",
+            "staged upload does not match expected MIME",
+        ));
+    }
+    if staged.filename != expectation.filename() {
+        return Err(ProtocolError::invalid_argument(
+            "filename",
+            "staged upload does not match expected filename",
+        ));
+    }
+    Ok(())
+}
+
 /// "This Fact came from that artefact", with no locator — the mapping is
 /// the whole citation. `UploadedBlobWholeV1` is a braced empty struct, so
 /// its wire form is `{}`; it is serialized rather than hardcoded so the
@@ -230,7 +395,20 @@ fn whole_blob_mapping() -> InlineCitationMappingDraft {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use async_trait::async_trait;
+
     use super::*;
+    use crate::storage::StorageError;
+    use crate::storage_ports::{
+        CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobUploadAborted,
+        CitedBlobUploadPrepared,
+    };
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, UserId};
 
     /// The mapping this verb sends must be the one core registered for
     /// whole-artefact citations, and must target the uploaded-blob
@@ -252,5 +430,216 @@ mod tests {
     #[test]
     fn the_mapping_payload_is_a_json_object() {
         assert_eq!(whole_blob_mapping().payload_bytes, b"{}");
+    }
+
+    fn staged_payload() -> crate::citations::UploadedBlobPayload {
+        crate::citations::UploadedBlobPayload {
+            content_hash: [0x11; 32],
+            bucket: "private-bucket".to_owned(),
+            object_key: "objects/upload-id".to_owned(),
+            sha256: [0x22; 32],
+            byte_len: 7,
+            mime: "application/pdf".to_owned(),
+            filename: "book.pdf".to_owned(),
+            etag: Some("etag".to_owned()),
+            uploaded_at: time::OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn exact_staged_payload_satisfies_expectation() {
+        let payload = staged_payload();
+        let expectation = UploadCompletionExpectation::new(
+            payload.content_hash,
+            payload.byte_len,
+            payload.mime.clone(),
+            payload.filename.clone(),
+        );
+
+        validate_staged_payload(&expectation, &payload)
+            .expect("the exact staged payload must satisfy its expectation");
+    }
+
+    #[test]
+    fn expectation_trims_only_surrounding_text_whitespace() {
+        let expectation = UploadCompletionExpectation::new(
+            [0x11; 32],
+            7,
+            "  Application/PDF ; charset=utf-8  ",
+            "  my  book.pdf  ",
+        );
+
+        assert_eq!(expectation.mime(), "Application/PDF ; charset=utf-8");
+        assert_eq!(expectation.filename(), "my  book.pdf");
+    }
+
+    #[derive(Debug)]
+    struct CountingStagePort {
+        staged: CitedBlobStaged,
+        stage_calls: Arc<AtomicUsize>,
+        finish_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl CitedBlobPort for CountingStagePort {
+        async fn prepare_upload(
+            &self,
+            _authz: &crate::AuthzContext,
+            _owner: crate::OwnerRef,
+            _filename: &str,
+            _mime: &str,
+            _byte_len: u64,
+        ) -> Result<CitedBlobUploadPrepared, StorageError> {
+            Err(StorageError::Internal("test port: unused".to_owned()))
+        }
+
+        async fn stage_upload(
+            &self,
+            _authz: &crate::AuthzContext,
+            _owner: crate::OwnerRef,
+            _upload_id: &str,
+        ) -> Result<CitedBlobStaged, StorageError> {
+            self.stage_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.staged.clone())
+        }
+
+        async fn finish_upload(
+            &self,
+            _authz: &crate::AuthzContext,
+            _owner: crate::OwnerRef,
+            _upload_id: &str,
+            _cited_object_id: uuid::Uuid,
+        ) -> Result<(), StorageError> {
+            self.finish_calls.fetch_add(1, Ordering::SeqCst);
+            Err(StorageError::Internal("test port: unused".to_owned()))
+        }
+
+        async fn abort_upload(
+            &self,
+            _authz: &crate::AuthzContext,
+            _owner: crate::OwnerRef,
+            _upload_id: &str,
+        ) -> Result<CitedBlobUploadAborted, StorageError> {
+            Err(StorageError::Internal("test port: unused".to_owned()))
+        }
+
+        async fn read_url(
+            &self,
+            _authz: &crate::AuthzContext,
+            _owner: crate::OwnerRef,
+            _cited_object_id: uuid::Uuid,
+        ) -> Result<CitedBlobReadUrl, StorageError> {
+            Err(StorageError::Internal("test port: unused".to_owned()))
+        }
+
+        async fn find_held_blobs(
+            &self,
+            _authz: &crate::AuthzContext,
+            _owner: crate::OwnerRef,
+            _content_hashes: &[[u8; 32]],
+        ) -> Result<Vec<CitedBlobHeld>, StorageError> {
+            Err(StorageError::Internal("test port: unused".to_owned()))
+        }
+    }
+
+    async fn assert_engine_rejects_mismatch(
+        expectation: UploadCompletionExpectation,
+        expected_message: &str,
+    ) {
+        let stage_calls = Arc::new(AtomicUsize::new(0));
+        let finish_calls = Arc::new(AtomicUsize::new(0));
+        let service = CitedBlobService::new(Arc::new(CountingStagePort {
+            staged: CitedBlobStaged {
+                payload: staged_payload(),
+                already_completed: None,
+            },
+            stage_calls: Arc::clone(&stage_calls),
+            finish_calls: Arc::clone(&finish_calls),
+        }));
+        let owner = crate::OwnerRef::Personal(UserId::new(uuid::Uuid::nil()));
+        let authority = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+
+        let error = engine
+            .complete_upload_as_fact_with_expectation(
+                &service,
+                &authority,
+                owner,
+                "upload-id",
+                &[],
+                &expectation,
+            )
+            .await
+            .expect_err("metadata mismatch must stop before the rejecting storage port");
+
+        assert_eq!(error.code, crate::ErrorCode::InvalidArgument);
+        assert_eq!(error.message, expected_message);
+        assert_eq!(stage_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(finish_calls.load(Ordering::SeqCst), 0);
+        assert!(!error.message.contains("private-bucket"));
+        assert!(!error.message.contains("objects/upload-id"));
+    }
+
+    #[tokio::test]
+    async fn engine_rejects_content_hash_mismatch_before_authorization() {
+        assert_engine_rejects_mismatch(
+            UploadCompletionExpectation::new([0x33; 32], 7, "application/pdf", "book.pdf"),
+            "invalid argument content_hash: staged upload does not match expected BLAKE3 content hash",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn engine_rejects_byte_len_mismatch_before_authorization() {
+        assert_engine_rejects_mismatch(
+            UploadCompletionExpectation::new([0x11; 32], 8, "application/pdf", "book.pdf"),
+            "invalid argument byte_len: staged upload does not match expected byte length",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn engine_rejects_mime_mismatch_before_authorization() {
+        assert_engine_rejects_mismatch(
+            UploadCompletionExpectation::new([0x11; 32], 7, "text/plain", "book.pdf"),
+            "invalid argument mime: staged upload does not match expected MIME",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn engine_rejects_filename_mismatch_before_authorization() {
+        assert_engine_rejects_mismatch(
+            UploadCompletionExpectation::new([0x11; 32], 7, "application/pdf", "other.pdf"),
+            "invalid argument filename: staged upload does not match expected filename",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn engine_reports_hash_before_length() {
+        assert_engine_rejects_mismatch(
+            UploadCompletionExpectation::new([0x33; 32], 8, "application/pdf", "book.pdf"),
+            "invalid argument content_hash: staged upload does not match expected BLAKE3 content hash",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn engine_reports_length_before_mime() {
+        assert_engine_rejects_mismatch(
+            UploadCompletionExpectation::new([0x11; 32], 8, "text/plain", "book.pdf"),
+            "invalid argument byte_len: staged upload does not match expected byte length",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn engine_reports_mime_before_filename() {
+        assert_engine_rejects_mismatch(
+            UploadCompletionExpectation::new([0x11; 32], 7, "text/plain", "other.pdf"),
+            "invalid argument mime: staged upload does not match expected MIME",
+        )
+        .await;
     }
 }

@@ -375,7 +375,8 @@ fn flavor_sdk_exposes_the_cited_blob_lane() {
         CitedBlobOwnerReconcileService, CitedBlobPort, CitedBlobReadError, CitedBlobReadPort,
         CitedBlobReadService, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
         CitedBlobUploadAborted, CitedBlobUploadCompleted, CitedBlobUploadHeader,
-        CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, UploadedBlobPayload, VerifiedCitedBlob,
+        CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, UploadCompletionExpectation,
+        UploadedBlobPayload, VerifiedCitedBlob,
     };
     fn _needs_port<T: CitedBlobPort>() {}
     fn _needs_verified_read_port<T: CitedBlobReadPort>() {}
@@ -390,6 +391,13 @@ fn flavor_sdk_exposes_the_cited_blob_lane() {
         &CitedBlobUploadHeader,
     )> = None;
     let _: Option<&CitedBlobReadService> = None;
+
+    let expectation =
+        UploadCompletionExpectation::new([3u8; 32], 17, "application/pdf", "handbuch.pdf");
+    assert_eq!(expectation.content_hash(), &[3u8; 32]);
+    assert_eq!(expectation.byte_len(), 17);
+    assert_eq!(expectation.mime(), "application/pdf");
+    assert_eq!(expectation.filename(), "handbuch.pdf");
 
     let owner_report = CitedBlobOwnerReconcileOutcome {
         rows_scanned: 1,

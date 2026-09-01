@@ -96,7 +96,7 @@ Delegated-capable operations are closed and explicit:
 | Engine inline citation Fact | `authorize_fact_with_citation` → `ingest_fact_with_citation_and_typed_sidecar`; commit rechecks the witness |
 | Engine cited-object-reference Fact | `authorize_fact_with_citation_by_ref` → `ingest_fact_with_citation_ref_and_typed_sidecar`; commit rechecks the witness |
 | Engine derived memory | `author_derived_authorized` |
-| Engine upload completion | `complete_upload_as_fact` |
+| Engine upload completion | `complete_upload_as_fact`, `complete_upload_as_fact_with_expectation` |
 | `CitedBlobService` | `prepare_upload`, `stage_upload`, `finish_upload`, `abort_upload`, `read_url`, `find_held_blobs` |
 | `CitedBlobReadService` | `collect_verified` |
 
@@ -312,6 +312,14 @@ Public facade status:
 | `VerifiedCitedBlob` / `CitedBlobReadError` / `CitedBlobIntegrityMismatch` | `proxima::flavor::*` and `proxima::*` | Locator-free result + typed failure taxonomy |
 | `CitedBlobOwnerReconcileService` / `Port` | `proxima::flavor::*` and `proxima::*` | Typed flavor service |
 | `CitedBlobOwnerReconcileOutcome` / `CitedBlobOwnerMissingObject` | `proxima::flavor::*` and `proxima::*` | Redacted owner DTO |
+| `UploadCompletionExpectation` | `proxima::flavor::UploadCompletionExpectation` | Core-owned, non-serializable immutable upload metadata for expectation-bearing completion |
+
+`Engine::complete_upload_as_fact_with_expectation` stages once, compares the
+expected BLAKE3 hash, byte length, MIME, and filename in that order, and only
+then enters citation authorization and persistence. A mismatch is a redacted
+`InvalidArgument`; it leaves the upload pending and does not call `finish`.
+The ordinary `complete_upload_as_fact` method and MCP `complete(upload_id)`
+remain unchanged for callers without a separate expectation.
 
 | Lane | Authority | Scope | Samples |
 |---|---|---|---|

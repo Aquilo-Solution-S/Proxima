@@ -54,7 +54,7 @@ pub use read_verbs::{
     SearchReadRequest, SearchReadResponse,
 };
 pub use unit_of_work::{TypedFactIngest, UnitOfWork};
-pub use upload::UploadCompleted;
+pub use upload::{UploadCompleted, UploadCompletionExpectation};
 
 #[cfg(test)]
 #[doc(hidden)]
