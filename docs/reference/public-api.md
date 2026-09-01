@@ -29,8 +29,12 @@ only `Hydrated`, `AlreadyHot`, `NotFound`, `MissingColdObject`,
 honest batch `NotAttempted` classifications; raw Postgres transactions and
 cold-store locators are not public. The set limit is
 `MAX_MEMORY_HYDRATION_BATCH` (64), and the set is atomic over owner-visible
-cooled items. Legacy or unwitnessed cold rows remain cooled and report the
-unsupported outcome for operator repair; they are not silently admitted.
+cooled items. A row cooled before the integrity witness existed carries no
+`cold_digest` and its object predates the stamped cold format; it stays cooled
+and reports the unsupported outcome rather than being silently admitted. There
+is no repair path and none is planned: the witness cannot be reconstructed
+from the object alone, and the append-only trigger refuses to accept one after
+the fact. Erase is the only remaining action on such a row.
 
 Unsupported:
 
@@ -216,8 +220,8 @@ for each erased Memory or Goal target. It has no owner or payload. Source
 Memory rows keep their `origins[]`, `refs[]`, and `goal_refs[]` byte-for-byte;
 erase does not cascade or null them. Ordinary new writes require live targets
 and cannot use or reuse witnesses. Exact sealed cooled restoration may use a
-correctly kinded witness; legacy or unwitnessed cooled rows remain unsupported
-until an operator supplies an independently verified cold-object witness.
+correctly kinded witness; cooled rows written before that seal are permanently
+unsupported and can only be erased.
 
 This metadata is absent from the public Edge/PinNode projections and from
 MCP, REST, transfer, forget, and export surfaces. A missing target continues

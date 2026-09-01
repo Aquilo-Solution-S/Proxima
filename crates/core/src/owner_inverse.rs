@@ -30,7 +30,10 @@ pub struct OwnerSurfaces {
     legs: BTreeMap<&'static str, EraseLeg>,
     transfer_legs: BTreeMap<&'static str, TransferLeg>,
     forget_legs: BTreeMap<&'static str, ForgetLeg>,
-    cascaded_details: Vec<CascadedDetail>,
+    /// Keyed by the rendered schema id, so the forget/hydrate lane looks a
+    /// declaration up without rendering every `SchemaRef` on every call. The
+    /// value is already in table order.
+    cascaded_details: BTreeMap<String, Vec<CascadedDetail>>,
 }
 
 /// A contract-declared `MemoryT` detail relation whose rows are removed by the
@@ -61,18 +64,21 @@ impl OwnerSurfaces {
         let mut legs = BTreeMap::new();
         let mut transfer_legs = BTreeMap::new();
         let mut forget_legs = BTreeMap::new();
-        let mut cascaded_details = Vec::new();
+        let mut cascaded_details: BTreeMap<String, Vec<CascadedDetail>> = BTreeMap::new();
         for contract in registry.contracts() {
             for schema in contract.schemas {
                 for surface in schema.surfaces {
                     if matches!(ForgetLeg::derive(surface), ForgetLeg::DumpedCascade { .. })
                         && let KeyShape::MemoryT { column } = surface.key
                     {
-                        cascaded_details.push(CascadedDetail {
-                            schema: schema.id,
-                            table: surface.table,
-                            key_column: column,
-                        });
+                        cascaded_details
+                            .entry(schema.id.render())
+                            .or_default()
+                            .push(CascadedDetail {
+                                schema: schema.id,
+                                table: surface.table,
+                                key_column: column,
+                            });
                     }
                 }
             }
@@ -85,15 +91,10 @@ impl OwnerSurfaces {
         }
         surfaces.sort_by_key(|surface| surface.table);
         surfaces.dedup_by_key(|surface| surface.table);
-        cascaded_details.sort_by_key(|detail| {
-            (
-                detail.schema.flavor,
-                detail.schema.name,
-                detail.schema.version,
-                detail.table,
-            )
-        });
-        cascaded_details.dedup_by_key(|detail| (detail.schema, detail.table));
+        for details in cascaded_details.values_mut() {
+            details.sort_by_key(|detail| detail.table);
+            details.dedup_by_key(|detail| detail.table);
+        }
         Self {
             surfaces,
             legs,
@@ -132,7 +133,7 @@ impl OwnerSurfaces {
             legs,
             transfer_legs,
             forget_legs,
-            cascaded_details: Vec::new(),
+            cascaded_details: BTreeMap::new(),
         }
     }
 
@@ -185,19 +186,14 @@ impl OwnerSurfaces {
     }
 
     /// Cascaded `MemoryT` detail relations explicitly marked as payload by the
-    /// schema identified by `schema_id`, in deterministic table order. A set made with
-    /// [`Self::from_surfaces`] intentionally has no schema provenance and
-    /// therefore returns no detail declarations.
+    /// schema identified by `schema_id`, in deterministic table order. A set
+    /// made with [`Self::from_surfaces`] intentionally has no schema
+    /// provenance and therefore returns no detail declarations.
     #[must_use]
-    pub fn cascaded_details_for_schema(&self, schema_id: &str) -> Vec<CascadedDetail> {
-        let mut details = self
-            .cascaded_details
-            .iter()
-            .filter(|detail| detail.schema.render() == schema_id)
-            .copied()
-            .collect::<Vec<_>>();
-        details.sort_by_key(|detail| detail.table);
-        details
+    pub fn cascaded_details_for_schema(&self, schema_id: &str) -> &[CascadedDetail] {
+        self.cascaded_details
+            .get(schema_id)
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Every surface the forget deletes with a GENERATED statement, in table

@@ -251,7 +251,7 @@ fn every_code_cascaded_detail_surface_is_in_the_hydration_contract() {
     .flat_map(|schema_id| {
         surfaces
             .cascaded_details_for_schema(schema_id)
-            .into_iter()
+            .iter()
             .map(move |detail| (schema_id, detail.table, detail.key_column))
     })
     .collect::<Vec<_>>();
