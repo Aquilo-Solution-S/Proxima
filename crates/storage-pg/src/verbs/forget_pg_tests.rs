@@ -169,7 +169,7 @@ async fn cool_one(
     Ok(())
 }
 
-/// Fixture-only simulation of a pre-v0.0.10 cooled locator. The production
+/// Fixture-only simulation of a pre-0003 cooled locator. The production
 /// append-only trigger is disabled and restored in this same transaction so a
 /// legacy NULL-array row cannot escape into ordinary runtime writes.
 async fn make_legacy_cooled(

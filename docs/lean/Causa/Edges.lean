@@ -36,7 +36,7 @@ inductive EdgeKind where
   deriving DecidableEq, Repr
 
 /-- Pins extracted from a node — THE derivation, and it is identity.
-    Three columns since v0.0.11: the Goal spine is its own list. -/
+    Three columns since the Goal-reference split: the Goal spine is its own list. -/
 def derivePins (m : Memory) :
     List MemoryId × List MemoryId × List GoalId :=
   (memory_origins m, memory_refs m, memory_goal_refs m)
@@ -86,7 +86,7 @@ theorem goal_is_reference_target
     goalReferenceTargetExists goals (goal_t g) :=
   ⟨g, hg, rfl⟩
 
-/-- Read-side resolution (v0.0.11). `goal_refs` is the STORED typing; what
+/-- Read-side resolution after the Goal-reference split. `goal_refs` is the STORED typing; what
     a given reader may see is a separate question, so before projection the
     Goals this reader cannot read are moved back into the untyped `refs`
     carrier, where they redact exactly as an unreadable Memory does. The

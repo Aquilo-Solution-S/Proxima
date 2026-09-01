@@ -658,7 +658,7 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
             if table == "cooled"
                 && let Some(object) = row.as_object_mut()
             {
-                // The pinned corpus predates the v0.0.11 split. Keep the
+                // The pinned corpus predates the 0004 split. Keep the
                 // column in the normalized shape expected by its golden,
                 // while the migration suite checks its real value.
                 object.insert("goal_refs".to_owned(), Value::Null);

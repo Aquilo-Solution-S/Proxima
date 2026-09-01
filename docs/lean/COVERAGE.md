@@ -112,7 +112,7 @@ Pins live on the node (`Memory.origins` / `Memory.refs` / `Memory.goal_refs`;
 Goal `*_t` columns). There is no `Edge` / `NodeRef` / `FactEntity` type.
 `#guard_msgs` pins the headline pin theorems in `Causa/Edges.lean`.
 
-v0.0.11 split the reference column by spine: `refs` is Memory-only and
+Migration `0004_v011_goal_refs.sql` split the reference column by spine: `refs` is Memory-only and
 `goal_refs` is the Goal spine, so the column carries the target's kind
 instead of every reader re-deriving it (E1, E7, E-SPINE below).
 
@@ -125,7 +125,7 @@ instead of every reader re-deriving it (E1, E7, E-SPINE below).
 | E4z | A write with ZERO origins is legal | THEOREM `declaration_without_origins_writes_no_origin_pins` + `interpretationOf`; THEOREM `invocation_without_inputs_is_complete` |
 | E5 | Structural idempotency — no pin row | STRUCTURAL ABSENCE of `Edge` / `EdgeId`. The pin set is the node's arrays |
 | E6 | No content — no pin payload | STRUCTURAL ABSENCE: arrays of `MemoryId` only |
-| E7 | Rebuildability — the pin set IS node content | def `derivePins` (a triple since v0.0.11) + THEOREMs `pins_are_node_content`, `derived_table_rebuildable`, `principle_9_index_is_a_function_of_node_content` |
+| E7 | Rebuildability — the pin set IS node content | def `derivePins` (a triple since the Goal-reference split) + THEOREMs `pins_are_node_content`, `derived_table_rebuildable`, `principle_9_index_is_a_function_of_node_content` |
 | E-SPINE | The reference column IS the target's spine — `refs` never holds a Goal | `MemoryGraphValid.cooledGoalIdsDisjoint` + THEOREM `a_goal_is_never_a_memory_reference` |
 | E-NODISC | Non-disclosure — an unreadable Goal reference is indistinguishable from an unreadable Memory reference | def `resolveVisibleGoalRefs` + THEOREMs `unreadable_goal_reference_resolves_like_a_memory_reference`, `readable_goal_reference_survives_resolution` |
 | E-READ | A row with no Goal reference needs no Goal-spine read to project | THEOREM `a_row_without_goal_refs_resolves_to_itself` |

@@ -184,7 +184,7 @@ structure Memory where
   kind       : MemoryKind
   owner      : Owner
   origins    : List MemoryId
-  /-- Reference pins onto the Memory spine. Since v0.0.11 this column is
+  /-- Reference pins onto the Memory spine. Since the Goal-reference split this column is
       Memory-only: a Goal reference lives in `goal_refs`, so the column
       itself carries the target's kind and no reader has to re-derive it. -/
   refs       : List MemoryId

@@ -1,4 +1,5 @@
--- v0.0.12, additive over the frozen v0.0.10 reference-integrity and v0.0.11 goal-reference lanes.
+-- Migration 0005, additive over the frozen 0003 reference-integrity and 0004
+-- goal-reference lanes.
 --
 -- Install the erased-target witness and lifecycle guards after the frozen goal-reference split.
 -- Earlier cooled pin arrays are nullable because stubs created before their lanes
@@ -27,7 +28,7 @@ BEGIN
         HAVING count(*) > 1
     ) THEN
         RAISE EXCEPTION
-            'v0.0.12 refuses identity collisions across memory, cooled and goal';
+            'the erased-target witness refuses identity collisions across memory, cooled and goal';
     END IF;
 END;
 $$;
@@ -81,6 +82,12 @@ $$;
 -- `pg_trigger_depth() >= 2` distinguishes their nested insert from a direct
 -- INSERT, while the transaction-local marker keeps an unrelated trigger from
 -- becoming a second writer. The schema owner remains a trusted boundary.
+--
+-- The marker carries the exact identity being witnessed, not a boolean. A
+-- boolean that leaked — because the INSERT below raised before its reset ran —
+-- would stay armed for the rest of the transaction and admit any nested
+-- INSERT; an identity-scoped marker can only ever admit the one target whose
+-- write already failed.
 CREATE OR REPLACE FUNCTION proxima_core.assert_erased_pin_target_insert()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -88,7 +95,7 @@ AS $$
 BEGIN
     IF pg_trigger_depth() < 2
        OR current_setting('proxima_core.erased_pin_target_writer', true)
-              IS DISTINCT FROM 'on'
+              IS DISTINCT FROM NEW.t::text
     THEN
         RAISE EXCEPTION
             'erased_pin_target is written only by a target deletion trigger'
@@ -161,10 +168,10 @@ BEGIN
         RETURN;
     END IF;
 
-    PERFORM set_config('proxima_core.erased_pin_target_writer', 'on', true);
+    PERFORM set_config('proxima_core.erased_pin_target_writer', target::text, true);
     INSERT INTO proxima_core.erased_pin_target (t, kind)
     VALUES (target, target_kind);
-    PERFORM set_config('proxima_core.erased_pin_target_writer', 'off', true);
+    PERFORM set_config('proxima_core.erased_pin_target_writer', '', true);
 END;
 $$;
 
@@ -534,7 +541,7 @@ BEGIN
     END IF;
 
     -- Nullable arrays are legacy rows. A row with no declaration arrays is
-    -- pre-v0.0.10 history; any partial declaration is malformed and must not
+    -- history from before migration 0003; any partial declaration is malformed and must not
     -- fall onto the live-target path, where it could launder a changed pin.
     IF EXISTS (
         SELECT 1
@@ -600,7 +607,7 @@ BEGIN
             USING ERRCODE = '23503';
     END IF;
 
-    -- `refs` carries only Memory targets after v0.0.11.
+    -- `refs` carries only Memory targets after the 0004 split.
     SELECT p.id INTO pin
       FROM unnest(NEW.refs) AS p(id)
       LEFT JOIN proxima_core.memory m ON m.t = p.id

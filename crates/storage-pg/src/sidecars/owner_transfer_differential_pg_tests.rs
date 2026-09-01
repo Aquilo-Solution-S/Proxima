@@ -632,8 +632,8 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
             if table == "cooled"
                 && let Some(object) = row.as_object_mut()
             {
-                // The pinned pre-v0.0.10 corpus predates the nullable
-                // declaration witnesses (including the v0.0.11 split).
+                // The pinned corpus predates the nullable declaration
+                // witnesses of migration 0003 (including the 0004 split).
                 // Dedicated migration tests cover the new columns; this
                 // differential remains focused on transfer behavior against
                 // its historical golden.

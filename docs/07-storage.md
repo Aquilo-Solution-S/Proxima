@@ -3,7 +3,7 @@
 Storage contract for identity, ownership, append-only writes, and typed
 sidecars. The frozen DDL is `crates/storage-pg/migrations/0001_v008.sql`;
 the hard-erase witness contract is additive in
-`crates/storage-pg/migrations/0005_v012_erased_pin_targets.sql`.
+`crates/storage-pg/migrations/0005_erased_pin_targets.sql`.
 
 <a id="id-types"></a>
 

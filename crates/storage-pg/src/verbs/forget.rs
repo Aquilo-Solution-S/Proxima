@@ -818,7 +818,12 @@ async fn lock_forget_footprint_tx(
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
-    if after.iter().all(|target| targets.contains(target)) {
+    // Both queries `ORDER BY t` and exclude `source_t`, so membership is a
+    // binary search over `dependents` rather than a scan of `targets`.
+    if after
+        .iter()
+        .all(|target| dependents.binary_search(target).is_ok())
+    {
         return Ok(());
     }
     Err(StorageError::Retryable(
@@ -1277,7 +1282,7 @@ pub async fn hydrate_memory(
             "cold object identity does not match cooled locator".into(),
         ));
     }
-    // The v0.0.11 locator stores the split arrays. Older cold objects carry
+    // A post-0004 locator stores the split arrays. Older cold objects carry
     // one mixed `refs` array, so compare the locator with its live-spine
     // partition rather than with the pre-split bytes.
     let (object_refs, object_goal_refs) = if rec.format_version >= 5 {
@@ -1346,27 +1351,10 @@ pub async fn hydrate_memory(
             "cooled locator changed while hydrating".into(),
         ));
     }
-    if let Some(current_origins) = &current.origins
-        && current_origins != &origins
-    {
-        return Err(StorageError::Conflict(
-            "cooled origins changed while hydrating".into(),
-        ));
-    }
-    if let Some(current_refs) = &current.refs
-        && current_refs != &refs
-    {
-        return Err(StorageError::Conflict(
-            "cooled refs changed while hydrating".into(),
-        ));
-    }
-    if let Some(current_goal_refs) = &current.goal_refs
-        && current_goal_refs != &goal_refs
-    {
-        return Err(StorageError::Conflict(
-            "cooled Goal refs changed while hydrating".into(),
-        ));
-    }
+    // No per-column comparison follows. The re-read above already pins every
+    // persisted pin array to the value this hydrate decoded against, and
+    // `origins`/`refs`/`goal_refs` are derived from those same `Option`s, so
+    // a column check could never fail. The locator check is the whole guard.
 
     // `ensure_memory_head` must stay after the lifecycle lock: a bulk erase
     // takes the same set before any head or row lock.

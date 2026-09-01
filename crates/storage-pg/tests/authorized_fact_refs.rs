@@ -1437,7 +1437,7 @@ async fn cooled_replay_requires_known_identical_refs() {
             .expect_err("cooled replay with changed refs must conflict");
         assert!(matches!(error, StorageError::Conflict(message) if message.contains("refs")));
 
-        // Fixture-only simulation of a pre-v0.0.10 cooled row whose nullable
+        // Fixture-only simulation of a pre-0003 cooled row whose nullable
         // declaration was never recorded. Production updates remain sealed;
         // the trigger is disabled only inside this transaction and is
         // restored before commit (rollback restores it automatically).

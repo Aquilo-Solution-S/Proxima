@@ -42,7 +42,7 @@ proxima_core.memory (
 - Ten call sites A→B are one `refs` entry and ten payload sites.
 - Rebuildable: re-derive from node content, same set.
 
-### One kind, two columns (v0.0.11)
+### One kind, two columns
 
 Reference is still one kind. The split is by **spine**, not by kind: `refs`
 is Memory-only and `goal_refs` is Goal-only, so the column a target sits in
@@ -61,7 +61,7 @@ Goal id falls back into `refs`, where it redacts exactly as an unreadable
 Memory does. Knowing that a withheld target is a Goal would itself be
 disclosure, so a redacted target says nothing about which spine it was on.
 
-**Migrating.** `refs` written before v0.0.11 still mixes the two. Migration
+**Migrating.** `refs` written before the split still mixes the two. Migration
 `0004_v011_goal_refs.sql` partitions hot and cooled rows by Goal-spine
 membership; cold objects below format version 5 are partitioned the same way
 on hydrate, since the object itself cannot say which ids were Goals.

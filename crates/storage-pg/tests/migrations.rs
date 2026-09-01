@@ -1893,13 +1893,13 @@ fn generated_declaration_triggers_are_the_migration_text() {
 fn reference_integrity_migration_is_set_based_and_keeps_baselines_frozen() {
     let migration = include_str!("../migrations/0003_v010_reference_integrity.sql");
     let goal_refs_lane = include_str!("../migrations/0004_v011_goal_refs.sql");
-    let erased_targets_lane = include_str!("../migrations/0005_v012_erased_pin_targets.sql");
+    let erased_targets_lane = include_str!("../migrations/0005_erased_pin_targets.sql");
     let baseline = include_str!("../migrations/0001_v008.sql");
     let declaration_lane = include_str!("../migrations/0002_v009_declaration_triggers.sql");
     assert!(
         !baseline.contains("cooled_origins_no_null_chk")
             && !declaration_lane.contains("cooled_origins_no_null_chk"),
-        "the new cooled witness belongs to the additive v0.0.10 migration"
+        "the new cooled witness belongs to the additive 0003 migration"
     );
     assert!(
         !migration.contains("erased_pin_target") && !goal_refs_lane.contains("erased_pin_target"),
@@ -1918,7 +1918,7 @@ fn reference_integrity_migration_is_set_based_and_keeps_baselines_frozen() {
     ] {
         assert!(
             migration.contains(fragment),
-            "v0.0.10 reference-integrity migration is missing {fragment:?}"
+            "0003_v010_reference_integrity.sql is missing {fragment:?}"
         );
     }
     for fragment in [
@@ -1936,7 +1936,7 @@ fn reference_integrity_migration_is_set_based_and_keeps_baselines_frozen() {
     ] {
         assert!(
             erased_targets_lane.contains(fragment),
-            "0005_v012_erased_pin_targets.sql is missing {fragment:?}"
+            "0005_erased_pin_targets.sql is missing {fragment:?}"
         );
     }
 }
@@ -2279,7 +2279,8 @@ async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
     Ok(())
 }
 
-/// A v0.0.8 database upgrades through v0.0.12 in place — no reset, no data loss.
+/// A v0.0.8 database upgrades through the current head in place — no reset,
+/// no data loss.
 ///
 /// This is the whole reason the declaration triggers ship as
 /// `0002_v009_declaration_triggers.sql` instead of being pasted into the
@@ -2293,7 +2294,7 @@ async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
 /// the installed invariants are actually live afterwards.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn a_v008_database_upgrades_to_v012_in_place() {
+async fn a_v008_database_upgrades_to_head_in_place() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 
     if let Err(e) = create_db(&db_name).await {
@@ -2350,7 +2351,7 @@ async fn a_v008_database_upgrades_to_v012_in_place() {
         assert_eq!(
             versions,
             vec![1, 2, 3, 4, 5],
-            "the upgrade appends v0.0.9 through v0.0.12; it does not re-apply or replace the \
+            "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
              baseline"
         );
 
@@ -2413,7 +2414,7 @@ async fn a_v008_database_upgrades_to_v012_in_place() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("v0.0.8 -> v0.0.12 in-place upgrade failed");
+    result.expect("v0.0.8 -> head in-place upgrade failed");
 }
 
 /// Applies the embedded core migrations in `versions`, straight from the
@@ -2431,7 +2432,7 @@ async fn apply_core_migrations(
     Ok(())
 }
 
-/// v0.0.11 splits Goal references out of `refs` into their own column. The
+/// Migration 0004 splits Goal references out of `refs` into their own column. The
 /// rows already on disk were written when `refs` was the only place a Goal
 /// reference could go, so the migration has to move them -- and move only
 /// them, leaving Memory references where they are.
@@ -2445,7 +2446,7 @@ async fn goal_refs_migration_backfills_goals_out_of_the_legacy_refs_column() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = sqlx::PgPool::connect(&url).await?;
-        // Stop one short of the split: this is the v0.0.10 schema, where a
+        // Stop one short of the split: this is the 0003 schema, where a
         // Goal t in `refs` is exactly what the writer produced.
         apply_core_migrations(&pool, 1..=3).await?;
         assert!(
@@ -2574,7 +2575,7 @@ async fn goal_refs_migration_backfills_goals_out_of_the_legacy_refs_column() {
             "the backfill must move Goal ids out of refs, not copy them: {stale:?}"
         );
 
-        // A database paused at the frozen v0.0.11 split must reach the same
+        // A database paused at the frozen 0004 split must reach the same
         // final catalog as a fresh apply when the witness lane is replayed.
         apply_core_migrations(&pool, 5..=5).await?;
         assert!(
@@ -2583,7 +2584,7 @@ async fn goal_refs_migration_backfills_goals_out_of_the_legacy_refs_column() {
             )
             .fetch_one(&pool)
             .await?,
-            "the v0.0.12 witness lane must apply after the frozen v0.0.11 split"
+            "the 0005 witness lane must apply after the frozen 0004 split"
         );
 
         // The backfill drops the append-only guard for one statement. It has

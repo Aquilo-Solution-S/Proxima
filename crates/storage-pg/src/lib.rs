@@ -429,6 +429,22 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                      AND c.convalidated
                 )
            THEN 'cooled.refs must reject NULL array elements'
+         -- `cooled_identity_seal` returns NEW for an array holding a NULL
+         -- element and lets the column CHECK reject it. Without this marker a
+         -- database missing the constraint would boot clean and silently skip
+         -- the seal, so the guard the trigger delegates to is asserted here.
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_constraint c
+                    JOIN pg_class r ON r.oid = c.conrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'cooled'
+                     AND c.conname = 'cooled_goal_refs_no_null_chk'
+                     AND c.contype = 'c'
+                     AND c.convalidated
+                )
+           THEN 'cooled.goal_refs must reject NULL array elements'
          WHEN COALESCE((
                   SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder)
                     FROM pg_enum e
@@ -951,7 +967,7 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
 
     if let Some(marker_error) = marker_error {
         return Err(StorageError::Internal(format!(
-            "database is missing or has an incorrect v0.0.10 schema marker: {marker_error}; apply migrations before boot"
+            "database is missing or has an incorrect reference-integrity schema marker: {marker_error}; apply migrations before boot"
         )));
     }
     Ok(())
@@ -1644,18 +1660,18 @@ mod tests {
         assert_eq!(
             versions,
             vec![1, 2, 3, 4, 5],
-            "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
-             v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
-             0003_v010_reference_integrity.sql, v0.0.11 is 0004_v011_goal_refs.sql and \
-             v0.0.12 is 0005_v012_erased_pin_targets.sql"
+            "v0.0.8 is one frozen file (0001_v008.sql) and v0.0.9 appended \
+             0002_v009_declaration_triggers.sql; 0003_v010_reference_integrity.sql, \
+             0004_v011_goal_refs.sql and 0005_erased_pin_targets.sql are the unreleased \
+             additive lanes on top of them"
         );
     }
 
     /// The v0.0.7 ALTER lane occupied versions 2..=21 and the squash to a
     /// single v008 baseline retired all of them.
     ///
-    /// Versions 2 and 3 are the v0.0.9 and v0.0.10 additive migrations, which
-    /// reuse retired numbers. That is safe, and this is why: the tripwire for
+    /// Versions 2 and 3 are additive migrations that reuse retired numbers.
+    /// That is safe, and this is why: the tripwire for
     /// a pre-v0.0.8 database is version 1's checksum, which is the legacy
     /// `0001_init.sql` and can never match `0001_v008.sql`.
     /// `ensure_core_ledger_compatible` compares it first and returns
@@ -1685,31 +1701,31 @@ mod tests {
         let version_3 = migrator
             .iter()
             .find(|migration| migration.version == 3)
-            .expect("version 3 is v0.0.10's additive migration");
+            .expect("version 3 is the reference-integrity additive migration");
         assert!(
             version_3.sql.as_str().contains("memory_pin_checks")
                 && version_3
                     .sql
                     .as_str()
                     .contains("cooled_origins_no_null_chk"),
-            "version 3 must be the v0.0.10 reference-integrity migration"
+            "version 3 must be the reference-integrity migration"
         );
         let version_4 = migrator
             .iter()
             .find(|migration| migration.version == 4)
-            .expect("version 4 is v0.0.11's additive migration");
+            .expect("version 4 is the goal-reference additive migration");
         assert!(
             version_4.sql.as_str().contains("goal_refs")
                 && version_4
                     .sql
                     .as_str()
                     .contains("memory_goal_refs_no_null_chk"),
-            "version 4 must be the v0.0.11 goal-reference split, not a resurrected legacy ALTER"
+            "version 4 must be the goal-reference split, not a resurrected legacy ALTER"
         );
         let version_5 = migrator
             .iter()
             .find(|migration| migration.version == 5)
-            .expect("version 5 is v0.0.12's witness-composition migration");
+            .expect("version 5 is the witness-composition migration");
         assert!(
             version_5.sql.as_str().contains("historical_restore")
                 && version_5.sql.as_str().contains("NEW.goal_refs")

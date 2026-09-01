@@ -24,7 +24,7 @@ structure MemoryGraphValid
   goalIdUnique : GoalIdUnique goals
   cooledIdUnique : CooledIdUnique cooled
   headAligned : MemoryHeadAligned memories heads
-  /-- Since v0.0.11 each reference column resolves against exactly one
+  /-- Since the Goal-reference split each reference column resolves against exactly one
       spine: `refs` against Memory (hot or cooled) and `goal_refs` against
       Goal. Before the split `refs` had to admit either, which is what
       forced every reader to re-derive the target's kind. -/
@@ -254,7 +254,7 @@ theorem perspective_has_provenance :
   have hne : memory_kind m ≠ .Fact := by rw [hk]; intro h; exact (nomatch h)
   exact hgraph.derivedProvenance m hm hne
 
-/-- v0.0.11 — `refs` is the Memory spine, so a Goal `t` is never in it. It
+/-- After the Goal-reference split `refs` is the Memory spine, so a Goal `t` is never in it. It
     is a theorem now rather than a case each reader had to rule out at read
     time: the column carries the target's kind, and the two id spaces are
     disjoint, so nothing has to be probed to know this. -/
