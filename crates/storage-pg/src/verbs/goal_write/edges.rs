@@ -31,13 +31,3 @@ pub(super) async fn assert_goal_topology_references(
     let _ = (tx, owner, goal_id);
     Ok(targets.len())
 }
-
-/// How many index rows a Goal write asserts, computed from the declaration
-/// rather than from the table — a replay asserts the same rows and must
-/// report the same count.
-pub(super) fn goal_topology_edge_count(
-    dependencies: &[GoalId],
-    evidence: &[EvidenceTarget],
-) -> usize {
-    1 + dependencies.len() + evidence.len()
-}

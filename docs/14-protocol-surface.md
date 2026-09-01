@@ -223,6 +223,19 @@ Owner-scoped append or supersession of a Goal row (see
 | supersession | prior goal must be same Owner and current head |
 | log | success commits the Goal row and its `announce` row |
 
+The command declaration and replay outcome are committed with the Goal.
+An exact replay resolves that snapshot before consulting current assignment,
+evidence, prior-head, or wake rows: those targets may legitimately have been
+cooled or erased since the original write. A fresh request id still performs
+the full live-admission checks, and reusing an old id with any changed
+declaration is an idempotency conflict.
+
+Goals written before `0006` carry no declaration, and one is never guessed
+back from current target rows. Reusing such an id is therefore an idempotency
+conflict rather than a replay: a consumer that keeps stable idempotency keys
+across an upgrade from v0.0.9 or earlier must retire the keys it wrote before
+that upgrade.
+
 Embedded Rust hosts use the typed helper instead of table SQL:
 
 ```rust

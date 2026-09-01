@@ -760,6 +760,66 @@ pub struct DecomposeGoalAtomicRequest<'a> {
     pub children: Vec<ChildGoalDraft>,
 }
 
+/// One already-normalized Goal command whose request-id replay may be
+/// resolved without renewing admission of the mutable rows it originally
+/// referenced.
+#[derive(Debug, Clone, Copy)]
+pub enum GoalReplayRequest<'request, 'context> {
+    Create(&'request CreateGoalAtomicRequest<'context>),
+    Transition(&'request TransitionGoalAtomicRequest<'context>),
+    Achieve(&'request AchieveGoalAtomicRequest<'context>),
+    Modify(&'request ModifyGoalAtomicRequest<'context>),
+    Decompose(&'request DecomposeGoalAtomicRequest<'context>),
+}
+
+impl GoalReplayRequest<'_, '_> {
+    /// The Owner namespace in which the request id is interpreted.
+    #[must_use]
+    pub fn owner(self) -> Owner {
+        match self {
+            Self::Create(req) => req.draft.owner(),
+            Self::Transition(req) => req.owner,
+            Self::Achieve(req) => req.owner,
+            Self::Modify(req) => req.owner,
+            Self::Decompose(req) => req.owner,
+        }
+    }
+}
+
+/// Stored response recovered by an exact Goal-command replay probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoalReplayOutcome {
+    Goal(GoalWriteOutcome),
+    Decompose(DecomposeGoalOutcome),
+}
+
+impl GoalReplayOutcome {
+    /// The shape a single-Goal verb asked for. `Err` names the mismatch a
+    /// port would have to have produced to get here.
+    ///
+    /// # Errors
+    /// The probe answered a single-Goal command with a decomposition.
+    pub fn into_goal(self) -> Result<GoalWriteOutcome, &'static str> {
+        match self {
+            Self::Goal(outcome) => Ok(outcome),
+            Self::Decompose(_) => {
+                Err("Goal replay port returned a decomposition for a single Goal command")
+            }
+        }
+    }
+
+    /// The shape a decomposition asked for.
+    ///
+    /// # Errors
+    /// The probe answered a decomposition with one Goal.
+    pub fn into_decompose(self) -> Result<DecomposeGoalOutcome, &'static str> {
+        match self {
+            Self::Decompose(outcome) => Ok(outcome),
+            Self::Goal(_) => Err("Goal replay port returned one Goal for a decomposition"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecomposedGoalOutcome {
     pub outcome: GoalWriteOutcome,

@@ -8,9 +8,9 @@ use crate::storage_ports::OwnerWritePermit;
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalCreateRequest, GoalDraft,
-    GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalWakeConfigWrite,
-    GoalWakeTrigger, GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey,
-    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    GoalEvidenceRef, GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalState,
+    GoalTopologyWrite, GoalWakeConfigWrite, GoalWakeTrigger, GoalWriteBuildError, GoalWriteOutcome,
+    IdempotencyKey, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use crate::verbs::schema::PayloadKind;
 use crate::{EntityKind, GoalPayload, MemoryId};
@@ -116,13 +116,6 @@ impl Engine {
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
         let payload = self.normalize_payload_write(req.payload.clone())?;
-        self.validate_goal_topology_authorized(authz, permit.owner(), &req.topology)
-            .await?;
-        let author_self_perspective_id = self
-            .author_self_perspective_authorized(authz, req.author_self_perspective_id)
-            .await?;
-        self.validate_wake_config_for_write(authz, req.wake.as_ref())
-            .await?;
         let draft = GoalDraft::active_from_payload_write(
             *permit.owner(),
             payload,
@@ -133,18 +126,31 @@ impl Engine {
         );
         let embedding_client = self.embed_client();
         let context =
-            self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
+            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+        let atomic = CreateGoalAtomicRequest {
+            draft,
+            context,
+            write_act_t: None,
+        };
+        if let Some(replay) = resolve_single_goal_replay(
+            &self.storage().goal_command,
+            GoalReplayRequest::Create(&atomic),
+            permit.owner_write_permit(),
+        )
+        .await?
+        {
+            return Ok(replay);
+        }
+        self.validate_goal_topology_authorized(authz, permit.owner(), &req.topology)
+            .await?;
+        self.author_self_perspective_authorized(authz, req.author_self_perspective_id)
+            .await?;
+        self.validate_wake_config_for_write(authz, req.wake.as_ref())
+            .await?;
         self.storage()
             .goal_command
             .goal_write
-            .create_goal_atomic(
-                &CreateGoalAtomicRequest {
-                    draft,
-                    context,
-                    write_act_t: None,
-                },
-                permit.owner_write_permit(),
-            )
+            .create_goal_atomic(&atomic, permit.owner_write_permit())
             .await
             .map_err(map_goal_storage_error)
     }
@@ -165,6 +171,17 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
+        let embedding_client = self.embed_client();
+        let context =
+            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+        let atomic = TransitionGoalAtomicRequest {
+            owner: *permit.owner(),
+            prior_goal_id: req.prior_goal_id,
+            next_state: req.next_state,
+            authorship: req.authorship.clone(),
+            request_id: req.request_id.clone(),
+            context,
+        };
         // `Achieved` is never a legal plain-transition target (achievement
         // carries mandatory evidence via `mark_goal_achieved`); the
         // authoritative matrix is `GoalState::{may_transition_to, may_achieve}`,
@@ -176,22 +193,22 @@ impl Engine {
                 "Achieved is not a valid transition target; use mark_goal_achieved with evidence",
             ));
         }
-        let author_self_perspective_id = self
-            .author_self_perspective_authorized(authz, req.author_self_perspective_id)
+        // Constant-time rejection first: this check ran before every prior
+        // write, so no stored declaration can name `Achieved`.
+        if let Some(replay) = resolve_single_goal_replay(
+            &self.storage().goal_command,
+            GoalReplayRequest::Transition(&atomic),
+            permit.owner_write_permit(),
+        )
+        .await?
+        {
+            return Ok(replay);
+        }
+        self.author_self_perspective_authorized(authz, req.author_self_perspective_id)
             .await?;
-        let embedding_client = self.embed_client();
-        let context =
-            self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         transition_goal_authorized(
             &self.storage().goal_command,
-            &TransitionGoalAtomicRequest {
-                owner: *permit.owner(),
-                prior_goal_id: req.prior_goal_id,
-                next_state: req.next_state,
-                authorship: req.authorship.clone(),
-                request_id: req.request_id.clone(),
-                context,
-            },
+            &atomic,
             permit.owner_write_permit(),
         )
         .await
@@ -213,28 +230,34 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
-        let author_self_perspective_id = self
-            .author_self_perspective_authorized(authz, req.author_self_perspective_id)
+        let embedding_client = self.embed_client();
+        let context =
+            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+        let atomic = AchieveGoalAtomicRequest {
+            owner: *permit.owner(),
+            prior_goal_id: req.prior_goal_id,
+            authorship: req.authorship.clone(),
+            request_id: req.request_id.clone(),
+            context,
+            evidence: req.evidence.clone(),
+        };
+        if let Some(replay) = resolve_single_goal_replay(
+            &self.storage().goal_command,
+            GoalReplayRequest::Achieve(&atomic),
+            permit.owner_write_permit(),
+        )
+        .await?
+        {
+            return Ok(replay);
+        }
+        self.author_self_perspective_authorized(authz, req.author_self_perspective_id)
             .await?;
         self.validate_goal_evidence_authorized(authz, &req.evidence)
             .await?;
-        let embedding_client = self.embed_client();
-        let context =
-            self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
         self.storage()
             .goal_command
             .goal_write
-            .achieve_goal_atomic(
-                &AchieveGoalAtomicRequest {
-                    owner: *permit.owner(),
-                    prior_goal_id: req.prior_goal_id,
-                    authorship: req.authorship.clone(),
-                    request_id: req.request_id.clone(),
-                    context,
-                    evidence: req.evidence.clone(),
-                },
-                permit.owner_write_permit(),
-            )
+            .achieve_goal_atomic(&atomic, permit.owner_write_permit())
             .await
             .map_err(map_goal_storage_error)
     }
@@ -256,18 +279,38 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
-        let author_self_perspective_id = self
-            .author_self_perspective_authorized(authz, req.author_self_perspective_id)
+        let replacement = self.normalize_payload_write(req.replacement.clone())?;
+        let embedding_client = self.embed_client();
+        let context =
+            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+        let atomic = ModifyGoalAtomicRequest {
+            owner: *permit.owner(),
+            prior_goal_id: req.prior_goal_id,
+            replacement,
+            wake: req.wake.clone(),
+            authorship: req.authorship.clone(),
+            request_id: req.request_id.clone(),
+            context,
+            evidence: req.evidence.clone(),
+        };
+        if let Some(replay) = resolve_single_goal_replay(
+            &self.storage().goal_command,
+            GoalReplayRequest::Modify(&atomic),
+            permit.owner_write_permit(),
+        )
+        .await?
+        {
+            return Ok(replay);
+        }
+        self.author_self_perspective_authorized(authz, req.author_self_perspective_id)
             .await?;
         if let Some(Some(config)) = &req.wake {
             self.validate_wake_config_for_write(authz, Some(config))
                 .await?;
         }
-        let replacement = self.normalize_payload_write(req.replacement.clone())?;
-        let evidence = if let Some(evidence) = req.evidence.clone() {
-            self.validate_goal_evidence_authorized(authz, &evidence)
+        if let Some(evidence) = &req.evidence {
+            self.validate_goal_evidence_authorized(authz, evidence)
                 .await?;
-            Some(evidence)
         } else {
             let carried = self
                 .storage()
@@ -276,62 +319,16 @@ impl Engine {
                 .load_goal_evidence(permit.owner(), req.prior_goal_id)
                 .await
                 .map_err(|err| super::errors::internal_storage_error("load_goal_evidence", &err))?;
-            let Some(ids) = carried else {
-                // Keep None for an absent or foreign Goal. Storage then
-                // performs its normal owner-scoped prior-head lookup and
-                // preserves the existing not-found collapse.
-                return self
-                    .modify_goal_with_evidence(
-                        &permit,
-                        req,
-                        replacement,
-                        None,
-                        author_self_perspective_id,
-                    )
-                    .await;
-            };
-            let evidence: Vec<_> = ids.into_iter().map(GoalEvidenceRef::new).collect();
-            self.validate_goal_evidence_authorized(authz, &evidence)
-                .await?;
-            Some(evidence)
-        };
-        self.modify_goal_with_evidence(
-            &permit,
-            req,
-            replacement,
-            evidence,
-            author_self_perspective_id,
-        )
-        .await
-    }
-
-    async fn modify_goal_with_evidence(
-        &self,
-        permit: &WritePermit,
-        req: &GoalModifyRequest,
-        replacement: crate::verbs::goal_write::GoalPayloadWrite,
-        evidence: Option<Vec<GoalEvidenceRef>>,
-        author_self_perspective_id: Option<MemoryId>,
-    ) -> Result<GoalWriteOutcome, ProtocolError> {
-        let embedding_client = self.embed_client();
-        let context =
-            self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
+            if let Some(ids) = carried {
+                let evidence: Vec<_> = ids.into_iter().map(GoalEvidenceRef::new).collect();
+                self.validate_goal_evidence_authorized(authz, &evidence)
+                    .await?;
+            }
+        }
         self.storage()
             .goal_command
             .goal_write
-            .modify_goal_atomic(
-                &ModifyGoalAtomicRequest {
-                    owner: *permit.owner(),
-                    prior_goal_id: req.prior_goal_id,
-                    replacement,
-                    wake: req.wake.clone(),
-                    authorship: req.authorship.clone(),
-                    request_id: req.request_id.clone(),
-                    context,
-                    evidence,
-                },
-                permit.owner_write_permit(),
-            )
+            .modify_goal_atomic(&atomic, permit.owner_write_permit())
             .await
             .map_err(map_goal_storage_error)
     }
@@ -353,32 +350,42 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
-        self.validate_goal_topology_authorized(authz, permit.owner(), &req.topology)
-            .await?;
         let mut children = Vec::with_capacity(req.children.len());
         for child in &req.children {
-            children.push(self.child_goal_draft_for_write(authz, child).await?);
+            children.push(self.normalize_child_goal_draft(child)?);
         }
-        let author_self_perspective_id = self
-            .author_self_perspective_authorized(authz, req.author_self_perspective_id)
-            .await?;
         let embedding_client = self.embed_client();
         let context =
-            self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
+            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+        let atomic = DecomposeGoalAtomicRequest {
+            owner: *permit.owner(),
+            parent_goal_id: req.parent_goal_id,
+            authorship: req.authorship.clone(),
+            context,
+            topology: req.topology.clone(),
+            children,
+        };
+        if let Some(replay) = resolve_decompose_goal_replay(
+            &self.storage().goal_command,
+            GoalReplayRequest::Decompose(&atomic),
+            permit.owner_write_permit(),
+        )
+        .await?
+        {
+            return Ok(replay);
+        }
+        self.validate_goal_topology_authorized(authz, permit.owner(), &req.topology)
+            .await?;
+        for child in &atomic.children {
+            self.validate_child_goal_draft_authorized(authz, child)
+                .await?;
+        }
+        self.author_self_perspective_authorized(authz, req.author_self_perspective_id)
+            .await?;
         self.storage()
             .goal_command
             .goal_write
-            .decompose_goal_atomic(
-                &DecomposeGoalAtomicRequest {
-                    owner: *permit.owner(),
-                    parent_goal_id: req.parent_goal_id,
-                    authorship: req.authorship.clone(),
-                    context,
-                    topology: req.topology.clone(),
-                    children,
-                },
-                permit.owner_write_permit(),
-            )
+            .decompose_goal_atomic(&atomic, permit.owner_write_permit())
             .await
             .map_err(map_goal_storage_error)
     }
@@ -427,40 +434,42 @@ impl Engine {
             payload_write.sidecar_payload = None;
         }
 
-        self.validate_goal_topology_authorized(authz, permit.owner(), &topology)
-            .await?;
-        let author_self_perspective_id = self
-            .author_self_perspective_authorized(authz, author_self_perspective_id)
-            .await?;
-        self.validate_wake_config_for_write(authz, wake.as_ref())
-            .await?;
-
         let embedding_client = self.embed_client();
-        let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
         let draft = GoalDraft::active_from_payload_write(
             *permit.owner(),
             payload_write,
-            topology,
-            wake,
+            topology.clone(),
+            wake.clone(),
             authorship,
             request_id,
         );
+        let context =
+            self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
+        let atomic = CreateGoalAtomicRequest {
+            draft,
+            context,
+            write_act_t: None,
+        };
+        if let Some(replay) = resolve_single_goal_replay(
+            &self.storage().goal_command,
+            GoalReplayRequest::Create(&atomic),
+            permit.owner_write_permit(),
+        )
+        .await?
+        {
+            return Ok(replay);
+        }
+        self.validate_goal_topology_authorized(authz, permit.owner(), &topology)
+            .await?;
+        self.author_self_perspective_authorized(authz, author_self_perspective_id)
+            .await?;
+        self.validate_wake_config_for_write(authz, wake.as_ref())
+            .await?;
         let outcome = self
             .storage()
             .goal_command
             .goal_write
-            .create_goal_atomic(
-                &CreateGoalAtomicRequest {
-                    draft,
-                    context: GoalAtomicContext {
-                        registry: self.registry(),
-                        embedding_model_id,
-                        author_self_perspective_id,
-                    },
-                    write_act_t: None,
-                },
-                permit.owner_write_permit(),
-            )
+            .create_goal_atomic(&atomic, permit.owner_write_permit())
             .await
             .map_err(map_goal_storage_error)?;
         Ok(outcome)
@@ -534,21 +543,28 @@ impl Engine {
         Ok(())
     }
 
-    async fn child_goal_draft_for_write(
+    fn normalize_child_goal_draft(
         &self,
-        authz: &AuthzContext,
         child: &ChildGoalDraft,
     ) -> Result<ChildGoalDraft, ProtocolError> {
-        self.validate_wake_config_for_write(authz, child.wake.as_ref())
-            .await?;
-        self.validate_goal_evidence_authorized(authz, &child.evidence)
-            .await?;
         Ok(ChildGoalDraft {
             payload: self.normalize_payload_write(child.payload.clone())?,
             evidence: child.evidence.clone(),
             wake: child.wake.clone(),
             request_id: child.request_id.clone(),
         })
+    }
+
+    async fn validate_child_goal_draft_authorized(
+        &self,
+        authz: &AuthzContext,
+        child: &ChildGoalDraft,
+    ) -> Result<(), ProtocolError> {
+        self.validate_wake_config_for_write(authz, child.wake.as_ref())
+            .await?;
+        self.validate_goal_evidence_authorized(authz, &child.evidence)
+            .await?;
+        Ok(())
     }
 
     async fn target_perspective_authorized(
@@ -579,9 +595,12 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         memory_id: Option<MemoryId>,
-    ) -> Result<Option<MemoryId>, ProtocolError> {
+    ) -> Result<(), ProtocolError> {
+        // Callers build `GoalAtomicContext` from the raw request value before
+        // the replay probe, so this admits rather than normalizes. Returning
+        // `()` keeps a future normalization from being silently discarded.
         let Some(memory_id) = memory_id else {
-            return Ok(None);
+            return Ok(());
         };
         let home_owner = self
             .storage()
@@ -595,7 +614,7 @@ impl Engine {
             .await?;
         self.require_perspective_kind(&home_owner, memory_id, "author_self_perspective_id")
             .await?;
-        Ok(Some(memory_id))
+        Ok(())
     }
 
     pub(in crate::engine) async fn validate_wake_config_for_write(
@@ -704,6 +723,39 @@ fn map_goal_build_error(err: GoalWriteBuildError) -> ProtocolError {
             ProtocolError::invalid_argument("text", err.to_string())
         }
     }
+}
+
+async fn resolve_single_goal_replay(
+    ports: &GoalCommandStoragePorts,
+    req: GoalReplayRequest<'_, '_>,
+    permit: &OwnerWritePermit,
+) -> Result<Option<GoalWriteOutcome>, ProtocolError> {
+    resolve_goal_replay_shaped(ports, req, permit, GoalReplayOutcome::into_goal).await
+}
+
+async fn resolve_decompose_goal_replay(
+    ports: &GoalCommandStoragePorts,
+    req: GoalReplayRequest<'_, '_>,
+    permit: &OwnerWritePermit,
+) -> Result<Option<DecomposeGoalOutcome>, ProtocolError> {
+    resolve_goal_replay_shaped(ports, req, permit, GoalReplayOutcome::into_decompose).await
+}
+
+async fn resolve_goal_replay_shaped<T>(
+    ports: &GoalCommandStoragePorts,
+    req: GoalReplayRequest<'_, '_>,
+    permit: &OwnerWritePermit,
+    shape: fn(GoalReplayOutcome) -> Result<T, &'static str>,
+) -> Result<Option<T>, ProtocolError> {
+    let Some(outcome) = ports
+        .goal_write
+        .resolve_goal_replay(req, permit)
+        .await
+        .map_err(map_goal_storage_error)?
+    else {
+        return Ok(None);
+    };
+    shape(outcome).map(Some).map_err(ProtocolError::internal)
 }
 
 pub(in crate::engine) async fn transition_goal_authorized(
@@ -881,15 +933,13 @@ mod tests {
             EntityKind::Perspective,
         ));
 
-        let authorized = engine
+        engine
             .author_self_perspective_authorized(
                 &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 Some(memory_id),
             )
             .await
             .expect("writable Perspective should authorize");
-
-        assert_eq!(authorized, Some(memory_id));
     }
 
     #[tokio::test]
@@ -958,6 +1008,118 @@ mod tests {
             .expect_err("foreign target Perspective must be rejected before write");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn exact_replay_precedes_mutable_target_admission_for_every_engine_goal_verb() {
+        let owner = owner();
+        let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let retired_target = memory_id();
+        let storage = storage_with_memory(owner, foreign, false, EntityKind::Perspective);
+        let observed_reads = storage.observed_entity_reads.clone();
+        let engine = engine_with_ports(storage);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let create = engine
+            .create_goal_from_payload_write(
+                &authz,
+                &GoalCreatePayloadWriteRequest {
+                    owner,
+                    topology: topology(retired_target),
+                    wake: None,
+                    payload: payload_write(),
+                    request_id: request_id("exact-replay-create"),
+                    authorship: tool_authorship(),
+                    author_self_perspective_id: Some(retired_target),
+                },
+            )
+            .await
+            .expect("create replay must not renew target admission");
+        assert!(create.idempotent_replay);
+
+        let transition = engine
+            .transition_goal(
+                &authz,
+                &GoalTransitionRequest {
+                    owner,
+                    prior_goal_id: goal_id(),
+                    // Not `Achieved`: that rejection is constant-time command
+                    // validation, so it precedes the probe rather than being
+                    // bypassed by it. What a replay skips is the live
+                    // prior-head and target admission below.
+                    next_state: GoalState::Abandoned,
+                    authorship: GoalAuthorship::User,
+                    request_id: request_id("exact-replay-transition"),
+                    author_self_perspective_id: Some(retired_target),
+                },
+            )
+            .await
+            .expect("transition replay must precede renewed prior-head and target checks");
+        assert!(transition.idempotent_replay);
+
+        let achieve = engine
+            .mark_goal_achieved(
+                &authz,
+                &GoalMarkAchievedRequest {
+                    owner,
+                    prior_goal_id: goal_id(),
+                    authorship: tool_authorship(),
+                    request_id: request_id("exact-replay-achieve"),
+                    evidence: vec![GoalEvidenceRef::new(retired_target)],
+                    author_self_perspective_id: Some(retired_target),
+                },
+            )
+            .await
+            .expect("achievement replay must not renew evidence admission");
+        assert!(achieve.idempotent_replay);
+
+        let modify = engine
+            .modify_goal(
+                &authz,
+                &GoalModifyRequest {
+                    owner,
+                    prior_goal_id: goal_id(),
+                    replacement: payload_write(),
+                    wake: None,
+                    authorship: GoalAuthorship::User,
+                    request_id: request_id("exact-replay-modify"),
+                    evidence: Some(vec![GoalEvidenceRef::new(retired_target)]),
+                    author_self_perspective_id: Some(retired_target),
+                },
+            )
+            .await
+            .expect("modify replay must not renew evidence admission");
+        assert!(modify.idempotent_replay);
+
+        let decompose = engine
+            .decompose_goal(
+                &authz,
+                &GoalDecomposeRequest {
+                    owner,
+                    parent_goal_id: goal_id(),
+                    authorship: tool_authorship(),
+                    topology: topology(retired_target),
+                    children: vec![ChildGoalDraft {
+                        payload: payload_write(),
+                        evidence: vec![GoalEvidenceRef::new(retired_target)],
+                        wake: None,
+                        request_id: request_id("exact-replay-decompose-child"),
+                    }],
+                    author_self_perspective_id: Some(retired_target),
+                },
+            )
+            .await
+            .expect("decompose replay must not renew parent or child target admission");
+        assert!(decompose.idempotent_replay);
+        assert_eq!(decompose.children.len(), 1);
+
+        assert!(
+            observed_reads
+                .lock()
+                .expect("entity read recorder lock")
+                .is_empty(),
+            "exact replay must return before every mutable target probe"
+        );
     }
 
     #[tokio::test]
@@ -1073,13 +1235,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn modify_goal_carries_exact_stored_evidence_when_omitted() {
+    async fn modify_goal_authorizes_stored_evidence_without_erasing_carry_intent() {
         let owner = owner();
         let evidence = vec![memory_id(), memory_id()];
         let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
         let mut storage = storage_with_memory(owner, owner, true, EntityKind::Abstraction);
         storage.goal_evidence = Some(evidence.clone());
         storage.observed_modify_evidence = observed.clone();
+        let observed_reads = storage.observed_entity_reads.clone();
         let engine = engine_with_ports(storage);
         let req = GoalModifyRequest {
             owner,
@@ -1102,8 +1265,16 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Internal);
         assert_eq!(
             *observed.lock().expect("modify evidence recorder lock"),
-            Some(evidence),
-            "omitted evidence must be carried exactly, not rebuilt from visible joins"
+            None,
+            "the storage command must preserve omitted-evidence carry intent"
+        );
+        assert_eq!(
+            *observed_reads.lock().expect("entity read recorder lock"),
+            evidence
+                .into_iter()
+                .map(EntityId::Memory)
+                .collect::<Vec<_>>(),
+            "the Engine must still read-admit the exact stored evidence vector"
         );
     }
 

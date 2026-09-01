@@ -31,7 +31,8 @@ use crate::verbs::fact_ingest::{
 };
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    DecomposeGoalOutcome, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
+    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::{
@@ -433,6 +434,16 @@ impl EmbeddingMaintenancePort for RejectingStorage {
 
 #[async_trait::async_trait]
 impl GoalWritePort for RejectingStorage {
+    async fn resolve_goal_replay(
+        &self,
+        _req: GoalReplayRequest<'_, '_>,
+        _permit: &OwnerWritePermit,
+    ) -> Result<Option<GoalReplayOutcome>, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
     async fn create_goal_atomic(
         &self,
         _req: &CreateGoalAtomicRequest<'_>,

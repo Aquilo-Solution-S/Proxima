@@ -4,11 +4,24 @@ use crate::storage::StorageError;
 use crate::storage_ports::OwnerWritePermit;
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    DecomposeGoalOutcome, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
+    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 
 #[async_trait::async_trait]
 pub trait GoalWritePort: Send + Sync {
+    /// Resolve an exact stored command before callers renew admission of its
+    /// mutable assignment, evidence, prior-head, or wake targets.
+    ///
+    /// Owner write authority is still mandatory. `None` means the request id
+    /// is fresh; a reused id with a changed declaration is an error rather
+    /// than `None`.
+    async fn resolve_goal_replay(
+        &self,
+        req: GoalReplayRequest<'_, '_>,
+        permit: &OwnerWritePermit,
+    ) -> Result<Option<GoalReplayOutcome>, StorageError>;
+
     async fn create_goal_atomic(
         &self,
         req: &CreateGoalAtomicRequest<'_>,

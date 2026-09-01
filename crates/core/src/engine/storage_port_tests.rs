@@ -114,6 +114,14 @@ struct GoalFake;
 
 #[async_trait::async_trait]
 impl GoalWritePort for GoalFake {
+    async fn resolve_goal_replay(
+        &self,
+        _req: crate::verbs::goal_write::GoalReplayRequest<'_, '_>,
+        _permit: &crate::storage_ports::OwnerWritePermit,
+    ) -> Result<Option<crate::verbs::goal_write::GoalReplayOutcome>, StorageError> {
+        Err(StorageError::Internal("goal fake rejects writes".into()))
+    }
+
     async fn create_goal_atomic(
         &self,
         _req: &crate::verbs::goal_write::CreateGoalAtomicRequest<'_>,

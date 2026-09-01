@@ -4,7 +4,8 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    DecomposeGoalOutcome, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
+    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use proxima_core::{MemoryId, OwnerRef, StorageError};
 
@@ -13,6 +14,15 @@ use crate::{PgStorage, verbs};
 
 #[async_trait::async_trait]
 impl GoalWritePort for PgStorage {
+    async fn resolve_goal_replay(
+        &self,
+        req: GoalReplayRequest<'_, '_>,
+        permit: &OwnerWritePermit,
+    ) -> Result<Option<GoalReplayOutcome>, StorageError> {
+        validate_permit_owner(permit, &req.owner())?;
+        verbs::goal_write::resolve_goal_command_replay(&self.pool, req).await
+    }
+
     async fn create_goal_atomic(
         &self,
         req: &CreateGoalAtomicRequest<'_>,

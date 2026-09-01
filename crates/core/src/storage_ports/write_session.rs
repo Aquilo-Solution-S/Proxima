@@ -3,7 +3,9 @@
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, StorageError};
 use crate::storage_ports::OwnerWritePermit;
 use crate::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
-use crate::verbs::goal_write::{CreateGoalAtomicRequest, GoalWriteOutcome};
+use crate::verbs::goal_write::{
+    CreateGoalAtomicRequest, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
+};
 use crate::verbs::query::SidecarAtom;
 use crate::{MemoryId, SchemaId, SidecarPayload};
 
@@ -132,6 +134,14 @@ pub trait WriteSession: Send {
         permit: &OwnerWritePermit,
         memory_id: MemoryId,
     ) -> Result<(), StorageError>;
+
+    /// Transaction-scoped replay probe. This sees a Goal written earlier in
+    /// the same session and must run before Engine target admission.
+    async fn resolve_goal_replay(
+        &mut self,
+        req: GoalReplayRequest<'_, '_>,
+        permit: &OwnerWritePermit,
+    ) -> Result<Option<GoalReplayOutcome>, StorageError>;
 
     async fn create_goal(
         &mut self,
