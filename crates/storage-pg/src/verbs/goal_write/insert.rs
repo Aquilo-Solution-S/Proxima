@@ -1,11 +1,20 @@
-use super::wake::write_goal_wake_config;
+use super::wake::prepare_goal_wake_plan;
 use super::{
-    GoalAtomicContext, GoalDraft, GoalId, GoalState, InsertedGoal, PayloadKind, PgSidecarKey,
-    PgSidecarRegistryFrozen, Postgres, StorageError, Transaction, WakeWrite,
+    GoalAtomicContext, GoalDraft, GoalId, GoalState, GoalWritePreparation, InsertedGoal,
+    PayloadKind, PgSidecarKey, PgSidecarRegistryFrozen, Postgres, StorageError, Transaction,
+    WakeWrite, lock_prepared_goal_write, persist_prepared_goal_write, prepare_goal_write,
 };
 use crate::verbs::goal_timeseries::{
-    GoalWriteCommand, ingest_write_act, load_goal_by_request_id, write_goal,
+    GoalWriteCommand, attach_goal_close_fact_reservation, load_goal_by_request_id,
+    reserve_fact_identity,
 };
+
+pub(super) struct PreparedGoalInsert<'a> {
+    pub(super) draft: GoalDraft,
+    pub(super) context: GoalAtomicContext<'a>,
+    pub(super) expected_prior: Option<GoalId>,
+    pub(super) preparation: GoalWritePreparation,
+}
 
 pub(super) async fn insert_or_replay_goal(
     tx: &mut Transaction<'_, Postgres>,
@@ -16,8 +25,42 @@ pub(super) async fn insert_or_replay_goal(
     wake_write: WakeWrite<'_>,
     write_act_t: Option<uuid::Uuid>,
 ) -> Result<InsertedGoal, StorageError> {
-    validate_goal_schema(context, draft)?;
+    let prepared =
+        prepare_goal_insert(tx, draft, expected_prior, context, wake_write, write_act_t).await?;
+    if let GoalWritePreparation::New(prepared_write) = &prepared.preparation {
+        lock_prepared_goal_write(tx, prepared_write).await?;
+    }
+    persist_prepared_goal_insert(tx, sidecars, &prepared).await
+}
+
+pub(super) async fn prepare_goal_insert<'a>(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &GoalDraft,
+    expected_prior: Option<GoalId>,
+    context: GoalAtomicContext<'a>,
+    wake_write: WakeWrite<'_>,
+    write_act_t: Option<uuid::Uuid>,
+) -> Result<PreparedGoalInsert<'a>, StorageError> {
     let owner = draft.owner();
+
+    // Replay detection precedes prior-head and wake lookups: a replay must
+    // not become dependent on a target that a later erase removed.
+    if let Some(existing) = load_goal_by_request_id(tx, &owner, &draft.request_id).await? {
+        return Ok(PreparedGoalInsert {
+            draft: draft.clone(),
+            context,
+            expected_prior,
+            preparation: GoalWritePreparation::Replay(
+                crate::verbs::goal_timeseries::GoalWriteOutcome {
+                    handle: existing.handle,
+                    t: existing.t,
+                    write_act_t: existing.write_act_t,
+                    replay: true,
+                },
+            ),
+        });
+    }
+    validate_goal_schema(context, draft)?;
 
     let handle = if let Some(prior) = expected_prior {
         let handle: Option<uuid::Uuid> = sqlx::query_scalar(
@@ -33,59 +76,73 @@ pub(super) async fn insert_or_replay_goal(
         None
     };
 
-    if let Some(existing) = load_goal_by_request_id(tx, &owner, &draft.request_id).await? {
-        return Ok(InsertedGoal {
-            goal_id: GoalId::new(existing.t),
-            change_event_seq: existing.t,
-            idempotent_replay: true,
-        });
-    }
-
-    let wake_id = write_goal_wake_config(tx, context, &owner, wake_write).await?;
-    let terminal = matches!(draft.state, GoalState::Achieved | GoalState::Abandoned);
-    let close_fact_t = if terminal {
-        Some(ingest_write_act(tx, &owner).await?.memory_id.into_inner())
-    } else {
-        None
+    let command = GoalWriteCommand {
+        handle,
+        schema_id: draft.schema_id.as_str().to_string(),
+        title: draft.title.clone(),
+        state: draft.state,
+        request_id: draft.request_id.clone(),
+        close_fact_t: None,
+        assignment_t: Some(draft.topology.assignment().perspective_id().into_inner()),
+        dependency_t: draft
+            .topology
+            .dependencies()
+            .iter()
+            .map(|dependency| dependency.goal_id().into_inner())
+            .collect(),
+        evidence_t: draft
+            .topology
+            .evidence()
+            .iter()
+            .map(|item| item.memory_id().into_inner())
+            .collect(),
+        wake_id: None,
+        mint_write_act: false,
+        write_act_t,
     };
-    let out = write_goal(
+    let wake = prepare_goal_wake_plan(tx, context, &owner, wake_write).await?;
+    let preparation = prepare_goal_write(
         tx,
         &owner,
-        &GoalWriteCommand {
-            handle,
-            schema_id: draft.schema_id.as_str().to_string(),
-            title: draft.title.clone(),
-            state: draft.state,
-            request_id: draft.request_id.clone(),
-            close_fact_t,
-            assignment_t: Some(draft.topology.assignment().perspective_id().into_inner()),
-            dependency_t: draft
-                .topology
-                .dependencies()
-                .iter()
-                .map(|dependency| dependency.goal_id().into_inner())
-                .collect(),
-            evidence_t: draft
-                .topology
-                .evidence()
-                .iter()
-                .map(|item| item.memory_id().into_inner())
-                .collect(),
-            wake_id,
-            mint_write_act: false,
-            write_act_t,
-        },
+        &command,
+        wake,
+        expected_prior.map(GoalId::into_inner),
     )
     .await?;
+    let close_fact = match &preparation {
+        GoalWritePreparation::New(_)
+            if matches!(draft.state, GoalState::Achieved | GoalState::Abandoned) =>
+        {
+            Some(reserve_fact_identity(tx).await?)
+        }
+        GoalWritePreparation::Replay(_) | GoalWritePreparation::New(_) => None,
+    };
+    let preparation = attach_goal_close_fact_reservation(preparation, close_fact);
+    Ok(PreparedGoalInsert {
+        draft: draft.clone(),
+        context,
+        expected_prior,
+        preparation,
+    })
+}
 
+pub(super) async fn persist_prepared_goal_insert(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    prepared: &PreparedGoalInsert<'_>,
+) -> Result<InsertedGoal, StorageError> {
+    let out = match &prepared.preparation {
+        GoalWritePreparation::Replay(outcome) => outcome.clone(),
+        GoalWritePreparation::New(prepared) => persist_prepared_goal_write(tx, prepared).await?,
+    };
     if !out.replay {
         insert_goal_sidecar(
             tx,
             sidecars,
-            context,
-            draft,
+            prepared.context,
+            &prepared.draft,
             GoalId::new(out.t),
-            expected_prior,
+            prepared.expected_prior,
         )
         .await?;
     }

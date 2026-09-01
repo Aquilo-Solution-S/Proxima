@@ -74,6 +74,22 @@ struct HotRow {
     content_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+struct CooledRow {
+    t: Uuid,
+    handle: Uuid,
+    owner_id: Uuid,
+    kind: String,
+    object_key: String,
+    blob_id: Option<Uuid>,
+    content_id: Option<Uuid>,
+    source_id: Option<String>,
+    ingest_key: Option<String>,
+    origins: Option<Vec<Uuid>>,
+    refs: Option<Vec<Uuid>>,
+    goal_refs: Option<Vec<Uuid>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColdRecord {
     row: HotRow,
@@ -179,9 +195,10 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
 }
 
 /// Split a pre-v5 mixed reference array into `(memory_refs, goal_refs)` by
-/// asking which ids exist on the Goal spine. Exact for the same reason the
-/// 0004 backfill is: a Goal id is decided by spine membership, not by
-/// anything the cold object recorded. Declaration order is preserved.
+/// asking which ids exist on the live Goal spine or have a retained Goal
+/// witness. Exact for the same reason the 0004 backfill is: a Goal id is
+/// decided by its typed spine/witness, not by anything the cold object
+/// recorded. Declaration order is preserved.
 async fn split_legacy_refs(
     conn: &mut sqlx::PgConnection,
     refs: &[Uuid],
@@ -189,12 +206,16 @@ async fn split_legacy_refs(
     if refs.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
-    let goals: Vec<Uuid> =
-        sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE t = ANY($1::uuid[])")
-            .bind(refs)
-            .fetch_all(conn)
-            .await
-            .map_err(map_err)?;
+    let goals: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.goal WHERE t = ANY($1::uuid[])
+         UNION
+         SELECT t FROM proxima_core.erased_pin_target
+          WHERE t = ANY($1::uuid[]) AND kind = 'goal'::proxima_core.pin_target_kind",
+    )
+    .bind(refs)
+    .fetch_all(conn)
+    .await
+    .map_err(map_err)?;
     let mut memory_refs = Vec::with_capacity(refs.len());
     let mut goal_refs = Vec::new();
     for id in refs {
@@ -737,24 +758,81 @@ pub(crate) async fn delete_cold_object(cold: &dyn ColdObjectStore, object_key: &
     }
 }
 
-async fn lock_forget_memory_tx(
+/// Acquire the one lifecycle lock vocabulary used by admission, hydration,
+/// transfer, forget and erase. Callers hand in the complete target set before
+/// taking any row/blob lock; sorting makes crossed declarations wait rather
+/// than deadlock.
+pub(crate) async fn lock_lifecycle_targets_tx(
     tx: &mut Transaction<'_, Postgres>,
-    t: Uuid,
+    targets: &[Uuid],
 ) -> Result<(), StorageError> {
-    sqlx::query(
-        "SELECT pg_advisory_xact_lock(
-             hashtextextended('proxima-forget:' || $1::text, 0)
-         )",
-    )
-    .bind(t)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    let mut sorted = targets.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    for target in sorted {
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(
+                 hashtextextended('proxima-forget:' || $1::text, 0)
+             )",
+        )
+        .bind(target)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    }
     Ok(())
 }
 
+/// Lock the source and every hot non-Fact depender before the source row is
+/// locked or cooled. `cooled_forget_grounding` takes the same set as a SQL
+/// backstop; the re-read rejects a growing set rather than extending an
+/// already-held advisory set out of UUID order.
+async fn lock_forget_footprint_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    source_t: Uuid,
+) -> Result<(), StorageError> {
+    let dependents: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.memory
+          WHERE kind <> 'fact'
+            AND t <> $1
+            AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
+          ORDER BY t",
+    )
+    .bind(source_t)
+    .fetch_all(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    let mut targets = Vec::with_capacity(1 + dependents.len());
+    targets.push(source_t);
+    targets.extend(dependents.iter().copied());
+    lock_lifecycle_targets_tx(tx, &targets).await?;
+
+    let after: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.memory
+          WHERE kind <> 'fact'
+            AND t <> $1
+            AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
+          ORDER BY t",
+    )
+    .bind(source_t)
+    .fetch_all(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    // Both queries `ORDER BY t` and exclude `source_t`, so membership is a
+    // binary search over `dependents` rather than a scan of `targets`.
+    if after
+        .iter()
+        .all(|target| dependents.binary_search(target).is_ok())
+    {
+        return Ok(());
+    }
+    Err(StorageError::Retryable(
+        "forget depender footprint grew after lifecycle lock acquisition".into(),
+    ))
+}
+
 /// The owner transfer's half of the forget serialization: the same
-/// per-memory advisory lock [`lock_forget_memory_tx`] takes, over every `t`
+/// per-memory advisory lock [`lock_lifecycle_targets_tx`] takes, over every `t`
 /// of the series, in sorted order. Forget takes its single lock before any
 /// row lock, and the transfer calls this before writing any row, so the two
 /// paths cannot form an advisory-lock cycle — a forget on a locked `t`
@@ -763,13 +841,7 @@ pub(crate) async fn lock_forget_memories_tx(
     tx: &mut Transaction<'_, Postgres>,
     ts: &[Uuid],
 ) -> Result<(), StorageError> {
-    let mut sorted = ts.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-    for t in sorted {
-        lock_forget_memory_tx(tx, t).await?;
-    }
-    Ok(())
+    lock_lifecycle_targets_tx(tx, ts).await
 }
 
 async fn insertable_columns(
@@ -1030,13 +1102,30 @@ async fn ensure_memory_head(
     rec: &ColdRecord,
     owner_id: Uuid,
 ) -> Result<(), StorageError> {
-    let head = sqlx::query(
+    let existing: Option<(String, String, Uuid)> = sqlx::query_as(
+        "SELECT kind::text, schema_id, owner_id
+           FROM proxima_core.memory_head
+          WHERE handle = $1
+          FOR UPDATE",
+    )
+    .bind(rec.row.handle)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    if let Some((kind, schema_id, existing_owner)) = existing {
+        if kind != rec.row.kind || schema_id != rec.schema_id || existing_owner != owner_id {
+            return Err(StorageError::ConstraintViolation(
+                "memory_head kind/schema/owner mismatch".into(),
+            ));
+        }
+        // A head can already point at a newer hot version. Hydrating this
+        // older cooled version must not rewind that series head.
+        return Ok(());
+    }
+    let inserted = sqlx::query(
         "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
          VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)
-         ON CONFLICT (handle) DO UPDATE SET t = EXCLUDED.t
-         WHERE proxima_core.memory_head.kind = EXCLUDED.kind
-           AND proxima_core.memory_head.schema_id = EXCLUDED.schema_id
-           AND proxima_core.memory_head.owner_id = EXCLUDED.owner_id
+         ON CONFLICT (handle) DO NOTHING
          RETURNING handle",
     )
     .bind(rec.row.handle)
@@ -1047,12 +1136,39 @@ async fn ensure_memory_head(
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)?;
-    if head.is_none() {
-        return Err(StorageError::ConstraintViolation(
-            "memory_head kind/schema/owner mismatch".into(),
-        ));
+    if inserted.is_none() {
+        // `ON CONFLICT DO NOTHING` can lose to a concurrent empty-head
+        // recreation. Re-read the committed winner under its row lock before
+        // classifying the result; an absent row means another lifecycle
+        // transition removed the head and this hydrate must be retried.
+        let winner: Option<(String, String, Uuid)> = sqlx::query_as(
+            "SELECT kind::text, schema_id, owner_id
+               FROM proxima_core.memory_head
+              WHERE handle = $1
+              FOR UPDATE",
+        )
+        .bind(rec.row.handle)
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+        match winner {
+            Some((kind, schema_id, existing_owner))
+                if kind == rec.row.kind
+                    && schema_id == rec.schema_id
+                    && existing_owner == owner_id =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(StorageError::ConstraintViolation(
+                "memory_head kind/schema/owner mismatch".into(),
+            )),
+            None => Err(StorageError::Retryable(
+                "memory_head disappeared during concurrent hydration".into(),
+            )),
+        }
+    } else {
+        Ok(())
     }
-    Ok(())
 }
 
 pub async fn forget_memory(
@@ -1064,7 +1180,7 @@ pub async fn forget_memory(
     t: Uuid,
     expected_owner_id: Uuid,
 ) -> Result<(), StorageError> {
-    lock_forget_memory_tx(tx, t).await?;
+    lock_forget_footprint_tx(tx, t).await?;
     let rec = snapshot_hot(tx.as_mut(), sidecars, t).await?;
     if rec.row.owner_id != expected_owner_id {
         return Err(StorageError::NotFound);
@@ -1100,7 +1216,7 @@ pub async fn forget_memory_oneshot(
     expected_owner_id: Uuid,
 ) -> Result<(), StorageError> {
     let mut tx = pool.begin().await.map_err(map_err)?;
-    lock_forget_memory_tx(&mut tx, t).await?;
+    lock_forget_footprint_tx(&mut tx, t).await?;
     let rec = snapshot_hot(tx.as_mut(), sidecars, t).await?;
     if rec.row.owner_id != expected_owner_id {
         return Err(StorageError::NotFound);
@@ -1139,28 +1255,110 @@ pub async fn hydrate_memory(
     t: Uuid,
     non_embeddable_schemas: &[String],
 ) -> Result<(), StorageError> {
-    // The row is the authority on WHO owns this series; the object is the
-    // authority on WHAT it contains. An owner transfer updates
-    // `cooled.owner_id` and leaves the bytes untouched (keys are
-    // owner-free), so hydrating from the dump's embedded owner would
-    // restore a transferred series back under the owner that gave it away.
-    let cooled: Option<(String, Uuid)> =
-        sqlx::query_as("SELECT object_key, owner_id FROM proxima_core.cooled WHERE t = $1")
-            .bind(t)
-            .fetch_optional(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-    let (object_key, owner_id) = cooled.ok_or(StorageError::NotFound)?;
-
-    let rec = decode_record(&cold.get(&object_key).await?)?;
-    ensure_memory_head(tx, &rec, owner_id).await?;
-    let cooled_content: Option<Uuid> = sqlx::query_scalar::<_, Option<Uuid>>(
-        "SELECT content_id FROM proxima_core.cooled WHERE t = $1",
+    // Read the locator without a lock, then decode the object without holding
+    // a database lock. The cooled row is authoritative for current owner and
+    // blob/content ownership; transfer may rewrite those fields while the
+    // object bytes remain at the owner-free key.
+    let cooled: CooledRow = sqlx::query_as(
+        "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
+                source_id, ingest_key, origins, refs, goal_refs
+           FROM proxima_core.cooled
+          WHERE t = $1",
     )
     .bind(t)
-    .fetch_one(tx.as_mut())
+    .fetch_optional(tx.as_mut())
     .await
-    .map_err(map_err)?;
+    .map_err(map_err)?
+    .ok_or(StorageError::NotFound)?;
+    let object_key = cooled.object_key.clone();
+    let rec = decode_record(&cold.get(&object_key).await?)?;
+    if rec.row.t != cooled.t
+        || rec.row.handle != cooled.handle
+        || rec.row.kind != cooled.kind
+        || rec.row.source_id != cooled.source_id
+        || rec.row.ingest_key != cooled.ingest_key
+    {
+        return Err(StorageError::Conflict(
+            "cold object identity does not match cooled locator".into(),
+        ));
+    }
+    // A post-0004 locator stores the split arrays. Older cold objects carry
+    // one mixed `refs` array, so compare the locator with its live-spine
+    // partition rather than with the pre-split bytes.
+    let (object_refs, object_goal_refs) = if rec.format_version >= 5 {
+        (rec.row.refs.clone(), rec.row.goal_refs.clone())
+    } else {
+        split_legacy_refs(tx.as_mut(), &rec.row.refs).await?
+    };
+    let origins = cooled
+        .origins
+        .clone()
+        .unwrap_or_else(|| rec.row.origins.clone());
+    let refs = cooled.refs.clone().unwrap_or_else(|| object_refs.clone());
+    let goal_refs = cooled
+        .goal_refs
+        .clone()
+        .unwrap_or_else(|| object_goal_refs.clone());
+    if cooled
+        .origins
+        .as_ref()
+        .is_some_and(|value| value != &rec.row.origins)
+        || cooled
+            .refs
+            .as_ref()
+            .is_some_and(|value| value != &object_refs)
+        || cooled
+            .goal_refs
+            .as_ref()
+            .is_some_and(|value| value != &object_goal_refs)
+    {
+        return Err(StorageError::Conflict(
+            "cold object pins do not match cooled locator".into(),
+        ));
+    }
+
+    // The source and every chosen pin are one sorted lifecycle set. Only
+    // after it is held do we re-read the locator and establish the exact
+    // cooled seal that the database trigger will evaluate on INSERT.
+    let mut targets = Vec::with_capacity(1 + origins.len() + refs.len() + goal_refs.len());
+    targets.push(t);
+    targets.extend(origins.iter().copied());
+    targets.extend(refs.iter().copied());
+    targets.extend(goal_refs.iter().copied());
+    lock_lifecycle_targets_tx(tx, &targets).await?;
+    let current: CooledRow = sqlx::query_as(
+        "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
+                source_id, ingest_key, origins, refs, goal_refs
+           FROM proxima_core.cooled
+          WHERE t = $1
+          FOR UPDATE",
+    )
+    .bind(t)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    .ok_or(StorageError::NotFound)?;
+    if current.object_key != object_key
+        || current.handle != rec.row.handle
+        || current.kind != rec.row.kind
+        || current.source_id != rec.row.source_id
+        || current.ingest_key != rec.row.ingest_key
+        || current.origins != cooled.origins
+        || current.refs != cooled.refs
+        || current.goal_refs != cooled.goal_refs
+    {
+        return Err(StorageError::Conflict(
+            "cooled locator changed while hydrating".into(),
+        ));
+    }
+    // No per-column comparison follows. The re-read above already pins every
+    // persisted pin array to the value this hydrate decoded against, and
+    // `origins`/`refs`/`goal_refs` are derived from those same `Option`s, so
+    // a column check could never fail. The locator check is the whole guard.
+
+    // `ensure_memory_head` must stay after the lifecycle lock: a bulk erase
+    // takes the same set before any head or row lock.
+    ensure_memory_head(tx, &rec, current.owner_id).await?;
     let mut stamped_tables = rec
         .sidecar_dumps
         .iter()
@@ -1177,15 +1375,6 @@ pub async fn hydrate_memory(
     {
         stamped_tables.push(primary.to_owned());
     }
-    // A pre-v5 object predates the pin split and still carries Goal ids inside
-    // `refs`. Separate them here against the live spine — the same predicate
-    // migration 0004 used on hot rows — or the trigger would reject the Goal
-    // ids as Memory references and a hydrate of an old object could never land.
-    let (refs, goal_refs) = if rec.format_version >= 5 {
-        (rec.row.refs.clone(), rec.row.goal_refs.clone())
-    } else {
-        split_legacy_refs(tx.as_mut(), &rec.row.refs).await?
-    };
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
@@ -1196,13 +1385,13 @@ pub async fn hydrate_memory(
     .bind(rec.row.handle)
     .bind(rec.row.t)
     .bind(&rec.row.kind)
-    .bind(owner_id)
+    .bind(current.owner_id)
     .bind(&rec.schema_id)
     .bind(rec.row.source_id.as_deref())
     .bind(rec.row.ingest_key.as_deref())
-    .bind(rec.row.blob_id)
-    .bind(cooled_content)
-    .bind(&rec.row.origins)
+    .bind(current.blob_id)
+    .bind(current.content_id)
+    .bind(&origins)
     .bind(&refs)
     .bind(&goal_refs)
     .bind(stamped_tables)
@@ -1254,8 +1443,15 @@ pub async fn hydrate_memory(
     // memory INSERT above. The sketch is READ owner-scoped, so a sketch
     // written under the dumped owner would let the owner that gave this
     // series away go on recalling it.
-    super::sketch::upsert_sketch(tx, owner_id, rec.row.t, &rec.row.kind, &hydrate_line).await?;
-    enqueue_embed_jobs(tx, &rec, owner_id, non_embeddable_schemas).await?;
+    super::sketch::upsert_sketch(
+        tx,
+        current.owner_id,
+        rec.row.t,
+        &rec.row.kind,
+        &hydrate_line,
+    )
+    .await?;
+    enqueue_embed_jobs(tx, &rec, current.owner_id, non_embeddable_schemas).await?;
 
     sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1")
         .bind(t)
@@ -1263,12 +1459,7 @@ pub async fn hydrate_memory(
         .await
         .map_err(map_err)?;
 
-    sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
-        .bind(rec.row.handle)
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+    sync_memory_head(tx, rec.row.handle).await?;
 
     // Likewise owner-scoped: the announce feed a client tails is its own.
     // Announcing a hydrate to the pre-transfer owner tells the wrong party
@@ -1277,7 +1468,7 @@ pub async fn hydrate_memory(
         "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
          VALUES ($1, 'append', 'memory', $2, $3)",
     )
-    .bind(owner_id)
+    .bind(current.owner_id)
     .bind(rec.row.handle)
     .bind(t)
     .execute(tx.as_mut())
@@ -1300,6 +1491,10 @@ pub async fn erase_memory(
     owner: &Owner,
     t: Uuid,
 ) -> Result<ColdPurgePlan, StorageError> {
+    // Take the lifecycle lock before reading any target row, blob locator, or
+    // sidecar. This is the single-admission half of the same ordering used by
+    // series and owner-scope erase.
+    lock_lifecycle_targets_tx(tx, &[t]).await?;
     let handle: Option<Uuid> =
         sqlx::query_scalar("SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
             .bind(t)
@@ -1447,6 +1642,11 @@ pub async fn erase_memory_series(
     }
     let owner_id = owner.stored_owner_id();
     let versions = expand_series_for_erase(tx, owner, ts).await?;
+
+    // Expansion includes every hot and cooled version before any cited blob
+    // or row lock. Re-entering these locks in erase_memory is intentional: it
+    // protects direct callers while preserving one global lock vocabulary.
+    lock_lifecycle_targets_tx(tx, &versions).await?;
 
     // Captured BEFORE the loop, because the loop is what makes them
     // unreferenced: after it, no row is left to read `blob_id` from.
@@ -1603,6 +1803,7 @@ pub async fn lock_admissions_for_erase(
     if ts.is_empty() {
         return Ok(());
     }
+    lock_lifecycle_targets_tx(tx, ts).await?;
     sqlx::query(LOCK_ADMISSIONS_SQL)
         .bind(ts)
         .execute(tx.as_mut())
@@ -1966,16 +2167,50 @@ mod tests {
             .execute(conn.as_mut())
             .await?;
 
+            let erased_goal_handle = uuid::Uuid::now_v7();
+            let erased_goal_t = uuid::Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+                 VALUES ($1, 'test/goal-v1', $2, $3)",
+            )
+            .bind(erased_goal_handle)
+            .bind(owner)
+            .bind(erased_goal_t)
+            .execute(conn.as_mut())
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.goal
+                     (handle, t, owner_id, title, state, request_id)
+                 VALUES ($1, $2, $3, 'erased target', 'Active', 'erased-goal')",
+            )
+            .bind(erased_goal_handle)
+            .bind(erased_goal_t)
+            .bind(owner)
+            .execute(conn.as_mut())
+            .await?;
+            sqlx::query("DELETE FROM proxima_core.goal WHERE t = $1")
+                .bind(erased_goal_t)
+                .execute(conn.as_mut())
+                .await?;
+            let erased_kind: String = sqlx::query_scalar(
+                "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+            )
+            .bind(erased_goal_t)
+            .fetch_one(conn.as_mut())
+            .await?;
+            assert_eq!(erased_kind, "goal");
+
             let before = uuid::Uuid::now_v7();
             let after = uuid::Uuid::now_v7();
             let (memory_refs, goal_refs) =
-                super::split_legacy_refs(conn.as_mut(), &[before, goal_t, after]).await?;
+                super::split_legacy_refs(conn.as_mut(), &[before, goal_t, erased_goal_t, after])
+                    .await?;
             assert_eq!(
                 memory_refs,
                 vec![before, after],
                 "declaration order must survive the split"
             );
-            assert_eq!(goal_refs, vec![goal_t]);
+            assert_eq!(goal_refs, vec![goal_t, erased_goal_t]);
 
             // Nothing on the Goal spine means nothing moves -- the common case.
             let (memory_refs, goal_refs) =

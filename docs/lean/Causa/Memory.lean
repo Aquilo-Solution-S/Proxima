@@ -35,6 +35,106 @@ def MemoryKind.layer : MemoryKind → Nat
   | .Abstraction => 1
   | .Perspective => 2
 
+/-- The closed historical vocabulary used by the database-only erase witness.
+    `Goal` is deliberately outside `MemoryKind`: a Goal witness can satisfy a
+    reference target, never a Memory origin/evidence target. -/
+inductive PinTargetKind where
+  | Fact
+  | Abstraction
+  | Perspective
+  | Goal
+  deriving DecidableEq, Repr
+
+def MemoryKind.pinTargetKind : MemoryKind → PinTargetKind
+  | .Fact        => .Fact
+  | .Abstraction => .Abstraction
+  | .Perspective => .Perspective
+
+theorem memory_kind_pin_target_kind_ne_goal (kind : MemoryKind) :
+    kind.pinTargetKind ≠ .Goal := by
+  cases kind <;> simp [MemoryKind.pinTargetKind]
+
+/-- A hard-erased identity witness. It carries only the former `t` and its
+    closed kind; in particular it carries no owner and cannot reconstruct one. -/
+structure ErasedPinTarget where
+  t    : MemoryId
+  kind : PinTargetKind
+
+def erased_pin_target_t : ErasedPinTarget → MemoryId := ErasedPinTarget.t
+def erased_pin_target_kind : ErasedPinTarget → PinTargetKind := ErasedPinTarget.kind
+
+theorem erased_pin_target_ext
+    (e1 e2 : ErasedPinTarget)
+    (ht : erased_pin_target_t e1 = erased_pin_target_t e2)
+    (hk : erased_pin_target_kind e1 = erased_pin_target_kind e2) :
+    e1 = e2 := by
+  cases e1 with
+  | mk t1 k1 =>
+      cases e2 with
+      | mk t2 k2 =>
+          cases ht
+          cases hk
+          rfl
+
+def ErasedPinTargetIdUnique (targets : Set ErasedPinTarget) : Prop :=
+  ∀ e1 e2 : ErasedPinTarget,
+    e1 ∈ targets →
+    e2 ∈ targets →
+    erased_pin_target_t e1 = erased_pin_target_t e2 →
+    e1 = e2
+
+def ErasedPinTargetKindCompatible
+    (targets : Set ErasedPinTarget) (id : MemoryId) (kind : PinTargetKind) : Prop :=
+  ∀ e : ErasedPinTarget, e ∈ targets → erased_pin_target_t e = id →
+    erased_pin_target_kind e = kind
+
+def erasedPinTargetExists
+    (targets : Set ErasedPinTarget) (id : MemoryId) : Prop :=
+  ∃ e : ErasedPinTarget, e ∈ targets ∧ erased_pin_target_t e = id
+
+def recordedMemoryTargetKind
+    (targets : Set ErasedPinTarget) (id : MemoryId) (kind : MemoryKind) : Prop :=
+  ∃ e : ErasedPinTarget,
+    e ∈ targets ∧
+    erased_pin_target_t e = id ∧
+    erased_pin_target_kind e = kind.pinTargetKind
+
+def recordedMemoryTargetExists
+    (targets : Set ErasedPinTarget) (id : MemoryId) : Prop :=
+  ∃ kind : MemoryKind, recordedMemoryTargetKind targets id kind
+
+def recordedGoalTargetExists
+    (targets : Set ErasedPinTarget) (id : GoalId) : Prop :=
+  ∃ e : ErasedPinTarget,
+    e ∈ targets ∧
+    erased_pin_target_t e = id ∧
+    erased_pin_target_kind e = .Goal
+
+theorem goal_witness_ne_memory_kind
+    (e : ErasedPinTarget) (he : erased_pin_target_kind e = .Goal)
+    (kind : MemoryKind) :
+    erased_pin_target_kind e ≠ kind.pinTargetKind := by
+  intro hkind
+  rw [he] at hkind
+  exact (memory_kind_pin_target_kind_ne_goal kind) hkind.symm
+
+theorem goal_witness_not_recorded_memory_target
+    (targets : Set ErasedPinTarget)
+    (hunique : ErasedPinTargetIdUnique targets)
+    (e : ErasedPinTarget) (he : e ∈ targets)
+    (hegoal : erased_pin_target_kind e = .Goal)
+    (id : MemoryId) (kind : MemoryKind)
+    (hid : erased_pin_target_t e = id)
+    (hrecorded : recordedMemoryTargetKind targets id kind) : False := by
+  obtain ⟨other, hother, hother_id, hother_kind⟩ := hrecorded
+  have same_id : erased_pin_target_t e = erased_pin_target_t other := by
+    calc
+      erased_pin_target_t e = id := hid
+      _ = erased_pin_target_t other := hother_id.symm
+  have same : e = other := hunique e other he hother same_id
+  subst other
+  exact goal_witness_ne_memory_kind e hegoal kind hother_kind
+
 -- ============================================================
 -- Content — owner-scoped typed payload (not an admission)
 -- ============================================================
@@ -84,7 +184,7 @@ structure Memory where
   kind       : MemoryKind
   owner      : Owner
   origins    : List MemoryId
-  /-- Reference pins onto the Memory spine. Since v0.0.11 this column is
+  /-- Reference pins onto the Memory spine. Since the Goal-reference split this column is
       Memory-only: a Goal reference lives in `goal_refs`, so the column
       itself carries the target's kind and no reader has to re-derive it. -/
   refs       : List MemoryId
@@ -285,6 +385,56 @@ def pinKindIs
 def pinKindFactOrAbstraction
     (memories : Set Memory) (cooled : Set Cooled) (id : MemoryId) : Prop :=
   pinKindIs memories cooled id .Fact ∨ pinKindIs memories cooled id .Abstraction
+
+def ErasedTargetsDisjointMemories
+    (targets : Set ErasedPinTarget) (memories : Set Memory) : Prop :=
+  ∀ e : ErasedPinTarget, e ∈ targets →
+    ∀ m : Memory, m ∈ memories → erased_pin_target_t e ≠ memory_t m
+
+def ErasedTargetsDisjointCooled
+    (targets : Set ErasedPinTarget) (cooled : Set Cooled) : Prop :=
+  ∀ e : ErasedPinTarget, e ∈ targets →
+    ∀ c : Cooled, c ∈ cooled → erased_pin_target_t e ≠ cooled_t c
+
+theorem erased_target_not_memory
+    (targets : Set ErasedPinTarget) (memories : Set Memory)
+    (hdisjoint : ErasedTargetsDisjointMemories targets memories)
+    (e : ErasedPinTarget) (he : e ∈ targets)
+    (m : Memory) (hm : m ∈ memories) :
+    erased_pin_target_t e ≠ memory_t m :=
+  hdisjoint e he m hm
+
+theorem erased_target_not_cooled
+    (targets : Set ErasedPinTarget) (cooled : Set Cooled)
+    (hdisjoint : ErasedTargetsDisjointCooled targets cooled)
+    (e : ErasedPinTarget) (he : e ∈ targets)
+    (c : Cooled) (hc : c ∈ cooled) :
+    erased_pin_target_t e ≠ cooled_t c :=
+  hdisjoint e he c hc
+
+def recordedPinKindIs
+    (memories : Set Memory) (cooled : Set Cooled)
+    (targets : Set ErasedPinTarget)
+    (id : MemoryId) (kind : MemoryKind) : Prop :=
+  pinKindIs memories cooled id kind ∨ recordedMemoryTargetKind targets id kind
+
+def recordedPinKindFactOrAbstraction
+    (memories : Set Memory) (cooled : Set Cooled)
+    (targets : Set ErasedPinTarget) (id : MemoryId) : Prop :=
+  recordedPinKindIs memories cooled targets id .Fact ∨
+  recordedPinKindIs memories cooled targets id .Abstraction
+
+structure RetainedOriginKindValid
+    (memories : Set Memory) (cooled : Set Cooled)
+    (targets : Set ErasedPinTarget) (m : Memory) : Prop where
+  factEmpty : memory_kind m = .Fact → memory_origins m = []
+  absFactOrAbs : memory_kind m = .Abstraction →
+    ∀ id : MemoryId, id ∈ memory_origins m →
+      recordedPinKindFactOrAbstraction memories cooled targets id
+  perspAbsOrEmpty : memory_kind m = .Perspective →
+    memory_origins m = [] ∨
+    ∀ id : MemoryId, id ∈ memory_origins m →
+      recordedPinKindIs memories cooled targets id .Abstraction
 
 -- ============================================================
 -- Origin kind CHECKs (UML §2) — Tesla valve, no extra if

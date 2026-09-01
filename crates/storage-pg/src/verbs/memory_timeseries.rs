@@ -35,6 +35,26 @@ pub struct MemoryRow {
     pub goal_refs: Vec<Uuid>,
 }
 
+#[derive(Debug)]
+pub(crate) enum PreparedMemoryAdmission {
+    Replay(FactIngestOutcome),
+    New(Box<PreparedMemoryAdmissionNew>),
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedMemoryAdmissionNew {
+    owner_id: Uuid,
+    draft: FactWriteCommand,
+    origins: Vec<Uuid>,
+    refs: Vec<Uuid>,
+    goal_refs: Vec<Uuid>,
+    sidecar_tables: Vec<String>,
+    handle: Uuid,
+    t: Uuid,
+    expected_head_t: Option<Uuid>,
+    targets: Vec<Uuid>,
+}
+
 /// One txn: owners upsert + ingest_keys + memory_head + memory + announce(append).
 ///
 /// `sidecar_tables` is the declared set forget will dump/delete — tables
@@ -49,7 +69,108 @@ pub(crate) async fn ingest_fact_timeseries(
     sidecar_tables: &[String],
     content_id: Option<Uuid>,
 ) -> Result<FactIngestOutcome, StorageError> {
-    let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
+    let prepared =
+        prepare_memory_admission(tx, owner, draft, origins, references, sidecar_tables).await?;
+    lock_prepared_memory_admission(tx, &prepared).await?;
+    let prepared = claim_prepared_memory_admission(tx, prepared).await?;
+    materialize_prepared_memory_admission(tx, prepared, draft.blob_id, content_id).await
+}
+
+/// Prepare ordinary Memory admission without touching content, blob, head, or
+/// Memory rows. Replay lookup runs first; a new admission arbitrates owner
+/// identity, reserves its real identity, and snapshots its lifecycle footprint
+/// before locking that footprint.
+pub(crate) async fn prepare_memory_admission(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    draft: &FactWriteCommand,
+    origins: &[EdgeEndpoint],
+    references: &[EdgeEndpoint],
+    sidecar_tables: &[String],
+) -> Result<PreparedMemoryAdmission, StorageError> {
+    prepare_memory_admission_at(
+        tx,
+        owner,
+        draft,
+        origins,
+        references,
+        sidecar_tables,
+        PreparationOptions {
+            identity: None,
+            extra_targets: &[],
+        },
+    )
+    .await
+}
+
+/// Prepare a derived admission with its explicit supersedes target included
+/// in the lifecycle set without persisting that target as a pin.
+pub(crate) async fn prepare_memory_admission_with_extra_targets(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    draft: &FactWriteCommand,
+    origins: &[EdgeEndpoint],
+    references: &[EdgeEndpoint],
+    sidecar_tables: &[String],
+    extra_targets: &[Uuid],
+) -> Result<PreparedMemoryAdmission, StorageError> {
+    prepare_memory_admission_at(
+        tx,
+        owner,
+        draft,
+        origins,
+        references,
+        sidecar_tables,
+        PreparationOptions {
+            identity: None,
+            extra_targets,
+        },
+    )
+    .await
+}
+
+/// Insert an unpinned lifecycle Fact at an identity reserved before a Goal's
+/// union lock. The caller already owns that lock; this helper still uses the
+/// same prepare/claim/materialize phases as ordinary admission.
+pub(crate) async fn ingest_unpinned_fact_at(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    draft: &FactWriteCommand,
+    identity: (Uuid, Uuid),
+) -> Result<FactIngestOutcome, StorageError> {
+    let prepared = prepare_memory_admission_at(
+        tx,
+        owner,
+        draft,
+        &[],
+        &[],
+        &[],
+        PreparationOptions {
+            identity: Some(identity),
+            extra_targets: &[],
+        },
+    )
+    .await?;
+    let prepared = claim_prepared_memory_admission(tx, prepared).await?;
+    materialize_prepared_memory_admission(tx, prepared, draft.blob_id, None).await
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparationOptions<'a> {
+    identity: Option<(Uuid, Uuid)>,
+    extra_targets: &'a [Uuid],
+}
+
+async fn prepare_memory_admission_at(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    draft: &FactWriteCommand,
+    origins: &[EdgeEndpoint],
+    references: &[EdgeEndpoint],
+    sidecar_tables: &[String],
+    options: PreparationOptions<'_>,
+) -> Result<PreparedMemoryAdmission, StorageError> {
+    let owner_id = owner.stored_owner_id();
 
     let source_id = draft.source_id.clone();
     let ingest_key = draft.ingest_key.clone();
@@ -74,21 +195,6 @@ pub(crate) async fn ingest_fact_timeseries(
             "A/P cannot carry source_id/ingest_key".into(),
         ));
     }
-    let content_id = if let Some(id) = content_id {
-        Some(id)
-    } else if kind == "fact" {
-        None
-    } else {
-        let text = draft
-            .rendered_text
-            .as_deref()
-            .map_or(draft.payload.as_slice(), str::as_bytes);
-        Some(
-            super::content::ensure_text_content(tx, owner_id, draft.schema_id.as_str(), text)
-                .await?,
-        )
-    };
-
     let mut persisted_origins = pin_memory_ids(origins)?;
     let (mut refs, goal_refs) = pin_reference_ids(references);
     // CHECK memory_fact_origins_chk: Facts cannot carry origins. Pins
@@ -101,80 +207,245 @@ pub(crate) async fn ingest_fact_timeseries(
         }
     }
 
-    let handle = draft.handle.unwrap_or_else(Uuid::now_v7);
-    let t: Uuid = sqlx::query_scalar("SELECT uuidv7()")
-        .fetch_one(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+    if let (Some(source_id), Some(key)) = (source_id.as_deref(), ingest_key.as_deref())
+        && let Some(replay) =
+            load_ingest_replay(tx, owner_id, source_id, key, &refs, &goal_refs).await?
+    {
+        return Ok(PreparedMemoryAdmission::Replay(replay));
+    }
 
-    if let (Some(source_id), Some(key)) = (source_id.as_deref(), ingest_key.as_deref()) {
+    // Owner identity is arbitrated before any lifecycle lock, matching
+    // transfer's owner -> lifecycle order and preventing an owner-row cycle.
+    let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
+
+    let handle = options
+        .identity
+        .map(|(handle, _)| handle)
+        .or(draft.handle)
+        .unwrap_or_else(Uuid::now_v7);
+    let t: Uuid = if let Some((_, t)) = options.identity {
+        t
+    } else {
+        sqlx::query_scalar("SELECT uuidv7()")
+            .fetch_one(tx.as_mut())
+            .await
+            .map_err(map_err)?
+    };
+
+    let expected_head_t: Option<Uuid> =
+        sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+            .bind(handle)
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+    let mut targets = Vec::with_capacity(
+        1 + usize::from(expected_head_t.is_some())
+            + persisted_origins.len()
+            + refs.len()
+            + goal_refs.len()
+            + options.extra_targets.len(),
+    );
+    targets.push(t);
+    if let Some(head_t) = expected_head_t {
+        targets.push(head_t);
+    }
+    targets.extend(persisted_origins.iter().copied());
+    targets.extend(refs.iter().copied());
+    targets.extend(goal_refs.iter().copied());
+    targets.extend(options.extra_targets.iter().copied());
+    Ok(PreparedMemoryAdmission::New(Box::new(
+        PreparedMemoryAdmissionNew {
+            owner_id,
+            draft: draft.clone(),
+            origins: persisted_origins,
+            refs,
+            goal_refs,
+            sidecar_tables: sidecar_tables.to_vec(),
+            handle,
+            t,
+            expected_head_t,
+            targets,
+        },
+    )))
+}
+
+async fn load_ingest_replay(
+    tx: &mut Transaction<'_, Postgres>,
+    owner_id: Uuid,
+    source_id: &str,
+    key: &str,
+    refs: &[Uuid],
+    goal_refs: &[Uuid],
+) -> Result<Option<FactIngestOutcome>, StorageError> {
+    let Some(replay_t): Option<Uuid> = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.ingest_keys
+          WHERE owner_id = $1 AND source_id = $2 AND ingest_key = $3",
+    )
+    .bind(owner_id)
+    .bind(source_id)
+    .bind(key)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    else {
+        return Ok(None);
+    };
+    // Forget keeps the `ingest_keys` row and moves the handle to the cooled
+    // stub, so a source re-delivering a cooled admission still replays. A
+    // legacy cooled row has NULL refs; accepting it as an empty vector would
+    // silently bless a changed declaration.
+    let replay_row: (Uuid, Option<Vec<Uuid>>, Option<Vec<Uuid>>) = sqlx::query_as(
+        "SELECT handle, refs, goal_refs FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
+         UNION ALL
+         SELECT handle, refs, goal_refs FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
+         LIMIT 1",
+    )
+    .bind(replay_t)
+    .bind(owner_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    .ok_or_else(|| {
+        internal(format!(
+            "ingest key claims t {replay_t} with no hot or cooled row"
+        ))
+    })?;
+    let (Some(stored_refs), Some(stored_goal_refs)) = (replay_row.1, replay_row.2) else {
+        return Err(StorageError::Conflict(
+            "fact replay references are unavailable for cooled admission".into(),
+        ));
+    };
+    if stored_refs != refs || stored_goal_refs != goal_refs {
+        return Err(StorageError::Conflict(
+            "fact replay changed declared refs".into(),
+        ));
+    }
+    Ok(Some(FactIngestOutcome {
+        receipt_id: None,
+        memory_id: MemoryId::new(replay_t),
+        change_event_seq: replay_t,
+        idempotent_replay: true,
+        cited_object_id: None,
+        handle: replay_row.0,
+    }))
+}
+
+/// Claim the sourced replay key after the lifecycle set is held. A concurrent
+/// loser discovers the replay here, still before citation/content persistence.
+pub(crate) async fn claim_prepared_memory_admission(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: PreparedMemoryAdmission,
+) -> Result<PreparedMemoryAdmission, StorageError> {
+    let PreparedMemoryAdmission::New(prepared) = prepared else {
+        return Ok(prepared);
+    };
+    if let (Some(source_id), Some(key)) = (
+        prepared.draft.source_id.as_deref(),
+        prepared.draft.ingest_key.as_deref(),
+    ) {
         let claimed = sqlx::query(
             "INSERT INTO proxima_core.ingest_keys (owner_id, source_id, ingest_key, t)
              VALUES ($1, $2, $3, $4)
              ON CONFLICT (owner_id, source_id, ingest_key) DO NOTHING",
         )
-        .bind(owner_id)
+        .bind(prepared.owner_id)
         .bind(source_id)
         .bind(key)
-        .bind(t)
+        .bind(prepared.t)
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
         if claimed.rows_affected() == 0 {
-            let replay_t: Uuid = sqlx::query_scalar(
-                "SELECT t FROM proxima_core.ingest_keys
-                  WHERE owner_id = $1 AND source_id = $2 AND ingest_key = $3",
+            let replay = load_ingest_replay(
+                tx,
+                prepared.owner_id,
+                source_id,
+                key,
+                &prepared.refs,
+                &prepared.goal_refs,
             )
-            .bind(owner_id)
-            .bind(source_id)
-            .bind(key)
-            .fetch_one(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-            // Forget keeps the `ingest_keys` row and moves the handle to the
-            // `cooled` stub, so a source re-delivering a cooled admission still
-            // replays. Reading `memory` alone misses the stub. A legacy cooled
-            // row has NULL refs because its declaration was not persisted;
-            // accepting it as an empty vector would silently bless a changed
-            // declaration.
-            let replay_row: (Uuid, Option<Vec<Uuid>>, Option<Vec<Uuid>>) = sqlx::query_as(
-                "SELECT handle, refs, goal_refs FROM proxima_core.memory
-                  WHERE t = $1 AND owner_id = $2
-                 UNION ALL
-                 SELECT handle, refs, goal_refs FROM proxima_core.cooled
-                  WHERE t = $1 AND owner_id = $2
-                 LIMIT 1",
-            )
-            .bind(replay_t)
-            .bind(owner_id)
-            .fetch_optional(tx.as_mut())
-            .await
-            .map_err(map_err)?
-            .ok_or_else(|| {
-                internal(format!(
-                    "ingest key claims t {replay_t} with no hot or cooled row"
-                ))
-            })?;
-            let (Some(stored_refs), Some(stored_goal_refs)) = (replay_row.1, replay_row.2) else {
-                return Err(StorageError::Conflict(
-                    "fact replay references are unavailable for cooled admission".into(),
-                ));
-            };
-            if stored_refs != refs || stored_goal_refs != goal_refs {
-                return Err(StorageError::Conflict(
-                    "fact replay changed declared refs".into(),
-                ));
-            }
-            return Ok(FactIngestOutcome {
-                receipt_id: None,
-                memory_id: MemoryId::new(replay_t),
-                change_event_seq: replay_t,
-                idempotent_replay: true,
-                cited_object_id: None,
-                handle: replay_row.0,
-            });
+            .await?
+            .ok_or_else(|| internal("ingest key conflict had no replay row".to_owned()))?;
+            return Ok(PreparedMemoryAdmission::Replay(replay));
         }
     }
+    Ok(PreparedMemoryAdmission::New(prepared))
+}
+
+pub(crate) async fn lock_prepared_memory_admission(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedMemoryAdmission,
+) -> Result<(), StorageError> {
+    if let PreparedMemoryAdmission::New(prepared) = prepared {
+        lock_and_validate_prepared_memory(tx, prepared).await?;
+    }
+    Ok(())
+}
+
+async fn lock_and_validate_prepared_memory(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedMemoryAdmissionNew,
+) -> Result<(), StorageError> {
+    crate::verbs::forget::lock_lifecycle_targets_tx(tx, &prepared.targets).await?;
+    let current_head: Option<Uuid> =
+        sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1 FOR UPDATE")
+            .bind(prepared.handle)
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+    if current_head != prepared.expected_head_t {
+        return Err(StorageError::Retryable(
+            "memory series head changed while preparing admission".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn materialize_prepared_memory_admission(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: PreparedMemoryAdmission,
+    blob_id: Option<Uuid>,
+    content_id: Option<Uuid>,
+) -> Result<FactIngestOutcome, StorageError> {
+    let PreparedMemoryAdmission::New(prepared) = prepared else {
+        let PreparedMemoryAdmission::Replay(outcome) = prepared else {
+            unreachable!()
+        };
+        return Ok(outcome);
+    };
+    // Keep this materialization primitive safe for every direct crate-internal
+    // caller, not only the ordinary prepare/lock/claim wrapper above. The
+    // advisory lock is re-entrant in this transaction and precedes all
+    // Content/head/Memory persistence below.
+    lock_and_validate_prepared_memory(tx, &prepared).await?;
+    let mut draft = prepared.draft;
+    if blob_id.is_some() {
+        draft.blob_id = blob_id;
+    }
+    let kind = if draft.kind.is_empty() {
+        "fact"
+    } else {
+        draft.kind.as_str()
+    };
+    let content_id = if let Some(id) = content_id {
+        Some(id)
+    } else if kind == "fact" {
+        None
+    } else {
+        let text = draft
+            .rendered_text
+            .as_deref()
+            .map_or(draft.payload.as_slice(), str::as_bytes);
+        Some(
+            super::content::ensure_text_content(
+                tx,
+                prepared.owner_id,
+                draft.schema_id.as_str(),
+                text,
+            )
+            .await?,
+        )
+    };
 
     let head = sqlx::query(
         "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
@@ -185,11 +456,11 @@ pub(crate) async fn ingest_fact_timeseries(
            AND proxima_core.memory_head.owner_id = EXCLUDED.owner_id
          RETURNING handle",
     )
-    .bind(handle)
+    .bind(prepared.handle)
     .bind(kind)
     .bind(draft.schema_id.as_str())
-    .bind(owner_id)
-    .bind(t)
+    .bind(prepared.owner_id)
+    .bind(prepared.t)
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -206,19 +477,19 @@ pub(crate) async fn ingest_fact_timeseries(
          VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                  $13)",
     )
-    .bind(handle)
-    .bind(t)
+    .bind(prepared.handle)
+    .bind(prepared.t)
     .bind(kind)
-    .bind(owner_id)
+    .bind(prepared.owner_id)
     .bind(draft.schema_id.as_str())
-    .bind(source_id.as_deref())
-    .bind(ingest_key.as_deref())
+    .bind(draft.source_id.as_deref())
+    .bind(draft.ingest_key.as_deref())
     .bind(draft.blob_id)
     .bind(content_id)
-    .bind(&persisted_origins)
-    .bind(&refs)
-    .bind(&goal_refs)
-    .bind(sidecar_tables)
+    .bind(&prepared.origins)
+    .bind(&prepared.refs)
+    .bind(&prepared.goal_refs)
+    .bind(&prepared.sidecar_tables)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -229,17 +500,17 @@ pub(crate) async fn ingest_fact_timeseries(
          VALUES ($1, 'append', 'memory', $2, $3)
          RETURNING seq",
     )
-    .bind(owner_id)
-    .bind(handle)
-    .bind(t)
+    .bind(prepared.owner_id)
+    .bind(prepared.handle)
+    .bind(prepared.t)
     .fetch_one(tx.as_mut())
     .await
     .map_err(map_err)?;
 
     super::sketch::upsert_sketch(
         tx,
-        owner_id,
-        t,
+        prepared.owner_id,
+        prepared.t,
         kind,
         &super::sketch::sketch_line(kind, draft.rendered_text.as_deref(), &[]),
     )
@@ -247,11 +518,15 @@ pub(crate) async fn ingest_fact_timeseries(
 
     Ok(FactIngestOutcome {
         receipt_id: None,
-        memory_id: MemoryId::new(t),
+        memory_id: MemoryId::new(prepared.t),
         change_event_seq: seq,
         idempotent_replay: false,
-        cited_object_id: None,
-        handle,
+        // Reports the blob this admission actually persisted. The predecessor
+        // always returned `None` here and left `ingest_core` to fill it in;
+        // every other caller passes a draft with no `blob_id`, so this is a
+        // narrowing of that gap rather than a change any caller observes.
+        cited_object_id: draft.blob_id,
+        handle: prepared.handle,
     })
 }
 

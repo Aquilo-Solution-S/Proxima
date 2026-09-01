@@ -10,7 +10,7 @@ use proxima_core::storage_ports::{MemoryReadPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{EntityKind, QueryRequest};
-use proxima_core::{AccessKind, MemoryId, OwnerRef, SchemaId, SchemaVersion, UserId};
+use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerRef, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, WRITE_ACT_SCHEMA, write_goal};
@@ -189,7 +189,18 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let pool = pg.pool_for_tests();
 
-        let assignment = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let base = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let mut abstraction = fact_draft();
+        abstraction.kind = "abstraction".into();
+        abstraction.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, base.memory_id)];
+        let abstraction = pg.ingest_fact_atomic(&permit, &abstraction, None).await?;
+        let mut perspective = fact_draft();
+        perspective.kind = "perspective".into();
+        perspective.derived_from = vec![EdgeEndpoint::memory(
+            EntityKind::Abstraction,
+            abstraction.memory_id,
+        )];
+        let assignment = pg.ingest_fact_atomic(&permit, &perspective, None).await?;
         let evidence = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
 
         let mut tx = pool.begin().await?;

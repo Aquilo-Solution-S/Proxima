@@ -22,7 +22,7 @@ use proxima_core::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft,
     GoalState, GoalTopologyWrite, IdempotencyKey,
 };
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
 use proxima_core::{
     AccessKind, AgentDerivationV1, AuthPath, AuthorDerivedRequestInput, AuthzContext, EdgeEndpoint,
     EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, FactPayload, FlavorRegistry, GoalId,
@@ -276,6 +276,27 @@ async fn seed_abstraction(
         .memory_id)
 }
 
+async fn seed_perspective(pg: &PgStorage, owner: Owner) -> Result<MemoryId, StorageError> {
+    let fact = seed_fact(pg, owner).await?;
+    let abstraction = seed_abstraction(pg, owner, fact).await?;
+    let mut draft = draft(
+        &format!("perspective-{}", Uuid::now_v7()),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    "perspective".clone_into(&mut draft.kind);
+    draft.source_id = None;
+    draft.ingest_key = None;
+    draft.receipt = None;
+    draft.refs.clear();
+    draft.derived_from = vec![EdgeEndpoint::memory(EntityKind::Abstraction, abstraction)];
+    let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+    Ok(pg
+        .ingest_fact_atomic(&permit, &draft, None)
+        .await?
+        .memory_id)
+}
+
 async fn stored_refs(pg: &PgStorage, memory_id: MemoryId) -> Result<Vec<Uuid>, sqlx::Error> {
     sqlx::query_scalar("SELECT refs FROM proxima_core.memory WHERE t = $1")
         .bind(memory_id.into_inner())
@@ -392,7 +413,7 @@ async fn authorized_links_are_persisted_by_engine_uow() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner();
         let fact_id = seed_fact(&pg, owner).await?;
-        let perspective = seed_fact(&pg, owner).await?;
+        let perspective = seed_perspective(&pg, owner).await?;
         let goal = create_goal(&pg, &registry, owner, perspective).await?;
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = engine(&pg, &registry);
@@ -449,6 +470,40 @@ async fn authorized_links_are_persisted_by_engine_uow() {
             stored_goal_refs(&pg, pool_typed.memory_id).await?,
             vec![goal.into_inner()]
         );
+
+        let mut snapshot_req = QueryRequest::for_owner(owner);
+        snapshot_req.memory_ids = vec![pool_typed.memory_id];
+        snapshot_req.goal_ids = vec![goal];
+        let snapshot = engine.query(&authz, &snapshot_req).await?;
+        let snapshot_row = snapshot
+            .memories
+            .iter()
+            .find(|row| row.id == pool_typed.memory_id)
+            .expect("typed reference row is in the query window");
+        assert_eq!(snapshot_row.goal_refs, vec![goal]);
+        assert!(snapshot.edges.iter().any(|edge| {
+            edge.source.memory_id() == Some(pool_typed.memory_id)
+                && matches!(
+                    edge.target,
+                    EdgeTargetProjection::Visible {
+                        target: EdgeEndpoint {
+                            entity: EntityRef::Goal(id), ..
+                        }
+                    } if id == goal
+                )
+        }));
+
+        let mut fact_only = QueryRequest::for_owner(owner);
+        fact_only.entity_kind = Some(EntityKind::Fact);
+        fact_only.memory_ids = vec![pool_typed.memory_id];
+        let fact_snapshot = engine.query(&authz, &fact_only).await?;
+        let fact_row = fact_snapshot
+            .memories
+            .iter()
+            .find(|row| row.id == pool_typed.memory_id)
+            .expect("typed reference Fact is in the filtered query window");
+        assert!(fact_row.goal_refs.is_empty());
+        assert!(fact_row.refs.contains(&MemoryId::new(goal.into_inner())));
 
         let outbound = engine
             .read_edges(
@@ -512,7 +567,7 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner();
         let fact_id = seed_fact(&pg, owner).await?;
-        let perspective = seed_fact(&pg, owner).await?;
+        let perspective = seed_perspective(&pg, owner).await?;
         let goal_id = create_goal(&pg, &registry, owner, perspective).await?;
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = engine(&pg, &registry);
@@ -607,7 +662,7 @@ async fn typed_raw_refs_cannot_disagree_with_payload_declarations() {
         let owner = owner();
         let fact_a = seed_fact(&pg, owner).await?;
         let fact_b = seed_fact(&pg, owner).await?;
-        let goal = create_goal(&pg, &registry, owner, seed_fact(&pg, owner).await?).await?;
+        let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = engine(&pg, &registry);
         let payload = payload("raw-disagreement", fact_a.into_inner(), goal.into_inner());
@@ -633,7 +688,7 @@ async fn storage_rejects_sidecars_whose_references_changed_after_authorization()
         let owner = owner();
         let first = seed_fact(&pg, owner).await?;
         let second = seed_fact(&pg, owner).await?;
-        let goal = create_goal(&pg, &registry, owner, seed_fact(&pg, owner).await?).await?;
+        let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
         let admitted = payload("bound-sidecar", first.into_inner(), goal.into_inner());
         let substituted = payload("bound-sidecar", second.into_inner(), goal.into_inner());
         let admitted_sidecars = [SidecarPayload::fact(admitted.clone())];
@@ -681,7 +736,7 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
         let fact = seed_fact(&pg, owner).await?;
         let abstraction = seed_abstraction(&pg, owner, fact).await?;
         let foreign_fact = seed_fact(&pg, foreign_owner).await?;
-        let goal = create_goal(&pg, &registry, owner, seed_fact(&pg, owner).await?).await?;
+        let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = engine(&pg, &registry);
 
@@ -751,8 +806,8 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
         .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(
-            count, 3,
-            "authorization failures must not append beyond the three owner seeds"
+            count, 5,
+            "authorization failures must not append beyond the five owner seeds"
         );
         Ok(())
     }
@@ -767,7 +822,7 @@ async fn malformed_fact_source_and_endpoints_are_rejected_before_write() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner();
         let target = seed_fact(&pg, owner).await?;
-        let goal = create_goal(&pg, &registry, owner, seed_fact(&pg, owner).await?).await?;
+        let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = engine(&pg, &registry);
 
@@ -808,7 +863,7 @@ async fn uow_rejects_session_visible_target_kind_mismatch() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner();
         let anchor = seed_fact(&pg, owner).await?;
-        let goal = create_goal(&pg, &registry, owner, seed_fact(&pg, owner).await?).await?;
+        let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = engine(&pg, &registry);
         let mut uow = engine.unit_of_work(&authz).await?;
@@ -870,7 +925,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
     let (db_name, pg, registry) = bootstrap().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner();
-        let perspective = seed_fact(&pg, owner).await?;
+        let perspective = seed_perspective(&pg, owner).await?;
         let goal = create_goal(&pg, &registry, owner, perspective).await?;
         let pool = pg.pool_for_tests();
 
@@ -997,13 +1052,17 @@ async fn goal_erase_serializes_against_reference_admission() {
     let (db_name, pg, registry) = bootstrap().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner();
-        let goal = create_goal(&pg, &registry, owner, seed_fact(&pg, owner).await?).await?;
+        let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
         let pool = pg.pool_for_tests();
         let mut erase_tx = pool.begin().await?;
-        sqlx::query("SELECT 1 FROM proxima_core.goal WHERE t = $1 FOR UPDATE")
-            .bind(goal.into_inner())
-            .execute(erase_tx.as_mut())
-            .await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(
+                 hashtextextended('proxima-forget:' || $1::text, 0)
+             )",
+        )
+        .bind(goal.into_inner())
+        .execute(erase_tx.as_mut())
+        .await?;
 
         let waiter_pool = pool.clone();
         let owner_id = owner.stored_owner_id();
@@ -1058,7 +1117,7 @@ async fn goal_erase_serializes_against_reference_admission() {
         }
         assert!(
             waiting,
-            "reference admission must wait on the locked Goal row"
+            "reference admission must wait on the shared lifecycle lock"
         );
 
         sqlx::query("DELETE FROM proxima_core.goal WHERE t = $1")
@@ -1185,7 +1244,7 @@ async fn storage_persists_authorized_links_not_draft_refs() {
         let owner = owner();
         let fact_a = seed_fact(&pg, owner).await?;
         let fact_b = seed_fact(&pg, owner).await?;
-        let goal = create_goal(&pg, &registry, owner, seed_fact(&pg, owner).await?).await?;
+        let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
         // The boundary regression uses real, readable Memory and Goal targets
         // so the write proves both endpoint classes come from the carrier.
         let draft = direct_draft("direct-links-real", vec![fact_b.into_inner()]);
@@ -1245,7 +1304,7 @@ async fn receipt_replay_requires_identical_authorized_refs() {
         let owner = owner();
         let fact_a = seed_fact(&pg, owner).await?;
         let fact_b = seed_fact(&pg, owner).await?;
-        let goal = create_goal(&pg, &registry, owner, seed_fact(&pg, owner).await?).await?;
+        let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
         let first_draft = direct_draft("replay-links", vec![fact_a.into_inner()]);
         let first_links = AuthorizedNodeLinks::new_for_tests(
             Vec::new(),
@@ -1318,7 +1377,7 @@ async fn cooled_replay_requires_known_identical_refs() {
         let owner = owner();
         let fact_a = seed_fact(&pg, owner).await?;
         let fact_b = seed_fact(&pg, owner).await?;
-        let goal = create_goal(&pg, &registry, owner, seed_fact(&pg, owner).await?).await?;
+        let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
         let first_draft = direct_draft("cooled-links", vec![fact_a.into_inner()]);
         let first = AuthorizedFactWrite::new_with_links_for_tests(
             OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
@@ -1378,10 +1437,22 @@ async fn cooled_replay_requires_known_identical_refs() {
             .expect_err("cooled replay with changed refs must conflict");
         assert!(matches!(error, StorageError::Conflict(message) if message.contains("refs")));
 
+        // Fixture-only simulation of a pre-0003 cooled row whose nullable
+        // declaration was never recorded. Production updates remain sealed;
+        // the trigger is disabled only inside this transaction and is
+        // restored before commit (rollback restores it automatically).
+        let mut legacy = pg.pool_for_tests().begin().await?;
+        sqlx::query("ALTER TABLE proxima_core.cooled DISABLE TRIGGER cooled_append_only")
+            .execute(&mut *legacy)
+            .await?;
         sqlx::query("UPDATE proxima_core.cooled SET refs = NULL WHERE t = $1")
             .bind(outcome.memory_id.into_inner())
-            .execute(pg.pool_for_tests())
+            .execute(&mut *legacy)
             .await?;
+        sqlx::query("ALTER TABLE proxima_core.cooled ENABLE TRIGGER cooled_append_only")
+            .execute(&mut *legacy)
+            .await?;
+        legacy.commit().await?;
         let unknown = AuthorizedFactWrite::new_with_links_for_tests(
             OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
             first_draft,

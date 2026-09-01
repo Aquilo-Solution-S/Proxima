@@ -429,6 +429,367 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                      AND c.convalidated
                 )
            THEN 'cooled.refs must reject NULL array elements'
+         -- `cooled_identity_seal` returns NEW for an array holding a NULL
+         -- element and lets the column CHECK reject it. Without this marker a
+         -- database missing the constraint would boot clean and silently skip
+         -- the seal, so the guard the trigger delegates to is asserted here.
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_constraint c
+                    JOIN pg_class r ON r.oid = c.conrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'cooled'
+                     AND c.conname = 'cooled_goal_refs_no_null_chk'
+                     AND c.contype = 'c'
+                     AND c.convalidated
+                )
+           THEN 'cooled.goal_refs must reject NULL array elements'
+         WHEN COALESCE((
+                  SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder)
+                    FROM pg_enum e
+                    JOIN pg_type t ON t.oid = e.enumtypid
+                    JOIN pg_namespace n ON n.oid = t.typnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND t.typname = 'pin_target_kind'
+                ), ARRAY[]::text[]) <> ARRAY['fact', 'abstraction', 'perspective', 'goal']
+           THEN 'pin_target_kind labels/order must be fact, abstraction, perspective, goal'
+         WHEN to_regclass('proxima_core.erased_pin_target') IS NULL
+           THEN 'missing relation proxima_core.erased_pin_target'
+         WHEN (
+                  SELECT count(*)
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'erased_pin_target'
+                ) <> 2
+           THEN 'erased_pin_target must have exactly columns t and kind'
+         WHEN EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'erased_pin_target'
+                     AND column_name NOT IN ('t', 'kind')
+                )
+           THEN 'erased_pin_target must not have extra columns'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'erased_pin_target'
+                     AND column_name = 't'
+                     AND data_type = 'uuid'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'erased_pin_target.t must be uuid NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'erased_pin_target'
+                     AND column_name = 'kind'
+                     AND udt_schema = 'proxima_core'
+                     AND udt_name = 'pin_target_kind'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'erased_pin_target.kind must be pin_target_kind NOT NULL'
+         WHEN EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'erased_pin_target'
+                     AND column_name = 'owner_id'
+                )
+           THEN 'erased_pin_target must not carry owner_id'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                      ON kcu.constraint_catalog = tc.constraint_catalog
+                     AND kcu.constraint_schema = tc.constraint_schema
+                     AND kcu.constraint_name = tc.constraint_name
+                   WHERE tc.table_schema = 'proxima_core'
+                     AND tc.table_name = 'erased_pin_target'
+                     AND tc.constraint_type = 'PRIMARY KEY'
+                     AND kcu.column_name = 't'
+                     AND 1 = (
+                         SELECT count(*)
+                           FROM information_schema.key_column_usage only_kcu
+                          WHERE only_kcu.constraint_catalog = tc.constraint_catalog
+                            AND only_kcu.constraint_schema = tc.constraint_schema
+                            AND only_kcu.constraint_name = tc.constraint_name
+                     )
+                )
+           THEN 'erased_pin_target.t must be the primary key'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'erased_pin_target'
+                     AND tr.tgname = 'erased_pin_target_insert_guard'
+                     AND NOT tr.tgisinternal
+                )
+           THEN 'erased_pin_target insert guard trigger is missing'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'erased_pin_target'
+                     AND tr.tgname = 'erased_pin_target_append_only'
+                     AND NOT tr.tgisinternal
+                )
+           THEN 'erased_pin_target append-only trigger is missing'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'memory'
+                     AND tr.tgname = 'memory_erased_pin_target'
+                     AND NOT tr.tgisinternal
+                )
+           THEN 'memory erased-target trigger is missing'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'cooled'
+                     AND tr.tgname = 'cooled_erased_pin_target'
+                     AND NOT tr.tgisinternal
+                )
+           THEN 'cooled erased-target trigger is missing'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'goal'
+                     AND tr.tgname = 'goal_erased_pin_target'
+                     AND NOT tr.tgisinternal
+                )
+           THEN 'goal erased-target trigger is missing'
+         WHEN to_regprocedure('proxima_core.lock_pin_targets(uuid[])') IS NULL
+           THEN 'missing function proxima_core.lock_pin_targets(uuid[])'
+         WHEN to_regprocedure('proxima_core.assert_erased_pin_target_insert()') IS NULL
+           THEN 'missing function proxima_core.assert_erased_pin_target_insert()'
+         WHEN to_regprocedure('proxima_core.cooled_identity_seal()') IS NULL
+           THEN 'missing function proxima_core.cooled_identity_seal()'
+         WHEN to_regprocedure('proxima_core.cooled_append_only()') IS NULL
+           THEN 'missing function proxima_core.cooled_append_only()'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_proc p
+                   WHERE p.oid = to_regprocedure(
+                         'proxima_core.record_erased_pin_target(uuid,proxima_core.pin_target_kind)'
+                     )
+                     AND strpos(lower(pg_get_functiondef(p.oid)), 'lock_pin_targets') > 0
+                     AND strpos(lower(pg_get_functiondef(p.oid)), 'existing_kind <> target_kind') > 0
+                     AND strpos(lower(pg_get_functiondef(p.oid)), 'erased_pin_target_writer') > 0
+                     AND strpos(lower(pg_get_functiondef(p.oid)), 'insert into proxima_core.erased_pin_target') > 0
+                     AND strpos(lower(pg_get_functiondef(p.oid)), 'lock_pin_targets')
+                         < strpos(lower(pg_get_functiondef(p.oid)), 'existing_kind <> target_kind')
+                     AND strpos(lower(pg_get_functiondef(p.oid)), 'existing_kind <> target_kind')
+                         < strpos(lower(pg_get_functiondef(p.oid)), 'erased_pin_target_writer')
+                     AND strpos(lower(pg_get_functiondef(p.oid)), 'erased_pin_target_writer')
+                         < strpos(lower(pg_get_functiondef(p.oid)), 'insert into proxima_core.erased_pin_target')
+                )
+           THEN 'record_erased_pin_target body/order is incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_proc p
+                   WHERE p.oid = to_regprocedure('proxima_core.cooled_forget_grounding()')
+                     AND strpos(lower(pg_get_functiondef(p.oid)), 'lock_pin_targets') > 0
+                     AND strpos(lower(pg_get_functiondef(p.oid)), 'for update') > 0
+                     AND strpos(lower(pg_get_functiondef(p.oid)), 'footprint grew') > 0
+                     AND strpos(lower(pg_get_functiondef(p.oid)),
+                                'not (m.t = any (dependent_ids))') > 0
+                     AND strpos(lower(pg_get_functiondef(p.oid)),
+                                'using errcode = ''40001''') > 0
+                     AND strpos(lower(pg_get_functiondef(p.oid)), 'lock_pin_targets')
+                         < strpos(lower(pg_get_functiondef(p.oid)),
+                                  'not (m.t = any (dependent_ids))')
+                     AND strpos(lower(pg_get_functiondef(p.oid)),
+                                  'not (m.t = any (dependent_ids))')
+                         < strpos(lower(pg_get_functiondef(p.oid)), 'footprint grew')
+                     AND strpos(lower(pg_get_functiondef(p.oid)), 'footprint grew')
+                         < strpos(lower(pg_get_functiondef(p.oid)),
+                                  'using errcode = ''40001''')
+                     AND strpos(lower(pg_get_functiondef(p.oid)),
+                                  'using errcode = ''40001''')
+                         < strpos(lower(pg_get_functiondef(p.oid)), 'for update')
+                )
+           THEN 'cooled_forget_grounding body/order is incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'memory'
+                     AND tr.tgname = 'memory_pin_checks'
+                     AND tr.tgenabled = 'O'
+                     AND (tr.tgtype & 2) = 2
+                     AND (tr.tgtype & 4) = 4
+                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
+                         '%execute function proxima_core.memory_pin_checks%'
+                )
+           THEN 'memory_pin_checks trigger must be enabled BEFORE INSERT and wired to its function'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'erased_pin_target'
+                     AND tr.tgname = 'erased_pin_target_insert_guard'
+                     AND tr.tgenabled = 'O'
+                     AND (tr.tgtype & 2) = 2
+                     AND (tr.tgtype & 4) = 4
+                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
+                         '%execute function proxima_core.assert_erased_pin_target_insert%'
+                )
+           THEN 'erased_pin_target insert guard timing or wiring is incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'erased_pin_target'
+                     AND tr.tgname = 'erased_pin_target_append_only'
+                     AND tr.tgenabled = 'O'
+                     AND (tr.tgtype & 2) = 2
+                     AND (tr.tgtype & 16) = 16
+                     AND (tr.tgtype & 8) = 8
+                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
+                         '%execute function proxima_core.erased_pin_target_append_only%'
+                )
+           THEN 'erased_pin_target append-only trigger timing or wiring is incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                   JOIN pg_class r ON r.oid = tr.tgrelid
+                   JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'cooled'
+                     AND tr.tgname = 'cooled_forget_grounding'
+                     AND tr.tgenabled = 'O'
+                     AND (tr.tgtype & 2) = 2
+                     AND (tr.tgtype & 4) = 4
+                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
+                         '%execute function proxima_core.cooled_forget_grounding%'
+                )
+           THEN 'cooled forget-grounding trigger timing or wiring is incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                   JOIN pg_class r ON r.oid = tr.tgrelid
+                   JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'cooled'
+                     AND tr.tgname = 'cooled_identity_seal'
+                     AND tr.tgenabled = 'O'
+                     AND (tr.tgtype & 2) = 2
+                     AND (tr.tgtype & 4) = 4
+                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
+                         '%execute function proxima_core.cooled_identity_seal%'
+                )
+           THEN 'cooled identity-seal trigger timing or wiring is incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'cooled'
+                     AND tr.tgname = 'cooled_append_only'
+                     AND tr.tgenabled = 'O'
+                     AND (tr.tgtype & 2) = 2
+                     AND (tr.tgtype & 16) = 16
+                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
+                         '%execute function proxima_core.cooled_append_only%'
+                )
+           THEN 'cooled append-only trigger timing or wiring is incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'goal'
+                     AND tr.tgname = 'goal_pin_target_checks'
+                     AND tr.tgenabled = 'O'
+                     AND (tr.tgtype & 2) = 2
+                     AND (tr.tgtype & 4) = 4
+                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
+                         '%execute function proxima_core.goal_pin_target_checks%'
+                )
+           THEN 'goal target trigger timing or wiring is incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'wake_config'
+                     AND tr.tgname = 'wake_pin_target_checks'
+                     AND tr.tgenabled = 'O'
+                     AND (tr.tgtype & 2) = 2
+                     AND (tr.tgtype & 4) = 4
+                     AND (tr.tgtype & 16) = 16
+                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
+                         '%execute function proxima_core.wake_pin_target_checks%'
+                )
+           THEN 'wake target trigger timing or wiring is incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'memory'
+                     AND tr.tgname = 'memory_erased_pin_target'
+                     AND tr.tgenabled = 'O'
+                     AND (tr.tgtype & 2) = 2
+                     AND (tr.tgtype & 8) = 8
+                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
+                         '%execute function proxima_core.memory_erase_witness%'
+                )
+           THEN 'memory witness trigger timing or wiring is incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'cooled'
+                     AND tr.tgname = 'cooled_erased_pin_target'
+                     AND tr.tgenabled = 'O'
+                     AND (tr.tgtype & 2) = 2
+                     AND (tr.tgtype & 8) = 8
+                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
+                         '%execute function proxima_core.cooled_erase_witness%'
+                )
+           THEN 'cooled witness trigger timing or wiring is incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'goal'
+                     AND tr.tgname = 'goal_erased_pin_target'
+                     AND tr.tgenabled = 'O'
+                     AND (tr.tgtype & 2) = 2
+                     AND (tr.tgtype & 8) = 8
+                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
+                         '%execute function proxima_core.goal_erase_witness%'
+                )
+           THEN 'goal witness trigger timing or wiring is incorrect'
          WHEN to_regclass('proxima_core.lexical_languages') IS NULL
            THEN 'missing relation proxima_core.lexical_languages'
          WHEN to_regclass('proxima_core.lexical_default') IS NULL
@@ -606,7 +967,7 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
 
     if let Some(marker_error) = marker_error {
         return Err(StorageError::Internal(format!(
-            "database is missing or has an incorrect v0.0.10 schema marker: {marker_error}; apply migrations before boot"
+            "database is missing or has an incorrect reference-integrity schema marker: {marker_error}; apply migrations before boot"
         )));
     }
     Ok(())
@@ -1298,18 +1659,19 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4],
-            "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
-             v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
-             0003_v010_reference_integrity.sql and v0.0.11 is 0004_v011_goal_refs.sql"
+            vec![1, 2, 3, 4, 5],
+            "v0.0.8 is one frozen file (0001_v008.sql) and v0.0.9 appended \
+             0002_v009_declaration_triggers.sql; 0003_v010_reference_integrity.sql, \
+             0004_v011_goal_refs.sql and 0005_erased_pin_targets.sql are the unreleased \
+             additive lanes on top of them"
         );
     }
 
     /// The v0.0.7 ALTER lane occupied versions 2..=21 and the squash to a
     /// single v008 baseline retired all of them.
     ///
-    /// Versions 2 and 3 are the v0.0.9 and v0.0.10 additive migrations, which
-    /// reuse retired numbers. That is safe, and this is why: the tripwire for
+    /// Versions 2 and 3 are additive migrations that reuse retired numbers.
+    /// That is safe, and this is why: the tripwire for
     /// a pre-v0.0.8 database is version 1's checksum, which is the legacy
     /// `0001_init.sql` and can never match `0001_v008.sql`.
     /// `ensure_core_ledger_compatible` compares it first and returns
@@ -1339,31 +1701,41 @@ mod tests {
         let version_3 = migrator
             .iter()
             .find(|migration| migration.version == 3)
-            .expect("version 3 is v0.0.10's additive migration");
+            .expect("version 3 is the reference-integrity additive migration");
         assert!(
             version_3.sql.as_str().contains("memory_pin_checks")
                 && version_3
                     .sql
                     .as_str()
                     .contains("cooled_origins_no_null_chk"),
-            "version 3 must be the v0.0.10 reference-integrity migration"
+            "version 3 must be the reference-integrity migration"
         );
         let version_4 = migrator
             .iter()
             .find(|migration| migration.version == 4)
-            .expect("version 4 is v0.0.11's additive migration");
+            .expect("version 4 is the goal-reference additive migration");
         assert!(
             version_4.sql.as_str().contains("goal_refs")
                 && version_4
                     .sql
                     .as_str()
                     .contains("memory_goal_refs_no_null_chk"),
-            "version 4 must be the v0.0.11 goal-reference split, not a resurrected legacy ALTER"
+            "version 4 must be the goal-reference split, not a resurrected legacy ALTER"
+        );
+        let version_5 = migrator
+            .iter()
+            .find(|migration| migration.version == 5)
+            .expect("version 5 is the witness-composition migration");
+        assert!(
+            version_5.sql.as_str().contains("historical_restore")
+                && version_5.sql.as_str().contains("NEW.goal_refs")
+                && version_5.sql.as_str().contains("cooled_identity_seal"),
+            "version 5 must restore witness-aware typed pin checks"
         );
         // The legacy range shrinks as the head advances: 4 is now a real
-        // additive migration, asserted by content just above, so only 5..=21
+        // additive migration, asserted by content just above, so only 6..=21
         // remain retired by the v0.0.8 squash.
-        for dead in 5..=21 {
+        for dead in 6..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"

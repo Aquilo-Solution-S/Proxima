@@ -28,6 +28,7 @@ Unsupported:
 | raw `sqlx::PgPool` on Flavor SDK / tools | denied. The Host extra-table bridge is `AppContext::{clone_pool_for_host, pg_tuning_for_host}` (see below) |
 | aggregate `Storage` / `StorageHandle` | removed; Engine owns storage ports |
 | `proxima-storage-pg` raw write verbs | backend API only; every owner write requires `OwnerWritePermit` minted by `Engine::authorize_owner_write` |
+| historical erase witness | internal database metadata only; not a public `Edge`, `PinNode`, export field, transfer field, MCP field, or REST field |
 | flavor raw SQL against `proxima_core.*` | denied for every site. The [authorized flavor-read facade](#authorized-flavor-read-facade) replaced the last raw `flavors/code` reads against `proxima_core.*`; `scripts/check-architecture-guardrails.py`'s dated-exemption allowlist is empty, and any new raw `proxima_core.*` site in flavor code fails the guardrail (no temporary exemption path is open) |
 | runtime plugin/tool/schema registration | denied; flavor composition is build-time |
 
@@ -198,6 +199,20 @@ under the membership lock before hard deletion.
 exactly the `counter` names the frozen flavor contracts declare, seeded to
 zero before the first delete. A flavor that declares a new counter gets it in
 the receipt without a change here.
+
+Hard deletion retains only an internal, permanent `(t, closed kind)` witness
+for each erased Memory or Goal target. It has no owner or payload. Source
+Memory rows keep their `origins[]`, `refs[]`, and `goal_refs[]` byte-for-byte;
+erase does not cascade or null them. Ordinary new writes require live targets
+and cannot use or reuse witnesses. Exact sealed cooled restoration may use a
+correctly kinded witness; legacy cooled rows with `NULL` pin arrays use
+ordinary live-target admission.
+
+This metadata is absent from the public Edge/PinNode projections and from
+MCP, REST, transfer, forget, and export surfaces. A missing target continues
+to use the existing redacted/missing projection; this contract does not add
+an `Unavailable` state. Hydration is a storage lifecycle operation and is
+not part of the Host API or flavor tool surface.
 
 Core keeps no record of the operation. There is no audit table, no retention
 window and no legal hold — the last two were removed outright, because a

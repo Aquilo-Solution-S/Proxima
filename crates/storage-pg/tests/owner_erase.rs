@@ -360,6 +360,17 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(remaining, 0);
+        let witness: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(
+            witness.as_deref(),
+            Some("fact"),
+            "owner erase hard-deletes a hot Memory and records its kind witness"
+        );
         let keys: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k1'",
         )
@@ -489,6 +500,17 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
             keys_after_erase, 0,
             "owner erase must delete ingest_keys of cooled facts"
         );
+        let witness: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(
+            witness.as_deref(),
+            Some("fact"),
+            "owner erase hard-deletes a cooled Memory and records its kind witness"
+        );
         Ok(())
     }
     .await;
@@ -518,7 +540,12 @@ async fn erase_personal_owner_destroys_wake_config() {
         let mut tx = pool.begin().await?;
         let armed = insert_wake_config(&mut tx, &owner, &wake_draft("armed prompt")).await?;
         let idle = insert_wake_config(&mut tx, &owner, &wake_draft("idle prompt")).await?;
-        write_armed_goal(&mut tx, &owner, "armed goal", "wake-owner", armed).await?;
+        let goal_handle =
+            write_armed_goal(&mut tx, &owner, "armed goal", "wake-owner", armed).await?;
+        let goal_t: Uuid = sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE handle = $1")
+            .bind(goal_handle)
+            .fetch_one(&mut *tx)
+            .await?;
         tx.commit().await?;
 
         let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -569,6 +596,17 @@ async fn erase_personal_owner_destroys_wake_config() {
         .fetch_one(pool)
         .await?;
         assert_eq!(untouched, 1, "another owner's wake config stays");
+        let witness: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(goal_t)
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(
+            witness.as_deref(),
+            Some("goal"),
+            "owner erase hard-deletes the armed Goal and records a goal witness"
+        );
         Ok(())
     }
     .await;
@@ -879,6 +917,16 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
         .fetch_one(pool)
         .await?;
         assert_eq!(pending, 0, "the pending mark rolls back with the erase");
+        let witness: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(
+            witness, None,
+            "an aborted owner erase must not leave a historical witness"
+        );
         Ok(())
     }
     .await;
@@ -1119,6 +1167,16 @@ async fn erase_group_owner_refuses_while_membership_rows_exist() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(remaining, 1, "live group must keep its memories");
+        let witness: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(
+            witness, None,
+            "a refused group erase must not write a witness"
+        );
         Ok(())
     }
     .await;
@@ -1290,6 +1348,13 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
             .ingest_fact_atomic(&permit, &draft(Some(("src-keep", "k-keep"))), None)
             .await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, target.memory_id).await?;
+        let foreign_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let foreign_permit = OwnerWritePermit::new_for_tests(foreign_owner, AccessKind::Fact);
+        let mut foreign_source = draft(Some(("foreign", "k-foreign")));
+        foreign_source.refs = vec![target.memory_id.into_inner()];
+        let foreign = pg
+            .ingest_fact_atomic(&foreign_permit, &foreign_source, None)
+            .await?;
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
             user_id: user,
@@ -1329,6 +1394,33 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
         .fetch_one(pool)
         .await?;
         assert_eq!(keys, 0);
+        let target_witness: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(target.memory_id.into_inner())
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(target_witness.as_deref(), Some("fact"));
+        let other_witness: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(other.memory_id.into_inner())
+        .fetch_optional(pool)
+        .await?;
+        assert_eq!(
+            other_witness, None,
+            "source-scope erase must not witness the other source"
+        );
+        let foreign_refs: Vec<Uuid> =
+            sqlx::query_scalar("SELECT refs FROM proxima_core.memory WHERE t = $1")
+                .bind(foreign.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            foreign_refs,
+            vec![target.memory_id.into_inner()],
+            "a cross-owner source retains its exact refs after target erase"
+        );
         Ok(())
     }
     .await;

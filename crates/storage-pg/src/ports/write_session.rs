@@ -102,23 +102,15 @@ impl WriteSession for PgWriteSession {
             .map_err(StorageError::ConstraintViolation)?;
         let fact_sidecars = self.sidecars.writing(authorized.draft());
         let payloads = sidecar_payloads.to_vec();
+        let content_payloads = payloads.clone();
         let tables = self.sidecars.tables_for_payloads(sidecar_payloads)?;
-        let owner = authorized.owner_write_permit().owner();
-        let owner_id =
-            crate::access::owner_columns::ensure_owner_row(self.tx.as_mut(), owner).await?;
-        let content_id = verbs::content::ensure_content_from_payloads(
-            &mut self.tx,
-            owner_id,
-            authorized.draft().schema_id.as_str(),
-            sidecar_payloads,
-        )
-        .await?;
         let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
             &mut self.tx,
             authorized,
             embedding_model_id,
             &tables,
-            content_id,
+            None,
+            &content_payloads,
             move |tx, outcome| {
                 Box::pin(async move {
                     for payload in &payloads {
@@ -171,27 +163,23 @@ impl WriteSession for PgWriteSession {
             .await?;
         let sidecars = self.sidecars.writing_derived(&draft);
         let sidecar_payload = req.sidecar_payload.clone();
+        let content_payload = sidecar_payload.clone();
         let tables = self
             .sidecars
             .tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
-        let owner_id =
-            crate::access::owner_columns::ensure_owner_row(self.tx.as_mut(), permit.owner())
-                .await?;
-        let content_id = verbs::content::ensure_content_from_payloads(
-            &mut self.tx,
-            owner_id,
-            req.schema_id.as_str(),
-            std::slice::from_ref(&sidecar_payload),
-        )
-        .await?;
-        let outcome = verbs::derive_append::append_derived_in_tx(
+        let outcome = verbs::derive_append::append_derived_with_content_payloads_in_tx(
             &mut self.tx,
             permit,
             &draft,
-            req.origins,
-            req.references,
-            &tables,
-            content_id,
+            verbs::derive_append::DerivedAdmissionInput {
+                origins: req.origins,
+                references: req.references,
+                sidecar_tables: &tables,
+                content: verbs::derive_append::ContentResolution {
+                    content_id: None,
+                    payloads: Some(std::slice::from_ref(&content_payload)),
+                },
+            },
             move |tx, outcome| {
                 Box::pin(async move {
                     sidecars
@@ -210,7 +198,7 @@ impl WriteSession for PgWriteSession {
             };
             verbs::sketch::upsert_sketch(
                 &mut self.tx,
-                owner_id,
+                permit.owner().stored_owner_id(),
                 outcome.memory_id.into_inner(),
                 kind,
                 &verbs::sketch::sketch_line(

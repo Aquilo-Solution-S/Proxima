@@ -197,6 +197,41 @@ async fn export_carries_cooled_locators_and_sketches() {
         .await?;
         tx.commit().await?;
 
+        // Populate the internal hard-erase witness while the owner still has
+        // exportable rows. The witness is database metadata, never a public
+        // table in the owner bundle.
+        let witnessed_t = Uuid::now_v7();
+        let witnessed_handle = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-fact-v1', $2, $3)",
+        )
+        .bind(witnessed_handle)
+        .bind(owner.stored_owner_id())
+        .bind(witnessed_t)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1')",
+        )
+        .bind(witnessed_handle)
+        .bind(witnessed_t)
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+            .bind(witnessed_t)
+            .execute(pool)
+            .await?;
+        let witness_kind: String = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(witnessed_t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(witness_kind, "fact");
+
         let auth =
             ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });
         let bundle = pg
@@ -238,6 +273,10 @@ async fn export_carries_cooled_locators_and_sketches() {
             "the sketch allowlist names four columns; the generated lexical index \
              is not one of them: {:?}",
             sketches[0]
+        );
+        assert!(
+            !bundle.tables.contains_key("proxima_core.erased_pin_target"),
+            "populated erased-target witnesses never enter the public export"
         );
         Ok(())
     }

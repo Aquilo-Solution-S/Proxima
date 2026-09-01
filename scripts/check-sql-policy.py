@@ -752,7 +752,13 @@ def run_fixture(path: Path) -> int:
 # guard that hardcoded `NEW.t` would pass everything else in that file. Same
 # shape as the `projection_maintenance.rs` site at 82 -> 83, and it carries
 # the same `SQL-POLICY: generated` proof.
-EXPECTED_DYNAMIC_SQL_SITES = 97
+#
+# 97 -> 99: two test-only sites in `storage-pg/tests/migrations.rs` disable
+# and re-enable each reference-integrity trigger in turn. Both identifiers
+# come exclusively from the closed literal tuple matrix beside the calls, and
+# each site carries `SQL-POLICY: fixed-fragment`; executing both directions is
+# what proves the boot marker refuses a missing trigger and accepts its repair.
+EXPECTED_DYNAMIC_SQL_SITES = 99
 
 
 def run_self_test() -> int:

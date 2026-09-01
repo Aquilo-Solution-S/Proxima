@@ -439,6 +439,10 @@ pub struct MemoryRow {
     pub origins: Vec<MemoryId>,
     /// Points-at pins (`memory.refs`).
     pub refs: Vec<MemoryId>,
+    /// Reader-visible Goal points-at pins (`memory.goal_refs`). Goal targets
+    /// outside this query's visible Goal set are folded into [`Self::refs`]
+    /// so their stored kind is not disclosed.
+    pub goal_refs: Vec<GoalId>,
     /// Typed sidecar projection populated by storage at read time. Protocol
     /// adapters serialize it at the transport boundary.
     pub payload: Option<SidecarPayload>,
@@ -452,7 +456,7 @@ impl From<&MemoryRow> for crate::PinNode {
             schema_id: row.schema_id.clone(),
             origins: row.origins.clone(),
             refs: row.refs.clone(),
-            goal_refs: Vec::new(),
+            goal_refs: row.goal_refs.clone(),
         }
     }
 }

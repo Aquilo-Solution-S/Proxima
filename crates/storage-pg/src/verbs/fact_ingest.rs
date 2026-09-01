@@ -19,7 +19,7 @@ use proxima_core::verbs::fact_ingest::{
 };
 use proxima_core::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, FactPayload,
-    MemoryId, Owner, SchemaId, StorageError,
+    MemoryId, Owner, SchemaId, SidecarPayload, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -141,6 +141,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
         options,
         &[],
         None,
+        None,
         |_tx, _outcome| Box::pin(async { Ok(()) }),
     )
     .await
@@ -186,6 +187,7 @@ where
         ),
         options,
         sidecar_tables,
+        None,
         None,
         fact_sidecar,
     )
@@ -240,6 +242,7 @@ where
         ),
         options,
         sidecar_tables,
+        None,
         None,
         fact_sidecar,
     )
@@ -405,6 +408,7 @@ pub(crate) async fn ingest_fact_with_sidecar_in_tx<F>(
     embedding_model_id: Option<&str>,
     sidecar_tables: &[String],
     content_id: Option<uuid::Uuid>,
+    content_payloads: &[SidecarPayload],
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -428,6 +432,7 @@ where
         options,
         sidecar_tables,
         content_id,
+        Some(content_payloads),
         sidecar,
     )
     .await
@@ -440,6 +445,7 @@ async fn ingest_core<F>(
     options: IngestCoreOptions<'_>,
     sidecar_tables: &[String],
     content_id: Option<uuid::Uuid>,
+    content_payloads: Option<&[SidecarPayload]>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -453,18 +459,45 @@ where
         draft,
         links,
     } = authorized;
+    let prepared = super::memory_timeseries::prepare_memory_admission(
+        tx,
+        owner,
+        draft,
+        links.origins(),
+        links.references(),
+        sidecar_tables,
+    )
+    .await?;
+    super::memory_timeseries::lock_prepared_memory_admission(tx, &prepared).await?;
+    let prepared = super::memory_timeseries::claim_prepared_memory_admission(tx, prepared).await?;
+    if let super::memory_timeseries::PreparedMemoryAdmission::Replay(mut outcome) = prepared {
+        outcome.cited_object_id =
+            citation_object_for_t(tx, owner.stored_owner_id(), outcome.memory_id).await?;
+        return Ok(outcome);
+    }
+
     let mut write = draft.clone();
     if write.blob_id.is_none() {
         write.blob_id =
             persist_citation_timeseries(tx, owner, draft, options.citation_plan).await?;
     }
-    let mut outcome = super::memory_timeseries::ingest_fact_timeseries(
+    let content_id = match (content_id, content_payloads) {
+        (Some(content_id), _) => Some(content_id),
+        (None, Some(payloads)) => {
+            crate::verbs::content::ensure_content_from_payloads(
+                tx,
+                owner.stored_owner_id(),
+                draft.schema_id.as_str(),
+                payloads,
+            )
+            .await?
+        }
+        (None, None) => None,
+    };
+    let mut outcome = super::memory_timeseries::materialize_prepared_memory_admission(
         tx,
-        owner,
-        &write,
-        links.origins(),
-        links.references(),
-        sidecar_tables,
+        prepared,
+        write.blob_id,
         content_id,
     )
     .await?;

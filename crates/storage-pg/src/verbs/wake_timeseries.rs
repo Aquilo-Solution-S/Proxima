@@ -35,6 +35,12 @@ pub async fn insert_wake_config(
     draft: &WakeConfigDraft,
 ) -> Result<Uuid, StorageError> {
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
+    let mut targets =
+        Vec::with_capacity(usize::from(draft.trigger_t.is_some()) + draft.hard_memory_t.len());
+    targets.extend(draft.trigger_t);
+    targets.extend(draft.hard_memory_t.iter().copied());
+    crate::verbs::forget::lock_lifecycle_targets_tx(tx, &targets).await?;
+    validate_wake_targets_live(tx, draft).await?;
 
     sqlx::query_scalar(
         "INSERT INTO proxima_core.wake_config
@@ -52,6 +58,47 @@ pub async fn insert_wake_config(
     .fetch_one(tx.as_mut())
     .await
     .map_err(map_err)
+}
+
+async fn validate_wake_targets_live(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &WakeConfigDraft,
+) -> Result<(), StorageError> {
+    if let Some(trigger_t) = draft.trigger_t {
+        let kind: Option<String> =
+            sqlx::query_scalar("SELECT kind::text FROM proxima_core.memory WHERE t = $1")
+                .bind(trigger_t)
+                .fetch_optional(tx.as_mut())
+                .await
+                .map_err(map_err)?;
+        match kind.as_deref() {
+            Some("fact") => {}
+            Some(_) => {
+                return Err(StorageError::ConstraintViolation(
+                    "wake trigger memory must be a Fact".into(),
+                ));
+            }
+            None => {
+                return Err(StorageError::ConstraintViolation(
+                    "wake trigger memory does not exist".into(),
+                ));
+            }
+        }
+    }
+    for hard_memory_t in &draft.hard_memory_t {
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM proxima_core.memory WHERE t = $1)")
+                .bind(hard_memory_t)
+                .fetch_one(tx.as_mut())
+                .await
+                .map_err(map_err)?;
+        if !exists {
+            return Err(StorageError::ConstraintViolation(
+                "wake hard context memory does not exist".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub async fn update_wake_prompt(

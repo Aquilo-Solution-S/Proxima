@@ -296,6 +296,7 @@ mod pg_tests {
             embedding_model_id,
             &[AGENT_NOTE.to_owned()],
             None,
+            &[],
             move |tx, outcome| {
                 Box::pin(async move {
                     sqlx::query(

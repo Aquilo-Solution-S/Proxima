@@ -74,6 +74,15 @@ theorem principle_5_memories_grounded_in_facts :
       ∀ m : Memory, m ∈ memories → GroundsInFact memories cooled m :=
   memory_grounds_in_facts
 
+/-- The retained post-erase surface is intentionally a validity shape, not a
+    grounding theorem: an erased witness has no owner, payload, or live
+    descent edge from which Fact grounding could be reconstructed. -/
+theorem principle_retained_committed_store_has_graph :
+    ∀ memories goals heads cooled targets,
+      RetainedCommittedStoreValid memories goals heads cooled targets →
+      RetainedMemoryGraphValid memories goals heads cooled targets :=
+  fun _ _ _ _ _ hstore => hstore.graph
+
 theorem principle_epistemic_abstraction_grounded_in_facts :
     ∀ memories goals heads cooled,
       MemoryGraphValid memories goals heads cooled →

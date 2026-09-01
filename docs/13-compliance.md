@@ -69,6 +69,15 @@ it: the destination can erase the transferred rows and the source no longer
 can. See [Consumer Projector
 Guidance](reference/public-api.md#consumer-projector-guidance).
 
+Hard deletion also appends a permanent, database-only witness for each erased
+Memory or Goal target: its `t` and closed kind. The witness has no owner or
+payload and is not an additional node or edge. Other rows that point at the
+target retain their `origins[]` and `refs[]` byte-for-byte; erase does not
+cascade into or null source declarations. New writes must resolve live target
+rows and cannot use or reuse witnesses. An exact cooled restoration may use a
+correctly kinded witness under the sealed historical path; legacy cooled rows
+with `NULL` pin arrays use ordinary live-target admission.
+
 ## The authority seam
 
 `OwnerEraseAuthorityPort` is the provider seam, and the only place the
@@ -149,12 +158,29 @@ indistinguishable from a surface the export forgot.
 | `sketch` | the four declared columns; the generated lexical index is not owner data |
 | `delegated_authority_grants` | an explicit field allowlist that excludes the redeemable `delegation_id`; a personal export does not pull group-owned grants merely because the same subject issued them |
 | `blob` | `blob_id`, `schema_id`, `content_hash` — enough to identify an opaque CitedObject with no sidecar; upload coordinates and object bytes stay out |
+| erased-target witness | never exported; the internal `(t, closed kind)` seal has no owner, payload, or public graph projection |
 | owner-pinned sidecars | `mcp_call_logged_v1` carries its own `owner_id`, so it is selected by that column rather than through the Memory: it stays in the bundle of the owner that made the call after the Memory has been transferred away, and out of the receiving owner's |
 | gate | system auth path, or `OwnerEraseAuthorityPort::may_export_owner` |
 
 Three surfaces are declared gaps rather than omissions, each carrying its
 `why`: `wake_config`, `blob_uploads` and `content` are erased and not
 exported. They are named here so the gap is a known one.
+
+The live `MemoryGraphValid`/Fact-grounding contract remains the ordinary live
+admission and operator contract. A sealed exact hydrate uses retained graph
+validity for recorded target kinds; a committed state after hard erase does
+not claim Fact grounding or reconstruct the erased target's owner. Public
+reads retain their existing redacted/missing-target behavior, and the internal
+witness does not introduce an `Unavailable` projection state.
+
+Per-entity admission, hydration, forget, and single-entity erase use one per-`t`
+advisory vocabulary: their complete target set is sorted and held before
+row/blob locks or persistence. Goal and wake paths acquire their complete union before
+inserting Goal, `goal_head`, or `wake_config` rows. Owner, series, source, and
+repository sweeps are explicitly outside this complete-set/no-growth claim;
+transfer uses the same vocabulary with bounded retry but its multi-round
+footprint is likewise outside it. This is the supported lifecycle order only;
+it does not promise broader handle or sweep fencing.
 
 ## Outcomes
 

@@ -216,6 +216,13 @@ statement; reauthorization and the transactional write fail closed when the
 whole vector cannot be admitted. Explicit `[]` is distinct from omission on
 the operator MCP action and is rejected there.
 
+Retained Goal validity may preserve cooled or witnessed pins; successor
+admission requires hot, readable assignment, evidence, lifecycle, and carried
+wake targets, so hydrate them first.
+
+At the low-level contract, a named stale prior is a caller-fixable conflict;
+an unnamed head-snapshot drift is retryable.
+
 Lifecycle Fact provenance:
 
 ```

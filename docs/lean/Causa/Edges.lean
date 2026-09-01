@@ -12,8 +12,9 @@ the Goal row (`assignment_t`, `dependency_t`, `evidence_t`, `close_fact_t`,
 `write_act_t`) and never appear in `memory.refs`.
 
 E1–E7 rebase:
-E1 existence   — every origin t and every refs t is a hot Memory.t or a
-                cooled stub; goal_refs resolves against the Goal spine
+E1 existence   — live origin and refs t are a hot Memory.t or a cooled stub;
+                goal_refs resolves against the Goal spine. Retained historical
+                pins may also resolve through a kinded erase witness.
   E2 ownership   — the pin is on the declaring row; no separate owner column
   E3 layering    — OriginKindValid (UML CHECKs)
   E4 kind follows — origins vs refs; no verb writes a pin
@@ -35,10 +36,19 @@ inductive EdgeKind where
   deriving DecidableEq, Repr
 
 /-- Pins extracted from a node — THE derivation, and it is identity.
-    Three columns since v0.0.11: the Goal spine is its own list. -/
+    Three columns since the Goal-reference split: the Goal spine is its own list. -/
 def derivePins (m : Memory) :
     List MemoryId × List MemoryId × List GoalId :=
   (memory_origins m, memory_refs m, memory_goal_refs m)
+
+/- A legacy/live reference carrier can still name either spine. The storage
+   split is reflected by `goalReferenceTargetExists`; this union remains the
+   target-existence predicate for the pre-split/live graph relation. -/
+def referenceTargetExists
+    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (id : Id) : Prop :=
+  pinExists memories cooled id ∨
+  ∃ g : Goal, g ∈ goals ∧ goal_t g = id
 
 /- A reference may point at a Goal, but no longer from the same column as a
    Memory reference. `refs` resolves against the Memory spine (`pinExists`)
@@ -48,12 +58,35 @@ def derivePins (m : Memory) :
 def goalReferenceTargetExists (goals : Set Goal) (id : GoalId) : Prop :=
   ∃ g : Goal, g ∈ goals ∧ goal_t g = id
 
+/-- Historical reference existence: a live/cooled Memory, a live Goal, or a
+    database-only erase witness. The mixed predicate is legacy-only; the
+    typed predicates below are the retained graph contract after the split. -/
+def retainedReferenceTargetExists
+    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (targets : Set ErasedPinTarget) (id : Id) : Prop :=
+  referenceTargetExists memories goals cooled id ∨
+  erasedPinTargetExists targets id
+
+def retainedMemoryReferenceTargetExists
+    (memories : Set Memory) (cooled : Set Cooled)
+    (targets : Set ErasedPinTarget) (id : MemoryId) : Prop :=
+  pinExists memories cooled id ∨ recordedMemoryTargetExists targets id
+
+def retainedGoalReferenceTargetExists
+    (goals : Set Goal) (targets : Set ErasedPinTarget) (id : GoalId) : Prop :=
+  goalReferenceTargetExists goals id ∨ recordedGoalTargetExists targets id
+
+def retainedOriginTargetExists
+    (memories : Set Memory) (cooled : Set Cooled)
+    (targets : Set ErasedPinTarget) (id : MemoryId) : Prop :=
+  pinExists memories cooled id ∨ recordedMemoryTargetExists targets id
+
 theorem goal_is_reference_target
     (goals : Set Goal) (g : Goal) (hg : g ∈ goals) :
     goalReferenceTargetExists goals (goal_t g) :=
   ⟨g, hg, rfl⟩
 
-/-- Read-side resolution (v0.0.11). `goal_refs` is the STORED typing; what
+/-- Read-side resolution after the Goal-reference split. `goal_refs` is the STORED typing; what
     a given reader may see is a separate question, so before projection the
     Goals this reader cannot read are moved back into the untyped `refs`
     carrier, where they redact exactly as an unreadable Memory does. The
@@ -91,6 +124,59 @@ theorem a_row_without_goal_refs_resolves_to_itself
     (readable : GoalId → Bool) (m : Memory) (h : memory_goal_refs m = []) :
     resolveVisibleGoalRefs readable m = (memory_refs m, []) := by
   simp [resolveVisibleGoalRefs, h]
+
+theorem retained_goal_is_reference_target
+    (_memories : Set Memory) (goals : Set Goal) (_cooled : Set Cooled)
+    (targets : Set ErasedPinTarget)
+    (g : Goal) (hg : g ∈ goals) :
+    retainedGoalReferenceTargetExists goals targets (goal_t g) := by
+  exact Or.inl (goal_is_reference_target goals g hg)
+
+theorem erased_goal_is_retained_goal_reference
+    (goals : Set Goal) (targets : Set ErasedPinTarget)
+    (e : ErasedPinTarget) (he : e ∈ targets)
+    (hk : erased_pin_target_kind e = .Goal) :
+    retainedGoalReferenceTargetExists goals targets (erased_pin_target_t e) := by
+  exact Or.inr ⟨e, he, rfl, hk⟩
+
+theorem erased_memory_is_retained_memory_reference
+    (memories : Set Memory) (cooled : Set Cooled)
+    (targets : Set ErasedPinTarget)
+    (e : ErasedPinTarget) (he : e ∈ targets)
+    (hk : erased_pin_target_kind e ≠ .Goal) :
+    retainedMemoryReferenceTargetExists memories cooled targets
+      (erased_pin_target_t e) := by
+  cases hkind : erased_pin_target_kind e with
+  | Fact => exact Or.inr ⟨.Fact, e, he, rfl, hkind⟩
+  | Abstraction => exact Or.inr ⟨.Abstraction, e, he, rfl, hkind⟩
+  | Perspective => exact Or.inr ⟨.Perspective, e, he, rfl, hkind⟩
+  | Goal => exact False.elim (hk hkind)
+
+/-- Legacy-only mixed carrier: a witness kind is not checked against the
+    caller's typed column. New retained graph proofs use the two predicates
+    above instead. -/
+theorem erased_is_retained_reference_target
+    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (targets : Set ErasedPinTarget)
+    (e : ErasedPinTarget) (he : e ∈ targets) :
+    retainedReferenceTargetExists memories goals cooled targets
+      (erased_pin_target_t e) := by
+  exact Or.inr ⟨e, he, rfl⟩
+
+/-- Legacy-only mixed live carrier; typed retained proofs do not use it. -/
+theorem live_reference_target_is_retained
+    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (targets : Set ErasedPinTarget) (id : Id)
+    (h : referenceTargetExists memories goals cooled id) :
+    retainedReferenceTargetExists memories goals cooled targets id :=
+  Or.inl h
+
+theorem live_origin_target_is_retained
+    (memories : Set Memory) (cooled : Set Cooled)
+    (targets : Set ErasedPinTarget) (id : MemoryId)
+    (h : pinExists memories cooled id) :
+    retainedOriginTargetExists memories cooled targets id :=
+  Or.inl h
 
 theorem pins_are_node_content (m : Memory) :
     derivePins m = (m.origins, m.refs, m.goal_refs) := rfl

@@ -35,12 +35,14 @@ proxima_core.memory (
 
 - Target is always a `t`. Never a handle. Origins target a hot or cooled
   Memory. References target a hot or cooled Memory from `refs`, or a Goal
-  from `goal_refs`. No follow-at-read.
+  from `goal_refs`. Exact historical restoration may resolve a target through
+  the internal kinded erase witness, but that witness is not a public edge and
+  is never follow-at-read.
 - No pin id, payload, sidecar, citation, or status.
 - Ten call sites A→B are one `refs` entry and ten payload sites.
 - Rebuildable: re-derive from node content, same set.
 
-### One kind, two columns (v0.0.11)
+### One kind, two columns
 
 Reference is still one kind. The split is by **spine**, not by kind: `refs`
 is Memory-only and `goal_refs` is Goal-only, so the column a target sits in
@@ -59,7 +61,7 @@ Goal id falls back into `refs`, where it redacts exactly as an unreadable
 Memory does. Knowing that a withheld target is a Goal would itself be
 disclosure, so a redacted target says nothing about which spine it was on.
 
-**Migrating.** `refs` written before v0.0.11 still mixes the two. Migration
+**Migrating.** `refs` written before the split still mixes the two. Migration
 `0004_v011_goal_refs.sql` partitions hot and cooled rows by Goal-spine
 membership; cold objects below format version 5 are partitioned the same way
 on hydrate, since the object itself cannot say which ids were Goals.
@@ -72,6 +74,23 @@ origins. Facts cannot be interpretation sources.
 
 Write admitted iff write on source and read on target at write time.
 Unreadable targets redact independently.
+
+Hard erase does not repair the declaring row: its `origins[]` and `refs[]`
+remain byte-for-byte, with no cascade or nulling. It appends the permanent
+owner-free `(t, closed kind)` witness needed only for exact sealed cooled
+restoration. Ordinary writes still require live targets and cannot use or
+reuse that witness. Legacy cooled rows whose pin arrays are `NULL` use the
+ordinary live-target path. The witness is excluded from export, transfer,
+forget, and all public Edge/PinNode/MCP/REST projections; public missing
+targets keep the existing redacted/missing behavior rather than gaining an
+`Unavailable` state.
+
+Per-entity admission, hydration, forget, and single-entity erase use one
+sorted per-`t` lifecycle lock vocabulary. Goal and wake writes hold the
+complete union of their target `t`s before inserting rows. Owner, series,
+source, and repository sweeps are outside this complete-set/no-growth
+guarantee. Transfer uses the same per-`t` vocabulary with bounded retry, but
+its broader multi-round footprint is also outside this guarantee.
 
 ## Computed Scores Are Abstractions
 
@@ -102,8 +121,10 @@ is a Perspective whose payload names worker and request; request
 `docs/lean/Causa/Edges.lean` (E1–E7, E-SPINE, E-NODISC, E-READ in
 `docs/lean/COVERAGE.md`).
 
-- **E1** origins and `refs` resolve to a hot Memory or cooled stub;
-  `goal_refs` resolves to a Goal.
+- **E1** live origins and `refs` resolve to a hot Memory or cooled stub;
+  `goal_refs` resolves to a Goal. Retained historical references may
+  additionally resolve to a kinded erase witness; Goal witnesses are never
+  Memory-origin kinds.
 - **E2** source-owned.
 - **E3** layering.
 - **E4** kind follows operation. Zero origins is legal (interpretation).
