@@ -22,6 +22,10 @@ struct PgWriteSession {
     tx: Transaction<'static, Postgres>,
     sidecars: PgSidecarRegistryFrozen,
     surfaces: proxima_core::owner_inverse::OwnerSurfaces,
+    /// The flavor-declared lifecycle scopes, so this session can resolve a
+    /// payload's `ScopeRef` into the fence key and liveness probe without
+    /// reaching back through the storage handle mid-transaction.
+    scopes: crate::access::scope_surfaces::ScopeSurfaces,
     cold: Arc<dyn ColdObjectStore>,
 }
 
@@ -33,6 +37,7 @@ impl WriteSessionFactory for PgStorage {
             tx,
             sidecars: self.sidecars.clone(),
             surfaces: self.surfaces.clone(),
+            scopes: self.scopes.clone(),
             cold: Arc::clone(&self.cold),
         }))
     }
@@ -115,6 +120,11 @@ impl WriteSession for PgWriteSession {
         let payloads = sidecar_payloads.to_vec();
         let content_payloads = payloads.clone();
         let tables = self.sidecars.tables_for_payloads(sidecar_payloads)?;
+        // The declared scopes come off the PAYLOADS, not off the caller: a
+        // host writing a scoped payload straight through `Engine` reaches
+        // this same line, and the fence it takes is the one the flavor's
+        // erase holds.
+        let scopes = self.scopes.targets_for_payloads(sidecar_payloads)?;
         let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
             &mut self.tx,
             authorized,
@@ -122,6 +132,7 @@ impl WriteSession for PgWriteSession {
             &tables,
             None,
             &content_payloads,
+            &scopes,
             move |tx, outcome| {
                 Box::pin(async move {
                     for payload in &payloads {
@@ -178,6 +189,9 @@ impl WriteSession for PgWriteSession {
         let tables = self
             .sidecars
             .tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
+        let scopes = self
+            .scopes
+            .targets_for_payloads(std::slice::from_ref(&sidecar_payload))?;
         let outcome = verbs::derive_append::append_derived_with_content_payloads_in_tx(
             &mut self.tx,
             permit,
@@ -186,6 +200,7 @@ impl WriteSession for PgWriteSession {
                 origins: req.origins,
                 references: req.references,
                 sidecar_tables: &tables,
+                scopes: &scopes,
                 content: verbs::derive_append::ContentResolution {
                     content_id: None,
                     payloads: Some(std::slice::from_ref(&content_payload)),

@@ -251,6 +251,11 @@ const fn storage_status(err: &StorageError) -> (StatusCode, &'static str, &'stat
             (StatusCode::BAD_REQUEST, "invalid-input", "Invalid input")
         }
         StorageError::NotFound => (StatusCode::NOT_FOUND, "not-found", "Not found"),
+        StorageError::ScopeMissing { .. } => (
+            StatusCode::NOT_FOUND,
+            "scope-not-registered",
+            "Scope not registered",
+        ),
         StorageError::Conflict(_) => (StatusCode::CONFLICT, "conflict", "Conflict"),
         StorageError::IdempotencyConflict { .. } => (
             StatusCode::CONFLICT,

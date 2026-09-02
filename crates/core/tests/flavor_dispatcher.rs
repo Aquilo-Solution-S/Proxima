@@ -95,6 +95,7 @@ static DISPATCH_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
     ordinal: 7,
     schemas: &[],
     state_surfaces: &[],
+    scopes: &[],
     kernel_surfaces: &[],
     tools: &[ToolContract {
         wire_name: DISPATCH,

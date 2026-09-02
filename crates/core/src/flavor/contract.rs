@@ -23,6 +23,7 @@
 //! Everything is `const`-constructible: a contract is a `static`, so the
 //! declaration is available before a database connection exists.
 
+use crate::scope::ScopeDecl;
 use crate::verbs::schema::PayloadKind;
 use crate::{SchemaId, SchemaVersion, SearchProjectionColumnKind};
 
@@ -1503,6 +1504,24 @@ pub struct FlavorContract {
     /// `proxima_core.goal`). Same [`Surface`] rules; erase and transfer walk
     /// them identically.
     pub state_surfaces: &'static [Surface],
+    /// The flavor-owned lifecycle scopes this flavor owns, one
+    /// [`ScopeDecl`] per [`crate::ScopeKind`] any of its payloads names
+    /// (docs/03 §Scope declaration).
+    ///
+    /// Separate from `state_surfaces` because it answers a different
+    /// question. A `Surface` says what erase, export, transfer and forget
+    /// do to a table's rows; a `ScopeDecl` says how to ASK whether one of
+    /// those rows still exists and how to key the fence that holds the
+    /// answer still. The registry table is normally a state surface as well
+    /// — `proxima_code.repos` is both — and the two declarations stay
+    /// independent so a scope whose registry the flavor erases some other
+    /// way is still fenceable.
+    ///
+    /// Freeze refuses a kind a registered payload names and no contract
+    /// declares, and a kind two contracts declare: an admission of a scoped
+    /// payload must resolve exactly one declaration or it cannot be fenced
+    /// at all.
+    pub scopes: &'static [ScopeDecl],
     /// Kernel relations this flavor's contract speaks for. Only flavor #0
     /// populates it: the kernel is not a flavor, but its surfaces still have
     /// to be declared somewhere the registry can walk.
@@ -1542,6 +1561,12 @@ impl FlavorContract {
     #[must_use]
     pub const fn is_core(&self) -> bool {
         self.ordinal == CORE_ORDINAL
+    }
+
+    /// This flavor's declaration for `kind`, if it owns one.
+    #[must_use]
+    pub fn scope_decl(&self, kind: crate::ScopeKind) -> Option<&'static ScopeDecl> {
+        self.scopes.iter().find(|decl| decl.kind == kind)
     }
 
     /// Every surface this flavor declares, in declaration order: schema

@@ -644,15 +644,7 @@ impl LocalGitSource {
             committer_time: commit_info.committer_time,
             message: commit_info.message.clone(),
         };
-        let outcome = ingest_commit(
-            ctx.engine(),
-            ctx.authz(),
-            ctx.store,
-            self.owner,
-            &commit_payload,
-            now,
-        )
-        .await?;
+        let outcome = ingest_commit(ctx.engine(), ctx.authz(), &commit_payload, now).await?;
         if outcome.idempotent_replay {
             report.commits_replayed += 1;
         } else {
@@ -826,15 +818,8 @@ impl LocalGitSource {
             indexed_commit_sha: indexed_commit_sha.to_string(),
             state: FileState::Present,
         };
-        let file_revision = ingest_file_revision(
-            ctx.engine(),
-            ctx.authz(),
-            ctx.store,
-            self.owner,
-            &rev_payload,
-            now,
-        )
-        .await?;
+        let file_revision =
+            ingest_file_revision(ctx.engine(), ctx.authz(), &rev_payload, now).await?;
         if !file_revision.idempotent_replay {
             report.files_present_emitted += 1;
         }
@@ -925,7 +910,6 @@ impl LocalGitSource {
             append_code_slices_with_handles(
                 ctx.engine,
                 ctx.authz,
-                ctx.store,
                 self.owner,
                 &tomb_payloads,
                 pending.file_revision,
@@ -1039,7 +1023,6 @@ impl LocalGitSource {
         let outcomes = append_code_slices_with_handles(
             ctx.engine,
             ctx.authz,
-            ctx.store,
             self.owner,
             &payloads,
             pending.file_revision,
@@ -1076,15 +1059,8 @@ impl LocalGitSource {
             indexed_commit_sha: commit_sha.to_string(),
             state: FileState::Tombstone,
         };
-        let file_revision = ingest_file_revision(
-            ctx.engine(),
-            ctx.authz(),
-            ctx.store,
-            self.owner,
-            &rev_payload,
-            now,
-        )
-        .await?;
+        let file_revision =
+            ingest_file_revision(ctx.engine(), ctx.authz(), &rev_payload, now).await?;
         report.files_tombstoned += 1;
 
         Ok(PendingDeletedPath {
@@ -1123,7 +1099,6 @@ impl LocalGitSource {
             append_code_slices_with_handles(
                 ctx.engine,
                 ctx.authz,
-                ctx.store,
                 self.owner,
                 &tomb_payloads,
                 pending.file_revision,

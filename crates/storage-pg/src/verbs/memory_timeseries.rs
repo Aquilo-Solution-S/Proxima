@@ -20,6 +20,7 @@ use proxima_core::{MemoryId, Owner, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
+use crate::access::scope_surfaces::ScopeFenceTarget;
 use crate::error::{internal, map_err};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -70,8 +71,14 @@ pub(crate) async fn ingest_fact_timeseries(
     sidecar_tables: &[String],
     content_id: Option<Uuid>,
 ) -> Result<FactIngestOutcome, StorageError> {
+    // No scope set: this is the payload-less admission body — the Goal
+    // write-act Facts and the crate's own fixtures. A typed payload reaches
+    // storage through `fact_ingest::ingest_core` or
+    // `derive_append::append_derived_timeseries`, and those two are where a
+    // declared scope is read off the payload and fenced.
     let prepared =
-        prepare_memory_admission(tx, owner, draft, origins, references, sidecar_tables).await?;
+        prepare_memory_admission(tx, owner, draft, origins, references, sidecar_tables, &[])
+            .await?;
     lock_prepared_memory_admission(tx, &prepared).await?;
     let prepared = claim_prepared_memory_admission(tx, prepared).await?;
     materialize_prepared_memory_admission(tx, prepared, draft.blob_id, content_id).await
@@ -81,6 +88,7 @@ pub(crate) async fn ingest_fact_timeseries(
 /// Memory rows. Replay lookup runs first; a new admission arbitrates owner
 /// identity, reserves its real identity, and snapshots its lifecycle footprint
 /// before locking that footprint.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare_memory_admission(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
@@ -88,6 +96,7 @@ pub(crate) async fn prepare_memory_admission(
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
     sidecar_tables: &[String],
+    scopes: &[ScopeFenceTarget],
 ) -> Result<PreparedMemoryAdmission, StorageError> {
     prepare_memory_admission_at(
         tx,
@@ -99,6 +108,7 @@ pub(crate) async fn prepare_memory_admission(
         PreparationOptions {
             identity: None,
             extra_targets: &[],
+            scopes,
         },
     )
     .await
@@ -106,6 +116,7 @@ pub(crate) async fn prepare_memory_admission(
 
 /// Prepare a derived admission with its explicit supersedes target included
 /// in the lifecycle set without persisting that target as a pin.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare_memory_admission_with_extra_targets(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
@@ -114,6 +125,7 @@ pub(crate) async fn prepare_memory_admission_with_extra_targets(
     references: &[EdgeEndpoint],
     sidecar_tables: &[String],
     extra_targets: &[Uuid],
+    scopes: &[ScopeFenceTarget],
 ) -> Result<PreparedMemoryAdmission, StorageError> {
     prepare_memory_admission_at(
         tx,
@@ -125,6 +137,7 @@ pub(crate) async fn prepare_memory_admission_with_extra_targets(
         PreparationOptions {
             identity: None,
             extra_targets,
+            scopes,
         },
     )
     .await
@@ -150,6 +163,9 @@ pub(crate) async fn ingest_unpinned_fact_at(
         PreparationOptions {
             identity: Some(identity),
             extra_targets: &[],
+            // A Goal's write-act Fact carries no typed payload and so
+            // declares no scope.
+            scopes: &[],
         },
     )
     .await?;
@@ -164,10 +180,60 @@ pub(crate) async fn ingest_unpinned_fact_at(
     materialize_prepared_memory_admission_after_locks(tx, prepared, draft.blob_id, None).await
 }
 
+/// Take every declared scope's fence shared, then run each scope's
+/// generated liveness probe under it.
+///
+/// The probe is the flavor's declaration made executable — `SELECT
+/// EXISTS(...)` over the registry table, id column and owner columns the
+/// [`proxima_core::ScopeDecl`] names, and nothing storage spelled itself.
+/// It runs IN THIS TRANSACTION, under the fence, which is what turns a
+/// vanished registry row from a race into a settled refusal.
+///
+/// # Errors
+///
+/// [`StorageError::ScopeMissing`] when a scope this write names is no
+/// longer registered for `owner`.
+async fn fence_declared_scopes(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    scopes: &[ScopeFenceTarget],
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_id) = crate::access::owner_columns::owner_binds(owner);
+    for scope in scopes {
+        crate::access::owner_columns::lock_scope_fence_shared_tx(tx, scope.kind, owner, scope.id)
+            .await?;
+        // `owner_kind` binds as the TYPED `proxima_core.owner_kind`, not as
+        // its `&str`: every owner-kind column in the tree is that enum, and
+        // a text bind would compare a text against it and fail the operator
+        // lookup rather than the row test.
+        //
+        // SQL-POLICY: generated
+        let registered: bool =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(std::sync::Arc::clone(&scope.probe_sql)))
+                .bind(owner_kind)
+                .bind(owner_id)
+                .bind(scope.id)
+                .fetch_one(tx.as_mut())
+                .await
+                .map_err(map_err)?;
+        if !registered {
+            return Err(StorageError::ScopeMissing {
+                kind: scope.kind.as_str().to_owned(),
+                id: scope.id,
+            });
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PreparationOptions<'a> {
     identity: Option<(Uuid, Uuid)>,
     extra_targets: &'a [Uuid],
+    /// The flavor-owned lifecycle scopes this admission's payloads declare,
+    /// already sorted and deduplicated
+    /// ([`crate::access::scope_surfaces::ScopeSurfaces::targets_for_payloads`]).
+    scopes: &'a [ScopeFenceTarget],
 }
 
 async fn prepare_memory_admission_at(
@@ -232,6 +298,14 @@ async fn prepare_memory_admission_at(
     if let Some(source_id) = source_id.as_deref() {
         crate::access::owner_columns::lock_source_fence_shared_tx(tx, owner, source_id).await?;
     }
+    // Then the flavor-declared lifecycle scopes, shared, BEFORE the handle
+    // and `t` locks below. That order — owner fence, source fence, scope
+    // fence, handle, lifecycle `t`, rows — is what makes a racing scope
+    // erase queue behind this write instead of closing a lock cycle with it.
+    // Under the fence, "is this scope still registered" has one answer for
+    // the life of the transaction: an erase that committed first is visible,
+    // and one that has not is waiting.
+    fence_declared_scopes(tx, owner, options.scopes).await?;
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
     // These fences are held through commit, so a whole-owner/source erase
     // either waits for this write or observes it in the exact-scope

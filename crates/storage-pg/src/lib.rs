@@ -1310,6 +1310,15 @@ pub struct PgStorage {
     /// Resolved by [`flavor_0_surfaces`], through a registry. Building it
     /// from a loose surface list is a different answer, not a cheaper one.
     surfaces: proxima_core::owner_inverse::OwnerSurfaces,
+    /// The flavor-declared lifecycle scopes, resolved into a fence key and a
+    /// liveness probe once.
+    ///
+    /// Empty until `with_flavors`, and empty means REFUSE: an admission of a
+    /// payload declaring a scope this storage has no declaration for cannot
+    /// be fenced, and admitting it unfenced is the defect. A host that links
+    /// a flavor with scopes and forgets `with_flavors` finds out on the
+    /// first scoped write, not after an erase left rows behind.
+    scopes: crate::access::scope_surfaces::ScopeSurfaces,
     search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
     embed_units: Vec<proxima_core::verbs::schema::MemoryEmbedUnit>,
     non_embeddable_schemas: Vec<String>,
@@ -1467,6 +1476,7 @@ impl PgStorage {
             pool,
             sidecars: core_pg_sidecars(),
             surfaces: flavor_0_surfaces(),
+            scopes: crate::access::scope_surfaces::ScopeSurfaces::default(),
             search_projections: Vec::new(),
             embed_units: Vec::new(),
             non_embeddable_schemas: Vec::new(),
@@ -1542,7 +1552,14 @@ impl PgStorage {
         self.embed_units = registry.embed_units().to_vec();
         self.non_embeddable_schemas = registry.non_embeddable_schema_ids().to_vec();
         self.surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(registry);
+        self.scopes = crate::access::scope_surfaces::ScopeSurfaces::for_registry(registry);
         self
+    }
+
+    /// The resolved lifecycle-scope declarations this storage fences on.
+    #[must_use]
+    pub fn scopes(&self) -> &crate::access::scope_surfaces::ScopeSurfaces {
+        &self.scopes
     }
 
     /// Apply the host's validated embedding runtime policy to every storage

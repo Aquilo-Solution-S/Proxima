@@ -309,6 +309,53 @@ Schema metadata:
 
 Stateless Fact schemas leave `natural_key_columns` empty.
 
+## Declared lifecycle scope
+
+A flavor may own a lifecycle the substrate cannot infer — a repository, a
+book, a project, a revision. Its rows carry a bare `<scope>_id uuid` with no
+foreign key into the flavor's registry, so no core fence separates an erase of
+one scope from a concurrent write into it. A schema says which lifecycle its
+rows belong to; the substrate does the fencing.
+
+The declaration has two halves, and freeze checks them against each other.
+
+| Half | Where | What it says |
+|---|---|---|
+| `const SCOPE_KIND: Option<ScopeKind>` | `FactPayload` / `AbstractionPayload` / `PerspectivePayload` | which lifecycle this schema's rows belong to (default `None`) |
+| `fn scope_id(&self) -> Option<Uuid>` | the same payload impl | which row of it this value belongs to |
+| `ScopeDecl` in `FlavorContract::scopes` | the flavor contract, once per kind | the scope registry's schema-qualified table, id column, owner kind column and owner id column |
+
+`ScopeKind` is a `&'static str` newtype, namespaced by convention
+(`<flavor>-<scope>`, e.g. `code-repo`): the closed vocabulary lives in the
+linked flavors, not in core.
+
+Storage GENERATES from the declaration and spells no name of its own — the
+fence key (`proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`)
+and the liveness probe
+(`SELECT EXISTS(SELECT 1 FROM <registry_table> WHERE <owner_kind_column> = $1
+AND <owner_id_column> = $2 AND <id_column> = $3)`). A renamed column is a
+declaration edit, not a second place to keep in sync.
+
+Freeze refusals, in the shape of the sidecar-declaration guards:
+
+| Shape | Refusal |
+|---|---|
+| a payload names a `ScopeKind` no linked contract declares | `ScopeNotDeclared` |
+| two contracts declare one `ScopeKind` | `DuplicateScopeDeclaration` |
+| a declaration's registry table is not schema-qualified, or a column name is empty | `InvalidScopeDeclaration` |
+
+There is no runtime registration path, and no generic scope erase: what "one
+scope's rows" means is the flavor's knowledge. What the substrate guarantees
+is the other half — that no admission of a scoped payload, from any caller,
+can slip past the fence that erase holds. See
+[07 §Lifecycle Lock Ordering](07-storage.md#lifecycle-lock-ordering) for the
+lock order and
+[09 §Declare the scope](09-developing-flavors.md#declare-the-scope-the-substrate-fences-every-admission-your-erase-takes-it-exclusive)
+for the flavor author's side.
+
+Payloads whose scope column is nullable return `None` for the rows that name
+no scope, and those rows are unscoped in fact as well as in declaration.
+
 ## Registration
 
 Registration is build-time only (see

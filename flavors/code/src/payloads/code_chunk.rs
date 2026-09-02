@@ -1,6 +1,8 @@
-use proxima_core::{AbstractionPayload, PayloadReference, proxima_schema_id};
+use proxima_core::{AbstractionPayload, PayloadReference, ScopeKind, proxima_schema_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::repos::CODE_REPO_SCOPE;
 
 use crate::payloads::file_revision::FileState;
 
@@ -81,6 +83,13 @@ pub struct CodeChunkV1 {
 impl AbstractionPayload for CodeChunkV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("code-chunk-v1");
     const SCHEMA_VERSION: u32 = 1;
+    /// Repo-scoped. The substrate takes the `code-repo` fence and re-asks
+    /// whether the repository is still registered on EVERY admission of
+    /// this payload, whoever the writer is.
+    const SCOPE_KIND: Option<ScopeKind> = Some(CODE_REPO_SCOPE);
+    fn scope_id(&self) -> Option<uuid::Uuid> {
+        Some(self.repo_id)
+    }
 
     fn sidecar_table() -> &'static str {
         "proxima_code.code_chunk_v1"

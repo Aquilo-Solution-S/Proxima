@@ -57,6 +57,12 @@ impl MemoryAuthoringPort for PgStorage {
             let tables = self
                 .sidecars
                 .tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
+            // `author_derived` is a host-facing write like any other: the
+            // scope comes off the payload it carries, so a derived row over a
+            // scoped payload is fenced exactly as its ingest would be.
+            let scopes = self
+                .scopes
+                .targets_for_payloads(std::slice::from_ref(&sidecar_payload))?;
             let outcome = verbs::derive_append::append_derived_with_content_payloads_in_tx(
                 &mut tx,
                 permit,
@@ -65,6 +71,7 @@ impl MemoryAuthoringPort for PgStorage {
                     origins: req.origins,
                     references: req.references,
                     sidecar_tables: &tables,
+                    scopes: &scopes,
                     content: verbs::derive_append::ContentResolution {
                         content_id: None,
                         payloads: Some(std::slice::from_ref(&content_payload)),

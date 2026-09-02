@@ -238,18 +238,25 @@ the Memory/Goal scope as of fence acquisition, and the selected handles and
 upload admission take their shared owner fence before first-use owner-row
 arbitration. Transfer exclusively fences both endpoints in sorted owner order
 before its series locks, then locks its complete sorted series handle/`t` set
-and rechecks membership before rehoming. A flavor scope the substrate cannot
-see fences itself in its own namespace: Code repository erase takes a fence
-(`proxima-code-repo-fence:<owner_kind>:<owner_id>:<repo_id>`) exclusively
-before it reads its footprint, and every transaction writing a Memory,
-sidecar, admission, or run row carrying that `repo_id` takes the same fence
-shared before its handle/`t` locks and revalidates the `repos` row under it.
-Shared writers do not wait on each other; the exclusive erase waits for all
-of them and is then waited on by every writer after it. Order: owner fence,
-source fence, repository fence, handle/`t`, rows. Repository ids are never
-hashed into the `t`/handle namespace, distinct repositories take distinct
-keys, and a vanished repository row is a typed refusal on every ingest path
-rather than an unscoped write.
+and rechecks membership before rehoming. A flavor-owned lifecycle scope the
+substrate cannot infer is DECLARED, and the substrate then fences it: a
+payload names a `ScopeKind` and returns its scope id, a flavor contract
+declares that kind's registry table, id column and owner columns once, and
+freeze refuses a kind used without a declaration or declared twice. From the
+declaration storage generates one fence key
+(`proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`) and
+one liveness probe over the named registry, spelling no name of its own.
+Every admission that persists a scoped payload — through `Engine`, a unit of
+work, `author_derived`, or a sidecar/replay path — takes that fence shared in
+its write transaction before its handle/`t` locks and runs the probe under
+it; a scope erase takes it exclusively before it reads its footprint. A batch
+spanning several scopes takes the distinct keys as one sorted, deduplicated
+set. Shared writers do not wait on each other; the exclusive erase waits for
+all of them and is then waited on by every writer after it. Order: owner
+fence, source fence, scope fence, handle/`t`, rows. Scope ids are never
+hashed into the `t`/handle namespace, distinct scope ids take distinct keys,
+and a vanished registry row is a typed refusal (`ScopeMissing`) on every
+admission path rather than an unscoped write.
 
 Upload object keys have their own fence, one rank below the lifecycle set. A
 path that is about to decide whether an upload object's bytes may be destroyed

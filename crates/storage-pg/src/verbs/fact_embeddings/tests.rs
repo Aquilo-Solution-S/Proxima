@@ -298,6 +298,7 @@ mod pg_tests {
             &[AGENT_NOTE.to_owned()],
             None,
             &[],
+            &[],
             move |tx, outcome| {
                 Box::pin(async move {
                     sqlx::query(

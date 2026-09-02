@@ -5,7 +5,7 @@ use super::ingress::{
 use super::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, FactPayload, FlavorRegistry,
     FlavorRegistryError, GoalPayload, PayloadKind, PerspectivePayload, ProtocolPayloadIngress,
-    ProtocolPayloadIngressEntry, SchemaId, SchemaInfo, SchemaVersion,
+    ProtocolPayloadIngressEntry, SchemaId, SchemaInfo, SchemaVersion, ScopeKind,
 };
 
 impl FlavorRegistry {
@@ -37,11 +37,23 @@ impl FlavorRegistry {
         });
     }
 
+    /// Record the lifecycle scope a payload type declares, if any.
+    ///
+    /// Called from the three memory-layer registrations and nowhere else:
+    /// a Goal is its own spine and a citation is blob-side, so neither is an
+    /// admission the scope fence covers.
+    fn register_scope_kind(&mut self, schema_id: SchemaId, kind: Option<ScopeKind>) {
+        if let Some(kind) = kind {
+            self.scoped_schemas.push((schema_id, kind));
+        }
+    }
+
     /// # Errors
     ///
     /// Currently infallible; returns a registry error if schema admission adds
     /// validation.
     pub fn try_add_fact_schema<F: FactPayload>(&mut self) -> Result<(), FlavorRegistryError> {
+        self.register_scope_kind(F::schema_id(), F::SCOPE_KIND);
         self.register_schema(
             SchemaInfo {
                 schema_id: F::schema_id(),
@@ -79,6 +91,7 @@ impl FlavorRegistry {
     pub fn try_add_abstraction_schema<A: AbstractionPayload>(
         &mut self,
     ) -> Result<(), FlavorRegistryError> {
+        self.register_scope_kind(A::schema_id(), A::SCOPE_KIND);
         self.register_schema(
             SchemaInfo {
                 schema_id: A::schema_id(),
@@ -110,6 +123,7 @@ impl FlavorRegistry {
     pub fn try_add_perspective_schema<P: PerspectivePayload>(
         &mut self,
     ) -> Result<(), FlavorRegistryError> {
+        self.register_scope_kind(P::schema_id(), P::SCOPE_KIND);
         self.register_schema(
             SchemaInfo {
                 schema_id: P::schema_id(),

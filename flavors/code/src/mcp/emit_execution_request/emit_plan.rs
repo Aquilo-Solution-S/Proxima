@@ -12,8 +12,8 @@ use crate::payloads::{
 use super::super::sql::resolve_repo_identifier;
 use super::super::{CodeToolCtxExt, engine};
 use super::context_validation::{
-    fence_repo_write, validate_active_goal_context, validate_evidence_in_owner,
-    validate_goal_activated_fact, validate_plan_source_abstraction_in_owner, validate_repo,
+    validate_active_goal_context, validate_evidence_in_owner, validate_goal_activated_fact,
+    validate_plan_source_abstraction_in_owner, validate_repo,
 };
 use super::ingest::{
     FactProvenance, ingest_acceptance_criteria, ingest_execution_request, ingest_test_request,
@@ -70,10 +70,9 @@ impl Tool for CodeEmitExecutionPlanTool {
                 .unit_of_work(ctx.authz())
                 .await
                 .map_err(ToolError::Protocol)?;
-            // Every Fact and the plan Abstraction below carry this repo_id,
-            // and they land in this one transaction, so one fence covers
-            // the whole plan.
-            fence_repo_write(&ctx, &mut uow, repo_id).await?;
+            // Every Fact and the plan Abstraction below declare the
+            // `code-repo` scope on this repo_id, so the first of them takes
+            // the fence in this transaction and the rest find it held.
 
             let plan_key = match args.plan_key {
                 Some(value) => normalize_text("plan_key", &value, 240)?,

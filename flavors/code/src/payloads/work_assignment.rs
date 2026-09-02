@@ -1,6 +1,10 @@
-use proxima_core::{EntityKind, MemoryId, PayloadReference, PerspectivePayload, proxima_schema_id};
+use proxima_core::{
+    EntityKind, MemoryId, PayloadReference, PerspectivePayload, ScopeKind, proxima_schema_id,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::repos::CODE_REPO_SCOPE;
 
 /// "This worker should pick up that request."
 ///
@@ -25,6 +29,13 @@ pub struct CodeWorkAssignmentV1 {
 impl PerspectivePayload for CodeWorkAssignmentV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("work-assignment-v1");
     const SCHEMA_VERSION: u32 = 1;
+    /// Repo-scoped. The substrate takes the `code-repo` fence and re-asks
+    /// whether the repository is still registered on EVERY admission of
+    /// this payload, whoever the writer is.
+    const SCOPE_KIND: Option<ScopeKind> = Some(CODE_REPO_SCOPE);
+    fn scope_id(&self) -> Option<uuid::Uuid> {
+        Some(self.repo_id)
+    }
 
     fn sidecar_table() -> &'static str {
         "proxima_code.work_assignment_v1"

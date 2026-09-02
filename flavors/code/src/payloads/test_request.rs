@@ -1,7 +1,10 @@
 use proxima_core::{
-    EntityKind, FactPayload, MemoryId, PayloadKeyBuilder, PayloadReference, proxima_schema_id,
+    EntityKind, FactPayload, MemoryId, PayloadKeyBuilder, PayloadReference, ScopeKind,
+    proxima_schema_id,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::repos::CODE_REPO_SCOPE;
 
 use super::AcceptanceCriterionV1;
 
@@ -23,6 +26,13 @@ pub struct TestRequestedV1 {
 impl FactPayload for TestRequestedV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("test-requested-v1");
     const SCHEMA_VERSION: u32 = 1;
+    /// Repo-scoped. The substrate takes the `code-repo` fence and re-asks
+    /// whether the repository is still registered on EVERY admission of
+    /// this payload, whoever the writer is.
+    const SCOPE_KIND: Option<ScopeKind> = Some(CODE_REPO_SCOPE);
+    fn scope_id(&self) -> Option<uuid::Uuid> {
+        Some(self.repo_id)
+    }
 
     fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);

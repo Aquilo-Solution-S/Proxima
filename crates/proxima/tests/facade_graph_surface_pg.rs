@@ -359,6 +359,7 @@ static FACADE_CONTRACT: FlavorContract = FlavorContract {
         },
     ],
     state_surfaces: &[],
+    scopes: &[],
     kernel_surfaces: &[],
     tools: &[],
     resources: &[],

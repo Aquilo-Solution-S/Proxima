@@ -93,7 +93,9 @@ async fn a_never_schema_enqueues_no_embedding_job() {
     let goal_activated_memory_id = seed_fact(&db, owner).await;
     let request_memory_id = seed_fact(&db, owner).await;
 
-    let payload = plan_payload(goal_activated_memory_id, request_memory_id);
+    let repo_id = Uuid::now_v7();
+    common::register_fixture_repo(db.pg.pool_for_tests(), &owner, repo_id).await;
+    let payload = plan_payload(repo_id, goal_activated_memory_id, request_memory_id);
     let memory_id = MemoryId::new(Uuid::now_v7());
     let derived_from = [EdgeEndpoint::memory(
         EntityKind::Abstraction,
@@ -163,7 +165,9 @@ async fn a_never_schema_stores_no_inline_vector() {
     let goal_activated_memory_id = seed_fact(&db, owner).await;
     let request_memory_id = seed_fact(&db, owner).await;
 
-    let payload = plan_payload(goal_activated_memory_id, request_memory_id);
+    let repo_id = Uuid::now_v7();
+    common::register_fixture_repo(db.pg.pool_for_tests(), &owner, repo_id).await;
+    let payload = plan_payload(repo_id, goal_activated_memory_id, request_memory_id);
     let memory_id = MemoryId::new(Uuid::now_v7());
     let derived_from = [EdgeEndpoint::memory(
         EntityKind::Abstraction,
@@ -234,9 +238,13 @@ async fn seed_fact(db: &TestDb, owner: proxima_core::Owner) -> Uuid {
     memory_id
 }
 
-fn plan_payload(goal_activated_memory_id: Uuid, request_memory_id: Uuid) -> CodeExecutionPlanV1 {
+fn plan_payload(
+    repo_id: Uuid,
+    goal_activated_memory_id: Uuid,
+    request_memory_id: Uuid,
+) -> CodeExecutionPlanV1 {
     CodeExecutionPlanV1 {
-        repo_id: Uuid::now_v7(),
+        repo_id,
         plan_key: "goal:repo:plan".to_string(),
         goal_activated_memory_id,
         summary: "a plan that never embeds".to_string(),

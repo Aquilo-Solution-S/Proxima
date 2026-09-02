@@ -217,6 +217,7 @@ instead of every reader re-deriving it (E1, E7, E-SPINE below).
 | ST-22/23 | Content hash/dedup key not Fact identity; collision semantics | Fact identity is `Memory.t`; `Content.hash` is payload identity within `(owner, schema)`; `ingest_keys` is the only sourced unique; THEOREM `shared_content_preserves_distinct_admissions` |
 | ST-FE | FactEntity endpoint alignment | RETIRED: no `FactEntity`. Pins are Memory `t` or a cooled stub (`pinExists`). Follow-at-read is forbidden |
 | ST-26 | Current state = head query | defs `memoryIsHead` / `memoryHeads` / `perspectiveHeads` over `MemoryHead`; `goalIsHead` / `activeGoals` over `GoalHead` |
+| ST-SCOPE | A flavor-declared lifecycle scope's erase and every admission into that scope are serialized, so a scope sweep's footprint is exact | excluded: the kernel models a set of rows and has neither a lock vocabulary nor a write ordering to state this in — the same stance as CI-18 and CI-20. The claim lives entirely in storage: a per-`(kind, owner, scope_id)` advisory fence generated from the flavor's `ScopeDecl`, taken shared by every admission of a payload declaring the scope and exclusively by that scope's erase before it selects. Carried by tests — `crates/storage-pg/tests/declared_scope_fence.rs` and `flavors/code/tests/repo_fence_pg.rs` — not by a theorem. The DECLARATION's completeness (a kind used and never declared, or declared twice) is a freeze refusal, pinned in `crates/core/src/flavor/freeze.rs` |
 
 ## 11 — Citations (CI)
 

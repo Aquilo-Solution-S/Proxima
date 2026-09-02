@@ -17,6 +17,7 @@ pub(in crate::engine) fn map_write_storage_error(
 ) -> ProtocolError {
     match err {
         StorageError::NotFound => ProtocolError::not_found(not_found_message),
+        StorageError::ScopeMissing { kind, id } => ProtocolError::scope_not_registered(&kind, id),
         StorageError::IdempotencyConflict { request_id } => {
             ProtocolError::idempotency_conflict(request_id)
         }

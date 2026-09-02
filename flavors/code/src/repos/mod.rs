@@ -11,10 +11,11 @@ pub mod scope;
 pub use erase::erase_repo;
 #[cfg(any(test, debug_assertions))]
 pub use erase::{erase_footprint, reference_closure_sql};
-/// The fence, reachable from an integration test so a barrier can hold the
-/// same lock the production paths take rather than a hand-copied key.
-#[cfg(any(test, debug_assertions))]
-pub use fence::{lock_repo_fence_exclusive_tx, lock_repo_fence_shared_tx};
+/// The declared lifecycle scope. `CODE_REPO_SCOPE` is what a repo-scoped
+/// payload names and what an integration-test barrier hands to
+/// `proxima::flavor::lock_scope_fence_exclusive_tx` — the same key the
+/// production paths take, not a hand-copied one.
+pub use fence::{CODE_REPO_SCOPE, CODE_REPO_SCOPE_DECL};
 pub use records::{
     RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
     StageCounters,

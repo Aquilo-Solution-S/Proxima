@@ -119,6 +119,7 @@ static TEST_REFS_CONTRACT: FlavorContract = FlavorContract {
     ordinal: 77,
     schemas: &[FACT_CONTRACT_SCHEMA],
     state_surfaces: &[],
+    scopes: &[],
     kernel_surfaces: &[],
     tools: &[],
     resources: &[],

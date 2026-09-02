@@ -173,6 +173,7 @@ mod tests {
             ordinal,
             schemas: &[],
             state_surfaces: &[],
+            scopes: &[],
             kernel_surfaces: &[],
             tools: &[],
             resources: &[],

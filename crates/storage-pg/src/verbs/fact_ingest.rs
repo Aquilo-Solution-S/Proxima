@@ -23,6 +23,7 @@ use proxima_core::{
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
+use crate::access::scope_surfaces::ScopeFenceTarget;
 use crate::error::{internal, map_err, with_bounded_retry};
 use crate::sidecars::PgSidecarRegistryFrozen;
 
@@ -49,11 +50,18 @@ pub trait PgFactSidecar: FactPayload + Sized {
 }
 
 /// What [`ingest_core`] needs beyond the draft: which embedding model to
-/// enqueue, and how the draft's citation resolves to a `blob_id`.
+/// enqueue, how the draft's citation resolves to a `blob_id`, and which
+/// flavor-declared lifecycle scopes this write's payloads belong to.
 #[derive(Debug, Clone, Copy)]
 struct IngestCoreOptions<'a> {
     embedding_model_id: Option<&'a str>,
     citation_plan: CitationPlan<'a>,
+    /// The declared scopes to fence, already sorted and deduplicated. Empty
+    /// for a payload-less write; a write whose payload declares a scope and
+    /// whose caller passes `&[]` here would admit a row a concurrent scope
+    /// erase cannot see, which is the defect this parameter exists to make
+    /// unspellable at the call site.
+    scopes: &'a [ScopeFenceTarget],
 }
 
 /// Authorization-bearing inputs shared by every Fact persistence route.
@@ -130,6 +138,11 @@ pub(crate) async fn ingest_fact_command_in_tx(
     let options = IngestCoreOptions {
         embedding_model_id,
         citation_plan: CitationPlan::DraftHint,
+        // The untyped Fact write: this route carries no `SidecarPayload` at
+        // all (`FactIngestPort::ingest_authorized_fact_atomic` refuses one
+        // that declares references), so there is no payload to read a scope
+        // off and no sidecar row for a scope erase to sweep.
+        scopes: &[],
     };
     ingest_core(
         tx,
@@ -156,12 +169,14 @@ pub(crate) async fn ingest_fact_command_in_tx(
 /// Fact sidecar insertion, cited-object sidecar insertion, or
 /// citation-mapping sidecar insertion. The caller owns transaction
 /// rollback/commit.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ingest_fact_with_citation_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitation,
     embedding_model_id: Option<&str>,
     sidecar_tables: &[String],
+    scopes: &[ScopeFenceTarget],
     fact_sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -177,6 +192,7 @@ where
         citation_plan: CitationPlan::Inline {
             cited_object: authorized.cited_object(),
         },
+        scopes,
     };
     ingest_core(
         tx,
@@ -210,12 +226,14 @@ where
 /// otherwise storage errors from core row materialization, Fact sidecar
 /// insertion, or citation-mapping sidecar insertion. The caller owns
 /// transaction rollback/commit.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ingest_fact_with_citation_ref_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitationRef,
     embedding_model_id: Option<&str>,
     sidecar_tables: &[String],
+    scopes: &[ScopeFenceTarget],
     fact_sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -232,6 +250,7 @@ where
             cited_object_id: authorized.cited_object_id(),
             expected_object_schema: authorized.expected_object_schema(),
         },
+        scopes,
     };
     ingest_core(
         tx,
@@ -402,6 +421,7 @@ async fn verify_cited_object_ref_in_tx(
 ///
 /// Returns storage errors from Fact materialization or sidecar
 /// insertion. The caller owns transaction rollback/commit.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ingest_fact_with_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedFactWrite,
@@ -409,6 +429,7 @@ pub(crate) async fn ingest_fact_with_sidecar_in_tx<F>(
     sidecar_tables: &[String],
     content_id: Option<uuid::Uuid>,
     content_payloads: &[SidecarPayload],
+    scopes: &[ScopeFenceTarget],
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -421,6 +442,7 @@ where
     let options = IngestCoreOptions {
         embedding_model_id,
         citation_plan: CitationPlan::DraftHint,
+        scopes,
     };
     ingest_core(
         tx,
@@ -466,6 +488,7 @@ where
         links.origins(),
         links.references(),
         sidecar_tables,
+        options.scopes,
     )
     .await?;
     super::memory_timeseries::lock_prepared_memory_admission(tx, &prepared).await?;

@@ -7,6 +7,7 @@
 use crate::authz::{AuthorizationHook, OwnerResolver};
 use crate::mcp::schema::{mcp_output_schema, mcp_tool_schema};
 use crate::mcp::validate_action_args;
+use crate::scope::ScopeKind;
 use crate::verbs::schema::{
     FlavorRegistryFrozen, PayloadKind, ProtocolPayload, ProtocolPayloadIngress,
     ProtocolPayloadIngressEntry, SchemaCapabilityTags, SchemaInfo,

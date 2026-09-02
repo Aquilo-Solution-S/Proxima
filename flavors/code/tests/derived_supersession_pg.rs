@@ -41,6 +41,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     let engine = build_engine(db.pg.clone()).with_embed(Arc::new(ConstantEmbedding));
 
     let repo_id = Uuid::now_v7();
+    common::register_fixture_repo(db.pg.pool_for_tests(), &owner, repo_id).await;
     let plan_source_memory_id = Uuid::now_v7();
     common::seed_memory(
         db.pg.pool_for_tests(),

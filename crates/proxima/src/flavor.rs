@@ -177,6 +177,29 @@ pub use proxima_core::{
 pub use proxima_core::{
     MAX_QUERY_CHARS, MAX_TEXT_CAP_CHARS, reject_zero_limit, validate_search_query,
 };
+/// The flavor-owned lifecycle scope: the declaration a flavor writes, and
+/// the erase-side fence that declaration makes available.
+///
+/// [`ScopeDecl`] goes in the flavor's [`FlavorContract::scopes`], and
+/// [`ScopeKind`] names it from the payloads that belong to it. Declaring
+/// the scope is the whole of the admission side — the Engine takes the
+/// fence and runs the liveness probe on EVERY write of a payload that
+/// names the scope, whether the caller is the flavor or a host writing
+/// straight through [`proxima_core::Engine`], and there is no opt-in and
+/// no opt-out.
+///
+/// [`lock_scope_fence_exclusive_tx`] is the other half, and the only half
+/// a flavor spells: a scope erase takes it in its own transaction BEFORE
+/// it reads what it intends to delete, so the footprint it computes is
+/// exact by construction. [`lock_scope_fence_shared_tx`] is for the
+/// flavor-owned writes that are NOT payload admissions — a run row, a
+/// cursor — which the Engine never sees and so cannot fence for you.
+///
+/// [`FlavorContract::scopes`]: proxima_core::FlavorContract::scopes
+pub use proxima_core::{ScopeDecl, ScopeKind, ScopeRef};
+pub use proxima_storage_pg::access::owner_columns::{
+    lock_scope_fence_exclusive_tx, lock_scope_fence_shared_tx,
+};
 pub use proxima_storage_pg::pg_sidecar;
 pub use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgGoalSidecar, PgMemoryPayload,
