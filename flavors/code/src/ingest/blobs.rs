@@ -511,50 +511,106 @@ pub(crate) fn plan_file_chunks(
 /// an indexed name table. Ten sites into the same callee are ten entries here
 /// and one index row — the multiplicity belongs to the node
 /// (docs/16 §The Model).
+///
+/// Two passes: [`resolve_call_endpoints`] answers "which chunks" against
+/// indexes built once per file, then this one writes the sites. The split is
+/// what lets the endpoint rule be read on its own; the payload mutation
+/// borrows `file_chunks` mutably and the name index borrows it immutably, so
+/// they cannot share a pass anyway.
 pub(crate) fn resolve_intra_file_calls(calls: &[ExtractedCall], file_chunks: &mut [ChunkInfo]) {
-    for call in calls {
-        let Some(caller_index) = file_chunks
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                c.payload.byte_range_start <= call.byte_start
-                    && c.payload.byte_range_end >= call.byte_end
-            })
-            .max_by_key(|(_, c)| c.payload.byte_range_start)
-            .map(|(index, _)| index)
-        else {
+    let endpoints = resolve_call_endpoints(calls, file_chunks);
+    // Where a `(caller, callee)` connection already sits in that caller's
+    // `calls`, so a repeated call appends a site instead of re-scanning the
+    // vec. Insertion order is the order the connections were pushed.
+    let mut entry_at: HashMap<(usize, Uuid), usize> = HashMap::new();
+    for (call, endpoint) in calls.iter().zip(endpoints) {
+        let Some((caller_index, callee_memory_id)) = endpoint else {
             continue;
         };
-        let Some(callee_memory_id) = file_chunks
-            .iter()
-            .find(|c| c.item_names.iter().any(|n| n == &call.callee_name))
-            .map(|c| c.memory_id)
-        else {
+        let Some(caller) = file_chunks.get_mut(caller_index) else {
             continue;
         };
-        // A chunk that calls itself is not a connection between two
-        // things, and the index refuses the row outright.
-        if file_chunks[caller_index].memory_id == callee_memory_id {
-            continue;
-        }
         let site = CodeCallSiteV1 {
             byte_start: call.byte_start,
             byte_end: call.byte_end,
             callee_name: call.callee_name.clone(),
             is_dynamic: call.is_dynamic,
         };
-        let calls = &mut file_chunks[caller_index].payload.calls;
-        match calls
-            .iter_mut()
-            .find(|existing| existing.callee_memory_id == callee_memory_id.into_inner())
-        {
-            Some(existing) => existing.sites.push(site),
-            None => calls.push(CodeCallV1 {
-                callee_memory_id: callee_memory_id.into_inner(),
-                sites: vec![site],
-            }),
+        let caller_calls = &mut caller.payload.calls;
+        match entry_at.entry((caller_index, callee_memory_id)) {
+            std::collections::hash_map::Entry::Occupied(slot) => {
+                if let Some(existing) = caller_calls.get_mut(*slot.get()) {
+                    existing.sites.push(site);
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(caller_calls.len());
+                caller_calls.push(CodeCallV1 {
+                    callee_memory_id,
+                    sites: vec![site],
+                });
+            }
         }
     }
+}
+
+/// Both endpoints of every call, in call order — `None` where the call has
+/// no caller chunk or names nothing this file defines.
+///
+/// Caller: the chunk containing the call whose byte-range start is largest,
+/// found by binary search over the chunks ordered by start rather than by
+/// scanning them all. The sort is stable, so an equal-start run keeps slice
+/// order and `partition_point` lands on that run's *last* member — the same
+/// chunk the earlier `max_by_key` returned, which is what the chunker's
+/// fallback path (every window carrying the whole blob as its range) depends
+/// on. Chunk spans do not nest on the AST path, so the containment check on
+/// the one candidate is the whole test.
+///
+/// Callee: the first chunk in slice order declaring the name, which is what
+/// the earlier linear `find` answered.
+fn resolve_call_endpoints(
+    calls: &[ExtractedCall],
+    file_chunks: &[ChunkInfo],
+) -> Vec<Option<(usize, Uuid)>> {
+    let mut by_start: Vec<(u32, u32, usize)> = file_chunks
+        .iter()
+        .enumerate()
+        .map(|(index, info)| {
+            (
+                info.payload.byte_range_start,
+                info.payload.byte_range_end,
+                index,
+            )
+        })
+        .collect();
+    by_start.sort_by_key(|&(start, ..)| start);
+
+    let mut callee_by_name: HashMap<&str, MemoryId> = HashMap::new();
+    for info in file_chunks {
+        for name in &info.item_names {
+            callee_by_name
+                .entry(name.as_str())
+                .or_insert(info.memory_id);
+        }
+    }
+
+    calls
+        .iter()
+        .map(|call| {
+            let above = by_start.partition_point(|&(start, ..)| start <= call.byte_start);
+            let &(_, end, caller_index) = by_start.get(above.checked_sub(1)?)?;
+            if end < call.byte_end {
+                return None;
+            }
+            let callee = *callee_by_name.get(call.callee_name.as_str())?;
+            // A chunk that calls itself is not a connection between two
+            // things, and the index refuses the row outright.
+            if file_chunks.get(caller_index)?.memory_id == callee {
+                return None;
+            }
+            Some((caller_index, callee.into_inner()))
+        })
+        .collect()
 }
 
 /// Build a tombstone `CodeChunkV1` payload for a `(repo, path, idx)`.
