@@ -841,3 +841,507 @@ impl FlavorRegistryError {
 }
 
 impl std::error::Error for FlavorRegistryError {}
+
+/// The pinned wording of every [`FlavorRegistryError`].
+///
+/// Registry refusals are read by a human at boot and by nothing else, so
+/// their text is the whole product. This module states each rendered
+/// message as a literal — no format string, no field interpolation — so it
+/// cannot drift with the code that produces it: the only way to change a
+/// message is to change the expectation next to it, deliberately.
+///
+/// The `match` in [`expected`] is exhaustive over an enum that is
+/// `#[non_exhaustive]` only outside this crate, so a new variant does not
+/// compile until it is worded here, and the discriminant count keeps
+/// [`all_variants`] from forgetting to construct it.
+#[cfg(test)]
+mod display_tests {
+    use super::{FlavorRegistryError, PayloadKind, SchemaId, SchemaVersion, ScopeKind};
+    use std::collections::HashSet;
+
+    /// The number of variants the enum carries today.
+    const VARIANT_COUNT: usize = 46;
+
+    fn sid(id: &str) -> SchemaId {
+        SchemaId::new(id.to_owned())
+    }
+
+    const fn ver(version: u32) -> SchemaVersion {
+        SchemaVersion::new(version)
+    }
+
+    /// One value per variant, plus a second `ProjectionLanguageColumn` for
+    /// its absent-column rendering.
+    // One line per variant is the point: a shorter body would be a shorter
+    // list of pinned messages.
+    #[allow(clippy::too_many_lines)]
+    fn all_variants() -> Vec<FlavorRegistryError> {
+        vec![
+            FlavorRegistryError::DuplicateSchema {
+                schema_id: sid("alpha.fact"),
+                schema_version: ver(1),
+                kind: PayloadKind::Fact,
+            },
+            FlavorRegistryError::DuplicateMemorySchemaSelector {
+                schema_id: sid("alpha.mem"),
+                kind: PayloadKind::Abstraction,
+                first_version: ver(1),
+                conflicting_version: ver(2),
+            },
+            FlavorRegistryError::DuplicateTool { name: "alpha_tool" },
+            FlavorRegistryError::DuplicateFlavor {
+                flavor_id: "alpha".to_owned(),
+            },
+            FlavorRegistryError::InvalidCapabilityTag {
+                schema_id: sid("alpha.tagged"),
+                schema_version: ver(2),
+                kind: PayloadKind::Perspective,
+                tag: "bad tag".to_owned(),
+                message: "unknown namespace".to_owned(),
+            },
+            FlavorRegistryError::InvalidToolName {
+                name: "bad-name",
+                expected_prefix: "alpha_".to_owned(),
+                message: "hyphen is not allowed".to_owned(),
+            },
+            FlavorRegistryError::DuplicateOwnerResolver,
+            FlavorRegistryError::SchemaIngressMismatch {
+                schema_id: sid("alpha.ingress"),
+                schema_version: ver(3),
+                kind: PayloadKind::Fact,
+            },
+            FlavorRegistryError::OpaqueSchemaKind {
+                schema_id: sid("alpha.opaque"),
+                schema_version: ver(4),
+                kind: PayloadKind::Goal,
+            },
+            FlavorRegistryError::UnregisteredSchemaCapabilityTags {
+                schema_id: sid("alpha.untagged"),
+                schema_version: ver(5),
+                kind: PayloadKind::CitedObject,
+            },
+            FlavorRegistryError::UndeclaredToolBehavior {
+                name: "alpha_silent",
+            },
+            FlavorRegistryError::DispatcherWithoutActionSpecs {
+                name: "alpha_dispatch",
+            },
+            FlavorRegistryError::InvalidActionSpecs {
+                name: "alpha_specs",
+                message: "action `read` is missing".to_owned(),
+            },
+            FlavorRegistryError::ConflictingActionVocabularies { name: "alpha_both" },
+            FlavorRegistryError::DuplicateFlavorOrdinal {
+                ordinal: 7,
+                flavor_id: "gamma",
+            },
+            FlavorRegistryError::ScopeNotDeclared {
+                schema_id: sid("alpha.scoped"),
+                kind: ScopeKind::new("alpha-repo"),
+            },
+            FlavorRegistryError::DuplicateScopeDeclaration {
+                kind: ScopeKind::new("alpha-repo"),
+                first_flavor_id: "alpha",
+                conflicting_flavor_id: "beta",
+            },
+            FlavorRegistryError::InvalidScopeDeclaration {
+                flavor_id: "alpha",
+                kind: ScopeKind::new("alpha-repo"),
+                message: "the registry table is unqualified",
+            },
+            FlavorRegistryError::ResourcesNotPermitted { flavor_id: "alpha" },
+            FlavorRegistryError::MissingCoreContract,
+            FlavorRegistryError::ContractSchemaPrefix {
+                flavor_id: "alpha",
+                schema_id: sid("beta.thing"),
+            },
+            FlavorRegistryError::UnreachableExportSurface {
+                flavor_id: "alpha",
+                table: "alpha.rows",
+            },
+            FlavorRegistryError::UndeletableSurface {
+                flavor_id: "alpha",
+                table: "alpha.rows",
+            },
+            FlavorRegistryError::BespokeEraseLegMismatch {
+                flavor_id: "alpha",
+                table: "alpha.rows",
+                why: "this flavor does not declare",
+            },
+            FlavorRegistryError::UnmovableSurface {
+                flavor_id: "alpha",
+                table: "alpha.rows",
+            },
+            FlavorRegistryError::BespokeTransferLegMismatch {
+                flavor_id: "alpha",
+                table: "alpha.rows",
+                why: "runs no statement at all",
+            },
+            FlavorRegistryError::UnforgettableSurface {
+                flavor_id: "alpha",
+                table: "alpha.rows",
+            },
+            FlavorRegistryError::EmbeddabilityDisagreement {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.embed"),
+                recipe_is_never: true,
+                machinery_embeds: false,
+            },
+            FlavorRegistryError::EmptyEmbeddingUnits {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.embed"),
+            },
+            FlavorRegistryError::NaturalKeyDisagreement {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.keyed"),
+            },
+            FlavorRegistryError::ToolActionsDisagreement {
+                flavor_id: "alpha",
+                name: "alpha_tool",
+            },
+            FlavorRegistryError::ToolIdempotenceDisagreement {
+                flavor_id: "alpha",
+                name: "alpha_tool",
+                declared: true,
+                resolved: false,
+            },
+            FlavorRegistryError::UnenforcedTransferRefusal {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.pinned"),
+            },
+            FlavorRegistryError::ContractSchemaNotRegistered {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.ghost"),
+                schema_version: ver(6),
+                kind: PayloadKind::CitationMapping,
+            },
+            FlavorRegistryError::SchemaWithoutContract {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.orphan"),
+                schema_version: ver(7),
+                kind: PayloadKind::Fact,
+            },
+            FlavorRegistryError::UnclaimedRegistration {
+                flavor_id: "alpha".to_owned(),
+            },
+            FlavorRegistryError::ProjectedSidecarNotMemoryKeyed {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.projected"),
+                table: "alpha.sidecar",
+            },
+            FlavorRegistryError::EmbeddedSidecarNotMemoryKeyed {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.embedded"),
+                table: "alpha.sidecar",
+            },
+            FlavorRegistryError::UnreachableSearchProjection {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.searched"),
+                why: "it declares no tag_column",
+            },
+            FlavorRegistryError::ContractToolNotRegistered {
+                flavor_id: "alpha",
+                name: "alpha_missing",
+            },
+            FlavorRegistryError::ProjectionWeightLevels {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.weighted"),
+                levels: 5,
+                classes: 4,
+            },
+            FlavorRegistryError::CitationSidecarNotRemappable {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.cited"),
+                table: "alpha.sidecar",
+            },
+            FlavorRegistryError::ProjectionLanguageColumn {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.projected"),
+                declared: "lang",
+                projection_column: Some("language"),
+            },
+            FlavorRegistryError::ProjectionLanguageColumn {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.projected"),
+                declared: "lang",
+                projection_column: None,
+            },
+            FlavorRegistryError::ProjectionRenderNotUniform {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.projected"),
+                property: "language",
+            },
+            FlavorRegistryError::ProjectionBandName {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.projected"),
+                missing: "strong",
+            },
+            FlavorRegistryError::ProjectionBandOutsideCoreWindow {
+                flavor_id: "alpha",
+                schema_id: sid("alpha.projected"),
+                band: "strong",
+                window: "[0, 2]".to_owned(),
+            },
+        ]
+    }
+
+    /// The message each fixture must render, byte for byte.
+    // One arm per variant, each holding a whole message; there is nothing to
+    // factor out of a list of literals.
+    #[allow(clippy::too_many_lines)]
+    fn expected(err: &FlavorRegistryError) -> String {
+        match err {
+            FlavorRegistryError::DuplicateSchema { .. } => {
+                "duplicate schema registered: alpha.fact v1 Fact"
+            }
+            FlavorRegistryError::DuplicateMemorySchemaSelector { .. } => {
+                "duplicate Memory schema selector: alpha.mem Abstraction has v1 and v2"
+            }
+            FlavorRegistryError::DuplicateTool { .. } => {
+                "duplicate tool name registered: alpha_tool"
+            }
+            FlavorRegistryError::DuplicateFlavor { .. } => {
+                "duplicate flavor descriptor registered: alpha"
+            }
+            FlavorRegistryError::InvalidCapabilityTag { .. } => {
+                "schema alpha.tagged v2 Perspective has invalid capability tag \"bad tag\": \
+                 unknown namespace"
+            }
+            FlavorRegistryError::InvalidToolName { .. } => {
+                "tool name \"bad-name\" is invalid for prefix \"alpha_\": hyphen is not allowed"
+            }
+            FlavorRegistryError::DuplicateOwnerResolver => "duplicate owner resolver registered",
+            FlavorRegistryError::SchemaIngressMismatch { .. } => {
+                "schema alpha.ingress v3 Fact has mismatched typed-ingress registration"
+            }
+            FlavorRegistryError::OpaqueSchemaKind { .. } => {
+                "schema alpha.opaque v4 Goal is opaque; only CitedObject and CitationMapping \
+                 schemas may be opaque"
+            }
+            FlavorRegistryError::UnregisteredSchemaCapabilityTags { .. } => {
+                "schema capability tags reference unregistered schema: alpha.untagged v5 \
+                 CitedObject"
+            }
+            FlavorRegistryError::UndeclaredToolBehavior { .. } => {
+                "tool alpha_silent declares no ANNOTATIONS, so the owner-role gate cannot tell a \
+                 read from a write and will demand write access; set `const ANNOTATIONS` on the \
+                 tool"
+            }
+            FlavorRegistryError::DispatcherWithoutActionSpecs { .. } => {
+                "tool alpha_dispatch has an internally tagged `Args` (its schema carries \
+                 x-proxima-actions) but declares no ACTION_ARG_SPECS, so nothing enumerates its \
+                 actions: set `const ACTION_ARG_SPECS` on the tool, or give it a plain struct \
+                 `Args`"
+            }
+            FlavorRegistryError::InvalidActionSpecs { .. } => {
+                "tool alpha_specs has inconsistent ACTION_ARG_SPECS: action `read` is missing"
+            }
+            FlavorRegistryError::ConflictingActionVocabularies { .. } => {
+                "tool alpha_both declares both ACTION_ARG_SPECS and ARGV_ACTION_SPECS; each is \
+                 the single enumeration of the tool's actions under its own dispatch shape, so \
+                 declare exactly one"
+            }
+            FlavorRegistryError::DuplicateFlavorOrdinal { .. } => {
+                "flavor gamma claims ordinal 7, which another flavor already holds; ordinals are \
+                 load-bearing at runtime and cannot collide"
+            }
+            FlavorRegistryError::ScopeNotDeclared { .. } => {
+                "schema alpha.scoped declares lifecycle scope alpha-repo, which no linked flavor \
+                 contract declares; add a ScopeDecl naming its registry table, id column and \
+                 owner columns"
+            }
+            FlavorRegistryError::DuplicateScopeDeclaration { .. } => {
+                "flavors alpha and beta both declare lifecycle scope alpha-repo; the kind is one \
+                 fence namespace and one registry, so it has one declaration or none"
+            }
+            FlavorRegistryError::InvalidScopeDeclaration { .. } => {
+                "flavor alpha's declaration of lifecycle scope alpha-repo is not spliceable: the \
+                 registry table is unqualified"
+            }
+            FlavorRegistryError::ResourcesNotPermitted { .. } => {
+                "flavor alpha declares proxima:// resources, which only flavor #0 may do: a \
+                 flavor resource needs its own scope-key namespace, URI-template parser and \
+                 pagination contract"
+            }
+            FlavorRegistryError::MissingCoreContract => {
+                "flavor contracts were registered but none is flavor #0; core is non-removable"
+            }
+            FlavorRegistryError::ContractSchemaPrefix { .. } => {
+                "flavor alpha declares schema beta.thing, which does not carry its prefix"
+            }
+            FlavorRegistryError::UnreachableExportSurface { .. } => {
+                "flavor alpha declares alpha.rows exportable, but it carries no owner column and \
+                 its key has no home table, so no export statement can reach its owner"
+            }
+            FlavorRegistryError::UndeletableSurface { .. } => {
+                "flavor alpha declares an erase for alpha.rows that no leg can perform: it is \
+                 keyed on neither a memory, a goal nor a blob, and no bespoke erase leg claims \
+                 it, so an owner erase would skip it and still report success"
+            }
+            FlavorRegistryError::BespokeEraseLegMismatch { .. } => {
+                "flavor alpha declares a bespoke erase leg for alpha.rows, which this flavor \
+                 does not declare"
+            }
+            FlavorRegistryError::UnmovableSurface { .. } => {
+                "flavor alpha declares a transfer for alpha.rows that no leg can perform: it is \
+                 keyed on neither a memory nor an entity t, and no bespoke transfer leg claims \
+                 it, so a transfer would skip it and still report success — leaving rows the \
+                 source owner can read after the memory became someone else's"
+            }
+            FlavorRegistryError::BespokeTransferLegMismatch { .. } => {
+                "flavor alpha declares a bespoke transfer leg for alpha.rows, which runs no \
+                 statement at all"
+            }
+            FlavorRegistryError::UnforgettableSurface { .. } => {
+                "flavor alpha declares that forget deletes alpha.rows with the memory, and the \
+                 forget reaches none of its rows: the key is neither a memory nor an entity t, \
+                 and no completeness constraint claims them either"
+            }
+            FlavorRegistryError::EmbeddabilityDisagreement { .. } => {
+                "flavor alpha declares alpha.embed with EmbeddingRecipe::Never = true, but the \
+                 drain resolves embed units for it = false; a schema that declares it embeds and \
+                 hands the drain nothing files embedding jobs the drain can only drop, and one \
+                 that declares Never while resolving a unit is silently embedded"
+            }
+            FlavorRegistryError::EmptyEmbeddingUnits { .. } => {
+                "flavor alpha declares alpha.embed with EmbeddingRecipe::Units(&[]); an empty \
+                 unit list yields the drain no text, which is what EmbeddingRecipe::Never says — \
+                 declare Never and state why, because Units answers `false` to is_never() and the \
+                 enqueue lane believes it"
+            }
+            FlavorRegistryError::NaturalKeyDisagreement { .. } => {
+                "flavor alpha declares natural key columns for alpha.keyed that are not the ones \
+                 the ingest reads off the payload trait"
+            }
+            FlavorRegistryError::ToolActionsDisagreement { .. } => {
+                "flavor alpha declares actions for alpha_tool that are not, in order, the actions \
+                 its registered dispatcher accepts"
+            }
+            FlavorRegistryError::ToolIdempotenceDisagreement { .. } => {
+                "flavor alpha declares alpha_tool idempotent = true; its resolved MCP annotations \
+                 say false, and the wire believes the annotations"
+            }
+            FlavorRegistryError::UnenforcedTransferRefusal { .. } => {
+                "flavor alpha declares alpha.pinned NotTransferable but names no enforcement \
+                 site; a refusal nothing backs is a comment"
+            }
+            FlavorRegistryError::ContractSchemaNotRegistered { .. } => {
+                "flavor alpha declares alpha.ghost v6 CitationMapping in its contract but never \
+                 registered it"
+            }
+            FlavorRegistryError::SchemaWithoutContract { .. } => {
+                "schema alpha.orphan v7 Fact is registered under flavor alpha but its contract \
+                 does not declare it, so every registry walk (erase, export, forget, transfer) \
+                 would miss its surfaces"
+            }
+            FlavorRegistryError::UnclaimedRegistration { .. } => {
+                "flavor alpha is linked into this binary and declares no FlavorContract, so \
+                 every registry walk (erase, export, forget, transfer) skips whatever it \
+                 registers and its Memory writes are refused later by a flavor_surface \
+                 constraint naming none of this; declare a FlavorContract for alpha and register \
+                 it, which for a flavor built with proxima_flavor! means adding `contract = \
+                 &<YOUR_CONTRACT>` to the macro"
+            }
+            FlavorRegistryError::ProjectedSidecarNotMemoryKeyed { .. } => {
+                "flavor alpha declares alpha.projected a search projection over sidecar \
+                 alpha.sidecar, and no surface of this flavor declares alpha.sidecar keyed on \
+                 the memory t; the projection generator spells each projection row's key from \
+                 that column, so there is no statement to generate -- declare a surface for \
+                 alpha.sidecar with `key: KeyShape::MemoryT { column: .. }`"
+            }
+            FlavorRegistryError::EmbeddedSidecarNotMemoryKeyed { .. } => {
+                "flavor alpha declares alpha.embedded an embed unit on sidecar alpha.sidecar, \
+                 and no surface of this flavor declares alpha.sidecar keyed on the memory t; the \
+                 drain filters the text read on that column, so there is no statement to \
+                 generate -- declare a surface for alpha.sidecar with `key: KeyShape::MemoryT { \
+                 column: .. }`"
+            }
+            FlavorRegistryError::UnreachableSearchProjection { .. } => {
+                "flavor alpha declares alpha.searched as a search projection that \
+                 core_search_memories can never scan: it declares no tag_column. Every write to \
+                 it still pays a projection row and a GIN index entry -- declare a tag_column so \
+                 a tag-filtered request reaches it, declare SearchProjectionDecl::None { why } \
+                 if it is not a search surface, or declare \
+                 RankSource::SidecarWithProjectionOwner { why } if the flavor's own tools rank it"
+            }
+            FlavorRegistryError::ContractToolNotRegistered { .. } => {
+                "flavor alpha declares MCP tool alpha_missing in its contract but never \
+                 registered it"
+            }
+            FlavorRegistryError::ProjectionWeightLevels { .. } => {
+                "flavor alpha schema alpha.weighted declares 5 distinct field weights, but \
+                 `PostgreSQL` stores a two-bit weight per lexeme position and offers exactly 4 \
+                 tsvector classes (A, B, C, D — see `PostgreSQL` 12.3.1); collapsing two levels \
+                 into one class would make ts_rank's weight array describe a document it is not \
+                 scoring"
+            }
+            FlavorRegistryError::CitationSidecarNotRemappable { .. } => {
+                "flavor alpha schema alpha.cited declares sidecar table alpha.sidecar for a \
+                 citation payload; a cross-owner transfer now dedupes a shared blob onto a NEW \
+                 blob row, and the columns that must follow it are the ones declared on \
+                 `TransferRule::FollowOrDedupe` -- a citation sidecar points at a blob by \
+                 convention with no SQL foreign key, so nothing would repoint it and the rows \
+                 would keep naming the source owner's row"
+            }
+            FlavorRegistryError::ProjectionLanguageColumn {
+                projection_column: Some(_),
+                ..
+            } => {
+                "flavor alpha schema alpha.projected declares LanguagePolicy::PerRow on \
+                 projection column lang, but its projection table's language column is language; \
+                 the generator writes one column per projection table, so a second name would be \
+                 a declaration nothing renders and every row would be stamped and ranked under a \
+                 configuration the contract never named"
+            }
+            FlavorRegistryError::ProjectionLanguageColumn {
+                projection_column: None,
+                ..
+            } => {
+                "flavor alpha schema alpha.projected declares LanguagePolicy::PerRow on \
+                 projection column lang, but its projection table's language column is absent; \
+                 the generator writes one column per projection table, so a second name would be \
+                 a declaration nothing renders and every row would be stamped and ranked under a \
+                 configuration the contract never named"
+            }
+            FlavorRegistryError::ProjectionRenderNotUniform { .. } => {
+                "flavor alpha declares RankSource::Projection, so one statement serves all of \
+                 its projected schemas -- but schema alpha.projected declares a different \
+                 language from the flavor's first projected schema, and one statement can spell \
+                 language only once"
+            }
+            FlavorRegistryError::ProjectionBandName { .. } => {
+                "flavor alpha declares RankSource::Projection, whose renderer resolves its arms \
+                 by band name -- but schema alpha.projected declares no band named \"strong\", so \
+                 that arm would have no window to score in"
+            }
+            FlavorRegistryError::ProjectionBandOutsideCoreWindow { .. } => {
+                "flavor alpha claims BandComparability::CoreBands, but schema alpha.projected \
+                 declares band \"strong\" as [0, 2], outside flavor #0's [0, 1] window; a merge \
+                 that compared those scores numerically would be comparing two different scales"
+            }
+        }
+        .to_owned()
+    }
+
+    #[test]
+    fn every_variant_renders_its_pinned_message() {
+        for err in all_variants() {
+            assert_eq!(
+                err.to_string(),
+                expected(&err),
+                "rendered message drifted for {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_golden_list_constructs_every_variant() {
+        let variants = all_variants();
+        let discriminants: HashSet<_> = variants.iter().map(std::mem::discriminant).collect();
+        assert_eq!(
+            discriminants.len(),
+            VARIANT_COUNT,
+            "all_variants() must construct every FlavorRegistryError variant"
+        );
+    }
+}
