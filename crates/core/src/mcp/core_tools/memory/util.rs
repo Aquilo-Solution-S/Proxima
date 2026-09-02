@@ -1,5 +1,73 @@
 use crate::McpToolError;
+use crate::mcp::McpToolCtx;
 use crate::verbs::goal_write::IdempotencyKey;
+use crate::{MemoryId, tool::validate_trimmed_len};
+
+/// Upper bound on the reserved `model_id` operator label, in characters.
+const MAX_OPERATOR_LABEL_CHARS: usize = 120;
+
+/// Resolve the reserved operator label for an authoring write.
+///
+/// `model_id` may arrive as an explicit argument or via the request-context
+/// `model_id` (which the MCP server strips into `ctx.author.model_id`); an
+/// omitted argument falls back to the latter. The label is trimmed before it
+/// is *used*, not just before it is checked: the stored label and any
+/// idempotency key derived from it must be the same string, or `" example "`
+/// and `"example"` are one label to the validator and two to the dedup key.
+///
+/// # Errors
+///
+/// Returns [`McpToolError::InvalidInput`] when the resolved label is blank
+/// after trimming or longer than [`MAX_OPERATOR_LABEL_CHARS`].
+pub fn operator_label(ctx: &McpToolCtx, explicit: Option<&str>) -> Result<String, McpToolError> {
+    let raw = explicit.map_or_else(|| ctx.author.model_id.clone(), ToString::to_string);
+    Ok(validate_trimmed_len("model_id", &raw, MAX_OPERATOR_LABEL_CHARS)?.to_string())
+}
+
+/// Resolve a caller's handle list to memories in request order with repeats
+/// dropped: a handle named twice is one input, and an empty result is not a
+/// declaration.
+///
+/// `resolve` is the surface's own handle resolver — `core_derive` reads the
+/// public handle vocabulary, `core_episode_commit` also reads the slots
+/// written earlier in the same transaction — and `T` is whatever that
+/// resolver classifies each handle as.
+///
+/// `field`, `max` and `empty_message` carry the calling surface's own error
+/// strings. The `max` bound is re-checked here so the helper is safe on its
+/// own, but every caller checks it first, against the raw argument and before
+/// any space or handle resolution, which is where each surface's error
+/// precedence is pinned.
+///
+/// # Errors
+///
+/// Returns [`McpToolError::InvalidInput`] when `handles` is over `max` or
+/// resolves to nothing, and whatever `resolve` returns for a bad handle.
+pub fn dedup_resolved<T>(
+    handles: &[String],
+    max: usize,
+    field: &'static str,
+    empty_message: &'static str,
+    mut resolve: impl FnMut(&str) -> Result<(MemoryId, T), McpToolError>,
+) -> Result<Vec<(MemoryId, T)>, McpToolError> {
+    if handles.len() > max {
+        return Err(McpToolError::InvalidInput(format!(
+            "{field} must contain at most {max} handles"
+        )));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(handles.len());
+    let mut resolved = Vec::with_capacity(handles.len());
+    for handle in handles {
+        let (memory_id, class) = resolve(handle)?;
+        if seen.insert(memory_id.into_inner()) {
+            resolved.push((memory_id, class));
+        }
+    }
+    if resolved.is_empty() {
+        return Err(McpToolError::InvalidInput(empty_message.into()));
+    }
+    Ok(resolved)
+}
 
 /// Normalize an explicitly-provided idempotency key to the shared
 /// write-surface contract — trimmed, 1..=180 chars — by parsing it
@@ -100,10 +168,127 @@ pub fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, McpToolError> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::memory_spaces::test_ctx::ctx_for;
     use super::{
-        MAX_TAGS, McpToolError, normalize_idempotency_key, normalize_tags, parse_observed_at,
+        MAX_OPERATOR_LABEL_CHARS, MAX_TAGS, McpToolError, dedup_resolved,
+        normalize_idempotency_key, normalize_tags, operator_label, parse_observed_at,
     };
     use crate::verbs::goal_write::IdempotencyKey;
+    use crate::{McpToolCtx, MemoryId, UserId};
+    use uuid::Uuid;
+
+    fn test_ctx() -> McpToolCtx {
+        ctx_for(
+            UserId::new(Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid")),
+            Vec::new(),
+        )
+    }
+
+    /// An omitted `model_id` falls back to the request context's label
+    /// rather than being rejected: the MCP server strips the reserved
+    /// request field into `ctx.author.model_id`, and that is the operator.
+    #[test]
+    fn operator_label_falls_back_to_the_request_context() {
+        let ctx = test_ctx();
+        assert_eq!(operator_label(&ctx, None).expect("context label"), "test");
+        assert_eq!(
+            operator_label(&ctx, Some("explicit-model")).expect("explicit label"),
+            "explicit-model",
+        );
+    }
+
+    /// The label is trimmed before it is stored, not just before it is
+    /// checked: `" m "` and `"m"` must be one operator on every surface,
+    /// or they are one label to the validator and two to the dedup key.
+    #[test]
+    fn operator_label_is_trimmed_before_it_is_stored() {
+        assert_eq!(
+            operator_label(&test_ctx(), Some("  spaced  ")).expect("trimmed label"),
+            "spaced",
+        );
+    }
+
+    #[test]
+    fn blank_and_oversized_operator_labels_are_rejected() {
+        let ctx = test_ctx();
+        assert!(operator_label(&ctx, Some("   ")).is_err());
+        assert!(operator_label(&ctx, Some(&"m".repeat(MAX_OPERATOR_LABEL_CHARS))).is_ok());
+        assert!(operator_label(&ctx, Some(&"m".repeat(MAX_OPERATOR_LABEL_CHARS + 1))).is_err());
+    }
+
+    fn memory(byte: u8) -> MemoryId {
+        MemoryId::new(Uuid::from_bytes([byte; 16]))
+    }
+
+    fn resolve_by_last_char(handle: &str) -> Result<(MemoryId, char), McpToolError> {
+        let last = handle
+            .chars()
+            .next_back()
+            .ok_or_else(|| McpToolError::InvalidInput("blank handle".into()))?;
+        Ok((memory(last as u8), last))
+    }
+
+    /// Request order survives, repeats collapse to their first occurrence,
+    /// and the resolver's classification rides along with each memory.
+    #[test]
+    fn dedup_resolved_keeps_request_order_and_drops_repeats() {
+        let handles = vec![
+            "mem-b".to_string(),
+            "mem-a".to_string(),
+            "other-b".to_string(),
+            "mem-a".to_string(),
+        ];
+        assert_eq!(
+            dedup_resolved(
+                &handles,
+                8,
+                "source_handles",
+                "nonempty",
+                resolve_by_last_char
+            )
+            .expect("resolved"),
+            vec![(memory(b'b'), 'b'), (memory(b'a'), 'a')],
+        );
+    }
+
+    #[test]
+    fn dedup_resolved_rejects_an_empty_result_with_the_callers_message() {
+        let McpToolError::InvalidInput(message) = dedup_resolved(
+            &[],
+            8,
+            "source_handles",
+            "source_handles must be nonempty for operator derivation",
+            resolve_by_last_char,
+        )
+        .expect_err("no declared inputs") else {
+            panic!("an empty declaration must be invalid input");
+        };
+        assert_eq!(
+            message,
+            "source_handles must be nonempty for operator derivation"
+        );
+    }
+
+    #[test]
+    fn dedup_resolved_rejects_more_handles_than_the_cap() {
+        let handles: Vec<String> = (0..3).map(|i| format!("mem-{i}")).collect();
+        let McpToolError::InvalidInput(message) =
+            dedup_resolved(&handles, 2, "subjects", "nonempty", resolve_by_last_char)
+                .expect_err("over the cap")
+        else {
+            panic!("an over-cap declaration must be invalid input");
+        };
+        assert_eq!(message, "subjects must contain at most 2 handles");
+    }
+
+    /// A handle the surface cannot resolve fails the whole declaration:
+    /// silently dropping it would write a derivation over fewer inputs
+    /// than the caller declared.
+    #[test]
+    fn dedup_resolved_propagates_a_resolver_error() {
+        let handles = vec!["ok".to_string(), String::new()];
+        assert!(dedup_resolved(&handles, 8, "subjects", "nonempty", resolve_by_last_char).is_err());
+    }
 
     #[test]
     fn omitted_observed_at_is_allowed() {

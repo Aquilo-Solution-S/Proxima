@@ -53,12 +53,10 @@ const BLOB_BATCH_BYTES: u64 = 8 * 1024 * 1024;
 use crate::calls::{ExtractedCall, ExtractedDefinition, extract_blob_callgraph};
 use crate::chunker::{Chunk, chunk_blob};
 use crate::ingest::{
-    FileRevisionHead, IngestError, append_code_slices_with_handles, assign_code_chunk_handles,
-    ingest_commit, ingest_file_revision,
+    ChunkInfo, FileRevisionHead, IngestError, append_code_slices_with_handles, ingest_commit,
+    ingest_file_revision, plan_file_chunks, resolve_intra_file_calls, tombstone_chunk,
 };
-use crate::payloads::{
-    CodeCallSiteV1, CodeCallV1, CodeChunkV1, CommitV1, FileRevisionV1, FileState,
-};
+use crate::payloads::{CommitV1, FileRevisionV1, FileState};
 use crate::repos::ScopeMatcher;
 use crate::store::CodeFlavorStore;
 
@@ -878,7 +876,13 @@ impl LocalGitSource {
             .await?;
         self.tombstone_vanished_slices(ctx, &pending, &heads, report)
             .await?;
-        let mut file_chunks = self.plan_file_chunks(&pending, &heads)?;
+        let mut file_chunks = plan_file_chunks(
+            self.repo_id,
+            &pending.path,
+            &pending.analysis.chunks,
+            &pending.analysis.definitions,
+            &heads,
+        )?;
         resolve_intra_file_calls(&pending.analysis.calls, &mut file_chunks);
         self.append_file_chunks(ctx, &pending, &file_chunks, report)
             .await
@@ -933,56 +937,6 @@ impl LocalGitSource {
             report.chunks_tombstoned += tomb_payloads.len();
         }
         Ok(())
-    }
-
-    /// Build this file's slice payloads and pair each with the series handle
-    /// it will be written under.
-    ///
-    /// Reuse listed series handles so intra-file calls can name callees
-    /// before insert. Mint only on miss.
-    fn plan_file_chunks(
-        &self,
-        pending: &PendingPresentBlob,
-        heads: &[proxima_storage_pg::query::ChunkSeriesHead],
-    ) -> Result<Vec<ChunkInfo>, IndexError> {
-        let mut bare_payloads: Vec<CodeChunkV1> = Vec::new();
-        for (idx, chunk) in pending.analysis.chunks.iter().enumerate() {
-            let chunk_index = u32::try_from(idx).unwrap_or(u32::MAX);
-            bare_payloads.push(CodeChunkV1 {
-                repo_id: self.repo_id,
-                file_path: pending.path.clone(),
-                chunk_index,
-                text: chunk.text.clone(),
-                language: chunk.language.map(str::to_string),
-                chunk_type: chunk.chunk_type.to_string(),
-                byte_range_start: chunk.byte_range_start,
-                byte_range_end: chunk.byte_range_end,
-                line_range_start: chunk.line_range_start,
-                line_range_end: chunk.line_range_end,
-                state: FileState::Present,
-                calls: Vec::new(),
-            });
-        }
-        let handles = assign_code_chunk_handles(heads, &bare_payloads)?;
-        let mut file_chunks: Vec<ChunkInfo> = Vec::new();
-        for (payload, handle) in bare_payloads.into_iter().zip(handles) {
-            let memory_id = MemoryId::new(handle);
-            let item_names: Vec<String> = pending
-                .analysis
-                .definitions
-                .iter()
-                .filter(|d| {
-                    d.byte_start >= payload.byte_range_start && d.byte_end <= payload.byte_range_end
-                })
-                .map(|d| d.name.clone())
-                .collect();
-            file_chunks.push(ChunkInfo {
-                memory_id,
-                payload,
-                item_names,
-            });
-        }
-        Ok(file_chunks)
     }
 
     /// Write the file's slices in one transaction: the chunks reference each
@@ -1092,86 +1046,6 @@ impl LocalGitSource {
             report.chunks_tombstoned += tomb_payloads.len();
         }
         Ok(())
-    }
-}
-
-/// Resolve each call into the caller/callee chunk pair and record it in the
-/// *caller's payload*. Resolution is intra-file v1; cross-file calls wait for
-/// an indexed name table. Ten sites into the same callee are ten entries here
-/// and one index row — the multiplicity belongs to the node
-/// (docs/16 §The Model).
-fn resolve_intra_file_calls(calls: &[ExtractedCall], file_chunks: &mut [ChunkInfo]) {
-    for call in calls {
-        let Some(caller_index) = file_chunks
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                c.payload.byte_range_start <= call.byte_start
-                    && c.payload.byte_range_end >= call.byte_end
-            })
-            .max_by_key(|(_, c)| c.payload.byte_range_start)
-            .map(|(index, _)| index)
-        else {
-            continue;
-        };
-        let Some(callee_memory_id) = file_chunks
-            .iter()
-            .find(|c| c.item_names.iter().any(|n| n == &call.callee_name))
-            .map(|c| c.memory_id)
-        else {
-            continue;
-        };
-        // A chunk that calls itself is not a connection between two
-        // things, and the index refuses the row outright.
-        if file_chunks[caller_index].memory_id == callee_memory_id {
-            continue;
-        }
-        let site = CodeCallSiteV1 {
-            byte_start: call.byte_start,
-            byte_end: call.byte_end,
-            callee_name: call.callee_name.clone(),
-            is_dynamic: call.is_dynamic,
-        };
-        let calls = &mut file_chunks[caller_index].payload.calls;
-        match calls
-            .iter_mut()
-            .find(|existing| existing.callee_memory_id == callee_memory_id.into_inner())
-        {
-            Some(existing) => existing.sites.push(site),
-            None => calls.push(CodeCallV1 {
-                callee_memory_id: callee_memory_id.into_inner(),
-                sites: vec![site],
-            }),
-        }
-    }
-}
-
-/// Build a tombstone `CodeChunkV1` payload for a `(repo, path, idx)`.
-/// `language` is `None` when the file itself was deleted; for shrink
-/// tombstones the file's current language is preserved so the head
-/// view stays self-consistent.
-fn tombstone_chunk(
-    repo_id: Uuid,
-    path: &str,
-    chunk_index: u32,
-    language: Option<String>,
-) -> CodeChunkV1 {
-    CodeChunkV1 {
-        repo_id,
-        file_path: path.to_string(),
-        chunk_index,
-        text: String::new(),
-        language,
-        chunk_type: "block".into(),
-        byte_range_start: 0,
-        byte_range_end: 0,
-        line_range_start: 0,
-        line_range_end: 0,
-        state: FileState::Tombstone,
-        // A tombstone slice asserts that the position is gone. It calls
-        // nothing, so it declares nothing and its index rows disappear
-        // with it.
-        calls: Vec::new(),
     }
 }
 
@@ -1329,12 +1203,4 @@ struct PendingDeletedPath {
     path: String,
     file_revision: MemoryId,
     source_commit: Option<MemoryId>,
-}
-
-/// Chunk info for call resolution.
-#[derive(Debug, Clone)]
-struct ChunkInfo {
-    memory_id: MemoryId,
-    payload: CodeChunkV1,
-    item_names: Vec<String>,
 }

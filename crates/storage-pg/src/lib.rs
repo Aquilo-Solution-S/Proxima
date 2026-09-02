@@ -58,6 +58,7 @@ pub mod query {
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
 mod tuning;
+mod tx;
 pub mod verbs;
 /// Stable, discoverable re-export of the exported `OwnerAccessPort` adapter
 /// (see [`access::PgOwnerAccessResolver`]) for embedding hosts.
@@ -311,8 +312,21 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
     // broken marker. Both the order of the calls below and the branch order
     // inside each group are therefore load-bearing: the first group that
     // reports a marker still names the same failure the single `CASE` did, and
-    // a later group may assume every marker before it holds — it probes
-    // columns of relations an earlier group proved present.
+    // a later group may assume every marker before it holds. Two dependencies
+    // ride on that assumption:
+    //
+    // * Cross-group: an absent relation makes a `'<relation>'::regclass` cast
+    //   raise instead of returning NULL, and Postgres folds that constant
+    //   while planning, so it aborts the whole statement even when an earlier
+    //   `WHEN` arm of the same group would have matched. A presence leaf must
+    //   therefore live in an earlier group, not merely earlier in the same
+    //   `CASE`: `CORE_RELATION_MARKERS` proves `goal`,
+    //   `goal_replay_declaration` and `blob_uploads` before the groups that
+    //   cast them.
+    // * Intra-group: a group that proves a relation and then probes its
+    //   columns must keep the relation branch ahead of the column branches, so
+    //   a missing relation reports as a missing relation rather than as a pile
+    //   of missing columns.
     probe_marker_group(pool, sqlx::query_scalar(CORE_RELATION_MARKERS)).await?;
     probe_marker_group(pool, sqlx::query_scalar(GOAL_REPLAY_DECLARATION_MARKERS)).await?;
     probe_marker_group(pool, sqlx::query_scalar(BLOB_UPLOAD_HASH_MARKERS)).await?;
@@ -363,6 +377,8 @@ const CORE_RELATION_MARKERS: &str = r"SELECT CASE
            THEN 'missing relation proxima_core.goal'
          WHEN to_regclass('proxima_core.goal_replay_declaration') IS NULL
            THEN 'missing relation proxima_core.goal_replay_declaration'
+         WHEN to_regclass('proxima_core.blob_uploads') IS NULL
+           THEN 'missing relation proxima_core.blob_uploads'
          ELSE NULL
        END";
 

@@ -1,7 +1,8 @@
 //! Forget / hydrate / erase.
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use proxima_core::flavor::ForgetLeg;
 use proxima_core::owner_inverse::OwnerSurfaces;
@@ -15,6 +16,7 @@ use uuid::Uuid;
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::sidecars::PgSidecarRegistryFrozen;
+use crate::tx::{TxOutcome, in_transaction};
 
 /// Version 6 adds the exact `memory.sidecar_tables` stamp to each object.
 /// Version 7 adds contract-declared cascaded detail declarations and their
@@ -1137,6 +1139,11 @@ pub(crate) async fn lock_forget_memories_tx(
     lock_lifecycle_targets_tx(tx, ts).await
 }
 
+/// The column list an `INSERT` splices, in `attnum` order.
+///
+/// `pg_attribute` is the only source: the spliced order is the column order
+/// of the statement text, and `information_schema.columns` would reorder it.
+/// Reached through [`ColdCatalogCache::insertable`], never directly.
 async fn insertable_columns(
     tx: &mut Transaction<'_, Postgres>,
     table: &str,
@@ -1164,6 +1171,148 @@ async fn insertable_columns(
     Ok(columns)
 }
 
+/// The insertable/required split of one relation's live column declaration.
+///
+/// A generated column is neither insertable nor required, so it is excluded
+/// on both sides. `column_count` is the raw catalog row count, kept separate
+/// from the two derived sets: an unknown relation declares no column at all,
+/// which is not the same answer as a relation whose every column is
+/// generated.
+#[derive(Debug, Default)]
+struct ColumnShape {
+    column_count: usize,
+    insertable: BTreeSet<String>,
+    required: Vec<String>,
+}
+
+impl ColumnShape {
+    /// The `column_name`, `is_nullable`, `is_generated` triples PostgreSQL
+    /// reports for one relation, split once.
+    fn from_declared(columns: &[(String, String, String)]) -> Self {
+        let mut shape = Self {
+            column_count: columns.len(),
+            ..Self::default()
+        };
+        for (name, nullable, generated) in columns {
+            if generated != "NEVER" {
+                continue;
+            }
+            shape.insertable.insert(name.clone());
+            if nullable == "NO" {
+                shape.required.push(name.clone());
+            }
+        }
+        shape
+    }
+
+    /// Whether the live catalog described this relation at all.
+    fn is_empty(&self) -> bool {
+        self.column_count == 0
+    }
+
+    /// Whether the relation declares `column` as insertable.
+    fn has_insertable(&self, column: &str) -> bool {
+        self.insertable.contains(column)
+    }
+
+    /// Whether one decoded cold object names only insertable columns and
+    /// carries a non-null value for every required one.
+    fn accepts(&self, object: &serde_json::Map<String, serde_json::Value>) -> bool {
+        if object.keys().any(|name| !self.has_insertable(name)) {
+            return false;
+        }
+        !self
+            .required
+            .iter()
+            .any(|name| object.get(name).is_none_or(serde_json::Value::is_null))
+    }
+}
+
+/// The live column declarations one hydration transaction has already read.
+///
+/// Both halves of hydration ask the catalog about the same handful of
+/// relations once per item: the planner for the declared shape, the write
+/// half for the spliced insert list. A bounded batch of 64 admissions turns
+/// that into hundreds of catalog reads over a few relations, so the answers
+/// are memoised for the life of the transaction.
+///
+/// No invalidation is needed inside one transaction: neither half issues
+/// DDL, the cache is only a pre-filter — every admitted payload still faces
+/// the live `jsonb_populate_*` probe and the live `INSERT` — and concurrent
+/// DDL needs `ACCESS EXCLUSIVE`, which serialises against the probe's
+/// `ACCESS SHARE`. It is deliberately not a [`crate::PgStorage`] field
+/// (a migration would have to invalidate it) nor a [`PreparedHydration`]
+/// field (it must be shared across items). The `Arc` returns end the borrow
+/// at the call so the caller's future stays `Send`.
+#[derive(Default)]
+struct ColdCatalogCache {
+    declared: BTreeMap<(String, String), Arc<ColumnShape>>,
+    insertable: BTreeMap<String, Arc<Vec<String>>>,
+}
+
+impl ColdCatalogCache {
+    async fn declared(
+        &mut self,
+        tx: &mut Transaction<'_, Postgres>,
+        schema_name: &str,
+        relation_name: &str,
+    ) -> Result<Arc<ColumnShape>, StorageError> {
+        let key = (schema_name.to_owned(), relation_name.to_owned());
+        if let Some(shape) = self.declared.get(&key) {
+            return Ok(Arc::clone(shape));
+        }
+        let shape = Arc::new(ColumnShape::from_declared(
+            &declared_columns(tx, schema_name, relation_name).await?,
+        ));
+        self.declared.insert(key, Arc::clone(&shape));
+        Ok(shape)
+    }
+
+    async fn insertable(
+        &mut self,
+        tx: &mut Transaction<'_, Postgres>,
+        table: &str,
+    ) -> Result<Arc<Vec<String>>, StorageError> {
+        if let Some(columns) = self.insertable.get(table) {
+            return Ok(Arc::clone(columns));
+        }
+        let columns = Arc::new(insertable_columns(tx, table).await?);
+        self.insertable
+            .insert(table.to_owned(), Arc::clone(&columns));
+        Ok(columns)
+    }
+}
+
+/// Which `jsonb_populate_*` form a cold payload is probed with.
+///
+/// The two lanes differ in more than the function name, so both differences
+/// are named here rather than left implicit at the call sites.
+#[derive(Clone, Copy, Debug)]
+enum ColdShape {
+    /// One object through `jsonb_populate_record`. The statement returns
+    /// exactly one row unless PostgreSQL refused the payload, so an empty
+    /// result is a rejection.
+    Record,
+    /// An array of rows through `jsonb_populate_recordset`, whose SELECT
+    /// returns a row only when one of them populated a NULL key. Any `Ok`
+    /// passes — INCLUDING that row. The asymmetry is deliberate and
+    /// preserved: `decode_cold_detail_rows` has already proven every key
+    /// parses to this exact `t`, so the predicate is unreachable, and
+    /// tightening it here would silently narrow the detail lane rather than
+    /// unify the two probes.
+    RecordSet,
+}
+
+impl ColdShape {
+    /// Whether an `Ok` result that did or did not return a row passes.
+    const fn passes(self, returned_row: bool) -> bool {
+        match self {
+            Self::Record => returned_row,
+            Self::RecordSet => true,
+        }
+    }
+}
+
 /// Validate every sidecar dump before the hydration atom writes its Memory
 /// row. The dump is normally produced by [`dump_stamped_sidecars`], but the
 /// cold store is an external durability boundary and must be treated as
@@ -1177,6 +1326,7 @@ async fn insertable_columns(
 /// and other column types without inserting a row.
 async fn validate_cold_sidecars(
     tx: &mut Transaction<'_, Postgres>,
+    cache: &mut ColdCatalogCache,
     sidecars: &PgSidecarRegistryFrozen,
     dumps: &[(String, String)],
     t: Uuid,
@@ -1192,15 +1342,17 @@ async fn validate_cold_sidecars(
         let Some(dump) = decode_cold_sidecar_dump(sidecars, table, json, t) else {
             return Ok(false);
         };
-        let columns = declared_columns(tx, dump.schema_name, dump.relation_name).await?;
-        if columns.is_empty() || !cold_object_columns_match(&dump.object, &columns) {
+        let columns = cache
+            .declared(tx, dump.schema_name, dump.relation_name)
+            .await?;
+        if columns.is_empty() || !columns.accepts(&dump.object) {
             return Ok(false);
         }
         let sql = format!(
             "SELECT jsonb_populate_record(NULL::{table}, $1::jsonb)",
             table = dump.ident.as_str()
         );
-        if !probe_cold_sidecar_shape(tx, sql, json).await? {
+        if !probe_cold_shape(tx, ColdShape::Record, sql, json).await? {
             return Ok(false);
         }
     }
@@ -1247,7 +1399,8 @@ fn decode_cold_sidecar_dump<'a>(
 
 /// The `column_name`, `is_nullable`, `is_generated` triples PostgreSQL
 /// reports for one relation. Both cold validators read the live catalog
-/// rather than trusting the external record's own column set.
+/// rather than trusting the external record's own column set. Reached
+/// through [`ColdCatalogCache::declared`], never directly.
 async fn declared_columns(
     tx: &mut Transaction<'_, Postgres>,
     schema_name: &str,
@@ -1265,90 +1418,82 @@ async fn declared_columns(
     .map_err(map_err)
 }
 
-/// Whether one decoded cold object names only insertable columns and carries
-/// a non-null value for every required one. A generated column is neither
-/// insertable nor required, so it is excluded on both sides.
-fn cold_object_columns_match(
-    object: &serde_json::Map<String, serde_json::Value>,
-    columns: &[(String, String, String)],
-) -> bool {
-    let insertable = columns
-        .iter()
-        .filter(|(_, _, generated)| generated == "NEVER")
-        .map(|(name, _, _)| name.as_str())
-        .collect::<BTreeSet<_>>();
-    if object
-        .keys()
-        .any(|name| !insertable.contains(name.as_str()))
-    {
-        return false;
-    }
-    !columns.iter().any(|(name, nullable, generated)| {
-        generated == "NEVER"
-            && nullable == "NO"
-            && object.get(name).is_none_or(serde_json::Value::is_null)
-    })
-}
-
-/// Let PostgreSQL validate one sidecar dump's concrete column types by
-/// populating a record from it, without inserting a row.
+/// Let PostgreSQL validate one cold payload's concrete column types by
+/// populating a record (or recordset) from it, without inserting a row.
 ///
 /// PostgreSQL aborts the surrounding transaction after a deterministic cast
 /// error. Probing behind a savepoint lets a malformed external object become
 /// a typed preflight result and the remaining set still be rolled back
 /// cleanly, rather than surfacing "current transaction is aborted" from an
 /// unrelated statement.
-async fn probe_cold_sidecar_shape(
+///
+/// One savepoint per lane, never nested. Each name is emitted by a `match`
+/// over the shape so the statement stays a literal at its call site.
+async fn probe_cold_shape(
     tx: &mut Transaction<'_, Postgres>,
+    shape: ColdShape,
     sql: String,
     json: &str,
 ) -> Result<bool, StorageError> {
-    sqlx::query("SAVEPOINT cold_sidecar_shape")
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+    match shape {
+        ColdShape::Record => sqlx::query("SAVEPOINT cold_sidecar_shape"),
+        ColdShape::RecordSet => sqlx::query("SAVEPOINT cold_detail_shape"),
+    }
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
     // SQL-POLICY: PgIdent
     match sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(json)
         .fetch_optional(tx.as_mut())
         .await
     {
-        Ok(Some(_)) => {
-            sqlx::query("RELEASE SAVEPOINT cold_sidecar_shape")
-                .execute(tx.as_mut())
-                .await
-                .map_err(map_err)?;
+        Ok(row) if shape.passes(row.is_some()) => {
+            match shape {
+                ColdShape::Record => sqlx::query("RELEASE SAVEPOINT cold_sidecar_shape"),
+                ColdShape::RecordSet => sqlx::query("RELEASE SAVEPOINT cold_detail_shape"),
+            }
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
             Ok(true)
         }
-        Ok(None) => {
-            discard_cold_sidecar_shape(tx).await?;
+        Ok(_) => {
+            discard_cold_shape(tx, shape).await?;
             Ok(false)
         }
         Err(sqlx::Error::Database(db))
             if db.code().as_deref().is_some_and(is_cold_data_shape_code) =>
         {
-            discard_cold_sidecar_shape(tx).await?;
+            discard_cold_shape(tx, shape).await?;
             Ok(false)
         }
         Err(error) => {
-            discard_cold_sidecar_shape(tx).await?;
+            discard_cold_shape(tx, shape).await?;
             Err(map_err(error))
         }
     }
 }
 
-/// Undo the sidecar shape savepoint after a probe that did not pass.
-async fn discard_cold_sidecar_shape(
+/// Undo the shape savepoint after a probe that did not pass.
+async fn discard_cold_shape(
     tx: &mut Transaction<'_, Postgres>,
+    shape: ColdShape,
 ) -> Result<(), StorageError> {
-    sqlx::query("ROLLBACK TO SAVEPOINT cold_sidecar_shape")
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("RELEASE SAVEPOINT cold_sidecar_shape")
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+    match shape {
+        ColdShape::Record => sqlx::query("ROLLBACK TO SAVEPOINT cold_sidecar_shape"),
+        ColdShape::RecordSet => sqlx::query("ROLLBACK TO SAVEPOINT cold_detail_shape"),
+    }
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    match shape {
+        ColdShape::Record => sqlx::query("RELEASE SAVEPOINT cold_sidecar_shape"),
+        ColdShape::RecordSet => sqlx::query("RELEASE SAVEPOINT cold_detail_shape"),
+    }
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
     Ok(())
 }
 
@@ -1357,16 +1502,18 @@ async fn discard_cold_sidecar_shape(
 /// external record may supply only the row values. PostgreSQL's recordset
 /// probe checks the concrete column types and constraints without allowing a
 /// malformed object to abort the caller's transaction.
+///
+/// The caller checks `cold_detail_stamp_matches` immediately before this and
+/// maps its failure to `UnsupportedObject`; there is deliberately no second
+/// check here, which would have mapped the same predicate to `InvalidObject`.
 async fn validate_cold_details(
     tx: &mut Transaction<'_, Postgres>,
+    cache: &mut ColdCatalogCache,
     surfaces: &OwnerSurfaces,
     rec: &ColdRecord,
     t: Uuid,
 ) -> Result<bool, StorageError> {
     let expected = surfaces.cascaded_details_for_schema(&rec.schema_id);
-    if !cold_detail_stamp_matches(rec, surfaces) {
-        return Ok(false);
-    }
     for (detail, (table_name, rows)) in expected.iter().zip(&rec.detail_dumps) {
         if detail.table != table_name {
             return Ok(false);
@@ -1376,12 +1523,8 @@ async fn validate_cold_details(
         let Some((schema_name, relation_name)) = detail.table.split_once('.') else {
             return Ok(false);
         };
-        let columns = declared_columns(tx, schema_name, relation_name).await?;
-        if columns.is_empty()
-            || !columns
-                .iter()
-                .any(|(name, _, generated)| name == detail.key_column && generated == "NEVER")
-        {
+        let columns = cache.declared(tx, schema_name, relation_name).await?;
+        if columns.is_empty() || !columns.has_insertable(detail.key_column) {
             return Ok(false);
         }
         let Some(values) = decode_cold_detail_rows(rows, &columns, detail.key_column, t) else {
@@ -1398,7 +1541,7 @@ async fn validate_cold_details(
             table = table.as_str(),
             key = key_column.as_str(),
         );
-        if !probe_cold_detail_shape(tx, sql, &json).await? {
+        if !probe_cold_shape(tx, ColdShape::RecordSet, sql, &json).await? {
             return Ok(false);
         }
     }
@@ -1410,7 +1553,7 @@ async fn validate_cold_details(
 /// no-owner rule. `None` refuses the whole dump.
 fn decode_cold_detail_rows(
     rows: &[String],
-    columns: &[(String, String, String)],
+    columns: &ColumnShape,
     key_column: &str,
     t: Uuid,
 ) -> Option<Vec<serde_json::Value>> {
@@ -1422,7 +1565,7 @@ fn decode_cold_detail_rows(
         if key_value.parse::<Uuid>().ok() != Some(t) || object.contains_key("owner_id") {
             return None;
         }
-        if !cold_object_columns_match(object, columns) {
+        if !columns.accepts(object) {
             return None;
         }
         values.push(value);
@@ -1430,77 +1573,26 @@ fn decode_cold_detail_rows(
     Some(values)
 }
 
-/// Let PostgreSQL evaluate one detail dump's rows against the live relation
-/// without inserting them. Same savepoint fence as the sidecar probe: a
-/// malformed external row becomes a typed preflight result instead of
-/// aborting the caller's transaction.
-async fn probe_cold_detail_shape(
-    tx: &mut Transaction<'_, Postgres>,
-    sql: String,
-    json: &str,
-) -> Result<bool, StorageError> {
-    sqlx::query("SAVEPOINT cold_detail_shape")
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    // SQL-POLICY: PgIdent
-    match sqlx::query(sqlx::AssertSqlSafe(sql))
-        .bind(json)
-        .fetch_optional(tx.as_mut())
-        .await
-    {
-        Ok(_) => {
-            sqlx::query("RELEASE SAVEPOINT cold_detail_shape")
-                .execute(tx.as_mut())
-                .await
-                .map_err(map_err)?;
-            Ok(true)
-        }
-        Err(sqlx::Error::Database(db))
-            if db.code().as_deref().is_some_and(is_cold_data_shape_code) =>
-        {
-            discard_cold_detail_shape(tx).await?;
-            Ok(false)
-        }
-        Err(error) => {
-            discard_cold_detail_shape(tx).await?;
-            Err(map_err(error))
-        }
-    }
-}
-
-/// Undo the detail shape savepoint after a probe that did not pass.
-async fn discard_cold_detail_shape(tx: &mut Transaction<'_, Postgres>) -> Result<(), StorageError> {
-    sqlx::query("ROLLBACK TO SAVEPOINT cold_detail_shape")
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("RELEASE SAVEPOINT cold_detail_shape")
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    Ok(())
-}
-
 async fn restore_registered_sidecars(
     tx: &mut Transaction<'_, Postgres>,
+    cache: &mut ColdCatalogCache,
     sidecars: &PgSidecarRegistryFrozen,
     dumps: &[(String, String)],
-) -> Result<Option<ColdRejection>, StorageError> {
+) -> Result<(), HydrationFailure> {
     let allowed = sidecars.memory_sidecar_tables();
     for (table, json) in dumps {
         if !allowed.contains(&table.as_str())
             || !sidecars.is_hydratable_memory_sidecar_table(table)
             || is_owner_pinned(sidecars, table)
         {
-            return Ok(Some(ColdRejection::UnsupportedSidecar));
+            return Err(ColdRejection::UnsupportedSidecar.into());
         }
         let ident = PgIdent::table(table)?;
-        let columns = insertable_columns(tx, ident.as_str()).await?;
+        let columns = cache.insertable(tx, ident.as_str()).await?;
         if columns.is_empty() {
-            return Err(StorageError::Internal(format!(
-                "no insertable columns for {table}"
-            )));
+            return Err(
+                StorageError::Internal(format!("no insertable columns for {table}")).into(),
+            );
         }
         let col_list = columns.join(", ");
         let sql = format!(
@@ -1515,35 +1607,34 @@ async fn restore_registered_sidecars(
             .execute(tx.as_mut())
             .await;
         if let Err(error) = result {
-            if let Some(rejection) = cold_write_rejection(&error) {
-                return Ok(Some(rejection));
-            }
-            return Err(map_err(error));
+            return Err(cold_write_failure(error));
         }
     }
-    Ok(None)
+    Ok(())
 }
 
 async fn restore_cascaded_details(
     tx: &mut Transaction<'_, Postgres>,
+    cache: &mut ColdCatalogCache,
     surfaces: &OwnerSurfaces,
     rec: &ColdRecord,
-) -> Result<Option<ColdRejection>, StorageError> {
+) -> Result<(), HydrationFailure> {
     let expected = surfaces.cascaded_details_for_schema(&rec.schema_id);
     if !cold_detail_stamp_matches(rec, surfaces) {
-        return Ok(Some(ColdRejection::UnsupportedObject));
+        return Err(ColdRejection::UnsupportedObject.into());
     }
     for (detail, (_, rows)) in expected.iter().zip(&rec.detail_dumps) {
         if rows.is_empty() {
             continue;
         }
         let table = PgIdent::table(detail.table)?;
-        let columns = insertable_columns(tx, detail.table).await?;
+        let columns = cache.insertable(tx, detail.table).await?;
         if columns.is_empty() {
             return Err(StorageError::Internal(format!(
                 "no insertable columns for {}",
                 detail.table
-            )));
+            ))
+            .into());
         }
         let col_list = columns.join(", ");
         let Ok(rows) = rows
@@ -1551,7 +1642,7 @@ async fn restore_cascaded_details(
             .map(|row| serde_json::from_str(row))
             .collect::<Result<Vec<serde_json::Value>, _>>()
         else {
-            return Ok(Some(ColdRejection::InvalidObject));
+            return Err(ColdRejection::InvalidObject.into());
         };
         let values = serde_json::Value::Array(rows).to_string();
         let sql = format!(
@@ -1566,13 +1657,10 @@ async fn restore_cascaded_details(
             .execute(tx.as_mut())
             .await;
         if let Err(error) = result {
-            if let Some(rejection) = cold_write_rejection(&error) {
-                return Ok(Some(rejection));
-            }
-            return Err(map_err(error));
+            return Err(cold_write_failure(error));
         }
     }
-    Ok(None)
+    Ok(())
 }
 
 /// `owner_id` is the CALLER's, never `rec.row.owner_id`.
@@ -2015,6 +2103,7 @@ enum HydrationPlan {
 /// the object store, decodes the record, or validates a payload shape.
 async fn plan_hydration(
     tx: &mut Transaction<'_, Postgres>,
+    cache: &mut ColdCatalogCache,
     sidecars: &PgSidecarRegistryFrozen,
     surfaces: &OwnerSurfaces,
     cold: &dyn ColdObjectStore,
@@ -2082,13 +2171,13 @@ async fn plan_hydration(
     if !cold_sidecar_stamp_matches(&rec, sidecars) {
         return Ok(HydrationPlan::Rejected(ColdRejection::UnsupportedSidecar));
     }
-    if !validate_cold_sidecars(tx, sidecars, &rec.sidecar_dumps, t).await? {
+    if !validate_cold_sidecars(tx, cache, sidecars, &rec.sidecar_dumps, t).await? {
         return Ok(HydrationPlan::Rejected(ColdRejection::InvalidObject));
     }
     if !cold_detail_stamp_matches(&rec, surfaces) {
         return Ok(HydrationPlan::Rejected(ColdRejection::UnsupportedObject));
     }
-    if !validate_cold_details(tx, surfaces, &rec, t).await? {
+    if !validate_cold_details(tx, cache, surfaces, &rec, t).await? {
         return Ok(HydrationPlan::Rejected(ColdRejection::InvalidObject));
     }
     Ok(HydrationPlan::Prepared(Box::new(PreparedHydration {
@@ -2124,6 +2213,57 @@ fn cold_write_rejection(error: &sqlx::Error) -> Option<ColdRejection> {
     }
 }
 
+/// Which [`HydrationFailure`] a failed cold write is: the record's own
+/// content refused, else a storage fault.
+fn cold_write_failure(error: sqlx::Error) -> HydrationFailure {
+    cold_write_rejection(&error).map_or_else(|| map_err(error).into(), Into::into)
+}
+
+/// Why one hydration step did not complete.
+///
+/// `Rejected` is the cold record's own content being refused — a typed
+/// per-item outcome that leaves the command healthy. `Storage` is a fault.
+/// The two stay separate types on purpose: [`ColdRejection`] is produced at
+/// named sites and must never be recovered from an error, and a per-item
+/// outcome must not leak into a crate-wide command error.
+#[derive(Debug)]
+enum HydrationFailure {
+    Rejected(ColdRejection),
+    Storage(StorageError),
+}
+
+impl From<ColdRejection> for HydrationFailure {
+    fn from(rejection: ColdRejection) -> Self {
+        Self::Rejected(rejection)
+    }
+}
+
+impl From<StorageError> for HydrationFailure {
+    fn from(error: StorageError) -> Self {
+        Self::Storage(error)
+    }
+}
+
+/// [`ensure_memory_head`] behind the one error-to-rejection translation in
+/// the write half.
+///
+/// A `ConstraintViolation` from it means the live series disagrees with the
+/// record about kind, schema or owner, so the record cannot be restored into
+/// it — a refusal of this record, not a failure of the command. Every other
+/// error stays a fault. This has a name so a bare `?` cannot quietly drop
+/// the classification and turn a refused record into a command failure.
+async fn ensure_memory_head_or_reject(
+    tx: &mut Transaction<'_, Postgres>,
+    rec: &ColdRecord,
+    owner_id: Uuid,
+) -> Result<(), HydrationFailure> {
+    match ensure_memory_head(tx, rec, owner_id).await {
+        Ok(()) => Ok(()),
+        Err(StorageError::ConstraintViolation(_)) => Err(ColdRejection::InvalidObject.into()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Write one prepared record back into the hot tables.
 ///
 /// The caller holds the complete handle/lifecycle lock union and has proven
@@ -2132,17 +2272,18 @@ fn cold_write_rejection(error: &sqlx::Error) -> Option<ColdRejection> {
 /// snapshot because a transfer may remap exactly those three columns and the
 /// append-only trigger permits it.
 ///
-/// The outer `Result` is a storage fault. The inner one is the record's own
-/// content being refused, which is a typed per-item outcome rather than a
-/// failure of the command.
+/// [`HydrationFailure`] keeps the two answers apart: a refused record is a
+/// typed per-item outcome, everything else is a failure of the command. The
+/// caller re-splits them.
 async fn apply_hydration(
     tx: &mut Transaction<'_, Postgres>,
+    cache: &mut ColdCatalogCache,
     sidecars: &PgSidecarRegistryFrozen,
     surfaces: &OwnerSurfaces,
     prepared: &PreparedHydration,
     locked: &CooledRow,
     non_embeddable_schemas: &[String],
-) -> Result<Result<u32, ColdRejection>, StorageError> {
+) -> Result<u32, HydrationFailure> {
     let PreparedHydration {
         rec,
         origins,
@@ -2156,30 +2297,14 @@ async fn apply_hydration(
     // only under the complete lock set, so an erase cannot remove one between
     // the reported count and this commit.
     let witness_targets = origins.iter().chain(refs).copied().collect::<Vec<_>>();
-    let Ok(preserved_witnesses) = cold_witness_count(tx, &witness_targets, goal_refs).await? else {
-        return Ok(Err(ColdRejection::InvalidObject));
-    };
+    let preserved_witnesses = cold_witness_count(tx, &witness_targets, goal_refs).await?;
 
     // `ensure_memory_head` must stay after the lifecycle lock: a bulk erase
     // takes the same set before any head or row lock.
-    match ensure_memory_head(tx, rec, locked.owner_id).await {
-        Ok(()) => {}
-        Err(StorageError::ConstraintViolation(_)) => {
-            // The live series disagrees with the record about kind, schema or
-            // owner. The record cannot be restored into it.
-            return Ok(Err(ColdRejection::InvalidObject));
-        }
-        Err(error) => return Err(error),
-    }
-    if let Some(rejection) = insert_hydrated_memory_row(tx, prepared, locked).await? {
-        return Ok(Err(rejection));
-    }
-    if let Some(rejection) = restore_registered_sidecars(tx, sidecars, &rec.sidecar_dumps).await? {
-        return Ok(Err(rejection));
-    }
-    if let Some(rejection) = restore_cascaded_details(tx, surfaces, rec).await? {
-        return Ok(Err(rejection));
-    }
+    ensure_memory_head_or_reject(tx, rec, locked.owner_id).await?;
+    insert_hydrated_memory_row(tx, prepared, locked).await?;
+    restore_registered_sidecars(tx, cache, sidecars, &rec.sidecar_dumps).await?;
+    restore_cascaded_details(tx, cache, surfaces, rec).await?;
     rebuild_hydrated_projections(tx, sidecars, rec).await?;
     // `owner_id` from the locked locator, not `rec.row.owner_id`: same reason
     // as the memory INSERT in `insert_hydrated_memory_row`. The sketch is
@@ -2210,20 +2335,21 @@ async fn apply_hydration(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-    Ok(Ok(preserved_witnesses))
+    Ok(preserved_witnesses)
 }
 
 /// Insert the restored Memory row.
 ///
 /// Owner, blob and content come from the locked locator rather than from the
-/// record: a transfer may remap exactly those three columns. `Some` is
-/// PostgreSQL refusing the record's own content, which is a typed per-item
-/// outcome; every other failure is a storage fault.
+/// record: a transfer may remap exactly those three columns.
+/// `HydrationFailure::Rejected` is PostgreSQL refusing the record's own
+/// content, which is a typed per-item outcome; every other failure is a
+/// storage fault.
 async fn insert_hydrated_memory_row(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedHydration,
     locked: &CooledRow,
-) -> Result<Option<ColdRejection>, StorageError> {
+) -> Result<(), HydrationFailure> {
     let PreparedHydration {
         rec,
         origins,
@@ -2254,12 +2380,9 @@ async fn insert_hydrated_memory_row(
     .execute(tx.as_mut())
     .await;
     if let Err(error) = result {
-        if let Some(rejection) = cold_write_rejection(&error) {
-            return Ok(Some(rejection));
-        }
-        return Err(map_err(error));
+        return Err(cold_write_failure(error));
     }
-    Ok(None)
+    Ok(())
 }
 
 /// Rebuild the search projection of every restored sidecar.
@@ -2380,7 +2503,7 @@ async fn cold_witness_count(
     tx: &mut Transaction<'_, Postgres>,
     memory_targets: &[Uuid],
     goal_targets: &[Uuid],
-) -> Result<Result<u32, ()>, StorageError> {
+) -> Result<u32, HydrationFailure> {
     let memory_targets = memory_targets.to_vec();
     let goal_targets = goal_targets.to_vec();
     let invalid: bool = sqlx::query_scalar(
@@ -2397,7 +2520,9 @@ async fn cold_witness_count(
     .await
     .map_err(map_err)?;
     if invalid {
-        return Ok(Err(()));
+        // A witness whose closed kind contradicts the cold declaration is the
+        // record being wrong about its own pins.
+        return Err(ColdRejection::InvalidObject.into());
     }
     let mut all = BTreeSet::new();
     all.extend(memory_targets);
@@ -2414,7 +2539,7 @@ async fn cold_witness_count(
     .map_err(map_err)?;
     let count = u32::try_from(count)
         .map_err(|_| StorageError::Internal("hydration witness count overflow".into()))?;
-    Ok(Ok(count))
+    Ok(count)
 }
 
 /// Test-only single-shot hydration inside the caller's transaction.
@@ -2434,11 +2559,13 @@ pub(crate) async fn hydrate_one_in_tx(
     owner_id: Uuid,
     non_embeddable_schemas: &[String],
 ) -> Result<Result<u32, ColdRejection>, StorageError> {
-    let prepared = match plan_hydration(tx, sidecars, surfaces, cold, t, owner_id).await? {
-        HydrationPlan::Prepared(prepared) => prepared,
-        HydrationPlan::Rejected(rejection) => return Ok(Err(rejection)),
-        HydrationPlan::Hot | HydrationPlan::NotFound => return Err(StorageError::NotFound),
-    };
+    let mut cache = ColdCatalogCache::default();
+    let prepared =
+        match plan_hydration(tx, &mut cache, sidecars, surfaces, cold, t, owner_id).await? {
+            HydrationPlan::Prepared(prepared) => prepared,
+            HydrationPlan::Rejected(rejection) => return Ok(Err(rejection)),
+            HydrationPlan::Hot | HydrationPlan::NotFound => return Err(StorageError::NotFound),
+        };
     lock_memory_handles_tx(tx, &[prepared.cooled.handle]).await?;
     let targets = std::iter::once(prepared.cooled.t)
         .chain(prepared.origins.iter().copied())
@@ -2452,8 +2579,12 @@ pub(crate) async fn hydrate_one_in_tx(
             "cooled hydration footprint changed while locking".into(),
         ));
     };
-    apply_hydration(
+    // Split back to this entry point's nested shape: the port, the batch
+    // command and every test read hydration's two answers here, not inside
+    // the steps that produce them.
+    match apply_hydration(
         tx,
+        &mut cache,
         sidecars,
         surfaces,
         &prepared,
@@ -2461,6 +2592,11 @@ pub(crate) async fn hydrate_one_in_tx(
         non_embeddable_schemas,
     )
     .await
+    {
+        Ok(count) => Ok(Ok(count)),
+        Err(HydrationFailure::Rejected(rejection)) => Ok(Err(rejection)),
+        Err(HydrationFailure::Storage(error)) => Err(error),
+    }
 }
 
 /// Owner-authorized, bounded, all-or-nothing hydration command.
@@ -2480,22 +2616,53 @@ pub(crate) async fn hydrate_memories_oneshot(
 ) -> Result<MemoryHydrationBatchOutcome, StorageError> {
     validate_hydration_request(memory_ids)?;
 
-    let mut tx = pool.begin().await.map_err(map_err)?;
-    let plans =
-        match plan_hydration_set(&mut tx, sidecars, surfaces, cold, owner_id, memory_ids).await {
-            Ok(plans) => plans,
-            Err(error) => {
-                let _ = tx.rollback().await;
-                return Err(error);
-            }
-        };
+    in_transaction(pool, |mut tx| async move {
+        let outcome = hydrate_planned_set(
+            &mut tx,
+            sidecars,
+            surfaces,
+            cold,
+            owner_id,
+            memory_ids,
+            non_embeddable_schemas,
+        )
+        .await;
+        (tx, outcome)
+    })
+    .await
+}
+
+/// The hydration transaction body: plan every id, abort the whole set on the
+/// first refusal, then lock, re-read and write.
+///
+/// Both `Abort` arms carry a report that claims `committed: false`, and
+/// [`in_transaction`] is what proves that claim by awaiting their rollback.
+/// The two lock calls and the statement order between them are unchanged
+/// from when this ran inline.
+async fn hydrate_planned_set(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
+    cold: &dyn ColdObjectStore,
+    owner_id: Uuid,
+    memory_ids: &[proxima_core::MemoryId],
+    non_embeddable_schemas: &[String],
+) -> Result<TxOutcome<MemoryHydrationBatchOutcome>, StorageError> {
+    // One catalog read per relation for the whole transaction, planner and
+    // write half alike, instead of one per item per relation.
+    let mut cache = ColdCatalogCache::default();
+    let plans = plan_hydration_set(
+        tx, &mut cache, sidecars, surfaces, cold, owner_id, memory_ids,
+    )
+    .await?;
 
     if plans
         .iter()
         .any(|plan| matches!(plan, HydrationPlan::Rejected(_)))
     {
-        tx.rollback().await.map_err(map_err)?;
-        return Ok(uncommitted_outcome(memory_ids, &plans, None));
+        return Ok(TxOutcome::Abort(uncommitted_outcome(
+            memory_ids, &plans, None,
+        )));
     }
 
     let prepared = plans
@@ -2505,45 +2672,39 @@ pub(crate) async fn hydrate_memories_oneshot(
             _ => None,
         })
         .collect::<Vec<_>>();
-    lock_prepared_footprint(&mut tx, &prepared).await?;
+    lock_prepared_footprint(tx, &prepared).await?;
 
-    let Some(locked) = relock_prepared_rows(&mut tx, &prepared, owner_id).await? else {
-        let _ = tx.rollback().await;
+    let Some(locked) = relock_prepared_rows(tx, &prepared, owner_id).await? else {
         return Err(StorageError::Retryable(
             "cooled hydration footprint changed while locking".into(),
         ));
     };
 
     let restored = match apply_prepared_hydrations(
-        &mut tx,
+        tx,
+        &mut cache,
         sidecars,
         surfaces,
         &prepared,
         &locked,
         non_embeddable_schemas,
     )
-    .await
+    .await?
     {
-        Ok(Ok(restored)) => restored,
-        Ok(Err((failed, rejection))) => {
-            tx.rollback().await.map_err(map_err)?;
-            return Ok(uncommitted_outcome(
+        Ok(restored) => restored,
+        Err((failed, rejection)) => {
+            return Ok(TxOutcome::Abort(uncommitted_outcome(
                 memory_ids,
                 &plans,
                 Some((failed, rejection)),
-            ));
-        }
-        Err(error) => {
-            let _ = tx.rollback().await;
-            return Err(error);
+            )));
         }
     };
-    tx.commit().await.map_err(map_err)?;
 
-    Ok(MemoryHydrationBatchOutcome {
+    Ok(TxOutcome::Commit(MemoryHydrationBatchOutcome {
         outcomes: hydrated_outcomes(memory_ids, &plans, restored),
         committed: true,
-    })
+    }))
 }
 
 /// Refuse a request the command cannot serve at all: more ids than the
@@ -2571,6 +2732,7 @@ fn validate_hydration_request(memory_ids: &[proxima_core::MemoryId]) -> Result<(
 /// reads the object store and validates a shape.
 async fn plan_hydration_set(
     tx: &mut Transaction<'_, Postgres>,
+    cache: &mut ColdCatalogCache,
     sidecars: &PgSidecarRegistryFrozen,
     surfaces: &OwnerSurfaces,
     cold: &dyn ColdObjectStore,
@@ -2582,6 +2744,7 @@ async fn plan_hydration_set(
         plans.push(
             plan_hydration(
                 tx,
+                cache,
                 sidecars,
                 surfaces,
                 cold,
@@ -2649,6 +2812,7 @@ async fn relock_prepared_rows(
 /// set reports.
 async fn apply_prepared_hydrations(
     tx: &mut Transaction<'_, Postgres>,
+    cache: &mut ColdCatalogCache,
     sidecars: &PgSidecarRegistryFrozen,
     surfaces: &OwnerSurfaces,
     prepared: &[&PreparedHydration],
@@ -2659,16 +2823,20 @@ async fn apply_prepared_hydrations(
     for (prepared, locked) in prepared.iter().zip(locked) {
         match apply_hydration(
             tx,
+            cache,
             sidecars,
             surfaces,
             prepared,
             locked,
             non_embeddable_schemas,
         )
-        .await?
+        .await
         {
             Ok(count) => restored.push(count),
-            Err(rejection) => return Ok(Err((prepared.cooled.t, rejection))),
+            Err(HydrationFailure::Rejected(rejection)) => {
+                return Ok(Err((prepared.cooled.t, rejection)));
+            }
+            Err(HydrationFailure::Storage(error)) => return Err(error),
         }
     }
     Ok(Ok(restored))
@@ -3416,12 +3584,58 @@ mod forget_pg_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{ForgetLeg, OwnerSurfaces, StorageError, forget_leg_sql, write_bytes};
+    use super::{ColumnShape, ForgetLeg, OwnerSurfaces, StorageError, forget_leg_sql, write_bytes};
 
     fn shipped() -> OwnerSurfaces {
         OwnerSurfaces::for_registry(
             &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
         )
+    }
+
+    fn declared(rows: &[(&str, &str, &str)]) -> ColumnShape {
+        ColumnShape::from_declared(
+            &rows
+                .iter()
+                .map(|(name, nullable, generated)| {
+                    (
+                        (*name).to_owned(),
+                        (*nullable).to_owned(),
+                        (*generated).to_owned(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// The whole admissibility rule a cold object faces before PostgreSQL
+    /// ever sees it: only insertable columns may appear, every required one
+    /// must appear non-null, and a generated column is on neither side —
+    /// naming it is a rejection, omitting it is not.
+    #[test]
+    fn a_column_shape_accepts_exactly_the_insertable_and_required_objects() {
+        let shape = declared(&[
+            ("t", "NO", "NEVER"),
+            ("title", "YES", "NEVER"),
+            ("search", "YES", "ALWAYS"),
+        ]);
+        assert!(shape.has_insertable("t"));
+        assert!(!shape.has_insertable("search"));
+        assert!(!shape.is_empty());
+        assert!(declared(&[]).is_empty());
+
+        let object = |json: &str| match serde_json::from_str(json).expect("object") {
+            serde_json::Value::Object(map) => map,
+            other => panic!("expected an object, got {other}"),
+        };
+        assert!(shape.accepts(&object(r#"{"t": "x", "title": "hello"}"#)));
+        assert!(shape.accepts(&object(r#"{"t": "x"}"#)));
+        assert!(shape.accepts(&object(r#"{"t": "x", "title": null}"#)));
+        // A missing or null required column.
+        assert!(!shape.accepts(&object(r#"{"title": "hello"}"#)));
+        assert!(!shape.accepts(&object(r#"{"t": null}"#)));
+        // An unknown column, and a generated one, are both uninsertable.
+        assert!(!shape.accepts(&object(r#"{"t": "x", "nope": 1}"#)));
+        assert!(!shape.accepts(&object(r#"{"t": "x", "search": "x"}"#)));
     }
 
     /// The declared walk reaches exactly the four derived-row tables and

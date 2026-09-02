@@ -24,7 +24,7 @@ use crate::storage_ports::CitedBlobService;
 use crate::{AccessKind, AuthzContext, Owner, Relation};
 
 use super::facts_citing_object::parse_cited_object_id;
-use super::memory_spaces::{SpaceDefault, resolve_space_owner};
+use super::memory_spaces::resolve_space_for_write;
 use super::{READ_ONLY, WRITE_NON_IDEMPOTENT};
 
 pub const CORE_UPLOAD_ACTIONS: &[CoreActionMeta] = &[
@@ -317,12 +317,7 @@ fn narrowed_space(
     space: Option<&str>,
     authority: SpaceAuthority,
 ) -> Result<(AuthzContext, Owner), McpToolError> {
-    let space = resolve_space_owner(ctx, space, SpaceDefault::Current)?;
-    let authz = ctx
-        .authz
-        .clone()
-        .narrowed_to_owner(space.owner)
-        .ok_or_else(|| McpToolError::NotAuthorized("memory space write".into()))?;
+    let (space, authz) = resolve_space_for_write(ctx, space)?;
     let (allowed, required) = match authority {
         SpaceAuthority::Write => (
             authz.may_write(&space.owner, AccessKind::Fact),

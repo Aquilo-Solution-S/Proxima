@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::AgentDerivationV1;
 
-use super::util::{normalize_idempotency_key, normalize_tags};
+use super::util::{dedup_resolved, normalize_idempotency_key, normalize_tags, operator_label};
 
 pub(crate) const MAX_SOURCE_HANDLES: usize = 256;
 const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
@@ -199,7 +199,16 @@ impl McpTool for DeriveTool {
         args: DeriveArgs,
     ) -> futures::future::BoxFuture<'static, Result<DeriveOutput, McpToolError>> {
         Box::pin(async move {
-            let authored = normalize_derive_args(&ctx, &args)?;
+            let authored = authored_derivation(
+                &ctx,
+                DerivationFields {
+                    title: &args.title,
+                    body: &args.body,
+                    tags: &args.tags,
+                    model_id: args.model_id.as_deref(),
+                    idempotency_key: args.idempotency_key.as_deref(),
+                },
+            )?;
 
             if args.source_handles.len() > MAX_SOURCE_HANDLES {
                 return Err(McpToolError::InvalidInput(format!(
@@ -211,28 +220,28 @@ impl McpTool for DeriveTool {
                 args.space.as_deref(),
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
-            let sources = resolve_source_handles(&ctx, &args.source_handles)?;
+            // The declared sources, resolved to memories in request order
+            // with repeats dropped: a handle named twice is one input, and
+            // no input at all is not a derivation.
+            let sources = dedup_resolved(
+                &args.source_handles,
+                MAX_SOURCE_HANDLES,
+                "source_handles",
+                "source_handles must be nonempty for operator derivation",
+                |handle| resolve_source_memory(&ctx, handle),
+            )?;
             let lexical_language = crate::lexical_language::resolve_lexical_language(
                 args.language.as_deref(),
                 &format!("{}\n{}", authored.title, authored.body),
             )
             .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-            let key = authored
-                .idempotency_key
-                .clone()
-                .unwrap_or_else(|| content_idempotency_key(&authored));
-            let memory_id = derived_memory_id(&space.owner, args.kind.as_str(), &key);
-            let sidecar = derivation_sidecar(&ctx, &authored, &sources);
-
-            let memory_id = MemoryId::new(memory_id);
-            let (operator_kind, target_kind) = operator_shape(args.kind, &sources)?;
-            // The declaration is a list of targets. Its kind — `origin` —
-            // follows from what this operation IS, so there is nothing
-            // here for the caller to pick.
-            let derived_from: Vec<EdgeEndpoint> = sources
-                .iter()
-                .map(|(source_id, _class)| EdgeEndpoint::memory(target_kind, *source_id))
-                .collect();
+            let DerivationPlan {
+                memory_id,
+                operator_kind,
+                derived_from,
+                sidecar,
+                authored,
+            } = plan_derivation(&ctx, &space.owner, args.kind, authored, &sources)?;
             let engine = ctx.require_engine()?;
             let outcome = engine
                 .author_derived_authorized(
@@ -277,36 +286,45 @@ impl McpTool for DeriveTool {
 /// What a `core_derive` request carries once it is validated: the authored
 /// text, the operator label, and the tags, each in the exact form the write
 /// stores and the idempotency key is derived from.
-struct AuthoredDerivation {
-    title: String,
-    body: String,
-    model_id: String,
-    tags: Vec<String>,
-    idempotency_key: Option<String>,
+pub(crate) struct AuthoredDerivation {
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) model_id: String,
+    pub(crate) tags: Vec<String>,
+    pub(crate) idempotency_key: Option<String>,
 }
 
-fn normalize_derive_args(
+/// The raw, still-unvalidated authoring fields every derived-memory surface
+/// carries. Borrowed rather than owned so a caller can hand over an arg
+/// struct's fields without cloning them first; the arg structs themselves
+/// stay per-surface because they are the `JsonSchema`-derived tool contract.
+#[derive(Clone, Copy)]
+pub(crate) struct DerivationFields<'a> {
+    pub(crate) title: &'a str,
+    pub(crate) body: &'a str,
+    pub(crate) tags: &'a [String],
+    pub(crate) model_id: Option<&'a str>,
+    pub(crate) idempotency_key: Option<&'a str>,
+}
+
+/// Validate and normalize the authoring fields of a derived-memory write.
+///
+/// # Errors
+///
+/// Returns [`McpToolError::InvalidInput`] when the title, body, operator
+/// label, an idempotency key, or a tag is blank or over its cap.
+pub(crate) fn authored_derivation(
     ctx: &McpToolCtx,
-    args: &DeriveArgs,
+    fields: DerivationFields<'_>,
 ) -> Result<AuthoredDerivation, McpToolError> {
     // 240 matches the goal-title cap: same-named field, same bound
     // on every authoring surface.
-    let title = validate_trimmed_len("title", &args.title, 240)?.to_string();
-    let body = validate_trimmed_len("body", &args.body, 20_000)?.to_string();
-    let idempotency_key = normalize_idempotency_key(args.idempotency_key.clone())?;
-    // `model_id` is the reserved operator label. It may arrive as an
-    // explicit arg or via the request-context `model_id` (which the MCP
-    // server strips into `ctx.author.model_id`); fall back to the latter.
-    let raw_model_id = args
-        .model_id
-        .clone()
-        .unwrap_or_else(|| ctx.author.model_id.clone());
-    // Trimmed before it is *used*, not just before it is checked: the
-    // stored label and the idempotency key derived from it must be
-    // the same string, or `" example "` and `"example"` are one label
-    // to the validator and two to the dedup key.
-    let model_id = validate_trimmed_len("model_id", &raw_model_id, 120)?.to_string();
-    let tags = normalize_tags(args.tags.clone())?;
+    let title = validate_trimmed_len("title", fields.title, 240)?.to_string();
+    let body = validate_trimmed_len("body", fields.body, 20_000)?.to_string();
+    let idempotency_key =
+        normalize_idempotency_key(fields.idempotency_key.map(ToString::to_string))?;
+    let model_id = operator_label(ctx, fields.model_id)?;
+    let tags = normalize_tags(fields.tags.to_vec())?;
     Ok(AuthoredDerivation {
         title,
         body,
@@ -316,30 +334,55 @@ fn normalize_derive_args(
     })
 }
 
-/// The declared sources, resolved to memories in request order with repeats
-/// dropped: a handle named twice is one input, and no input at all is not a
-/// derivation.
-fn resolve_source_handles(
-    ctx: &McpToolCtx,
-    handles: &[String],
-) -> Result<Vec<(MemoryId, MemoryHandleClass)>, McpToolError> {
-    let mut seen_sources =
-        std::collections::HashSet::with_capacity(handles.len().min(MAX_SOURCE_HANDLES));
-    let mut sources = Vec::with_capacity(handles.len());
-    for handle in handles {
-        let (memory_id, class) = resolve_source_memory(ctx, handle)?;
-        let source_uuid = memory_id.into_inner();
-        if seen_sources.insert(source_uuid) {
-            sources.push((memory_id, class));
-        }
-    }
+/// Everything a derived-memory write needs that follows from the authored
+/// content plus the declared sources, and nothing that follows from the
+/// call site: the port (`Engine` vs `UnitOfWork`), `extra_refs`,
+/// `supersedes`, the lexical language and the rendered output stay where
+/// they are, because those genuinely differ between `core_derive` and
+/// `core_episode_commit`.
+pub(crate) struct DerivationPlan {
+    pub(crate) memory_id: MemoryId,
+    pub(crate) operator_kind: crate::MemoryOperatorKind,
+    pub(crate) derived_from: Vec<EdgeEndpoint>,
+    pub(crate) sidecar: AgentDerivationV1,
+    pub(crate) authored: AuthoredDerivation,
+}
 
-    if sources.is_empty() {
-        return Err(McpToolError::InvalidInput(
-            "source_handles must be nonempty for operator derivation".into(),
-        ));
-    }
-    Ok(sources)
+/// Fold the authored content and the resolved sources into the identity,
+/// operator shape, sidecar and declared inputs of one derived write.
+///
+/// # Errors
+///
+/// Returns [`McpToolError`] when `sources` are empty, mix memory layers, or
+/// name a layer this `kind` cannot be derived from — see [`operator_shape`].
+pub(crate) fn plan_derivation(
+    ctx: &McpToolCtx,
+    owner: &crate::Owner,
+    kind: DerivedKind,
+    authored: AuthoredDerivation,
+    sources: &[(MemoryId, MemoryHandleClass)],
+) -> Result<DerivationPlan, McpToolError> {
+    let key = authored
+        .idempotency_key
+        .clone()
+        .unwrap_or_else(|| content_idempotency_key(&authored));
+    let memory_id = MemoryId::new(derived_memory_id(owner, kind.as_str(), &key));
+    let sidecar = derivation_sidecar(ctx, &authored, sources);
+    let (operator_kind, target_kind) = operator_shape(kind, sources)?;
+    // The declaration is a list of targets. Its kind — `origin` —
+    // follows from what this operation IS, so there is nothing
+    // here for the caller to pick.
+    let derived_from: Vec<EdgeEndpoint> = sources
+        .iter()
+        .map(|(source_id, _class)| EdgeEndpoint::memory(target_kind, *source_id))
+        .collect();
+    Ok(DerivationPlan {
+        memory_id,
+        operator_kind,
+        derived_from,
+        sidecar,
+        authored,
+    })
 }
 
 /// The auto-derived idempotency key, which must cover everything this write
@@ -360,7 +403,7 @@ fn resolve_source_handles(
 /// is asserting "this is the same derivation" — that is what the
 /// parameter is for, and a re-generated body differing by a space
 /// must still replay.
-fn content_idempotency_key(authored: &AuthoredDerivation) -> String {
+pub(crate) fn content_idempotency_key(authored: &AuthoredDerivation) -> String {
     let mut content = blake3::Hasher::new();
     content.update(authored.title.as_bytes());
     content.update(b"\0");
@@ -373,7 +416,7 @@ fn content_idempotency_key(authored: &AuthoredDerivation) -> String {
 }
 
 /// The typed sidecar this write stores beside the memory row.
-fn derivation_sidecar(
+pub(crate) fn derivation_sidecar(
     ctx: &McpToolCtx,
     authored: &AuthoredDerivation,
     sources: &[(MemoryId, MemoryHandleClass)],
@@ -423,9 +466,90 @@ pub(crate) fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{DerivedKind, MAX_SOURCE_HANDLES, derived_memory_id};
-    use crate::{OwnerRef, UserId};
+    use super::super::super::memory_spaces::test_ctx::ctx_for;
+    use super::{
+        AuthoredDerivation, DerivedKind, MAX_SOURCE_HANDLES, content_idempotency_key,
+        derivation_sidecar, derived_memory_id,
+    };
+    use crate::mcp::MemoryHandleClass;
+    use crate::{AgentDerivationV1, MemoryId, OwnerRef, UserId};
     use uuid::Uuid;
+
+    fn golden_authored(idempotency_key: Option<&str>) -> AuthoredDerivation {
+        AuthoredDerivation {
+            title: "Golden title".into(),
+            body: "Golden body".into(),
+            model_id: "example-model".into(),
+            tags: vec!["alpha".into(), "beta".into()],
+            idempotency_key: idempotency_key.map(ToString::to_string),
+        }
+    }
+
+    /// Pins the auto-derived idempotency key byte for byte: blake3 over
+    /// `title \0 body (\0 tag)*`, rendered `"{model_id}:{hex}"`. Two
+    /// authoring surfaces compute this key, and a drift in either one
+    /// silently re-points every future write's `derived_memory_id` — a
+    /// replay that is no longer a replay, or a replay that swallows a
+    /// different body.
+    #[test]
+    fn content_idempotency_key_golden() {
+        assert_eq!(
+            content_idempotency_key(&golden_authored(None)),
+            "example-model:47dcfe4f790ea0580ce015da6dd0f56ed2332cb328f37edf37e4c00e14581f1b",
+        );
+    }
+
+    /// The tags participate in the hash and their order is the normalized
+    /// (sorted, deduped) one, so a tag change is a different write.
+    #[test]
+    fn content_idempotency_key_covers_title_body_and_tags() {
+        let base = content_idempotency_key(&golden_authored(None));
+        let mut other_title = golden_authored(None);
+        other_title.title = "Other title".into();
+        let mut other_body = golden_authored(None);
+        other_body.body = "Other body".into();
+        let mut other_tags = golden_authored(None);
+        other_tags.tags = vec!["alpha".into()];
+        let mut other_model = golden_authored(None);
+        other_model.model_id = "other-model".into();
+        for variant in [other_title, other_body, other_tags, other_model] {
+            assert_ne!(content_idempotency_key(&variant), base);
+        }
+    }
+
+    /// Pins the exact sidecar field set. `idempotency_key` holds the
+    /// *explicit* key only: storing the auto-derived one instead would
+    /// change the sidecar bytes of every key-less derivation.
+    #[test]
+    fn derivation_sidecar_stores_only_an_explicit_key() {
+        let ctx = ctx_for(
+            UserId::new(Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid")),
+            Vec::new(),
+        );
+        let source = MemoryId::new(
+            Uuid::parse_str("00000000-0000-0000-0000-0000000000aa").expect("uuid literal"),
+        );
+        let sources = [(source, MemoryHandleClass::Fact)];
+
+        assert_eq!(
+            derivation_sidecar(&ctx, &golden_authored(None), &sources),
+            AgentDerivationV1 {
+                title: "Golden title".into(),
+                body: "Golden body".into(),
+                tags: vec!["alpha".into(), "beta".into()],
+                idempotency_key: None,
+                source_memory_ids: vec![source.into_inner()],
+                model_id: "example-model".into(),
+                client_name: "test".into(),
+                client_version: "0".into(),
+            },
+        );
+        assert_eq!(
+            derivation_sidecar(&ctx, &golden_authored(Some("explicit-key")), &sources)
+                .idempotency_key,
+            Some("explicit-key".to_string()),
+        );
+    }
 
     #[test]
     fn derived_kind_accepts_mixed_case() {

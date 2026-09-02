@@ -12,13 +12,13 @@ use super::goal::{
 };
 use super::memory::derive::{
     self, DerivedKind, MAX_SOURCE_HANDLES, core_derive_input_contract_id, core_derive_operator_id,
-    derived_memory_id, map_derive_authoring_error, operator_shape,
+    map_derive_authoring_error,
 };
 use super::memory::interpret::{
     self, MAX_CLAIM_CHARS, MAX_SUBJECTS, default_confidence, interpret_input_contract_id,
     interpret_operator_id, interpretation_memory_id, reject_self_subject,
 };
-use super::memory::util::{normalize_idempotency_key, normalize_tags};
+use super::memory::util::{dedup_resolved, normalize_idempotency_key, normalize_tags};
 use crate::engine::{GoalCreatePayloadWriteRequest, TypedFactIngest};
 use crate::error::ErrorCode;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
@@ -30,7 +30,7 @@ use crate::verbs::goal_write::{
     GoalAssignmentTarget, GoalEvidenceRef, GoalTopologyWrite, IdempotencyKey,
 };
 use crate::{
-    AbstractionPayload, AgentDerivationV1, AuthorDerivedRequestInput, EdgeEndpoint, EntityKind,
+    AbstractionPayload, AgentDerivationV1, AuthorDerivedRequestInput, EntityKind,
     InterpretationSubjectKind, InterpretationV1, MemoryId, PerspectivePayload, SchemaId,
     SchemaVersion, SidecarPayload, UnitOfWork,
 };
@@ -201,16 +201,8 @@ async fn episode_commit(
         args.stance.len(),
         args.goal.len(),
     )?;
-    let space = super::memory_spaces::resolve_space_owner(
-        &ctx,
-        args.space.as_deref(),
-        super::memory_spaces::SpaceDefault::Current,
-    )?;
-    let authz = ctx
-        .authz
-        .clone()
-        .narrowed_to_owner(space.owner)
-        .ok_or_else(|| McpToolError::NotAuthorized("memory space write".into()))?;
+    let (space, authz) =
+        super::memory_spaces::resolve_space_for_write(&ctx, args.space.as_deref())?;
     let engine = ctx.require_engine()?;
     let mut uow = engine.unit_of_work(&authz).await?;
     let write_act = uow
@@ -390,76 +382,48 @@ async fn write_derive(
     slots: &mut EpisodeSlots,
     bound: &mut Vec<String>,
 ) -> Result<String, McpToolError> {
-    let title = validate_trimmed_len("title", &item.title, 240)?;
-    let body = validate_trimmed_len("body", &item.body, 20_000)?;
-    let idempotency_key = normalize_idempotency_key(item.idempotency_key.clone())?;
-    let raw_model_id = item
-        .model_id
-        .clone()
-        .unwrap_or_else(|| ctx.author.model_id.clone());
-    let model_id = validate_trimmed_len("model_id", &raw_model_id, 120)?.to_string();
-    let tags = normalize_tags(item.tags.clone())?;
+    let authored = derive::authored_derivation(
+        ctx,
+        derive::DerivationFields {
+            title: &item.title,
+            body: &item.body,
+            tags: &item.tags,
+            model_id: item.model_id.as_deref(),
+            idempotency_key: item.idempotency_key.as_deref(),
+        },
+    )?;
     if item.source_handles.len() > MAX_SOURCE_HANDLES {
         return Err(McpToolError::InvalidInput(format!(
             "source_handles must contain at most {MAX_SOURCE_HANDLES} handles"
         )));
     }
-    let mut seen = std::collections::HashSet::new();
-    let mut sources = Vec::new();
-    for handle in &item.source_handles {
-        let (memory_id, class) = resolve_memory_source(ctx, slots, handle)?;
-        if seen.insert(memory_id.into_inner()) {
-            sources.push((memory_id, class));
-        }
-    }
-    if sources.is_empty() {
-        return Err(McpToolError::InvalidInput(
-            "source_handles must be nonempty for operator derivation".into(),
-        ));
-    }
+    let sources = dedup_resolved(
+        &item.source_handles,
+        MAX_SOURCE_HANDLES,
+        "source_handles",
+        "source_handles must be nonempty for operator derivation",
+        |handle| resolve_memory_source(ctx, slots, handle),
+    )?;
     let lexical_language = crate::lexical_language::resolve_lexical_language(
         item.language.as_deref(),
-        &format!("{title}\n{body}"),
+        &format!("{}\n{}", authored.title, authored.body),
     )
     .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-    let key = idempotency_key.clone().unwrap_or_else(|| {
-        let mut content = blake3::Hasher::new();
-        content.update(title.as_bytes());
-        content.update(b"\0");
-        content.update(body.as_bytes());
-        for tag in &tags {
-            content.update(b"\0");
-            content.update(tag.as_bytes());
-        }
-        format!("{}:{}", model_id, content.finalize().to_hex())
-    });
     let kind = DerivedKind::Abstraction;
-    let memory_id = MemoryId::new(derived_memory_id(&owner, kind.as_str(), &key));
-    let sidecar = AgentDerivationV1 {
-        title: title.to_string(),
-        body: body.to_string(),
-        tags,
-        idempotency_key,
-        source_memory_ids: sources
-            .iter()
-            .map(|(memory_id, _class)| memory_id.into_inner())
-            .collect(),
-        model_id: model_id.clone(),
-        client_name: ctx.author.client_name.clone(),
-        client_version: ctx.author.client_version.clone(),
-    };
-    let (operator_kind, target_kind) = operator_shape(kind, &sources)?;
-    let derived_from: Vec<EdgeEndpoint> = sources
-        .iter()
-        .map(|(source_id, _class)| EdgeEndpoint::memory(target_kind, *source_id))
-        .collect();
+    let derive::DerivationPlan {
+        memory_id,
+        operator_kind,
+        derived_from,
+        sidecar,
+        authored,
+    } = derive::plan_derivation(ctx, &owner, kind, authored, &sources)?;
     let extra_refs = pin.then_some(act_id).into_iter().collect::<Vec<_>>();
     let outcome = uow
         .author_derived(AuthorDerivedRequestInput {
             memory_id,
             owner,
             kind: kind.to_entity_kind(),
-            text: body.to_string(),
+            text: authored.body.clone(),
             schema_id: SchemaId::new(<AgentDerivationV1 as AbstractionPayload>::SCHEMA_ID.into()),
             schema_version: SchemaVersion::new(
                 <AgentDerivationV1 as AbstractionPayload>::SCHEMA_VERSION,
@@ -467,7 +431,7 @@ async fn write_derive(
             operator_kind,
             operator_id: core_derive_operator_id(kind),
             input_contract_id: core_derive_input_contract_id(kind),
-            model_id: &model_id,
+            model_id: &authored.model_id,
             sidecar_payload: SidecarPayload::abstraction(sidecar),
             derived_from: &derived_from,
             extra_refs: &extra_refs,
@@ -517,21 +481,17 @@ async fn write_stances(
                 "subjects must contain at most {MAX_SUBJECTS} handles"
             )));
         }
-        let raw_model_id = item
-            .model_id
-            .clone()
-            .unwrap_or_else(|| ctx.author.model_id.clone());
-        let model_id = validate_trimmed_len("model_id", &raw_model_id, 120)?.to_string();
-        let mut subject_memory_ids = Vec::new();
-        let mut subject_kinds = Vec::new();
-        for handle in &item.subjects {
-            let (memory_id, kind) = resolve_stance_subject(ctx, slots, handle)?;
-            if subject_memory_ids.contains(&memory_id.into_inner()) {
-                continue;
-            }
-            subject_memory_ids.push(memory_id.into_inner());
-            subject_kinds.push(kind);
-        }
+        let model_id = super::memory::util::operator_label(ctx, item.model_id.as_deref())?;
+        let (subject_memory_ids, subject_kinds): (Vec<uuid::Uuid>, Vec<_>) = dedup_resolved(
+            &item.subjects,
+            MAX_SUBJECTS,
+            "subjects",
+            "an interpretation must be about at least one memory",
+            |handle| resolve_stance_subject(ctx, slots, handle),
+        )?
+        .into_iter()
+        .map(|(memory_id, kind)| (memory_id.into_inner(), kind))
+        .unzip();
         let memory_id = MemoryId::new(interpretation_memory_id(
             &owner,
             &model_id,
