@@ -14,8 +14,7 @@ mod pg_tests {
     use proxima_core::verbs::schema::MemoryEmbedUnit;
     use proxima_core::{
         AccessKind, AuthPath, AuthzContext, Engine, EntityId, EntityKind, FactIngestPort,
-        FlavorRegistry, GoalId, GroupId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-        StorageError,
+        FlavorRegistry, GoalId, GroupId, Owner, SchemaId, SchemaVersion, SourceId, StorageError,
     };
     use proxima_pg_testkit::drop_db;
     use uuid::Uuid;
@@ -239,7 +238,6 @@ mod pg_tests {
             lexical_language: None,
             receipt: Some(FactReceiptDraft {
                 source_id: SourceId::new("proxima-test/fact-embedding"),
-                source_batch_id: SourceBatchId::new(Uuid::now_v7()),
                 observed_at: now,
                 occurred_at: now,
             }),

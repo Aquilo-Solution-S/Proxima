@@ -24,8 +24,6 @@
 //! the `Engine` is not; making it a field would push that optionality into
 //! every construction site to serve one verb.
 
-use uuid::Uuid;
-
 use super::Engine;
 use super::errors::map_write_storage_error;
 use crate::access::Relation;
@@ -41,7 +39,7 @@ use crate::verbs::fact_ingest::{
 };
 use crate::{
     CitationMappingPayload, CitedObjectPayload, FactIngestOutcome, OwnerRef, SchemaId,
-    SchemaVersion, SidecarPayload, SourceBatchId, UploadV1,
+    SchemaVersion, SidecarPayload, UploadV1,
 };
 
 /// Provenance of every upload Fact. Constant, not per-call: the source is
@@ -265,7 +263,6 @@ impl Engine {
         // about the document, which nobody has read yet.
         let draft = FactWriteCommand::from_payload(
             UPLOAD_SOURCE_ID,
-            SourceBatchId::new(Uuid::now_v7()),
             &payload,
             time::OffsetDateTime::now_utc(),
         );

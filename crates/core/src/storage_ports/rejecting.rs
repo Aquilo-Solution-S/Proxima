@@ -5,7 +5,7 @@ use super::embeddings::{
     EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWriteOutcome,
     EmbeddingWritePort, EmbeddingWriteProof,
 };
-use super::fact::{FactIngestPort, SourceBatchPort};
+use super::fact::FactIngestPort;
 use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 use super::mcp::McpCallReadPort;
 use super::memory::{
@@ -117,14 +117,6 @@ impl MemoryAuthoringPort for RejectingStorage {
         _owner: &Owner,
         _memory_ids: &[crate::MemoryId],
     ) -> Result<Vec<crate::MemoryKindRow>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn load_fact_source_batches(
-        &self,
-        _owner: &Owner,
-        _memory_ids: &[crate::MemoryId],
-    ) -> Result<Vec<crate::FactSourceBatchRow>, StorageError> {
         Ok(Vec::new())
     }
 
@@ -672,8 +664,6 @@ impl OwnerTransferPort for RejectingStorage {
         ))
     }
 }
-
-impl SourceBatchPort for RejectingStorage {}
 
 #[async_trait::async_trait]
 impl SourceCursorPort for RejectingStorage {

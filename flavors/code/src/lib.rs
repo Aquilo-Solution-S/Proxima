@@ -46,8 +46,7 @@ pub use repos::{
 #[doc(hidden)]
 pub mod testkit {
     pub use crate::ingest::{
-        append_code_slice, build_engine, build_engine_with, close_local_git_batch, ingest_commit,
-        ingest_file_revision,
+        append_code_slice, build_engine, build_engine_with, ingest_commit, ingest_file_revision,
     };
     pub use crate::repos::runs::{
         advance_stage, begin_run, get_active_run, get_run, mark_failed, mark_succeeded, start_run,

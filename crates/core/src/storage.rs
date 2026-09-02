@@ -13,9 +13,7 @@ use crate::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, FactPayload, GoalPayload,
     PayloadReference, PerspectivePayload,
 };
-use crate::{
-    EntityKind, MemoryId, MemoryOperatorKind, Owner, SchemaId, SchemaVersion, SourceBatchId,
-};
+use crate::{EntityKind, MemoryId, MemoryOperatorKind, Owner, SchemaId, SchemaVersion};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StorageError {
@@ -130,12 +128,6 @@ impl MemoryHydrationOutcome {
 pub struct MemoryHydrationBatchOutcome {
     pub outcomes: Vec<MemoryHydrationOutcome>,
     pub committed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FactSourceBatchRow {
-    pub memory_id: MemoryId,
-    pub source_batch_id: SourceBatchId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

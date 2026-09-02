@@ -252,14 +252,6 @@ pub(crate) mod tests {
                 .unwrap_or_default())
         }
 
-        async fn load_fact_source_batches(
-            &self,
-            _owner: &Owner,
-            _memory_ids: &[MemoryId],
-        ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
-            Ok(Vec::new())
-        }
-
         async fn forget_memory(
             &self,
             _permit: &crate::storage_ports::OwnerWritePermit,
@@ -884,8 +876,6 @@ pub(crate) mod tests {
         }
     }
 
-    impl SourceBatchPort for MembershipStorage {}
-
     #[async_trait::async_trait]
     impl SourceCursorPort for MembershipStorage {
         async fn load_source_cursor(
@@ -1033,7 +1023,6 @@ pub(crate) mod tests {
                 .owner_access_read(storage.clone())
                 .owner_membership_admin(storage.clone())
                 .owner_transfer(storage.clone())
-                .source_batch(storage.clone())
                 .source_cursor(storage.clone())
                 .owner_erase(storage.clone())
                 .registry_projection(storage.clone())

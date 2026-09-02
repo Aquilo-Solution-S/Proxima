@@ -7,7 +7,7 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, EntityKind, FactPayload,
     FlavorRegistry, Owner, OwnerRef, PayloadKeyBuilder, Relation, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, UserId, canonical_json_bytes,
+    SourceId, UserId, canonical_json_bytes,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -125,7 +125,6 @@ fn draft(_owner: &Owner) -> FactWriteCommand {
         lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/source"),
-            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
             observed_at: now,
             occurred_at: now,
         }),

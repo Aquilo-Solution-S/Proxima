@@ -1,14 +1,14 @@
 //! `LocalGitSource` — pull-mode git ingest over a local repository.
 //!
 //! [`LocalGitSource::run_poll`] walks git since the supplied
-//! [`proxima_core::Cursor`] and ingests **one `source_batch` per
-//! commit**. Per doc 01 §"The contract", a commit is the natural
+//! [`proxima_core::Cursor`] and ingests **one commit at a time**.
+//! Per doc 01 §"The contract", a commit is the natural
 //! observational unit for git: one author's one logical change.
 //! The poll itself is a delivery mechanism, not an observation —
 //! its boundary is arbitrary cadence, while the commit is the
-//! causal atom F→A consumes per batch.
+//! causal atom F→A consumes.
 //!
-//! Each commit's batch contains the `commit-v1` Fact plus
+//! Each commit contributes the `commit-v1` Fact plus
 //! `file-revision-v1` Facts for that commit's tree diff against its
 //! first parent (or the empty tree for root commits). Deterministic
 //! chunk/call extraction is F→A operator work over those file Facts:
@@ -37,9 +37,7 @@ mod git;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use proxima_core::access::AccessKind;
-use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::{AuthzContext, Cursor, Engine, MemoryId, Owner, SourceBatchId, ToolError};
+use proxima_core::{AuthzContext, Cursor, Engine, MemoryId, Owner, ToolError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -85,7 +83,7 @@ pub enum IndexError {
 }
 
 /// Counters returned by [`LocalGitSource::run_poll`]. Sums across
-/// every commit-batch the poll opened.
+/// every commit the poll walked.
 ///
 /// `chunks_reused` counts blob-analysis cache hits where deterministic
 /// chunk/call extraction was reused for another path/commit. Cache hits
@@ -168,13 +166,6 @@ impl<'a> CodeIngestContext<'a> {
 
     fn authz(&self) -> &AuthzContext {
         self.authz
-    }
-
-    async fn owner_write_permit(&self, owner: &Owner) -> Result<OwnerWritePermit, IngestError> {
-        self.engine
-            .authorize_owner_write(self.authz, owner, AccessKind::Fact)
-            .await
-            .map_err(IngestError::from)
     }
 
     async fn file_revision_heads(
@@ -316,17 +307,15 @@ impl LocalGitSource {
         })
     }
 
-    /// DB-aware ingest. Walks each commit since the cursor, opens a
-    /// `source_batch` per commit, emits the commit Fact plus the
-    /// file-revision Facts from that commit's tree diff, derives
-    /// code-slice Abstractions from those Facts, then closes the batch.
-    /// F→A consumes one batch = one commit's worth of causally-coherent
-    /// Facts.
+    /// DB-aware ingest. Walks each commit since the cursor, emits the
+    /// commit Fact plus the file-revision Facts from that commit's tree
+    /// diff, then derives code-slice Abstractions from those Facts. F→A
+    /// consumes one commit's worth of causally-coherent Facts.
     ///
     /// # Errors
     ///
-    /// Returns [`IndexError`] when git cannot be walked, when a batch fails
-    /// to open, ingest or close, or when the cursor cannot be encoded.
+    /// Returns [`IndexError`] when git cannot be walked, when a Fact fails
+    /// to ingest, or when the cursor cannot be encoded.
     pub async fn run_poll(
         &self,
         ctx: &CodeIngestContext<'_>,
@@ -554,10 +543,7 @@ impl LocalGitSource {
                 ..IndexReport::default()
             });
         }
-        let pool = ctx.pool();
         let now = time::OffsetDateTime::now_utc();
-        let batch_id = SourceBatchId::new(Uuid::now_v7());
-        let permit = ctx.owner_write_permit(&self.owner).await?;
         let mut report = IndexReport {
             files_excluded,
             ..IndexReport::default()
@@ -568,7 +554,6 @@ impl LocalGitSource {
         self.ingest_head_entries(
             ctx,
             head_sha,
-            batch_id,
             now,
             &indexable,
             skip_heads,
@@ -583,11 +568,10 @@ impl LocalGitSource {
             .chain(deleted_paths.iter().cloned())
         {
             pending_deleted.push(
-                self.tombstone_deleted_path(ctx, head_sha, batch_id, now, &path, None, &mut report)
+                self.tombstone_deleted_path(ctx, head_sha, now, &path, None, &mut report)
                     .await?,
             );
         }
-        crate::ingest::close_local_git_batch(pool, &permit, batch_id).await?;
         for pending in pending_present {
             self.derive_present_blob(ctx, pending, &mut report).await?;
         }
@@ -597,10 +581,10 @@ impl LocalGitSource {
         Ok(report)
     }
 
-    /// Single-commit ingest: one `source_batch_id`, one commit Fact,
-    /// the commit's own tree diff materialised as file-revision Facts
-    /// plus derived code-slice/call projections. Each call is the unit
-    /// of observation per doc 01 §"The contract".
+    /// Single-commit ingest: one commit Fact, the commit's own tree diff
+    /// materialised as file-revision Facts plus derived code-slice/call
+    /// projections. Each call is the unit of observation per doc 01
+    /// §"The contract".
     async fn ingest_one_commit(
         &self,
         ctx: &CodeIngestContext<'_>,
@@ -609,10 +593,7 @@ impl LocalGitSource {
         report: &mut IndexReport,
         blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
     ) -> Result<(), IndexError> {
-        let pool = ctx.pool();
         let now = time::OffsetDateTime::now_utc();
-        let batch_id = SourceBatchId::new(Uuid::now_v7());
-        let permit = ctx.owner_write_permit(&self.owner).await?;
 
         // Diff this commit against its first parent (or against the
         // empty tree for a root commit, where `ls-tree` of the commit
@@ -656,8 +637,7 @@ impl LocalGitSource {
             committer_time: commit_info.committer_time,
             message: commit_info.message.clone(),
         };
-        let outcome =
-            ingest_commit(ctx.engine(), ctx.authz(), batch_id, &commit_payload, now).await?;
+        let outcome = ingest_commit(ctx.engine(), ctx.authz(), &commit_payload, now).await?;
         if outcome.idempotent_replay {
             report.commits_replayed += 1;
         } else {
@@ -675,7 +655,6 @@ impl LocalGitSource {
                 .ingest_changed_path(
                     ctx,
                     commit_info,
-                    batch_id,
                     now,
                     path,
                     Some(commit_memory_id),
@@ -695,7 +674,6 @@ impl LocalGitSource {
                 self.tombstone_deleted_path(
                     ctx,
                     &commit_info.sha,
-                    batch_id,
                     now,
                     path,
                     Some(commit_memory_id),
@@ -705,8 +683,6 @@ impl LocalGitSource {
             );
         }
 
-        // Close this commit's batch before any F→A derivation consumes it.
-        crate::ingest::close_local_git_batch(pool, &permit, batch_id).await?;
         for pending in pending_present {
             self.derive_present_blob(ctx, pending, report).await?;
         }
@@ -717,13 +693,12 @@ impl LocalGitSource {
     }
 
     /// Emit one file's `file-revision-v1` Fact and
-    /// cache the deterministic blob analysis to derive after batch close.
+    /// cache the deterministic blob analysis to derive from afterwards.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn ingest_changed_path(
         &self,
         ctx: &CodeIngestContext<'_>,
         commit_info: &CommitInfo,
-        batch_id: SourceBatchId,
         now: time::OffsetDateTime,
         path: &str,
         source_commit: Option<MemoryId>,
@@ -732,22 +707,13 @@ impl LocalGitSource {
     ) -> Result<ChangedPathIngest, IndexError> {
         let Some(blob) = git::cat_blob(&self.repo_path, &commit_info.sha, path)? else {
             return self
-                .tombstone_deleted_path(
-                    ctx,
-                    &commit_info.sha,
-                    batch_id,
-                    now,
-                    path,
-                    source_commit,
-                    report,
-                )
+                .tombstone_deleted_path(ctx, &commit_info.sha, now, path, source_commit, report)
                 .await
                 .map(ChangedPathIngest::Tombstone);
         };
         self.ingest_present_blob(
             ctx,
             &commit_info.sha,
-            batch_id,
             now,
             path,
             &blob,
@@ -768,7 +734,6 @@ impl LocalGitSource {
         &self,
         ctx: &CodeIngestContext<'_>,
         head_sha: &str,
-        batch_id: SourceBatchId,
         now: time::OffsetDateTime,
         entries: &[git::TreeEntry],
         prior_heads: &HashMap<String, FileRevisionHead>,
@@ -803,7 +768,6 @@ impl LocalGitSource {
                     self.ingest_present_blob(
                         ctx,
                         head_sha,
-                        batch_id,
                         now,
                         &entry.path,
                         &blob,
@@ -826,7 +790,6 @@ impl LocalGitSource {
         &self,
         ctx: &CodeIngestContext<'_>,
         indexed_commit_sha: &str,
-        batch_id: SourceBatchId,
         now: time::OffsetDateTime,
         path: &str,
         blob: &[u8],
@@ -849,7 +812,7 @@ impl LocalGitSource {
             state: FileState::Present,
         };
         let file_revision =
-            ingest_file_revision(ctx.engine(), ctx.authz(), batch_id, &rev_payload, now).await?;
+            ingest_file_revision(ctx.engine(), ctx.authz(), &rev_payload, now).await?;
         if !file_revision.idempotent_replay {
             report.files_present_emitted += 1;
         }
@@ -881,8 +844,8 @@ impl LocalGitSource {
         })
     }
 
-    /// Derive code-slice Abstractions and call edges after all Facts in
-    /// the source batch have been materialized and the batch is closed.
+    /// Derive code-slice Abstractions and call edges after every Fact
+    /// this pass observed has been materialized.
     #[allow(clippy::too_many_lines)]
     async fn derive_present_blob(
         &self,
@@ -890,12 +853,10 @@ impl LocalGitSource {
         pending: PendingPresentBlob,
         report: &mut IndexReport,
     ) -> Result<(), IndexError> {
-        // A receipt-replayed Fact belongs to the batch that first observed
-        // it, not to this one, and its chunks were derived under that batch.
-        // Deriving again here would hand `validate_ftoa_input_batch` a slice
-        // whose `source_batch_id` does not match its input Fact's, and the
-        // resulting `ConstraintViolation` fails the whole snapshot — leaving
-        // the cursor unmoved so every retry fails the same way.
+        // A receipt-replayed Fact was observed by an earlier pass, and its
+        // code slices were derived then. Re-deriving here would re-emit the
+        // same slices for a revision this pass did not observe, so the pass
+        // skips it and leaves the earlier derivation standing.
         //
         // Ordinary branch work reaches this:
         // index `main`, index a branch that touches the same path, check
@@ -1072,13 +1033,11 @@ impl LocalGitSource {
     }
 
     /// Emit a `file-revision-v1` tombstone Fact
-    /// for the deleted path. Code-slice tombstones derive after batch close.
-    #[allow(clippy::too_many_arguments)]
+    /// for the deleted path. Code-slice tombstones derive afterwards.
     async fn tombstone_deleted_path(
         &self,
         ctx: &CodeIngestContext<'_>,
         commit_sha: &str,
-        batch_id: SourceBatchId,
         now: time::OffsetDateTime,
         path: &str,
         source_commit: Option<MemoryId>,
@@ -1094,7 +1053,7 @@ impl LocalGitSource {
             state: FileState::Tombstone,
         };
         let file_revision =
-            ingest_file_revision(ctx.engine(), ctx.authz(), batch_id, &rev_payload, now).await?;
+            ingest_file_revision(ctx.engine(), ctx.authz(), &rev_payload, now).await?;
         report.files_tombstoned += 1;
 
         Ok(PendingDeletedPath {
@@ -1104,7 +1063,7 @@ impl LocalGitSource {
         })
     }
 
-    /// Derive code-slice tombstones for a deleted path after batch close.
+    /// Derive code-slice tombstones for a deleted path.
     async fn derive_deleted_path(
         &self,
         ctx: &CodeIngestContext<'_>,

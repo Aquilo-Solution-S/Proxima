@@ -52,7 +52,7 @@ that distinguishes a carrier from a decoy.
 | ES-2 | Visibility rule (group membership) | def `visible` (`o r ≠ none`, i.e. holds any `Role`) + theorem `visible_personal` |
 | ES-3 | org never enters access or identity | structural: org absent from `OwnerRef`, `OwnerState`, and resolved `Owner := Group` — decisions `2026-06-11-org-out-of-kernel.md`, owner realign 2026-06-28 |
 | ES-4 | source-ingest dedup key deterministic over source/owner/payload | excluded: source/flavor ingest metadata after D1; no core `FactReceiptId` entity |
-| ES-5 | Batch id unique within (source, owner) | excluded: per-scope source-id validation has no kernel-observable face; F→A gate carries owner dimension separately under CN-8; wake context dimension deferred after D4 |
+| ES-5 | Batch id unique within (source, owner) | RETIRED: doc 01 declares no source batch id. No batch table, column, or close step exists; F→A admits any Fact set (doc 04) |
 | ES-6 | Facts are typed observations, not operator derivations | `Fact` subtype + `operator_memory_output_not_fact`; `Flavor.OptionalFactReceipt` models arbitrary observed-source receipts as optional metadata |
 | ES-7 | 1:1 source-ingest receipt→Fact materialization | partial: `Flavor.OptionalFactReceipt` proves receipt payloads attach only to Fact rows; exact source materialization/idempotency remains source/flavor ingest implementation |
 | ES-8 | Source must not abstract/interpret/cross-join/relevance-filter/persist | excluded: source/flavor ingest contract; kernel carries the consequence via `operator_memory_output_not_fact` + no downward operator writes |

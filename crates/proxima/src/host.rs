@@ -147,8 +147,8 @@ pub use proxima_core::{
     EmbeddingRuntimePolicy, Engine, EngineAuthority, EngineHandle, FlavorRegistryFrozen,
     FlavorServiceError, FlavorServices, GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId,
     Owner, OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef, OwnerRefKind, OwnerRoles,
-    Relation, Role, SourceBatchId, SourceId, StorageError, ToolScope, UserId, canonical_json_bytes,
-    env_value, parse_external_key, provider_safe_tool_name,
+    Relation, Role, SourceId, StorageError, ToolScope, UserId, canonical_json_bytes, env_value,
+    parse_external_key, provider_safe_tool_name,
 };
 /// The three citation schema ids [`CitationSpec`] is written with:
 /// `UPLOADED_BLOB_SCHEMA_ID` names the cited object, and the other two

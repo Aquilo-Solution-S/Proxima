@@ -501,8 +501,8 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         // Simulate a long churn history: seed Present-state chunk rows at
         // distinct indexes (distinct natural keys, so every one is a live
         // head the deletion pass must tombstone). Deterministic memory ids
-        // let the three FK-ordered inserts (source_batches -> memories ->
-        // code_chunk_v1) share the same id set without a temp table.
+        // let the FK-ordered inserts (memories -> code_chunk_v1) share the
+        // same id set without a temp table.
         let owner_id = owner.stored_owner_id();
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)

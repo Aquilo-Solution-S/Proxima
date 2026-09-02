@@ -9,9 +9,9 @@ use proxima_core::verbs::query::{
     QueryRequest, QueryResponse,
 };
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphIdentity,
-    MemoryGraphPayloadRow, MemoryHydrationBatchOutcome, MemoryId, MemoryKindRow, Owner, OwnerRef,
-    StorageError, cold_object_key,
+    AuthorDerivedOutcome, AuthorDerivedRequest, MemoryGraphIdentity, MemoryGraphPayloadRow,
+    MemoryHydrationBatchOutcome, MemoryId, MemoryKindRow, Owner, OwnerRef, StorageError,
+    cold_object_key,
 };
 
 use crate::error::{internal, with_bounded_retry};
@@ -246,15 +246,6 @@ impl MemoryAuthoringPort for PgStorage {
             }
         })
         .await
-    }
-
-    async fn load_fact_source_batches(
-        &self,
-        _owner: &Owner,
-        memory_ids: &[MemoryId],
-    ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
-        let _ = memory_ids;
-        Ok(Vec::new())
     }
 }
 

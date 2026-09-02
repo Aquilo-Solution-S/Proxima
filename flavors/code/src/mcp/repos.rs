@@ -509,9 +509,8 @@ pub struct CodeEraseRepoOutput {
 /// Erase one registered repository and everything derived from it.
 ///
 /// Supported re-index path: a HEAD snapshot re-derives only files whose
-/// content moved, and a derived Abstraction must share `source_batch_id`
-/// with its Facts — a deriver change cannot rewrite in place. Erase then
-/// re-ingest.
+/// content moved, so a deriver change cannot rewrite already-derived
+/// slices in place. Erase then re-ingest.
 #[derive(Debug)]
 pub struct CodeEraseRepoTool;
 

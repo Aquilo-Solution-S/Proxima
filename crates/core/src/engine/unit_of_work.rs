@@ -14,7 +14,7 @@ use crate::verbs::goal_write::{
 use crate::verbs::query::SidecarAtom;
 use crate::{
     AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, FactPayload, MemoryId,
-    MemoryOperatorKind, Owner, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
+    MemoryOperatorKind, Owner, SchemaId, SchemaVersion, SidecarPayload,
 };
 
 /// Owned embedding so a prepared batch can outlive the client borrow
@@ -56,7 +56,7 @@ struct PreparedDerived {
     references: Vec<EdgeEndpoint>,
 }
 
-/// One typed Fact write: payload plus optional citation, batch, origins.
+/// One typed Fact write: payload plus optional citation and origins.
 ///
 /// Natural-key handle reuse is automatic when `handle` is unset and the
 /// schema declared `natural_key_columns`. That lookup reads committed
@@ -66,7 +66,6 @@ struct PreparedDerived {
 pub struct TypedFactIngest<'a, P: FactPayload> {
     source_id: &'a str,
     payload: &'a P,
-    source_batch_id: Option<SourceBatchId>,
     observed_at: Option<time::OffsetDateTime>,
     citation: Option<CitationSpec>,
     derived_from: Vec<EdgeEndpoint>,
@@ -87,8 +86,8 @@ impl<P: FactPayload> std::fmt::Debug for TypedFactIngest<'_, P> {
 }
 
 impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
-    /// Typed sidecar Fact from `source_id`. Mint a batch id and observe
-    /// now unless the caller overrides.
+    /// Typed sidecar Fact from `source_id`. Observe now unless the
+    /// caller overrides.
     ///
     /// The lexical language starts as
     /// [`crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT`]:
@@ -102,7 +101,6 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
         Self {
             source_id,
             payload,
-            source_batch_id: None,
             observed_at: None,
             citation: None,
             derived_from: Vec::new(),
@@ -112,13 +110,6 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
             ),
             refs: Vec::new(),
         }
-    }
-
-    /// Group this observation into an existing source batch.
-    #[must_use]
-    pub const fn source_batch_id(mut self, source_batch_id: SourceBatchId) -> Self {
-        self.source_batch_id = Some(source_batch_id);
-        self
     }
 
     /// Observation time stamped on the receipt.
@@ -236,7 +227,7 @@ impl Engine {
             .await
     }
 
-    /// One-shot Fact + typed sidecar with citation / batch / origins.
+    /// One-shot Fact + typed sidecar with citation / origins.
     ///
     /// # Errors
     ///
@@ -374,7 +365,7 @@ impl UnitOfWork<'_> {
             .await
     }
 
-    /// Authorize and persist one typed Fact with citation / batch / origins.
+    /// Authorize and persist one typed Fact with citation / origins.
     ///
     /// # Errors
     ///
@@ -389,17 +380,9 @@ impl UnitOfWork<'_> {
         let observed_at = spec
             .observed_at
             .unwrap_or_else(time::OffsetDateTime::now_utc);
-        let source_batch_id = spec
-            .source_batch_id
-            .unwrap_or_else(|| SourceBatchId::new(uuid::Uuid::now_v7()));
-        let mut draft = FactWriteCommand::from_payload(
-            spec.source_id,
-            source_batch_id,
-            spec.payload,
-            observed_at,
-        )
-        .with_derived_from(spec.derived_from)
-        .with_handle(spec.handle);
+        let mut draft = FactWriteCommand::from_payload(spec.source_id, spec.payload, observed_at)
+            .with_derived_from(spec.derived_from)
+            .with_handle(spec.handle);
         if let Some(citation) = spec.citation {
             draft = draft.with_citation(citation);
         }

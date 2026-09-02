@@ -1,8 +1,8 @@
+use crate::Relation;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
 use crate::verbs::fact_ingest::FactWriteCommand;
-use crate::{Relation, SourceBatchId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -101,13 +101,8 @@ impl McpTool for RecordUtteranceTool {
             let lexical_language =
                 crate::lexical_language::resolve_lexical_language(args.language.as_deref(), text)
                     .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-            let draft = FactWriteCommand::from_payload(
-                source_id,
-                SourceBatchId::new(uuid::Uuid::now_v7()),
-                &payload,
-                observed_at,
-            )
-            .with_lexical_language(Some(lexical_language));
+            let draft = FactWriteCommand::from_payload(source_id, &payload, observed_at)
+                .with_lexical_language(Some(lexical_language));
 
             let engine = ctx.require_engine()?;
             let embedding_client = engine.embed_client();

@@ -9,7 +9,7 @@ use common::{migrated_db, test_owner};
 use proxima_code::CommitV1;
 use proxima_code::RepoScope;
 use proxima_code::testkit::{build_engine, ingest_commit, register_repo};
-use proxima_core::{AuthPath, AuthzContext, SourceBatchId};
+use proxima_core::{AuthPath, AuthzContext};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
@@ -45,14 +45,7 @@ async fn commit_ingest_does_not_run_wake_execution() {
             committer_time: now,
             message: "feat: add foo".into(),
         };
-        let commit_outcome = ingest_commit(
-            &engine,
-            &authz,
-            SourceBatchId::new(Uuid::now_v7()),
-            &commit_payload,
-            now,
-        )
-        .await?;
+        let commit_outcome = ingest_commit(&engine, &authz, &commit_payload, now).await?;
         let commit_memory_id = commit_outcome.memory_id;
 
         let summary_count: i64 =

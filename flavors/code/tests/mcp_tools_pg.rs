@@ -315,8 +315,7 @@ async fn an_ingest_scope_excludes_fixtures_and_tombstones_what_leaves_it()
 
 /// Erasure is the supported way to re-index a repository from scratch, which
 /// is what a chunker or render upgrade needs: a HEAD snapshot re-derives only
-/// files whose content moved, and a derived Abstraction has to carry its
-/// input Facts' `source_batch_id`, so files that never change cannot be
+/// files whose content moved, so files that never change cannot be
 /// re-derived in place. It is also the only way to remove an indexed
 /// repository at all — `register_repo` upserts and keeps the cursor.
 #[tokio::test]
@@ -695,13 +694,11 @@ async fn a_file_containing_nul_is_skipped_not_fatal() -> Result<(), Box<dyn std:
 
 /// Switching back to a branch that was already indexed must not break ingest.
 ///
-/// A file revision's receipt key is (repo, path, commit, content hash, state)
-/// and carries no batch, so re-observing a commit returns the *original*
-/// Fact — whose receipt still names the *original* `source_batch_id`.
-/// Deriving that Fact's chunks under the current batch then trips
-/// `validate_ftoa_input_batch` ("F→A operator `source_batch_id` must match
-/// input Facts") and fails the whole snapshot, leaving the cursor unmoved so
-/// every retry fails identically.
+/// A file revision's receipt key is (repo, path, commit, content hash, state),
+/// so re-observing a commit returns the *original* Fact rather than minting
+/// a second one. The poll must therefore not re-derive its code slices: the
+/// earlier pass already emitted them, and re-emitting would duplicate work
+/// for a revision this pass did not observe.
 ///
 /// The `already_current` skip does not cover this: it compares against the
 /// current head, and after `main -> feature -> main` the head is the

@@ -91,14 +91,6 @@ impl MemoryAuthoringPort for MemoryAuthoringFake {
         fake_error()
     }
 
-    async fn load_fact_source_batches(
-        &self,
-        _owner: &Owner,
-        _memory_ids: &[MemoryId],
-    ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
-        fake_error()
-    }
-
     async fn forget_memory(
         &self,
         _permit: &OwnerWritePermit,
@@ -606,11 +598,6 @@ impl OwnerMembershipAdminPort for OwnerMembershipAdminFake {
 }
 
 #[derive(Debug)]
-struct SourceBatchFake;
-
-impl SourceBatchPort for SourceBatchFake {}
-
-#[derive(Debug)]
 struct SourceCursorFake;
 
 #[async_trait::async_trait]
@@ -737,7 +724,6 @@ fn public_storage_ports_can_be_mocked_independently() {
     assert_port::<CitationFake>();
     assert_port::<OwnerAccessReadFake>();
     assert_port::<OwnerMembershipAdminFake>();
-    assert_port::<SourceBatchFake>();
     assert_port::<SourceCursorFake>();
     assert_port::<OwnerInverseFake>();
     assert_port::<RegistryProjectionFake>();

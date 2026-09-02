@@ -27,8 +27,8 @@ use proxima_core::{
     AccessKind, AgentDerivationV1, AuthPath, AuthorDerivedRequestInput, AuthzContext, EdgeEndpoint,
     EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, FactPayload, FlavorRegistry, GoalId,
     InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, OwnerRef, PayloadKeyBuilder,
-    PayloadReference, Relation, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
-    StorageError, UploadedBlobPayload, UserId,
+    PayloadReference, Relation, SchemaId, SchemaVersion, SidecarPayload, StorageError,
+    UploadedBlobPayload, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
@@ -161,12 +161,7 @@ fn draft(logical_id: &str, fact_id: Uuid, goal_id: Uuid) -> FactWriteCommand {
         target_kind: "fact".to_owned(),
     };
     let now = time::OffsetDateTime::now_utc();
-    FactWriteCommand::from_payload(
-        "test/authorized-fact-refs",
-        proxima_core::SourceBatchId::new(Uuid::now_v7()),
-        &payload,
-        now,
-    )
+    FactWriteCommand::from_payload("test/authorized-fact-refs", &payload, now)
 }
 
 fn payload(logical_id: &str, fact_id: Uuid, goal_id: Uuid) -> ReferencedFactV1 {
@@ -354,7 +349,6 @@ fn inline_citation() -> (InlineCitedObjectDraft, InlineCitationMappingDraft) {
 fn custom_draft(payload: &ReferencedFactV1) -> FactWriteCommand {
     FactWriteCommand::from_payload(
         "test/authorized-fact-refs",
-        SourceBatchId::new(Uuid::now_v7()),
         payload,
         time::OffsetDateTime::now_utc(),
     )
@@ -579,7 +573,6 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
         );
         let inline_draft = FactWriteCommand::from_payload(
             "test/authorized-citation",
-            proxima_core::SourceBatchId::new(Uuid::now_v7()),
             &inline_payload,
             time::OffsetDateTime::now_utc(),
         );
@@ -618,7 +611,6 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
         );
         let by_ref_draft = FactWriteCommand::from_payload(
             "test/authorized-citation",
-            proxima_core::SourceBatchId::new(Uuid::now_v7()),
             &by_ref_payload,
             time::OffsetDateTime::now_utc(),
         );

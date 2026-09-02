@@ -22,28 +22,6 @@ pub fn normalize_idempotency_key(key: Option<String>) -> Result<Option<String>, 
     .transpose()
 }
 
-/// Normalize an optional `source_batch_key` under the same trimmed
-/// 1..=180-char contract as idempotency keys.
-///
-/// The field name is passed down rather than the error being discarded and
-/// replaced. The replacement sentence said `source_batch_key must be
-/// 1..=180 chars after trimming` for a blank key as well as an over-long
-/// one — the very shape [`IdempotencyKey::new_named`] exists to avoid, and
-/// a second sentence for one rule besides.
-///
-/// # Errors
-///
-/// Returns [`McpToolError::InvalidInput`] when the key is blank after
-/// trimming or over the character cap.
-pub fn normalize_batch_key(key: Option<String>) -> Result<Option<String>, McpToolError> {
-    key.map(|raw| {
-        IdempotencyKey::new_named("source_batch_key", raw)
-            .map(IdempotencyKey::into_string)
-            .map_err(McpToolError::InvalidInput)
-    })
-    .transpose()
-}
-
 /// Clock-skew tolerance for caller-supplied `observed_at` timestamps.
 const OBSERVED_AT_FUTURE_SKEW: time::Duration = time::Duration::minutes(5);
 

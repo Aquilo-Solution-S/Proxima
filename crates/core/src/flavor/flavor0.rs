@@ -755,8 +755,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         },
         erase: EraseRule::ByKey,
         export: ExportRule::Excluded {
-            why: "the pull log is projector state, exported as source_batches (empty by \
-                  declaration) rather than as owner content",
+            why: "the pull log is projector state, not owner content",
         },
         forget: ForgetRule::Keep {
             why: "forget APPENDS an announce row; it never removes one",

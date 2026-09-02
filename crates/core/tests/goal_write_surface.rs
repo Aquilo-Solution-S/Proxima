@@ -80,7 +80,7 @@ fn typed_goal_payload_write_rejects_invalid_display_fields() {
 }
 
 /// Every embedding-host length rejection in this file must tell a blank
-/// value from an over-long one. The four checks below were written as
+/// value from an over-long one. The checks below were written as
 /// `count == 0 || count > max` behind a single sentence, so a host handed
 /// `"  "` was told `goal title must be 1..=240 chars` — a range two spaces
 /// satisfy, which reads as a server fault rather than "send a title".
@@ -95,7 +95,7 @@ fn an_embedded_host_is_told_which_bound_it_broke() {
     };
     let long = "a".repeat(20_001);
 
-    let cases: [(&str, String, String); 4] = [
+    let cases: [(&str, String, String); 3] = [
         (
             "goal title",
             GoalPayloadWrite::from_payload("  ", "text", payload())
@@ -119,15 +119,6 @@ fn an_embedded_host_is_told_which_bound_it_broke() {
             IdempotencyKey::new("  ").expect_err("blank key"),
             IdempotencyKey::new("a".repeat(IdempotencyKey::MAX_CHARS + 1)).expect_err("long key"),
         ),
-        (
-            "source_batch_key",
-            IdempotencyKey::new_named("source_batch_key", "  ").expect_err("blank key"),
-            IdempotencyKey::new_named(
-                "source_batch_key",
-                "a".repeat(IdempotencyKey::MAX_CHARS + 1),
-            )
-            .expect_err("long key"),
-        ),
     ];
 
     for (field, blank, over) in cases {
@@ -148,7 +139,7 @@ fn an_embedded_host_is_told_which_bound_it_broke() {
 
 /// The wake prompt takes the same path but reports through `ProtocolError`,
 /// which prefixes `invalid argument {field}: `, so it is checked apart from
-/// the four above rather than bent into their shape.
+/// the ones above rather than bent into their shape.
 #[test]
 fn a_wake_prompt_rejection_names_the_bound_it_broke() {
     let long = "a".repeat(GoalWakeConfigWrite::MAX_PROMPT_CHARS + 1);

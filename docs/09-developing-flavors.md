@@ -477,7 +477,6 @@ Invocation:
 // `from_payload` carries no owner; the engine stamps it from authorization.
 let draft = FactWriteCommand::from_payload(
     "acme/importer",
-    source_batch_id,
     &fact_payload,
     observed_at,
 );

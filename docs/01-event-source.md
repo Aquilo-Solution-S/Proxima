@@ -127,22 +127,14 @@ A single Reality observation may produce **many events**, however. A PDF
 upload produces one event per chunk after OCR; a repo crawl produces one
 event per file; a Telegram conversation produces one event per message. The
 1:1 rule applies to events crossing into the engine, not to the upstream
-fan-out. All events from a single observation share a **source batch id**:
-a UUIDv7 the source declares opaquely at emit time. The engine validates
-uniqueness within `(source_id, owner)` and rejects collisions; sources
-already control observation grouping, so they own this id (Q6). F→A
-consolidation operates on a source batch (component 02): the chunks of one
-PDF, the files of one repo crawl, the messages of one chat session.
+fan-out. Events carry no grouping id: there is no source batch, no
+`source_batches` table, and no `engine.close_batch`. F→A consolidation
+reads any set of Facts the operator names, whenever they were written
+(see [04 §F->A input admission](04-consolidation.md#f-a-input-admission)).
 
-`source_batch_id` is an opaque episode id the source stamps on each
-write (see [07](07-storage.md)). There is no `source_batches` table and
-no `engine.close_batch` in v0.0.8.
-
-`source_batch_id` is the F→A consolidation episode, distinct from the
-artefact a Fact cites (`citation_mapping_id` → `cited_object_id`,
-see [11](11-citations.md)). They often coincide — one PDF ingestion → one batch → one
-Document — but for streams (one ChatSession lasting months → many
-batches over time) they don't. Coincidence isn't identity.
+Where a Fact's own observation came from is recorded by what it cites
+(`citation_mapping_id` → `cited_object_id`, see [11](11-citations.md)),
+not by an ingestion-time grouping.
 
 ## Compliance metadata
 
@@ -200,7 +192,6 @@ Every event carries:
 | `ingest_key` | Sourced Fact replay. Same `(owner, source_id, ingest_key)` → same `(handle, t)`. |
 | `source_id` | Which source emitted this. |
 | `owner` | `Owner` — scope of this event (whose Reality slice). Source sets at emit time from its config or per-event observation context. |
-| `source_batch_id` | UUIDv7 declared by the source at emit time; engine validates uniqueness within `(source_id, owner)` and rejects collisions. Groups events from the same Reality observation. |
 | `schema_id` | Which registered schema this event conforms to (component 03). |
 | `schema_version` | Version of that schema. |
 | `observed_at` | When the agent observed the event. Defaults to ingest time. Ordering is `t` (uuidv7). |

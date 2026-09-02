@@ -274,8 +274,7 @@ Unassigned owner-only Goal rows are not part of the public helper.
 ### FactIngest
 
 Fact write path for external sources and in-app sources. Receipt-backed writes
-carry source receipt metadata; receiptless writes carry no source-batch
-witness.
+carry source receipt metadata; receiptless writes carry none.
 
 | Rule | Contract |
 |---|---|

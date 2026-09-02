@@ -11,7 +11,6 @@ policy, and retrieval policy.
 ```
 source receipt metadata
   -> receipt-backed Fact + its payload's reference entries
-  -> closed source batch
   -> Abstraction + origin entries
 
 announce(F/A/P/Goal/Edge)
@@ -27,17 +26,25 @@ Phase split:
 | Phase | Input | Output | Runtime |
 |---|---|---|---|
 | FactIngest | external observation + receipt metadata | receipt-backed Fact + its payload's `reference` entries | 01 / 03 / 05 |
-| F->A | Fact set, source batch | Abstraction + `origin` entries | flavor-operator discipline |
+| F->A | Fact set | Abstraction + `origin` entries | flavor-operator discipline |
 | A->A | Abstraction set | Abstraction + `origin` entries | operator / harness |
 | A->P | Abstraction set, active Perspective context | Perspective + `origin` entries | operator / harness |
 | A->Goal | Abstraction set, active Perspective context | Goal + `reference` entries from its evidence column | operator / harness |
 
-## Source-batch lifecycle
+## F->A input admission
 
-The `source_batches` table and `engine.close_batch` were removed in
-v0.0.8. `source_batch_id` remains the F→A episode id stamped on the
-write. Domain metadata belongs on `CitedObject` / `CitationMapping`
-sidecars, not on a batch row.
+F->A takes any set of Facts, across any number of authoring calls and
+any age. No grouping id, batch table, or close step exists or is
+required: the `source_batches` table and `engine.close_batch` were
+removed in v0.0.8, and `source_batch_id` after v0.0.9. The gate on
+`core_derive` is exactly:
+
+- one memory layer per operator invocation — every `source_handles`
+  entry resolves to the same layer, else `InvalidArgument`;
+- no Perspective from Facts and no derivation from Perspectives, else
+  `LayeringViolation`.
+
+Domain metadata belongs on `CitedObject` / `CitationMapping` sidecars.
 
 ## Phase 2 — Perspective-context embedding
 

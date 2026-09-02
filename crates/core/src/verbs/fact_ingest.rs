@@ -13,7 +13,7 @@ use crate::engine::MemoryPermit;
 use crate::storage_ports::OwnerWritePermit;
 use crate::{
     FactPayload, FactReceiptId, MemoryId, Owner, OwnerRefKind, SchemaId, SchemaVersion,
-    SidecarPayload, SourceBatchId, SourceId,
+    SidecarPayload, SourceId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -113,7 +113,6 @@ pub struct InlineCitationMappingDraft {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FactReceiptDraft {
     pub source_id: SourceId,
-    pub source_batch_id: SourceBatchId,
     pub observed_at: time::OffsetDateTime,
     pub occurred_at: time::OffsetDateTime,
 }
@@ -751,7 +750,6 @@ impl FactWriteCommand {
     /// [`Self::receipt_id_for_owner`] folds them.
     pub fn from_payload<P: FactPayload>(
         source_id: impl Into<String>,
-        source_batch_id: SourceBatchId,
         payload: &P,
         observed_at: time::OffsetDateTime,
     ) -> Self {
@@ -768,7 +766,6 @@ impl FactWriteCommand {
             lexical_language: None,
             receipt: Some(FactReceiptDraft {
                 source_id: SourceId::new(source_id),
-                source_batch_id,
                 observed_at,
                 occurred_at: observed_at,
             }),
@@ -874,9 +871,7 @@ pub struct FactIngestOutcome {
 #[cfg(test)]
 mod tests {
     use super::{FactReceiptDraft, FactWriteCommand};
-    use crate::{
-        OwnerRef, PayloadKeyBuilder, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
-    };
+    use crate::{OwnerRef, PayloadKeyBuilder, SchemaId, SchemaVersion, SourceId, UserId};
     use uuid::Uuid;
 
     fn owner() -> OwnerRef {
@@ -898,7 +893,6 @@ mod tests {
             lexical_language: None,
             receipt: Some(FactReceiptDraft {
                 source_id: SourceId::new("test/source"),
-                source_batch_id: SourceBatchId::new(Uuid::nil()),
                 observed_at: now,
                 occurred_at: now,
             }),
@@ -946,7 +940,6 @@ mod tests {
             lexical_language: None,
             receipt: Some(FactReceiptDraft {
                 source_id: SourceId::new("golden/source"),
-                source_batch_id: SourceBatchId::new(Uuid::nil()),
                 observed_at: time::OffsetDateTime::UNIX_EPOCH,
                 occurred_at: time::OffsetDateTime::UNIX_EPOCH,
             }),
@@ -1004,12 +997,7 @@ mod tests {
             body,
         };
         let command = |payload: &NotePayload| {
-            FactWriteCommand::from_payload(
-                "test/source",
-                SourceBatchId::new(Uuid::nil()),
-                payload,
-                time::OffsetDateTime::UNIX_EPOCH,
-            )
+            FactWriteCommand::from_payload("test/source", payload, time::OffsetDateTime::UNIX_EPOCH)
         };
 
         let first = command(&note(long_body.clone()));

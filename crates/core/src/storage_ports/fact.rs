@@ -97,5 +97,3 @@ pub trait FactIngestPort: Send + Sync {
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError>;
 }
-
-pub trait SourceBatchPort: Send + Sync {}

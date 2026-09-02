@@ -6,7 +6,7 @@ use super::cursors::SourceCursorPort;
 use super::embeddings::{
     EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWritePort,
 };
-use super::fact::{FactIngestPort, SourceBatchPort};
+use super::fact::FactIngestPort;
 use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 use super::mcp::McpCallReadPort;
 use super::memory::{CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort};
@@ -31,7 +31,6 @@ pub type CitationHandle = Arc<dyn CitationPort>;
 pub type OwnerAccessReadHandle = Arc<dyn OwnerAccessReadPort>;
 pub type OwnerMembershipAdminHandle = Arc<dyn OwnerMembershipAdminPort>;
 pub type OwnerTransferHandle = Arc<dyn OwnerTransferPort>;
-pub type SourceBatchHandle = Arc<dyn SourceBatchPort>;
 pub type SourceCursorHandle = Arc<dyn SourceCursorPort>;
 pub type OwnerInverseHandle = Arc<dyn OwnerInversePort>;
 pub type RegistryProjectionHandle = Arc<dyn RegistryProjectionPort>;

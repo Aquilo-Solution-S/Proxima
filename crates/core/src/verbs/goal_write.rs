@@ -173,24 +173,10 @@ impl IdempotencyKey {
     /// Returns the rejection reason when the trimmed key is empty or longer
     /// than `MAX_CHARS`.
     pub fn new(raw: impl Into<String>) -> Result<Self, String> {
-        Self::new_named("idempotency_key", raw)
-    }
-
-    /// Same contract as [`IdempotencyKey::new`], but the rejection names
-    /// `field` rather than `idempotency_key`.
-    ///
-    /// `core_remember`'s `source_batch_key` is the same 1..=180 trimmed key
-    /// under another name; passing the field name keeps one sentence.
-    ///
-    /// # Errors
-    ///
-    /// Returns the rejection reason when the trimmed key is empty or longer
-    /// than `MAX_CHARS`.
-    pub fn new_named(field: &str, raw: impl Into<String>) -> Result<Self, String> {
         let raw = raw.into();
         match check_trimmed_len(&raw, Self::MAX_CHARS) {
             Ok(trimmed) => Ok(Self(trimmed.to_string())),
-            Err(violation) => Err(violation.reason(field)),
+            Err(violation) => Err(violation.reason("idempotency_key")),
         }
     }
 
