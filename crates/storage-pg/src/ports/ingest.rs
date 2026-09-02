@@ -55,10 +55,14 @@ impl FactIngestPort for PgStorage {
                     &mut tx,
                     authorized,
                     embedding_model_id,
-                    &tables,
-                    None,
-                    &content_payloads,
-                    &scopes,
+                    verbs::fact_ingest::FactAdmissionInput {
+                        sidecar_tables: &tables,
+                        scopes: &scopes,
+                        content: verbs::fact_ingest::ContentResolution {
+                            content_id: None,
+                            payloads: Some(&content_payloads),
+                        },
+                    },
                     move |tx, outcome| {
                         Box::pin(async move {
                             for payload in &payloads {
@@ -104,8 +108,16 @@ impl FactIngestPort for PgStorage {
                     &sidecars,
                     authorized,
                     embedding_model_id,
-                    &tables,
-                    &scopes,
+                    verbs::fact_ingest::FactAdmissionInput {
+                        sidecar_tables: &tables,
+                        scopes: &scopes,
+                        // A cited Fact resolves its `Content` the same way
+                        // the citation routes always have: not at all.
+                        content: verbs::fact_ingest::ContentResolution {
+                            content_id: None,
+                            payloads: None,
+                        },
+                    },
                     move |tx, outcome| {
                         Box::pin(async move {
                             for payload in &payloads {
@@ -152,8 +164,16 @@ impl FactIngestPort for PgStorage {
                     &sidecars,
                     authorized,
                     embedding_model_id,
-                    &tables,
-                    &scopes,
+                    verbs::fact_ingest::FactAdmissionInput {
+                        sidecar_tables: &tables,
+                        scopes: &scopes,
+                        // A cited Fact resolves its `Content` the same way
+                        // the citation routes always have: not at all.
+                        content: verbs::fact_ingest::ContentResolution {
+                            content_id: None,
+                            payloads: None,
+                        },
+                    },
                     move |tx, outcome| {
                         Box::pin(async move {
                             for payload in &payloads {
