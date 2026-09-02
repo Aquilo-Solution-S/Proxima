@@ -5,7 +5,7 @@
 //! columns. This module turns those names into a liveness probe and hands
 //! back the fence target the admission path locks on. It SPELLS NOTHING OF
 //! ITS OWN — every identifier in the generated statement comes off the
-//! declaration and through [`PgIdent`], which is the repo's standing rule
+//! declaration and through `PgIdent`, which is the repo's standing rule
 //! for splicing a build-time name into SQL.
 //!
 //! Resolution happens once, at `PgStorage::with_flavors`, because the
