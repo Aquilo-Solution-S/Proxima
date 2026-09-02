@@ -50,6 +50,7 @@ impl FactIngestPort for PgStorage {
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
                 let tables = self.sidecars.tables_for_payloads(&payloads)?;
+                let scopes = self.scopes.targets_for_payloads(&payloads)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
                     &mut tx,
                     authorized,
@@ -57,6 +58,7 @@ impl FactIngestPort for PgStorage {
                     &tables,
                     None,
                     &content_payloads,
+                    &scopes,
                     move |tx, outcome| {
                         Box::pin(async move {
                             for payload in &payloads {
@@ -96,12 +98,14 @@ impl FactIngestPort for PgStorage {
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
                 let tables = self.sidecars.tables_for_payloads(&payloads)?;
+                let scopes = self.scopes.targets_for_payloads(&payloads)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_citation_in_tx(
                     &mut tx,
                     &sidecars,
                     authorized,
                     embedding_model_id,
                     &tables,
+                    &scopes,
                     move |tx, outcome| {
                         Box::pin(async move {
                             for payload in &payloads {
@@ -142,12 +146,14 @@ impl FactIngestPort for PgStorage {
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
                 let tables = self.sidecars.tables_for_payloads(&payloads)?;
+                let scopes = self.scopes.targets_for_payloads(&payloads)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_citation_ref_in_tx(
                     &mut tx,
                     &sidecars,
                     authorized,
                     embedding_model_id,
                     &tables,
+                    &scopes,
                     move |tx, outcome| {
                         Box::pin(async move {
                             for payload in &payloads {

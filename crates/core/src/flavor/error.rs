@@ -1,4 +1,4 @@
-use super::{PayloadKind, SchemaId, SchemaVersion};
+use super::{PayloadKind, SchemaId, SchemaVersion, ScopeKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -85,6 +85,32 @@ pub enum FlavorRegistryError {
     DuplicateFlavorOrdinal {
         ordinal: u16,
         flavor_id: &'static str,
+    },
+    /// A registered payload names a lifecycle scope no linked flavor
+    /// declares (docs/03 §Scope declaration). Without the declaration
+    /// storage has no registry table to probe and no columns to key the
+    /// probe on, so every admission of that payload would either skip the
+    /// fence or fail at the first write. Refused here, where the
+    /// registration that named it can still be pointed at.
+    ScopeNotDeclared {
+        schema_id: SchemaId,
+        kind: ScopeKind,
+    },
+    /// Two contracts declare the same [`ScopeKind`]. The kind is the fence
+    /// key's namespace and the sole selector for the liveness probe, so a
+    /// second declaration is not a wider claim but an undecided one: an
+    /// admission could not tell which registry table its scope lives in.
+    DuplicateScopeDeclaration {
+        kind: ScopeKind,
+        first_flavor_id: &'static str,
+        conflicting_flavor_id: &'static str,
+    },
+    /// A scope declaration names something storage cannot splice — an
+    /// unqualified registry table or an empty column name.
+    InvalidScopeDeclaration {
+        flavor_id: &'static str,
+        kind: ScopeKind,
+        message: &'static str,
     },
     /// A flavor other than #0 declared `proxima://` resources. Resources are
     /// substrate-only: a flavor resource needs its own scope-key namespace,
@@ -406,6 +432,31 @@ impl std::fmt::Display for FlavorRegistryError {
                 f,
                 "flavor {flavor_id} claims ordinal {ordinal}, which another flavor already holds; \
                  ordinals are load-bearing at runtime and cannot collide"
+            ),
+            Self::ScopeNotDeclared { schema_id, kind } => write!(
+                f,
+                "schema {schema_id} declares lifecycle scope {kind}, which no linked flavor \
+                 contract declares; add a ScopeDecl naming its registry table, id column and \
+                 owner columns"
+            ),
+            Self::DuplicateScopeDeclaration {
+                kind,
+                first_flavor_id,
+                conflicting_flavor_id,
+            } => write!(
+                f,
+                "flavors {first_flavor_id} and {conflicting_flavor_id} both declare lifecycle \
+                 scope {kind}; the kind is one fence namespace and one registry, so it has one \
+                 declaration or none"
+            ),
+            Self::InvalidScopeDeclaration {
+                flavor_id,
+                kind,
+                message,
+            } => write!(
+                f,
+                "flavor {flavor_id}'s declaration of lifecycle scope {kind} is not spliceable: \
+                 {message}"
             ),
             Self::ResourcesNotPermitted { flavor_id } => write!(
                 f,

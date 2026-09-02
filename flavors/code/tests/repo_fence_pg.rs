@@ -1,19 +1,25 @@
-//! The repository lifecycle fence, under real interleavings.
+//! The declared `code-repo` lifecycle scope, under real interleavings.
 //!
 //! Every test here stages its race with a lock and waits for the database
 //! to say a backend is blocked. Nothing sleeps: a sleep would make these
 //! pass on a fast machine and flake on a loaded one, and the thing being
 //! pinned is an ordering, which a clock cannot observe.
+//!
+//! The fence these tests hold is the SUBSTRATE's — one key generated from
+//! `CODE_REPO_SCOPE_DECL` — so a barrier here takes exactly the lock the
+//! Engine takes on an admission, rather than a flavor-side copy of it.
 
 mod common;
 
 use common::{code_pg_sidecars, migrated_db, test_owner};
-use proxima_code::testkit::{
-    build_engine, erase_repo, ingest_commit, lock_repo_fence_exclusive_tx,
-    lock_repo_fence_shared_tx, register_repo,
+use proxima::flavor::{lock_scope_fence_exclusive_tx, lock_scope_fence_shared_tx};
+use proxima_code::testkit::{build_engine, erase_repo, ingest_commit, register_repo};
+use proxima_code::{CODE_REPO_SCOPE, CodeFlavorStore, CommitSummaryV1, CommitV1, RepoScope};
+use proxima_core::{
+    AbstractionPayload, AuthPath, AuthorDerivedRequestInput, AuthzContext, EdgeEndpoint, Engine,
+    EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, ProtocolError,
+    SchemaVersion, SidecarPayload,
 };
-use proxima_code::{CodeFlavorStore, CommitV1, RepoScope};
-use proxima_core::{AuthPath, AuthzContext, Owner};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -172,19 +178,11 @@ fn spawn_ingest(
     let payload = commit_payload(repo_id, sha);
     tokio::spawn(async move {
         let pg = connect_storage(&db_name).await?;
-        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let engine = build_engine(pg.clone());
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-        ingest_commit(
-            &engine,
-            &authz,
-            &store,
-            owner,
-            &payload,
-            time::OffsetDateTime::now_utc(),
-        )
-        .await
-        .map_err(|err| err.to_string())
+        ingest_commit(&engine, &authz, &payload, time::OffsetDateTime::now_utc())
+            .await
+            .map_err(|err| err.to_string())
     })
 }
 
@@ -206,14 +204,11 @@ async fn a_same_repo_ingest_waits_for_the_erase_and_is_then_refused() {
         let repo_id = Uuid::now_v7();
         register(pool, &owner, repo_id).await?;
 
-        let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
         let engine = build_engine(pg.clone());
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         ingest_commit(
             &engine,
             &authz,
-            &store,
-            owner,
             &commit_payload(repo_id, "0000000000000000000000000000000000000001"),
             time::OffsetDateTime::now_utc(),
         )
@@ -269,8 +264,8 @@ async fn a_same_repo_ingest_waits_for_the_erase_and_is_then_refused() {
             .await?
             .expect_err("an ingest into an erased repository must be refused");
         assert!(
-            refusal.contains(&repo_id.to_string()) && refusal.contains("repo not found"),
-            "the refusal must name the repository as not found; got {refusal}"
+            refusal.contains(&repo_id.to_string()) && refusal.contains("scope not registered"),
+            "the refusal must name the scope as unregistered; got {refusal}"
         );
         assert_eq!(
             census(pool, repo_id).await,
@@ -305,7 +300,7 @@ async fn an_erase_waits_for_an_in_flight_same_repo_write_and_sweeps_it() {
         // middle of it.
         let writer_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let mut writer = writer_pool.begin().await?;
-        lock_repo_fence_exclusive_tx(&mut writer, &owner, repo_id).await?;
+        lock_scope_fence_exclusive_tx(&mut writer, CODE_REPO_SCOPE, &owner, repo_id).await?;
         let late_t = Uuid::now_v7();
         insert_commit_row(&mut writer, &owner, repo_id, late_t).await?;
 
@@ -420,12 +415,12 @@ async fn an_erase_of_one_repository_does_not_fence_another() {
 ///
 /// The fence separates writers from the ERASE, not writers from each other,
 /// and this is the test that says so. The parked writer takes the shared
-/// mode through the flavor helper and stays open; the second writer goes
-/// through the production admission path, whose fence is the same key. If
-/// that path took the exclusive mode - as it did before the write-session
-/// port grew `advisory_xact_lock_shared` - the second writer would block
-/// behind the first, and this test would run out its bound instead of
-/// finishing, which is the failure the assertion names.
+/// mode through the substrate helper and stays open; the second writer goes
+/// through the production admission path, whose fence is the same key,
+/// generated from the same declaration. If the admission took the exclusive
+/// mode the second writer would block behind the first, and this test would
+/// run out its bound instead of finishing, which is the failure the
+/// assertion names.
 ///
 /// The erase then queues behind the writer that is still holding, and
 /// sweeps both writers' rows: shared writers are not exempt from the
@@ -456,7 +451,7 @@ async fn two_same_repo_writers_hold_the_fence_at_once_and_the_erase_sweeps_both(
         // stops. Held open across the whole of the rest of this test.
         let parked_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let mut parked = parked_pool.begin().await?;
-        lock_repo_fence_shared_tx(&mut parked, &owner, repo_id).await?;
+        lock_scope_fence_shared_tx(&mut parked, CODE_REPO_SCOPE, &owner, repo_id).await?;
         let parked_t = Uuid::now_v7();
         insert_commit_row(&mut parked, &owner, repo_id, parked_t).await?;
 
@@ -518,6 +513,176 @@ async fn two_same_repo_writers_hold_the_fence_at_once_and_the_erase_sweeps_both(
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("two_same_repo_writers_hold_the_fence_at_once_and_the_erase_sweeps_both failed");
+}
+
+/// A host writes a repo-scoped payload straight through `Engine`, and is
+/// fenced anyway. **This is the hole the declaration closes.**
+///
+/// `commit_summary_v1` has no writer in this flavor: nothing in
+/// `flavors/code/src` ever admits one, so under the retired flavor-side
+/// fence there was no place to put the fence call and no fence was ever
+/// taken. A host that wrote a summary through `Engine::author_derived_authorized`
+/// raced every repository erase, and could commit a row after the erase had
+/// already computed its footprint. Declaring `CODE_REPO_SCOPE` on the
+/// payload is the whole of the fix: the fence and the liveness probe are
+/// now the Engine's, in the write transaction, before its handle and `t`.
+///
+/// Both halves are pinned here. The first summary commits before the erase
+/// parks and must be SWEPT; the second arrives while the erase holds the
+/// fence and must WAIT and then be REFUSED.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refused() {
+    let (db_name, pg) = migrated_db().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = test_owner();
+        let repo_id = Uuid::now_v7();
+        register(pool, &owner, repo_id).await?;
+
+        // A commit for the summaries to derive from: an Abstraction must
+        // pin at least one Fact, which is the Model's rule and not this
+        // test's.
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let commit = ingest_commit(
+            &engine,
+            &authz,
+            &commit_payload(repo_id, "0000000000000000000000000000000000000005"),
+            time::OffsetDateTime::now_utc(),
+        )
+        .await?
+        .memory_id;
+
+        // The write that gets in first. No flavor code in its path — this is
+        // the host's own call.
+        let early =
+            host_write_commit_summary(&engine, &authz, owner, repo_id, "early0001", commit).await?;
+        assert!(
+            census(pool, repo_id).await > 0,
+            "the host's summary landed before the erase"
+        );
+
+        // The barrier: hold the repo row the erase locks immediately after
+        // its fence, so the erase parks holding the fence.
+        let barrier_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
+        let mut barrier = barrier_pool.begin().await?;
+        let (kind, owner_id) = owner.columns();
+        sqlx::query(HOLD_REPO_ROW_SQL)
+            .bind(kind)
+            .bind(owner_id)
+            .bind(repo_id)
+            .fetch_all(&mut *barrier)
+            .await?;
+
+        let erase_db = db_name.clone();
+        let erase = tokio::spawn(async move {
+            let pg = connect_storage(&erase_db).await?;
+            let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+            erase_repo(&store, &owner, repo_id)
+                .await
+                .map_err(|err| err.to_string())
+        });
+        assert!(
+            wait_for_count(pool, Probe::AnyLock, 1).await,
+            "the erase never parked on the repo row; the interleaving did not set up"
+        );
+
+        // The late host write, on its own pool so it can block.
+        let late_db = db_name.clone();
+        let late = tokio::spawn(async move {
+            let pg = connect_storage(&late_db).await?;
+            let engine = build_engine(pg.clone());
+            let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+            host_write_commit_summary(&engine, &authz, owner, repo_id, "late00001", commit)
+                .await
+                .map_err(|err| err.to_string())
+        });
+        assert!(
+            wait_for_count(pool, Probe::Advisory, 1).await,
+            "the host's write did not wait on the declared scope fence"
+        );
+        assert!(!late.is_finished(), "the host write ran past the fence");
+
+        barrier.rollback().await?;
+        barrier_pool.close().await;
+
+        erase.await?.expect("the erase completes once unparked");
+        let refusal = late
+            .await?
+            .expect_err("a host write into an erased scope must be refused");
+        assert!(
+            refusal.contains(&repo_id.to_string()) && refusal.contains("scope not registered"),
+            "the refusal must name the scope as unregistered; got {refusal}"
+        );
+        assert_eq!(
+            census(pool, repo_id).await,
+            0,
+            "the summary the host wrote first is inside the erase's footprint"
+        );
+        let survivor: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(early.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(survivor, 0, "and so is the admission behind it");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+        .expect("a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refused failed");
+}
+
+/// One `commit_summary_v1`, written the way a host writes it: the Engine's
+/// own authored-derived verb, with no repository check and no fence of its
+/// own anywhere in the call.
+#[allow(clippy::too_many_arguments)]
+async fn host_write_commit_summary(
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: Owner,
+    repo_id: Uuid,
+    commit_sha: &str,
+    commit: MemoryId,
+) -> Result<MemoryId, ProtocolError> {
+    let payload = CommitSummaryV1 {
+        repo_id,
+        commit_sha: commit_sha.to_string(),
+        summary: format!("host summary of {commit_sha}"),
+        key_files: Vec::new(),
+        change_kind: "fix".to_string(),
+    };
+    let text = payload.summary.clone();
+    let origins = [EdgeEndpoint::memory(EntityKind::Fact, commit)];
+    let outcome = engine
+        .author_derived_authorized(
+            authz,
+            AuthorDerivedRequestInput {
+                memory_id: MemoryId::new(Uuid::now_v7()),
+                owner,
+                kind: EntityKind::Abstraction,
+                text,
+                schema_id: <CommitSummaryV1 as AbstractionPayload>::schema_id(),
+                schema_version: SchemaVersion::new(CommitSummaryV1::SCHEMA_VERSION),
+                operator_kind: MemoryOperatorKind::FtoA,
+                operator_id: OperatorId::new(Uuid::new_v5(
+                    &Uuid::NAMESPACE_URL,
+                    b"proxima-code/tests/repo-fence/host-summary",
+                )),
+                input_contract_id: InputContractId::new(Uuid::new_v5(
+                    &Uuid::NAMESPACE_URL,
+                    commit_sha.as_bytes(),
+                )),
+                model_id: "proxima-code/tests/repo-fence",
+                sidecar_payload: SidecarPayload::abstraction(payload),
+                derived_from: &origins,
+                extra_refs: &[],
+                supersedes: None,
+                lexical_language: None,
+            },
+        )
+        .await?;
+    Ok(outcome.memory_id)
 }
 
 /// One admitted `commit_v1` and the `proxima_core` rows behind it, written

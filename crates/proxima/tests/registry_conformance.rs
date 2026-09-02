@@ -101,6 +101,7 @@ static CONFORMANCE_CONTRACT: FlavorContract = FlavorContract {
         natural_key_columns: &[],
     }],
     state_surfaces: &[],
+    scopes: &[],
     kernel_surfaces: &[],
     tools: &[],
     resources: &[],

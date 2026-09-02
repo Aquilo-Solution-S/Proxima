@@ -83,6 +83,20 @@ impl ProtocolError {
         }
     }
 
+    /// A write named a flavor-owned lifecycle scope whose registry row is
+    /// absent for this owner (docs/03 §Scope declaration). `NotFound`
+    /// rather than a code of its own: the caller named a row that is not
+    /// there, which is what `NotFound` means, and `ErrorCode` is
+    /// deliberately exhaustive at every transport, so a new variant would
+    /// cost a rendering decision this refusal does not need.
+    pub fn scope_not_registered(kind: impl AsRef<str>, id: uuid::Uuid) -> Self {
+        Self {
+            code: ErrorCode::NotFound,
+            message: format!("scope not registered: {}:{id}", kind.as_ref()),
+            request_id: None,
+        }
+    }
+
     pub fn not_found(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::NotFound,

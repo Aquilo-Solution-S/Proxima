@@ -9,6 +9,7 @@
 //! const-construction of `String`, which Rust does not allow.
 
 use crate::edge::EdgeEndpoint;
+use crate::scope::{ScopeKind, ScopeRef};
 use crate::{EntityKind, GoalId, MemoryId, SchemaId};
 
 /// How a schema-declared reference field addresses the node it points
@@ -531,6 +532,42 @@ pub trait FactPayload:
     fn references(&self) -> Vec<PayloadReference> {
         Vec::new()
     }
+    /// The flavor-owned lifecycle scope this schema's rows belong to
+    /// (docs/03 §Scope declaration). `None` — the default — means the rows
+    /// are unscoped and no scope fence is taken for them.
+    ///
+    /// A property of the TYPE, so freeze can read it off the registration
+    /// and refuse a kind no linked `FlavorContract` declares. The
+    /// per-`ScopeKind` half — the registry table, its id column and its
+    /// owner columns — is [`crate::ScopeDecl`], declared once by the flavor
+    /// that owns the scope.
+    const SCOPE_KIND: Option<ScopeKind> = None;
+    /// The scope id THIS row carries, read out of the payload's own field.
+    ///
+    /// Returns `None` for a row that names no scope — a nullable scope
+    /// column is a real domain state (the code flavor's cross-repository
+    /// development perspective), and such a row is unscoped in fact, not by
+    /// omission.
+    #[must_use]
+    fn scope_id(&self) -> Option<uuid::Uuid> {
+        None
+    }
+    /// The scope this payload belongs to: [`Self::SCOPE_KIND`] and
+    /// [`Self::scope_id`] together, or `None` when either is absent.
+    ///
+    /// THE ADMISSION READS THIS. Every write transaction that persists this
+    /// payload takes the shared scope fence for what this returns before its
+    /// handle/`t` locks and re-asks, under the fence, whether the scope row
+    /// is still registered. Do not override it: the two halves above are the
+    /// declaration, and a third answer would be a scope nothing else knows
+    /// about — storage refuses an undeclared kind rather than fencing it.
+    #[must_use]
+    fn scope(&self) -> Option<ScopeRef> {
+        match (Self::SCOPE_KIND, self.scope_id()) {
+            (Some(kind), Some(id)) => Some(ScopeRef::new(kind, id)),
+            _ => None,
+        }
+    }
     /// Per-schema typed Fact sidecar table, or `None` when the Fact
     /// carries no sidecar of its own (its typed payload lives elsewhere,
     /// e.g. in a citation cited-object). Defaults to `None`; mirrors the
@@ -581,6 +618,42 @@ pub trait AbstractionPayload:
     fn references(&self) -> Vec<PayloadReference> {
         Vec::new()
     }
+    /// The flavor-owned lifecycle scope this schema's rows belong to
+    /// (docs/03 §Scope declaration). `None` — the default — means the rows
+    /// are unscoped and no scope fence is taken for them.
+    ///
+    /// A property of the TYPE, so freeze can read it off the registration
+    /// and refuse a kind no linked `FlavorContract` declares. The
+    /// per-`ScopeKind` half — the registry table, its id column and its
+    /// owner columns — is [`crate::ScopeDecl`], declared once by the flavor
+    /// that owns the scope.
+    const SCOPE_KIND: Option<ScopeKind> = None;
+    /// The scope id THIS row carries, read out of the payload's own field.
+    ///
+    /// Returns `None` for a row that names no scope — a nullable scope
+    /// column is a real domain state (the code flavor's cross-repository
+    /// development perspective), and such a row is unscoped in fact, not by
+    /// omission.
+    #[must_use]
+    fn scope_id(&self) -> Option<uuid::Uuid> {
+        None
+    }
+    /// The scope this payload belongs to: [`Self::SCOPE_KIND`] and
+    /// [`Self::scope_id`] together, or `None` when either is absent.
+    ///
+    /// THE ADMISSION READS THIS. Every write transaction that persists this
+    /// payload takes the shared scope fence for what this returns before its
+    /// handle/`t` locks and re-asks, under the fence, whether the scope row
+    /// is still registered. Do not override it: the two halves above are the
+    /// declaration, and a third answer would be a scope nothing else knows
+    /// about — storage refuses an undeclared kind rather than fencing it.
+    #[must_use]
+    fn scope(&self) -> Option<ScopeRef> {
+        match (Self::SCOPE_KIND, self.scope_id()) {
+            (Some(kind), Some(id)) => Some(ScopeRef::new(kind, id)),
+            _ => None,
+        }
+    }
     #[must_use]
     fn json_schema() -> Option<serde_json::Value> {
         None
@@ -607,6 +680,42 @@ pub trait PerspectivePayload:
     #[must_use]
     fn references(&self) -> Vec<PayloadReference> {
         Vec::new()
+    }
+    /// The flavor-owned lifecycle scope this schema's rows belong to
+    /// (docs/03 §Scope declaration). `None` — the default — means the rows
+    /// are unscoped and no scope fence is taken for them.
+    ///
+    /// A property of the TYPE, so freeze can read it off the registration
+    /// and refuse a kind no linked `FlavorContract` declares. The
+    /// per-`ScopeKind` half — the registry table, its id column and its
+    /// owner columns — is [`crate::ScopeDecl`], declared once by the flavor
+    /// that owns the scope.
+    const SCOPE_KIND: Option<ScopeKind> = None;
+    /// The scope id THIS row carries, read out of the payload's own field.
+    ///
+    /// Returns `None` for a row that names no scope — a nullable scope
+    /// column is a real domain state (the code flavor's cross-repository
+    /// development perspective), and such a row is unscoped in fact, not by
+    /// omission.
+    #[must_use]
+    fn scope_id(&self) -> Option<uuid::Uuid> {
+        None
+    }
+    /// The scope this payload belongs to: [`Self::SCOPE_KIND`] and
+    /// [`Self::scope_id`] together, or `None` when either is absent.
+    ///
+    /// THE ADMISSION READS THIS. Every write transaction that persists this
+    /// payload takes the shared scope fence for what this returns before its
+    /// handle/`t` locks and re-asks, under the fence, whether the scope row
+    /// is still registered. Do not override it: the two halves above are the
+    /// declaration, and a third answer would be a scope nothing else knows
+    /// about — storage refuses an undeclared kind rather than fencing it.
+    #[must_use]
+    fn scope(&self) -> Option<ScopeRef> {
+        match (Self::SCOPE_KIND, self.scope_id()) {
+            (Some(kind), Some(id)) => Some(ScopeRef::new(kind, id)),
+            _ => None,
+        }
     }
     #[must_use]
     fn json_schema() -> Option<serde_json::Value> {

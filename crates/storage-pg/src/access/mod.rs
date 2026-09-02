@@ -1,4 +1,5 @@
 pub mod owner_columns;
+pub mod scope_surfaces;
 
 use async_trait::async_trait;
 use proxima_core::{

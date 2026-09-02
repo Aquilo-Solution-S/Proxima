@@ -7,8 +7,8 @@ mod common;
 
 use common::{migrated_db, test_owner};
 use proxima_code::CommitV1;
+use proxima_code::RepoScope;
 use proxima_code::testkit::{build_engine, ingest_commit, register_repo};
-use proxima_code::{CodeFlavorStore, RepoScope};
 use proxima_core::{AuthPath, AuthzContext};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
@@ -29,7 +29,6 @@ async fn commit_ingest_does_not_run_wake_execution() {
             &RepoScope::default(),
         )
         .await?;
-        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let engine = build_engine(pg.clone());
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
@@ -46,8 +45,7 @@ async fn commit_ingest_does_not_run_wake_execution() {
             committer_time: now,
             message: "feat: add foo".into(),
         };
-        let commit_outcome =
-            ingest_commit(&engine, &authz, &store, owner, &commit_payload, now).await?;
+        let commit_outcome = ingest_commit(&engine, &authz, &commit_payload, now).await?;
         let commit_memory_id = commit_outcome.memory_id;
 
         let summary_count: i64 =

@@ -1,6 +1,8 @@
-use proxima_core::{FactPayload, PayloadKeyBuilder, proxima_schema_id};
+use proxima_core::{FactPayload, PayloadKeyBuilder, ScopeKind, proxima_schema_id};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+
+use crate::repos::CODE_REPO_SCOPE;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitV1 {
@@ -21,6 +23,13 @@ pub struct CommitV1 {
 impl FactPayload for CommitV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("commit-v1");
     const SCHEMA_VERSION: u32 = 1;
+    /// Repo-scoped. The substrate takes the `code-repo` fence and re-asks
+    /// whether the repository is still registered on EVERY admission of
+    /// this payload, whoever the writer is.
+    const SCOPE_KIND: Option<ScopeKind> = Some(CODE_REPO_SCOPE);
+    fn scope_id(&self) -> Option<uuid::Uuid> {
+        Some(self.repo_id)
+    }
     fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("repo_id", self.repo_id);

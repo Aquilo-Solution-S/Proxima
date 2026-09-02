@@ -36,6 +36,13 @@ VALID_PROOFS = (
     # projection table, each through `PgIdent`, and bind the schema id / table
     # name. The proof is the same one — one audited producer per string — and
     # the same file is the thing to re-read.
+    #
+    # `crates/storage-pg/src/access/scope_surfaces.rs` is the third:
+    # `generate_probe` splices a flavor's `ScopeDecl` — registry table, id
+    # column, owner kind and owner id columns — each through `PgIdent`, and
+    # the probe binds all three values it compares. Its execution site holds
+    # an `Arc<str>` resolved off the frozen registry, so again the proof is
+    # that the string has exactly one producer and that producer is audited.
     "SQL-POLICY: generated",
 )
 
@@ -811,7 +818,18 @@ def run_fixture(path: Path) -> int:
 # database where both are hostile. Both splice only literals from the array
 # immediately above them, plus — in the test — the uuid-derived database name
 # the test itself just created.
-EXPECTED_DYNAMIC_SQL_SITES = 116
+#
+# 116 -> 118: the declared lifecycle-scope fence. One `sqlx::query(sql)` in
+# `access/owner_columns.rs::lock_scope_fence`, choosing between two adjacent
+# `&'static str` constants because SQL cannot parameterize a lock function
+# name — the same shape as the owner and source fences three functions above
+# it. One `sqlx::query_scalar` in `verbs/memory_timeseries.rs`, executing the
+# liveness probe `access/scope_surfaces.rs` GENERATED from a flavor's
+# `ScopeDecl`: every identifier in it passed through `PgIdent` at generation
+# time, and the three values it compares are binds. Literal SQL cannot express
+# it because the registry table and its columns are named by an out-of-tree
+# flavor's declaration.
+EXPECTED_DYNAMIC_SQL_SITES = 118
 
 
 def run_self_test() -> int:

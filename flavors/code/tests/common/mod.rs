@@ -406,6 +406,30 @@ fn code_template_name() -> String {
     format!("proxima_tmpl_code_{hash:016x}")
 }
 
+/// Register a repository, because every repo-scoped payload declares the
+/// `code-repo` lifecycle scope and the substrate fences its admission on a
+/// registry row being there.
+///
+/// A fixture that mints a `repo_id` and writes rows under it without this is
+/// asking the Engine to admit a write into a scope that does not exist,
+/// which is the refusal `flavors/code/tests/repo_fence_pg.rs` exists to pin.
+///
+/// # Panics
+///
+/// Panics when the registration fails.
+pub async fn register_fixture_repo(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) {
+    proxima_code::testkit::register_repo(
+        pool,
+        owner,
+        repo_id,
+        &format!("/tmp/proxima-code-fixture-{repo_id}"),
+        "test fixture",
+        &proxima_code::RepoScope::default(),
+    )
+    .await
+    .expect("fixture repo registration");
+}
+
 /// This flavor's frozen PG sidecar registry — the same handle production
 /// composes, and the one [`assert_no_declaration_drift`] asks.
 pub fn code_pg_sidecars() -> PgSidecarRegistryFrozen {

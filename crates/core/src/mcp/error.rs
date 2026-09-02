@@ -63,7 +63,9 @@ impl McpToolError {
             },
             Self::Storage(storage) => match storage {
                 crate::StorageError::ConstraintViolation(_) => McpToolErrorKind::InvalidInput,
-                crate::StorageError::NotFound => McpToolErrorKind::NotFound,
+                crate::StorageError::NotFound | crate::StorageError::ScopeMissing { .. } => {
+                    McpToolErrorKind::NotFound
+                }
                 crate::StorageError::Conflict(_)
                 | crate::StorageError::Suppressed(_)
                 | crate::StorageError::IdempotencyConflict { .. } => {

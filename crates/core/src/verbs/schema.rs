@@ -364,6 +364,13 @@ pub struct FlavorRegistryFrozen {
     request_behaviors: Vec<Arc<dyn RequestBehavior>>,
     flavors: Vec<FlavorDescriptor>,
     contracts: Vec<&'static FlavorContract>,
+    /// Every linked flavor's scope declarations, flattened at freeze.
+    ///
+    /// Flattened rather than walked per lookup because the consumer is a
+    /// write path: an admission resolves its payload's `ScopeKind` to a
+    /// declaration on every scoped write, and freeze has already proved the
+    /// map has exactly one entry per kind.
+    scopes: Vec<crate::scope::ScopeDecl>,
     owner_resolver: Option<Arc<dyn OwnerResolver>>,
     authorization_hooks: Vec<Arc<dyn AuthorizationHook>>,
     /// Lookup acceleration built during successful freeze. Not part of the
@@ -521,9 +528,14 @@ impl FlavorRegistryFrozen {
             request_behaviors,
             flavors,
             contracts,
+            scoped_schemas: _,
             owner_resolver,
             authorization_hooks,
         } = registry;
+        let scopes: Vec<crate::scope::ScopeDecl> = contracts
+            .iter()
+            .flat_map(|contract| contract.scopes.iter().copied())
+            .collect();
         let schema_capability_tags = crate::flavor::schema_capability_map(&schema_capability_tags);
         let search_projections = contract_search_projections(&contracts)?;
         let embed_units = contract_embed_units(&contracts)?;
@@ -538,6 +550,7 @@ impl FlavorRegistryFrozen {
             request_behaviors,
             flavors,
             contracts,
+            scopes,
             owner_resolver,
             authorization_hooks,
             index,
@@ -561,6 +574,26 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn contracts(&self) -> &[&'static FlavorContract] {
         &self.contracts
+    }
+
+    /// Every flavor-owned lifecycle scope declaration in this binary
+    /// (docs/03 §Scope declaration), one per [`crate::ScopeKind`].
+    ///
+    /// The write path's only source for the fence key's namespace and the
+    /// liveness probe's table and columns: storage spells neither, it reads
+    /// them here. Freeze proved there is exactly one declaration per kind,
+    /// so a lookup that misses is a payload naming a scope no linked flavor
+    /// owns — refused, not fenced with a guess.
+    #[must_use]
+    pub fn scopes(&self) -> &[crate::scope::ScopeDecl] {
+        &self.scopes
+    }
+
+    /// The declaration for one [`crate::ScopeKind`], or `None` when no
+    /// linked flavor declares it.
+    #[must_use]
+    pub fn scope_decl(&self, kind: crate::ScopeKind) -> Option<&crate::scope::ScopeDecl> {
+        self.scopes.iter().find(|decl| decl.kind == kind)
     }
 
     /// How a `(schema, kind)` pair's provenance is reachable, or `None`

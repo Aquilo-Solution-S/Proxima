@@ -1,6 +1,8 @@
-use proxima_core::{AbstractionPayload, proxima_schema_id};
+use proxima_core::{AbstractionPayload, ScopeKind, proxima_schema_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::repos::CODE_REPO_SCOPE;
 
 /// Code F→A output — a per-commit synthesis covering the commit
 /// Fact, its file-revision Facts, and derived code-slice/call
@@ -36,6 +38,13 @@ pub struct CommitSummaryV1 {
 impl AbstractionPayload for CommitSummaryV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("commit-summary-v1");
     const SCHEMA_VERSION: u32 = 1;
+    /// Repo-scoped. The substrate takes the `code-repo` fence and re-asks
+    /// whether the repository is still registered on EVERY admission of
+    /// this payload, whoever the writer is.
+    const SCOPE_KIND: Option<ScopeKind> = Some(CODE_REPO_SCOPE);
+    fn scope_id(&self) -> Option<uuid::Uuid> {
+        Some(self.repo_id)
+    }
     fn sidecar_table() -> &'static str {
         "proxima_code.commit_summary_v1"
     }

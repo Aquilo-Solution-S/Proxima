@@ -6,26 +6,15 @@ use uuid::Uuid;
 use super::super::sql::{map_storage, owner_columns};
 use super::super::{code_store, engine};
 
-/// Take the repository lifecycle fence in `uow` and re-confirm the
-/// registration under it.
+/// Is this `repo_handle` a repository this owner has?
 ///
-/// [`validate_repo`] answers the same question against the pool before any
-/// transaction exists, which is what turns a bad `repo_handle` into an
-/// argument error instead of a write. It is not a guard: an erase of this
-/// repository can commit between that answer and the first row this tool
-/// writes. This is the guard, and it belongs in the write transaction and
-/// before its handle/`t` locks — see [`crate::repos::fence`].
-pub(super) async fn fence_repo_write(
-    ctx: &ToolCtx,
-    uow: &mut proxima_core::UnitOfWork<'_>,
-    repo_id: Uuid,
-) -> Result<(), ToolError> {
-    let store = code_store(ctx)?;
-    crate::repos::fence::fence_repo_admission(store.pool(), uow, ctx.owner(), repo_id)
-        .await
-        .map_err(crate::mcp::repos::map_repo_registry)
-}
-
+/// Answered against the pool before any transaction exists, which is what
+/// turns a bad handle into an argument error instead of a write. It is NOT
+/// the guard: an erase of this repository can commit between this answer
+/// and the first row the tool writes. The guard is the `code-repo` scope
+/// fence, which the Engine takes inside the write transaction and before
+/// its handle/`t` locks because every payload these tools write declares
+/// the scope — see [`crate::repos::fence`].
 pub(super) async fn validate_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<(), ToolError> {
     let (owner_kind, owner_id) = owner_columns(&ctx.owner());
     let pool = code_store(ctx)?;

@@ -2,6 +2,7 @@
 
 use proxima_core::flavor::TransferLeg;
 use proxima_core::owner_inverse::OwnerSurfaces;
+use proxima_core::scope::ScopeKind;
 use proxima_core::{
     EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation, StorageError, UserId,
 };
@@ -175,6 +176,115 @@ async fn lock_source_fence(
         .bind(kind.as_str())
         .bind(owner_id)
         .bind(source)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
+/// The flavor-owned lifecycle-scope fence — one substrate namespace for
+/// every declared scope, whatever the flavor calls it.
+///
+/// A scope is a lifecycle the substrate could not previously see. Its rows
+/// carry a bare `<scope>_id uuid` with no foreign key into the flavor's
+/// registry, so the row lock an erase takes on the registry row constrains
+/// nothing else, and two writes into two different scopes of one owner share
+/// the owner fence and the one source fence with each other — neither
+/// separates a scope's erase from a write into that same scope. This key
+/// does.
+///
+/// Key: `proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`.
+/// The scope KIND leads because two flavors' scopes must not collide on a
+/// shared uuid, and the owner portion is repeated for the reason the source
+/// fence repeats it: a scope id that somehow appeared under two owners must
+/// never serialize them. Scope ids are NEVER hashed into the Memory
+/// `t`/handle namespace — a scope is not an admission, and the alias would
+/// make a scope id collide with a series handle.
+///
+/// Position in the global order: AFTER the owner and source fences, BEFORE
+/// the Memory handle and lifecycle `t` locks and every row the write
+/// touches. Writers take it shared, an erase takes it exclusive: the thing
+/// a scope fence excludes is the erase, not the other writers into the same
+/// scope.
+const LOCK_SCOPE_FENCE_SHARED_SQL: &str = "\
+SELECT pg_advisory_xact_lock_shared(
+           hashtextextended(
+               'proxima-scope-fence:' || $1 || ':' || $2 || ':' || $3::text || ':' || $4::text,
+               0
+           )
+       )";
+
+const LOCK_SCOPE_FENCE_EXCLUSIVE_SQL: &str = "\
+SELECT pg_advisory_xact_lock(
+           hashtextextended(
+               'proxima-scope-fence:' || $1 || ':' || $2 || ':' || $3::text || ':' || $4::text,
+               0
+           )
+       )";
+
+/// Take one declared scope's fence SHARED, in an already-open transaction.
+///
+/// The admission side. Every transaction that persists a payload declaring
+/// this scope takes it, before its handle/`t` locks, and re-asks under it
+/// whether the scope's registry row is still there. Several writers into one
+/// scope hold it together; the scope's eraser does not join them.
+///
+/// # Errors
+///
+/// [`StorageError`] when Postgres cannot acquire the advisory lock.
+pub async fn lock_scope_fence_shared_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    kind: ScopeKind,
+    owner: &OwnerRef,
+    scope_id: uuid::Uuid,
+) -> Result<(), StorageError> {
+    lock_scope_fence(tx, kind, owner, scope_id, false).await
+}
+
+/// Take one declared scope's fence EXCLUSIVELY, in an already-open
+/// transaction.
+///
+/// The erase side, and the reason the fence exists. A flavor's scope erase
+/// takes it BEFORE it reads anything it intends to delete — fence before
+/// select — so the footprint it computes is exact by construction rather
+/// than by re-checking afterwards: a later writer waits here, and an earlier
+/// one has already committed and is in the footprint.
+///
+/// # Errors
+///
+/// [`StorageError`] when Postgres cannot acquire the advisory lock.
+pub async fn lock_scope_fence_exclusive_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    kind: ScopeKind,
+    owner: &OwnerRef,
+    scope_id: uuid::Uuid,
+) -> Result<(), StorageError> {
+    lock_scope_fence(tx, kind, owner, scope_id, true).await
+}
+
+/// One key, one bind chain; only the lock function differs by mode — the
+/// same shape the owner and source fences above use, and for the same
+/// reason: SQL cannot parameterize a function name, so the two constants
+/// read side by side and a drift between them is visible.
+async fn lock_scope_fence(
+    tx: &mut Transaction<'_, Postgres>,
+    kind: ScopeKind,
+    owner: &OwnerRef,
+    scope_id: uuid::Uuid,
+    exclusive: bool,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_id) = owner_binds(owner);
+    let sql = if exclusive {
+        LOCK_SCOPE_FENCE_EXCLUSIVE_SQL
+    } else {
+        LOCK_SCOPE_FENCE_SHARED_SQL
+    };
+    // SQL-POLICY: fixed-fragment
+    sqlx::query(sql)
+        .bind(kind.as_str())
+        .bind(owner_kind.as_str())
+        .bind(owner_id)
+        .bind(scope_id)
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;

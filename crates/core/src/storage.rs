@@ -9,6 +9,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::edge::EdgeEndpoint;
+use crate::scope::ScopeRef;
 use crate::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, FactPayload, GoalPayload,
     PayloadReference, PerspectivePayload,
@@ -43,6 +44,13 @@ pub enum StorageError {
     SchemaResetRequired { details: String },
     #[error("not found")]
     NotFound,
+    /// A write named a flavor-owned lifecycle scope whose registry row is
+    /// not there for this owner, asked WHILE HOLDING that scope's fence.
+    /// Under the fence the answer is settled for the life of the
+    /// transaction — an erase that committed first is visible and one that
+    /// has not is waiting — so this is a refusal, never a race.
+    #[error("scope not registered: {kind}:{id}")]
+    ScopeMissing { kind: String, id: Uuid },
     #[error("suppressed: {0}")]
     Suppressed(String),
     #[error("internal storage error: {0}")]
@@ -159,6 +167,13 @@ pub struct SidecarPayload {
     /// type, and a per-kind function pointer is how the typed
     /// declaration survives the erasure.
     references: fn(&dyn Any) -> Vec<PayloadReference>,
+    /// The flavor-owned lifecycle scope this payload declares, read back
+    /// through the erased value. Same mechanism as `references`, and for
+    /// the same reason: the admission fences the scope without knowing
+    /// which concrete payload type it is writing. `None` for the payload
+    /// kinds that are not memories (cited objects, citation mappings) and
+    /// for every schema that declares no `SCOPE_KIND`.
+    scope: fn(&dyn Any) -> Option<ScopeRef>,
 }
 
 impl PartialEq for SidecarPayload {
@@ -190,6 +205,7 @@ impl SidecarPayload {
         schema_version: SchemaVersion,
         value: T,
         references: fn(&dyn Any) -> Vec<PayloadReference>,
+        scope: fn(&dyn Any) -> Option<ScopeRef>,
     ) -> Self
     where
         T: serde::Serialize + Send + Sync + 'static,
@@ -202,6 +218,7 @@ impl SidecarPayload {
             value: Arc::new(value),
             protocol_json: encode_protocol_json::<T>,
             references,
+            scope,
         }
     }
 
@@ -216,6 +233,7 @@ impl SidecarPayload {
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
             fact_references::<T>,
+            fact_scope::<T>,
         )
     }
 
@@ -230,6 +248,7 @@ impl SidecarPayload {
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
             abstraction_references::<T>,
+            abstraction_scope::<T>,
         )
     }
 
@@ -244,6 +263,7 @@ impl SidecarPayload {
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
             perspective_references::<T>,
+            perspective_scope::<T>,
         )
     }
 
@@ -258,6 +278,7 @@ impl SidecarPayload {
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
             goal_references::<T>,
+            no_scope,
         )
     }
 
@@ -272,6 +293,7 @@ impl SidecarPayload {
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
             no_references,
+            no_scope,
         )
     }
 
@@ -286,6 +308,7 @@ impl SidecarPayload {
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
             no_references,
+            no_scope,
         )
     }
 
@@ -302,6 +325,19 @@ impl SidecarPayload {
     #[must_use]
     pub fn references(&self) -> Vec<PayloadReference> {
         (self.references)(self.value.as_ref())
+    }
+
+    /// The flavor-owned lifecycle scope this payload declares
+    /// (docs/03 §Scope declaration), or `None` when it declares none.
+    ///
+    /// The admission path reads THIS: it is the only thing between a typed
+    /// payload and the fence its scope's erase holds, and it answers for
+    /// every caller — protocol ingress, a flavor's own write, a host
+    /// writing the payload straight through `Engine` — because the
+    /// declaration travels with the value rather than with the caller.
+    #[must_use]
+    pub fn scope(&self) -> Option<ScopeRef> {
+        (self.scope)(self.value.as_ref())
     }
 
     /// Render this typed payload as JSON for protocol output.
@@ -384,6 +420,25 @@ fn goal_references<T: GoalPayload>(value: &dyn Any) -> Vec<PayloadReference> {
 /// so they have no reference fields to declare.
 fn no_references(_value: &dyn Any) -> Vec<PayloadReference> {
     Vec::new()
+}
+
+fn fact_scope<T: FactPayload>(value: &dyn Any) -> Option<ScopeRef> {
+    value.downcast_ref::<T>().and_then(T::scope)
+}
+
+fn abstraction_scope<T: AbstractionPayload>(value: &dyn Any) -> Option<ScopeRef> {
+    value.downcast_ref::<T>().and_then(T::scope)
+}
+
+fn perspective_scope<T: PerspectivePayload>(value: &dyn Any) -> Option<ScopeRef> {
+    value.downcast_ref::<T>().and_then(T::scope)
+}
+
+/// A Goal is its own spine and a citation is blob-side; neither is an
+/// admission the scope fence covers. `docs/03` keeps the scope declaration
+/// on the three memory layers for that reason.
+fn no_scope(_value: &dyn Any) -> Option<ScopeRef> {
+    None
 }
 
 /// What storage must do about a derived memory's vector, decided by the

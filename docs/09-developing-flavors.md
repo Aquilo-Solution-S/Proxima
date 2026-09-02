@@ -257,31 +257,63 @@ A relation between two owners that belongs to neither exclusively is that
 table with `owner_column: None` (`proxima_core.group_memberships` is the
 shipped example; see 08 §Contract Reach).
 
-### Flavor-scoped erase must fence its scope
+### Declare the scope; the substrate fences every admission, your erase takes it exclusive
 
-A scope of your own — a repository, a project, a workspace — is a scope the
-substrate cannot see. A bare `scope_id uuid` column with no FK to the scope's
-own table is reachable by no core fence, so the owner and source fences do not
-separate an erase of that scope from a concurrent write into it.
+A lifecycle of your own — a repository, a book, a project, a revision — is a
+scope the substrate cannot infer. A bare `scope_id uuid` column with no FK to
+the scope's own registry is reachable by no core fence, so the owner and
+source fences do not separate an erase of that scope from a concurrent write
+into it.
 
-A flavor that erases such a scope owns the fence for it:
+You do not write the fence. You **declare the scope**, in two halves, and the
+Engine takes the fence on every admission:
 
-- Its own advisory-lock namespace (`<flavor>-<scope>-fence:<owner_kind>:<owner_id>:<scope_id>`,
-  hashed with `hashtextextended(.., 0)`). Never hash a scope id into the
-  Memory `t`/handle namespace — a scope is not an admission, and the alias
-  would collide with a series handle.
-- The erase takes it **exclusively before it reads anything**, so its
-  footprint is exact by construction rather than by re-checking afterwards.
-- Every transaction writing a Memory, sidecar, admission, or state row that
-  carries the scope id takes it **shared, in that same transaction, before its
-  handle/`t` locks**, and rereads the scope row under it.
-- Order: owner fence → source fence → **scope fence** → handle/lifecycle `t` →
-  rows. Distinct scope ids take distinct keys and never wait on each other.
-- A vanished scope row is a typed refusal on every ingest path. An allow-all
-  fallback ("no scope row, so no restriction") is the bug this rule exists to
-  prevent.
+- **On the payload.** Every `FactPayload`/`AbstractionPayload`/
+  `PerspectivePayload` whose rows belong to the scope sets
+  `const SCOPE_KIND: Option<ScopeKind>` and returns its id from `scope_id`. A
+  nullable scope column returns `None` for the rows that name no scope, and
+  those rows are unscoped in fact as well as in declaration.
+- **On the contract.** `FlavorContract::scopes` carries one `ScopeDecl` per
+  kind: the schema-qualified registry table, its id column, and its owner
+  kind/id columns. Storage GENERATES both the fence key
+  (`proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`) and
+  the liveness probe from those names and spells none of its own, so a renamed
+  column is a declaration edit rather than a second place to keep in sync.
 
-`flavors/code/src/repos/fence.rs` is the shipped example.
+Freeze refuses a `ScopeKind` a payload names and no contract declares, a kind
+two contracts declare, and a declaration whose table is not schema-qualified.
+There is no runtime registration path.
+
+What that buys, without a line of fencing code in your write paths:
+
+- Every admission of a scoped payload — through `Engine`, a `UnitOfWork`,
+  `author_derived`, or any sidecar/replay path that persists the row — takes
+  the scope fence **shared, in that write transaction, before its handle/`t`
+  locks**, and reruns the liveness probe under it. A host writing your payload
+  straight through `Engine` is fenced identically; there is no opt-in.
+- A batch spanning several scopes takes the distinct keys as one sorted,
+  deduplicated set.
+- A vanished registry row is a typed refusal (`ScopeMissing`, surfaced as
+  `NotFound` / `scope not registered: <kind>:<id>`), never an unscoped write.
+
+What is still yours:
+
+- **The erase.** Take the fence exclusively with
+  `proxima::flavor::lock_scope_fence_exclusive_tx` **before you read anything
+  you intend to delete**, so the footprint is exact by construction rather
+  than by re-checking afterwards. A generic scope erase does not exist: what
+  "one scope's rows" means is your knowledge.
+- **Flavor state rows that are not Memory admissions** (a run row, a cursor).
+  The Engine never sees those, so it cannot fence them; take the same fence
+  with `proxima::flavor::lock_scope_fence_shared_tx` yourself.
+
+Order: owner fence → source fence → **scope fence** → handle/lifecycle `t` →
+rows. Distinct scope ids take distinct keys and never wait on each other, and
+scope ids are never hashed into the Memory `t`/handle namespace — a scope is
+not an admission, and the alias would collide with a series handle.
+
+`flavors/code/src/repos/fence.rs` is the shipped declaration; its erase is
+`flavors/code/src/repos/erase.rs`.
 
 ## PG Sidecars
 
@@ -1114,6 +1146,7 @@ serialization. Internal identity/storage/query paths must stay typed.
 - Migrator exported with `ignore_missing(true)`.
 - No JSON escape hatch in payload structs or sidecars.
 - Prefix guards pass at registry freeze.
-- Every flavor-owned erase scope has a fence, taken before its selection reads
-  and by every writer into that scope.
+- Every flavor-owned lifecycle scope is DECLARED — `SCOPE_KIND`/`scope_id` on
+  every payload that belongs to it, one `ScopeDecl` in `FlavorContract::scopes`
+  — and its erase takes that fence exclusively before its selection reads.
 - `cargo clippy --workspace --all-targets` clean.

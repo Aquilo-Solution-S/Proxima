@@ -1297,6 +1297,7 @@ pub const FLAVOR_0: FlavorContract = FlavorContract {
         MCP_CALL_IO_CITATION_V1,
     ],
     state_surfaces: STATE_SURFACES,
+    scopes: &[],
     kernel_surfaces: KERNEL_SURFACES,
     tools: TOOLS,
     resources: RESOURCES,

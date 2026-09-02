@@ -18,6 +18,7 @@
 //! everything, `const fn` helpers for the repeated shapes, every field
 //! named, and a `why` on every declared absence.
 
+use proxima_core::ScopeDecl;
 use proxima_core::SearchProjectionColumnKind as ColumnKind;
 use proxima_core::flavor::{
     Band, BandComparability, CounterRule, DbConstraint, EmbedUnit, EmbeddingRecipe, EraseRule,
@@ -32,6 +33,10 @@ use proxima_core::verbs::schema::PayloadKind;
 
 /// The prefix every code schema id and tool name already carries.
 pub const FLAVOR_ID: &str = "proxima-code";
+
+/// The flavor's declared lifecycle scopes, spelled in `repos::fence` beside
+/// the registry statement they have to agree with.
+const CODE_SCOPES: &[ScopeDecl] = &[crate::repos::CODE_REPO_SCOPE_DECL];
 
 /// Non-zero, so the flavor stays out of unscoped `core_search_memories`
 /// (`FlavorContract::declares_sidecar_table` is asked of flavor #0 only).
@@ -757,6 +762,13 @@ pub static CODE_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
         ),
     ],
     state_surfaces: STATE_SURFACES,
+    // One declared lifecycle scope. From it the substrate generates the
+    // `proxima-scope-fence:code-repo:…` key and the liveness probe over
+    // `proxima_code.repos`, and takes both on every admission of a payload
+    // that names `CODE_REPO_SCOPE` — including one a host writes straight
+    // through `Engine`, which is the whole reason the declaration lives
+    // here rather than in each write path.
+    scopes: CODE_SCOPES,
     kernel_surfaces: &[],
     tools: TOOLS,
     resources: &[],

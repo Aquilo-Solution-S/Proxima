@@ -1,6 +1,8 @@
-use proxima_core::{PerspectivePayload, proxima_schema_id};
+use proxima_core::{PerspectivePayload, ScopeKind, proxima_schema_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::repos::CODE_REPO_SCOPE;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeDevelopmentPerspectiveV1 {
@@ -23,6 +25,13 @@ pub struct CodeDevelopmentPerspectiveV1 {
 impl PerspectivePayload for CodeDevelopmentPerspectiveV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("development-perspective-v1");
     const SCHEMA_VERSION: u32 = 1;
+    /// Repo-scoped when it names a repository. A cross-repository
+    /// perspective (`repo_id: None`) belongs to no scope and takes no
+    /// fence — a declared absence, not an omission.
+    const SCOPE_KIND: Option<ScopeKind> = Some(CODE_REPO_SCOPE);
+    fn scope_id(&self) -> Option<uuid::Uuid> {
+        self.repo_id
+    }
 
     fn sidecar_table() -> &'static str {
         "proxima_code.development_perspective_v1"

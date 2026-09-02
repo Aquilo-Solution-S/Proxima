@@ -1,8 +1,8 @@
 use super::contract::FlavorContract;
 use super::{
     Arc, AuthorizationHook, FlavorDescriptor, McpToolDescriptor, OwnerResolver,
-    ProtocolPayloadIngressEntry, RequestBehavior, SchemaCapabilityTags, SchemaInfo,
-    ScopeGateBehavior,
+    ProtocolPayloadIngressEntry, RequestBehavior, SchemaCapabilityTags, SchemaId, SchemaInfo,
+    ScopeGateBehavior, ScopeKind,
 };
 
 /// Mutable build-time registry. Flavors push into it during their
@@ -21,6 +21,14 @@ pub struct FlavorRegistry {
     /// export, forget, transfer and the migration guardrail a registry walk
     /// instead of six hand-maintained lists.
     pub(crate) contracts: Vec<&'static FlavorContract>,
+    /// Every registered payload that named a [`ScopeKind`], paired with the
+    /// schema that named it.
+    ///
+    /// Read off the payload TYPE at registration (`P::SCOPE_KIND`), which is
+    /// the only moment core holds the concrete type. Freeze uses it to
+    /// refuse a kind no linked contract declares — the schema id travels
+    /// with it so the refusal names the registration, not just the kind.
+    pub(crate) scoped_schemas: Vec<(SchemaId, ScopeKind)>,
     pub(crate) owner_resolver: Option<Arc<dyn OwnerResolver>>,
     pub(crate) authorization_hooks: Vec<Arc<dyn AuthorizationHook>>,
 }
@@ -35,6 +43,7 @@ impl Default for FlavorRegistry {
             request_behaviors: vec![Arc::new(ScopeGateBehavior)],
             flavors: Vec::new(),
             contracts: Vec::new(),
+            scoped_schemas: Vec::new(),
             owner_resolver: None,
             authorization_hooks: Vec::new(),
         };

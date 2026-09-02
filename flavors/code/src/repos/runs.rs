@@ -45,7 +45,11 @@ pub async fn start_run_with_created(
     let new_run_id = Uuid::now_v7();
 
     let mut tx = pool.begin().await?;
-    super::fence::lock_repo_fence_shared_tx(&mut tx, owner, repo_id).await?;
+    // Not a Memory admission — `repo_ingestion_runs` is a flavor state row
+    // the Engine never sees — so this lane takes the declared scope fence
+    // itself, shared, and asks the same liveness question under it.
+    proxima::flavor::lock_scope_fence_shared_tx(&mut tx, super::CODE_REPO_SCOPE, owner, repo_id)
+        .await?;
     if !super::fence::repo_registered_tx(&mut tx, owner, repo_id).await? {
         return Err(RepoRegistryError::NotFound { repo_id });
     }

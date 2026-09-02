@@ -5,8 +5,8 @@ use crate::payloads::{AcceptanceCriteriaV1, ExecutionRequestV1};
 use super::super::sql::resolve_repo_identifier;
 use super::super::{CodeToolCtxExt, engine};
 use super::context_validation::{
-    fence_repo_write, validate_active_goal_context, validate_evidence_in_owner,
-    validate_goal_activated_fact, validate_repo,
+    validate_active_goal_context, validate_evidence_in_owner, validate_goal_activated_fact,
+    validate_repo,
 };
 use super::ingest::{FactProvenance, ingest_acceptance_criteria, ingest_execution_request};
 use super::input_validation::{normalize_text, resolve_evidence, validate_acceptance_criteria};
@@ -82,7 +82,9 @@ impl Tool for CodeEmitExecutionRequestTool {
                 .unit_of_work(ctx.authz())
                 .await
                 .map_err(ToolError::Protocol)?;
-            fence_repo_write(&ctx, &mut uow, repo_id).await?;
+            // `ExecutionRequestV1` declares the `code-repo` scope, so this
+            // ingest takes the fence and re-asks whether the repository is
+            // registered before it takes a handle.
             let outcome = ingest_execution_request(&mut uow, &payload, provenance).await?;
             let acceptance_memory_id =
                 if outcome.idempotent_replay || acceptance_criteria.is_empty() {

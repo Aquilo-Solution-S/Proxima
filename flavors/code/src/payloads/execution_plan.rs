@@ -1,6 +1,10 @@
-use proxima_core::{AbstractionPayload, EntityKind, MemoryId, PayloadReference, proxima_schema_id};
+use proxima_core::{
+    AbstractionPayload, EntityKind, MemoryId, PayloadReference, ScopeKind, proxima_schema_id,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::repos::CODE_REPO_SCOPE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +48,13 @@ pub struct CodeExecutionPlanV1 {
 impl AbstractionPayload for CodeExecutionPlanV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("execution-plan-v1");
     const SCHEMA_VERSION: u32 = 1;
+    /// Repo-scoped. The substrate takes the `code-repo` fence and re-asks
+    /// whether the repository is still registered on EVERY admission of
+    /// this payload, whoever the writer is.
+    const SCOPE_KIND: Option<ScopeKind> = Some(CODE_REPO_SCOPE);
+    fn scope_id(&self) -> Option<uuid::Uuid> {
+        Some(self.repo_id)
+    }
 
     fn sidecar_table() -> &'static str {
         "proxima_code.execution_plan_v1"

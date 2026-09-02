@@ -64,6 +64,11 @@ pub(crate) struct DerivedAdmissionInput<'a> {
     pub(crate) origins: &'a [EdgeEndpoint],
     pub(crate) references: &'a [EdgeEndpoint],
     pub(crate) sidecar_tables: &'a [String],
+    /// The flavor-declared lifecycle scopes this derived payload belongs to,
+    /// already sorted and deduplicated. A derived Abstraction or Perspective
+    /// is as much an admission into its scope as a Fact is, so it takes the
+    /// same fence in the same place.
+    pub(crate) scopes: &'a [crate::access::scope_surfaces::ScopeFenceTarget],
     pub(crate) content: ContentResolution<'a>,
 }
 
@@ -145,6 +150,7 @@ async fn append_derived_timeseries(
         input.references,
         input.sidecar_tables,
         &supersedes_targets,
+        input.scopes,
     )
     .await?;
     super::memory_timeseries::lock_prepared_memory_admission(tx, &prepared).await?;
@@ -300,6 +306,7 @@ pub(crate) async fn append_derived_in_tx(
             origins,
             references,
             sidecar_tables,
+            scopes: &[],
             content: ContentResolution {
                 content_id,
                 payloads: None,

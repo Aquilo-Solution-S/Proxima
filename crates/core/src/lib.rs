@@ -37,6 +37,7 @@ pub mod payload;
 pub mod payload_contract;
 pub mod protocol;
 pub mod read_models;
+pub mod scope;
 pub mod secrets;
 pub mod storage;
 pub mod storage_ports;
@@ -83,6 +84,7 @@ pub use owner_inverse::{
 pub use payload::*;
 pub use payload_contract::assert_no_serde_json_value_fields;
 pub use read_models::*;
+pub use scope::{ScopeDecl, ScopeKind, ScopeRef, scope_set};
 pub use secrets::*;
 pub use storage::*;
 pub use text_bounds::*;
