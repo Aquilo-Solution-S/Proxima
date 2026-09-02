@@ -12,7 +12,7 @@ use super::goal::{
 };
 use super::memory::derive::{
     self, DerivedKind, MAX_SOURCE_HANDLES, core_derive_input_contract_id, core_derive_operator_id,
-    derived_memory_id, map_derive_authoring_error, operator_shape,
+    map_derive_authoring_error,
 };
 use super::memory::interpret::{
     self, MAX_CLAIM_CHARS, MAX_SUBJECTS, default_confidence, interpret_input_contract_id,
@@ -30,7 +30,7 @@ use crate::verbs::goal_write::{
     GoalAssignmentTarget, GoalEvidenceRef, GoalTopologyWrite, IdempotencyKey,
 };
 use crate::{
-    AbstractionPayload, AgentDerivationV1, AuthorDerivedRequestInput, EdgeEndpoint, EntityKind,
+    AbstractionPayload, AgentDerivationV1, AuthorDerivedRequestInput, EntityKind,
     InterpretationSubjectKind, InterpretationV1, MemoryId, PerspectivePayload, SchemaId,
     SchemaVersion, SidecarPayload, UnitOfWork,
 };
@@ -390,15 +390,16 @@ async fn write_derive(
     slots: &mut EpisodeSlots,
     bound: &mut Vec<String>,
 ) -> Result<String, McpToolError> {
-    let title = validate_trimmed_len("title", &item.title, 240)?;
-    let body = validate_trimmed_len("body", &item.body, 20_000)?;
-    let idempotency_key = normalize_idempotency_key(item.idempotency_key.clone())?;
-    let raw_model_id = item
-        .model_id
-        .clone()
-        .unwrap_or_else(|| ctx.author.model_id.clone());
-    let model_id = validate_trimmed_len("model_id", &raw_model_id, 120)?.to_string();
-    let tags = normalize_tags(item.tags.clone())?;
+    let authored = derive::authored_derivation(
+        ctx,
+        derive::DerivationFields {
+            title: &item.title,
+            body: &item.body,
+            tags: &item.tags,
+            model_id: item.model_id.as_deref(),
+            idempotency_key: item.idempotency_key.as_deref(),
+        },
+    )?;
     if item.source_handles.len() > MAX_SOURCE_HANDLES {
         return Err(McpToolError::InvalidInput(format!(
             "source_handles must contain at most {MAX_SOURCE_HANDLES} handles"
@@ -419,47 +420,24 @@ async fn write_derive(
     }
     let lexical_language = crate::lexical_language::resolve_lexical_language(
         item.language.as_deref(),
-        &format!("{title}\n{body}"),
+        &format!("{}\n{}", authored.title, authored.body),
     )
     .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-    let key = idempotency_key.clone().unwrap_or_else(|| {
-        let mut content = blake3::Hasher::new();
-        content.update(title.as_bytes());
-        content.update(b"\0");
-        content.update(body.as_bytes());
-        for tag in &tags {
-            content.update(b"\0");
-            content.update(tag.as_bytes());
-        }
-        format!("{}:{}", model_id, content.finalize().to_hex())
-    });
     let kind = DerivedKind::Abstraction;
-    let memory_id = MemoryId::new(derived_memory_id(&owner, kind.as_str(), &key));
-    let sidecar = AgentDerivationV1 {
-        title: title.to_string(),
-        body: body.to_string(),
-        tags,
-        idempotency_key,
-        source_memory_ids: sources
-            .iter()
-            .map(|(memory_id, _class)| memory_id.into_inner())
-            .collect(),
-        model_id: model_id.clone(),
-        client_name: ctx.author.client_name.clone(),
-        client_version: ctx.author.client_version.clone(),
-    };
-    let (operator_kind, target_kind) = operator_shape(kind, &sources)?;
-    let derived_from: Vec<EdgeEndpoint> = sources
-        .iter()
-        .map(|(source_id, _class)| EdgeEndpoint::memory(target_kind, *source_id))
-        .collect();
+    let derive::DerivationPlan {
+        memory_id,
+        operator_kind,
+        derived_from,
+        sidecar,
+        authored,
+    } = derive::plan_derivation(ctx, &owner, kind, authored, &sources)?;
     let extra_refs = pin.then_some(act_id).into_iter().collect::<Vec<_>>();
     let outcome = uow
         .author_derived(AuthorDerivedRequestInput {
             memory_id,
             owner,
             kind: kind.to_entity_kind(),
-            text: body.to_string(),
+            text: authored.body.clone(),
             schema_id: SchemaId::new(<AgentDerivationV1 as AbstractionPayload>::SCHEMA_ID.into()),
             schema_version: SchemaVersion::new(
                 <AgentDerivationV1 as AbstractionPayload>::SCHEMA_VERSION,
@@ -467,7 +445,7 @@ async fn write_derive(
             operator_kind,
             operator_id: core_derive_operator_id(kind),
             input_contract_id: core_derive_input_contract_id(kind),
-            model_id: &model_id,
+            model_id: &authored.model_id,
             sidecar_payload: SidecarPayload::abstraction(sidecar),
             derived_from: &derived_from,
             extra_refs: &extra_refs,
