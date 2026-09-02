@@ -7,7 +7,9 @@ the hard-erase witness contract is additive in
 Goal command replay state is additive in
 `crates/storage-pg/migrations/0006_v013_goal_replay_declaration.sql`, and
 pre-publication upload content identity is additive in
-`crates/storage-pg/migrations/0007_upload_content_identity.sql`.
+`crates/storage-pg/migrations/0007_upload_content_identity.sql`; the cold
+object integrity witness is additive in
+`crates/storage-pg/migrations/0008_cold_integrity_digest.sql`.
 
 <a id="id-types"></a>
 
@@ -180,7 +182,30 @@ Independent of entity tables.
 | CDC | `announce.seq` |
 | writes are replayable | `ingest_keys`; the handle resolves through `memory` ∪ `cooled`, so a cooled admission still replays |
 | forget is cool | lock `(t, owner)`, PUT `cold/`, insert locator, delete hot; on a pre-commit error retain the PUT only when `cooled(t, object_key)` names it; retain on an ambiguous commit outcome. Last-t forget deletes `memory_head`. Refuse if a remaining hot non-Fact would lose `groundingSupport` (no hot pin and no cooled Fact). Forget does not create an erased-target witness. |
-| hydrate | same `t`; recreates `memory_head` when the series was empty. An exact sealed cooled snapshot may restore correctly kinded erased targets; a legacy `NULL` pin array goes through ordinary live-target admission. Hydration preserves a newer existing head. |
+| hydrate | same `t`; recreates `memory_head` when the series was empty. An exact sealed cooled snapshot may restore correctly kinded erased targets. Legacy or unwitnessed cold rows are reported as unsupported and remain cooled; they never enter ordinary live-target admission. Hydration preserves a newer existing head. |
+
+Owner-authorized hydration is a bounded Host API repair command. One id and a
+set of at most `MAX_MEMORY_HYDRATION_BATCH` ids use the same lifecycle locks
+and the existing Postgres hydration atom. Cold format v7 carries the exact
+`memory.sidecar_tables` stamp beside its dumps plus every contract-declared
+`DumpThenCascade` detail table and its exact zero-or-many rows. Hydration
+requires the sidecar dump set to equal the stamp minus declared retained
+owner-pinned tables and the detail declaration to equal the frozen schema
+contract. Format v6 remains readable only for schemas with no preserved detail
+tables; pre-v6 objects are unsupported because they have no authenticated
+sidecar stamp. Each newly cooled locator also stores the BLAKE3 digest of its
+encoded object. A legacy locator with a NULL digest remains unsupported, and
+bytes that do not match a present digest are invalid. A set commits all
+owner-visible cooled restorations together; if any
+selected object is missing, unsupported, or invalid, the transaction rolls
+back and valid cooled items are reported as `NotAttempted`. Hot, absent, and
+foreign ids do not mutate state; absent and foreign ids both report `NotFound`.
+Missing objects, unsupported cold formats or integrity witnesses, unsupported
+sidecar stamps, and invalid objects have distinct typed outcomes. Exact
+restore leaves correctly kinded `erased_pin_target` witnesses in place and
+reports their count without projecting witness metadata; that count is read
+after the complete lifecycle lock union is held and comes from the committed
+hydration atom.
 
 Hard erase never rewrites another Memory row's `origins[]` or `refs[]` and
 does not cascade or null those source declarations. The witness is technical
@@ -193,7 +218,9 @@ existing redacted/missing projection.
 Per-entity admission, hydration, forget, and single-entity erase share one
 per-`t` advisory lock vocabulary. Each of these paths computes its complete
 lifecycle target set, sorts and deduplicates it, and acquires that set before
-any row or blob lock.
+any row or blob lock. A batch hydration computes the union across all selected
+admissions and acquires every series handle before any lifecycle target, so
+one transaction never extends its advisory set item by item.
 Transfer uses the same per-`t` vocabulary with bounded retry: it exclusively
 fences both endpoints in sorted owner order, locks the complete sorted series
 handle/`t` sets, and rechecks membership before rehoming.

@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{migrated_db, seed_memory_with_sidecars, test_owner};
+use common::{migrated_db, seed_memory_with_sidecars_in_tx, test_owner};
 use proxima_code::CodeChunkV1;
 use proxima_core::AbstractionPayload;
 use proxima_pg_testkit::drop_db;
@@ -19,8 +19,12 @@ async fn owned_chunk_series_heads_lists_present_and_tombstone() {
         let schema = <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID;
         let mut handles = Vec::new();
         for (index, state) in [(0_i32, "Present"), (1, "Present"), (2, "Tombstone")] {
-            let (handle, t) = seed_memory_with_sidecars(
-                pool,
+            // The stamp and the rows it promises land in one transaction: a
+            // memory row that names a sidecar table it has no row in is refused
+            // at COMMIT.
+            let mut stamped = pool.begin().await?;
+            let (handle, t) = seed_memory_with_sidecars_in_tx(
+                &mut stamped,
                 &owner,
                 schema,
                 "abstraction",
@@ -41,8 +45,9 @@ async fn owned_chunk_series_heads_lists_present_and_tombstone() {
             .bind(repo_id)
             .bind(index)
             .bind(state)
-            .execute(pool)
+            .execute(&mut *stamped)
             .await?;
+            stamped.commit().await?;
             handles.push(handle);
         }
 

@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{migrated_db, project_code, seed_memory_with_sidecars, test_owner};
+use common::{migrated_db, project_code, seed_memory_with_sidecars_in_tx, test_owner};
 use proxima_code::mcp::search_chunks::{chunk_gin_sql_for_tests, chunk_like_sql_for_tests};
 use proxima_code::mcp::search_commits::{
     commit_like_sql_for_tests, commit_search_sql_for_tests, summary_like_sql_for_tests,
@@ -22,8 +22,12 @@ async fn code_hot_path_plans_use_expected_indexes() {
         let owner = test_owner();
         let pool = pg.pool_for_tests();
         let repo_id = Uuid::now_v7();
-        let (_, chunk_t) = seed_memory_with_sidecars(
-            pool,
+        // The stamp and the rows it promises land in one transaction: a
+        // memory row that names a sidecar table it has no row in is refused
+        // at COMMIT.
+        let mut stamped = pool.begin().await?;
+        let (_, chunk_t) = seed_memory_with_sidecars_in_tx(
+            &mut stamped,
             &owner,
             <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
             "abstraction",
@@ -42,8 +46,9 @@ async fn code_hot_path_plans_use_expected_indexes() {
         )
         .bind(chunk_t)
         .bind(repo_id)
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
+        stamped.commit().await?;
         project_code(
             pool,
             chunk_t,
@@ -51,8 +56,12 @@ async fn code_hot_path_plans_use_expected_indexes() {
             None,
         )
         .await?;
-        let (_, file_t) = seed_memory_with_sidecars(
-            pool,
+        // The stamp and the rows it promises land in one transaction: a
+        // memory row that names a sidecar table it has no row in is refused
+        // at COMMIT.
+        let mut stamped = pool.begin().await?;
+        let (_, file_t) = seed_memory_with_sidecars_in_tx(
+            &mut stamped,
             &owner,
             FileRevisionV1::SCHEMA_ID,
             "fact",
@@ -71,8 +80,9 @@ async fn code_hot_path_plans_use_expected_indexes() {
         .bind(file_t)
         .bind(repo_id)
         .bind([7u8; 32].to_vec())
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
+        stamped.commit().await?;
         // A template-sized table has no plan worth pinning: every access
         // path costs about the same on two rows. Seed the situation the
         // composite index exists for — a NEIGHBOUR owner whose `CORPUS_ROWS`
@@ -400,6 +410,11 @@ async fn seed_chunk_corpus(
     // share one snapshot, so a `code_chunk_v1` row written alongside its
     // admission cannot see it, and `<relation>_declared_by_memory` reads
     // `memory.sidecar_tables` as of that snapshot.
+    //
+    // Two statements, one transaction: the presence trigger is deferred to
+    // COMMIT, so it sees the chunk rows the second statement writes, while a
+    // stamp committed on its own would be refused.
+    let mut stamped = pool.begin().await?;
     sqlx::query(
         "WITH ids AS MATERIALIZED (
              SELECT h.handle, h.t
@@ -414,7 +429,7 @@ async fn seed_chunk_corpus(
            FROM ids",
     )
     .bind(owner.stored_owner_id())
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
     sqlx::query(
         "WITH ids AS MATERIALIZED (
@@ -441,7 +456,7 @@ async fn seed_chunk_corpus(
     )
     .bind(owner.stored_owner_id())
     .bind(repo_id)
-    .execute(pool)
-    .await
-    .map(|_| ())
+    .execute(&mut *stamped)
+    .await?;
+    stamped.commit().await
 }

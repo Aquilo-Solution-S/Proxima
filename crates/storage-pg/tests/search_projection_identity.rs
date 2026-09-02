@@ -258,7 +258,7 @@ fn projections() -> Vec<MemorySearchProjection> {
 /// `Some(config)` stamps that configuration on the projection row and
 /// registers it in `lexical_languages` through the table's own trigger.
 async fn project(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     t: Uuid,
     schema_id: &str,
     language: Option<&str>,
@@ -276,7 +276,7 @@ async fn project(
         .bind(t)
         .bind(language)
         .bind(schema_id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     Ok(())
 }
@@ -305,7 +305,7 @@ fn sidecar_of(schema_id: &str) -> &'static str {
 /// grounds in its own owner's first one, which keeps the corpus
 /// deterministic and the pin inside the owner.
 async fn admit(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     owner_id: Uuid,
     t: Uuid,
     kind: &str,
@@ -322,7 +322,7 @@ async fn admit(
     .bind(schema_id)
     .bind(owner_id)
     .bind(t)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     // `memory_ap_content_chk`: only a Fact may have no content row. The
     // hash is `t`'s bytes doubled, which is deterministic, 32 bytes, and
@@ -342,7 +342,7 @@ async fn admit(
             .bind(owner_id)
             .bind(schema_id)
             .bind(hash)
-            .fetch_one(pool)
+            .fetch_one(&mut *conn)
             .await?,
         )
     };
@@ -359,7 +359,7 @@ async fn admit(
     .bind(origins)
     .bind(content_id)
     .bind(sidecar_of(schema_id))
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
@@ -387,9 +387,12 @@ async fn seed(
         .execute(pool)
         .await?;
     }
+    // The stamp and the row it promises land in one transaction: a memory row
+    // that names a sidecar table it has no row in is refused at COMMIT.
+    let mut stamped = pool.begin().await?;
     for (index, (owner, note)) in corpus(notes_per_owner).into_iter().enumerate() {
         let owner_id = owner.stored_owner_id();
-        admit(pool, owner_id, note.t, "fact", NOTE_SCHEMA, &[]).await?;
+        admit(&mut stamped, owner_id, note.t, "fact", NOTE_SCHEMA, &[]).await?;
         sqlx::query(
             "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $2, $3, $4, $5)",
@@ -399,14 +402,14 @@ async fn seed(
         .bind(&note.title)
         .bind(&note.body)
         .bind(&note.tags)
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
-        project(pool, note.t, NOTE_SCHEMA, language_for(index)).await?;
+        project(&mut stamped, note.t, NOTE_SCHEMA, language_for(index)).await?;
     }
     for (index, (owner, derivation)) in derivations(derivations_per_owner).into_iter().enumerate() {
         let owner_id = owner.stored_owner_id();
         admit(
-            pool,
+            &mut stamped,
             owner_id,
             derivation.t,
             "abstraction",
@@ -423,11 +426,17 @@ async fn seed(
         .bind(&derivation.title)
         .bind(&derivation.body)
         .bind(&derivation.tags)
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
-        project(pool, derivation.t, DERIVATION_SCHEMA, language_for(index)).await?;
+        project(
+            &mut stamped,
+            derivation.t,
+            DERIVATION_SCHEMA,
+            language_for(index),
+        )
+        .await?;
     }
-    Ok(())
+    stamped.commit().await
 }
 
 fn request(read_owners: Vec<OwnerRef>, query: &str, order: SearchOrder) -> MemorySearchRequest {
@@ -947,7 +956,7 @@ const LIVE_DERIVATION_BODY: &str = "a single atlas reference in the cartography 
 /// One revision of one note handle: the memory row, its sidecar, and the
 /// projection row the generator writes for it.
 async fn seed_note_revision(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     owner_id: Uuid,
     handle: Uuid,
     t: Uuid,
@@ -964,7 +973,7 @@ async fn seed_note_revision(
     .bind(owner_id)
     .bind(NOTE_SCHEMA)
     .bind(sidecar_of(NOTE_SCHEMA))
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
@@ -974,9 +983,9 @@ async fn seed_note_revision(
     .bind(t)
     .bind(title)
     .bind(body)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
-    project(pool, t, NOTE_SCHEMA, None).await?;
+    project(&mut *conn, t, NOTE_SCHEMA, None).await?;
     Ok(())
 }
 
@@ -992,6 +1001,9 @@ async fn seed_starvation(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // The stamp and the row it promises land in one transaction: a memory row
+    // that names a sidecar table it has no row in is refused at COMMIT.
+    let mut stamped = pool.begin().await?;
     for index in 0..STARVED_HANDLES as u64 {
         let handle = det_uuid(30_000 + index);
         let superseded = det_uuid(10_000 + index);
@@ -1007,10 +1019,10 @@ async fn seed_starvation(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         .bind(NOTE_SCHEMA)
         .bind(owner_id)
         .bind(superseded)
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
         seed_note_revision(
-            pool,
+            &mut stamped,
             owner_id,
             handle,
             superseded,
@@ -1018,17 +1030,17 @@ async fn seed_starvation(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
             SUPERSEDED_BODY,
         )
         .await?;
-        seed_note_revision(pool, owner_id, handle, head, HEAD_TITLE, HEAD_BODY).await?;
+        seed_note_revision(&mut stamped, owner_id, handle, head, HEAD_TITLE, HEAD_BODY).await?;
         sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
             .bind(handle)
             .bind(head)
-            .execute(pool)
+            .execute(&mut *stamped)
             .await?;
     }
 
     let live_derivation = det_uuid(50_000);
     admit(
-        pool,
+        &mut stamped,
         owner_id,
         live_derivation,
         "abstraction",
@@ -1046,10 +1058,10 @@ async fn seed_starvation(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     .bind(live_derivation)
     .bind(LIVE_DERIVATION_TITLE)
     .bind(LIVE_DERIVATION_BODY)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
-    project(pool, live_derivation, DERIVATION_SCHEMA, None).await?;
-    Ok(())
+    project(&mut stamped, live_derivation, DERIVATION_SCHEMA, None).await?;
+    stamped.commit().await
 }
 
 fn starvation_cases() -> Vec<(&'static str, MemorySearchRequest)> {
@@ -1233,8 +1245,11 @@ async fn seed_kind_probe(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // The stamp and the row it promises land in one transaction: a memory row
+    // that names a sidecar table it has no row in is refused at COMMIT.
+    let mut stamped = pool.begin().await?;
     let anchor = det_uuid(100);
-    admit(pool, owner_id, anchor, "fact", NOTE_SCHEMA, &[]).await?;
+    admit(&mut stamped, owner_id, anchor, "fact", NOTE_SCHEMA, &[]).await?;
     sqlx::query(
         "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
          VALUES ($1, $2, 'anchor', $3, '{}')",
@@ -1242,14 +1257,14 @@ async fn seed_kind_probe(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     .bind(anchor)
     .bind(anchor)
     .bind(KIND_ANCHOR_BODY)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
-    project(pool, anchor, NOTE_SCHEMA, None).await?;
+    project(&mut stamped, anchor, NOTE_SCHEMA, None).await?;
 
     for index in 0..KIND_DECOYS {
         let t = det_uuid(1_000 + index);
         admit(
-            pool,
+            &mut stamped,
             owner_id,
             t,
             "abstraction",
@@ -1264,14 +1279,14 @@ async fn seed_kind_probe(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
                      'test-model', 'identity-fixture', '1')",
         )
         .bind(t)
-        .execute(pool)
+        .execute(&mut *stamped)
         .await?;
-        project(pool, t, DERIVATION_SCHEMA, None).await?;
+        project(&mut stamped, t, DERIVATION_SCHEMA, None).await?;
     }
 
     let interpretation = det_uuid(3_000);
     admit(
-        pool,
+        &mut stamped,
         owner_id,
         interpretation,
         "perspective",
@@ -1296,10 +1311,10 @@ async fn seed_kind_probe(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     )
     .bind(interpretation)
     .bind(format!("{filler} atlas cartography"))
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
-    project(pool, interpretation, INTERPRETATION_SCHEMA, None).await?;
-    Ok(())
+    project(&mut stamped, interpretation, INTERPRETATION_SCHEMA, None).await?;
+    stamped.commit().await
 }
 
 fn kind_probe_cases() -> Vec<(&'static str, MemorySearchRequest)> {

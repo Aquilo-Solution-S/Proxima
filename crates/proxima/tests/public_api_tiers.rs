@@ -117,6 +117,21 @@ fn host_api_can_construct_every_owner_erase_target() {
 }
 
 #[test]
+fn host_api_names_the_cold_hydration_result_surface() {
+    let memory_id = proxima::MemoryId::new(uuid::Uuid::nil());
+    let outcome = proxima::MemoryHydrationOutcome::simple(
+        memory_id,
+        proxima::MemoryHydrationStatus::AlreadyHot,
+    );
+    let batch = proxima::MemoryHydrationBatchOutcome {
+        outcomes: vec![outcome],
+        committed: true,
+    };
+    assert_eq!(batch.outcomes[0].memory_id, memory_id);
+    assert_eq!(proxima::MAX_MEMORY_HYDRATION_BATCH, 64);
+}
+
+#[test]
 fn host_api_can_ask_for_and_hold_an_owner_export() {
     // `Engine::export_owner_bundle` is `pub`, takes a
     // `OwnerExportTarget` and returns a `OwnerExportBundle`, and

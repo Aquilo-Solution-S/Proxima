@@ -1,9 +1,13 @@
 use super::Engine;
+use crate::MAX_MEMORY_HYDRATION_BATCH;
 use crate::access::Relation;
 use crate::authz::{AuthzContext, EngineAuthority};
 use crate::edge::{EdgeEndpoint, validate_edge_layering, validate_not_self_loop};
 use crate::error::ProtocolError;
-use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEmbedding, StorageError};
+use crate::storage::{
+    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEmbedding, MemoryHydrationBatchOutcome,
+    MemoryHydrationOutcome, StorageError,
+};
 use crate::storage_ports::OwnerWritePermit;
 use crate::{
     EntityId, EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner,
@@ -119,6 +123,97 @@ impl Engine {
             .map_err(|err| {
                 super::errors::map_write_storage_error(err, "memory", "memory not found")
             })
+    }
+
+    /// Hydrate one owner-owned cooled Memory admission.
+    ///
+    /// The operation is owner-authorized with the same editor write gate as
+    /// `forget_memory`; the storage tier receives only the sealed write
+    /// permit. Missing and foreign ids collapse to `NotFound`, while cold
+    /// object and integrity outcomes remain typed in the returned value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on the
+    /// owner, `InvalidArgument` for storage configuration faults, and
+    /// `Internal` for unavailable storage or an exhausted lifecycle retry.
+    pub async fn hydrate_memory<A>(
+        &self,
+        authority: &A,
+        owner: Owner,
+        memory_id: MemoryId,
+    ) -> Result<MemoryHydrationOutcome, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let outcome = self
+            .hydrate_memories(authority, owner, std::slice::from_ref(&memory_id))
+            .await?;
+        outcome
+            .outcomes
+            .into_iter()
+            .next()
+            .ok_or_else(|| ProtocolError::internal("single-memory hydration returned no outcome"))
+    }
+
+    /// Hydrate a bounded owner-scoped set of cooled Memory admissions.
+    ///
+    /// Results are in request order. The storage transaction is atomic over
+    /// owner-visible cooled items: if any cold object is missing, unsupported,
+    /// or invalid, no cooled item is changed and otherwise-valid items are
+    /// `NotAttempted`.
+    /// `NotFound` covers both absent and foreign ids, preserving the
+    /// non-disclosure rule used by owner-scoped reads. Duplicate ids and sets
+    /// over [`MAX_MEMORY_HYDRATION_BATCH`] are rejected before storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on the
+    /// owner; `InvalidArgument` for an unbounded or duplicate request; and
+    /// `Internal` for storage failures.
+    pub async fn hydrate_memories<A>(
+        &self,
+        authority: &A,
+        owner: Owner,
+        memory_ids: &[MemoryId],
+    ) -> Result<MemoryHydrationBatchOutcome, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        if memory_ids.len() > MAX_MEMORY_HYDRATION_BATCH {
+            return Err(ProtocolError::invalid_argument(
+                "memory_ids",
+                format!("at most {MAX_MEMORY_HYDRATION_BATCH} ids are allowed"),
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        if memory_ids
+            .iter()
+            .any(|memory_id| !seen.insert(memory_id.into_inner()))
+        {
+            return Err(ProtocolError::invalid_argument(
+                "memory_ids",
+                "duplicate memory ids are not allowed",
+            ));
+        }
+        let write_permit = self
+            .authorize_write(authority, &owner, Relation::Editor)
+            .await?;
+        let outcome = self
+            .storage()
+            .memory_authoring
+            .memory_authoring
+            .hydrate_memories(write_permit.owner_write_permit(), memory_ids)
+            .await
+            .map_err(|err| {
+                super::errors::map_write_storage_error(err, "memory_ids", "memory not found")
+            })?;
+        if outcome.outcomes.len() != memory_ids.len() {
+            return Err(ProtocolError::internal(
+                "storage returned an incomplete hydration result",
+            ));
+        }
+        Ok(outcome)
     }
 
     /// Authorized graph-write verb for agent-authored derived memory.
@@ -751,6 +846,57 @@ mod tests {
         assert_eq!(seen.supersedes, Some(prior));
     }
 
+    #[tokio::test]
+    async fn hydrate_uses_the_owner_write_gate_and_returns_typed_storage_results() {
+        let recorder = Arc::new(RecordingAuthoring::default());
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(crate::StoragePorts::rejecting_with_memory_authoring(
+                recorder.clone(),
+            ));
+        let owner = owner();
+        let memory_id = MemoryId::new(uuid::Uuid::now_v7());
+        let authz = AuthzContext::single_owner(&owner, crate::AuthPath::HostBearer);
+
+        let outcome = engine
+            .hydrate_memory(&authz, owner, memory_id)
+            .await
+            .expect("recording port returns a typed result");
+        assert_eq!(outcome.memory_id, memory_id);
+        assert_eq!(outcome.status, crate::MemoryHydrationStatus::AlreadyHot);
+        assert_eq!(
+            recorder
+                .hydration_calls
+                .lock()
+                .expect("recorder")
+                .as_slice(),
+            &[(owner, vec![memory_id])]
+        );
+    }
+
+    #[tokio::test]
+    async fn hydrate_denies_before_reaching_storage() {
+        let recorder = Arc::new(RecordingAuthoring::default());
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(crate::StoragePorts::rejecting_with_memory_authoring(
+                recorder.clone(),
+            ));
+        let owner = owner();
+        let memory_id = MemoryId::new(uuid::Uuid::now_v7());
+
+        let error = engine
+            .hydrate_memory(&AuthzContext::denied_for_owner(&owner), owner, memory_id)
+            .await
+            .expect_err("denied owner cannot hydrate");
+        assert_eq!(error.code, ErrorCode::Forbidden);
+        assert!(
+            recorder
+                .hydration_calls
+                .lock()
+                .expect("recorder")
+                .is_empty()
+        );
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct RecordedWrite {
         origins: Vec<EdgeEndpoint>,
@@ -761,6 +907,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingAuthoring {
         seen: std::sync::Mutex<Option<RecordedWrite>>,
+        hydration_calls: std::sync::Mutex<Vec<(OwnerRef, Vec<MemoryId>)>>,
     }
 
     #[async_trait::async_trait]
@@ -806,6 +953,30 @@ mod tests {
             _memory_id: MemoryId,
         ) -> Result<(), StorageError> {
             Ok(())
+        }
+
+        async fn hydrate_memories(
+            &self,
+            permit: &OwnerWritePermit,
+            memory_ids: &[MemoryId],
+        ) -> Result<crate::MemoryHydrationBatchOutcome, StorageError> {
+            self.hydration_calls
+                .lock()
+                .expect("recorder")
+                .push((*permit.owner(), memory_ids.to_vec()));
+            Ok(crate::MemoryHydrationBatchOutcome {
+                outcomes: memory_ids
+                    .iter()
+                    .copied()
+                    .map(|memory_id| {
+                        crate::MemoryHydrationOutcome::simple(
+                            memory_id,
+                            crate::MemoryHydrationStatus::AlreadyHot,
+                        )
+                    })
+                    .collect(),
+                committed: true,
+            })
         }
     }
 }

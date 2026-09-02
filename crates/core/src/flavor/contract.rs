@@ -1051,6 +1051,10 @@ pub enum ForgetRule {
     DumpThenDelete,
     /// Deleted with the memory, not preserved.
     DeleteWithMemory,
+    /// Dumped into the cold record before the parent's declared cascade
+    /// deletes it. This is distinct from [`Self::DeleteWithMemory`], whose
+    /// rows are intentionally derived/disposable and are never restored.
+    DumpThenCascade,
     /// Untouched by forget, with the reason stated.
     Keep { why: &'static str },
 }
@@ -1066,7 +1070,9 @@ pub enum ForgetRule {
 /// from a table that row never touched, and one that lost a table must
 /// still forget rows written before it went. The `Deleted` legs have no
 /// stamp to walk — they are derived rows written by a lane the memory does
-/// not record — so they come off the declaration.
+/// not record — so they come off the declaration. `DumpedCascade` likewise
+/// comes from the schema declaration, but carries durable child payload into
+/// the cold record before its parent cascade removes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ForgetLeg {
     /// Dumped into the cold record, then deleted. The stamp names it; this
@@ -1075,14 +1081,12 @@ pub enum ForgetLeg {
     /// Deleted for the forgotten `t` and not preserved: derived state
     /// hydrate recomputes, or a queue entry with nothing to restore.
     Deleted { key_column: &'static str },
-    /// Deleted with the memory by a constraint that already proves it — the
-    /// declared `completeness`, spent. No statement is generated, and the
-    /// constraint is the list.
-    ///
-    /// A recorded gap rides on this arm: the code flavor's four cascade
-    /// detail tables go with their parent sidecar row and nothing dumps
-    /// them, so hydrate restores the parent without its details. Naming the
-    /// leg is what makes that a visible hole rather than an absence.
+    /// Dumped into the cold record, then removed by the declared parent
+    /// cascade. The explicit leg keeps durable child payload distinct from a
+    /// derived `Cascaded` relation that hydrate rebuilds or discards.
+    DumpedCascade { via: DbConstraint },
+    /// Deleted with the memory by a constraint that already proves it, with
+    /// no cold payload. Hydrate does not restore this derived relation.
     Cascaded { via: DbConstraint },
     /// Untouched, with the reason stated.
     Kept { why: &'static str },
@@ -1112,6 +1116,16 @@ impl ForgetLeg {
                     _ => Self::Unreachable,
                 },
             },
+            ForgetRule::DumpThenCascade => match (surface.key, surface.erase, surface.completeness)
+            {
+                (KeyShape::MemoryT { .. }, EraseRule::Cascade { via: erase_via }, Some(via))
+                    if static_str_eq(erase_via.relation, via.relation)
+                        && static_str_eq(erase_via.name, via.name) =>
+                {
+                    Self::DumpedCascade { via }
+                }
+                _ => Self::Unreachable,
+            },
             ForgetRule::DumpThenDelete => match surface.key {
                 KeyShape::MemoryT { column } | KeyShape::EntityT { column } => {
                     Self::Dumped { key_column: column }
@@ -1127,6 +1141,26 @@ impl ForgetLeg {
     pub const fn is_generated(&self) -> bool {
         matches!(self, Self::Deleted { .. })
     }
+}
+
+/// Compare contract literals in const contexts without surrendering the
+/// classifier's public `const fn` guarantee. The standard `str` equality
+/// implementation is not const, while these values are all frozen static
+/// declarations whose bytes are the constraint identity.
+const fn static_str_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }
 
 /// One physical relation a flavor (or the kernel) owns, with every rule the
@@ -1675,9 +1709,11 @@ impl FlavorContract {
 #[cfg(test)]
 mod tests {
     use super::{
-        Band, EmbedUnit, EmbeddingRecipe, LanguagePolicy, SLOT_DEFAULT, SchemaRef,
-        SearchProjectionDecl, SubstringArm, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
-        TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, WEIGHT_UNIFORM, WeightedField,
+        Band, CounterRule, DbConstraint, EmbedUnit, EmbeddingRecipe, EraseRule, ExportRule,
+        ForgetLeg, ForgetRule, KeyShape, LanguagePolicy, SLOT_DEFAULT, SchemaRef,
+        SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+        TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, TransferRule, WEIGHT_UNIFORM,
+        WeightedField,
     };
 
     #[test]
@@ -1686,6 +1722,49 @@ mod tests {
             SchemaRef::new("core", "agent-note", 1).render(),
             "core/agent-note-v1"
         );
+    }
+
+    #[test]
+    fn dumped_cascade_is_only_a_memory_t_surface_with_a_completeness_proof() {
+        let via = DbConstraint {
+            relation: "detail",
+            name: "detail_parent_fkey",
+        };
+        let mut surface = Surface {
+            table: "detail",
+            key: KeyShape::MemoryT { column: "parent_t" },
+            owner_column: None,
+            transfer: TransferRule::StaysOnKey,
+            erase: EraseRule::Cascade { via },
+            export: ExportRule::Rows,
+            forget: ForgetRule::DumpThenCascade,
+            lexical_language_column: None,
+            counter: CounterRule::Uncounted { why: "detail" },
+            completeness: Some(via),
+        };
+        assert_eq!(
+            ForgetLeg::derive(&surface),
+            ForgetLeg::DumpedCascade { via }
+        );
+        surface.key = KeyShape::EntityT { column: "entity_t" };
+        assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Unreachable);
+        surface.key = KeyShape::MemoryT { column: "parent_t" };
+        surface.completeness = None;
+        assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Unreachable);
+        surface.completeness = Some(via);
+        surface.erase = EraseRule::ByKey;
+        assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Unreachable);
+        surface.erase = EraseRule::Cascade {
+            via: DbConstraint {
+                relation: "other_detail",
+                name: "other_parent_fkey",
+            },
+        };
+        assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Unreachable);
+        surface.forget = ForgetRule::DeleteWithMemory;
+        surface.completeness = Some(via);
+        surface.erase = EraseRule::Cascade { via };
+        assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Cascaded { via });
     }
 
     #[test]

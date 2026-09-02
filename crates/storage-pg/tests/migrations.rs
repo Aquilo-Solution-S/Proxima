@@ -349,6 +349,29 @@ async fn migrations_apply_to_fresh_db() {
             "cooled carries nullable refs for exact replay"
         );
         assert!(
+            column_exists(&pg, "cooled", "cold_digest").await,
+            "cooled carries the nullable cold-object integrity witness"
+        );
+        let digest_constraint: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1
+                   FROM pg_constraint c
+                   JOIN pg_class r ON r.oid = c.conrelid
+                   JOIN pg_namespace n ON n.oid = r.relnamespace
+                  WHERE n.nspname = 'proxima_core'
+                    AND r.relname = 'cooled'
+                    AND c.conname = 'cooled_cold_digest_len_chk'
+                    AND c.contype = 'c'
+                    AND c.convalidated
+             )",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert!(
+            digest_constraint,
+            "cooled digest witness length is constrained"
+        );
+        assert!(
             column_exists(&pg, "memory", "schema_id").await,
             "schema_id is on each memory row (same value as the handle)"
         );
@@ -1073,6 +1096,13 @@ async fn cooled_identity_seal_freezes_all_but_transfer_remaps() {
         .execute(pool)
         .await
         .expect_err("cooled Goal pins are sealed");
+        assert!(err.to_string().contains("frozen"), "got: {err}");
+        let err = sqlx::query("UPDATE proxima_core.cooled SET cold_digest = $2 WHERE t = $1")
+            .bind(t)
+            .bind(vec![7_u8; 32])
+            .execute(pool)
+            .await
+            .expect_err("cooled cold digest is sealed");
         assert!(err.to_string().contains("frozen"), "got: {err}");
         Ok(())
     }
@@ -1952,6 +1982,94 @@ fn generated_declaration_triggers_are_the_migration_text() {
     }
 }
 
+/// The presence-lane migration text IS the generator's output.
+///
+/// The sibling of `generated_declaration_triggers_are_the_migration_text`,
+/// one lane later. Split from it rather than folded into it because
+/// `0002_v009_declaration_triggers.sql` is applied in live databases: a
+/// generator whose existing output grew would make that file's pin
+/// unsatisfiable, so the new families get a new generator, a new file and a
+/// new pin.
+///
+/// The count assertions are the ones that make this a pin rather than a
+/// smoke test: `mcp_call_logged_v1` is owner-pinned and gets the UPDATE
+/// guard but NOT a presence trigger, so a change that started guarding it —
+/// or that stopped guarding one of the other five — fails here.
+#[test]
+fn generated_presence_triggers_are_the_migration_text() {
+    use proxima_storage_pg::integrity::{DELETE_GUARD_FUNCTION, PRESENCE_TRIGGER_FUNCTION};
+
+    let migration = include_str!("../migrations/0009_declared_sidecar_presence.sql");
+    let baseline = include_str!("../migrations/0001_v008.sql");
+    let declaration_lane = include_str!("../migrations/0002_v009_declaration_triggers.sql");
+    for function in [PRESENCE_TRIGGER_FUNCTION, DELETE_GUARD_FUNCTION] {
+        assert!(
+            migration.contains(function),
+            "0009_declared_sidecar_presence.sql does not carry a shared function \
+             verbatim:\n{function}"
+        );
+    }
+    for name in [
+        "assert_declared_sidecar_present",
+        "assert_row_not_still_declared",
+    ] {
+        assert!(
+            !baseline.contains(name) && !declaration_lane.contains(name),
+            "the v008 baseline and the declaration lane are applied — stamp ⊆ rows ships as \
+             the additive 0009, never as an edit to a version live databases already carry"
+        );
+    }
+
+    let artifacts = frozen_core_sidecars()
+        .presence_trigger_artifacts("core")
+        .expect("core's presence triggers");
+    let presence = artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact
+                .forward
+                .contains("AFTER INSERT OR UPDATE OF sidecar_tables")
+        })
+        .count();
+    let orphan = artifacts
+        .iter()
+        .filter(|artifact| artifact.forward.contains("AFTER DELETE ON"))
+        .count();
+    let repoint = artifacts
+        .iter()
+        .filter(|artifact| artifact.forward.contains("BEFORE UPDATE OF"))
+        .count();
+    assert_eq!(
+        (presence, orphan),
+        (5, 5),
+        "flavor #0 registers six memory sidecars, one of them owner-pinned; only the other \
+         five get a presence trigger and an orphan guard"
+    );
+    assert_eq!(
+        repoint, 6,
+        "every registered memory sidecar gets the UPDATE-of-key guard, owner-pinned included"
+    );
+    assert_eq!(
+        artifacts.len(),
+        presence + orphan + repoint,
+        "every generated artifact belongs to one of the three families"
+    );
+    for artifact in &artifacts {
+        assert!(
+            migration.contains(&artifact.forward),
+            "0009_declared_sidecar_presence.sql does not carry the generator's output \
+             verbatim:\n{}",
+            artifact.forward
+        );
+    }
+    assert!(
+        !migration.contains("mcp_call_logged_v1', 't')"),
+        "the owner-pinned sidecar must get neither a presence trigger nor an orphan guard: \
+         its rows are erased on their own owner's schedule, so its stamp records a past \
+         write rather than claiming a present row"
+    );
+}
+
 /// The reference-integrity lane is deliberately one additive migration. Its
 /// trigger body is pinned here so a future rewrite cannot silently collapse
 /// the origin-only and reference-capable target sets back into one check.
@@ -2160,17 +2278,21 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
 
         // Two memories of the same schema. One declares the note sidecar,
         // one declares nothing — so the ONLY difference between the two
-        // inserts below is the stamp.
+        // inserts below is the stamp. The declaring one gets its row in the
+        // same transaction, because the other direction of the invariant
+        // (`assert_declared_sidecar_present`) refuses a stamp that never
+        // gets its row.
         let mut ids = Vec::new();
         for declared in [false, true] {
             let handle = Uuid::now_v7();
+            let mut stamped = pool.begin().await?;
             sqlx::query(
                 "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
                  VALUES ($1, 'fact', 'core/agent-note-v1', $2, $1)",
             )
             .bind(handle)
             .bind(owner_id)
-            .execute(pool)
+            .execute(&mut *stamped)
             .await?;
             let stamp: Vec<String> = if declared {
                 vec!["proxima_core.agent_note_v1".to_owned()]
@@ -2185,8 +2307,21 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
             .bind(handle)
             .bind(owner_id)
             .bind(&stamp)
-            .execute(pool)
+            .execute(&mut *stamped)
             .await?;
+            if declared {
+                // The same statement the undeclared memory is refused below,
+                // against the memory that declared it.
+                sqlx::query(
+                    "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+                     VALUES ($1, $1, 'title', 'body', '{}')",
+                )
+                .bind(handle)
+                .execute(&mut *stamped)
+                .await
+                .expect("a declared sidecar row is admitted");
+            }
+            stamped.commit().await?;
             ids.push(handle);
         }
 
@@ -2207,16 +2342,6 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
             message.contains(&ids[0].to_string()),
             "the refusal names the memory row: {message}"
         );
-
-        // The same statement, against the memory that declared it.
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
-             VALUES ($1, $1, 'title', 'body', '{}')",
-        )
-        .bind(ids[1])
-        .execute(pool)
-        .await
-        .expect("a declared sidecar row is admitted");
 
         Ok(())
     }
@@ -2262,6 +2387,414 @@ async fn a_dropped_declaration_trigger_fails_the_boot_guardrail() {
 
     let _ = drop_db(&db_name).await;
     result.expect("declaration trigger boot guardrail test failed");
+}
+
+/// The same guardrail, over the two families 0009 added.
+///
+/// A dropped presence trigger is a table whose `stamp ⊆ rows` direction is
+/// unenforced; a presence trigger with the right NAME and the wrong
+/// ARGUMENTS is worse, because it looks installed and guards a different
+/// table. The guardrail has to refuse both, so both are made here.
+#[tokio::test]
+async fn a_damaged_presence_trigger_fails_the_boot_guardrail() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let sidecars = frozen_core_sidecars();
+
+        proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+            .await
+            .expect("a freshly migrated database satisfies the guardrail");
+
+        // 1. Gone — either end of the direction.
+        for (why, drop) in [
+            (
+                "no presence trigger",
+                "DROP TRIGGER memory_declares_proxima_core_agent_note_v1
+                     ON proxima_core.memory",
+            ),
+            (
+                "no orphan guard",
+                "DROP TRIGGER agent_note_v1_declared_by_memory_on_delete
+                     ON proxima_core.agent_note_v1",
+            ),
+        ] {
+            // SQL-POLICY: fixed-fragment — a literal from the table above.
+            sqlx::query(sqlx::AssertSqlSafe(drop)).execute(pool).await?;
+            let err = proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+                .await
+                .expect_err(why)
+                .to_string();
+            assert!(
+                err.contains("proxima_core.agent_note_v1"),
+                "the refusal names the table that lost its guard ({why}): {err}"
+            );
+            // Put it back, so the next case is the only damage in the
+            // database and the assertion above cannot pass for the wrong
+            // reason.
+            let sidecars_for_repair = sidecars.presence_trigger_artifacts("core")?;
+            for artifact in &sidecars_for_repair {
+                // SQL-POLICY: generated
+                sqlx::raw_sql(sqlx::AssertSqlSafe(artifact.forward.clone()))
+                    .execute(pool)
+                    .await?;
+            }
+            proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+                .await
+                .expect("re-applying the generator's output repairs it");
+        }
+
+        // 2. Present, correctly named, and wrong in a way the argument list
+        //    does not show. Each of these passes a check that looks only for
+        //    the trigger's name and its `EXECUTE FUNCTION …(args)`:
+        //
+        //    - a `WHEN` that never matches disarms the guard completely,
+        //      which is the exact hole this direction exists to close;
+        //    - no `WHEN` at all fires it on every memory insert (safe only
+        //      because the function body re-tests membership, and a guard
+        //      whose safety depends on that is not the generated one);
+        //    - not `DEFERRABLE` refuses every legitimate write;
+        //    - the wrong surface guards a table nobody asked about.
+        for (why, when, deferral, args) in [
+            (
+                "a WHEN that never matches",
+                "WHEN (false)",
+                "DEFERRABLE INITIALLY DEFERRED",
+                "'proxima_core.agent_note_v1', 't'",
+            ),
+            (
+                "no WHEN at all",
+                "",
+                "DEFERRABLE INITIALLY DEFERRED",
+                "'proxima_core.agent_note_v1', 't'",
+            ),
+            (
+                "an immediate trigger",
+                "WHEN ('proxima_core.agent_note_v1' = ANY (NEW.sidecar_tables))",
+                "",
+                "'proxima_core.agent_note_v1', 't'",
+            ),
+            (
+                "the wrong guarded surface",
+                "WHEN ('proxima_core.agent_note_v1' = ANY (NEW.sidecar_tables))",
+                "DEFERRABLE INITIALLY DEFERRED",
+                "'proxima_core.utterance_v1', 't'",
+            ),
+        ] {
+            let ddl = format!(
+                // SQL-POLICY: fixed-fragment — see the comment above.
+                "DROP TRIGGER IF EXISTS memory_declares_proxima_core_agent_note_v1
+                     ON proxima_core.memory;
+                 CREATE CONSTRAINT TRIGGER memory_declares_proxima_core_agent_note_v1
+                     AFTER INSERT OR UPDATE OF sidecar_tables ON proxima_core.memory
+                     {deferral}
+                     FOR EACH ROW
+                     {when}
+                     EXECUTE FUNCTION \
+                         proxima_core.assert_declared_sidecar_present({args})"
+            );
+            // SQL-POLICY: fixed-fragment — every part comes from the fixed
+            // table of damaged shapes above.
+            sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
+                .execute(pool)
+                .await?;
+            let err = proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+                .await
+                .expect_err(why)
+                .to_string();
+            assert!(
+                err.contains("proxima_core.agent_note_v1"),
+                "the refusal names the table whose guard is wrong ({why}): {err}"
+            );
+        }
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("presence trigger boot guardrail test failed");
+}
+
+/// The `row ⊆ stamp` direction was INSERT-only until 0009: a legal row could
+/// be repointed onto a memory that declares nothing, which is the same
+/// undeclared row the INSERT guard exists to refuse.
+///
+/// Every sidecar core ships is append-only, so a core table would prove
+/// nothing here — its own append-only trigger refuses the UPDATE first, and
+/// a guard that was never installed would pass. The table is made by hand
+/// and given the generated trigger, so the refusal under test is the only
+/// one that can fire.
+#[tokio::test]
+async fn a_key_repoint_onto_an_undeclared_memory_is_refused() {
+    const TABLE: &str = "public.repointable_sidecar_v1";
+    const KEY: &str = "t";
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+
+        sqlx::query(
+            "CREATE TABLE public.repointable_sidecar_v1 (
+                 t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+                 body text NOT NULL
+             )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id)
+             VALUES ($1, 'repoint-test')",
+        )
+        .bind(TABLE)
+        .execute(pool)
+        .await?;
+        for artifact in [
+            proxima_storage_pg::integrity::declaration_trigger(TABLE, KEY)
+                .expect("the generator emits the INSERT guard"),
+            proxima_storage_pg::integrity::key_repoint_trigger(TABLE, KEY)
+                .expect("the generator emits the UPDATE guard"),
+        ] {
+            // SQL-POLICY: generated
+            sqlx::query(sqlx::AssertSqlSafe(artifact.forward))
+                .execute(pool)
+                .await?;
+        }
+
+        let owner_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner_id)
+            .execute(pool)
+            .await?;
+
+        // One memory that declares the table, one that declares nothing —
+        // the repoint target.
+        let declared = Uuid::now_v7();
+        let bare = Uuid::now_v7();
+        for (t, stamp) in [(declared, vec![TABLE.to_owned()]), (bare, Vec::new())] {
+            sqlx::query(
+                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                 VALUES ($1, 'fact', 'core/agent-note-v1', $2, $1)",
+            )
+            .bind(t)
+            .bind(owner_id)
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.memory
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables)
+                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3)",
+            )
+            .bind(t)
+            .bind(owner_id)
+            .bind(&stamp)
+            .execute(pool)
+            .await?;
+        }
+        sqlx::query("INSERT INTO public.repointable_sidecar_v1 (t, body) VALUES ($1, 'body')")
+            .bind(declared)
+            .execute(pool)
+            .await?;
+
+        let err = sqlx::query("UPDATE public.repointable_sidecar_v1 SET t = $2 WHERE t = $1")
+            .bind(declared)
+            .bind(bare)
+            .execute(pool)
+            .await
+            .expect_err("a repoint onto a memory that declares nothing must be refused");
+        let message = err.to_string();
+        assert!(
+            message.contains(TABLE),
+            "the refusal names the table: {message}"
+        );
+        assert!(
+            message.contains(&bare.to_string()),
+            "…and the memory it would have been repointed onto: {message}"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("key repoint guard test failed");
+}
+
+/// The boot guardrail must not care what session settings the pool arrives
+/// with.
+///
+/// Two of them change what `pg_get_triggerdef` renders. `search_path` omits
+/// the schema of anything the path already resolves, so a connection with
+/// `proxima_core` on its path renders `EXECUTE FUNCTION
+/// assert_row_not_still_declared(...)`; `quote_all_identifiers` double-quotes
+/// every identifier in the definition, down to `("new"."sidecar_tables")`
+/// inside a `WHEN`. Right trigger, different string — and compared naively, a
+/// correctly migrated database refuses to boot. Both are settable
+/// per-database, which is how this test sets them. The guardrail pins both
+/// for its own read; this is what says so.
+#[tokio::test]
+async fn the_boot_guardrail_ignores_the_callers_session_settings() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let sidecars = frozen_core_sidecars();
+
+        // The path that would break a naive comparison, made the default for
+        // every connection this database hands out — so the guardrail cannot
+        // dodge it by picking a fresh one from the pool.
+        for setting in [
+            "search_path TO proxima_core, public",
+            "quote_all_identifiers TO on",
+        ] {
+            // SQL-POLICY: fixed-fragment — the only interpolations are the
+            // uuid-derived database name this test created and a literal from
+            // the list above.
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER DATABASE {db_name} SET {setting}"
+            )))
+            .execute(pool)
+            .await?;
+        }
+
+        let scoped = PgStorage::connect(&url).await?;
+        let settings = || async {
+            let path: String = sqlx::query_scalar("SHOW search_path")
+                .fetch_one(scoped.pool_for_tests())
+                .await?;
+            let quoting: String = sqlx::query_scalar("SHOW quote_all_identifiers")
+                .fetch_one(scoped.pool_for_tests())
+                .await?;
+            Ok::<_, sqlx::Error>((path, quoting))
+        };
+        let before = settings().await?;
+        assert_eq!(
+            (before.0.as_str(), before.1.as_str()),
+            ("proxima_core, public", "on"),
+            "the fixture must actually change the settings it claims to"
+        );
+
+        proxima_storage_pg::integrity::ensure_declaration_triggers(
+            scoped.pool_for_tests(),
+            &sidecars,
+        )
+        .await
+        .map_err(|err| format!("a correctly migrated database must boot on any path: {err}"))?;
+
+        // And the pins are not left behind on the pooled connection.
+        let after = settings().await?;
+        assert_eq!(
+            after, before,
+            "the guardrail leaves the caller's settings as it found them"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("session-setting-independent boot guardrail test failed");
+}
+
+/// The boot guardrail compares whole rendered trigger definitions, so it has
+/// to agree with `pg_get_triggerdef` on every family AND on a key column that
+/// is not `t`.
+///
+/// Nothing else can catch this. Every memory sidecar the tree ships happens to
+/// key on `t`, so a rendering the guardrail gets wrong for any other column —
+/// and the key appears in the `BEFORE UPDATE OF <key>` clause and in two
+/// argument lists — would pass every other test here and then refuse to boot
+/// the first out-of-tree flavor that used `KeyShape::MemoryT { column }`. The
+/// table is made by hand, registered, given the generator's own four
+/// artifacts, and put in front of the real guardrail.
+#[tokio::test]
+async fn the_boot_guardrail_accepts_a_sidecar_keyed_on_something_other_than_t() {
+    const TABLE: &str = "public.oddly_keyed_sidecar_v1";
+    const KEY: &str = "note_memory_id";
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+
+        sqlx::query(
+            "CREATE TABLE public.oddly_keyed_sidecar_v1 (
+                 note_memory_id uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+                 body text NOT NULL
+             )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id)
+             VALUES ($1, 'odd-key-test')",
+        )
+        .bind(TABLE)
+        .execute(pool)
+        .await?;
+
+        let sidecars =
+            frozen_core_sidecars().with_memory_sidecar_for_tests("core/odd-key-v1", TABLE, KEY);
+
+        // Without its triggers the guardrail must refuse: otherwise the
+        // acceptance below would prove only that the table was ignored.
+        let err = proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+            .await
+            .expect_err("a registered sidecar with no triggers is unguarded");
+        assert!(
+            err.to_string().contains(TABLE),
+            "the refusal names the unguarded table: {err}"
+        );
+
+        for artifact in [
+            proxima_storage_pg::integrity::declaration_trigger(TABLE, KEY)?,
+            proxima_storage_pg::integrity::key_repoint_trigger(TABLE, KEY)?,
+            proxima_storage_pg::integrity::presence_trigger(TABLE, KEY)?,
+            proxima_storage_pg::integrity::delete_guard_trigger(TABLE, KEY)?,
+        ] {
+            // SQL-POLICY: generated
+            sqlx::raw_sql(sqlx::AssertSqlSafe(artifact.forward))
+                .execute(pool)
+                .await?;
+        }
+
+        proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+            .await
+            .map_err(|err| {
+                format!(
+                    "the guardrail must accept what its own generators emit, on any declared \
+                     key column: {err}"
+                )
+            })?;
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("non-`t` key boot guardrail test failed");
 }
 
 /// The guard reads the column the REGISTRATION declares, proven against a
@@ -2487,7 +3020,7 @@ async fn a_v008_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
             "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
              baseline"
         );
@@ -2524,7 +3057,9 @@ async fn a_v008_database_upgrades_to_head_in_place() {
         .await?;
         assert!(
             cooled_append_only.contains("NEW.goal_refs")
-                && cooled_append_only.contains("OLD.goal_refs"),
+                && cooled_append_only.contains("OLD.goal_refs")
+                && cooled_append_only.contains("NEW.cold_digest")
+                && cooled_append_only.contains("OLD.cold_digest"),
             "the final cooled append-only guard must freeze the split Goal-reference column"
         );
 

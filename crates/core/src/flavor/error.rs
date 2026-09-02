@@ -141,10 +141,10 @@ pub enum FlavorRegistryError {
         table: &'static str,
         why: &'static str,
     },
-    /// A surface declares that forget destroys its rows and the forget
-    /// reaches none of them: `DeleteWithMemory` over a key it builds no
-    /// `t` for, with no constraint claiming completeness either. The rows
-    /// would outlive the memory that declared them gone.
+    /// A surface declares that forget destroys or preserves its rows and the
+    /// forget reaches none of them: `DeleteWithMemory` over a key it builds
+    /// no `t` for, or `DumpThenCascade` without its MemoryT/completeness
+    /// proof. The rows would outlive the memory that declared their fate.
     UnforgettableSurface {
         flavor_id: &'static str,
         table: &'static str,

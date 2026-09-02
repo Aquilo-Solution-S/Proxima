@@ -186,6 +186,10 @@ async fn flavor_migrations_apply_to_fresh_db() {
         .bind(owner_id)
         .execute(pg.pool_for_tests())
         .await?;
+        // The stamp and the row it promises land in one transaction: the
+        // presence trigger refuses a memory that names a sidecar table it
+        // has no row in, at COMMIT.
+        let mut stamped = pg.pool_for_tests().begin().await?;
         sqlx::query(
             // `sidecar_tables` is not decoration here: the chunk row below
             // is only reachable by forget, erase and export through this
@@ -201,7 +205,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
         .bind(owner_id)
         .bind(fact_t)
         .bind(content_id)
-        .execute(pg.pool_for_tests())
+        .execute(&mut *stamped)
         .await?;
         sqlx::query(
             "INSERT INTO proxima_code.code_chunk_v1
@@ -212,8 +216,9 @@ async fn flavor_migrations_apply_to_fresh_db() {
         )
         .bind(memory_id)
         .bind(repo_id)
-        .execute(pg.pool_for_tests())
+        .execute(&mut *stamped)
         .await?;
+        stamped.commit().await?;
         let err = sqlx::query(
             "UPDATE proxima_code.code_chunk_v1 SET text = 'rewritten' WHERE t = $1",
         )
@@ -377,6 +382,81 @@ fn generated_declaration_triggers_are_the_code_migration_text() {
     }
 }
 
+/// The code flavor's presence-lane migration carries every trigger the
+/// generator emits for this flavor, verbatim.
+///
+/// The sibling of `generated_presence_triggers_are_the_migration_text` on the
+/// other side of the flavor boundary, and of
+/// `generated_declaration_triggers_are_the_code_migration_text` one lane
+/// earlier. The shared functions are deliberately NOT asserted here — they
+/// are core's, defined once in core's migrations, and a flavor that restated
+/// one would be a second declaration of one thing.
+#[test]
+fn generated_presence_triggers_are_the_code_migration_text() {
+    let registry = proxima_code::schema_registry();
+    let mut pg = proxima_storage_pg::PgSidecarRegistry::new();
+    proxima_storage_pg::register_core_pg_sidecars(&mut pg);
+    proxima_code::register_pg_sidecars(&mut pg);
+    let frozen = pg
+        .freeze_against(&registry)
+        .expect("the code registration freezes");
+    let artifacts = frozen
+        .presence_trigger_artifacts(proxima_code::contract::FLAVOR_ID)
+        .expect("the code flavor's presence triggers");
+    assert!(
+        !artifacts.is_empty(),
+        "the code flavor registers memory sidecars, so it has triggers to carry"
+    );
+    let migration = include_str!("../migrations/20260901000020_declared_sidecar_presence.sql");
+    let baseline = include_str!("../migrations/20260818000020_v008_baseline.sql");
+    let declaration_lane =
+        include_str!("../migrations/20260824000020_v009_declaration_triggers.sql");
+    for name in [
+        "assert_declared_sidecar_present",
+        "assert_row_not_still_declared",
+    ] {
+        assert!(
+            !baseline.contains(name) && !declaration_lane.contains(name),
+            "the baseline and the declaration lane are applied — stamp ⊆ rows ships as the \
+             additive 20260901000020, never as an edit to a version live databases already \
+             carry"
+        );
+    }
+    for artifact in &artifacts {
+        assert!(
+            migration.contains(&artifact.forward),
+            "the code presence migration does not carry the generator's output verbatim:\n{}",
+            artifact.forward
+        );
+    }
+    // No sidecar of this flavor is owner-pinned, so all three families cover
+    // all of them: a change that started skipping one fails here.
+    let families = |needle: &str| {
+        artifacts
+            .iter()
+            .filter(|artifact| artifact.forward.contains(needle))
+            .count()
+    };
+    let presence = families("AFTER INSERT OR UPDATE OF sidecar_tables");
+    assert_eq!(
+        (families("AFTER DELETE ON"), families("BEFORE UPDATE OF")),
+        (presence, presence),
+        "every guarded surface gets a presence trigger, an orphan guard and an \
+         UPDATE-of-key guard"
+    );
+    assert_eq!(
+        artifacts.len(),
+        presence * 3,
+        "every generated artifact belongs to one of the three families"
+    );
+    // The shared functions are core's, defined once there. A flavor that
+    // carried its own copy would be a second place for one rule to be wrong.
+    assert!(
+        !migration.contains("CREATE OR REPLACE FUNCTION"),
+        "the flavor migration carries triggers only; the functions they run are core's"
+    );
+}
+
 /// Apply an already-shipped migration the way a live deployment carries it:
 /// the file's own bytes, and one ledger row whose checksum comes from the
 /// embedded migration rather than from a recomputation here, so this fixture
@@ -494,7 +574,7 @@ async fn a_v008_code_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             core_versions,
-            vec![1, 2, 3, 4, 5, 6, 7],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
             "core appends every migration after its baseline"
         );
 
@@ -506,7 +586,7 @@ async fn a_v008_code_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             flavor_versions,
-            vec![20_260_818_000_020, 20_260_824_000_020],
+            vec![20_260_818_000_020, 20_260_824_000_020, 20_260_901_000_020],
             "the flavor appends its v0.0.9 rather than re-applying its baseline"
         );
 

@@ -80,10 +80,11 @@ Rows that declared the erased `t` keep their `origins[]` and `refs[]` exactly
 as written; hard erase neither cascades into those arrays nor nulls them.
 Ordinary new writes still require live targets and cannot name or reuse a
 witness. Exact cooled restoration is the one historical path that may use a
-correctly kinded witness under the database seal; legacy cooled rows with
-`NULL` pin arrays use ordinary live-target admission. Public graph reads keep
-their existing missing-target/redaction behavior; the witness does not create
-an `Unavailable` state.
+correctly kinded witness under the database seal; cooled rows written before
+that seal existed carry no integrity witness, are permanently unsupported, and
+can only be erased. Public graph reads keep their existing
+missing-target/redaction behavior; the witness does not create an
+`Unavailable` state.
 
 ## Edges
 

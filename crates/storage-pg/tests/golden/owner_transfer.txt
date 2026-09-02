@@ -51,9 +51,9 @@
 {"content_hash":"\\x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","content_id":"<id059>","owner_id":"<id039>","schema_id":"core/agent-note-v1"}
 {"content_hash":"\\x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c","content_id":"<id060>","owner_id":"<id039>","schema_id":"core/agent-note-v1"}
 ## proxima_core.cooled (3)
-{"blob_id":"<id048>","content_id":"<id060>","cooled_at":"<ts061>","goal_refs":null,"handle":"<id017>","ingest_key":"in-place-1","kind":"fact","object_key":"cold/<id020>","owner_id":"<id039>","source_id":"src-a","t":"<id020>"}
-{"blob_id":"<id047>","content_id":null,"cooled_at":"<ts061>","goal_refs":null,"handle":"<id023>","ingest_key":"dedupe-1","kind":"fact","object_key":"cold/<id025>","owner_id":"<id039>","source_id":"src-a","t":"<id025>"}
-{"blob_id":"<id049>","content_id":null,"cooled_at":"<ts061>","goal_refs":null,"handle":"<id028>","ingest_key":"mount-1","kind":"fact","object_key":"cold/<id030>","owner_id":"<id039>","source_id":"src-a","t":"<id030>"}
+{"blob_id":"<id048>","cold_digest":null,"content_id":"<id060>","cooled_at":"<ts061>","goal_refs":null,"handle":"<id017>","ingest_key":"in-place-1","kind":"fact","object_key":"cold/<id020>","owner_id":"<id039>","source_id":"src-a","t":"<id020>"}
+{"blob_id":"<id047>","cold_digest":null,"content_id":null,"cooled_at":"<ts061>","goal_refs":null,"handle":"<id023>","ingest_key":"dedupe-1","kind":"fact","object_key":"cold/<id025>","owner_id":"<id039>","source_id":"src-a","t":"<id025>"}
+{"blob_id":"<id049>","cold_digest":null,"content_id":null,"cooled_at":"<ts061>","goal_refs":null,"handle":"<id028>","ingest_key":"mount-1","kind":"fact","object_key":"cold/<id030>","owner_id":"<id039>","source_id":"src-a","t":"<id030>"}
 ## proxima_core.delegated_authority_grants (1)
 {"action_name":null,"auth_epoch":1,"delegation_id":"<id062>","expires_at":"<ts051>","issued_at":"<ts050>","owner_id":"<id018>","owner_kind":"personal","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id018>","tool_name":"core_remember","write_ceiling":"fact"}
 ## proxima_core.embedding_heads (9)

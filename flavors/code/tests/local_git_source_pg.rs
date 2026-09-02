@@ -556,6 +556,10 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         .bind(owner_id)
         .execute(pg.pool_for_tests())
         .await?;
+        // Two statements, one transaction: the presence trigger is deferred to
+        // COMMIT, so it sees the chunk rows the next statement writes, while a
+        // stamp committed on its own would be refused.
+        let mut stamped = pg.pool_for_tests().begin().await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, content_id,
@@ -575,7 +579,7 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         .bind(SEED_INDEX_BASE + EXTRA_PRESENT_ROWS - 1)
         .bind(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID)
         .bind(fact_t)
-        .execute(pg.pool_for_tests())
+        .execute(&mut *stamped)
         .await?;
         sqlx::query(
             "INSERT INTO proxima_code.code_chunk_v1
@@ -588,8 +592,9 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         .bind(repo_id)
         .bind(SEED_INDEX_BASE)
         .bind(SEED_INDEX_BASE + EXTRA_PRESENT_ROWS - 1)
-        .execute(pg.pool_for_tests())
+        .execute(&mut *stamped)
         .await?;
+        stamped.commit().await?;
 
         std::fs::remove_file(dir.path().join("hot.rs"))?;
         git(dir.path(), &["add", "-A"]);

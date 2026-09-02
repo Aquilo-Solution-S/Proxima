@@ -938,13 +938,29 @@ async fn insert_raw_facade_fact(
 ) -> Result<MemoryId, sqlx::Error> {
     let memory_id =
         insert_raw_fact_admission(pool, owner, FacadeFact::SCHEMA_ID, stamped_tables).await?;
-    if insert_primary_row {
+    if !insert_primary_row {
+        // Since `0009_declared_sidecar_presence.sql` the database refuses
+        // both ways into a stamp with no row: the admission above cannot skip
+        // the row, and the DELETE below cannot take it while the stamp
+        // stands. So the fixture writes the pair and deletes the row with the
+        // orphan guard switched off — which is the only shape this state has
+        // in a live database too, one whose trigger someone removed or whose
+        // rows predate it. That IS the state this test needs the reader to
+        // fail closed on.
         sqlx::query(
-            "INSERT INTO public.facade_surface_fact_v1 (t, note_id, title, body)
-             VALUES ($1, $2, 'integrity fixture', 'payload present')",
+            "ALTER TABLE public.facade_surface_fact_v1
+                 DISABLE TRIGGER facade_surface_fact_v1_declared_by_memory_on_delete",
         )
-        .bind(memory_id.into_inner())
-        .bind(Uuid::now_v7())
+        .execute(pool)
+        .await?;
+        sqlx::query("DELETE FROM public.facade_surface_fact_v1 WHERE t = $1")
+            .bind(memory_id.into_inner())
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "ALTER TABLE public.facade_surface_fact_v1
+                 ENABLE TRIGGER facade_surface_fact_v1_declared_by_memory_on_delete",
+        )
         .execute(pool)
         .await?;
     }
@@ -983,6 +999,9 @@ async fn insert_raw_fact_admission(
         .iter()
         .map(|table| (*table).to_owned())
         .collect::<Vec<_>>();
+    // The stamp and the rows it promises land in one transaction: a memory
+    // row that names a sidecar table it has no row in is refused at COMMIT.
+    let mut stamped = pool.begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, sidecar_tables)
@@ -993,8 +1012,35 @@ async fn insert_raw_fact_admission(
     .bind(owner_id)
     .bind(schema_id)
     .bind(&stamped_tables)
-    .execute(pool)
+    .execute(&mut *stamped)
     .await?;
+    for table in &stamped_tables {
+        match table.as_str() {
+            "public.facade_surface_fact_v1" => {
+                sqlx::query(
+                    "INSERT INTO public.facade_surface_fact_v1 (t, note_id, title, body)
+                     VALUES ($1, $2, 'integrity fixture', 'payload present')",
+                )
+                .bind(t)
+                .bind(Uuid::now_v7())
+                .execute(&mut *stamped)
+                .await?;
+            }
+            "public.facade_surface_abstraction_v1" => {
+                sqlx::query(
+                    "INSERT INTO public.facade_surface_abstraction_v1
+                        (t, title, body, source_count, observed_entity)
+                     VALUES ($1, 'integrity fixture', 'extension present', 1, $2)",
+                )
+                .bind(t)
+                .bind(Uuid::now_v7())
+                .execute(&mut *stamped)
+                .await?;
+            }
+            other => panic!("fixture stamps an unknown sidecar table: {other}"),
+        }
+    }
+    stamped.commit().await?;
     Ok(MemoryId::new(t))
 }
 
@@ -1008,7 +1054,8 @@ async fn insert_raw_fact_admission(
 ///
 /// The trigger statements are read off the frozen registry rather than
 /// written out, because that is what a flavor's migration author does:
-/// `declaration_trigger_artifacts` emits them, the migration carries them.
+/// `declaration_trigger_artifacts` and `presence_trigger_artifacts` emit
+/// them, the migration carries them.
 fn facade_migrator() -> sqlx::migrate::Migrator {
     use sqlx::SqlSafeStr;
 
@@ -1061,6 +1108,13 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
         sidecars
             .declaration_trigger_artifacts("facade-test")
             .expect("the facade test flavor's declaration triggers")
+            .into_iter()
+            .map(|artifact| artifact.forward),
+    );
+    statements.extend(
+        sidecars
+            .presence_trigger_artifacts("facade-test")
+            .expect("the facade test flavor's presence triggers")
             .into_iter()
             .map(|artifact| artifact.forward),
     );

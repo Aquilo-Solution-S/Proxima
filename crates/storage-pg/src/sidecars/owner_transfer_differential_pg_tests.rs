@@ -290,6 +290,11 @@ async fn embed(pool: &PgPool, t: Uuid, owner: OwnerRef) -> Result<(), Box<dyn st
 /// Cool the hot row into a `cooled` stub, the way `forget` does, so the
 /// transferred series carries a cold tail.
 async fn cool(pool: &PgPool, t: Uuid, at: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // One transaction, because that is what forget does: the sidecar row and
+    // the memory row that stamps it leave together, or neither leaves. Split
+    // across three autocommit statements this fixture would be an orphaning
+    // delete, which the database refuses.
+    let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.cooled
              (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id,
@@ -301,20 +306,21 @@ async fn cool(pool: &PgPool, t: Uuid, at: &str) -> Result<(), Box<dyn std::error
     )
     .bind(t)
     .bind(at)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
     sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
         .bind(t)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
         .bind(t)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
         .bind(t)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(())
 }
 

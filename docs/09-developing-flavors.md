@@ -844,27 +844,98 @@ is a **new** migration, never an edit to a file live databases have applied
 
 ### Declaration triggers
 
-Every registered **memory** sidecar table carries one generated trigger:
+`memory.sidecar_tables` is an array foreign key PostgreSQL has no syntax
+for, so it is enforced as three generated triggers, one per direction.
+
+**stamp ⊆ registry** — `assert_sidecar_stamp_declared`, on
+`proxima_core.memory`, shipped in the v0.0.8 baseline: a memory may not
+stamp a table no flavor declares.
+
+**row ⊆ stamp** — every registered **memory** sidecar table carries:
 
 ```sql
 CREATE OR REPLACE TRIGGER <relation>_declared_by_memory
     BEFORE INSERT ON <schema>.<relation>
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.assert_memory_declares_sidecar('<memory key column>');
+
+CREATE OR REPLACE TRIGGER <relation>_declared_by_memory_on_update
+    BEFORE UPDATE OF <memory key column> ON <schema>.<relation>
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.assert_memory_declares_sidecar('<memory key column>');
 ```
 
 It refuses a sidecar row whose `proxima_core.memory` row does not name that
-table in `sidecar_tables` — the direction `assert_sidecar_stamp_declared`
-does not cover. Forget, owner erase and owner export all walk
+table in `sidecar_tables`. Forget, owner erase and owner export all walk
 `memory.sidecar_tables`, so an unstamped row is reachable by none of them.
+The `_on_update` sibling is the same check on a repoint of the memory key,
+which would otherwise carry a legal row onto a memory that declares nothing.
+
+**stamp ⊆ rows** — each **non-owner-pinned** memory sidecar table also puts
+one deferred trigger on `proxima_core.memory`. Its `WHEN` clause is an
+optimisation, evaluated on the queueing path so an unstamped table costs
+nothing; the function body re-tests the same membership, because an
+optimisation is the wrong place for the only copy of a rule:
+
+```sql
+CREATE CONSTRAINT TRIGGER memory_declares_<schema>_<relation>
+    AFTER INSERT OR UPDATE OF sidecar_tables ON proxima_core.memory
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    WHEN ('<schema>.<relation>' = ANY (NEW.sidecar_tables))
+    EXECUTE FUNCTION proxima_core.assert_declared_sidecar_present(
+        '<schema>.<relation>', '<memory key column>');
+```
+
+It refuses, **at COMMIT**, a memory that stamps a table it writes no row
+into. Without it a stamp with no row cools into a cold object whose sidecar
+dump can never equal its own stamp, so the Memory forgets and can never be
+hydrated — and nothing detects it at write time. Deferred because the memory
+row has to exist before the sidecar row's FK to it can be satisfied, so a
+legitimate write always stamps before it inserts. The `WHEN` clause is
+evaluated on the queueing path, so a sidecar table this memory does not
+stamp costs nothing.
+
+Owner-pinned sidecars are excluded: their stamp is a record of a past write,
+not a claim about the present, because a source-scoped erase may take the row
+while a transferred memory still stamps it. That is the same predicate
+`dumpable_stamped_tables` uses to keep them out of cold dumps.
+
+The same direction is guarded at the other end. Deleting the sidecar row and
+leaving the stamp reaches the same state, and is worse — the row's bytes are
+gone, so nothing can repair it. Each guarded surface therefore also carries:
+
+```sql
+CREATE CONSTRAINT TRIGGER <relation>_declared_by_memory_on_delete
+    AFTER DELETE ON <schema>.<relation>
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.assert_row_not_still_declared(
+        '<schema>.<relation>', '<memory key column>');
+```
+
+Deferred, and it has to be: the sidecar's FK to `proxima_core.memory` has no
+`ON DELETE CASCADE`, so a legitimate delete of both rows takes the sidecar
+row **first**. An immediate check would see the memory row still standing and
+refuse every forget and every owner erase. It costs 3.0 µs of COMMIT per
+deleted sidecar row (a 300k-row delete goes 1.21 s → 2.14 s). A constraint
+trigger must be `FOR EACH ROW` and cannot take a transition table, so there is
+no cheaper set-based formulation to reach for.
+
+**Existing rows are validated by none of this.** The triggers constrain
+writes from the moment they are installed; a database upgraded in place may
+already carry the damage. `integrity_check` is the read-back that finds it,
+as `IntegrityFinding::MissingStampedSidecarRows`, and running it once after
+the upgrade is the operator's job. A logical restore has the same shape —
+see [how-to/operate.md](how-to/operate.md), §Backup and restore.
 
 | | |
 |---|---|
-| Emitted by | `PgSidecarRegistryFrozen::declaration_trigger_artifacts(flavor_id)` |
-| Lands in | the flavor's own additive v0.0.9 migration, verbatim — never the frozen v0.0.8 baseline |
-| Pinned by | a test comparing generator output against that migration's text, which also asserts the baseline does not carry it |
-| Checked at boot | `proxima_storage_pg::integrity::ensure_declaration_triggers`, bidirectionally; issues no DDL (docs/15 split-role) |
-| Not emitted for | Goal, `CitedObject` and `CitationMapping` sidecars, child tables of a sidecar row, and projection tables — none of them is ever stamped by a memory |
+| Emitted by | `PgSidecarRegistryFrozen::declaration_trigger_artifacts(flavor_id)` (row ⊆ stamp, `BEFORE INSERT`) and `presence_trigger_artifacts(flavor_id)` (both ends of stamp ⊆ rows, plus the `_on_update` siblings) |
+| Lands in | the flavor's own additive migrations, verbatim — never the frozen v0.0.8 baseline, and never an already-applied migration |
+| Pinned by | a test per lane comparing generator output against that migration's text, which also asserts the earlier migrations do not carry it |
+| Checked at boot | `proxima_storage_pg::integrity::ensure_declaration_triggers`, over all four families, bidirectionally, comparing the whole `pg_get_triggerdef` rather than a fragment — a `WHEN` that never matches disarms a presence trigger and does not show up in its argument list; issues no DDL (docs/15 split-role) |
+| Not emitted for | Goal, `CitedObject` and `CitationMapping` sidecars, child tables of a sidecar row, and projection tables — none of them is ever stamped by a memory. Owner-pinned tables get the row ⊆ stamp pair but neither end of stamp ⊆ rows |
 
 `PgSidecarRegistryFrozen::integrity_check(pool)` is the read-back, and the
 one line a flavor's CI runs after its own ingest tests:
@@ -874,8 +945,10 @@ frozen_sidecars.integrity_check(pool).await?;
 ```
 
 It refuses on any sidecar row of a projected schema with no projection row
-(repair: `rebuild_projection_for_table`, which the error names) and on any
-row no memory declares (no repair — the row is outside every declaration).
+(repair: `rebuild_projection_for_table`, which the error names), on any row
+no memory declares, and on any stamp whose row is gone (neither has a
+repair — the row is outside every declaration, and the stamp's row is not
+reconstructible).
 
 ## MCP Tools
 

@@ -28,7 +28,7 @@ use proxima_core::{
     SchemaVersion, SidecarPayload, SourceBatchId, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
-use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory_series, hydrate_memory};
+use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory_series};
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::wake_timeseries::{
     WakeConfigDraft, WakeTriggerKind, insert_wake_config, write_armed_goal,
@@ -68,14 +68,6 @@ fn memory_schema_specs() -> Vec<MemorySchemaSpec> {
 /// measure.
 fn contract_sidecar_tables() -> OwnerSurfaces {
     OwnerSurfaces::for_registry(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
-}
-
-/// The hydrate's registry-resolved embedding answer, same reason.
-fn non_embeddable_schemas() -> Vec<String> {
-    proxima_core::FlavorRegistry::new()
-        .freeze_or_panic_for_tests()
-        .non_embeddable_schema_ids()
-        .to_vec()
 }
 
 /// Observe one specific advisory waiter/holder, including its mode and lock
@@ -553,7 +545,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
 
 #[tokio::test]
 async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
-    let (db_name, pg, cold) = fresh_pg_with_cold().await;
+    let (db_name, pg, _cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         use proxima_storage_pg::verbs::forget::cold_object_key;
 
@@ -706,16 +698,13 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
                 .fetch_all(pool)
                 .await?;
 
-        let mut tx = pool.begin().await?;
-        hydrate_memory(
-            &mut tx,
-            &core_pg_sidecars(),
-            cold.as_ref(),
-            first.memory_id.into_inner(),
-            &non_embeddable_schemas(),
-        )
-        .await?;
-        tx.commit().await?;
+        let dest_permit = OwnerWritePermit::new_for_tests(dest, AccessKind::Fact);
+        let hydrated =
+            MemoryAuthoringPort::hydrate_memories(&pg, &dest_permit, &[first.memory_id]).await?;
+        assert_eq!(
+            hydrated.outcomes[0].status,
+            proxima_core::MemoryHydrationStatus::Hydrated
+        );
         let hydrated_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(first.memory_id.into_inner())
@@ -2961,7 +2950,7 @@ async fn source_scope_erase_reaches_a_retained_actor_log_after_transfer() {
 /// destination's erase does not fail on a child row it cannot see.
 #[tokio::test]
 async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_trail() {
-    let (db_name, pg, cold) = fresh_pg_with_cold().await;
+    let (db_name, pg, _cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -2991,16 +2980,12 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
 
         // ...and hydrates it back. The row was never in the dump, so it is
         // not restored either — it never left.
-        let mut tx = pool.begin().await?;
-        hydrate_memory(
-            &mut tx,
-            &core_pg_sidecars(),
-            cold.as_ref(),
-            first.memory_id.into_inner(),
-            &non_embeddable_schemas(),
-        )
-        .await?;
-        tx.commit().await?;
+        let hydrated = MemoryAuthoringPort::hydrate_memories(&pg, &dest_permit, &[first.memory_id])
+            .await?;
+        assert_eq!(
+            hydrated.outcomes[0].status,
+            proxima_core::MemoryHydrationStatus::Hydrated
+        );
         assert_eq!(
             pinned_owners(pool, first.memory_id.into_inner()).await?,
             vec![owner.stored_owner_id()],

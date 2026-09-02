@@ -1,12 +1,56 @@
 //! Declaration integrity: the floor under every write path, and the check
 //! that reads it back.
 //!
-//! One invariant, stated twice. **A row in a registered memory-sidecar
-//! table exists only for a memory row whose `sidecar_tables` declares that
-//! table.** `assert_sidecar_stamp_declared` (`0001_v008.sql`) already holds
-//! the other direction — a stamp names only tables some flavor declares —
-//! and the two together are the array foreign key `PostgreSQL` has no
-//! syntax for.
+//! One invariant, stated three ways, because the array foreign key
+//! `PostgreSQL` has no syntax for takes three statements to say (and four
+//! trigger families to enforce, since the third is guarded at both ends):
+//!
+//! 1. **stamp ⊆ registry** — a stamp names only tables some flavor
+//!    declares. `assert_sidecar_stamp_declared` (`0001_v008.sql`).
+//! 2. **row ⊆ stamp** — a row in a registered memory-sidecar table exists
+//!    only for a memory row whose `sidecar_tables` declares that table.
+//!    [`DECLARATION_TRIGGER_FUNCTION`], v0.0.9.
+//! 3. **stamp ⊆ rows** — a memory row that declares a table has a row in
+//!    it. [`PRESENCE_TRIGGER_FUNCTION`], `0009_declared_sidecar_presence.sql`,
+//!    and the reason this module is not two halves any more.
+//!
+//! Direction 3 is not symmetry for its own sake. A stamp with no row cools
+//! into a cold object whose sidecar dump can never equal its own stamp, so
+//! the Memory forgets and then cannot be hydrated, permanently, with no
+//! error at the moment the damage is done —
+//! `PgSidecarRegistryFrozen::integrity_check` could not even find it, since
+//! it only ever asked direction 2. Forget now refuses such a row at cool
+//! time (`dump_stamped_sidecars`); this refuses it at the transaction that
+//! creates it, which is the only place the operator still has the
+//! information to fix it.
+//!
+//! Direction 3 is guarded at both ends. A stamp can lose its row by never
+//! having written one ([`PRESENCE_TRIGGER_FUNCTION`], at `INSERT`) or by
+//! having its row deleted out from under it ([`DELETE_GUARD_FUNCTION`], at
+//! `DELETE`). The second is strictly worse than the first: the row's bytes
+//! are gone, so nothing can repair it — `integrity_check` can name the damage
+//! and no operator can undo it. That asymmetry is why the `DELETE` is refused
+//! rather than reported.
+//!
+//! **What it costs, measured on PG 18.4.** The presence trigger: 8.8 µs of
+//! `COMMIT` per stamped surface, 0.01 µs when the memory does not stamp it —
+//! the `WHEN` clause is evaluated on the queueing path. The orphan guard:
+//! 3.0 µs of `COMMIT` per deleted sidecar row, taking a 300k-row delete from
+//! 1.21 s to 2.14 s, which lands on owner erase and on forget. A constraint
+//! trigger must be `FOR EACH ROW` and cannot take a transition table
+//! (`REFERENCING OLD TABLE` on one is a syntax error), so the set-based
+//! statement-level formulation that would have cost one join per statement
+//! does not exist; per-row is the only shape there is. A second on a 300k-row
+//! compliance batch is the right price for a corruption class with no repair.
+//!
+//! **What is still not enforced: rows already there, and writes that turn
+//! the triggers off.** These triggers constrain writes from the moment they
+//! are installed. A database upgraded in place may already carry a stamp
+//! with no row; so may one an owner reached with `TRUNCATE`, which fires no
+//! row trigger at all, or with `session_replication_role = replica`. Nothing
+//! here finds any of them — [`IntegrityFinding::MissingStampedSidecarRows`]
+//! is the read-back that does, and running it once after an upgrade or a
+//! restore is the operator's job (`docs/how-to/operate.md`).
 //!
 //! Why the database and not the port. Forget, owner erase and owner export
 //! all walk `memory.sidecar_tables`; a row nobody stamped is reachable by
@@ -18,19 +62,32 @@
 //!
 //! Two halves, mirroring [`crate::projection`] exactly:
 //!
-//! 1. **The generator.** [`DECLARATION_TRIGGER_FUNCTION`] is fixed text and
-//!    [`declaration_trigger`] emits one `CREATE OR REPLACE TRIGGER` per
-//!    registered memory-sidecar table, each carrying its own `DROP`. Both
-//!    are pasted verbatim into the v0.0.9 migrations —
-//!    `0002_v009_declaration_triggers.sql` and each flavor's own — and pinned
-//!    by `generated_declaration_triggers_are_the_migration_text`, so the
-//!    migration author cannot drift from the generator. Deliberately NOT into
-//!    the v0.0.8 baselines: those are frozen, and editing one would change
-//!    the checksum of a version live databases have already applied, turning
-//!    an additive release into a forced reset (docs/how-to/migrations.md).
+//! 1. **The generator**, four families of it. [`declaration_trigger`]
+//!    emits direction 2's `BEFORE INSERT` guard,
+//!    [`key_repoint_trigger`] emits the `BEFORE UPDATE OF <key>` guard that
+//!    closes the same direction against a re-pointed key column,
+//!    [`presence_trigger`] emits direction 3's deferred constraint trigger on
+//!    `proxima_core.memory`, and [`delete_guard_trigger`] emits direction 3's
+//!    other end — the deferred `AFTER DELETE` guard on the sidecar table
+//!    itself. Each carries its own `DROP`. All of it is pasted
+//!    verbatim into migrations — the declaration lane
+//!    (`0002_v009_declaration_triggers.sql` and each flavor's own) for the
+//!    first family, the presence lane
+//!    (`0009_declared_sidecar_presence.sql` and each flavor's own) for the
+//!    other three — and pinned by
+//!    `generated_declaration_triggers_are_the_migration_text` and
+//!    `generated_presence_triggers_are_the_migration_text`, so the migration
+//!    author cannot drift from the generator. Deliberately NOT into the
+//!    v0.0.8 baselines, and the declaration lane is not edited either: both
+//!    are applied, and editing one would change the checksum of a version live
+//!    databases have already applied, turning an additive release into a
+//!    forced reset (docs/how-to/migrations.md).
 //! 2. **The boot guardrail** ([`ensure_declaration_triggers`]), which re-runs
-//!    the generator against the frozen registry and compares it with
-//!    `pg_trigger`. It issues no DDL: in the split-role topology (docs/15) an
+//!    all four generators against the frozen registry and compares the whole
+//!    definition `pg_get_triggerdef` renders back for each. The whole
+//!    definition and not a fragment: a `WHEN` clause that never matches
+//!    disarms a presence trigger completely, and neither that nor a lost
+//!    `DEFERRABLE` shows up in the argument list. It issues no DDL: in the split-role topology (docs/15) an
 //!    init container or `tools/dev-migrate` migrates under a DDL role and the
 //!    app boots under a DML-only role that could not create a trigger if it
 //!    tried. A flavor whose migrations have not been applied therefore fails
@@ -109,6 +166,78 @@ BEGIN
 END;
 $$;";
 
+/// The relation half of a schema-qualified sidecar table.
+///
+/// Every generated trigger name is derived from it, and the boot guardrail
+/// derives the same names from the same function — a trigger name formatted
+/// twice is a trigger name that can drift once.
+fn relation_of(sidecar_table: &str) -> Result<(&str, &str), StorageError> {
+    sidecar_table.split_once('.').ok_or_else(|| {
+        StorageError::Internal(format!(
+            "a registered sidecar table must be schema-qualified: {sidecar_table:?}"
+        ))
+    })
+}
+
+/// The name of the `BEFORE INSERT` declaration trigger on `sidecar_table`.
+///
+/// # Errors
+///
+/// [`StorageError::Internal`] when the table is not schema-qualified, or when
+/// the derived name exceeds `PostgreSQL`'s 63-byte identifier limit.
+fn declaration_trigger_name(sidecar_table: &str) -> Result<String, StorageError> {
+    let (_, relation) = relation_of(sidecar_table)?;
+    Ok(
+        PgIdent::column(&format!("{relation}_{DECLARATION_TRIGGER_SUFFIX}"))?
+            .as_str()
+            .to_owned(),
+    )
+}
+
+/// The name of the `BEFORE UPDATE OF <key>` declaration trigger on
+/// `sidecar_table`.
+///
+/// # Errors
+///
+/// As [`declaration_trigger_name`].
+fn key_repoint_trigger_name(sidecar_table: &str) -> Result<String, StorageError> {
+    let (_, relation) = relation_of(sidecar_table)?;
+    Ok(
+        PgIdent::column(&format!("{relation}_{KEY_REPOINT_TRIGGER_SUFFIX}"))?
+            .as_str()
+            .to_owned(),
+    )
+}
+
+/// The name of the presence constraint trigger guarding `sidecar_table`.
+/// It lives on `proxima_core.memory`, so the name carries the schema.
+///
+/// # Errors
+///
+/// As [`declaration_trigger_name`].
+fn presence_trigger_name(sidecar_table: &str) -> Result<String, StorageError> {
+    let (schema, relation) = relation_of(sidecar_table)?;
+    Ok(
+        PgIdent::column(&format!("{PRESENCE_TRIGGER_PREFIX}_{schema}_{relation}"))?
+            .as_str()
+            .to_owned(),
+    )
+}
+
+/// The name of the `AFTER DELETE` orphan guard on `sidecar_table`.
+///
+/// # Errors
+///
+/// As [`declaration_trigger_name`].
+fn delete_guard_trigger_name(sidecar_table: &str) -> Result<String, StorageError> {
+    let (_, relation) = relation_of(sidecar_table)?;
+    Ok(
+        PgIdent::column(&format!("{relation}_{DELETE_GUARD_TRIGGER_SUFFIX}"))?
+            .as_str()
+            .to_owned(),
+    )
+}
+
 /// The declaration trigger for one registered memory-sidecar table, and the
 /// statement that removes it.
 ///
@@ -136,13 +265,7 @@ pub fn declaration_trigger(
     memory_key_column: &str,
 ) -> Result<Artifact, StorageError> {
     let table = PgIdent::table(sidecar_table)?;
-    let (_, relation) = sidecar_table.split_once('.').ok_or_else(|| {
-        StorageError::Internal(format!(
-            "a registered sidecar table must be schema-qualified: {sidecar_table:?}"
-        ))
-    })?;
-    let name = format!("{relation}_{DECLARATION_TRIGGER_SUFFIX}");
-    let trigger = PgIdent::column(&name)?;
+    let trigger = declaration_trigger_name(sidecar_table)?;
     let key = PgIdent::column(memory_key_column)?;
 
     // SQL-POLICY: PgIdent
@@ -155,21 +278,421 @@ pub fn declaration_trigger(
     BEFORE INSERT ON {table}
     FOR EACH ROW
     EXECUTE FUNCTION {DECLARATION_TRIGGER_FUNCTION_NAME}('{key}');",
-        trigger = trigger.as_str(),
         table = table.as_str(),
         key = key.as_str()
     );
     // SQL-POLICY: PgIdent
-    let inverse = format!(
-        "DROP TRIGGER IF EXISTS {} ON {};",
-        trigger.as_str(),
-        table.as_str()
-    );
+    let inverse = format!("DROP TRIGGER IF EXISTS {trigger} ON {};", table.as_str());
     Ok(Artifact { forward, inverse })
+}
+
+/// The one relation every presence trigger is installed on.
+const MEMORY_TABLE: &str = "proxima_core.memory";
+
+/// The qualified name of the one function every presence trigger runs.
+pub const PRESENCE_TRIGGER_FUNCTION_NAME: &str = "proxima_core.assert_declared_sidecar_present";
+
+/// What a generated presence trigger is called: the guarded surface, with
+/// its dot flattened, under one prefix. Every one of them lives on
+/// `proxima_core.memory`, so the relation cannot disambiguate them and the
+/// name has to carry the schema — `proxima_core.chunk_v1` and
+/// `proxima_code.chunk_v1` are two tables and must be two triggers.
+const PRESENCE_TRIGGER_PREFIX: &str = "memory_declares";
+
+/// What the `UPDATE` half of the declaration guard is called.
+const KEY_REPOINT_TRIGGER_SUFFIX: &str = "declared_by_memory_on_update";
+
+/// What a generated orphan guard is called. Same family, same reading: the
+/// row is declared by a memory, and the `DELETE` that would end that has to
+/// end the declaration with it.
+const DELETE_GUARD_TRIGGER_SUFFIX: &str = "declared_by_memory_on_delete";
+
+/// The qualified name of the one function every orphan guard runs.
+pub const DELETE_GUARD_FUNCTION_NAME: &str = "proxima_core.assert_row_not_still_declared";
+
+/// Direction 3, at the other end: a stamped sidecar row may not be deleted
+/// out from under its stamp.
+///
+/// This is the same corruption [`PRESENCE_TRIGGER_FUNCTION`] refuses at
+/// `INSERT`, arrived at by `DELETE` instead. A stamp whose row is gone cools
+/// into a cold object whose dump can never equal its own stamp, so the Memory
+/// forgets and can never be hydrated — and unlike the insert case there is no
+/// repair, because the row's bytes are gone. `integrity_check` can name the
+/// damage; nothing can undo it. That asymmetry is the argument for refusing
+/// the `DELETE` rather than reporting it.
+///
+/// `DEFERRABLE INITIALLY DEFERRED`, and it has to be: the sidecar's own
+/// foreign key to `proxima_core.memory` has no `ON DELETE CASCADE`
+/// (`0001_v008.sql`), so a legitimate delete of both rows must take the
+/// sidecar row FIRST. An immediate check would see the memory row still
+/// standing and refuse every forget and every owner erase. Deferred to
+/// `COMMIT`, it sees the transaction's outcome: both gone, or neither.
+///
+/// **Measured, PG 18.4:** deleting 300k sidecar rows and their memory rows in
+/// one transaction costs 1.21 s without this guard and 2.14 s with —
+/// 3.0 µs of `COMMIT` per deleted row. It lands on owner erase, the one lane
+/// that deletes sidecar rows in bulk, and on forget, which deletes a handful
+/// per memory. A constraint trigger must be `FOR EACH ROW` and cannot take a
+/// transition table (`REFERENCING OLD TABLE` is a syntax error on one), so
+/// the set-based statement-level formulation that would have cost one join
+/// per statement is not available. Per-row is the only shape there is, and
+/// a second on a 300k-row compliance batch is the right price for a
+/// corruption class with no repair.
+///
+/// Owner-pinned sidecars get no orphan guard, for the same reason they get no
+/// presence trigger: a source-scoped erase legitimately takes their row while
+/// a Memory that has since transferred still stamps it.
+///
+/// The key column is read as `to_jsonb(OLD) ->> TG_ARGV[1]` rather than
+/// `OLD.t`, so one function serves a table keyed on anything — the same move
+/// [`DECLARATION_TRIGGER_FUNCTION`] makes on `NEW`.
+pub const DELETE_GUARD_FUNCTION: &str = r"CREATE OR REPLACE FUNCTION proxima_core.assert_row_not_still_declared() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    surface text := TG_ARGV[0];
+    memory_t uuid := (to_jsonb(OLD) ->> TG_ARGV[1])::uuid;
+BEGIN
+    IF EXISTS (
+        SELECT 1
+          FROM proxima_core.memory m
+         WHERE m.t = memory_t
+           AND m.sidecar_tables @> ARRAY[surface]
+    ) THEN
+        RAISE EXCEPTION
+            'memory % still declares % in memory.sidecar_tables, so the row it declares there may not be deleted',
+            memory_t, surface
+            USING ERRCODE = '23503',
+                  HINT = 'a stamp whose row was deleted cools into a cold object whose '
+                         || 'sidecar dump cannot equal its own stamp, so the Memory forgets '
+                         || 'and can never be hydrated, and the row is gone so nothing can '
+                         || 'repair it; delete the memory row in the same transaction, which '
+                         || 'is what forget and owner erase do';
+    END IF;
+    RETURN NULL;
+END;
+$$;";
+
+/// Direction 3 against a `DELETE` of the stamped row, and the statement that
+/// removes it.
+///
+/// A `CONSTRAINT TRIGGER`, deferred, for the reason spelled out on
+/// [`DELETE_GUARD_FUNCTION`]. No `WHEN` clause: unlike the presence trigger,
+/// this one lives on the guarded table itself, so every row it sees is a row
+/// it is responsible for.
+///
+/// `DROP` + `CREATE`, like [`presence_trigger`]: `CREATE OR REPLACE
+/// CONSTRAINT TRIGGER` is not supported.
+///
+/// # Errors
+///
+/// As [`presence_trigger`].
+pub fn delete_guard_trigger(
+    sidecar_table: &str,
+    memory_key_column: &str,
+) -> Result<Artifact, StorageError> {
+    let table = PgIdent::table(sidecar_table)?;
+    let trigger = delete_guard_trigger_name(sidecar_table)?;
+    let key = PgIdent::column(memory_key_column)?;
+
+    // SQL-POLICY: PgIdent
+    // Relation, derived trigger name and key column are all validated
+    // identifiers; the surface and the key are spliced into the argument
+    // list as literals, and `PgIdent` admits no quote to close either with.
+    let forward = format!(
+        "DROP TRIGGER IF EXISTS {trigger} ON {table};
+CREATE CONSTRAINT TRIGGER {trigger}
+    AFTER DELETE ON {table}
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE FUNCTION {DELETE_GUARD_FUNCTION_NAME}('{table}', '{key}');",
+        table = table.as_str(),
+        key = key.as_str()
+    );
+    // SQL-POLICY: PgIdent
+    let inverse = format!("DROP TRIGGER IF EXISTS {trigger} ON {};", table.as_str());
+    Ok(Artifact { forward, inverse })
+}
+
+/// Direction 3's shared function: the stamp names a table, so the table has
+/// a row.
+///
+/// Both facts it needs arrive as trigger arguments rather than from the
+/// catalog: the guarded surface as `TG_ARGV[0]` and its memory-key column as
+/// `TG_ARGV[1]`. The surface cannot be read off the trigger's own relation
+/// the way [`DECLARATION_TRIGGER_FUNCTION`] reads it, because every one of
+/// these triggers is installed on `proxima_core.memory` and the surface is
+/// the thing that varies.
+///
+/// **Measured, PG 18.4, 200k memory rows inserted and stamped in one
+/// transaction, `COMMIT` time only:** 0.01 µs/row when the stamp does not
+/// name the guarded table, 8.8 µs/row when it does. The first number is the
+/// `WHEN` clause the generator emits: `PostgreSQL` evaluates it before
+/// queueing the deferred event, so a memory row that stamps one table pays
+/// for one table and not for the twenty-six the deployment registers. The
+/// second is one `EXECUTE` — a shared function cannot name the table
+/// statically, and a one-shot plan for `SELECT EXISTS` on a primary key is
+/// where 6 of those 8.8 µs go. Against a real fact ingest neither is
+/// visible, and both land on `COMMIT`, behind an fsync.
+///
+/// `RETURN NULL` because an `AFTER` trigger's return value is discarded.
+///
+/// `ERRCODE 23503` is `foreign_key_violation`, the code the other two
+/// directions raise. Three directions of one array foreign key report as one
+/// kind of thing.
+///
+/// The body re-tests membership that the `WHEN` clause has already tested.
+/// That is deliberate and it is not redundant: `WHEN` is an optimisation —
+/// it keeps an unstamped table off the queueing path — and an optimisation
+/// is the wrong place for the only copy of a rule. A trigger carrying this
+/// function under the right name and arguments but a `WHEN` that never
+/// matches would admit exactly the state this direction exists to refuse,
+/// and a trigger with no `WHEN` at all would refuse every write that does
+/// not stamp the table. With the test in the body, both are merely slow or
+/// merely safe rather than wrong. The array scan is over a stamp with a
+/// handful of elements and does not appear against the `EXECUTE` below.
+pub const PRESENCE_TRIGGER_FUNCTION: &str = r"CREATE OR REPLACE FUNCTION proxima_core.assert_declared_sidecar_present() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    surface text := TG_ARGV[0];
+    present boolean;
+BEGIN
+    IF NOT (surface = ANY (NEW.sidecar_tables)) THEN
+        RETURN NULL;
+    END IF;
+    EXECUTE format('SELECT EXISTS (SELECT 1 FROM %s WHERE %I = $1)', surface, TG_ARGV[1])
+       INTO present
+      USING NEW.t;
+    IF NOT present THEN
+        RAISE EXCEPTION
+            'memory % declares % in memory.sidecar_tables with no row in that table',
+            NEW.t, surface
+            USING ERRCODE = '23503',
+                  HINT = 'a stamp with no row cools into a cold object whose sidecar dump '
+                         || 'cannot equal its own stamp, so the Memory forgets and can never '
+                         || 'be hydrated; write through Engine::unit_of_work, which stamps '
+                         || 'exactly the tables the write inserts into, in the same '
+                         || 'transaction';
+    END IF;
+    RETURN NULL;
+END;
+$$;";
+
+/// Direction 3 for one guarded sidecar table, and the statement that removes
+/// it.
+///
+/// A `CONSTRAINT TRIGGER`, `DEFERRABLE INITIALLY DEFERRED`, because the
+/// memory row is inserted before the sidecar rows it stamps — the sidecar's
+/// own foreign key to `proxima_core.memory` requires exactly that order — so
+/// an immediate check would refuse every legitimate write. Deferred to
+/// `COMMIT`, the two rows are both there or the transaction is not.
+///
+/// `DROP` + `CREATE` rather than the `CREATE OR REPLACE TRIGGER` the other
+/// two families use: `PostgreSQL` 18 answers `CREATE OR REPLACE CONSTRAINT
+/// TRIGGER` with `is not supported`. The `DROP … IF EXISTS` in front buys
+/// back the same idempotent replay.
+///
+/// `AFTER INSERT OR UPDATE OF sidecar_tables` mirrors
+/// `memory_sidecar_stamp_declared` in the v0.0.8 baseline. The `UPDATE` arm
+/// is unreachable today — `memory_owner_or_append_only` raises `25006` on any
+/// `UPDATE` that moves `sidecar_tables` — and is spelled out anyway so that a
+/// future migration which unfreezes the column does not silently unfreeze the
+/// invariant with it.
+///
+/// The `WHEN` clause is not an optimisation of the function body: it is
+/// evaluated on the queueing path, so an unstamped table costs nothing at all
+/// rather than one queued event and one function call. See
+/// [`PRESENCE_TRIGGER_FUNCTION`] for the two numbers.
+///
+/// # Errors
+///
+/// [`StorageError::Internal`] when the table is not a schema-qualified
+/// identifier, when the key column is not an identifier, or when the derived
+/// trigger name exceeds `PostgreSQL`'s 63-byte identifier limit — silent
+/// truncation there would give two guarded surfaces one trigger name on the
+/// one relation they share, and make the boot guardrail unsatisfiable.
+pub fn presence_trigger(
+    sidecar_table: &str,
+    memory_key_column: &str,
+) -> Result<Artifact, StorageError> {
+    let table = PgIdent::table(sidecar_table)?;
+    let trigger = presence_trigger_name(sidecar_table)?;
+    let key = PgIdent::column(memory_key_column)?;
+
+    // SQL-POLICY: PgIdent
+    // The surface, the derived trigger name and the key column are all
+    // validated identifiers; the surface and the key are spliced as literals
+    // — into the `WHEN` comparison and the trigger argument list — and
+    // `PgIdent` admits no quote to close either with. Everything else is
+    // fixed text, identical for every guarded table.
+    let forward = format!(
+        "DROP TRIGGER IF EXISTS {trigger} ON {MEMORY_TABLE};
+CREATE CONSTRAINT TRIGGER {trigger}
+    AFTER INSERT OR UPDATE OF sidecar_tables ON {MEMORY_TABLE}
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    WHEN ('{table}' = ANY (NEW.sidecar_tables))
+    EXECUTE FUNCTION {PRESENCE_TRIGGER_FUNCTION_NAME}('{table}', '{key}');",
+        table = table.as_str(),
+        key = key.as_str()
+    );
+    // SQL-POLICY: PgIdent
+    let inverse = format!("DROP TRIGGER IF EXISTS {trigger} ON {MEMORY_TABLE};");
+    Ok(Artifact { forward, inverse })
+}
+
+/// Direction 2 against an `UPDATE` of the key column, and the statement that
+/// removes it.
+///
+/// [`declaration_trigger`] is `BEFORE INSERT` only, which leaves one door
+/// open: re-point an existing sidecar row's memory-key column at a memory
+/// that does not stamp the table, and nothing fires. The row's foreign key
+/// is satisfied — the new memory exists — and the row is now invisible to
+/// forget, owner erase and owner export. Four of the six core sidecars are
+/// closed to this by an append-only `UPDATE` trigger of their own;
+/// `write_act_v1` and `mcp_call_logged_v1` are not, and no flavor sidecar is
+/// obliged to be.
+///
+/// It runs [`DECLARATION_TRIGGER_FUNCTION`] unchanged: that function reads
+/// `NEW`, which an `UPDATE` trigger has, and asks the one question this arm
+/// also asks. A second body would be a second place for one rule to be wrong.
+///
+/// `UPDATE OF {key}` and not a bare `UPDATE`: an `UPDATE` that leaves the key
+/// alone cannot break the direction, and paying for it would tax every
+/// legitimate column rewrite on every sidecar table.
+///
+/// The key column may not be a reserved word. `UPDATE OF` is the one place
+/// the generators spell an identifier where `PostgreSQL`'s grammar will not
+/// take one unquoted, so a sidecar keyed on `user` produces `syntax error at
+/// or near "user"` — at the first apply of the migration that carries this
+/// artifact, before any row exists, which is why the check is this paragraph
+/// and not a keyword table. `PgIdent` cannot catch it: the name is a valid
+/// identifier, just not a bare one.
+///
+/// # Errors
+///
+/// As [`declaration_trigger`].
+pub fn key_repoint_trigger(
+    sidecar_table: &str,
+    memory_key_column: &str,
+) -> Result<Artifact, StorageError> {
+    let table = PgIdent::table(sidecar_table)?;
+    let trigger = key_repoint_trigger_name(sidecar_table)?;
+    let key = PgIdent::column(memory_key_column)?;
+
+    // SQL-POLICY: PgIdent
+    let forward = format!(
+        "CREATE OR REPLACE TRIGGER {trigger}
+    BEFORE UPDATE OF {key} ON {table}
+    FOR EACH ROW
+    EXECUTE FUNCTION {DECLARATION_TRIGGER_FUNCTION_NAME}('{key}');",
+        table = table.as_str(),
+        key = key.as_str()
+    );
+    // SQL-POLICY: PgIdent
+    let inverse = format!("DROP TRIGGER IF EXISTS {trigger} ON {};", table.as_str());
+    Ok(Artifact { forward, inverse })
+}
+
+/// One trigger the registry says must exist, and the whole definition
+/// `pg_get_triggerdef` must render back for it.
+///
+/// The whole definition, not a fragment. A `WHEN` clause that never matches
+/// disarms a presence trigger completely, and a trigger that is not
+/// `DEFERRABLE INITIALLY DEFERRED` refuses every legitimate write; neither
+/// shows up in the argument list, so neither is visible to a check that only
+/// looks for `EXECUTE FUNCTION …(args)`. Equality sees all of it — timing,
+/// events, column list, deferral, `WHEN`, and the arguments exactly rather
+/// than as a substring.
+///
+/// This pins `PostgreSQL`'s own rendering, which is deterministic but not
+/// contractual. That is on purpose: every PG test in the workspace boots
+/// through this function, so a rendering change in a future major version
+/// fails in CI, loudly, instead of degrading a production guard into one
+/// that passes whatever it finds.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ExpectedTrigger {
+    relation: String,
+    name: String,
+    definition: String,
+}
+
+/// The set [`ensure_declaration_triggers`] expects, built from the registry
+/// alone, and sorted into the order `pg_trigger` is read back in.
+fn expected_declaration_triggers(
+    registry: &PgSidecarRegistryFrozen,
+) -> Result<Vec<ExpectedTrigger>, StorageError> {
+    let mut declared: Vec<ExpectedTrigger> = Vec::new();
+    for table in registry.memory_sidecar_tables() {
+        let key = registry.memory_key_column(table).ok_or_else(|| {
+            StorageError::Internal(format!(
+                "{table} is a registered memory sidecar with no declared memory-key column; \
+                 give its `pg_sidecar!` registration a `key:` and its contract a \
+                 KeyShape::MemoryT {{ column }}"
+            ))
+        })?;
+        let declaration = declaration_trigger_name(table)?;
+        declared.push(ExpectedTrigger {
+            definition: format!(
+                "CREATE TRIGGER {declaration} BEFORE INSERT ON {table} FOR EACH ROW \
+                 EXECUTE FUNCTION {DECLARATION_TRIGGER_FUNCTION_NAME}('{key}')"
+            ),
+            relation: table.to_owned(),
+            name: declaration,
+        });
+        let repoint = key_repoint_trigger_name(table)?;
+        declared.push(ExpectedTrigger {
+            definition: format!(
+                "CREATE TRIGGER {repoint} BEFORE UPDATE OF {key} ON {table} FOR EACH ROW \
+                 EXECUTE FUNCTION {DECLARATION_TRIGGER_FUNCTION_NAME}('{key}')"
+            ),
+            relation: table.to_owned(),
+            name: repoint,
+        });
+        if !registry.is_owner_pinned_memory_sidecar_table(table) {
+            let orphan = delete_guard_trigger_name(table)?;
+            declared.push(ExpectedTrigger {
+                definition: format!(
+                    "CREATE CONSTRAINT TRIGGER {orphan} AFTER DELETE ON {table} DEFERRABLE \
+                     INITIALLY DEFERRED FOR EACH ROW \
+                     EXECUTE FUNCTION {DELETE_GUARD_FUNCTION_NAME}('{table}', '{key}')"
+                ),
+                relation: table.to_owned(),
+                name: orphan,
+            });
+            let presence = presence_trigger_name(table)?;
+            declared.push(ExpectedTrigger {
+                definition: format!(
+                    "CREATE CONSTRAINT TRIGGER {presence} AFTER INSERT OR UPDATE OF \
+                     sidecar_tables ON {MEMORY_TABLE} DEFERRABLE INITIALLY DEFERRED FOR EACH ROW \
+                     WHEN (('{table}'::text = ANY (new.sidecar_tables))) \
+                     EXECUTE FUNCTION {PRESENCE_TRIGGER_FUNCTION_NAME}('{table}', '{key}')"
+                ),
+                relation: MEMORY_TABLE.to_owned(),
+                name: presence,
+            });
+        }
+    }
+    declared.sort();
+    Ok(declared)
 }
 
 /// Every declaration trigger the linked flavors expect, as `pg_trigger` sees
 /// it — and nothing else.
+///
+/// All four families at once (see the module docs): row ⊆ stamp on `INSERT`
+/// and on an `UPDATE` of the key column, both on the sidecar table, and
+/// stamp ⊆ rows at both ends — the presence trigger on
+/// `proxima_core.memory` and the orphan guard on the sidecar's own `DELETE`.
+/// The last two are skipped for an owner-pinned sidecar, and that is not an
+/// oversight: an owner-pinned row
+/// carries its own `owner_id` and no foreign key to `proxima_core.memory`
+/// precisely so a source-scoped erase can take it while the Memory it
+/// records — which may since have transferred to another owner — stays. Its
+/// stamp is a record of what was written, not a claim about what is still
+/// there, and neither a guard that demanded the row still be there nor one
+/// that refused to let the erase take it could hold.
 ///
 /// Bidirectional, like [`crate::projection::ensure_projection_schema`]: a
 /// registered sidecar table with no trigger is a table any statement can
@@ -183,30 +706,47 @@ pub fn declaration_trigger(
 ///
 /// [`StorageError::Internal`] when the trigger set in the database is not
 /// the set the registry declares, when a trigger runs on a different
-/// memory-key column than its registration declares, or when a registered
-/// memory sidecar declares no memory-key column at all.
+/// memory-key column or guarded surface than its registration declares, or
+/// when a registered memory sidecar declares no memory-key column at all.
 pub async fn ensure_declaration_triggers(
     pool: &sqlx::PgPool,
     registry: &PgSidecarRegistryFrozen,
 ) -> Result<(), StorageError> {
-    let mut declared: Vec<(String, String)> = Vec::new();
-    for table in registry.memory_sidecar_tables() {
-        let key = registry.memory_key_column(table).ok_or_else(|| {
-            StorageError::Internal(format!(
-                "{table} is a registered memory sidecar with no declared memory-key column; \
-                 give its `pg_sidecar!` registration a `key:` and its contract a \
-                 KeyShape::MemoryT {{ column }}"
-            ))
-        })?;
-        declared.push((table.to_owned(), key.to_owned()));
-    }
-    declared.sort();
+    let declared = expected_declaration_triggers(registry)?;
 
     // `pg_get_triggerdef` renders the argument list back as `SQL`, so the
-    // key column a trigger actually runs on is readable without decoding
-    // `pg_trigger.tgargs`' NUL-separated bytea by hand.
-    let found: Vec<(String, String)> = sqlx::query_as(
+    // key column and guarded surface a trigger actually runs on are readable
+    // without decoding `pg_trigger.tgargs`' NUL-separated bytea by hand.
+    //
+    // That rendering, though, is not a constant: it is a function of two
+    // session settings as well as of the trigger.
+    //
+    // `search_path` — PG omits the schema of anything the path already
+    // resolves, so a session with `proxima_core` on its path gets back
+    // `EXECUTE FUNCTION assert_row_not_still_declared(...)`.
+    // `quote_all_identifiers` — with it on, every identifier comes back
+    // double-quoted, down to `("new"."sidecar_tables")` inside the `WHEN`.
+    //
+    // Either one turns the comparison below into a refusal to boot a database
+    // whose triggers are exactly right, and both are settable per-database and
+    // per-role, so neither is hypothetical. Pinning them makes the rendering a
+    // function of the trigger alone. `SET LOCAL` reverts when the transaction
+    // ends, which is why the read takes one: the connection goes back to the
+    // pool with the caller's settings intact.
+    let mut tx = pool.begin().await.map_err(crate::error::map_err)?;
+    for pin in [
+        "SET LOCAL search_path = pg_catalog",
+        "SET LOCAL quote_all_identifiers = off",
+    ] {
+        // SQL-POLICY: fixed-fragment — a literal from the array above.
+        sqlx::query(pin)
+            .execute(&mut *tx)
+            .await
+            .map_err(crate::error::map_err)?;
+    }
+    let found: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT (n.nspname || '.' || c.relname)::text,
+                t.tgname::text,
                 pg_get_triggerdef(t.oid)::text
            FROM pg_trigger t
            JOIN pg_class c ON c.oid = t.tgrelid
@@ -215,31 +755,42 @@ pub async fn ensure_declaration_triggers(
            JOIN pg_namespace f ON f.oid = p.pronamespace
           WHERE NOT t.tgisinternal
             AND f.nspname = 'proxima_core'
-            AND p.proname = 'assert_memory_declares_sidecar'
-          ORDER BY 1",
+            AND p.proname IN ('assert_memory_declares_sidecar',
+                              'assert_declared_sidecar_present',
+                              'assert_row_not_still_declared')
+          ORDER BY 1, 2",
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await
     .map_err(crate::error::map_err)?;
+    // Read-only, so there is nothing to keep; rolling back drops both pins
+    // with it.
+    tx.rollback().await.map_err(crate::error::map_err)?;
 
-    let found_tables: Vec<&str> = found.iter().map(|(table, _)| table.as_str()).collect();
-    let declared_tables: Vec<&str> = declared.iter().map(|(table, _)| table.as_str()).collect();
-    if found_tables != declared_tables {
+    let found_names: Vec<(&str, &str)> = found
+        .iter()
+        .map(|(relation, name, _)| (relation.as_str(), name.as_str()))
+        .collect();
+    let declared_names: Vec<(&str, &str)> = declared
+        .iter()
+        .map(|expected| (expected.relation.as_str(), expected.name.as_str()))
+        .collect();
+    if found_names != declared_names {
         return Err(StorageError::Internal(format!(
             "declaration triggers in the database do not match the registered memory sidecars: \
-             registered {declared_tables:?}, found {found_tables:?}; apply migrations before \
-             boot, and give every registered memory sidecar the trigger \
-             `proxima_storage_pg::integrity::declaration_trigger` emits for it"
+             registered {declared_names:?}, found {found_names:?}; apply migrations before \
+             boot, and give every registered memory sidecar the triggers \
+             `proxima_storage_pg::integrity`'s generators emit for it"
         )));
     }
 
-    for ((table, key), (_, definition)) in declared.iter().zip(&found) {
-        let expected = format!("{DECLARATION_TRIGGER_FUNCTION_NAME}('{key}')");
-        if !definition.contains(&expected) {
+    for (expected, (_, _, definition)) in declared.iter().zip(&found) {
+        if definition != &expected.definition {
             return Err(StorageError::Internal(format!(
-                "the declaration trigger on {table} does not read the declared memory-key \
-                 column {key:?}: {definition}; re-apply the trigger \
-                 `proxima_storage_pg::integrity::declaration_trigger` emits for it"
+                "the trigger {} on {} is not the guard its registration declares;\n  \
+                 registered: {}\n  found:      {definition}\nre-apply the trigger \
+                 `proxima_storage_pg::integrity`'s generator emits for it",
+                expected.name, expected.relation, expected.definition
             )));
         }
     }
@@ -284,6 +835,10 @@ pub enum IntegrityFinding {
     /// Sidecar rows whose memory row does not declare the table they are
     /// in. Forget, owner erase and owner export cannot see them.
     UndeclaredSidecarRows { sidecar_table: String, rows: i64 },
+    /// Memory rows that declare a table they have no row in. They cool into
+    /// a cold object whose dump cannot equal its own stamp, so they can
+    /// never be hydrated back.
+    MissingStampedSidecarRows { sidecar_table: String, rows: i64 },
 }
 
 impl std::fmt::Display for IntegrityFinding {
@@ -312,6 +867,18 @@ impl std::fmt::Display for IntegrityFinding {
                  records which memory meant to declare them and no derivation can put them back \
                  — decide per row whether to delete it or to re-write it through \
                  Engine::unit_of_work"
+            ),
+            Self::MissingStampedSidecarRows {
+                sidecar_table,
+                rows,
+            } => write!(
+                f,
+                "{rows} memory row(s) name {sidecar_table} in sidecar_tables and have no row \
+                 in it. Forgetting one is refused at cool time, and one already cooled has a \
+                 dump that cannot equal its stamp, so it can never be hydrated. There is NO \
+                 repair from here: the payload the stamp promised was never written and \
+                 nothing records what it should have said — decide per row whether to erase \
+                 the Memory or to re-write it through Engine::unit_of_work"
             ),
         }
     }
@@ -393,6 +960,41 @@ pub(crate) fn undeclared_rows_sql(
              FROM proxima_core.memory m
             WHERE m.t = c.{key}
               AND m.sidecar_tables @> ARRAY[$1::text]
+       )",
+        sidecar = sidecar.as_str(),
+        key = key.as_str()
+    ))
+}
+
+/// Memory rows that stamp one registered memory-sidecar table and have no
+/// row in it. `$1` is the table's own name.
+///
+/// The mirror of [`undeclared_rows_sql`]. With both ends of direction 3
+/// installed nothing can reach this state through `INSERT` or `DELETE`; the
+/// read-back is for rows that predate the triggers, for a database whose
+/// triggers someone dropped, and for the paths that suppress them at all
+/// (`TRUNCATE`, `session_replication_role = replica`). Owner-pinned tables
+/// are excluded by the caller for the reason
+/// [`ensure_declaration_triggers`] gives.
+///
+/// # Errors
+///
+/// [`StorageError::Internal`] for an invalid identifier.
+pub(crate) fn missing_stamped_rows_sql(
+    sidecar_table: &str,
+    memory_key_column: &str,
+) -> Result<String, StorageError> {
+    let sidecar = PgIdent::table(sidecar_table)?;
+    let key = PgIdent::column(memory_key_column)?;
+    // SQL-POLICY: PgIdent
+    Ok(format!(
+        "SELECT count(*)
+  FROM proxima_core.memory m
+ WHERE m.sidecar_tables @> ARRAY[$1::text]
+   AND NOT EXISTS (
+           SELECT 1
+             FROM {sidecar} c
+            WHERE c.{key} = m.t
        )",
         sidecar = sidecar.as_str(),
         key = key.as_str()

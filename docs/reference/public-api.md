@@ -21,6 +21,21 @@ Post-PR9 supported Rust tiers:
 | Flavor SDK (authorized reads) | `use proxima::flavor::{authorized_memory_ids, authorized_fact_payloads, authorized_abstraction_payloads, SidecarAtom, QueryRequest, hybrid_degraded_to_lexical};` | typed, authz-filtered candidate/payload reads — see [Authorized Flavor-Read Facade](#authorized-flavor-read-facade) below. `Engine` is Host API (`use proxima::Engine`). Code-series `&PgPool` helpers live in `flavors/code`, not this SDK. |
 | Flavor SDK (outbound endpoints) | `use proxima::flavor::{validate_endpoint_url, EndpointUrlPolicy};` | enforce HTTPS with the shared, exact loopback-only plaintext exception; never reproduce it with string prefixes |
 
+Cold-memory repair is part of the Host API: `Engine::hydrate_memory` and
+`Engine::hydrate_memories` accept an owner plus `MemoryId` values and use the
+server-resolved write authority. Their `MemoryHydrationOutcome` values expose
+only `Hydrated`, `AlreadyHot`, `NotFound`, `MissingColdObject`,
+`UnsupportedColdObject`, `UnsupportedColdSidecar`, `InvalidColdObject`, and
+honest batch `NotAttempted` classifications; raw Postgres transactions and
+cold-store locators are not public. The set limit is
+`MAX_MEMORY_HYDRATION_BATCH` (64), and the set is atomic over owner-visible
+cooled items. A row cooled before the integrity witness existed carries no
+`cold_digest` and its object predates the stamped cold format; it stays cooled
+and reports the unsupported outcome rather than being silently admitted. There
+is no repair path and none is planned: the witness cannot be reconstructed
+from the object alone, and the append-only trigger refuses to accept one after
+the fact. Erase is the only remaining action on such a row.
+
 Unsupported:
 
 | Surface | Status |
@@ -205,14 +220,14 @@ for each erased Memory or Goal target. It has no owner or payload. Source
 Memory rows keep their `origins[]`, `refs[]`, and `goal_refs[]` byte-for-byte;
 erase does not cascade or null them. Ordinary new writes require live targets
 and cannot use or reuse witnesses. Exact sealed cooled restoration may use a
-correctly kinded witness; legacy cooled rows with `NULL` pin arrays use
-ordinary live-target admission.
+correctly kinded witness; cooled rows written before that seal are permanently
+unsupported and can only be erased.
 
 This metadata is absent from the public Edge/PinNode projections and from
 MCP, REST, transfer, forget, and export surfaces. A missing target continues
 to use the existing redacted/missing projection; this contract does not add
-an `Unavailable` state. Hydration is a storage lifecycle operation and is
-not part of the Host API or flavor tool surface.
+an `Unavailable` state. Hydration is a storage lifecycle operation exposed by
+the owner-authorized Host API, not a flavor tool surface.
 
 Core keeps no record of the operation. There is no audit table, no retention
 window and no legal hold — the last two were removed outright, because a

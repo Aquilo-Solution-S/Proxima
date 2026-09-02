@@ -454,11 +454,12 @@ impl FlavorRegistry {
     /// Every surface says what forget does to it, and every answer is one
     /// the forget can carry out.
     ///
-    /// The arm this closes is `DeleteWithMemory` over a key shaped like
-    /// nothing the forget builds a `t` for — an owner-scoped `Custom` key,
-    /// say. Such a surface declared that forgetting a memory destroys its
-    /// rows, and no statement anywhere would have. Same shape as
-    /// `UndeletableSurface` and `UnmovableSurface`, one verb over.
+    /// The arms this closes are `DeleteWithMemory` over a key shaped like
+    /// nothing the forget builds a `t` for, or `DumpThenCascade` without both
+    /// a `MemoryT` key and a completeness proof. Such a surface declared that
+    /// forgetting a memory destroys (or preserves) rows, and no valid leg
+    /// anywhere would have. Same shape as `UndeletableSurface` and
+    /// `UnmovableSurface`, one verb over.
     fn validate_forget_legs(
         contract: &crate::flavor::contract::FlavorContract,
     ) -> Result<(), FlavorRegistryError> {

@@ -531,6 +531,30 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'cooled.refs must be nullable uuid[]'
          WHEN NOT EXISTS (
                   SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'cooled'
+                     AND column_name = 'cold_digest'
+                     AND data_type = 'bytea'
+                     AND is_nullable = 'YES'
+                )
+           THEN 'cooled.cold_digest must be nullable bytea'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_constraint c
+                    JOIN pg_class r ON r.oid = c.conrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'cooled'
+                     AND c.conname = 'cooled_cold_digest_len_chk'
+                     AND c.contype = 'c'
+                     AND c.convalidated
+                     AND strpos(lower(pg_get_constraintdef(c.oid, true)),
+                                'octet_length(cold_digest) = 32') > 0
+                )
+           THEN 'cooled.cold_digest must be NULL or exactly 32 bytes'
+         WHEN NOT EXISTS (
+                  SELECT 1
                     FROM pg_constraint c
                     JOIN pg_class r ON r.oid = c.conrelid
                     JOIN pg_namespace n ON n.oid = r.relnamespace
@@ -1281,6 +1305,7 @@ pub struct PgStorage {
     surfaces: proxima_core::owner_inverse::OwnerSurfaces,
     search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
     embed_units: Vec<proxima_core::verbs::schema::MemoryEmbedUnit>,
+    non_embeddable_schemas: Vec<String>,
     tuning: PgTuning,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
     cold: Arc<dyn proxima_core::ColdObjectStore>,
@@ -1437,6 +1462,7 @@ impl PgStorage {
             surfaces: flavor_0_surfaces(),
             search_projections: Vec::new(),
             embed_units: Vec::new(),
+            non_embeddable_schemas: Vec::new(),
             tuning,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
             cold: Arc::new(verbs::forget::MemoryColdStore::default()),
@@ -1507,6 +1533,7 @@ impl PgStorage {
     pub fn with_flavors(mut self, registry: &proxima_core::FlavorRegistryFrozen) -> Self {
         self.search_projections = registry.search_projections().to_vec();
         self.embed_units = registry.embed_units().to_vec();
+        self.non_embeddable_schemas = registry.non_embeddable_schema_ids().to_vec();
         self.surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(registry);
         self
     }
@@ -1783,20 +1810,21 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
              0003_v010_reference_integrity.sql, 0004_v011_goal_refs.sql, \
              the hard-erase witness is 0005_erased_pin_targets.sql, \
-             0006_v013_goal_replay_declaration.sql and \
-             0007_upload_content_identity.sql"
+             0006_v013_goal_replay_declaration.sql, \
+             0007_upload_content_identity.sql, 0008_cold_integrity_digest.sql \
+             and 0009_declared_sidecar_presence.sql"
         );
     }
 
     /// The v0.0.7 ALTER lane occupied versions 2..=21 and the squash to a
     /// single v008 baseline retired all of them.
     ///
-    /// Versions 2 through 7 are current additive migrations which reuse
+    /// Versions 2 through 8 are current additive migrations which reuse
     /// retired numbers. That is safe, and this is why: the tripwire for
     /// a pre-v0.0.8 database is version 1's checksum, which is the legacy
     /// `0001_init.sql` and can never match `0001_v008.sql`.
@@ -1885,10 +1913,26 @@ mod tests {
                     .contains("blob_uploads_terminal_content_idx"),
             "version 7 must persist exact pre-publication upload content identity"
         );
-        // The legacy range shrinks as the head advances: 7 is now a real
-        // additive migration, asserted by content just above, so only 8..=21
-        // remain retired by the v0.0.8 squash.
-        for dead in 8..=21 {
+        let version_8 = migrator
+            .iter()
+            .find(|migration| migration.version == 8)
+            .expect("version 8 is the cold integrity migration");
+        assert!(
+            version_8.sql.as_str().contains("cold_digest")
+                && version_8
+                    .sql
+                    .as_str()
+                    .contains("cooled_cold_digest_len_chk")
+                && version_8
+                    .sql
+                    .as_str()
+                    .contains("NEW.cold_digest IS DISTINCT FROM OLD.cold_digest"),
+            "version 8 must persist the exact cold-object digest witness"
+        );
+        // The legacy range shrinks as the head advances: versions 7, 8 and 9
+        // are current additive migrations, so only 10..=21 remain retired by
+        // the v0.0.8 squash.
+        for dead in 10..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"

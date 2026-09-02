@@ -10,7 +10,8 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphIdentity,
-    MemoryGraphPayloadRow, MemoryId, MemoryKindRow, Owner, OwnerRef, StorageError, cold_object_key,
+    MemoryGraphPayloadRow, MemoryHydrationBatchOutcome, MemoryId, MemoryKindRow, Owner, OwnerRef,
+    StorageError, cold_object_key,
 };
 
 use crate::error::{internal, with_bounded_retry};
@@ -205,6 +206,41 @@ impl MemoryAuthoringPort for PgStorage {
                     &key,
                     t,
                     owner_id,
+                )
+                .await
+            }
+        })
+        .await
+    }
+
+    async fn hydrate_memories(
+        &self,
+        permit: &OwnerWritePermit,
+        memory_ids: &[MemoryId],
+    ) -> Result<MemoryHydrationBatchOutcome, StorageError> {
+        let owner_id = permit.owner().stored_owner_id();
+        let pool = self.pool.clone();
+        let sidecars = self.sidecars.clone();
+        let surfaces = self.surfaces.clone();
+        let cold = Arc::clone(&self.cold);
+        let ids = memory_ids.to_vec();
+        let non_embeddable_schemas = self.non_embeddable_schemas.clone();
+        with_bounded_retry(move || {
+            let pool = pool.clone();
+            let sidecars = sidecars.clone();
+            let surfaces = surfaces.clone();
+            let cold = Arc::clone(&cold);
+            let ids = ids.clone();
+            let non_embeddable_schemas = non_embeddable_schemas.clone();
+            async move {
+                verbs::forget::hydrate_memories_oneshot(
+                    &pool,
+                    &sidecars,
+                    &surfaces,
+                    cold.as_ref(),
+                    owner_id,
+                    &ids,
+                    &non_embeddable_schemas,
                 )
                 .await
             }

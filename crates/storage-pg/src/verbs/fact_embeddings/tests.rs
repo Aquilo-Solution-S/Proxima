@@ -722,6 +722,10 @@ mod pg_tests {
             .bind(note_t)
             .execute(pg.pool_for_tests())
             .await?;
+            // The stamp and the row it promises land together: since
+            // `0009_declared_sidecar_presence.sql` a memory row that names a
+            // sidecar table it has no row in is refused at COMMIT.
+            let mut stamped = pg.pool_for_tests().begin().await?;
             sqlx::query(
                 "INSERT INTO proxima_core.memory
                      (handle, t, kind, owner_id, schema_id, sidecar_tables)
@@ -731,7 +735,7 @@ mod pg_tests {
             .bind(note_handle)
             .bind(note_t)
             .bind(owner_id)
-            .execute(pg.pool_for_tests())
+            .execute(&mut *stamped)
             .await?;
             sqlx::query(
                 "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
@@ -739,8 +743,9 @@ mod pg_tests {
             )
             .bind(note_t)
             .bind(Uuid::now_v7())
-            .execute(pg.pool_for_tests())
+            .execute(&mut *stamped)
             .await?;
+            stamped.commit().await?;
 
             let units = core_embed_units();
             let text = load_embedding_text(
@@ -776,6 +781,8 @@ mod pg_tests {
             .bind(utter_t)
             .execute(pg.pool_for_tests())
             .await?;
+            // The stamp and the row it promises land together: see above.
+            let mut stamped = pg.pool_for_tests().begin().await?;
             sqlx::query(
                 "INSERT INTO proxima_core.memory
                      (handle, t, kind, owner_id, schema_id, sidecar_tables)
@@ -785,15 +792,16 @@ mod pg_tests {
             .bind(utter_handle)
             .bind(utter_t)
             .bind(owner_id)
-            .execute(pg.pool_for_tests())
+            .execute(&mut *stamped)
             .await?;
             sqlx::query(
                 "INSERT INTO proxima_core.utterance_v1 (t, speaker, conversation_id, text)
                  VALUES ($1, 'user', 'c1', 'said this')",
             )
             .bind(utter_t)
-            .execute(pg.pool_for_tests())
+            .execute(&mut *stamped)
             .await?;
+            stamped.commit().await?;
             let uttered = load_embedding_text(
                 pg.pool_for_tests(),
                 &owner,
@@ -843,6 +851,10 @@ mod pg_tests {
             .bind(note_t)
             .execute(pg.pool_for_tests())
             .await?;
+            // The stamp and the row it promises land together: since
+            // `0009_declared_sidecar_presence.sql` a memory row that names a
+            // sidecar table it has no row in is refused at COMMIT.
+            let mut stamped = pg.pool_for_tests().begin().await?;
             sqlx::query(
                 "INSERT INTO proxima_core.memory
                      (handle, t, kind, owner_id, schema_id, sidecar_tables)
@@ -852,7 +864,7 @@ mod pg_tests {
             .bind(note_handle)
             .bind(note_t)
             .bind(owner_id)
-            .execute(pg.pool_for_tests())
+            .execute(&mut *stamped)
             .await?;
             sqlx::query(
                 "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
@@ -860,8 +872,9 @@ mod pg_tests {
             )
             .bind(note_t)
             .bind(Uuid::now_v7())
-            .execute(pg.pool_for_tests())
+            .execute(&mut *stamped)
             .await?;
+            stamped.commit().await?;
 
             let utter_handle = Uuid::now_v7();
             let utter_t = Uuid::now_v7();
@@ -874,6 +887,8 @@ mod pg_tests {
             .bind(utter_t)
             .execute(pg.pool_for_tests())
             .await?;
+            // The stamp and the row it promises land together: see above.
+            let mut stamped = pg.pool_for_tests().begin().await?;
             sqlx::query(
                 "INSERT INTO proxima_core.memory
                      (handle, t, kind, owner_id, schema_id, sidecar_tables)
@@ -883,15 +898,16 @@ mod pg_tests {
             .bind(utter_handle)
             .bind(utter_t)
             .bind(owner_id)
-            .execute(pg.pool_for_tests())
+            .execute(&mut *stamped)
             .await?;
             sqlx::query(
                 "INSERT INTO proxima_core.utterance_v1 (t, speaker, conversation_id, text)
                  VALUES ($1, 'user', 'c1', 'said this')",
             )
             .bind(utter_t)
-            .execute(pg.pool_for_tests())
+            .execute(&mut *stamped)
             .await?;
+            stamped.commit().await?;
 
             let missing = proxima_core::MemoryId::new(Uuid::now_v7());
             let units = core_embed_units();
