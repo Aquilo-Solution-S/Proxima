@@ -554,17 +554,20 @@ impl LocalGitSource {
             ..IndexReport::default()
         };
         let mut blob_analysis_cache = HashMap::new();
+        let mut pass = IngestPass {
+            ctx: *ctx,
+            now,
+            report: &mut report,
+            blob_analysis_cache: &mut blob_analysis_cache,
+        };
         let mut pending_present = Vec::new();
         let mut pending_deleted = Vec::new();
         self.ingest_head_entries(
-            ctx,
+            &mut pass,
             head_sha,
-            now,
             &indexable,
             skip_heads,
             &mut pending_present,
-            &mut report,
-            &mut blob_analysis_cache,
         )
         .await?;
         for path in oversized
@@ -573,15 +576,15 @@ impl LocalGitSource {
             .chain(deleted_paths.iter().cloned())
         {
             pending_deleted.push(
-                self.tombstone_deleted_path(ctx, head_sha, now, &path, None, &mut report)
+                self.tombstone_deleted_path(&mut pass, head_sha, &path, None)
                     .await?,
             );
         }
         for pending in pending_present {
-            self.derive_present_blob(ctx, pending, &mut report).await?;
+            self.derive_present_blob(&mut pass, pending).await?;
         }
         for pending in pending_deleted {
-            self.derive_deleted_path(ctx, pending, &mut report).await?;
+            self.derive_deleted_path(&mut pass, pending).await?;
         }
         Ok(report)
     }
@@ -599,6 +602,12 @@ impl LocalGitSource {
         blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
     ) -> Result<(), IndexError> {
         let now = time::OffsetDateTime::now_utc();
+        let mut pass = IngestPass {
+            ctx: *ctx,
+            now,
+            report,
+            blob_analysis_cache,
+        };
 
         // Diff this commit against its first parent (or against the
         // empty tree for a root commit, where `ls-tree` of the commit
@@ -624,7 +633,7 @@ impl LocalGitSource {
         } else {
             let before = changed.len();
             let changed: Vec<String> = changed.into_iter().filter(|p| scope.admits(p)).collect();
-            report.files_excluded += before.saturating_sub(changed.len());
+            pass.report.files_excluded += before.saturating_sub(changed.len());
             let deleted: Vec<String> = deleted.into_iter().filter(|p| scope.admits(p)).collect();
             (changed, deleted)
         };
@@ -642,11 +651,12 @@ impl LocalGitSource {
             committer_time: commit_info.committer_time,
             message: commit_info.message.clone(),
         };
-        let outcome = ingest_commit(ctx.engine(), ctx.authz(), &commit_payload, now).await?;
+        let outcome =
+            ingest_commit(pass.ctx.engine(), pass.ctx.authz(), &commit_payload, now).await?;
         if outcome.idempotent_replay {
-            report.commits_replayed += 1;
+            pass.report.commits_replayed += 1;
         } else {
-            report.commits_emitted += 1;
+            pass.report.commits_emitted += 1;
         }
         let commit_memory_id = outcome.memory_id;
 
@@ -657,15 +667,7 @@ impl LocalGitSource {
         let mut pending_deleted = Vec::with_capacity(deleted.len());
         for path in &changed {
             match self
-                .ingest_changed_path(
-                    ctx,
-                    commit_info,
-                    now,
-                    path,
-                    Some(commit_memory_id),
-                    report,
-                    blob_analysis_cache,
-                )
+                .ingest_changed_path(&mut pass, commit_info, path, Some(commit_memory_id))
                 .await?
             {
                 ChangedPathIngest::Present(pending) => pending_present.push(pending),
@@ -677,22 +679,20 @@ impl LocalGitSource {
         for path in &deleted {
             pending_deleted.push(
                 self.tombstone_deleted_path(
-                    ctx,
+                    &mut pass,
                     &commit_info.sha,
-                    now,
                     path,
                     Some(commit_memory_id),
-                    report,
                 )
                 .await?,
             );
         }
 
         for pending in pending_present {
-            self.derive_present_blob(ctx, pending, report).await?;
+            self.derive_present_blob(&mut pass, pending).await?;
         }
         for pending in pending_deleted {
-            self.derive_deleted_path(ctx, pending, report).await?;
+            self.derive_deleted_path(&mut pass, pending).await?;
         }
         Ok(())
     }
@@ -701,32 +701,20 @@ impl LocalGitSource {
     /// cache the deterministic blob analysis to derive from afterwards.
     async fn ingest_changed_path(
         &self,
-        ctx: &CodeIngestContext<'_>,
+        pass: &mut IngestPass<'_>,
         commit_info: &CommitInfo,
-        now: time::OffsetDateTime,
         path: &str,
         source_commit: Option<MemoryId>,
-        report: &mut IndexReport,
-        blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
     ) -> Result<ChangedPathIngest, IndexError> {
         let Some(blob) = git::cat_blob(&self.repo_path, &commit_info.sha, path)? else {
             return self
-                .tombstone_deleted_path(ctx, &commit_info.sha, now, path, source_commit, report)
+                .tombstone_deleted_path(pass, &commit_info.sha, path, source_commit)
                 .await
                 .map(ChangedPathIngest::Tombstone);
         };
-        self.ingest_present_blob(
-            ctx,
-            &commit_info.sha,
-            now,
-            path,
-            &blob,
-            source_commit,
-            report,
-            blob_analysis_cache,
-        )
-        .await
-        .map(ChangedPathIngest::Present)
+        self.ingest_present_blob(pass, &commit_info.sha, path, &blob, source_commit)
+            .await
+            .map(ChangedPathIngest::Present)
     }
 
     /// Read a HEAD listing's blobs in byte-bounded batches and ingest each.
@@ -735,14 +723,11 @@ impl LocalGitSource {
     /// [`BLOB_BATCH_BYTES`] of file contents resident at a time.
     async fn ingest_head_entries(
         &self,
-        ctx: &CodeIngestContext<'_>,
+        pass: &mut IngestPass<'_>,
         head_sha: &str,
-        now: time::OffsetDateTime,
         entries: &[git::TreeEntry],
         prior_heads: &HashMap<String, FileRevisionHead>,
         pending_present: &mut Vec<PendingPresentBlob>,
-        report: &mut IndexReport,
-        blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
     ) -> Result<(), IndexError> {
         let mut cursor = 0usize;
         while cursor < entries.len() {
@@ -768,17 +753,8 @@ impl LocalGitSource {
                     continue;
                 }
                 pending_present.push(
-                    self.ingest_present_blob(
-                        ctx,
-                        head_sha,
-                        now,
-                        &entry.path,
-                        &blob,
-                        None,
-                        report,
-                        blob_analysis_cache,
-                    )
-                    .await?,
+                    self.ingest_present_blob(pass, head_sha, &entry.path, &blob, None)
+                        .await?,
                 );
             }
             cursor = end;
@@ -790,14 +766,11 @@ impl LocalGitSource {
     /// Shared by commit replay and HEAD snapshot ingestion.
     async fn ingest_present_blob(
         &self,
-        ctx: &CodeIngestContext<'_>,
+        pass: &mut IngestPass<'_>,
         indexed_commit_sha: &str,
-        now: time::OffsetDateTime,
         path: &str,
         blob: &[u8],
         source_commit: Option<MemoryId>,
-        report: &mut IndexReport,
-        blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
     ) -> Result<PendingPresentBlob, IndexError> {
         let content_sha256: [u8; 32] = blake3::hash(blob).into();
 
@@ -814,14 +787,15 @@ impl LocalGitSource {
             state: FileState::Present,
         };
         let file_revision =
-            ingest_file_revision(ctx.engine(), ctx.authz(), &rev_payload, now).await?;
+            ingest_file_revision(pass.ctx.engine(), pass.ctx.authz(), &rev_payload, pass.now)
+                .await?;
         if !file_revision.idempotent_replay {
-            report.files_present_emitted += 1;
+            pass.report.files_present_emitted += 1;
         }
 
         let analysis_key = (content_sha256, language.clone());
-        let analysis = if let Some(cached) = blob_analysis_cache.get(&analysis_key) {
-            report.chunks_reused += cached.chunks.len();
+        let analysis = if let Some(cached) = pass.blob_analysis_cache.get(&analysis_key) {
+            pass.report.chunks_reused += cached.chunks.len();
             cached.clone()
         } else {
             let lang_static = crate::chunker::detect_language(path);
@@ -832,7 +806,8 @@ impl LocalGitSource {
                 definitions,
                 calls,
             };
-            blob_analysis_cache.insert(analysis_key, analysis.clone());
+            pass.blob_analysis_cache
+                .insert(analysis_key, analysis.clone());
             analysis
         };
 
@@ -850,9 +825,8 @@ impl LocalGitSource {
     /// this pass observed has been materialized.
     async fn derive_present_blob(
         &self,
-        ctx: &CodeIngestContext<'_>,
+        pass: &mut IngestPass<'_>,
         pending: PendingPresentBlob,
-        report: &mut IndexReport,
     ) -> Result<(), IndexError> {
         // A receipt-replayed Fact was observed by an earlier pass, and its
         // code slices were derived then. Re-deriving here would re-emit the
@@ -865,13 +839,14 @@ impl LocalGitSource {
         // because the current head is by then the *branch's* revision, so
         // `main`'s revision is re-offered and replays.
         if pending.replayed {
-            report.chunks_reused += pending.analysis.chunks.len();
+            pass.report.chunks_reused += pending.analysis.chunks.len();
             return Ok(());
         }
-        let heads = ctx
+        let heads = pass
+            .ctx
             .chunk_series_heads(self.owner, self.repo_id, &pending.path)
             .await?;
-        self.tombstone_vanished_slices(ctx, &pending, &heads, report)
+        self.tombstone_vanished_slices(pass, &pending, &heads)
             .await?;
         let mut file_chunks = plan_file_chunks(
             self.repo_id,
@@ -881,8 +856,7 @@ impl LocalGitSource {
             &heads,
         )?;
         resolve_intra_file_calls(&pending.analysis.calls, &mut file_chunks);
-        self.append_file_chunks(ctx, &pending, &file_chunks, report)
-            .await
+        self.append_file_chunks(pass, &pending, &file_chunks).await
     }
 
     /// Tombstone the prior slice indexes that don't appear in the new slice
@@ -890,10 +864,9 @@ impl LocalGitSource {
     /// tied to this file-revision Fact, not external observations.
     async fn tombstone_vanished_slices(
         &self,
-        ctx: &CodeIngestContext<'_>,
+        pass: &mut IngestPass<'_>,
         pending: &PendingPresentBlob,
         heads: &[proxima_storage_pg::query::ChunkSeriesHead],
-        report: &mut IndexReport,
     ) -> Result<(), IndexError> {
         let new_indexes: HashSet<u32> = (0..pending.analysis.chunks.len())
             .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
@@ -922,8 +895,8 @@ impl LocalGitSource {
         }
         if !tomb_payloads.is_empty() {
             append_code_slices_with_handles(
-                ctx.engine,
-                ctx.authz,
+                pass.ctx.engine,
+                pass.ctx.authz,
                 self.owner,
                 &tomb_payloads,
                 pending.file_revision,
@@ -931,7 +904,7 @@ impl LocalGitSource {
                 &tomb_handles,
             )
             .await?;
-            report.chunks_tombstoned += tomb_payloads.len();
+            pass.report.chunks_tombstoned += tomb_payloads.len();
         }
         Ok(())
     }
@@ -941,10 +914,9 @@ impl LocalGitSource {
     /// every member exists.
     async fn append_file_chunks(
         &self,
-        ctx: &CodeIngestContext<'_>,
+        pass: &mut IngestPass<'_>,
         pending: &PendingPresentBlob,
         file_chunks: &[ChunkInfo],
-        report: &mut IndexReport,
     ) -> Result<(), IndexError> {
         let payloads = file_chunks
             .iter()
@@ -955,8 +927,8 @@ impl LocalGitSource {
             .map(|chunk| chunk.memory_id.into_inner())
             .collect();
         let outcomes = append_code_slices_with_handles(
-            ctx.engine,
-            ctx.authz,
+            pass.ctx.engine,
+            pass.ctx.authz,
             self.owner,
             &payloads,
             pending.file_revision,
@@ -966,9 +938,9 @@ impl LocalGitSource {
         .await?;
         for (chunk, outcome) in file_chunks.iter().zip(&outcomes) {
             if !outcome.idempotent_replay {
-                report.chunks_emitted += 1;
+                pass.report.chunks_emitted += 1;
             }
-            report.call_references_emitted += chunk.payload.calls.len();
+            pass.report.call_references_emitted += chunk.payload.calls.len();
         }
         Ok(())
     }
@@ -977,12 +949,10 @@ impl LocalGitSource {
     /// for the deleted path. Code-slice tombstones derive afterwards.
     async fn tombstone_deleted_path(
         &self,
-        ctx: &CodeIngestContext<'_>,
+        pass: &mut IngestPass<'_>,
         commit_sha: &str,
-        now: time::OffsetDateTime,
         path: &str,
         source_commit: Option<MemoryId>,
-        report: &mut IndexReport,
     ) -> Result<PendingDeletedPath, IndexError> {
         let rev_payload = FileRevisionV1 {
             repo_id: self.repo_id,
@@ -994,8 +964,9 @@ impl LocalGitSource {
             state: FileState::Tombstone,
         };
         let file_revision =
-            ingest_file_revision(ctx.engine(), ctx.authz(), &rev_payload, now).await?;
-        report.files_tombstoned += 1;
+            ingest_file_revision(pass.ctx.engine(), pass.ctx.authz(), &rev_payload, pass.now)
+                .await?;
+        pass.report.files_tombstoned += 1;
 
         Ok(PendingDeletedPath {
             path: path.to_string(),
@@ -1007,11 +978,11 @@ impl LocalGitSource {
     /// Derive code-slice tombstones for a deleted path.
     async fn derive_deleted_path(
         &self,
-        ctx: &CodeIngestContext<'_>,
+        pass: &mut IngestPass<'_>,
         pending: PendingDeletedPath,
-        report: &mut IndexReport,
     ) -> Result<(), IndexError> {
-        let heads = ctx
+        let heads = pass
+            .ctx
             .chunk_series_heads(self.owner, self.repo_id, &pending.path)
             .await?;
         let mut tomb_payloads = Vec::new();
@@ -1031,8 +1002,8 @@ impl LocalGitSource {
         }
         if !tomb_payloads.is_empty() {
             append_code_slices_with_handles(
-                ctx.engine,
-                ctx.authz,
+                pass.ctx.engine,
+                pass.ctx.authz,
                 self.owner,
                 &tomb_payloads,
                 pending.file_revision,
@@ -1040,7 +1011,7 @@ impl LocalGitSource {
                 &tomb_handles,
             )
             .await?;
-            report.chunks_tombstoned += tomb_payloads.len();
+            pass.report.chunks_tombstoned += tomb_payloads.len();
         }
         Ok(())
     }
@@ -1180,6 +1151,27 @@ struct BlobAnalysis {
 enum ChangedPathIngest {
     Present(PendingPresentBlob),
     Tombstone(PendingDeletedPath),
+}
+
+/// Everything one ingestion pass carries from end to end: the authorized
+/// context, the instant every Fact in the pass is observed at, the report
+/// the pass accumulates, and the per-pass blob analysis cache.
+///
+/// A pass is one commit (`ingest_one_commit`) or one snapshot apply
+/// (`snapshot_apply`), and those two are the only places one is built.
+/// Rule: any function needing two or more of `{ctx, now, report,
+/// blob_analysis_cache}` takes the pass instead.
+///
+/// Fields are plain and public to the module on purpose — no accessors.
+/// The cache-hit branch in [`LocalGitSource::ingest_present_blob`] holds a
+/// borrow of `blob_analysis_cache` while it bumps `report`, which only
+/// works as two disjoint field borrows.
+#[derive(Debug)]
+struct IngestPass<'a> {
+    ctx: CodeIngestContext<'a>,
+    now: time::OffsetDateTime,
+    report: &'a mut IndexReport,
+    blob_analysis_cache: &'a mut HashMap<BlobAnalysisKey, BlobAnalysis>,
 }
 
 #[derive(Debug, Clone)]
