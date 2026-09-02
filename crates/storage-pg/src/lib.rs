@@ -58,6 +58,7 @@ pub mod query {
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
 mod tuning;
+mod tx;
 pub mod verbs;
 /// Stable, discoverable re-export of the exported `OwnerAccessPort` adapter
 /// (see [`access::PgOwnerAccessResolver`]) for embedding hosts.

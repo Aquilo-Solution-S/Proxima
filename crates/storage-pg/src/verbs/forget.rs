@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::sidecars::PgSidecarRegistryFrozen;
+use crate::tx::{TxOutcome, in_transaction};
 
 /// Version 6 adds the exact `memory.sidecar_tables` stamp to each object.
 /// Version 7 adds contract-declared cascaded detail declarations and their
@@ -2615,28 +2616,53 @@ pub(crate) async fn hydrate_memories_oneshot(
 ) -> Result<MemoryHydrationBatchOutcome, StorageError> {
     validate_hydration_request(memory_ids)?;
 
-    let mut tx = pool.begin().await.map_err(map_err)?;
+    in_transaction(pool, |mut tx| async move {
+        let outcome = hydrate_planned_set(
+            &mut tx,
+            sidecars,
+            surfaces,
+            cold,
+            owner_id,
+            memory_ids,
+            non_embeddable_schemas,
+        )
+        .await;
+        (tx, outcome)
+    })
+    .await
+}
+
+/// The hydration transaction body: plan every id, abort the whole set on the
+/// first refusal, then lock, re-read and write.
+///
+/// Both `Abort` arms carry a report that claims `committed: false`, and
+/// [`in_transaction`] is what proves that claim by awaiting their rollback.
+/// The two lock calls and the statement order between them are unchanged
+/// from when this ran inline.
+async fn hydrate_planned_set(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
+    cold: &dyn ColdObjectStore,
+    owner_id: Uuid,
+    memory_ids: &[proxima_core::MemoryId],
+    non_embeddable_schemas: &[String],
+) -> Result<TxOutcome<MemoryHydrationBatchOutcome>, StorageError> {
     // One catalog read per relation for the whole transaction, planner and
     // write half alike, instead of one per item per relation.
     let mut cache = ColdCatalogCache::default();
-    let plans = match plan_hydration_set(
-        &mut tx, &mut cache, sidecars, surfaces, cold, owner_id, memory_ids,
+    let plans = plan_hydration_set(
+        tx, &mut cache, sidecars, surfaces, cold, owner_id, memory_ids,
     )
-    .await
-    {
-        Ok(plans) => plans,
-        Err(error) => {
-            let _ = tx.rollback().await;
-            return Err(error);
-        }
-    };
+    .await?;
 
     if plans
         .iter()
         .any(|plan| matches!(plan, HydrationPlan::Rejected(_)))
     {
-        tx.rollback().await.map_err(map_err)?;
-        return Ok(uncommitted_outcome(memory_ids, &plans, None));
+        return Ok(TxOutcome::Abort(uncommitted_outcome(
+            memory_ids, &plans, None,
+        )));
     }
 
     let prepared = plans
@@ -2646,17 +2672,16 @@ pub(crate) async fn hydrate_memories_oneshot(
             _ => None,
         })
         .collect::<Vec<_>>();
-    lock_prepared_footprint(&mut tx, &prepared).await?;
+    lock_prepared_footprint(tx, &prepared).await?;
 
-    let Some(locked) = relock_prepared_rows(&mut tx, &prepared, owner_id).await? else {
-        let _ = tx.rollback().await;
+    let Some(locked) = relock_prepared_rows(tx, &prepared, owner_id).await? else {
         return Err(StorageError::Retryable(
             "cooled hydration footprint changed while locking".into(),
         ));
     };
 
     let restored = match apply_prepared_hydrations(
-        &mut tx,
+        tx,
         &mut cache,
         sidecars,
         surfaces,
@@ -2664,28 +2689,22 @@ pub(crate) async fn hydrate_memories_oneshot(
         &locked,
         non_embeddable_schemas,
     )
-    .await
+    .await?
     {
-        Ok(Ok(restored)) => restored,
-        Ok(Err((failed, rejection))) => {
-            tx.rollback().await.map_err(map_err)?;
-            return Ok(uncommitted_outcome(
+        Ok(restored) => restored,
+        Err((failed, rejection)) => {
+            return Ok(TxOutcome::Abort(uncommitted_outcome(
                 memory_ids,
                 &plans,
                 Some((failed, rejection)),
-            ));
-        }
-        Err(error) => {
-            let _ = tx.rollback().await;
-            return Err(error);
+            )));
         }
     };
-    tx.commit().await.map_err(map_err)?;
 
-    Ok(MemoryHydrationBatchOutcome {
+    Ok(TxOutcome::Commit(MemoryHydrationBatchOutcome {
         outcomes: hydrated_outcomes(memory_ids, &plans, restored),
         committed: true,
-    })
+    }))
 }
 
 /// Refuse a request the command cannot serve at all: more ids than the
