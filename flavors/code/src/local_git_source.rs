@@ -699,7 +699,6 @@ impl LocalGitSource {
 
     /// Emit one file's `file-revision-v1` Fact and
     /// cache the deterministic blob analysis to derive from afterwards.
-    #[allow(clippy::too_many_arguments)]
     async fn ingest_changed_path(
         &self,
         ctx: &CodeIngestContext<'_>,
@@ -734,7 +733,6 @@ impl LocalGitSource {
     ///
     /// One `git cat-file --batch` per batch, with at most
     /// [`BLOB_BATCH_BYTES`] of file contents resident at a time.
-    #[allow(clippy::too_many_arguments)]
     async fn ingest_head_entries(
         &self,
         ctx: &CodeIngestContext<'_>,
@@ -790,7 +788,6 @@ impl LocalGitSource {
 
     /// Emit one Present file revision Fact from an already-loaded blob.
     /// Shared by commit replay and HEAD snapshot ingestion.
-    #[allow(clippy::too_many_arguments)]
     async fn ingest_present_blob(
         &self,
         ctx: &CodeIngestContext<'_>,

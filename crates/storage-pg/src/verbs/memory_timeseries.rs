@@ -84,7 +84,6 @@ pub(crate) async fn ingest_fact_timeseries(
 /// Memory rows. Replay lookup runs first; a new admission arbitrates owner
 /// identity, reserves its real identity, and snapshots its lifecycle footprint
 /// before locking that footprint.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare_memory_admission(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
@@ -112,7 +111,6 @@ pub(crate) async fn prepare_memory_admission(
 
 /// Prepare a derived admission with its explicit supersedes target included
 /// in the lifecycle set without persisting that target as a pin.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare_memory_admission_with_extra_targets(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,

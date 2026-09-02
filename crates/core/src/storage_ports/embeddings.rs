@@ -104,8 +104,6 @@ pub trait EmbeddingWritePort: Send + Sync {
         )
         .await
     }
-
-    #[allow(clippy::too_many_arguments)] // entity-kind-generic variant of insert_embedding
     async fn insert_memory_embedding(
         &self,
         owner: &Owner,
@@ -143,8 +141,6 @@ pub trait EmbeddingWritePort: Send + Sync {
             .await?;
         Ok(())
     }
-
-    #[allow(clippy::too_many_arguments)] // entity-kind-generic variant of upsert_fact_embedding
     async fn upsert_memory_embedding(
         &self,
         owner: &Owner,

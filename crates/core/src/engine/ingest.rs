@@ -673,7 +673,6 @@ impl Engine {
     /// validation fails or `memory_kind` is not a kind that cites
     /// directly; or `Internal` when a registered cited-object schema has
     /// no sidecar inserter.
-    #[allow(clippy::too_many_arguments)] // one parameter per authorized fact
     pub async fn authorize_citation_attachment(
         &self,
         authz: &AuthzContext,

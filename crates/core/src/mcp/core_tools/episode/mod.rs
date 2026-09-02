@@ -370,8 +370,6 @@ async fn write_remembered(
     }
     Ok(())
 }
-
-#[allow(clippy::too_many_arguments)]
 async fn write_derive(
     ctx: &McpToolCtx,
     uow: &mut UnitOfWork<'_>,
@@ -452,8 +450,6 @@ async fn write_derive(
     });
     Ok(handle)
 }
-
-#[allow(clippy::too_many_arguments)]
 async fn write_stances(
     ctx: &McpToolCtx,
     uow: &mut UnitOfWork<'_>,
@@ -555,8 +551,6 @@ async fn write_stances(
     }
     Ok(())
 }
-
-#[allow(clippy::too_many_arguments)]
 async fn write_goals(
     ctx: &McpToolCtx,
     uow: &mut UnitOfWork<'_>,

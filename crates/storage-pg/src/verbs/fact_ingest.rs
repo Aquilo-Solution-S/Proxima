@@ -169,7 +169,6 @@ pub(crate) async fn ingest_fact_command_in_tx(
 /// Fact sidecar insertion, cited-object sidecar insertion, or
 /// citation-mapping sidecar insertion. The caller owns transaction
 /// rollback/commit.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ingest_fact_with_citation_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -226,7 +225,6 @@ where
 /// otherwise storage errors from core row materialization, Fact sidecar
 /// insertion, or citation-mapping sidecar insertion. The caller owns
 /// transaction rollback/commit.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ingest_fact_with_citation_ref_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -421,7 +419,6 @@ async fn verify_cited_object_ref_in_tx(
 ///
 /// Returns storage errors from Fact materialization or sidecar
 /// insertion. The caller owns transaction rollback/commit.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ingest_fact_with_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedFactWrite,

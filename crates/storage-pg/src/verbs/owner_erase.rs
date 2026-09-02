@@ -2,7 +2,6 @@
 // source scope) — every argument is a distinct authority the erase has to be
 // handed, and bundling them into a struct would only move the arity to its
 // constructor.
-#![allow(clippy::too_many_arguments)]
 
 use proxima_core::flavor::{EraseLeg, KeyShape};
 use proxima_core::owner_inverse::{

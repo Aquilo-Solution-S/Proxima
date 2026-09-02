@@ -32,7 +32,6 @@ const MAX_AUTHZ_CANDIDATES: usize = 2_000;
 ///
 /// Returns whatever [`Engine::query`] returns for an unauthorized owner or
 /// storage failure.
-#[allow(clippy::too_many_arguments)]
 pub async fn authorized_memory_ids(
     engine: &Engine,
     authz: &AuthzContext,
@@ -167,8 +166,6 @@ pub async fn read_owner_ids(
         .map(proxima_core::OwnerRef::stored_owner_id)
         .collect())
 }
-
-#[allow(clippy::too_many_arguments)]
 async fn authorized_payloads(
     engine: &Engine,
     authz: &AuthzContext,

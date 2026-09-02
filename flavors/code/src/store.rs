@@ -93,8 +93,6 @@ impl CodeFlavorStore {
     pub(crate) fn surfaces(&self) -> &proxima_core::owner_inverse::OwnerSurfaces {
         &self.surfaces
     }
-
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn authorized_memory_ids(
         &self,
         engine: &proxima_core::Engine,

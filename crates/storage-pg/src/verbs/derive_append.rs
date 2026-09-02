@@ -283,7 +283,6 @@ async fn resolve_derived_content_id(
 /// # Errors
 ///
 /// Returns storage constraint/internal errors from Postgres.
-#[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) async fn append_derived_in_tx(
     tx: &mut Transaction<'_, Postgres>,

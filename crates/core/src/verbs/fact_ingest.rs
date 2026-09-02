@@ -652,7 +652,6 @@ pub struct AuthorizedFactWithCitationRef {
 }
 
 impl AuthorizedFactWithCitationRef {
-    #[allow(clippy::too_many_arguments)] // one parameter per authorized fact
     pub(crate) fn new(
         permit: MemoryPermit,
         draft: FactWriteCommand,
