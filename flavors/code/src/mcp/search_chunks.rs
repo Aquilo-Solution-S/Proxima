@@ -307,19 +307,24 @@ impl Tool for CodeSearchChunksTool {
             proxima_core::reject_zero_limit(args.limit)?;
             let snippet_max_chars = effective_snippet_max_chars(args.snippet_max_chars);
             let limit = args.limit.unwrap_or(12).min(50);
-            let exact_pattern = like_pattern(query);
+            // The three input checks above stay ahead of this: resolving a
+            // repo handle is a DB round trip that can answer `NotFound`, and
+            // a request that is malformed *and* names a bad handle must
+            // still be told what is malformed about it.
             let repo_id = match args.repo_handle.as_deref() {
                 Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),
                 None => None,
             };
-            let fingerprint = chunk_search_fingerprint(
-                &ctx.owner(),
+            let resolved = ResolvedChunkQuery {
+                owner: ctx.owner(),
                 query,
-                args.mode,
+                requested_mode: args.mode,
                 repo_id,
-                args.language.as_deref(),
-                args.chunk_type.as_deref(),
-            );
+                language: args.language.as_deref(),
+                chunk_type: args.chunk_type.as_deref(),
+                exact_pattern: like_pattern(query),
+            };
+            let fingerprint = resolved.fingerprint();
             let after: Option<ChunkCursorPos> = args
                 .cursor
                 .as_deref()
@@ -333,18 +338,14 @@ impl Tool for CodeSearchChunksTool {
             // model is an error, not an empty result set, and a `hybrid` one
             // becomes a `lexical` one that reports having done so.
             let (effective_mode, query_embedding) =
-                resolve_query_embedding(&engine, args.mode, query).await?;
+                resolve_query_embedding(&engine, resolved.requested_mode, resolved.query).await?;
 
             let read_owner_ids = super::read_owner_ids(&engine, &ctx).await?;
             let needed = seen.saturating_add(limit);
             let candidate_limit = i64::from(needed.saturating_mul(20).max(needed).min(1_000));
             let scan = ChunkCandidateScan {
-                query,
+                resolved: &resolved,
                 effective_mode,
-                repo_id,
-                language: args.language.as_deref(),
-                chunk_type: args.chunk_type.as_deref(),
-                exact_pattern: &exact_pattern,
                 candidate_limit,
                 read_owner_ids: &read_owner_ids,
                 query_embedding: query_embedding.as_ref(),
@@ -364,7 +365,7 @@ impl Tool for CodeSearchChunksTool {
                 seen,
             );
             let (matches, chunk_ids) =
-                render_chunk_matches(&ctx, query, snippet_max_chars, eligible)?;
+                render_chunk_matches(&ctx, resolved.query, snippet_max_chars, eligible)?;
 
             // Phase 3: the call-neighbour pins, only when the caller asks
             // for them and the page phase 2 admitted is non-empty. Keyed on
@@ -376,8 +377,12 @@ impl Tool for CodeSearchChunksTool {
             };
 
             Ok(CodeSearchChunksOutput {
-                degraded_to_lexical: degraded_to_lexical(args.mode, effective_mode, &matches),
-                mode: mode_label(args.mode).to_string(),
+                degraded_to_lexical: degraded_to_lexical(
+                    resolved.requested_mode,
+                    effective_mode,
+                    &matches,
+                ),
+                mode: mode_label(resolved.requested_mode).to_string(),
                 matches,
                 calls_edges,
                 has_more,
@@ -387,15 +392,82 @@ impl Tool for CodeSearchChunksTool {
     }
 }
 
-/// One chunk search's resolved scope, shared by both candidate arms so a
-/// filter cannot reach one arm and miss the other.
-struct ChunkCandidateScan<'a> {
+/// Everything one chunk search's cursor is bound to, resolved once from the
+/// arguments and used by every phase after it.
+///
+/// One value, one fingerprint: a filter cannot be added to the scan and
+/// forgotten in the cursor canon, because both read the same fields.
+///
+/// `effective_mode` is deliberately *not* a field here. What the cursor
+/// binds is the question the caller asked; the mode that ends up running is
+/// a deployment fact resolved after the cursor is decoded. Fingerprinting
+/// over it would fingerprint over embedding availability, so a cursor minted
+/// while the embedding client was healthy would come back
+/// `cursor does not match this query` after a provider blip — turning a
+/// transient outage into a hard paging failure. The split across two types
+/// is the statement of that distinction.
+struct ResolvedChunkQuery<'a> {
+    owner: proxima_core::Owner,
     query: &'a str,
-    effective_mode: ChunkSearchMode,
+    /// The mode the caller asked for, not the one that will run.
+    requested_mode: ChunkSearchMode,
     repo_id: Option<Uuid>,
     language: Option<&'a str>,
     chunk_type: Option<&'a str>,
-    exact_pattern: &'a str,
+    exact_pattern: String,
+}
+
+impl ResolvedChunkQuery<'_> {
+    /// The cursor fingerprint: blake3 over a positional JSON array of the
+    /// six resolved values.
+    ///
+    /// The spelling is load-bearing, not incidental. `CHUNK_CURSOR.version`
+    /// is `1` and outstanding cursors were minted against exactly these
+    /// bytes, so the element order, the `mode_label` rendering, and the
+    /// `json!([...]).to_string()` canon all have to stay as they are. A
+    /// switch to a named-object canon is a cursor version bump, not a
+    /// refactor.
+    fn fingerprint(&self) -> String {
+        let canon = serde_json::json!([
+            self.owner.external_key(),
+            self.query,
+            mode_label(self.requested_mode),
+            self.repo_id,
+            self.language,
+            self.chunk_type,
+        ]);
+        wire_cursor::fingerprint(&canon.to_string())
+    }
+
+    /// The lexical arm's sidecar scan over this query, with the run-time
+    /// budget the caller supplies.
+    fn sidecar_scan<'s>(
+        &'s self,
+        distinctive: &'s str,
+        candidate_limit: i64,
+        read_owner_ids: &'s [Uuid],
+    ) -> ChunkSidecarScan<'s> {
+        ChunkSidecarScan {
+            repo_id: self.repo_id,
+            language: self.language,
+            chunk_type: self.chunk_type,
+            exact_pattern: &self.exact_pattern,
+            candidate_limit,
+            distinctive,
+            read_owner_ids,
+        }
+    }
+}
+
+/// One chunk search's run-time budget, shared by both candidate arms so a
+/// filter cannot reach one arm and miss the other.
+///
+/// The filters themselves live on [`ResolvedChunkQuery`]; what is added here
+/// is only what the deployment, not the caller, decided.
+struct ChunkCandidateScan<'a> {
+    resolved: &'a ResolvedChunkQuery<'a>,
+    /// The mode that will actually run, after `resolve_query_embedding`.
+    effective_mode: ChunkSearchMode,
     candidate_limit: i64,
     read_owner_ids: &'a [Uuid],
     /// The query embedding and the model that produced it, `None` when the
@@ -450,23 +522,18 @@ async fn scan_lexical_candidates(
     if scan.effective_mode == ChunkSearchMode::Semantic {
         return Ok(Vec::new());
     }
-    let sidecar = ChunkSidecarScan {
-        repo_id: scan.repo_id,
-        language: scan.language,
-        chunk_type: scan.chunk_type,
-        exact_pattern: scan.exact_pattern,
-        candidate_limit: scan.candidate_limit,
-        distinctive: &distinctive_terms(scan.query),
-        read_owner_ids: scan.read_owner_ids,
-    };
-    let gin = scan_chunk_sidecar(pool.pool(), scan.query, &sidecar).await?;
+    let distinctive = distinctive_terms(scan.resolved.query);
+    let sidecar =
+        scan.resolved
+            .sidecar_scan(&distinctive, scan.candidate_limit, scan.read_owner_ids);
+    let gin = scan_chunk_sidecar(pool.pool(), scan.resolved.query, &sidecar).await?;
     // The substring arm is DECLARED, not blanket. A schema whose contract
     // says `SubstringArm::Off` contributes no statement and no rows; the
     // price for stopword-only and partial-word queries is then paid per
     // declaration, visibly, instead of being a mechanism nobody can turn
     // off.
     if gin.is_empty() && chunk_substring_arm_is_declared() {
-        scan_chunk_sidecar_like(pool.pool(), scan.query, &sidecar).await
+        scan_chunk_sidecar_like(pool.pool(), scan.resolved.query, &sidecar).await
     } else {
         Ok(gin)
     }
@@ -490,9 +557,9 @@ async fn scan_semantic_candidates(
         model_id,
         embedding,
         CodeChunkVectorFilters {
-            repo_id: scan.repo_id,
-            language: scan.language,
-            chunk_type: scan.chunk_type,
+            repo_id: scan.resolved.repo_id,
+            language: scan.resolved.language,
+            chunk_type: scan.resolved.chunk_type,
         },
         usize::try_from(scan.candidate_limit).unwrap_or(0),
     )
@@ -722,25 +789,6 @@ fn fuse_candidates(
             .then_with(|| b.memory_id.cmp(&a.memory_id))
     });
     fused
-}
-
-fn chunk_search_fingerprint(
-    owner: &proxima_core::Owner,
-    query: &str,
-    mode: ChunkSearchMode,
-    repo_id: Option<Uuid>,
-    language: Option<&str>,
-    chunk_type: Option<&str>,
-) -> String {
-    let canon = serde_json::json!([
-        owner.external_key(),
-        query,
-        mode_label(mode),
-        repo_id,
-        language,
-        chunk_type,
-    ]);
-    wire_cursor::fingerprint(&canon.to_string())
 }
 
 /// True when `scores` sorts strictly after the last emitted row
@@ -1163,8 +1211,8 @@ struct CallSiteRow {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChunkCandidateRow, ChunkSearchMode, MAX_DISTINCTIVE_TERMS, MatchScores, distinctive_terms,
-        fuse_candidates, reciprocal_rank,
+        ChunkCandidateRow, ChunkSearchMode, MAX_DISTINCTIVE_TERMS, MatchScores, ResolvedChunkQuery,
+        distinctive_terms, fuse_candidates, reciprocal_rank,
     };
     use proxima_storage_pg::query::CodeChunkVectorCandidate;
 
@@ -1365,5 +1413,121 @@ mod tests {
             distinctive_terms(&query).split_whitespace().count(),
             MAX_DISTINCTIVE_TERMS
         );
+    }
+
+    fn owner(byte: u8) -> proxima_core::Owner {
+        proxima_core::Owner::Personal(proxima_core::UserId::new(id(byte)))
+    }
+
+    fn resolved() -> ResolvedChunkQuery<'static> {
+        ResolvedChunkQuery {
+            owner: owner(1),
+            query: "parse_chunk",
+            requested_mode: ChunkSearchMode::Hybrid,
+            repo_id: Some(id(9)),
+            language: Some("rust"),
+            chunk_type: Some("function"),
+            exact_pattern: "%parse\\_chunk%".to_string(),
+        }
+    }
+
+    /// The check that makes "the cursor binds the whole resolved query" an
+    /// executable statement rather than a review convention: every field the
+    /// fingerprint canon names must be able to move it. A field dropped from
+    /// the canon fails here instead of silently letting page 2 resume a
+    /// different candidate set under a matching cursor.
+    #[test]
+    fn every_resolved_field_moves_the_fingerprint() {
+        let base = resolved();
+        let baseline = base.fingerprint();
+
+        let cases: Vec<(&str, ResolvedChunkQuery<'_>)> = vec![
+            (
+                "owner",
+                ResolvedChunkQuery {
+                    owner: owner(2),
+                    ..resolved()
+                },
+            ),
+            (
+                "query",
+                ResolvedChunkQuery {
+                    query: "parse_chunks",
+                    ..resolved()
+                },
+            ),
+            (
+                "requested_mode",
+                ResolvedChunkQuery {
+                    requested_mode: ChunkSearchMode::Lexical,
+                    ..resolved()
+                },
+            ),
+            (
+                "repo_id",
+                ResolvedChunkQuery {
+                    repo_id: Some(id(10)),
+                    ..resolved()
+                },
+            ),
+            (
+                "language",
+                ResolvedChunkQuery {
+                    language: Some("typescript"),
+                    ..resolved()
+                },
+            ),
+            (
+                "chunk_type",
+                ResolvedChunkQuery {
+                    chunk_type: Some("class"),
+                    ..resolved()
+                },
+            ),
+        ];
+
+        for (field, flipped) in cases {
+            assert_ne!(
+                baseline,
+                flipped.fingerprint(),
+                "changing {field} left the cursor fingerprint unchanged"
+            );
+        }
+    }
+
+    /// `language` and `chunk_type` are adjacent `Option<&str>` values in the
+    /// canon, so transposing them would compile. It must not fingerprint the
+    /// same: a cursor minted for one filter would otherwise be accepted for
+    /// the other and resume page 1's keyset over a different candidate set.
+    #[test]
+    fn transposing_language_and_chunk_type_moves_the_fingerprint() {
+        let language_only = ResolvedChunkQuery {
+            language: Some("rust"),
+            chunk_type: None,
+            ..resolved()
+        };
+        let chunk_type_only = ResolvedChunkQuery {
+            language: None,
+            chunk_type: Some("rust"),
+            ..resolved()
+        };
+        assert_ne!(
+            language_only.fingerprint(),
+            chunk_type_only.fingerprint(),
+            "language and chunk_type are interchangeable in the cursor canon"
+        );
+    }
+
+    /// The one field that must *not* reach the canon: `exact_pattern` is
+    /// derived from `query`, so it carries no independent binding, and
+    /// `effective_mode` is not on the type at all (see the type's docs).
+    #[test]
+    fn derived_exact_pattern_is_not_fingerprinted() {
+        let base = resolved();
+        let rewritten = ResolvedChunkQuery {
+            exact_pattern: "%something else%".to_string(),
+            ..resolved()
+        };
+        assert_eq!(base.fingerprint(), rewritten.fingerprint());
     }
 }
