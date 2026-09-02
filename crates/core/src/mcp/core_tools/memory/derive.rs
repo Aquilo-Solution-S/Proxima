@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::AgentDerivationV1;
 
-use super::util::{normalize_idempotency_key, normalize_tags};
+use super::util::{dedup_resolved, normalize_idempotency_key, normalize_tags, operator_label};
 
 pub(crate) const MAX_SOURCE_HANDLES: usize = 256;
 const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
@@ -220,7 +220,16 @@ impl McpTool for DeriveTool {
                 args.space.as_deref(),
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
-            let sources = resolve_source_handles(&ctx, &args.source_handles)?;
+            // The declared sources, resolved to memories in request order
+            // with repeats dropped: a handle named twice is one input, and
+            // no input at all is not a derivation.
+            let sources = dedup_resolved(
+                &args.source_handles,
+                MAX_SOURCE_HANDLES,
+                "source_handles",
+                "source_handles must be nonempty for operator derivation",
+                |handle| resolve_source_memory(&ctx, handle),
+            )?;
             let lexical_language = crate::lexical_language::resolve_lexical_language(
                 args.language.as_deref(),
                 &format!("{}\n{}", authored.title, authored.body),
@@ -314,17 +323,7 @@ pub(crate) fn authored_derivation(
     let body = validate_trimmed_len("body", fields.body, 20_000)?.to_string();
     let idempotency_key =
         normalize_idempotency_key(fields.idempotency_key.map(ToString::to_string))?;
-    // `model_id` is the reserved operator label. It may arrive as an
-    // explicit arg or via the request-context `model_id` (which the MCP
-    // server strips into `ctx.author.model_id`); fall back to the latter.
-    let raw_model_id = fields
-        .model_id
-        .map_or_else(|| ctx.author.model_id.clone(), ToString::to_string);
-    // Trimmed before it is *used*, not just before it is checked: the
-    // stored label and the idempotency key derived from it must be
-    // the same string, or `" example "` and `"example"` are one label
-    // to the validator and two to the dedup key.
-    let model_id = validate_trimmed_len("model_id", &raw_model_id, 120)?.to_string();
+    let model_id = operator_label(ctx, fields.model_id)?;
     let tags = normalize_tags(fields.tags.to_vec())?;
     Ok(AuthoredDerivation {
         title,
@@ -384,32 +383,6 @@ pub(crate) fn plan_derivation(
         sidecar,
         authored,
     })
-}
-
-/// The declared sources, resolved to memories in request order with repeats
-/// dropped: a handle named twice is one input, and no input at all is not a
-/// derivation.
-fn resolve_source_handles(
-    ctx: &McpToolCtx,
-    handles: &[String],
-) -> Result<Vec<(MemoryId, MemoryHandleClass)>, McpToolError> {
-    let mut seen_sources =
-        std::collections::HashSet::with_capacity(handles.len().min(MAX_SOURCE_HANDLES));
-    let mut sources = Vec::with_capacity(handles.len());
-    for handle in handles {
-        let (memory_id, class) = resolve_source_memory(ctx, handle)?;
-        let source_uuid = memory_id.into_inner();
-        if seen_sources.insert(source_uuid) {
-            sources.push((memory_id, class));
-        }
-    }
-
-    if sources.is_empty() {
-        return Err(McpToolError::InvalidInput(
-            "source_handles must be nonempty for operator derivation".into(),
-        ));
-    }
-    Ok(sources)
 }
 
 /// The auto-derived idempotency key, which must cover everything this write

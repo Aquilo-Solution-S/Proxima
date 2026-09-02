@@ -18,7 +18,7 @@ use super::memory::interpret::{
     self, MAX_CLAIM_CHARS, MAX_SUBJECTS, default_confidence, interpret_input_contract_id,
     interpret_operator_id, interpretation_memory_id, reject_self_subject,
 };
-use super::memory::util::{normalize_idempotency_key, normalize_tags};
+use super::memory::util::{dedup_resolved, normalize_idempotency_key, normalize_tags};
 use crate::engine::{GoalCreatePayloadWriteRequest, TypedFactIngest};
 use crate::error::ErrorCode;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
@@ -405,19 +405,13 @@ async fn write_derive(
             "source_handles must contain at most {MAX_SOURCE_HANDLES} handles"
         )));
     }
-    let mut seen = std::collections::HashSet::new();
-    let mut sources = Vec::new();
-    for handle in &item.source_handles {
-        let (memory_id, class) = resolve_memory_source(ctx, slots, handle)?;
-        if seen.insert(memory_id.into_inner()) {
-            sources.push((memory_id, class));
-        }
-    }
-    if sources.is_empty() {
-        return Err(McpToolError::InvalidInput(
-            "source_handles must be nonempty for operator derivation".into(),
-        ));
-    }
+    let sources = dedup_resolved(
+        &item.source_handles,
+        MAX_SOURCE_HANDLES,
+        "source_handles",
+        "source_handles must be nonempty for operator derivation",
+        |handle| resolve_memory_source(ctx, slots, handle),
+    )?;
     let lexical_language = crate::lexical_language::resolve_lexical_language(
         item.language.as_deref(),
         &format!("{}\n{}", authored.title, authored.body),
@@ -495,21 +489,17 @@ async fn write_stances(
                 "subjects must contain at most {MAX_SUBJECTS} handles"
             )));
         }
-        let raw_model_id = item
-            .model_id
-            .clone()
-            .unwrap_or_else(|| ctx.author.model_id.clone());
-        let model_id = validate_trimmed_len("model_id", &raw_model_id, 120)?.to_string();
-        let mut subject_memory_ids = Vec::new();
-        let mut subject_kinds = Vec::new();
-        for handle in &item.subjects {
-            let (memory_id, kind) = resolve_stance_subject(ctx, slots, handle)?;
-            if subject_memory_ids.contains(&memory_id.into_inner()) {
-                continue;
-            }
-            subject_memory_ids.push(memory_id.into_inner());
-            subject_kinds.push(kind);
-        }
+        let model_id = super::memory::util::operator_label(ctx, item.model_id.as_deref())?;
+        let (subject_memory_ids, subject_kinds): (Vec<uuid::Uuid>, Vec<_>) = dedup_resolved(
+            &item.subjects,
+            MAX_SUBJECTS,
+            "subjects",
+            "an interpretation must be about at least one memory",
+            |handle| resolve_stance_subject(ctx, slots, handle),
+        )?
+        .into_iter()
+        .map(|(memory_id, kind)| (memory_id.into_inner(), kind))
+        .unzip();
         let memory_id = MemoryId::new(interpretation_memory_id(
             &owner,
             &model_id,

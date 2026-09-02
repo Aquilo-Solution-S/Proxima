@@ -103,11 +103,7 @@ impl McpTool for InterpretTool {
                     "subjects must contain at most {MAX_SUBJECTS} handles"
                 )));
             }
-            let raw_model_id = args
-                .model_id
-                .clone()
-                .unwrap_or_else(|| ctx.author.model_id.clone());
-            let model_id = validate_trimmed_len("model_id", &raw_model_id, 120)?.to_string();
+            let model_id = super::util::operator_label(&ctx, args.model_id.as_deref())?;
 
             let space = super::super::memory_spaces::resolve_space_owner(
                 &ctx,
@@ -115,16 +111,17 @@ impl McpTool for InterpretTool {
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
 
-            let mut subject_memory_ids = Vec::with_capacity(args.subjects.len());
-            let mut subject_kinds = Vec::with_capacity(args.subjects.len());
-            for handle in &args.subjects {
-                let (memory_id, kind) = resolve_subject(&ctx, handle)?;
-                if subject_memory_ids.contains(&memory_id.into_inner()) {
-                    continue;
-                }
-                subject_memory_ids.push(memory_id.into_inner());
-                subject_kinds.push(kind);
-            }
+            let (subject_memory_ids, subject_kinds): (Vec<uuid::Uuid>, Vec<_>) =
+                super::util::dedup_resolved(
+                    &args.subjects,
+                    MAX_SUBJECTS,
+                    "subjects",
+                    "an interpretation must be about at least one memory",
+                    |handle| resolve_subject(&ctx, handle),
+                )?
+                .into_iter()
+                .map(|(memory_id, kind)| (memory_id.into_inner(), kind))
+                .unzip();
 
             let memory_id = MemoryId::new(interpretation_memory_id(
                 &space.owner,
