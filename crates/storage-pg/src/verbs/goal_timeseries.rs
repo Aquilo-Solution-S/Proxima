@@ -1,8 +1,5 @@
 //! Goal timeseries write.
-#![allow(
-    clippy::missing_errors_doc,
-    clippy::doc_markdown
-)]
+#![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
 use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
 use proxima_core::verbs::goal_write::GoalState;
@@ -433,6 +430,26 @@ pub(crate) async fn persist_prepared_goal_write(
     // re-enter the advisory set and re-check the head so persistence remains
     // safe even when a caller already performed the union lock.
     lock_and_validate_prepared_goal_write(tx, prepared).await?;
+    revalidate_prepared_goal_targets(tx, prepared).await?;
+    let wake_id = persist_goal_lifecycle_rows(tx, prepared).await?;
+    advance_goal_head(tx, prepared).await?;
+    insert_goal_revision(tx, prepared, wake_id).await?;
+    announce_goal_revision(tx, prepared).await?;
+    Ok(GoalWriteOutcome {
+        handle: prepared.handle,
+        t: prepared.t,
+        write_act_t: prepared.command.write_act_t,
+        replay: false,
+    })
+}
+
+/// Re-check, under the held lifecycle locks, that every target the prepared
+/// write names is still live and that a carried wake still matches its
+/// snapshot.
+async fn revalidate_prepared_goal_targets(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedGoalWrite,
+) -> Result<(), StorageError> {
     let reserved_lifecycle = [
         prepared.write_act_identity.map(|identity| identity.t),
         prepared.close_fact_identity.map(|identity| identity.t),
@@ -446,6 +463,15 @@ pub(crate) async fn persist_prepared_goal_write(
     {
         revalidate_wake_plan(tx, *wake_id, *trigger_t, hard_memory_t).await?;
     }
+    Ok(())
+}
+
+/// Write the lifecycle Facts and the wake row the Goal revision will point at,
+/// and report the wake id to store on it.
+async fn persist_goal_lifecycle_rows(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedGoalWrite,
+) -> Result<Option<Uuid>, StorageError> {
     // Lifecycle Facts use the exact reservations included in `targets`.
     // Persist them only after the caller has acquired the complete union, so
     // a blocked Goal preparation cannot leave a write-act or close Fact.
@@ -455,11 +481,19 @@ pub(crate) async fn persist_prepared_goal_write(
     if let Some(identity) = prepared.close_fact_identity {
         ingest_write_act_at(tx, &prepared.owner, identity).await?;
     }
-    let wake_id = match &prepared.wake {
-        GoalWakePlan::None => None,
-        GoalWakePlan::New(draft) => Some(insert_wake_config(tx, &prepared.owner, draft).await?),
-        GoalWakePlan::Existing { wake_id, .. } => Some(*wake_id),
-    };
+    match &prepared.wake {
+        GoalWakePlan::None => Ok(None),
+        GoalWakePlan::New(draft) => Ok(Some(insert_wake_config(tx, &prepared.owner, draft).await?)),
+        GoalWakePlan::Existing { wake_id, .. } => Ok(Some(*wake_id)),
+    }
+}
+
+/// Move the series head to the prepared `t`, failing with the conflict the
+/// current head implies when the compare-and-set does not apply.
+async fn advance_goal_head(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedGoalWrite,
+) -> Result<(), StorageError> {
     let head = sqlx::query(
         "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
          VALUES ($1, $2, $3, $4)
@@ -477,49 +511,54 @@ pub(crate) async fn persist_prepared_goal_write(
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)?;
-    if head.is_none() {
-        let current: Option<(String, Uuid, Uuid)> = sqlx::query_as(
-            "SELECT schema_id, owner_id, t FROM proxima_core.goal_head WHERE handle = $1",
-        )
-        .bind(prepared.handle)
-        .fetch_optional(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-        match current {
-            Some((schema_id, owner_id, _))
-                if schema_id != prepared.command.schema_id || owner_id != prepared.owner_id =>
-            {
-                return Err(StorageError::ConstraintViolation(
-                    "goal_head schema/owner mismatch".into(),
-                ));
-            }
-            Some((_, _, current_t))
-                if prepared
-                    .expected_prior_t
-                    .is_some_and(|expected_prior_t| current_t != expected_prior_t) =>
-            {
-                return Err(StorageError::Conflict(
-                    "goal successor prior is no longer current".into(),
-                ));
-            }
-            Some(_) => {
-                return Err(StorageError::Retryable(
-                    "goal series head changed while persisting Goal".into(),
-                ));
-            }
-            None if prepared.expected_prior_t.is_some() => {
-                return Err(StorageError::Conflict(
-                    "goal successor prior is no longer current".into(),
-                ));
-            }
-            None => {
-                return Err(StorageError::Retryable(
-                    "goal series head disappeared while persisting Goal".into(),
-                ));
-            }
+    if head.is_some() {
+        return Ok(());
+    }
+    let current: Option<(String, Uuid, Uuid)> = sqlx::query_as(
+        "SELECT schema_id, owner_id, t FROM proxima_core.goal_head WHERE handle = $1",
+    )
+    .bind(prepared.handle)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    Err(goal_head_conflict(prepared, current))
+}
+
+/// The error a refused head compare-and-set implies, given the head row as it
+/// stands now.
+fn goal_head_conflict(
+    prepared: &PreparedGoalWrite,
+    current: Option<(String, Uuid, Uuid)>,
+) -> StorageError {
+    match current {
+        Some((schema_id, owner_id, _))
+            if schema_id != prepared.command.schema_id || owner_id != prepared.owner_id =>
+        {
+            StorageError::ConstraintViolation("goal_head schema/owner mismatch".into())
+        }
+        Some((_, _, current_t))
+            if prepared
+                .expected_prior_t
+                .is_some_and(|expected_prior_t| current_t != expected_prior_t) =>
+        {
+            StorageError::Conflict("goal successor prior is no longer current".into())
+        }
+        Some(_) => StorageError::Retryable("goal series head changed while persisting Goal".into()),
+        None if prepared.expected_prior_t.is_some() => {
+            StorageError::Conflict("goal successor prior is no longer current".into())
+        }
+        None => {
+            StorageError::Retryable("goal series head disappeared while persisting Goal".into())
         }
     }
+}
 
+/// Append the immutable Goal revision row itself.
+async fn insert_goal_revision(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedGoalWrite,
+    wake_id: Option<Uuid>,
+) -> Result<(), StorageError> {
     sqlx::query(
         "INSERT INTO proxima_core.goal
             (handle, t, owner_id, title, state, request_id, close_fact_t,
@@ -541,7 +580,14 @@ pub(crate) async fn persist_prepared_goal_write(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
+    Ok(())
+}
 
+/// Refresh the Goal sketch and announce the append.
+async fn announce_goal_revision(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedGoalWrite,
+) -> Result<(), StorageError> {
     crate::verbs::sketch::upsert_sketch(
         tx,
         prepared.owner_id,
@@ -560,12 +606,7 @@ pub(crate) async fn persist_prepared_goal_write(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-    Ok(GoalWriteOutcome {
-        handle: prepared.handle,
-        t: prepared.t,
-        write_act_t: prepared.command.write_act_t,
-        replay: false,
-    })
+    Ok(())
 }
 
 async fn validate_goal_targets_live(
