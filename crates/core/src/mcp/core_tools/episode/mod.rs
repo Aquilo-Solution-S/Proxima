@@ -453,11 +453,6 @@ async fn write_derive(
         .iter()
         .map(|(source_id, _class)| EdgeEndpoint::memory(target_kind, *source_id))
         .collect();
-    if matches!(operator_kind, crate::MemoryOperatorKind::FtoA) {
-        let source_ids: Vec<MemoryId> = sources.iter().map(|(id, _)| *id).collect();
-        ctx.require_engine()?
-            .close_ftoa_source_batch_if_open(&ctx.authz, owner, &source_ids)?;
-    }
     let extra_refs = pin.then_some(act_id).into_iter().collect::<Vec<_>>();
     let outcome = uow
         .author_derived(AuthorDerivedRequestInput {

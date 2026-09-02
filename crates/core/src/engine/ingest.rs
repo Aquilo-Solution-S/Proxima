@@ -21,9 +21,7 @@ use crate::verbs::persist_mcp_call::{
     McpCallLogOutcome,
 };
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
-use crate::{
-    EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload, SourceBatchId,
-};
+use crate::{EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload};
 
 /// Liveness probe after a provider refuses a batch.
 ///
@@ -93,9 +91,8 @@ impl Engine {
     /// Returns `Forbidden` when the context cannot resolve exactly one writable owner or
     /// lacks [`Relation::Ingest`] on that owner space; `UnknownSchema` when the
     /// Fact schema or provided citation schemas are not registered.
-    /// Caller-fixable storage rejections (closed batch, concurrent
-    /// citation) surface as `InvalidArgument`; infrastructure faults as
-    /// `Internal`.
+    /// Caller-fixable storage rejections (concurrent citation) surface as
+    /// `InvalidArgument`; infrastructure faults as `Internal`.
     ///
     /// A schema whose recipe resolves to no embed unit is written without a
     /// vector even when the host has an embedder configured.
@@ -563,9 +560,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns caller-fixable storage rejections (closed batch, concurrent
-    /// citation) as `InvalidArgument` and infrastructure faults as
-    /// `Internal`.
+    /// Returns caller-fixable storage rejections (concurrent citation) as
+    /// `InvalidArgument` and infrastructure faults as `Internal`.
     pub async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
@@ -597,9 +593,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns caller-fixable storage rejections (closed batch, concurrent
-    /// citation) as `InvalidArgument` and infrastructure faults as
-    /// `Internal`.
+    /// Returns caller-fixable storage rejections (concurrent citation) as
+    /// `InvalidArgument` and infrastructure faults as `Internal`.
     pub async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
@@ -632,9 +627,9 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns caller-fixable storage rejections (closed batch, missing
-    /// or foreign cited object, mapping-target mismatch) as
-    /// `InvalidArgument` and infrastructure faults as `Internal`.
+    /// Returns caller-fixable storage rejections (missing or foreign
+    /// cited object, mapping-target mismatch) as `InvalidArgument` and
+    /// infrastructure faults as `Internal`.
     pub async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitationRef,
@@ -1424,20 +1419,16 @@ impl Engine {
 
         let receipt_id = input.receipt_id();
         let payload = input.payload();
-        let mut draft = FactWriteCommand::from_payload(
-            MCP_CALL_SOURCE_ID,
-            SourceBatchId::new(uuid::Uuid::now_v7()),
-            &payload,
-            input.observed_at,
-        )
-        .occurred_at(input.occurred_at)
-        // Content-addressed I/O citation: the same request/response bytes
-        // under one Owner share one cited object, whatever else differs.
-        .with_citation(CitationSpec::v1(
-            MCP_CALL_IO_SCHEMA,
-            input.io_content_hash(),
-            MCP_CALL_CITATION_SCHEMA,
-        ));
+        let mut draft =
+            FactWriteCommand::from_payload(MCP_CALL_SOURCE_ID, &payload, input.observed_at)
+                .occurred_at(input.occurred_at)
+                // Content-addressed I/O citation: the same request/response bytes
+                // under one Owner share one cited object, whatever else differs.
+                .with_citation(CitationSpec::v1(
+                    MCP_CALL_IO_SCHEMA,
+                    input.io_content_hash(),
+                    MCP_CALL_CITATION_SCHEMA,
+                ));
         // Whole-verb replay key. `from_payload` digests the payload alone,
         // which would collapse two identical calls made at different times
         // into one Fact; `McpCallLogInput::receipt_id` folds the timestamps
@@ -1568,12 +1559,7 @@ mod tests {
     }
 
     fn referenced_draft(payload: &ReferencedTestFact) -> FactWriteCommand {
-        FactWriteCommand::from_payload(
-            "test/references",
-            SourceBatchId::new(uuid::Uuid::now_v7()),
-            payload,
-            time::OffsetDateTime::now_utc(),
-        )
+        FactWriteCommand::from_payload("test/references", payload, time::OffsetDateTime::now_utc())
     }
 
     fn reference_engine(
@@ -1958,7 +1944,6 @@ mod tests {
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let draft = FactWriteCommand::from_payload(
             "test/source",
-            SourceBatchId::new(uuid::Uuid::now_v7()),
             &TestFact {
                 fact_id: "fact-1".to_string(),
             },
@@ -1981,7 +1966,6 @@ mod tests {
         let engine = Engine::new(registry.freeze_or_panic_for_tests());
         let draft = FactWriteCommand::from_payload(
             "test/source",
-            SourceBatchId::new(uuid::Uuid::now_v7()),
             &TestFact {
                 fact_id: "fact-1".to_string(),
             },
@@ -2009,7 +1993,6 @@ mod tests {
         let engine = Engine::new(registry.freeze_or_panic_for_tests());
         let mut draft = FactWriteCommand::from_payload(
             "test/source",
-            SourceBatchId::new(uuid::Uuid::now_v7()),
             &TestFact {
                 fact_id: "fact-1".to_owned(),
             },
@@ -2038,7 +2021,6 @@ mod tests {
         let engine = Engine::new(registry.freeze_or_panic_for_tests());
         let draft = FactWriteCommand::from_payload(
             "test/source",
-            SourceBatchId::new(uuid::Uuid::now_v7()),
             &TestFact {
                 fact_id: "fact-1".to_string(),
             },

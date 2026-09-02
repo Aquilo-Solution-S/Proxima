@@ -151,23 +151,6 @@ impl FactReceiptId {
     }
 }
 
-/// `UUIDv7`, declared by the source at emit time.
-/// See docs/01 §"The contract".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct SourceBatchId(uuid::Uuid);
-
-impl SourceBatchId {
-    #[must_use]
-    pub const fn new(inner: uuid::Uuid) -> Self {
-        Self(inner)
-    }
-
-    #[must_use]
-    pub const fn into_inner(self) -> uuid::Uuid {
-        self.0
-    }
-}
-
 /// Stable identifier of an Event Source. docs/07 §"ID types".
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SourceId(String);

@@ -3,7 +3,7 @@
 use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
-use proxima_core::{OwnerRef, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
+use proxima_core::{OwnerRef, SchemaId, SchemaVersion, SourceId, UserId};
 use uuid::Uuid;
 
 fn fresh_command() -> FactWriteCommand {
@@ -19,7 +19,6 @@ fn fresh_command() -> FactWriteCommand {
         lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/source"),
-            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
             observed_at: now,
             occurred_at: now,
         }),

@@ -1569,7 +1569,6 @@ impl PgStorage {
             .owner_access_read(self.clone())
             .owner_membership_admin(self.clone())
             .owner_transfer(self.clone())
-            .source_batch(self.clone())
             .source_cursor(self.clone())
             .owner_erase(self.clone())
             .registry_projection(self.clone())

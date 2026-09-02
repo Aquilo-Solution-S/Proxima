@@ -1,6 +1,6 @@
 use proxima_core::storage_ports::{
     OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort, OwnerWritePermit,
-    SourceBatchPort, SourceCursorPort,
+    SourceCursorPort,
 };
 
 use proxima_core::{
@@ -114,8 +114,6 @@ impl OwnerTransferPort for PgStorage {
         .await
     }
 }
-
-impl SourceBatchPort for PgStorage {}
 
 #[async_trait::async_trait]
 impl SourceCursorPort for PgStorage {

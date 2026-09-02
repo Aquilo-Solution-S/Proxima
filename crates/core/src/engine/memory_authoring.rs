@@ -1,7 +1,7 @@
 use super::Engine;
 use crate::MAX_MEMORY_HYDRATION_BATCH;
 use crate::access::Relation;
-use crate::authz::{AuthzContext, EngineAuthority};
+use crate::authz::EngineAuthority;
 use crate::edge::{EdgeEndpoint, validate_edge_layering, validate_not_self_loop};
 use crate::error::ProtocolError;
 use crate::storage::{
@@ -66,31 +66,6 @@ pub struct AuthorDerivedAuthorizedOutcome {
 }
 
 impl Engine {
-    /// Close the single open source batch behind a set of F→A input Facts.
-    ///
-    /// Sources that group `core_remember` writes with a `source_batch_key`
-    /// never issue an explicit close; deriving an Abstraction from the
-    /// batch is the natural completion signal, so consolidation closes it
-    /// here (idempotently) before the F→A closed-batch gate runs. No-ops
-    /// when inputs are unbatched, missing, or span batches — those shapes
-    /// are left to the F→A validation path for its precise errors.
-    ///
-    /// # Errors
-    ///
-    /// Returns authorization failures from the owner-scoped close
-    /// ([`Relation::Ingest`] is required, as for any batch close) and
-    /// `Internal` for storage failures.
-    pub fn close_ftoa_source_batch_if_open(
-        &self,
-        authz: &AuthzContext,
-        owner: crate::OwnerRef,
-        _source_memory_ids: &[MemoryId],
-    ) -> Result<(), ProtocolError> {
-        let _ = owner;
-        self.operation_authority(authz)?;
-        Ok(())
-    }
-
     /// Cool one owned memory `t`. PUT cold first, then stub+delete hot.
     ///
     /// One-shot command-port: generic [`EngineAuthority`], including
@@ -936,14 +911,6 @@ mod tests {
             _owner: &Owner,
             _memory_ids: &[MemoryId],
         ) -> Result<Vec<crate::MemoryKindRow>, StorageError> {
-            Ok(Vec::new())
-        }
-
-        async fn load_fact_source_batches(
-            &self,
-            _owner: &Owner,
-            _memory_ids: &[MemoryId],
-        ) -> Result<Vec<crate::FactSourceBatchRow>, StorageError> {
             Ok(Vec::new())
         }
 

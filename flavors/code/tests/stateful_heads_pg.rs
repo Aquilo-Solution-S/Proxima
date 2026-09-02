@@ -25,7 +25,7 @@ use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaTombstone};
 use proxima_core::{
     AbstractionPayload, FactPayload, FlavorRegistry, Owner, OwnerRef, PayloadKeyBuilder, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId, UserId,
+    SchemaVersion, SourceId, UserId,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
@@ -91,7 +91,6 @@ fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand 
         lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/source"),
-            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
             observed_at: now,
             occurred_at: now,
         }),

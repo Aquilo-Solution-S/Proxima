@@ -65,7 +65,7 @@ mod tests {
                 ErrorCode::IdempotencyConflict,
             ),
             (
-                StorageError::ConstraintViolation("closed batch".into()),
+                StorageError::ConstraintViolation("duplicate natural key".into()),
                 ErrorCode::InvalidArgument,
             ),
             (
@@ -95,12 +95,12 @@ mod tests {
     #[test]
     fn field_and_not_found_labels_reach_the_message() {
         let invalid = map_write_storage_error(
-            StorageError::ConstraintViolation("cannot ingest into closed batch".into()),
+            StorageError::ConstraintViolation("duplicate natural key".into()),
             "fact",
             "fact row not found",
         );
         assert!(invalid.message.contains("fact"));
-        assert!(invalid.message.contains("closed batch"));
+        assert!(invalid.message.contains("duplicate natural key"));
 
         let missing = map_write_storage_error(StorageError::NotFound, "fact", "fact row not found");
         assert_eq!(missing.message, "fact row not found");

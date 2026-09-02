@@ -17,8 +17,8 @@ pub struct InboundPinQuery<'a> {
 use crate::edge::{EdgeKind, PinNode};
 use crate::read_models::{MemorySchemaSpec, MemorySnapshot};
 use crate::storage::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphIdentity,
-    MemoryGraphPayloadRow, MemoryHydrationBatchOutcome, MemoryKindRow, StorageError,
+    AuthorDerivedOutcome, AuthorDerivedRequest, MemoryGraphIdentity, MemoryGraphPayloadRow,
+    MemoryHydrationBatchOutcome, MemoryKindRow, StorageError,
 };
 use crate::{GoalId, MemoryId, Owner, OwnerRef};
 
@@ -54,12 +54,6 @@ pub trait MemoryAuthoringPort: Send + Sync {
         owner: &Owner,
         memory_ids: &[MemoryId],
     ) -> Result<Vec<MemoryKindRow>, StorageError>;
-
-    async fn load_fact_source_batches(
-        &self,
-        owner: &Owner,
-        memory_ids: &[MemoryId],
-    ) -> Result<Vec<FactSourceBatchRow>, StorageError>;
 
     /// Cool one memory `t`: PUT cold object, stub + delete hot, `announce.forget`.
     async fn forget_memory(

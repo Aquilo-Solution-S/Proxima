@@ -58,7 +58,7 @@ pub use embeddings::{
     EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome,
     EmbeddingWritePort, EmbeddingWriteProof,
 };
-pub use fact::{FactIngestPort, SourceBatchPort};
+pub use fact::FactIngestPort;
 pub use goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 pub use handles::{
     ChangeEventHandle, CitationHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle,
@@ -66,7 +66,7 @@ pub use handles::{
     GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, MemoryAuthoringHandle,
     MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
     OwnerEraseAuthorityHandle, OwnerInverseHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle, WriteSessionFactoryHandle,
+    RegistryProjectionHandle, SourceCursorHandle, WriteSessionFactoryHandle,
 };
 pub use mcp::McpCallReadPort;
 pub use memory::{

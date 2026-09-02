@@ -25,7 +25,7 @@ use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
     AccessKind, AgentNoteV1, AuthPath, AuthzContext, ChangeEventKind, ColdObjectStore, Engine,
     EntityId, EntityRef, FlavorRegistry, GoalId, GroupId, MemoryId, OwnerRef, SchemaId,
-    SchemaVersion, SidecarPayload, SourceBatchId, StorageError, UserId,
+    SchemaVersion, SidecarPayload, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory_series};
@@ -228,12 +228,8 @@ async fn ingest_mcp_call_fact(
         io_truncated: false,
         io_content_hash: [3_u8; 32],
     };
-    let mut draft = FactWriteCommand::from_payload(
-        "proxima/fact",
-        SourceBatchId::new(Uuid::now_v7()),
-        &payload,
-        time::OffsetDateTime::now_utc(),
-    );
+    let mut draft =
+        FactWriteCommand::from_payload("proxima/fact", &payload, time::OffsetDateTime::now_utc());
     // `extra` may carry a `LanguagePolicy::PerRow` schema; the mcp sidecar
     // itself pins its configuration and reads no language bind.
     draft.lexical_language =

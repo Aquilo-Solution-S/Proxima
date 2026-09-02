@@ -373,5 +373,5 @@ pub use storage_ports::{
     McpCallReadPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
     OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort, OwnerEraseAuthorityPort,
     OwnerInversePort, OwnerMembershipAdminPort, OwnerTransferPort, RegistryProjectionPort,
-    SourceBatchPort, SourceCursorPort, StoragePorts,
+    SourceCursorPort, StoragePorts,
 };

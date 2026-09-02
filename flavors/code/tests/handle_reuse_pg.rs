@@ -6,7 +6,7 @@ use common::{migrated_db, owner_write_permit, test_owner};
 use proxima_code::testkit::{build_engine, ingest_commit, ingest_file_revision};
 use proxima_code::{CommitV1, FileRevisionV1, FileState};
 use proxima_core::storage_ports::OwnerTransferPort;
-use proxima_core::{AccessKind, AuthPath, AuthzContext, EntityId, SourceBatchId};
+use proxima_core::{AccessKind, AuthPath, AuthzContext, EntityId};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
@@ -22,10 +22,6 @@ fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     proxima_core::owner_inverse::OwnerSurfaces::for_registry(
         &registry.try_freeze().expect("core + code freeze"),
     )
-}
-
-fn source_batch_id() -> SourceBatchId {
-    SourceBatchId::new(Uuid::now_v7())
 }
 
 fn content_hash(seed: &str) -> [u8; 32] {
@@ -74,7 +70,6 @@ async fn code_stateful_ingest_reuses_handle() {
         let first = ingest_file_revision(
             &engine,
             &authz,
-            source_batch_id(),
             &file_revision(repo_id, file_path, "v1"),
             now,
         )
@@ -82,7 +77,6 @@ async fn code_stateful_ingest_reuses_handle() {
         let second = ingest_file_revision(
             &engine,
             &authz,
-            source_batch_id(),
             &file_revision(repo_id, file_path, "v2"),
             now,
         )
@@ -93,7 +87,7 @@ async fn code_stateful_ingest_reuses_handle() {
             "new observation is a new t"
         );
 
-        ingest_commit(&engine, &authz, source_batch_id(), &commit(repo_id), now).await?;
+        ingest_commit(&engine, &authz, &commit(repo_id), now).await?;
         Ok(())
     }
     .await;
@@ -115,7 +109,6 @@ async fn code_stateful_ingest_mints_after_owner_transfer() {
         let first = ingest_file_revision(
             &engine,
             &authz,
-            source_batch_id(),
             &file_revision(repo_id, file_path, "v1"),
             now,
         )
@@ -133,7 +126,6 @@ async fn code_stateful_ingest_mints_after_owner_transfer() {
         let after = ingest_file_revision(
             &engine,
             &authz,
-            source_batch_id(),
             &file_revision(repo_id, file_path, "v2"),
             now,
         )

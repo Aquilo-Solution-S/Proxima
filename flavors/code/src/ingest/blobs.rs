@@ -1,15 +1,13 @@
 use std::collections::HashMap;
 
-use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
     AbstractionPayload, AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, AuthzContext,
     EdgeEndpoint, Engine, EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId,
-    Owner, SchemaVersion, SidecarPayload, SourceBatchId, TypedFactIngest,
+    Owner, SchemaVersion, SidecarPayload, TypedFactIngest,
 };
 use proxima_storage_pg::query::ChunkSeriesHead;
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1};
@@ -77,22 +75,9 @@ fn code_slice_identity_key(payload: &CodeChunkV1, source_file_revision: MemoryId
     key
 }
 
-/// Close a `source_batch` opened by the typed-ingest helpers under a
-/// LocalGitSource poll. Idempotent. Maps `NotFound` to `Ok(())` so
-/// callers can safely call this after no-op polls (no events → no
-/// batch row was ever inserted).
-pub async fn close_local_git_batch(
-    _pool: &PgPool,
-    _permit: &OwnerWritePermit,
-    _source_batch_id: SourceBatchId,
-) -> Result<(), IngestError> {
-    Ok(())
-}
-
 async fn ingest_local_git_fact<P>(
     engine: &Engine,
     authz: &AuthzContext,
-    source_batch_id: SourceBatchId,
     payload: &P,
     citation: CitationSpec,
     observed_at: time::OffsetDateTime,
@@ -104,7 +89,6 @@ where
         .ingest_typed_fact_with(
             authz,
             TypedFactIngest::new(LOCAL_GIT_SOURCE_ID, payload)
-                .source_batch_id(source_batch_id)
                 .observed_at(observed_at)
                 .citation(citation),
         )
@@ -217,14 +201,12 @@ pub async fn resolve_code_chunk_handles(
 pub async fn ingest_commit(
     engine: &Engine,
     authz: &AuthzContext,
-    source_batch_id: SourceBatchId,
     payload: &CommitV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
     ingest_local_git_fact(
         engine,
         authz,
-        source_batch_id,
         payload,
         CitationSpec::v1(
             CODE_COMMIT_OBJECT_SCHEMA,
@@ -242,14 +224,12 @@ pub async fn ingest_commit(
 pub async fn ingest_file_revision(
     engine: &Engine,
     authz: &AuthzContext,
-    source_batch_id: SourceBatchId,
     payload: &FileRevisionV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
     ingest_local_git_fact(
         engine,
         authz,
-        source_batch_id,
         payload,
         CitationSpec::v1(
             CODE_BLOB_SCHEMA,
@@ -277,9 +257,9 @@ pub async fn ingest_file_revision(
 /// instead of minting new ones.
 ///
 /// Chunking is deterministic F→A operator work over file/blob Facts;
-/// callers must materialize all batch Facts before invoking this helper.
-/// This helper deliberately does not write an event, source batch, or
-/// Fact citation.
+/// callers must materialize every input Fact before invoking this
+/// helper. This helper deliberately does not write an event or a Fact
+/// citation.
 pub async fn append_code_slices(
     engine: &Engine,
     authz: &AuthzContext,

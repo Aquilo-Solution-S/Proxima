@@ -671,7 +671,7 @@ mod tests {
         McpActionArgSpec, McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolError,
     };
     use crate::query::QueryRequest;
-    use crate::{FactPayload, FlavorRegistry, GroupId, PayloadKeyBuilder, Relation, SourceBatchId};
+    use crate::{FactPayload, FlavorRegistry, GroupId, PayloadKeyBuilder, Relation};
 
     const TOOL_NAME: &str = "test-delegation_worker";
     const DISPATCHER_TOOL_NAME: &str = "test-delegation_dispatcher";
@@ -855,7 +855,6 @@ mod tests {
     fn fact() -> crate::FactWriteCommand {
         crate::FactWriteCommand::from_payload(
             "test/source",
-            SourceBatchId::new(Uuid::now_v7()),
             &TestFact {
                 value: "one".into(),
             },
@@ -962,10 +961,6 @@ mod tests {
             .await
             .expect_err("unconverted query must reject raw delegated context");
         assert_eq!(query_err.code, ErrorCode::Forbidden);
-        let close_err = engine
-            .close_ftoa_source_batch_if_open(&raw, owner, &[])
-            .expect_err("raw delegated context must be denied before batch lookup");
-        assert_eq!(close_err.code, ErrorCode::Forbidden);
         let transfer_err = engine
             .transfer_to_owner(
                 &raw,
