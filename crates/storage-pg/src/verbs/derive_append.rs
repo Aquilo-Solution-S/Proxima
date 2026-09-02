@@ -53,11 +53,9 @@ pub(crate) struct DerivedOutcome {
     pub idempotent_replay: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ContentResolution<'a> {
-    pub(crate) content_id: Option<uuid::Uuid>,
-    pub(crate) payloads: Option<&'a [SidecarPayload]>,
-}
+/// Content resolution is shared with the Fact routes and lives with the
+/// admission row it resolves against.
+pub(crate) use super::memory_timeseries::ContentResolution;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DerivedAdmissionInput<'a> {
@@ -144,13 +142,15 @@ async fn append_derived_timeseries(
         .collect::<Vec<_>>();
     let prepared = super::memory_timeseries::prepare_memory_admission_with_extra_targets(
         tx,
-        &draft.owner,
-        &cmd,
-        input.origins,
-        input.references,
-        input.sidecar_tables,
+        super::memory_timeseries::MemoryAdmissionDraft {
+            owner: &draft.owner,
+            draft: &cmd,
+            origins: input.origins,
+            references: input.references,
+            sidecar_tables: input.sidecar_tables,
+            scopes: input.scopes,
+        },
         &supersedes_targets,
-        input.scopes,
     )
     .await?;
     super::memory_timeseries::lock_prepared_memory_admission(tx, &prepared).await?;

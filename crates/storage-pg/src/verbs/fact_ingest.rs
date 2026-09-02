@@ -479,12 +479,14 @@ where
     } = authorized;
     let prepared = super::memory_timeseries::prepare_memory_admission(
         tx,
-        owner,
-        draft,
-        links.origins(),
-        links.references(),
-        sidecar_tables,
-        options.scopes,
+        super::memory_timeseries::MemoryAdmissionDraft {
+            owner,
+            draft,
+            origins: links.origins(),
+            references: links.references(),
+            sidecar_tables,
+            scopes: options.scopes,
+        },
     )
     .await?;
     super::memory_timeseries::lock_prepared_memory_admission(tx, &prepared).await?;

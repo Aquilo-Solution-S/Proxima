@@ -12,7 +12,7 @@
 
 use proxima_core::edge::EdgeEndpoint;
 use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
-use proxima_core::{MemoryId, Owner, StorageError};
+use proxima_core::{MemoryId, Owner, SidecarPayload, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -30,6 +30,38 @@ pub struct MemoryRow {
     pub origins: Vec<Uuid>,
     pub refs: Vec<Uuid>,
     pub goal_refs: Vec<Uuid>,
+}
+
+/// The admission a write asks the timeseries to prepare: whose row it is,
+/// what it says, what it pins, which sidecar tables it declares, and which
+/// flavor-owned lifecycle scopes it belongs to. These six travel together
+/// from the verb that assembles them all the way down to
+/// [`prepare_memory_admission_at`], so they are one value and not six
+/// parameters a call site could permute.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MemoryAdmissionDraft<'a> {
+    pub(crate) owner: &'a Owner,
+    pub(crate) draft: &'a FactWriteCommand,
+    pub(crate) origins: &'a [EdgeEndpoint],
+    pub(crate) references: &'a [EdgeEndpoint],
+    /// The declared set forget will dump/delete — tables actually inserted
+    /// for this `t`, never the global registry.
+    pub(crate) sidecar_tables: &'a [String],
+    /// The flavor-owned lifecycle scopes this admission's payloads declare,
+    /// already sorted and deduplicated
+    /// ([`crate::access::scope_surfaces::ScopeSurfaces::targets_for_payloads`]).
+    /// Empty for a payload-less write; a write whose payload declares a
+    /// scope and whose caller leaves this empty would admit a row a
+    /// concurrent scope erase cannot see.
+    pub(crate) scopes: &'a [ScopeFenceTarget],
+}
+
+/// How an admission's owner-scoped `Content` row is resolved: an id the
+/// caller already holds, or the typed payloads to derive one from.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ContentResolution<'a> {
+    pub(crate) content_id: Option<Uuid>,
+    pub(crate) payloads: Option<&'a [SidecarPayload]>,
 }
 
 #[derive(Debug)]
@@ -72,9 +104,18 @@ pub(crate) async fn ingest_fact_timeseries(
     // storage through `fact_ingest::ingest_core` or
     // `derive_append::append_derived_timeseries`, and those two are where a
     // declared scope is read off the payload and fenced.
-    let prepared =
-        prepare_memory_admission(tx, owner, draft, origins, references, sidecar_tables, &[])
-            .await?;
+    let prepared = prepare_memory_admission(
+        tx,
+        MemoryAdmissionDraft {
+            owner,
+            draft,
+            origins,
+            references,
+            sidecar_tables,
+            scopes: &[],
+        },
+    )
+    .await?;
     lock_prepared_memory_admission(tx, &prepared).await?;
     let prepared = claim_prepared_memory_admission(tx, prepared).await?;
     materialize_prepared_memory_admission(tx, prepared, draft.blob_id, content_id).await
@@ -86,24 +127,14 @@ pub(crate) async fn ingest_fact_timeseries(
 /// before locking that footprint.
 pub(crate) async fn prepare_memory_admission(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
-    draft: &FactWriteCommand,
-    origins: &[EdgeEndpoint],
-    references: &[EdgeEndpoint],
-    sidecar_tables: &[String],
-    scopes: &[ScopeFenceTarget],
+    admission: MemoryAdmissionDraft<'_>,
 ) -> Result<PreparedMemoryAdmission, StorageError> {
     prepare_memory_admission_at(
         tx,
-        owner,
-        draft,
-        origins,
-        references,
-        sidecar_tables,
+        admission,
         PreparationOptions {
             identity: None,
             extra_targets: &[],
-            scopes,
         },
     )
     .await
@@ -113,25 +144,15 @@ pub(crate) async fn prepare_memory_admission(
 /// in the lifecycle set without persisting that target as a pin.
 pub(crate) async fn prepare_memory_admission_with_extra_targets(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
-    draft: &FactWriteCommand,
-    origins: &[EdgeEndpoint],
-    references: &[EdgeEndpoint],
-    sidecar_tables: &[String],
+    admission: MemoryAdmissionDraft<'_>,
     extra_targets: &[Uuid],
-    scopes: &[ScopeFenceTarget],
 ) -> Result<PreparedMemoryAdmission, StorageError> {
     prepare_memory_admission_at(
         tx,
-        owner,
-        draft,
-        origins,
-        references,
-        sidecar_tables,
+        admission,
         PreparationOptions {
             identity: None,
             extra_targets,
-            scopes,
         },
     )
     .await
@@ -149,17 +170,19 @@ pub(crate) async fn ingest_unpinned_fact_at(
 ) -> Result<FactIngestOutcome, StorageError> {
     let prepared = prepare_memory_admission_at(
         tx,
-        owner,
-        draft,
-        &[],
-        &[],
-        &[],
-        PreparationOptions {
-            identity: Some(identity),
-            extra_targets: &[],
+        MemoryAdmissionDraft {
+            owner,
+            draft,
+            origins: &[],
+            references: &[],
+            sidecar_tables: &[],
             // A Goal's write-act Fact carries no typed payload and so
             // declares no scope.
             scopes: &[],
+        },
+        PreparationOptions {
+            identity: Some(identity),
+            extra_targets: &[],
         },
     )
     .await?;
@@ -224,21 +247,14 @@ async fn fence_declared_scopes(
 struct PreparationOptions<'a> {
     identity: Option<(Uuid, Uuid)>,
     extra_targets: &'a [Uuid],
-    /// The flavor-owned lifecycle scopes this admission's payloads declare,
-    /// already sorted and deduplicated
-    /// ([`crate::access::scope_surfaces::ScopeSurfaces::targets_for_payloads`]).
-    scopes: &'a [ScopeFenceTarget],
 }
 
 async fn prepare_memory_admission_at(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
-    draft: &FactWriteCommand,
-    origins: &[EdgeEndpoint],
-    references: &[EdgeEndpoint],
-    sidecar_tables: &[String],
+    admission: MemoryAdmissionDraft<'_>,
     options: PreparationOptions<'_>,
 ) -> Result<PreparedMemoryAdmission, StorageError> {
+    let MemoryAdmissionDraft { owner, draft, .. } = admission;
     let owner_id = owner.stored_owner_id();
 
     let source_id = draft.source_id.clone();
@@ -264,8 +280,8 @@ async fn prepare_memory_admission_at(
             "A/P cannot carry source_id/ingest_key".into(),
         ));
     }
-    let mut persisted_origins = pin_memory_ids(origins)?;
-    let (mut refs, goal_refs) = pin_reference_ids(references);
+    let mut persisted_origins = pin_memory_ids(admission.origins)?;
+    let (mut refs, goal_refs) = pin_reference_ids(admission.references);
     // CHECK memory_fact_origins_chk: Facts cannot carry origins. Pins
     // a Fact declares (activation, evidence, prior request) live in refs.
     if kind == "fact" {
@@ -299,7 +315,7 @@ async fn prepare_memory_admission_at(
     // Under the fence, "is this scope still registered" has one answer for
     // the life of the transaction: an erase that committed first is visible,
     // and one that has not is waiting.
-    fence_declared_scopes(tx, owner, options.scopes).await?;
+    fence_declared_scopes(tx, owner, admission.scopes).await?;
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
     // These fences are held through commit, so a whole-owner/source erase
     // either waits for this write or observes it in the exact-scope
@@ -348,7 +364,7 @@ async fn prepare_memory_admission_at(
             origins: persisted_origins,
             refs,
             goal_refs,
-            sidecar_tables: sidecar_tables.to_vec(),
+            sidecar_tables: admission.sidecar_tables.to_vec(),
             handle,
             t,
             expected_head_t,
