@@ -370,67 +370,17 @@ impl ProximaBuilder {
             pg_tuning,
         } = self;
 
-        let pg_pool_config = match pg_pool_config {
-            Some(config) => config,
-            None => proxima_storage_pg::PgPoolConfig::from_env().map_err(embed_storage_error)?,
-        };
-        let pg_tuning = match pg_tuning {
-            Some(tuning) => tuning,
-            None => proxima_storage_pg::PgTuning::from_env().map_err(embed_storage_error)?,
-        };
-        let pg = PgStorage::connect_with_config(&config.database_url, pg_pool_config, pg_tuning)
-            .await
-            .map_err(embed_storage_error)?;
-        if skip_migrations {
-            // GitOps split-role deploy: schema is migrated out-of-band under a
-            // DDL role; here we only run the preflight and issue no DDL.
-            preflight_without_migrations(&pg, migrators)
-                .await
-                .map_err(embed_migration_error)?;
-        } else {
-            run_core_and_flavor_migrations(&pg, migrators)
-                .await
-                .map_err(embed_migration_error)?;
-        }
-
-        let mut registry = FlavorRegistry::new();
-        for register in registers {
-            register(&mut registry).map_err(EmbedError::Registry)?;
-        }
-        let registry = registry.try_freeze().map_err(EmbedError::Registry)?;
-
-        let mut pg_sidecars = PgSidecarRegistry::new();
-        register_core_pg_sidecars(&mut pg_sidecars);
-        for register in pg_sidecar_registers {
-            register(&mut pg_sidecars);
-        }
-        let pg_sidecars = pg_sidecars
-            .freeze_against(&registry)
-            .map_err(embed_storage_error)?;
-        let pg_sidecars = Arc::new(pg_sidecars);
-        // Re-run the projection generator against the composed contracts and
-        // compare it with the catalog. The migration carries the generator's
-        // output verbatim; this is the half that notices a deployment whose
-        // schema and whose linked flavors disagree — a flavor added without
-        // its migrations, or a migration hand-edited away from the generator.
-        proxima_storage_pg::projection::ensure_projection_schema(
-            pg.pool_for_tests(),
-            registry.contracts(),
+        let pg = connect_and_migrate(
+            &config.database_url,
+            pg_pool_config,
+            pg_tuning,
+            migrators,
+            skip_migrations,
         )
-        .await
-        .map_err(embed_storage_error)?;
-        // The same half, one layer down. The projection check asks whether
-        // the tables a search reads exist; this asks whether the guard that
-        // keeps every registered memory sidecar reachable by forget, erase
-        // and export is installed on it. Both read the catalog and issue no
-        // DDL, so both hold under `PROXIMA_SKIP_MIGRATIONS` in a split-role
-        // deploy, where this process's role cannot create a trigger at all.
-        proxima_storage_pg::integrity::ensure_declaration_triggers(
-            pg.pool_for_tests(),
-            pg_sidecars.as_ref(),
-        )
-        .await
-        .map_err(embed_storage_error)?;
+        .await?;
+
+        let registry = compose_registry(registers)?;
+        let pg_sidecars = compose_pg_sidecars(&pg, &registry, pg_sidecar_registers).await?;
         let pg = pg
             .with_sidecars(pg_sidecars.as_ref().clone())
             .with_flavors(&registry)
@@ -443,52 +393,15 @@ impl ProximaBuilder {
             .map(|s3| CitedBlobStore::new(pool.clone(), s3))
             .transpose()
             .map_err(|error| EmbedError::Config(error.to_string()))?;
-        let pg = match &blobs {
-            Some(store) => {
-                let cold = store.cold_store();
-                // Assert the composition the purge queue's `backend` column
-                // depends on. `cold_purge_pending` records the bucket an
-                // upload row named, and the drain refuses any row whose
-                // backend is not the wired store's — so a store wired against
-                // a different bucket than the one uploads publish to must
-                // fail here, at boot, not silently stop reclaiming bytes.
-                let configured_bucket = configured_bucket.as_deref().unwrap_or_default();
-                if ColdObjectStore::backend(&cold) != configured_bucket {
-                    return Err(EmbedError::Config(format!(
-                        "cold object store reports backend {:?} but cited uploads publish to \
-                         bucket {configured_bucket:?}; the purge queue and the object store \
-                         must name one backend",
-                        ColdObjectStore::backend(&cold),
-                    )));
-                }
-                pg.with_cold(Arc::new(cold))
-            }
-            None => pg,
-        };
+        let pg = wire_cold_store(pg, blobs.as_ref(), configured_bucket.as_deref())?;
 
-        let mut engine = Engine::new(registry)
-            .with_storage_ports(Arc::new(pg.clone()).storage_ports())
-            .with_embedding_runtime_policy(embedding_runtime_policy);
-        if let Some(scope) = deployment_tool_scope {
-            engine = engine.with_deployment_tool_scope(scope);
-        }
-        if let Some(client) = embed_client {
-            // Fail fast on a dimension mismatch. The `embeddings.embedding`
-            // column is a fixed-width `vector(EMBEDDING_DIM)`; a client of a
-            // different dim (e.g. a 3072-d model) would let every job be
-            // claimed and then rejected at insert, silently burning the queue.
-            let dim = client.dim();
-            if dim != proxima_core::llm::EMBEDDING_DIM {
-                return Err(EmbedError::Config(format!(
-                    "embedding client reports dim {dim}, but the vector column is fixed at {} \
-                     (proxima_core::llm::EMBEDDING_DIM); a mismatched model fails every \
-                     embedding job — configure a {}-dimensional embedding model",
-                    proxima_core::llm::EMBEDDING_DIM,
-                    proxima_core::llm::EMBEDDING_DIM,
-                )));
-            }
-            engine = engine.with_embed(client);
-        }
+        let engine = compose_engine(
+            registry,
+            &pg,
+            embedding_runtime_policy,
+            deployment_tool_scope,
+            embed_client,
+        )?;
 
         let (engine, system_authority, delegation_runtime_authority) =
             engine.into_runtime_authorities();
@@ -516,6 +429,159 @@ impl ProximaBuilder {
             owner,
         })
     }
+}
+
+/// Connect the Postgres storage backend and bring its schema to this
+/// binary's expectation.
+///
+/// Unset pool policy or tuning falls back to the process environment.
+async fn connect_and_migrate(
+    database_url: &str,
+    pg_pool_config: Option<proxima_storage_pg::PgPoolConfig>,
+    pg_tuning: Option<proxima_storage_pg::PgTuning>,
+    migrators: Vec<NamedMigrator>,
+    skip_migrations: bool,
+) -> Result<PgStorage, EmbedError> {
+    let pg_pool_config = match pg_pool_config {
+        Some(config) => config,
+        None => proxima_storage_pg::PgPoolConfig::from_env().map_err(embed_storage_error)?,
+    };
+    let pg_tuning = match pg_tuning {
+        Some(tuning) => tuning,
+        None => proxima_storage_pg::PgTuning::from_env().map_err(embed_storage_error)?,
+    };
+    let pg = PgStorage::connect_with_config(database_url, pg_pool_config, pg_tuning)
+        .await
+        .map_err(embed_storage_error)?;
+    if skip_migrations {
+        // GitOps split-role deploy: schema is migrated out-of-band under a
+        // DDL role; here we only run the preflight and issue no DDL.
+        preflight_without_migrations(&pg, migrators)
+            .await
+            .map_err(embed_migration_error)?;
+    } else {
+        run_core_and_flavor_migrations(&pg, migrators)
+            .await
+            .map_err(embed_migration_error)?;
+    }
+    Ok(pg)
+}
+
+/// Run every linked flavor's registration callback and freeze the result.
+fn compose_registry(
+    registers: Vec<RegisterFn>,
+) -> Result<proxima_core::FlavorRegistryFrozen, EmbedError> {
+    let mut registry = FlavorRegistry::new();
+    for register in registers {
+        register(&mut registry).map_err(EmbedError::Registry)?;
+    }
+    registry.try_freeze().map_err(EmbedError::Registry)
+}
+
+/// Freeze the PG sidecar registry against the composed contracts, then
+/// verify the deployed schema agrees with it.
+async fn compose_pg_sidecars(
+    pg: &PgStorage,
+    registry: &proxima_core::FlavorRegistryFrozen,
+    pg_sidecar_registers: Vec<PgSidecarRegisterFn>,
+) -> Result<Arc<PgSidecarRegistryFrozen>, EmbedError> {
+    let mut pg_sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut pg_sidecars);
+    for register in pg_sidecar_registers {
+        register(&mut pg_sidecars);
+    }
+    let pg_sidecars = pg_sidecars
+        .freeze_against(registry)
+        .map_err(embed_storage_error)?;
+    let pg_sidecars = Arc::new(pg_sidecars);
+    // Re-run the projection generator against the composed contracts and
+    // compare it with the catalog. The migration carries the generator's
+    // output verbatim; this is the half that notices a deployment whose
+    // schema and whose linked flavors disagree — a flavor added without
+    // its migrations, or a migration hand-edited away from the generator.
+    proxima_storage_pg::projection::ensure_projection_schema(
+        pg.pool_for_tests(),
+        registry.contracts(),
+    )
+    .await
+    .map_err(embed_storage_error)?;
+    // The same half, one layer down. The projection check asks whether
+    // the tables a search reads exist; this asks whether the guard that
+    // keeps every registered memory sidecar reachable by forget, erase
+    // and export is installed on it. Both read the catalog and issue no
+    // DDL, so both hold under `PROXIMA_SKIP_MIGRATIONS` in a split-role
+    // deploy, where this process's role cannot create a trigger at all.
+    proxima_storage_pg::integrity::ensure_declaration_triggers(
+        pg.pool_for_tests(),
+        pg_sidecars.as_ref(),
+    )
+    .await
+    .map_err(embed_storage_error)?;
+    Ok(pg_sidecars)
+}
+
+/// Wire the cited-blob store's cold object store into storage, asserting
+/// that it and the cited uploads name one backend.
+fn wire_cold_store(
+    pg: PgStorage,
+    blobs: Option<&CitedBlobStore>,
+    configured_bucket: Option<&str>,
+) -> Result<PgStorage, EmbedError> {
+    let Some(store) = blobs else {
+        return Ok(pg);
+    };
+    let cold = store.cold_store();
+    // Assert the composition the purge queue's `backend` column
+    // depends on. `cold_purge_pending` records the bucket an
+    // upload row named, and the drain refuses any row whose
+    // backend is not the wired store's — so a store wired against
+    // a different bucket than the one uploads publish to must
+    // fail here, at boot, not silently stop reclaiming bytes.
+    let configured_bucket = configured_bucket.unwrap_or_default();
+    if ColdObjectStore::backend(&cold) != configured_bucket {
+        return Err(EmbedError::Config(format!(
+            "cold object store reports backend {:?} but cited uploads publish to \
+             bucket {configured_bucket:?}; the purge queue and the object store \
+             must name one backend",
+            ColdObjectStore::backend(&cold),
+        )));
+    }
+    Ok(pg.with_cold(Arc::new(cold)))
+}
+
+/// Compose the engine over the frozen registry and wired storage, attaching
+/// the deployment tool scope and the host's embedding client.
+fn compose_engine(
+    registry: proxima_core::FlavorRegistryFrozen,
+    pg: &PgStorage,
+    embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
+    deployment_tool_scope: Option<proxima_core::ToolScope>,
+    embed_client: Option<Arc<dyn EmbeddingClient>>,
+) -> Result<Engine, EmbedError> {
+    let mut engine = Engine::new(registry)
+        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
+        .with_embedding_runtime_policy(embedding_runtime_policy);
+    if let Some(scope) = deployment_tool_scope {
+        engine = engine.with_deployment_tool_scope(scope);
+    }
+    if let Some(client) = embed_client {
+        // Fail fast on a dimension mismatch. The `embeddings.embedding`
+        // column is a fixed-width `vector(EMBEDDING_DIM)`; a client of a
+        // different dim (e.g. a 3072-d model) would let every job be
+        // claimed and then rejected at insert, silently burning the queue.
+        let dim = client.dim();
+        if dim != proxima_core::llm::EMBEDDING_DIM {
+            return Err(EmbedError::Config(format!(
+                "embedding client reports dim {dim}, but the vector column is fixed at {} \
+                 (proxima_core::llm::EMBEDDING_DIM); a mismatched model fails every \
+                 embedding job — configure a {}-dimensional embedding model",
+                proxima_core::llm::EMBEDDING_DIM,
+                proxima_core::llm::EMBEDDING_DIM,
+            )));
+        }
+        engine = engine.with_embed(client);
+    }
+    Ok(engine)
 }
 
 /// Errors from embedded boot.
