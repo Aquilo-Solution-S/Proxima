@@ -41,15 +41,13 @@
 //!
 //! A flavor-owned transaction ([`super::erase`], [`super::runs`]) takes the
 //! fence with [`lock_repo_fence_exclusive_tx`] / [`lock_repo_fence_shared_tx`],
-//! which spell `pg_advisory_xact_lock[_shared]` directly and get the mode they
-//! ask for. A Memory admission runs in the Engine's write session, which owns
-//! its transaction and exposes exactly one lock affordance —
-//! `UnitOfWork::advisory_xact_lock`, an i64 key in EXCLUSIVE mode. So
-//! [`fence_repo_admission`] resolves the same key through
-//! [`REPO_FENCE_KEY_SQL`] first and hands it to that affordance: the same
-//! lane, one mode stronger than it needs. Same-repository writers therefore
-//! serialize against each other for the length of one write transaction,
-//! which is the price of not widening the core write-session port.
+//! which spell `pg_advisory_xact_lock[_shared]` directly. A Memory admission
+//! runs in the Engine's write session, which owns its transaction and names
+//! its locks by i64 key rather than by statement, so [`fence_repo_admission`]
+//! resolves the same key through [`REPO_FENCE_KEY_SQL`] first and hands it to
+//! `UnitOfWork::advisory_xact_lock_shared`. Same key, same mode, same lane:
+//! two writers into one repository do not wait on each other, and neither
+//! path is a weaker fence than the other.
 
 use proxima_core::{Owner, StorageError, UnitOfWork};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -69,7 +67,8 @@ const REPO_FENCE_KEY_EXPR: &str =
     "hashtextextended('proxima-code-repo-fence:' || $1 || ':' || $2::text || ':' || $3::text, 0)";
 
 /// The key alone, for the callers that must hand it to
-/// `UnitOfWork::advisory_xact_lock` instead of taking the lock themselves.
+/// `UnitOfWork::advisory_xact_lock_shared` instead of taking the lock
+/// themselves.
 const REPO_FENCE_KEY_SQL: &str = "\
 SELECT hashtextextended('proxima-code-repo-fence:' || $1 || ':' || $2::text || ':' || $3::text, 0)";
 
@@ -170,9 +169,11 @@ pub(crate) async fn repo_registered_tx(
 ///
 /// 1. resolve the fence key — a pure `hashtextextended` on the pool, before
 ///    the write session opens, so no connection is held across it;
-/// 2. take the fence in the write transaction, before any handle or `t`
-///    lock, which is what keeps a racing erase from closing a cycle with
-///    this writer rather than queueing behind it;
+/// 2. take the fence SHARED in the write transaction, before any handle or
+///    `t` lock, which is what keeps a racing erase from closing a cycle with
+///    this writer rather than queueing behind it. Shared because the thing
+///    to exclude is the erase, not the other writers into the same
+///    repository;
 /// 3. ask, WHILE HOLDING IT, whether the repository is still registered.
 ///
 /// Step 3 runs on the pool rather than in the write transaction because the
@@ -208,7 +209,7 @@ pub(crate) async fn fence_repo_admission(
         .bind(repo_id)
         .fetch_one(pool)
         .await?;
-    uow.advisory_xact_lock(key)
+    uow.advisory_xact_lock_shared(key)
         .await
         .map_err(|err| RepoRegistryError::Storage(StorageError::Internal(err.to_string())))?;
     let registered: bool = sqlx::query_scalar(REPO_REGISTERED_SQL)

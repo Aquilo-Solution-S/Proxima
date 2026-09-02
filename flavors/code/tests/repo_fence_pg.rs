@@ -9,7 +9,8 @@ mod common;
 
 use common::{code_pg_sidecars, migrated_db, test_owner};
 use proxima_code::testkit::{
-    build_engine, erase_repo, ingest_commit, lock_repo_fence_exclusive_tx, register_repo,
+    build_engine, erase_repo, ingest_commit, lock_repo_fence_exclusive_tx,
+    lock_repo_fence_shared_tx, register_repo,
 };
 use proxima_code::{CodeFlavorStore, CommitV1, RepoScope};
 use proxima_core::{AuthPath, AuthzContext, Owner};
@@ -413,6 +414,110 @@ async fn an_erase_of_one_repository_does_not_fence_another() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("an_erase_of_one_repository_does_not_fence_another failed");
+}
+
+/// Two writers into one repository hold the fence at the same time.
+///
+/// The fence separates writers from the ERASE, not writers from each other,
+/// and this is the test that says so. The parked writer takes the shared
+/// mode through the flavor helper and stays open; the second writer goes
+/// through the production admission path, whose fence is the same key. If
+/// that path took the exclusive mode - as it did before the write-session
+/// port grew `advisory_xact_lock_shared` - the second writer would block
+/// behind the first, and this test would run out its bound instead of
+/// finishing, which is the failure the assertion names.
+///
+/// The erase then queues behind the writer that is still holding, and
+/// sweeps both writers' rows: shared writers are not exempt from the
+/// footprint, they are inside it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_same_repo_writers_hold_the_fence_at_once_and_the_erase_sweeps_both() {
+    let (db_name, pg) = migrated_db().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = test_owner();
+        let repo_id = Uuid::now_v7();
+        register(pool, &owner, repo_id).await?;
+
+        // The owner row, committed, BEFORE anyone parks. First-use owner
+        // arbitration is an upsert on `proxima_core.owners`, so a parked
+        // writer that created that row would hold a row lock the second
+        // writer waits on - a wait that has nothing to do with the fence and
+        // would make this test pass or fail for the wrong reason.
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
+        )
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+
+        // Writer one: the fence, shared, then a repo-scoped row, then it
+        // stops. Held open across the whole of the rest of this test.
+        let parked_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
+        let mut parked = parked_pool.begin().await?;
+        lock_repo_fence_shared_tx(&mut parked, &owner, repo_id).await?;
+        let parked_t = Uuid::now_v7();
+        insert_commit_row(&mut parked, &owner, repo_id, parked_t).await?;
+
+        // Writer two, through the real path, into the SAME repository.
+        let second = spawn_ingest(
+            db_name.clone(),
+            owner,
+            repo_id,
+            "0000000000000000000000000000000000000004",
+        );
+        // A bound on the test, not a synchronization step: this writer
+        // either does not wait on the parked one, in which case it finishes
+        // at once, or it waits forever, and no amount of waiting
+        // distinguishes "slow" from "blocked on a lock nothing will
+        // release".
+        let second = tokio::time::timeout(std::time::Duration::from_secs(45), second)
+            .await
+            .map_err(|_| "the second same-repo writer blocked on the first one's fence")??;
+        let second = second.expect("a second writer into a fenced repository is admitted");
+        assert!(
+            census(pool, repo_id).await >= 1,
+            "the second writer committed while the first still held the fence"
+        );
+
+        // And the erase, behind the writer that is still holding.
+        let erase_db = db_name.clone();
+        let erase = tokio::spawn(async move {
+            let pg = connect_storage(&erase_db).await?;
+            let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+            erase_repo(&store, &owner, repo_id)
+                .await
+                .map_err(|err| err.to_string())
+        });
+        assert!(
+            wait_for_count(pool, Probe::Advisory, 1).await,
+            "the erase did not queue behind the writer still holding the fence"
+        );
+        assert!(!erase.is_finished(), "the erase ran past a held fence");
+
+        parked.commit().await?;
+        parked_pool.close().await;
+
+        let receipt = erase.await?.expect("the erase completes once unparked");
+        assert!(receipt.repo_record_deleted);
+        assert_eq!(
+            census(pool, repo_id).await,
+            0,
+            "both writers' rows are in the footprint"
+        );
+        let survivors: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory WHERE t = ANY($1)",
+        )
+        .bind(vec![parked_t, second.memory_id.into_inner()])
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(survivors, 0, "and so are the admissions behind them");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("two_same_repo_writers_hold_the_fence_at_once_and_the_erase_sweeps_both failed");
 }
 
 /// One admitted `commit_v1` and the `proxima_core` rows behind it, written

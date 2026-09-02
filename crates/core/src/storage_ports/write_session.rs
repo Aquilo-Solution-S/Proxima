@@ -65,11 +65,32 @@ pub trait WriteSessionFactory: Send + Sync {
 pub trait WriteSession: Send {
     async fn advisory_xact_lock(&mut self, key: i64) -> Result<(), StorageError>;
 
+    /// Serialize this transaction against `key` in SHARED mode
+    /// (`pg_advisory_xact_lock_shared`).
+    ///
+    /// The mode a WRITER of a fenced scope takes. Exclusive is the mode the
+    /// scope's ERASER takes, and the point of the pair is that the two are
+    /// mutually exclusive while writers are not: many admissions into one
+    /// scope proceed together, and the erase of that scope waits for all of
+    /// them and is then waited on by all later ones. A writer that took the
+    /// exclusive mode instead would be correct and would also serialize
+    /// every write into that scope behind every other, which is a
+    /// throughput cost with no safety return.
+    ///
+    /// Shared is NOT sufficient for the read-model precondition below: two
+    /// sessions holding the same key shared see each other's absent rows and
+    /// both append. Use [`Self::advisory_xact_lock`] for that.
+    async fn advisory_xact_lock_shared(&mut self, key: i64) -> Result<(), StorageError>;
+
     /// Read the flavor's own sidecar rows INSIDE this session's transaction.
     ///
     /// Sees this session's uncommitted writes and is serialized by whatever
     /// [`Self::advisory_xact_lock`] the session already took — which is what
-    /// makes a precondition check binding instead of advisory.
+    /// makes a precondition check binding instead of advisory. A lock taken
+    /// through [`Self::advisory_xact_lock_shared`] does not make it binding:
+    /// it excludes the exclusive holders of that key, not the other shared
+    /// ones, so a check-then-append against a concurrent identical writer
+    /// needs the exclusive mode.
     ///
     /// Rows come back as JSON objects of the sidecar's own columns; the
     /// flavor deserializes them into its own row type. That is a read
