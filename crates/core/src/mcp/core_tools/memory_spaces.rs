@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
-use crate::{AccessKind, GroupId, Owner, OwnerRef, OwnerRefKind, UserId};
+use crate::{AccessKind, AuthzContext, GroupId, Owner, OwnerRef, OwnerRefKind, UserId};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MemorySpacesArgs {}
@@ -79,6 +79,33 @@ pub struct ResolvedMemorySpace {
     pub key: String,
     pub label: String,
     pub owner: Owner,
+}
+
+/// Resolve the memory space a write lands in, and narrow the caller's
+/// authorization to that space's Owner.
+///
+/// The space key is a selector; the narrowing is the gate. A caller who can
+/// *see* a space but holds no role on its Owner cannot narrow to it, and that
+/// refusal is `NotAuthorized`, not "unknown space" — the space exists, the
+/// caller just may not write there. Every write-side surface resolves through
+/// here so the two steps cannot drift apart or be taken in the wrong order.
+///
+/// # Errors
+///
+/// Returns `InvalidInput` when the key is unknown or the default space is not
+/// accessible, and `NotAuthorized` when the caller holds no role on the
+/// resolved Owner.
+pub fn resolve_space_for_write(
+    ctx: &McpToolCtx,
+    raw: Option<&str>,
+) -> Result<(ResolvedMemorySpace, AuthzContext), McpToolError> {
+    let space = resolve_space_owner(ctx, raw, SpaceDefault::Current)?;
+    let authz = ctx
+        .authz
+        .clone()
+        .narrowed_to_owner(space.owner)
+        .ok_or_else(|| McpToolError::NotAuthorized("memory space write".into()))?;
+    Ok((space, authz))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

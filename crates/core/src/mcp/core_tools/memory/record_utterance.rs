@@ -74,16 +74,8 @@ impl McpTool for RecordUtteranceTool {
             let text = validate_trimmed_len("text", &args.text, 20_000)?;
             let idempotency_key = super::util::normalize_idempotency_key(args.idempotency_key)?;
 
-            let space = super::super::memory_spaces::resolve_space_owner(
-                &ctx,
-                args.space.as_deref(),
-                super::super::memory_spaces::SpaceDefault::Current,
-            )?;
-            let authz = ctx
-                .authz
-                .clone()
-                .narrowed_to_owner(space.owner)
-                .ok_or_else(|| McpToolError::NotAuthorized("memory space write".into()))?;
+            let (_, authz) =
+                super::super::memory_spaces::resolve_space_for_write(&ctx, args.space.as_deref())?;
             let payload = UtteranceV1 {
                 speaker: args.speaker,
                 conversation_id: conversation_id.to_string(),

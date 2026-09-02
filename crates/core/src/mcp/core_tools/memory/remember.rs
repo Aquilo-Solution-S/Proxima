@@ -116,16 +116,8 @@ impl McpTool for RememberTool {
             let title = validate_trimmed_len("title", &args.title, 240)?;
             let body = validate_trimmed_len("body", &args.body, 20_000)?;
             let idempotency_key = normalize_idempotency_key(args.idempotency_key)?;
-            let space = super::super::memory_spaces::resolve_space_owner(
-                &ctx,
-                args.space.as_deref(),
-                super::super::memory_spaces::SpaceDefault::Current,
-            )?;
-            let authz = ctx
-                .authz
-                .clone()
-                .narrowed_to_owner(space.owner)
-                .ok_or_else(|| McpToolError::NotAuthorized("memory space write".into()))?;
+            let (_, authz) =
+                super::super::memory_spaces::resolve_space_for_write(&ctx, args.space.as_deref())?;
             let tags = normalize_tags(args.tags)?;
             let note_id = idempotency_key
                 .as_deref()
