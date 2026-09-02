@@ -46,20 +46,17 @@ pub(super) async fn load_execution_request(
     ctx: &ToolCtx,
     memory_id: MemoryId,
 ) -> Result<PriorExecutionRequest, ToolError> {
-    let pool = code_store(ctx)?;
     let engine = engine(ctx)?;
-    let Some((_, row)) = pool
-        .authorized_fact_payloads::<ExecutionRequestV1>(
-            &engine,
-            ctx.authz(),
-            ctx.owner(),
-            &[memory_id.into_inner()],
-            1,
-        )
-        .await?
-        .into_iter()
-        .next()
-    else {
+    let Some((_, row)) = proxima::flavor::authorized_fact_payloads::<ExecutionRequestV1>(
+        &engine,
+        ctx.authz(),
+        ctx.owner(),
+        &[memory_id.into_inner()],
+        1,
+    )
+    .await?
+    .into_iter()
+    .next() else {
         return Err(ToolError::InvalidInput(
             "prior_execution_request must be a visible proxima-code/work-requested-v1 Fact".into(),
         ));
@@ -91,8 +88,8 @@ pub(super) async fn find_execution_request_by_key(
     .fetch_all(pool.pool())
     .await
     .map_err(map_storage)?;
-    Ok(pool
-        .authorized_fact_payloads::<ExecutionRequestV1>(
+    Ok(
+        proxima::flavor::authorized_fact_payloads::<ExecutionRequestV1>(
             &engine,
             ctx.authz(),
             ctx.owner(),
@@ -102,26 +99,25 @@ pub(super) async fn find_execution_request_by_key(
         .await?
         .into_iter()
         .next()
-        .map(|(id, _)| id))
+        .map(|(id, _)| id),
+    )
 }
 
 pub(super) async fn validate_target_perspective(
     ctx: &ToolCtx,
     target_perspective: MemoryId,
 ) -> Result<(), ToolError> {
-    let pool = code_store(ctx)?;
     let engine = engine(ctx)?;
-    let visible = pool
-        .authorized_memory_ids(
-            &engine,
-            ctx.authz(),
-            ctx.owner(),
-            &[target_perspective.into_inner()],
-            EntityKind::Perspective,
-            None,
-            1,
-        )
-        .await?;
+    let visible = proxima::flavor::authorized_memory_ids(
+        &engine,
+        ctx.authz(),
+        ctx.owner(),
+        &[target_perspective.into_inner()],
+        EntityKind::Perspective,
+        None,
+        1,
+    )
+    .await?;
     if visible.is_empty() {
         return Err(ToolError::InvalidInput(format!(
             "target_perspective not found: {}",

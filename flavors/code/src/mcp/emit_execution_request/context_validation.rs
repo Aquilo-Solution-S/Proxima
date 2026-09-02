@@ -45,19 +45,17 @@ pub(super) async fn validate_goal_activated_fact(
     ctx: &ToolCtx,
     memory_id: MemoryId,
 ) -> Result<Uuid, ToolError> {
-    let pool = code_store(ctx)?;
     let engine = engine(ctx)?;
-    let visible = pool
-        .authorized_memory_ids(
-            &engine,
-            ctx.authz(),
-            ctx.owner(),
-            &[memory_id.into_inner()],
-            EntityKind::Fact,
-            None,
-            1,
-        )
-        .await?;
+    let visible = proxima::flavor::authorized_memory_ids(
+        &engine,
+        ctx.authz(),
+        ctx.owner(),
+        &[memory_id.into_inner()],
+        EntityKind::Fact,
+        None,
+        1,
+    )
+    .await?;
     if visible.is_empty() {
         return Err(ToolError::InvalidInput(format!(
             "goal_activated_memory is not visible: {}",
@@ -133,19 +131,17 @@ pub(super) async fn validate_plan_source_abstraction_in_owner(
     ctx: &ToolCtx,
     memory_id: MemoryId,
 ) -> Result<(), ToolError> {
-    let pool = code_store(ctx)?;
     let engine = engine(ctx)?;
-    let visible = pool
-        .authorized_memory_ids(
-            &engine,
-            ctx.authz(),
-            ctx.owner(),
-            &[memory_id.into_inner()],
-            EntityKind::Abstraction,
-            None,
-            1,
-        )
-        .await?;
+    let visible = proxima::flavor::authorized_memory_ids(
+        &engine,
+        ctx.authz(),
+        ctx.owner(),
+        &[memory_id.into_inner()],
+        EntityKind::Abstraction,
+        None,
+        1,
+    )
+    .await?;
     if visible.is_empty() {
         return Err(ToolError::InvalidInput(format!(
             "plan_source_memory not visible: {}",
@@ -159,20 +155,18 @@ pub(super) async fn validate_evidence_in_owner(
     ctx: &ToolCtx,
     evidence: &[MemoryId],
 ) -> Result<(), ToolError> {
-    let pool = code_store(ctx)?;
     let engine = engine(ctx)?;
     for memory_id in evidence {
-        let visible = pool
-            .authorized_memory_ids(
-                &engine,
-                ctx.authz(),
-                ctx.owner(),
-                &[memory_id.into_inner()],
-                EntityKind::Fact,
-                None,
-                1,
-            )
-            .await?;
+        let visible = proxima::flavor::authorized_memory_ids(
+            &engine,
+            ctx.authz(),
+            ctx.owner(),
+            &[memory_id.into_inner()],
+            EntityKind::Fact,
+            None,
+            1,
+        )
+        .await?;
         if visible.is_empty() {
             return Err(ToolError::InvalidInput(format!(
                 "evidence not visible or not a Fact: {}",

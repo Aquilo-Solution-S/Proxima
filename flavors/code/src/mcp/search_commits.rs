@@ -165,15 +165,14 @@ async fn load_commit_matches(
         .into_iter()
         .map(|row| (row.memory_id, row.score))
         .collect::<std::collections::HashMap<_, _>>();
-    let mut commit_payloads = pool
-        .authorized_fact_payloads::<CommitV1>(
-            engine,
-            ctx.authz(),
-            ctx.owner(),
-            &commit_ids,
-            scan.page_len.saturating_add(1),
-        )
-        .await?;
+    let mut commit_payloads = proxima::flavor::authorized_fact_payloads::<CommitV1>(
+        engine,
+        ctx.authz(),
+        ctx.owner(),
+        &commit_ids,
+        scan.page_len.saturating_add(1),
+    )
+    .await?;
     let commits_has_more = commit_payloads.len() > scan.page_len;
     commit_payloads.truncate(scan.page_len);
     let commits = commit_payloads
@@ -225,15 +224,14 @@ async fn load_summary_matches(
         .into_iter()
         .map(|row| (row.memory_id, row.score))
         .collect::<std::collections::HashMap<_, _>>();
-    let mut summary_payloads = pool
-        .authorized_abstraction_payloads::<CommitSummaryV1>(
-            engine,
-            ctx.authz(),
-            ctx.owner(),
-            &summary_ids,
-            scan.page_len.saturating_add(1),
-        )
-        .await?;
+    let mut summary_payloads = proxima::flavor::authorized_abstraction_payloads::<CommitSummaryV1>(
+        engine,
+        ctx.authz(),
+        ctx.owner(),
+        &summary_ids,
+        scan.page_len.saturating_add(1),
+    )
+    .await?;
     let summaries_has_more = summary_payloads.len() > scan.page_len;
     summary_payloads.truncate(scan.page_len);
     let summaries = summary_payloads

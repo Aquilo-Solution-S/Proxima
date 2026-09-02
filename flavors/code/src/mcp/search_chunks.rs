@@ -499,15 +499,14 @@ async fn collect_candidates(
         .into_iter()
         .map(|scores| (scores.memory_id, scores))
         .collect::<HashMap<_, _>>();
-    let rows = pool
-        .authorized_abstraction_payloads::<CodeChunkV1>(
-            engine,
-            ctx.authz(),
-            ctx.owner(),
-            &candidate_ids,
-            candidate_ids.len(),
-        )
-        .await?;
+    let rows = proxima::flavor::authorized_abstraction_payloads::<CodeChunkV1>(
+        engine,
+        ctx.authz(),
+        ctx.owner(),
+        &candidate_ids,
+        candidate_ids.len(),
+    )
+    .await?;
     Ok((rows, score_by_id))
 }
 
