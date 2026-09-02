@@ -53,8 +53,9 @@ pub mod testkit {
         start_run_with_created, sweep_orphaned_runs,
     };
     pub use crate::repos::{
-        erase_footprint, erase_repo, get_repo, list_repos, reference_closure_sql, register_repo,
-        set_repo_scope, set_repo_target_branch, update_cursor,
+        erase_footprint, erase_repo, get_repo, list_repos, lock_repo_fence_exclusive_tx,
+        lock_repo_fence_shared_tx, reference_closure_sql, register_repo, set_repo_scope,
+        set_repo_target_branch, update_cursor,
     };
 }
 

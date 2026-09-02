@@ -2106,6 +2106,9 @@ async fn ingest_execution_request_fixture(
     repo_id: Uuid,
     request_key: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
+    // A work item is filed under a repository, and every write that names
+    // one is fenced on its registration now, so the fixture registers it.
+    register_repo_row(pool, owner, repo_id).await?;
     // The stamp and the row it promises land in one transaction: a memory row
     // that names a sidecar table it has no row in is refused at COMMIT.
     let mut stamped = pool.begin().await?;

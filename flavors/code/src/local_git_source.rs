@@ -80,6 +80,12 @@ pub enum IndexError {
     /// that cannot be applied is not the same as no scope.
     #[error("ingest scope: {0}")]
     Scope(#[from] crate::repos::ScopeError),
+    /// The repository is not registered for this owner. Either it never
+    /// was, or an erase of it committed while this ingest was running.
+    /// Never a fallback: an ingest with no repository row has no scope to
+    /// apply and nothing to file its rows under.
+    #[error(transparent)]
+    Repo(#[from] crate::repos::RepoRegistryError),
 }
 
 /// Counters returned by [`LocalGitSource::run_poll`]. Sums across
@@ -268,23 +274,24 @@ impl LocalGitSource {
     /// set depend on which verb ran last. Reading it from the row is the
     /// only way a caller cannot forget.
     ///
-    /// A repo row that has vanished admits everything — the ingest verbs
-    /// resolve the repo themselves and report a missing one better than a
-    /// scope lookup can.
+    /// A repo row that has vanished REFUSES the ingest. It used to admit
+    /// everything, on the reasoning that the ingest verbs resolve the repo
+    /// themselves and report a missing one better than a scope lookup can.
+    /// That reasoning holds only while the row cannot vanish underneath the
+    /// verb, and it can: an erase of this repository commits between the
+    /// verb's own lookup and this one, and the fallback then re-indexes a
+    /// deleted repository under an allow-all scope — the widest possible
+    /// scope, chosen precisely when there is no repository to scope. So the
+    /// absence is typed, and the write paths that follow refuse it again
+    /// under the repository fence.
     async fn load_scope(&self, pool: &sqlx::PgPool) -> Result<(ScopeMatcher, String), IndexError> {
         let record = crate::repos::get_repo(pool, &self.owner, self.repo_id)
-            .await
-            .map_err(|err| IndexError::Git(err.to_string()))?;
-        match record {
-            Some(record) => {
-                let fingerprint = record.scope.fingerprint();
-                Ok((record.scope.compile()?, fingerprint))
-            }
-            None => Ok((
-                ScopeMatcher::allow_all(),
-                crate::repos::RepoScope::default().fingerprint(),
-            )),
-        }
+            .await?
+            .ok_or(crate::repos::RepoRegistryError::NotFound {
+                repo_id: self.repo_id,
+            })?;
+        let fingerprint = record.scope.fingerprint();
+        Ok((record.scope.compile()?, fingerprint))
     }
 
     /// Pure git walk under `cursor`. Pool-free; returns the commits
@@ -637,7 +644,15 @@ impl LocalGitSource {
             committer_time: commit_info.committer_time,
             message: commit_info.message.clone(),
         };
-        let outcome = ingest_commit(ctx.engine(), ctx.authz(), &commit_payload, now).await?;
+        let outcome = ingest_commit(
+            ctx.engine(),
+            ctx.authz(),
+            ctx.store,
+            self.owner,
+            &commit_payload,
+            now,
+        )
+        .await?;
         if outcome.idempotent_replay {
             report.commits_replayed += 1;
         } else {
@@ -811,8 +826,15 @@ impl LocalGitSource {
             indexed_commit_sha: indexed_commit_sha.to_string(),
             state: FileState::Present,
         };
-        let file_revision =
-            ingest_file_revision(ctx.engine(), ctx.authz(), &rev_payload, now).await?;
+        let file_revision = ingest_file_revision(
+            ctx.engine(),
+            ctx.authz(),
+            ctx.store,
+            self.owner,
+            &rev_payload,
+            now,
+        )
+        .await?;
         if !file_revision.idempotent_replay {
             report.files_present_emitted += 1;
         }
@@ -903,6 +925,7 @@ impl LocalGitSource {
             append_code_slices_with_handles(
                 ctx.engine,
                 ctx.authz,
+                ctx.store,
                 self.owner,
                 &tomb_payloads,
                 pending.file_revision,
@@ -1016,6 +1039,7 @@ impl LocalGitSource {
         let outcomes = append_code_slices_with_handles(
             ctx.engine,
             ctx.authz,
+            ctx.store,
             self.owner,
             &payloads,
             pending.file_revision,
@@ -1052,8 +1076,15 @@ impl LocalGitSource {
             indexed_commit_sha: commit_sha.to_string(),
             state: FileState::Tombstone,
         };
-        let file_revision =
-            ingest_file_revision(ctx.engine(), ctx.authz(), &rev_payload, now).await?;
+        let file_revision = ingest_file_revision(
+            ctx.engine(),
+            ctx.authz(),
+            ctx.store,
+            self.owner,
+            &rev_payload,
+            now,
+        )
+        .await?;
         report.files_tombstoned += 1;
 
         Ok(PendingDeletedPath {
@@ -1092,6 +1123,7 @@ impl LocalGitSource {
             append_code_slices_with_handles(
                 ctx.engine,
                 ctx.authz,
+                ctx.store,
                 self.owner,
                 &tomb_payloads,
                 pending.file_revision,

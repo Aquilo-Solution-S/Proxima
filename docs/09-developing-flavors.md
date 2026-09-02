@@ -257,6 +257,32 @@ A relation between two owners that belongs to neither exclusively is that
 table with `owner_column: None` (`proxima_core.group_memberships` is the
 shipped example; see 08 §Contract Reach).
 
+### Flavor-scoped erase must fence its scope
+
+A scope of your own — a repository, a project, a workspace — is a scope the
+substrate cannot see. A bare `scope_id uuid` column with no FK to the scope's
+own table is reachable by no core fence, so the owner and source fences do not
+separate an erase of that scope from a concurrent write into it.
+
+A flavor that erases such a scope owns the fence for it:
+
+- Its own advisory-lock namespace (`<flavor>-<scope>-fence:<owner_kind>:<owner_id>:<scope_id>`,
+  hashed with `hashtextextended(.., 0)`). Never hash a scope id into the
+  Memory `t`/handle namespace — a scope is not an admission, and the alias
+  would collide with a series handle.
+- The erase takes it **exclusively before it reads anything**, so its
+  footprint is exact by construction rather than by re-checking afterwards.
+- Every transaction writing a Memory, sidecar, admission, or state row that
+  carries the scope id takes it **shared, in that same transaction, before its
+  handle/`t` locks**, and rereads the scope row under it.
+- Order: owner fence → source fence → **scope fence** → handle/lifecycle `t` →
+  rows. Distinct scope ids take distinct keys and never wait on each other.
+- A vanished scope row is a typed refusal on every ingest path. An allow-all
+  fallback ("no scope row, so no restriction") is the bug this rule exists to
+  prevent.
+
+`flavors/code/src/repos/fence.rs` is the shipped example.
+
 ## PG Sidecars
 
 Implement insert and readback for every payload registered with a PG
@@ -1088,4 +1114,6 @@ serialization. Internal identity/storage/query paths must stay typed.
 - Migrator exported with `ignore_missing(true)`.
 - No JSON escape hatch in payload structs or sidecars.
 - Prefix guards pass at registry freeze.
+- Every flavor-owned erase scope has a fence, taken before its selection reads
+  and by every writer into that scope.
 - `cargo clippy --workspace --all-targets` clean.

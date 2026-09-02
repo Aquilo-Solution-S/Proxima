@@ -21,8 +21,21 @@ pub async fn start_run(
 
 /// Create a queued run or return the active row plus whether this call inserted.
 ///
+/// The insert is the one writer here that can bring new repository-scoped
+/// state into existence, so it is the one that takes the repository fence
+/// (shared, in its own transaction, before the row lock the `runs_repo_fk`
+/// foreign key implies). `runs_repo_fk` would refuse a run for a repository
+/// erased before this transaction anyway; the fence is what makes the
+/// refusal a refusal rather than a race, and puts this writer in the same
+/// lane and the same order as every other repository-scoped write. The
+/// stage/terminal updaters below need no fence: they only ever narrow an
+/// existing row, and an erase cascades that row away rather than leaving it
+/// to be updated.
+///
 /// # Errors
-/// Returns `RepoRegistryError::Database` on database failures.
+/// Returns `RepoRegistryError::NotFound` when the repository is not
+/// registered for `owner`, `RepoRegistryError::Database` on database
+/// failures.
 pub async fn start_run_with_created(
     pool: &PgPool,
     owner: &Owner,
@@ -30,6 +43,12 @@ pub async fn start_run_with_created(
 ) -> Result<(RepoIngestionRun, bool), RepoRegistryError> {
     let (kind, principal_id) = owner.columns();
     let new_run_id = Uuid::now_v7();
+
+    let mut tx = pool.begin().await?;
+    super::fence::lock_repo_fence_shared_tx(&mut tx, owner, repo_id).await?;
+    if !super::fence::repo_registered_tx(&mut tx, owner, repo_id).await? {
+        return Err(RepoRegistryError::NotFound { repo_id });
+    }
 
     let inserted = sqlx::query_as::<_, RunRow>(
         "INSERT INTO proxima_code.repo_ingestion_runs \
@@ -49,8 +68,9 @@ pub async fn start_run_with_created(
     .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     if let Some(row) = inserted {
         return Ok((row.into(), true));

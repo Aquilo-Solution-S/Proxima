@@ -280,12 +280,36 @@ impl UnitOfWork<'_> {
             .map_err(|err| ProtocolError::internal(err.to_string()))
     }
 
+    /// Serialize this transaction against `key` in shared mode
+    /// (`pg_advisory_xact_lock_shared`).
+    ///
+    /// A fenced scope's writers take this; the scope's eraser takes the
+    /// exclusive mode. Writers do not wait on each other, the erase waits
+    /// for all of them, and every writer after it waits for the erase. It
+    /// is NOT the mode for the read-model precondition — see
+    /// [`Self::read_own_sidecar`], which needs an exclusive holder to make
+    /// the check binding.
+    ///
+    /// # Errors
+    ///
+    /// Storage faults from the lock.
+    pub async fn advisory_xact_lock_shared(&mut self, key: i64) -> Result<(), ProtocolError> {
+        self.ensure_session()
+            .await?
+            .advisory_xact_lock_shared(key)
+            .await
+            .map_err(|err| ProtocolError::internal(err.to_string()))
+    }
+
     /// Read `owner`'s own sidecar rows inside THIS transaction.
     ///
     /// The read-model precondition affordance: `advisory_xact_lock` →
     /// read → check → append, all on one snapshot. Opens the transaction
     /// if the unit has not written yet, because a read that is not in the
-    /// transaction is exactly the thing this exists to stop being.
+    /// transaction is exactly the thing this exists to stop being. The
+    /// exclusive mode is the one that binds it: under
+    /// [`Self::advisory_xact_lock_shared`] a second holder of the same key
+    /// reads the same absence and appends the same row.
     ///
     /// `owner` goes through the same write gate as the append that follows
     /// it, and the resolved permit — not `read` — is what scopes the rows.

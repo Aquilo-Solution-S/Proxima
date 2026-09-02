@@ -17,9 +17,10 @@ mod common;
 
 use common::{git, migrated_db, test_owner, write_file};
 use proxima_code::chunker::MAX_BLOB_BYTES;
-use proxima_code::testkit::build_engine;
+use proxima_code::testkit::{build_engine, register_repo};
 use proxima_code::{
     CodeChunkV1, CodeFlavorStore, CodeIngestContext, FileRevisionV1, FileState, LocalGitSource,
+    RepoScope,
 };
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
 use proxima_core::{
@@ -28,6 +29,29 @@ use proxima_core::{
 use proxima_pg_testkit::drop_db;
 use sqlx::Row;
 use tempfile::TempDir;
+
+/// Register the fixture's repository row.
+///
+/// Not optional any more: an ingest resolves its scope from this row, and a
+/// missing row is a refusal rather than an allow-all scope — the fallback
+/// that let a racing erase be re-indexed. See `repo_fence_pg`.
+async fn register_fixture_repo(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+    path: &std::path::Path,
+) {
+    register_repo(
+        pool,
+        owner,
+        repo_id,
+        &path.to_string_lossy(),
+        "local git fixture",
+        &RepoScope::default(),
+    )
+    .await
+    .expect("register fixture repo");
+}
 use uuid::Uuid;
 
 fn fixture_repo() -> TempDir {
@@ -140,6 +164,7 @@ async fn local_git_source_full_cycle() {
         // Initial index.
         let repo = fixture_repo();
         let repo_id = Uuid::now_v7();
+        register_fixture_repo(pg.pool_for_tests(), &owner, repo_id, repo.path()).await;
         let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
         let cursor = proxima_core::Cursor::empty();
         let (r1, cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
@@ -404,6 +429,7 @@ async fn head_snapshot_repeated_after_change_and_delete_is_idempotent() {
 
         let repo = fixture_repo();
         let repo_id = Uuid::now_v7();
+        register_fixture_repo(pg.pool_for_tests(), &owner, repo_id, repo.path()).await;
         let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
 
         let initial = source
@@ -490,6 +516,7 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         git(dir.path(), &["commit", "-q", "-m", "init"]);
 
         let repo_id = Uuid::now_v7();
+        register_fixture_repo(pg.pool_for_tests(), &owner, repo_id, dir.path()).await;
         let source = LocalGitSource::new(repo_id, dir.path().to_path_buf(), owner);
         let initial = source
             .run_head_snapshot(&ingest_ctx, &Cursor::empty())
@@ -642,6 +669,7 @@ async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
         git(dir.path(), &["commit", "-q", "-m", "init"]);
 
         let repo_id = Uuid::now_v7();
+        register_fixture_repo(pg.pool_for_tests(), &owner, repo_id, dir.path()).await;
         let source = LocalGitSource::new(repo_id, dir.path().to_path_buf(), owner);
         let cursor = proxima_core::Cursor::empty();
         let (report, _cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;

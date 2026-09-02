@@ -388,6 +388,17 @@ async fn limited_local_ingestion_advances_one_commit_per_poll() {
         let owner = test_owner();
         let repo = make_tiny_repo();
         let repo_id = Uuid::now_v7();
+        // Registered, because an ingest of an unregistered repository is a
+        // refusal now rather than an allow-all fallback: see `repo_fence_pg`.
+        register_repo(
+            pg.pool_for_tests(),
+            &owner,
+            repo_id,
+            &repo.path().to_string_lossy(),
+            "fixture",
+            &RepoScope::default(),
+        )
+        .await?;
         let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
         let engine = build_engine(pg.clone());
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);

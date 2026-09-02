@@ -15,8 +15,8 @@ use std::sync::Arc;
 mod common;
 
 use common::{migrated_db, test_owner};
-use proxima_code::testkit::build_engine;
-use proxima_code::{CodeFlavorStore, CodeIngestContext, LocalGitSource};
+use proxima_code::testkit::{build_engine, register_repo};
+use proxima_code::{CodeFlavorStore, CodeIngestContext, LocalGitSource, RepoScope};
 use proxima_core::{AuthPath, AuthzContext, Cursor, Owner};
 use proxima_pg_testkit::drop_db;
 use tempfile::TempDir;
@@ -147,6 +147,17 @@ async fn self_ingestion_streams_proxima_main() {
 
         // Historical ingestion.
         let repo_id = Uuid::now_v7();
+        // An ingest resolves its scope from the repo row and refuses when
+        // there is none — see `repo_fence_pg`.
+        register_repo(
+            pg.pool_for_tests(),
+            &owner,
+            repo_id,
+            &clone_path.to_string_lossy(),
+            "self ingestion fixture",
+            &RepoScope::default(),
+        )
+        .await?;
         let source = LocalGitSource::new(repo_id, clone_path.clone(), owner);
         let cursor = Cursor::empty();
         let (r1, cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;

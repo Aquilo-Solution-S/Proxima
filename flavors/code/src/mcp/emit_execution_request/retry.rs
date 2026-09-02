@@ -9,7 +9,7 @@ use proxima_core::{
 use crate::payloads::{CodeWorkAssignmentV1, ExecutionRequestV1};
 
 use super::super::{CodeToolCtxExt, engine};
-use super::context_validation::validate_evidence_in_owner;
+use super::context_validation::{fence_repo_write, validate_evidence_in_owner};
 use super::ingest::{FactProvenance, ingest_execution_request};
 use super::input_validation::{normalize_text, resolve_evidence};
 use super::retry_support::{
@@ -116,6 +116,7 @@ impl Tool for CodeRetryExecutionRequestTool {
                 .unit_of_work(ctx.authz())
                 .await
                 .map_err(ToolError::Protocol)?;
+            fence_repo_write(&ctx, &mut uow, prior.repo_id).await?;
             let outcome = ingest_execution_request(
                 &mut uow,
                 &payload,
@@ -178,37 +179,44 @@ async fn author_assignment(
         work_item_memory_id: work_item_memory_id.into_inner(),
         reason: "shell-author retry assignment".to_string(),
     };
-    let outcome = engine
-        .author_derived_authorized(
-            ctx.authz(),
-            AuthorDerivedRequestInput {
-                memory_id: work_assignment_memory_id(
-                    &owner,
-                    target_perspective_memory_id,
-                    work_item_memory_id,
-                ),
-                owner,
-                kind: EntityKind::Perspective,
-                text: payload.reason.clone(),
-                schema_id: SchemaId::new(
-                    <CodeWorkAssignmentV1 as PerspectivePayload>::SCHEMA_ID.into(),
-                ),
-                schema_version: SchemaVersion::new(
-                    <CodeWorkAssignmentV1 as PerspectivePayload>::SCHEMA_VERSION,
-                ),
-                operator_kind: MemoryOperatorKind::AtoP,
-                operator_id: work_assignment_operator_id(),
-                input_contract_id: work_assignment_input_contract_id(),
-                model_id: caller.model_id.as_str(),
-                sidecar_payload: SidecarPayload::perspective(payload),
-                // An assignment consumes nothing. It grounds through the
-                // references its payload carries.
-                derived_from: &[],
-                extra_refs: &[],
-                supersedes: None,
-                lexical_language: None,
-            },
-        )
+    // `author_derived_authorized` is this write inside a unit of work of
+    // one. Spelled out here so the assignment's `repo_id` is fenced in the
+    // same transaction that writes it: the row carries a repository scope,
+    // so it is one of the rows a repository erase must not miss.
+    let mut uow = engine
+        .unit_of_work(ctx.authz())
+        .await
+        .map_err(ToolError::Protocol)?;
+    fence_repo_write(ctx, &mut uow, repo_id).await?;
+    let outcome = uow
+        .author_derived(AuthorDerivedRequestInput {
+            memory_id: work_assignment_memory_id(
+                &owner,
+                target_perspective_memory_id,
+                work_item_memory_id,
+            ),
+            owner,
+            kind: EntityKind::Perspective,
+            text: payload.reason.clone(),
+            schema_id: SchemaId::new(
+                <CodeWorkAssignmentV1 as PerspectivePayload>::SCHEMA_ID.into(),
+            ),
+            schema_version: SchemaVersion::new(
+                <CodeWorkAssignmentV1 as PerspectivePayload>::SCHEMA_VERSION,
+            ),
+            operator_kind: MemoryOperatorKind::AtoP,
+            operator_id: work_assignment_operator_id(),
+            input_contract_id: work_assignment_input_contract_id(),
+            model_id: caller.model_id.as_str(),
+            sidecar_payload: SidecarPayload::perspective(payload),
+            // An assignment consumes nothing. It grounds through the
+            // references its payload carries.
+            derived_from: &[],
+            extra_refs: &[],
+            supersedes: None,
+            lexical_language: None,
+        })
         .await?;
+    uow.commit().await.map_err(ToolError::Protocol)?;
     Ok(ctx.format_perspective_memory(outcome.memory_id))
 }
