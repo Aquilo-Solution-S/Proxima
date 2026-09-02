@@ -1,6 +1,7 @@
 //! Repository registry and ingestion-run state.
 
 pub mod erase;
+pub mod fence;
 pub mod records;
 pub mod registry;
 mod rows;
@@ -10,6 +11,10 @@ pub mod scope;
 pub use erase::erase_repo;
 #[cfg(any(test, debug_assertions))]
 pub use erase::{erase_footprint, reference_closure_sql};
+/// The fence, reachable from an integration test so a barrier can hold the
+/// same lock the production paths take rather than a hand-copied key.
+#[cfg(any(test, debug_assertions))]
+pub use fence::{lock_repo_fence_exclusive_tx, lock_repo_fence_shared_tx};
 pub use records::{
     RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
     StageCounters,

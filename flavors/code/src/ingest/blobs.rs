@@ -11,6 +11,7 @@ use proxima_storage_pg::query::ChunkSeriesHead;
 use uuid::Uuid;
 
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1};
+use crate::repos::fence::fence_repo_admission;
 use crate::store::CodeFlavorStore;
 
 use super::IngestError;
@@ -75,9 +76,20 @@ fn code_slice_identity_key(payload: &CodeChunkV1, source_file_revision: MemoryId
     key
 }
 
+/// One repo-scoped Fact, fenced.
+///
+/// `Engine::ingest_typed_fact_with` is the same thing without the fence — a
+/// unit of work of one — so this spells the unit out in order to get the
+/// repository fence into the transaction BEFORE the admission takes its
+/// handle and `t` locks. That order is what makes a racing erase queue
+/// behind this write instead of closing a lock cycle with it.
+#[allow(clippy::too_many_arguments)]
 async fn ingest_local_git_fact<P>(
     engine: &Engine,
     authz: &AuthzContext,
+    store: &CodeFlavorStore,
+    owner: Owner,
+    repo_id: uuid::Uuid,
     payload: &P,
     citation: CitationSpec,
     observed_at: time::OffsetDateTime,
@@ -85,15 +97,17 @@ async fn ingest_local_git_fact<P>(
 where
     P: proxima_core::FactPayload + Clone,
 {
-    engine
-        .ingest_typed_fact_with(
-            authz,
+    let mut uow = engine.unit_of_work(authz).await?;
+    fence_repo_admission(store.pool(), &mut uow, owner, repo_id).await?;
+    let outcome = uow
+        .ingest_typed(
             TypedFactIngest::new(LOCAL_GIT_SOURCE_ID, payload)
                 .observed_at(observed_at)
                 .citation(citation),
         )
-        .await
-        .map_err(IngestError::from)
+        .await?;
+    uow.commit().await?;
+    Ok(outcome)
 }
 
 /// Current series handle for this owner's chunk at `(repo, path, index)`.
@@ -201,12 +215,17 @@ pub async fn resolve_code_chunk_handles(
 pub async fn ingest_commit(
     engine: &Engine,
     authz: &AuthzContext,
+    store: &CodeFlavorStore,
+    owner: Owner,
     payload: &CommitV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
     ingest_local_git_fact(
         engine,
         authz,
+        store,
+        owner,
+        payload.repo_id,
         payload,
         CitationSpec::v1(
             CODE_COMMIT_OBJECT_SCHEMA,
@@ -224,12 +243,17 @@ pub async fn ingest_commit(
 pub async fn ingest_file_revision(
     engine: &Engine,
     authz: &AuthzContext,
+    store: &CodeFlavorStore,
+    owner: Owner,
     payload: &FileRevisionV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
     ingest_local_git_fact(
         engine,
         authz,
+        store,
+        owner,
+        payload.repo_id,
         payload,
         CitationSpec::v1(
             CODE_BLOB_SCHEMA,
@@ -273,6 +297,7 @@ pub async fn append_code_slices(
     append_code_slices_with_handles(
         engine,
         authz,
+        store,
         owner,
         payloads,
         source_file_revision,
@@ -284,9 +309,11 @@ pub async fn append_code_slices(
 
 /// [`append_code_slices`] when the caller already resolved series handles
 /// (intra-file call naming).
+#[allow(clippy::too_many_arguments)]
 pub async fn append_code_slices_with_handles(
     engine: &Engine,
     authz: &AuthzContext,
+    store: &CodeFlavorStore,
     owner: Owner,
     payloads: &[CodeChunkV1],
     source_file_revision: MemoryId,
@@ -298,9 +325,10 @@ pub async fn append_code_slices_with_handles(
             "code slice handle count must match payload count".into(),
         ));
     }
-    if payloads.is_empty() {
+    let Some(first) = payloads.first() else {
         return Ok(Vec::new());
-    }
+    };
+    let repo_id = first.repo_id;
     let mut origins = vec![EdgeEndpoint::memory(EntityKind::Fact, source_file_revision)];
     if let Some(commit) = source_commit {
         origins.push(EdgeEndpoint::memory(EntityKind::Fact, commit));
@@ -333,7 +361,17 @@ pub async fn append_code_slices_with_handles(
             // sync with.
             lexical_language: None,
         });
+    // One repository per group. The fence is a per-repository lane, so a
+    // batch that spanned two of them would be covered by neither.
+    if payloads.iter().any(|payload| payload.repo_id != repo_id) {
+        return Err(IngestError::Storage(
+            "code slice batch requires one repo_id".into(),
+        ));
+    }
     let mut uow = engine.unit_of_work(authz).await?;
+    // Before the first derived write, so the group's handles and `t`s are
+    // taken under the fence rather than ahead of it.
+    fence_repo_admission(store.pool(), &mut uow, owner, repo_id).await?;
     let outcomes = uow.author_derived_all(reqs).await?;
     uow.commit().await?;
     Ok(outcomes)
@@ -344,6 +382,7 @@ pub async fn append_code_slices_with_handles(
 pub async fn append_code_slice(
     engine: &Engine,
     authz: &AuthzContext,
+    store: &CodeFlavorStore,
     owner: Owner,
     payload: &CodeChunkV1,
     source_file_revision: MemoryId,
@@ -362,6 +401,7 @@ pub async fn append_code_slice(
     let outcomes = append_code_slices_with_handles(
         engine,
         authz,
+        store,
         owner,
         std::slice::from_ref(payload),
         source_file_revision,

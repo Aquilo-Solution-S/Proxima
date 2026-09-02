@@ -191,9 +191,18 @@ whole — the erase never observes a partial one. Transfer exclusively fences
 both endpoints in sorted owner order before its complete sorted series
 handle/`t` locks and membership reread, so owner- and source-scope erase have
 defined boundaries. Per-entity hydration,
-forget, and single-entity erase retain their existing per-`t`/handle contract;
-repository sweeps share their source-owner boundary through commit but remain
-outside this bulk-erase exact-snapshot claim.
+forget, and single-entity erase retain their existing per-`t`/handle contract.
+A flavor scope narrower than a source fences itself the same way in its own
+namespace: Code repository erase takes the repository fence
+(`proxima-code-repo-fence:<owner_kind>:<owner_id>:<repo_id>`) exclusively
+before it selects, and every transaction writing a row that carries that
+`repo_id` takes the same fence shared before its handle/`t` locks and rereads
+the `repos` row under it — shared, so concurrent writers into one repository
+do not serialize against each other, exclusive only for the erase they are
+being separated from. That extends the order to owner → source → repository →
+Memory handle → lifecycle `t` → rows. A repository sweep therefore carries the
+same exact-snapshot claim as owner and source scope, and an ingest that races
+it is refused as `NotFound` rather than admitted into an erased scope.
 
 ## Outcomes
 

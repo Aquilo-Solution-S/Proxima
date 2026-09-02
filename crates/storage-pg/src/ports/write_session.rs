@@ -49,6 +49,15 @@ impl WriteSession for PgWriteSession {
         Ok(())
     }
 
+    async fn advisory_xact_lock_shared(&mut self, key: i64) -> Result<(), StorageError> {
+        sqlx::query("SELECT pg_advisory_xact_lock_shared($1)")
+            .bind(key)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(crate::error::map_err)?;
+        Ok(())
+    }
+
     async fn read_own_sidecar(
         &mut self,
         permit: &OwnerWritePermit,

@@ -588,7 +588,7 @@ fn map_index_error(error: &crate::IndexError) -> ToolError {
     ToolError::Other(error.to_string())
 }
 
-fn map_repo_registry(error: RepoRegistryError) -> ToolError {
+pub(crate) fn map_repo_registry(error: RepoRegistryError) -> ToolError {
     match error {
         RepoRegistryError::DuplicatePath { canonical_path } => ToolError::InvalidInput(format!(
             "repo already registered for owner: {canonical_path}"

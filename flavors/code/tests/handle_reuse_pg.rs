@@ -3,8 +3,8 @@
 mod common;
 
 use common::{migrated_db, owner_write_permit, test_owner};
-use proxima_code::testkit::{build_engine, ingest_commit, ingest_file_revision};
-use proxima_code::{CommitV1, FileRevisionV1, FileState};
+use proxima_code::testkit::{build_engine, ingest_commit, ingest_file_revision, register_repo};
+use proxima_code::{CodeFlavorStore, CommitV1, FileRevisionV1, FileState, RepoScope};
 use proxima_core::storage_ports::OwnerTransferPort;
 use proxima_core::{AccessKind, AuthPath, AuthzContext, EntityId};
 use proxima_pg_testkit::drop_db;
@@ -56,6 +56,27 @@ fn commit(repo_id: Uuid) -> CommitV1 {
     }
 }
 
+/// Every repo-scoped ingest is fenced on a registered repository, so the
+/// fixture has to register one. An unregistered repo id is now a refusal,
+/// which is the point of the fence and is pinned in `repo_fence_pg`.
+async fn registered_store(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &proxima_core::OwnerRef,
+    repo_id: Uuid,
+) -> Result<CodeFlavorStore, Box<dyn std::error::Error>> {
+    let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+    register_repo(
+        pg.pool_for_tests(),
+        owner,
+        repo_id,
+        &format!("/tmp/proxima-handle-reuse-{repo_id}"),
+        "handle reuse fixture",
+        &RepoScope::default(),
+    )
+    .await?;
+    Ok(store)
+}
+
 #[tokio::test]
 async fn code_stateful_ingest_reuses_handle() {
     let (db_name, pg) = migrated_db().await;
@@ -64,12 +85,15 @@ async fn code_stateful_ingest_reuses_handle() {
         let engine = build_engine(pg.clone());
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let repo_id = Uuid::now_v7();
+        let store = registered_store(&pg, &owner, repo_id).await?;
         let file_path = "src/lib.rs";
         let now = time::OffsetDateTime::now_utc();
 
         let first = ingest_file_revision(
             &engine,
             &authz,
+            &store,
+            owner,
             &file_revision(repo_id, file_path, "v1"),
             now,
         )
@@ -77,6 +101,8 @@ async fn code_stateful_ingest_reuses_handle() {
         let second = ingest_file_revision(
             &engine,
             &authz,
+            &store,
+            owner,
             &file_revision(repo_id, file_path, "v2"),
             now,
         )
@@ -87,7 +113,7 @@ async fn code_stateful_ingest_reuses_handle() {
             "new observation is a new t"
         );
 
-        ingest_commit(&engine, &authz, &commit(repo_id), now).await?;
+        ingest_commit(&engine, &authz, &store, owner, &commit(repo_id), now).await?;
         Ok(())
     }
     .await;
@@ -104,11 +130,14 @@ async fn code_stateful_ingest_mints_after_owner_transfer() {
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let permit = owner_write_permit(&owner, AccessKind::Fact).await?;
         let repo_id = Uuid::now_v7();
+        let store = registered_store(&pg, &owner, repo_id).await?;
         let file_path = "src/lib.rs";
         let now = time::OffsetDateTime::now_utc();
         let first = ingest_file_revision(
             &engine,
             &authz,
+            &store,
+            owner,
             &file_revision(repo_id, file_path, "v1"),
             now,
         )
@@ -126,6 +155,8 @@ async fn code_stateful_ingest_mints_after_owner_transfer() {
         let after = ingest_file_revision(
             &engine,
             &authz,
+            &store,
+            owner,
             &file_revision(repo_id, file_path, "v2"),
             now,
         )
