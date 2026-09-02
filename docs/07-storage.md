@@ -251,6 +251,23 @@ hashed into the `t`/handle namespace, distinct repositories take distinct
 keys, and a vanished repository row is a typed refusal on every ingest path
 rather than an unscoped write.
 
+Upload object keys have their own fence, one rank below the lifecycle set. A
+path that is about to decide whether an upload object's bytes may be destroyed
+— owner erase, source-scope erase, upload stage, finish and abort, mount
+creation, and the in-place upload moves inside transfer — locks the complete
+sorted, deduplicated set of `blob_uploads.object_key` values it will decide
+about, after its owner/source fence and after its handle and lifecycle `t`
+locks, and before any refcount read, any row lock on `blob_uploads`, or any
+`cold_purge_pending` insert. The refcount is a query, never a counter: "does
+any surviving row under any owner still name this key". Holding the key to
+commit is what makes that query a decision rather than an observation — two
+owners erasing one mounted object would otherwise each read the other's row
+under READ COMMITTED, both withhold, and orphan the bytes. The upload paths
+take the key before their own row lock while erase takes it before its
+deletes, so the two orders can cross; `40P01` is therefore an expected
+outcome of correct code on these paths and every one of them re-runs its
+whole transaction under the shared bounded retry budget.
+
 <a id="scaling-envelope"></a>
 
 ## Scaling Envelope

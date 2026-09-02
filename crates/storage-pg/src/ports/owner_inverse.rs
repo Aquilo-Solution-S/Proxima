@@ -12,7 +12,6 @@ impl OwnerInversePort for PgStorage {
         &self,
         auth: &EraseAuthorization,
         group_id: GroupId,
-        object_purge_planned: bool,
         tables: &proxima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<OwnerEraseOutcome, StorageError> {
         verbs::owner_erase::erase_group_owner(
@@ -20,7 +19,6 @@ impl OwnerInversePort for PgStorage {
             self.cold.as_ref(),
             auth,
             group_id,
-            object_purge_planned,
             tables,
         )
         .await
@@ -30,7 +28,6 @@ impl OwnerInversePort for PgStorage {
         &self,
         auth: &EraseAuthorization,
         user_id: UserId,
-        object_purge_planned: bool,
         tables: &proxima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<OwnerEraseOutcome, StorageError> {
         verbs::owner_erase::erase_personal_owner(
@@ -38,7 +35,6 @@ impl OwnerInversePort for PgStorage {
             self.cold.as_ref(),
             auth,
             user_id,
-            object_purge_planned,
             tables,
         )
         .await

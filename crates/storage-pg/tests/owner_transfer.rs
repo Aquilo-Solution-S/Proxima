@@ -174,6 +174,33 @@ async fn lifecycle_waiter_count(pool: &sqlx::PgPool, t: Uuid) -> Result<i64, sql
     .await
 }
 
+/// Sessions queued behind one object key's lifecycle lock.
+///
+/// The refcount fence: every taker that is about to decide whether an upload
+/// object's bytes may go queues here first, so the decision reads a set of
+/// referencing rows nobody else is still changing.
+async fn object_key_waiter_count(
+    pool: &sqlx::PgPool,
+    object_key: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND NOT granted
+            AND mode = 'ExclusiveLock'
+            AND classid::bigint = ((hashtextextended(
+                'proxima-object-key:' || $1, 0
+            ) >> 32) & 4294967295)
+            AND objid::bigint = (hashtextextended(
+                'proxima-object-key:' || $1, 0
+            ) & 4294967295)",
+    )
+    .bind(object_key)
+    .fetch_one(pool)
+    .await
+}
+
 fn draft() -> FactWriteCommand {
     FactWriteCommand {
         schema_id: SchemaId::new("core/test-fact-v1".to_string()),
@@ -374,6 +401,61 @@ async fn fresh_pg() -> (String, PgStorage) {
         .expect("connect");
     pg.run_migrations().await.expect("migrate");
     (db_name, pg)
+}
+
+/// A cold store that records every destruction it is asked for.
+///
+/// The count is the only witness that separates "both owners withheld" from
+/// "one owner destroyed": `cold_purge_pending` reads empty in both cases,
+/// because a discharged debt deletes its own row.
+#[derive(Debug, Default)]
+struct CountingColdStore {
+    inner: MemoryColdStore,
+    deletes: std::sync::Mutex<Vec<String>>,
+}
+
+impl CountingColdStore {
+    fn deletes_of(&self, key: &str) -> usize {
+        self.deletes
+            .lock()
+            .expect("delete log")
+            .iter()
+            .filter(|logged| logged.as_str() == key)
+            .count()
+    }
+}
+
+#[async_trait::async_trait]
+impl ColdObjectStore for CountingColdStore {
+    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        self.inner.put(key, bytes).await
+    }
+
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        self.inner.get(key).await
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+        self.deletes
+            .lock()
+            .expect("delete log")
+            .push(key.to_owned());
+        self.inner.delete(key).await
+    }
+}
+
+async fn fresh_pg_with_counting_cold() -> (String, PgStorage, Arc<CountingColdStore>) {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let cold = Arc::new(CountingColdStore::default());
+    let pg = PgStorage::connect(&db_url(&db_name))
+        .await
+        .expect("connect")
+        .with_cold(cold.clone());
+    pg.run_migrations().await.expect("migrate");
+    (db_name, pg, cold)
 }
 
 async fn fresh_pg_with_cold() -> (String, PgStorage, Arc<MemoryColdStore>) {
@@ -2522,7 +2604,7 @@ async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
             drop_event_id: "test-drop-armed-transfer".into(),
         });
         let outcome = pg
-            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
             .await?;
         let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("erase must complete after the refused transfer, got {outcome:?}");
@@ -2849,7 +2931,7 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
             drop_event_id: "test-drop-retained-audit".into(),
         });
         let erased = pg
-            .erase_personal_owner(&auth, user_id, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user_id, &contract_sidecar_tables())
             .await?;
         assert!(
             matches!(erased, OwnerEraseOutcome::Completed { .. }),
@@ -3003,7 +3085,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
         let auth =
             EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
         let erased = pg
-            .erase_group_owner(&auth, group_id, false, &contract_sidecar_tables())
+            .erase_group_owner(&auth, group_id, &contract_sidecar_tables())
             .await?;
         assert!(
             matches!(erased, OwnerEraseOutcome::Completed { .. }),
@@ -4321,7 +4403,7 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
         };
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
         let erased = pg
-            .erase_group_owner(&auth, group_id, false, &contract_sidecar_tables())
+            .erase_group_owner(&auth, group_id, &contract_sidecar_tables())
             .await?;
         assert!(
             matches!(erased, OwnerEraseOutcome::Completed { .. }),
@@ -4350,7 +4432,7 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
             drop_event_id: "drop-1".into(),
         });
         let erased = pg
-            .erase_personal_owner(&last, user_id, false, &contract_sidecar_tables())
+            .erase_personal_owner(&last, user_id, &contract_sidecar_tables())
             .await?;
         assert!(
             matches!(erased, OwnerEraseOutcome::Completed { .. }),
@@ -4368,6 +4450,144 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("refcounted object purge failed");
+}
+
+/// The same object, two owners, both erasing at once: the bytes go exactly
+/// once.
+///
+/// The sequential arm above passes on a refcount read against a stale
+/// snapshot. Under READ COMMITTED two concurrent erases each see the other's
+/// `blob_uploads` row, each concludes "someone else still names it", and both
+/// withhold — the object is destroyed zero times and nothing is left pointing
+/// at it. The object-key lock is what makes the anti-join a decision rather
+/// than an observation: the second erase runs its refcount after the first
+/// has committed its deletion.
+///
+/// The rendezvous is the proof that the lock is the one being taken. A third
+/// session holds `proxima-object-key:<key>` and both erases must queue behind
+/// it; drop that lock from the erase path and the wait never happens, so this
+/// test fails at the barrier rather than on the byte count.
+#[tokio::test]
+async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() {
+    let (db_name, pg, cold) = fresh_pg_with_counting_cold().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+
+        let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[17_u8; 32]).await?;
+        let object_key = format!("objects/{upload_id}");
+        cold.put(&object_key, b"the contested bytes").await?;
+
+        let mine = cite(&pg, &permit, "race-mine", blob_id).await?;
+        let _also_mine = cite(&pg, &permit, "race-also-mine", blob_id).await?;
+        assert!(
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(mine.memory_id),
+                dest,
+                &contract_sidecar_tables()
+            )
+            .await?
+        );
+        let mounts: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
+        )
+        .bind(&object_key)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(mounts, 2, "two owners now name one object");
+
+        // Hold the object's key so neither erase can decide until both are
+        // in flight and past their own owner fences.
+        let mut barrier = pool.begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(
+                 hashtextextended('proxima-object-key:' || $1, 0)
+             )",
+        )
+        .bind(&object_key)
+        .execute(&mut *barrier)
+        .await?;
+
+        let group_id = match dest {
+            OwnerRef::Group(group_id) => group_id,
+            OwnerRef::Personal(_) => panic!("a transfer destination is a group"),
+        };
+        let user_id = match owner {
+            OwnerRef::Personal(user_id) => user_id,
+            OwnerRef::Group(_) => panic!("seeded as a personal owner"),
+        };
+        let group_pg = pg.clone();
+        let group_erase = tokio::spawn(async move {
+            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
+            group_pg
+                .erase_group_owner(&auth, group_id, &contract_sidecar_tables())
+                .await
+        });
+        let personal_pg = pg.clone();
+        let personal_erase = tokio::spawn(async move {
+            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+                user_id,
+                drop_event_id: "race-drop".into(),
+            });
+            personal_pg
+                .erase_personal_owner(&auth, user_id, &contract_sidecar_tables())
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if object_key_waiter_count(pool, &object_key).await? >= 2 {
+                    return Ok::<(), sqlx::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await??;
+        barrier.rollback().await?;
+
+        let group_outcome = group_erase.await??;
+        let personal_outcome = personal_erase.await??;
+        assert!(
+            matches!(group_outcome, OwnerEraseOutcome::Completed { .. }),
+            "the group's erase completes: {group_outcome:?}"
+        );
+        assert!(
+            matches!(personal_outcome, OwnerEraseOutcome::Completed { .. }),
+            "the personal owner's erase completes: {personal_outcome:?}"
+        );
+
+        let survivors: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
+        )
+        .bind(&object_key)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(survivors, 0, "no row is left naming the object");
+        assert_eq!(
+            cold.deletes_of(&object_key),
+            1,
+            "exactly one of the two erases owed the bytes, and paid"
+        );
+        assert!(
+            matches!(
+                cold.get(&object_key).await,
+                Err(proxima_core::StorageError::NotFound)
+            ),
+            "the object is destroyed, not orphaned"
+        );
+        let pending: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cold_purge_pending")
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(pending, 0, "the discharged debt leaves no queue row");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("concurrent refcounted object purge failed");
 }
 
 /// The same guarantee, on the source-scope arm.
@@ -4462,7 +4682,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
         };
         let last = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
         let outcome = pg
-            .erase_group_owner(&last, group_id, false, &contract_sidecar_tables())
+            .erase_group_owner(&last, group_id, &contract_sidecar_tables())
             .await?;
         assert!(
             matches!(outcome, OwnerEraseOutcome::Completed { .. }),

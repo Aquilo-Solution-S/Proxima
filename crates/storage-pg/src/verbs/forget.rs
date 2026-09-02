@@ -823,22 +823,55 @@ async fn compensate_forget_put(
 /// than a `cooled` row naming nothing.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ColdPurgePlan {
-    object_keys: Vec<String>,
+    entries: Vec<ColdPurgeEntry>,
+}
+
+/// One debt: the key, and the object store that holds those bytes.
+///
+/// The backend travels with the key because the queue outlives the process
+/// that wrote it. See [`proxima_core::UNRECORDED_BACKEND`] for what an empty
+/// backend means and why cold Memory objects have one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColdPurgeEntry {
+    pub object_key: String,
+    pub backend: String,
 }
 
 impl ColdPurgePlan {
+    /// Debts with no recorded backend — cold Memory objects, whose store is
+    /// the deployment's one wired `ColdObjectStore`.
     pub(crate) fn from_keys(object_keys: Vec<String>) -> Self {
-        Self { object_keys }
+        Self::from_entries(
+            object_keys
+                .into_iter()
+                .map(|object_key| ColdPurgeEntry {
+                    object_key,
+                    backend: proxima_core::UNRECORDED_BACKEND.to_owned(),
+                })
+                .collect(),
+        )
+    }
+
+    pub(crate) fn from_entries(entries: Vec<ColdPurgeEntry>) -> Self {
+        Self { entries }
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.object_keys.is_empty()
+        self.entries.is_empty()
     }
 
     #[must_use]
-    pub fn object_keys(&self) -> &[String] {
-        &self.object_keys
+    pub fn entries(&self) -> &[ColdPurgeEntry] {
+        &self.entries
+    }
+
+    #[must_use]
+    pub fn object_keys(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .map(|entry| entry.object_key.clone())
+            .collect()
     }
 }
 
@@ -869,10 +902,25 @@ pub async fn purge_cold_objects_after_commit(
     plan: &ColdPurgePlan,
 ) -> ColdPurgeOutcome {
     let mut outcome = ColdPurgeOutcome {
-        attempted: u64::try_from(plan.object_keys().len()).unwrap_or(u64::MAX),
+        attempted: u64::try_from(plan.entries().len()).unwrap_or(u64::MAX),
         ..ColdPurgeOutcome::default()
     };
-    for key in plan.object_keys() {
+    for entry in plan.entries() {
+        let key = entry.object_key.as_str();
+        // Never delete against the wrong store, and never silently drop the
+        // debt either: the row stays, `failed` counts it, and the receipt
+        // reports the erase as still owing bytes. An operator draining the
+        // queue gets the typed refusal with the offending backend named.
+        if !proxima_core::cold_backend_matches(cold.backend(), &entry.backend) {
+            outcome.failed = outcome.failed.saturating_add(1);
+            tracing::warn!(
+                key,
+                row_backend = entry.backend,
+                store_backend = cold.backend(),
+                "cold purge debt names a backend this store is not; leaving it queued"
+            );
+            continue;
+        }
         match cold.delete(key).await {
             Ok(()) | Err(StorageError::NotFound) => match clear_cold_purge_pending(pool, key).await
             {
@@ -2719,15 +2767,15 @@ async fn erase_memory_series_after_snapshot(
     // unreferenced: after it, no row is left to read `blob_id` from.
     let cited = cited_blobs_locked_for_erase(tx, owner, &versions).await?;
 
-    let mut keys = Vec::new();
+    let mut entries = Vec::new();
     let mut erased = 0_u64;
     for t in versions {
         let plan = erase_memory(tx, sidecars, surfaces, owner, t).await?;
-        keys.extend_from_slice(plan.object_keys());
+        entries.extend_from_slice(plan.entries());
         erased += 1;
     }
-    keys.extend(gc_unreferenced_blobs(tx, owner_id, &cited).await?);
-    Ok((erased, ColdPurgePlan::from_keys(keys)))
+    entries.extend(gc_unreferenced_blobs(tx, owner_id, &cited).await?);
+    Ok((erased, ColdPurgePlan::from_entries(entries)))
 }
 
 /// Every version of every series the given admissions belong to, for this
@@ -3124,16 +3172,32 @@ async fn gc_unreferenced_blobs(
     tx: &mut Transaction<'_, Postgres>,
     owner_id: Uuid,
     cited: &[Uuid],
-) -> Result<Vec<String>, StorageError> {
+) -> Result<Vec<ColdPurgeEntry>, StorageError> {
     if cited.is_empty() {
         return Ok(Vec::new());
     }
-    sqlx::query_scalar(GC_UNREFERENCED_BLOBS_SQL)
+    // One snapshot is still not one lock for the OBJECT question. The
+    // anti-join below asks "does a row outside this orphan set name the key",
+    // and another owner's erase asking the mirror-image question concurrently
+    // would have both withhold and leak the bytes. The object-key fence is
+    // what serializes the two; `FOR UPDATE` on `blob` cannot, because the
+    // rows racing here belong to a different owner.
+    let object_keys = crate::access::owner_columns::blob_upload_object_keys(tx, cited).await?;
+    crate::access::owner_columns::lock_object_keys_tx(tx, &object_keys).await?;
+    sqlx::query_as::<_, (String, String)>(GC_UNREFERENCED_BLOBS_SQL)
         .bind(cited)
         .bind(owner_id)
         .fetch_all(tx.as_mut())
         .await
         .map_err(map_err)
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(object_key, backend)| ColdPurgeEntry {
+                    object_key,
+                    backend,
+                })
+                .collect()
+        })
 }
 
 const GC_UNREFERENCED_BLOBS_SQL: &str = "\
@@ -3150,8 +3214,8 @@ WITH orphans AS MATERIALIZED (
            )
 ),
 enqueued AS (
-    INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
-    SELECT DISTINCT u.object_key, u.owner_id
+    INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
+    SELECT DISTINCT ON (u.object_key) u.object_key, u.owner_id, u.bucket
       FROM proxima_core.blob_uploads u
       JOIN orphans o ON o.blob_id = u.blob_id
      WHERE NOT EXISTS (
@@ -3163,8 +3227,10 @@ enqueued AS (
                           SELECT 1 FROM orphans o2 WHERE o2.blob_id = other.blob_id
                       )
            )
-    ON CONFLICT (object_key) DO UPDATE SET enqueued_at = now()
-    RETURNING object_key
+     ORDER BY u.object_key, u.upload_id
+    ON CONFLICT (object_key) DO UPDATE
+       SET enqueued_at = now(), backend = EXCLUDED.backend
+    RETURNING object_key, backend
 ),
 d_uploads AS (
     DELETE FROM proxima_core.blob_uploads u
@@ -3179,7 +3245,7 @@ d_blobs AS (
 -- `d_uploads` and `d_blobs` are read by nothing on purpose: a
 -- data-modifying WITH clause runs exactly once and to completion whether
 -- or not the primary query reads its output.
-SELECT object_key FROM enqueued";
+SELECT object_key, backend FROM enqueued";
 
 // The forget/erase/hydrate suite. Crate-internal because it works at this
 // layer deliberately: it stamps `sidecar_tables` lists by hand — including a

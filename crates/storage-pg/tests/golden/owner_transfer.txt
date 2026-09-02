@@ -45,7 +45,7 @@
 {"aborted_at":null,"blob_id":"<id049>","bucket":"bucket","completed_at":"<ts050>","error_message":null,"etag":"etag-1","expected_byte_len":1,"expires_at":"<ts051>","filename":"f.pdf","mime":"application/pdf","mounted_from_upload_id":"<id053>","object_key":"objects/mount","owner_id":"<id039>","sha256":"\\x1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","status":"completed","upload_id":"<id056>"}
 ## proxima_core.closed_handle (0)
 ## proxima_core.cold_purge_pending (1)
-{"enqueued_at":"<ts057>","object_key":"cold/never-drained","owner_id":"<id018>"}
+{"backend":"","enqueued_at":"<ts057>","object_key":"cold/never-drained","owner_id":"<id018>"}
 ## proxima_core.content (3)
 {"content_hash":"\\x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","content_id":"<id058>","owner_id":"<id018>","schema_id":"core/agent-note-v1"}
 {"content_hash":"\\x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","content_id":"<id059>","owner_id":"<id039>","schema_id":"core/agent-note-v1"}

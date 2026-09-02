@@ -841,7 +841,7 @@ async fn scenario(source_scope: Option<&str>, out_key: &str) {
                     drop_event_id: "diff".into(),
                 });
                 let outcome = pg
-                    .erase_personal_owner(&auth, corpus.target, false, &tables())
+                    .erase_personal_owner(&auth, corpus.target, &tables())
                     .await?;
                 text.push_str(&format!("## outcome {}\n", outcome_shape(&outcome)));
             }
@@ -883,12 +883,9 @@ async fn scenario(source_scope: Option<&str>, out_key: &str) {
 fn outcome_shape(outcome: &proxima_core::owner_inverse::OwnerEraseOutcome) -> String {
     match outcome {
         proxima_core::owner_inverse::OwnerEraseOutcome::Completed {
-            cited_object_purge_pending,
             cold_object_purge_pending,
             ..
-        } => format!(
-            "Completed cited_pending={cited_object_purge_pending} cold_pending={cold_object_purge_pending}"
-        ),
+        } => format!("Completed cold_pending={cold_object_purge_pending}"),
         other => format!("{other:?}"),
     }
 }

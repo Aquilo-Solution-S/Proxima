@@ -105,7 +105,7 @@ Every erase returns what it destroyed; every export returns what it carried.
 | erase counts | one entry per `counter` the frozen flavor contracts declare, seeded to zero before the first delete, so "counted none" is distinguishable from "does not count this" |
 | export counts | one entry per exported table, derived from the rows beside them — a count that disagrees with its rows is not representable |
 | identity | the operation's uuidv7 id, its target, the derived requester and auth path, and the timestamp |
-| external debt | `cold_object_purge_pending` and `cited_object_purge_pending` independently report destruction still owed outside the database |
+| external debt | `cold_object_purge_pending` is the one receipt for destruction still owed outside the database. Cold Memory objects and cited upload objects share `cold_purge_pending`, so one queue answers for both |
 | persistence | none. Core writes no journal row for an erase, a refusal, or an export |
 
 A host that must be able to show what it did records the receipt. A host with
@@ -136,7 +136,8 @@ Two legs deserve prose because their correctness is not local:
 | Rows | Contract |
 |---|---|
 | external objects | each exact `cooled.object_key` or erased `blob_uploads.object_key` is enqueued in `cold_purge_pending` inside the erase transaction and the object is destroyed only after commit. Destroying in-transaction loses the bytes outright on rollback. The queue IS the debt: a row means the object still exists and the erase that promised to reclaim it has not. |
-| shared objects | an object key two owners' upload rows both name survives one owner's erase. The candidate set is filtered by an anti-join against the other owner's rows, and under source scope against rows outside the selection — refcount by query, never by counter. |
+| shared objects | an object key two owners' upload rows both name survives one owner's erase. The candidate set is filtered by an anti-join against the other owner's rows, and under source scope against rows outside the selection — refcount by query, never by counter. The query is asked while holding that object key's advisory fence, so it is a decision and not an observation: two erases racing over one mounted object cannot each defer to the other and destroy it zero times. Every path that publishes, moves or retires an upload object takes the same fence, which is why a stage that finds its row erased under it can conclude that the bytes it just wrote are owed to nobody, and enqueue them. |
+| backend identity | each queue row records the object store its debt is owed against, taken from `blob_uploads.bucket` at enqueue. A drain refuses to run — loudly, naming the foreign backends — while the queue holds a debt against a store this process is not wired to, rather than deleting nothing against the wrong bucket and clearing the debt anyway. Rows written before the column existed carry no backend and are drained by any store; boot asserts that the wired cold store is the configured bucket. |
 
 ## The export bundle
 

@@ -11,8 +11,8 @@ use proxima_core::error::ProtocolError;
 use proxima_core::storage_ports::{
     CitedBlobHeld, CitedBlobIntegrityMismatch, CitedBlobPort, CitedBlobReadError,
     CitedBlobReadPort, CitedBlobReadUrl, CitedBlobReconcileOutcome, CitedBlobService,
-    CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadPrepared, CitedObjectErasePort,
-    MAX_HELD_BLOB_DIGESTS, OwnerTransferPort, OwnerWritePermit,
+    CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS,
+    OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
 };
 use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::{
@@ -47,6 +47,46 @@ fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     proxima_core::owner_inverse::OwnerSurfaces::for_registry(
         &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
     )
+}
+
+/// Erase an owner for real and drain the debt it enqueued.
+///
+/// This is the whole object-store half now: the erase transaction enqueues
+/// every orphaned key in `cold_purge_pending` under the object-key fence, and
+/// the wired `ColdObjectStore` destroys them after the commit. The
+/// `CitedObjectErasePort` these tests used to call ran AFTER the same
+/// transaction deleted the rows it enumerated, so it could only ever report a
+/// vacuous success — the objects it was supposed to reach were unreachable by
+/// the time it looked.
+async fn erase_owner_and_drain(pg: &PgStorage, store: &CitedBlobStore, owner: OwnerRef) {
+    use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
+
+    let pg = pg.clone().with_cold(Arc::new(store.cold_store()));
+    let surfaces = transfer_surfaces();
+    let outcome = match owner {
+        OwnerRef::Personal(user_id) => {
+            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+                user_id,
+                drop_event_id: "blob-s3-test-drop".into(),
+            });
+            OwnerInversePort::erase_personal_owner(&pg, &auth, user_id, &surfaces).await
+        }
+        OwnerRef::Group(group_id) => {
+            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
+            OwnerInversePort::erase_group_owner(&pg, &auth, group_id, &surfaces).await
+        }
+    }
+    .expect("owner erase");
+    assert!(
+        matches!(
+            outcome,
+            OwnerEraseOutcome::Completed {
+                cold_object_purge_pending: false,
+                ..
+            }
+        ),
+        "the drain must clear every debt the erase enqueued: {outcome:?}"
+    );
 }
 
 async fn fresh_storage() -> (PgStorage, String) {
@@ -1359,6 +1399,11 @@ async fn versioned_same_upload_stages_converge_behind_locator_barrier() {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    // Both stages queue on an advisory lock, but no longer on the same one:
+    // the winner is held at the locator barrier inside its `UPDATE`, and the
+    // loser never reaches the UPDATE because it is still queued on the
+    // canonical key's `proxima-object-key` fence, which stage now takes
+    // before touching the row. Either wait is the rendezvous this test wants.
     let mut waiters = 0_i64;
     while waiters < 2 {
         waiters = sqlx::query_scalar(
@@ -1367,14 +1412,16 @@ async fn versioned_same_upload_stages_converge_behind_locator_barrier() {
               WHERE datname = current_database()
                 AND wait_event_type = 'Lock'
                 AND wait_event = 'advisory'
-                AND query LIKE '%UPDATE proxima_core.blob_uploads%'",
+                AND (query LIKE '%UPDATE proxima_core.blob_uploads%'
+                     OR query LIKE '%proxima-object-key%')",
         )
         .fetch_one(&pool)
         .await
         .expect("inspect advisory waiters");
         assert!(
             Instant::now() < deadline,
-            "both stage calls must wait at the locator barrier (observed {waiters})"
+            "both stage calls must wait behind the locator barrier or the object-key fence \
+             (observed {waiters})"
         );
         if waiters < 2 {
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -2347,10 +2394,7 @@ async fn erase_follows_the_transfer_rather_than_the_key() {
     );
 
     let client = s3_client(&config).await;
-    store
-        .purge_owner_objects(source)
-        .await
-        .expect("source erase");
+    erase_owner_and_drain(&pg, &store, source).await;
 
     assert!(
         head(&client, &config.bucket, &retained.object_key)
@@ -2368,10 +2412,7 @@ async fn erase_follows_the_transfer_rather_than_the_key() {
         .await
         .expect("the destination still reads its citation after the source erase");
 
-    store
-        .purge_owner_objects(destination)
-        .await
-        .expect("destination erase");
+    erase_owner_and_drain(&pg, &store, destination).await;
     assert!(
         head(&client, &config.bucket, &completed.object_key)
             .await
@@ -2598,9 +2639,10 @@ async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
 }
 
 #[tokio::test]
-async fn purge_owner_objects_removes_completed_blob() {
-    // Owner erasure must physically remove the
-    // owner's S3 objects in-band. Opt-in, needs an S3 target like the roundtrip above.
+async fn owner_erase_removes_the_completed_blobs_object() {
+    // Owner erasure must physically remove the owner's S3 objects: the erase
+    // enqueues the key and the post-commit drain destroys it. Opt-in, needs an
+    // S3 target like the roundtrip above.
     if !S3RuntimeConfig::present_in_env() {
         eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
         return;
@@ -2660,12 +2702,8 @@ async fn purge_owner_objects_removes_completed_blob() {
         "object present in S3 before purge"
     );
 
-    // In-band purge (the port the engine calls after an owner erase commits).
-    let deleted = store.purge_owner_objects(owner).await.expect("purge");
-    assert!(
-        deleted >= 1,
-        "purge deleted at least the owner's blob object"
-    );
+    // The real inverse: enqueue under the object-key fence, drain after commit.
+    erase_owner_and_drain(&pg, &store, owner).await;
 
     assert!(
         client
@@ -2826,7 +2864,7 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
     // key-only delete would demonstrably leave a noncurrent version behind.
     put_object_via_sdk(&config, &final_key.0, body).await;
 
-    store.purge_owner_objects(owner).await.expect("purge");
+    erase_owner_and_drain(&pg, &store, owner).await;
 
     let versions = client
         .list_object_versions()
@@ -4282,13 +4320,200 @@ async fn post_put_expiry_race_repairs_locator_and_purges_pending_versions() {
     post_put_terminal_race("expired", "upload is expired").await;
 }
 
-/// If an owner-scoped locator CAS loses because the upload row was erased,
-/// stage purges only the derived transfer key. The canonical bytes are not
-/// inferentially orphaned: an in-place transfer or mounted row may still own
-/// them.
+/// The other half of the window: the erase SNAPSHOT is taken before the
+/// canonical PUT, so the erase can never have seen the canonical key at all.
+///
+/// This is the case that proves the enqueue has to live in the stage. While
+/// the erase is deciding, the row still says `pending/<upload_id>` — that is
+/// the only key its refcount can reach, and the only key it enqueues. The
+/// canonical object does not exist yet, and by the time it does the erase has
+/// committed and is out of the picture. No amount of locking on the erase
+/// side can close that; only the writer of the bytes can.
+///
+/// The rendezvous holds the erase inside its own DELETE (a statement trigger
+/// waiting on an advisory lock the test holds), so the stage's snapshot,
+/// its provider read and its PUT all happen strictly after the erase took
+/// its locks and strictly before the erase commits.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // two barriers and two tasks to pin one window
+async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let base = s3_config_for_dev();
+    let config = S3RuntimeConfig {
+        bucket: format!("{}-versioned", base.bucket),
+        ..base
+    };
+    let client = s3_client(&config).await;
+    let _ = client.create_bucket().bucket(&config.bucket).send().await;
+
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let body: &'static [u8] = b"erase-first-canonical-bytes";
+    let (upload_id, _pending_key) = prepare_and_put_upload(
+        &pool,
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "erase-first.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    let canonical_key = format!("objects/{upload_id}");
+
+    sqlx::raw_sql(
+        "CREATE SEQUENCE erase_delete_probe;
+         CREATE FUNCTION erase_delete_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                PERFORM nextval('erase_delete_probe');
+                PERFORM pg_advisory_xact_lock(hashtextextended(current_database() || ':erase', 0));
+                RETURN NULL;
+            END
+         $$;
+         CREATE TRIGGER erase_delete_barrier_trigger
+         AFTER DELETE ON proxima_core.blob_uploads
+         FOR EACH STATEMENT EXECUTE FUNCTION erase_delete_barrier();",
+    )
+    .execute(&pool)
+    .await
+    .expect("create erase barrier");
+
+    let mut barrier = pool.begin().await.expect("begin barrier transaction");
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended(current_database() || ':erase', 0))",
+    )
+    .execute(&mut *barrier)
+    .await
+    .expect("hold erase barrier");
+
+    let erase_pg = pg.clone().with_cold(Arc::new(store.cold_store()));
+    let erase_task = tokio::spawn(async move {
+        use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseTarget};
+        let OwnerRef::Personal(user_id) = owner else {
+            panic!("the fixture owner is personal");
+        };
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+            user_id,
+            drop_event_id: "erase-before-put".into(),
+        });
+        OwnerInversePort::erase_personal_owner(&erase_pg, &auth, user_id, &transfer_surfaces())
+            .await
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let fired: bool = sqlx::query_scalar("SELECT is_called FROM erase_delete_probe")
+            .fetch_one(&pool)
+            .await
+            .expect("read erase probe");
+        if fired {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the erase never reached its DELETE"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+            .await
+            .is_none(),
+        "the erase decided before any canonical object existed"
+    );
+
+    let stage_store = store.clone();
+    let stage_ctx = ctx.clone();
+    let stage_upload_id = upload_id.clone();
+    let stage_task = tokio::spawn(async move {
+        stage_store
+            .stage_upload(
+                &stage_ctx,
+                CitedBlobUploadCompleteTs {
+                    owner,
+                    upload_id: stage_upload_id,
+                },
+            )
+            .await
+    });
+    while head(&s3_client(&config).await, &config.bucket, &canonical_key)
+        .await
+        .is_none()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "stage did not publish canonical bytes"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // The canonical bytes now exist and the erase has still not committed:
+    // the window this test names is open.
+    drop(barrier);
+
+    erase_task
+        .await
+        .expect("erase task join")
+        .expect("owner erase completes");
+    let error = stage_task
+        .await
+        .expect("stage task join")
+        .expect_err("an erased owner row is not a successful stage");
+    assert!(matches!(error, BlobError::State(message) if message == "upload not found for Owner"));
+
+    let debt: (String, Option<Uuid>) = sqlx::query_as(
+        "SELECT backend, owner_id FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+    )
+    .bind(&canonical_key)
+    .fetch_one(&pool)
+    .await
+    .expect("the key the erase could not have seen is owed by the stage");
+    assert_eq!(debt.0, config.bucket);
+    assert_eq!(debt.1, None);
+    assert!(
+        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+            .await
+            .is_some(),
+        "the debt is a queue row, not a synchronous delete"
+    );
+    assert_eq!(corpus_counts(&pool).await, (0, 0));
+
+    sqlx::raw_sql(
+        "DROP TRIGGER erase_delete_barrier_trigger ON proxima_core.blob_uploads;
+         DROP FUNCTION erase_delete_barrier();
+         DROP SEQUENCE erase_delete_probe;",
+    )
+    .execute(&pool)
+    .await
+    .expect("drop erase barrier");
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// An erase that commits AFTER the canonical PUT leaves bytes nothing
+/// references — so the stage that published them owes them, durably.
+///
+/// The old contract kept the canonical object on the reasoning that a mounted
+/// or in-place-transferred row might still own it. That reasoning is only
+/// sound when it is CHECKED. Here nothing owns them: the erase enqueued the
+/// key the row named at the time (`pending/<id>`), never the canonical key
+/// this stage went on to write, so before this change the object survived
+/// every erase and every drain with no record that it existed. The refcount
+/// under the object key is what turns "may still be owned" into an answer.
+///
+/// Enqueue, not delete: the debt is a queue row, so a crash between the CAS
+/// and the provider call cannot lose it. The drain is the second half, and
+/// this test runs it — a debt nothing ever discharges is not a fix.
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // the barrier fixture proves an erased-row race end to end
-async fn missing_owner_row_after_stage_keeps_canonical_and_purges_pending() {
+async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
     if !S3RuntimeConfig::present_in_env() {
         eprintln!("skipped: PROXIMA_S3_* unset");
         return;
@@ -4409,13 +4634,28 @@ async fn missing_owner_row_after_stage_keeps_canonical_and_purges_pending() {
         .expect_err("missing owner row is not a successful stage");
     assert!(matches!(error, BlobError::State(message) if message == "upload not found for Owner"));
     assert_s3_key_versions_absent(&config, &pending_key).await;
+    // The debt is durable and names the bucket it is owed against. The owner
+    // is NULL because the owner row is exactly what was erased.
+    let debt: (String, Option<Uuid>) = sqlx::query_as(
+        "SELECT backend, owner_id FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+    )
+    .bind(&canonical_key)
+    .fetch_one(&pool)
+    .await
+    .expect("the orphaned canonical object is owed");
+    assert_eq!(
+        debt.0, config.bucket,
+        "the debt names the publishing bucket"
+    );
+    assert_eq!(debt.1, None, "an erased owner cannot be referenced");
+    // Enqueue is not destruction: the bytes are still there until a drain.
     let retained = client
         .get_object()
         .bucket(&config.bucket)
         .key(&canonical_key)
         .send()
         .await
-        .expect("canonical bytes remain readable")
+        .expect("canonical bytes remain readable until the drain runs")
         .body
         .collect()
         .await
@@ -4423,6 +4663,26 @@ async fn missing_owner_row_after_stage_keeps_canonical_and_purges_pending() {
         .into_bytes();
     assert_eq!(retained.as_ref(), body);
     assert_eq!(corpus_counts(&pool).await, (0, 0));
+
+    let drained = pg
+        .clone()
+        .with_cold(Arc::new(store.cold_store()))
+        .retry_cold_object_purges(proxima_storage_pg::ColdPurgeRetryOptions {
+            batch_size: 10,
+            dry_run: false,
+        })
+        .await
+        .expect("the drain accepts a debt against the bucket it is wired to");
+    assert_eq!(
+        (drained.selected, drained.purged, drained.failed),
+        (1, 1, 0)
+    );
+    assert!(
+        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+            .await
+            .is_none(),
+        "the drain destroys the object the stage orphaned"
+    );
 
     sqlx::query("DROP TRIGGER upload_locator_barrier_trigger ON proxima_core.blob_uploads")
         .execute(&pool)
