@@ -293,7 +293,6 @@ impl Tool for CodeSearchChunksTool {
     type Args = CodeSearchChunksArgs;
     type Output = CodeSearchChunksOutput;
 
-    #[allow(clippy::too_many_lines)]
     fn call(
         ctx: ToolCtx,
         args: CodeSearchChunksArgs,

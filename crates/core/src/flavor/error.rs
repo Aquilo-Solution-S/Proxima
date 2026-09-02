@@ -335,7 +335,6 @@ pub enum FlavorRegistryError {
 impl std::fmt::Display for FlavorRegistryError {
     // Every variant renders its own message; splitting the match would put
     // half the vocabulary in a second place to forget one.
-    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DuplicateSchema {

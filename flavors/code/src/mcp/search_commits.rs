@@ -87,7 +87,6 @@ impl Tool for CodeSearchCommitsTool {
     type Args = CodeSearchCommitsArgs;
     type Output = CodeSearchCommitsOutput;
 
-    #[allow(clippy::too_many_lines)]
     fn call(
         ctx: ToolCtx,
         args: CodeSearchCommitsArgs,

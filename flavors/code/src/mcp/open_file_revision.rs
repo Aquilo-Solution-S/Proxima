@@ -87,7 +87,6 @@ impl Tool for CodeOpenFileRevisionTool {
     type Args = CodeOpenFileRevisionArgs;
     type Output = CodeOpenFileRevisionOutput;
 
-    #[allow(clippy::too_many_lines)]
     fn call(
         ctx: ToolCtx,
         args: CodeOpenFileRevisionArgs,

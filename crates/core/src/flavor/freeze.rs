@@ -1106,7 +1106,6 @@ impl FlavorRegistry {
 /// each spec's field lists against the ones the schema derived for that action.
 /// The action sets are known to agree by the time this runs, so `extension`
 /// has a key for every spec.
-#[allow(clippy::too_many_lines)]
 fn validate_action_field_sets(
     tool: &McpToolDescriptor,
     extension: &serde_json::Map<String, serde_json::Value>,

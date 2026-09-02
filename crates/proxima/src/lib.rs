@@ -355,7 +355,6 @@ impl ProximaBuilder {
     /// failures, `EmbedError::SchemaResetRequired` when the target database
     /// does not match `0001_v008.sql` (see `docs/how-to/migrations.md`), and
     /// `EmbedError::Engine` when engine startup fails.
-    #[allow(clippy::too_many_lines)]
     pub async fn boot(self) -> Result<EmbeddedProxima, EmbedError> {
         let Self {
             config,

@@ -42,7 +42,6 @@ impl Tool for CodeEmitExecutionPlanTool {
     type Args = CodeEmitExecutionPlanArgs;
     type Output = CodeEmitExecutionPlanOutput;
 
-    #[allow(clippy::too_many_lines)]
     fn call(
         ctx: ToolCtx,
         args: CodeEmitExecutionPlanArgs,

@@ -194,7 +194,6 @@ impl McpTool for DeriveTool {
     type Args = DeriveArgs;
     type Output = DeriveOutput;
 
-    #[allow(clippy::too_many_lines)]
     fn call(
         ctx: McpToolCtx,
         args: DeriveArgs,

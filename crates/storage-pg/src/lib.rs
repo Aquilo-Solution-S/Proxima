@@ -303,7 +303,6 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
 /// Returns [`StorageError::Internal`] when any structural marker for the
 /// current lane is absent or has the wrong type, nullability, enum order, or
 /// processing-claim invariant.
-#[allow(clippy::too_many_lines)]
 pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageError> {
     ensure_lexical_language_stamps(pool).await?;
     let marker_error: Option<String> = sqlx::query_scalar(

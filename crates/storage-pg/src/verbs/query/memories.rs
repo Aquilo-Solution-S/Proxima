@@ -21,7 +21,6 @@ use super::edges::query_edges;
 use super::goals::query_goals;
 use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water};
 
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn query_memories(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,

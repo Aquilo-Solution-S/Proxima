@@ -990,7 +990,6 @@ fn inline_variant_refs(value: &mut serde_json::Value, defs: &LocalDefs) -> Resul
     inline_value(value, defs, &mut Vec::new())
 }
 
-#[allow(clippy::too_many_lines)]
 fn inline_value(
     value: &mut serde_json::Value,
     defs: &LocalDefs,

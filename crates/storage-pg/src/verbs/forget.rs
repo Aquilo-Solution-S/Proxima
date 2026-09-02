@@ -1,8 +1,7 @@
 //! Forget / hydrate / erase.
 #![allow(
     clippy::missing_errors_doc,
-    clippy::doc_markdown,
-    clippy::too_many_lines
+    clippy::doc_markdown
 )]
 
 use std::collections::BTreeSet;

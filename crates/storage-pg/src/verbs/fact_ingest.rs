@@ -460,7 +460,6 @@ where
     .await
 }
 
-#[allow(clippy::too_many_lines)]
 async fn ingest_core<F>(
     tx: &mut Transaction<'_, Postgres>,
     authorized: AuthorizedFactInput<'_>,
