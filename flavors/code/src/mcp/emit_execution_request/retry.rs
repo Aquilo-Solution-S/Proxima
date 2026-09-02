@@ -37,7 +37,6 @@ impl Tool for CodeRetryExecutionRequestTool {
     type Args = CodeRetryExecutionRequestArgs;
     type Output = CodeRetryExecutionRequestOutput;
 
-    #[allow(clippy::too_many_lines)]
     fn call(
         ctx: ToolCtx,
         args: CodeRetryExecutionRequestArgs,

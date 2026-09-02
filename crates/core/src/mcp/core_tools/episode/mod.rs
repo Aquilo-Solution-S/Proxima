@@ -379,7 +379,7 @@ async fn write_remembered(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 async fn write_derive(
     ctx: &McpToolCtx,
     uow: &mut UnitOfWork<'_>,

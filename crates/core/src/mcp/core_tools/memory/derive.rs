@@ -194,30 +194,12 @@ impl McpTool for DeriveTool {
     type Args = DeriveArgs;
     type Output = DeriveOutput;
 
-    #[allow(clippy::too_many_lines)]
     fn call(
         ctx: McpToolCtx,
         args: DeriveArgs,
     ) -> futures::future::BoxFuture<'static, Result<DeriveOutput, McpToolError>> {
         Box::pin(async move {
-            // 240 matches the goal-title cap: same-named field, same bound
-            // on every authoring surface.
-            let title = validate_trimmed_len("title", &args.title, 240)?;
-            let body = validate_trimmed_len("body", &args.body, 20_000)?;
-            let idempotency_key = normalize_idempotency_key(args.idempotency_key)?;
-            // `model_id` is the reserved operator label. It may arrive as an
-            // explicit arg or via the request-context `model_id` (which the MCP
-            // server strips into `ctx.author.model_id`); fall back to the latter.
-            let raw_model_id = args
-                .model_id
-                .clone()
-                .unwrap_or_else(|| ctx.author.model_id.clone());
-            // Trimmed before it is *used*, not just before it is checked: the
-            // stored label and the idempotency key derived from it must be
-            // the same string, or `" example "` and `"example"` are one label
-            // to the validator and two to the dedup key.
-            let model_id = validate_trimmed_len("model_id", &raw_model_id, 120)?.to_string();
-            let tags = normalize_tags(args.tags)?;
+            let authored = normalize_derive_args(&ctx, &args)?;
 
             if args.source_handles.len() > MAX_SOURCE_HANDLES {
                 return Err(McpToolError::InvalidInput(format!(
@@ -229,71 +211,18 @@ impl McpTool for DeriveTool {
                 args.space.as_deref(),
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
-            let mut seen_sources = std::collections::HashSet::with_capacity(
-                args.source_handles.len().min(MAX_SOURCE_HANDLES),
-            );
-            let mut sources = Vec::with_capacity(args.source_handles.len());
-            for handle in &args.source_handles {
-                let (memory_id, class) = resolve_source_memory(&ctx, handle)?;
-                let source_uuid = memory_id.into_inner();
-                if seen_sources.insert(source_uuid) {
-                    sources.push((memory_id, class));
-                }
-            }
-
-            if sources.is_empty() {
-                return Err(McpToolError::InvalidInput(
-                    "source_handles must be nonempty for operator derivation".into(),
-                ));
-            }
+            let sources = resolve_source_handles(&ctx, &args.source_handles)?;
             let lexical_language = crate::lexical_language::resolve_lexical_language(
                 args.language.as_deref(),
-                &format!("{title}\n{body}"),
+                &format!("{}\n{}", authored.title, authored.body),
             )
             .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-            // The auto-derived key must cover everything this write stores
-            // that the storage-side replay proof does not.
-            //
-            // That proof (`validate_derived_replay_equivalent`) compares the
-            // `memories` row: text, kind, operator, model, owner. `text` is
-            // the body alone — the title and tags live in the
-            // `agent_derivation_v1` sidecar, which the proof never reads and
-            // which the replay path never even writes. Hashing the body alone
-            // would make two derivations with one body and different titles a
-            // single write: the second caller gets `idempotent_replay: true`
-            // and a handle to somebody else's Abstraction, with their own
-            // title silently discarded. A success flag over dropped content
-            // is the worst shape a write can fail in.
-            //
-            // An *explicit* key is deliberately left alone. There the caller
-            // is asserting "this is the same derivation" — that is what the
-            // parameter is for, and a re-generated body differing by a space
-            // must still replay.
-            let key = idempotency_key.clone().unwrap_or_else(|| {
-                let mut content = blake3::Hasher::new();
-                content.update(title.as_bytes());
-                content.update(b"\0");
-                content.update(body.as_bytes());
-                for tag in &tags {
-                    content.update(b"\0");
-                    content.update(tag.as_bytes());
-                }
-                format!("{}:{}", model_id, content.finalize().to_hex())
-            });
+            let key = authored
+                .idempotency_key
+                .clone()
+                .unwrap_or_else(|| content_idempotency_key(&authored));
             let memory_id = derived_memory_id(&space.owner, args.kind.as_str(), &key);
-            let sidecar = AgentDerivationV1 {
-                title: title.to_string(),
-                body: body.to_string(),
-                tags: tags.clone(),
-                idempotency_key: idempotency_key.clone(),
-                source_memory_ids: sources
-                    .iter()
-                    .map(|(memory_id, _class)| memory_id.into_inner())
-                    .collect(),
-                model_id: model_id.clone(),
-                client_name: ctx.author.client_name.clone(),
-                client_version: ctx.author.client_version.clone(),
-            };
+            let sidecar = derivation_sidecar(&ctx, &authored, &sources);
 
             let memory_id = MemoryId::new(memory_id);
             let (operator_kind, target_kind) = operator_shape(args.kind, &sources)?;
@@ -312,13 +241,13 @@ impl McpTool for DeriveTool {
                         memory_id,
                         owner: space.owner,
                         kind: args.kind.to_entity_kind(),
-                        text: body.to_string(),
+                        text: authored.body.clone(),
                         schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
                         schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
                         operator_kind,
                         operator_id: core_derive_operator_id(args.kind),
                         input_contract_id: core_derive_input_contract_id(args.kind),
-                        model_id: &model_id,
+                        model_id: &authored.model_id,
                         sidecar_payload: match args.kind {
                             DerivedKind::Abstraction => SidecarPayload::abstraction(sidecar),
                             DerivedKind::Perspective => SidecarPayload::perspective(sidecar),
@@ -342,6 +271,125 @@ impl McpTool for DeriveTool {
                 embedding_deferred: outcome.embedding_deferred,
             })
         })
+    }
+}
+
+/// What a `core_derive` request carries once it is validated: the authored
+/// text, the operator label, and the tags, each in the exact form the write
+/// stores and the idempotency key is derived from.
+struct AuthoredDerivation {
+    title: String,
+    body: String,
+    model_id: String,
+    tags: Vec<String>,
+    idempotency_key: Option<String>,
+}
+
+fn normalize_derive_args(
+    ctx: &McpToolCtx,
+    args: &DeriveArgs,
+) -> Result<AuthoredDerivation, McpToolError> {
+    // 240 matches the goal-title cap: same-named field, same bound
+    // on every authoring surface.
+    let title = validate_trimmed_len("title", &args.title, 240)?.to_string();
+    let body = validate_trimmed_len("body", &args.body, 20_000)?.to_string();
+    let idempotency_key = normalize_idempotency_key(args.idempotency_key.clone())?;
+    // `model_id` is the reserved operator label. It may arrive as an
+    // explicit arg or via the request-context `model_id` (which the MCP
+    // server strips into `ctx.author.model_id`); fall back to the latter.
+    let raw_model_id = args
+        .model_id
+        .clone()
+        .unwrap_or_else(|| ctx.author.model_id.clone());
+    // Trimmed before it is *used*, not just before it is checked: the
+    // stored label and the idempotency key derived from it must be
+    // the same string, or `" example "` and `"example"` are one label
+    // to the validator and two to the dedup key.
+    let model_id = validate_trimmed_len("model_id", &raw_model_id, 120)?.to_string();
+    let tags = normalize_tags(args.tags.clone())?;
+    Ok(AuthoredDerivation {
+        title,
+        body,
+        model_id,
+        tags,
+        idempotency_key,
+    })
+}
+
+/// The declared sources, resolved to memories in request order with repeats
+/// dropped: a handle named twice is one input, and no input at all is not a
+/// derivation.
+fn resolve_source_handles(
+    ctx: &McpToolCtx,
+    handles: &[String],
+) -> Result<Vec<(MemoryId, MemoryHandleClass)>, McpToolError> {
+    let mut seen_sources =
+        std::collections::HashSet::with_capacity(handles.len().min(MAX_SOURCE_HANDLES));
+    let mut sources = Vec::with_capacity(handles.len());
+    for handle in handles {
+        let (memory_id, class) = resolve_source_memory(ctx, handle)?;
+        let source_uuid = memory_id.into_inner();
+        if seen_sources.insert(source_uuid) {
+            sources.push((memory_id, class));
+        }
+    }
+
+    if sources.is_empty() {
+        return Err(McpToolError::InvalidInput(
+            "source_handles must be nonempty for operator derivation".into(),
+        ));
+    }
+    Ok(sources)
+}
+
+/// The auto-derived idempotency key, which must cover everything this write
+/// stores that the storage-side replay proof does not.
+///
+/// That proof (`validate_derived_replay_equivalent`) compares the
+/// `memories` row: text, kind, operator, model, owner. `text` is
+/// the body alone — the title and tags live in the
+/// `agent_derivation_v1` sidecar, which the proof never reads and
+/// which the replay path never even writes. Hashing the body alone
+/// would make two derivations with one body and different titles a
+/// single write: the second caller gets `idempotent_replay: true`
+/// and a handle to somebody else's Abstraction, with their own
+/// title silently discarded. A success flag over dropped content
+/// is the worst shape a write can fail in.
+///
+/// An *explicit* key is deliberately left alone. There the caller
+/// is asserting "this is the same derivation" — that is what the
+/// parameter is for, and a re-generated body differing by a space
+/// must still replay.
+fn content_idempotency_key(authored: &AuthoredDerivation) -> String {
+    let mut content = blake3::Hasher::new();
+    content.update(authored.title.as_bytes());
+    content.update(b"\0");
+    content.update(authored.body.as_bytes());
+    for tag in &authored.tags {
+        content.update(b"\0");
+        content.update(tag.as_bytes());
+    }
+    format!("{}:{}", authored.model_id, content.finalize().to_hex())
+}
+
+/// The typed sidecar this write stores beside the memory row.
+fn derivation_sidecar(
+    ctx: &McpToolCtx,
+    authored: &AuthoredDerivation,
+    sources: &[(MemoryId, MemoryHandleClass)],
+) -> AgentDerivationV1 {
+    AgentDerivationV1 {
+        title: authored.title.clone(),
+        body: authored.body.clone(),
+        tags: authored.tags.clone(),
+        idempotency_key: authored.idempotency_key.clone(),
+        source_memory_ids: sources
+            .iter()
+            .map(|(memory_id, _class)| memory_id.into_inner())
+            .collect(),
+        model_id: authored.model_id.clone(),
+        client_name: ctx.author.client_name.clone(),
+        client_version: ctx.author.client_version.clone(),
     }
 }
 

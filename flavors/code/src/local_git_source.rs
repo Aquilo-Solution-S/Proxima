@@ -701,7 +701,7 @@ impl LocalGitSource {
 
     /// Emit one file's `file-revision-v1` Fact and
     /// cache the deterministic blob analysis to derive from afterwards.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     async fn ingest_changed_path(
         &self,
         ctx: &CodeIngestContext<'_>,
@@ -792,7 +792,7 @@ impl LocalGitSource {
 
     /// Emit one Present file revision Fact from an already-loaded blob.
     /// Shared by commit replay and HEAD snapshot ingestion.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     async fn ingest_present_blob(
         &self,
         ctx: &CodeIngestContext<'_>,
@@ -853,7 +853,6 @@ impl LocalGitSource {
 
     /// Derive code-slice Abstractions and call edges after every Fact
     /// this pass observed has been materialized.
-    #[allow(clippy::too_many_lines)]
     async fn derive_present_blob(
         &self,
         ctx: &CodeIngestContext<'_>,
@@ -874,19 +873,33 @@ impl LocalGitSource {
             report.chunks_reused += pending.analysis.chunks.len();
             return Ok(());
         }
-        // Re-derive and tombstone any prior slice indexes that don't
-        // appear in the new slice batch (file content shrunk). These
-        // tombstones are projection rows tied to this file-revision
-        // Fact, not external observations.
-        let new_indexes: HashSet<u32> = (0..pending.analysis.chunks.len())
-            .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
-            .collect();
         let heads = ctx
             .chunk_series_heads(self.owner, self.repo_id, &pending.path)
             .await?;
+        self.tombstone_vanished_slices(ctx, &pending, &heads, report)
+            .await?;
+        let mut file_chunks = self.plan_file_chunks(&pending, &heads)?;
+        resolve_intra_file_calls(&pending.analysis.calls, &mut file_chunks);
+        self.append_file_chunks(ctx, &pending, &file_chunks, report)
+            .await
+    }
+
+    /// Tombstone the prior slice indexes that don't appear in the new slice
+    /// batch (file content shrank). These tombstones are projection rows
+    /// tied to this file-revision Fact, not external observations.
+    async fn tombstone_vanished_slices(
+        &self,
+        ctx: &CodeIngestContext<'_>,
+        pending: &PendingPresentBlob,
+        heads: &[proxima_storage_pg::query::ChunkSeriesHead],
+        report: &mut IndexReport,
+    ) -> Result<(), IndexError> {
+        let new_indexes: HashSet<u32> = (0..pending.analysis.chunks.len())
+            .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
+            .collect();
         let mut tomb_payloads = Vec::new();
         let mut tomb_handles = Vec::new();
-        for head in &heads {
+        for head in heads {
             if head.state != FileState::Present.as_str() {
                 continue;
             }
@@ -919,9 +932,19 @@ impl LocalGitSource {
             .await?;
             report.chunks_tombstoned += tomb_payloads.len();
         }
+        Ok(())
+    }
 
-        // Reuse listed series handles so intra-file calls can name
-        // callees before insert. Mint only on miss.
+    /// Build this file's slice payloads and pair each with the series handle
+    /// it will be written under.
+    ///
+    /// Reuse listed series handles so intra-file calls can name callees
+    /// before insert. Mint only on miss.
+    fn plan_file_chunks(
+        &self,
+        pending: &PendingPresentBlob,
+        heads: &[proxima_storage_pg::query::ChunkSeriesHead],
+    ) -> Result<Vec<ChunkInfo>, IndexError> {
         let mut bare_payloads: Vec<CodeChunkV1> = Vec::new();
         for (idx, chunk) in pending.analysis.chunks.iter().enumerate() {
             let chunk_index = u32::try_from(idx).unwrap_or(u32::MAX);
@@ -940,7 +963,7 @@ impl LocalGitSource {
                 calls: Vec::new(),
             });
         }
-        let handles = assign_code_chunk_handles(&heads, &bare_payloads)?;
+        let handles = assign_code_chunk_handles(heads, &bare_payloads)?;
         let mut file_chunks: Vec<ChunkInfo> = Vec::new();
         for (payload, handle) in bare_payloads.into_iter().zip(handles) {
             let memory_id = MemoryId::new(handle);
@@ -959,59 +982,19 @@ impl LocalGitSource {
                 item_names,
             });
         }
+        Ok(file_chunks)
+    }
 
-        // Resolve each call into the caller/callee chunk pair and record it
-        // in the *caller's payload*. Resolution is intra-file v1;
-        // cross-file calls wait for an indexed name table. Ten sites into
-        // the same callee are ten entries here and one index row — the
-        // multiplicity belongs to the node (docs/16 §The Model).
-        for call in &pending.analysis.calls {
-            let Some(caller_index) = file_chunks
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| {
-                    c.payload.byte_range_start <= call.byte_start
-                        && c.payload.byte_range_end >= call.byte_end
-                })
-                .max_by_key(|(_, c)| c.payload.byte_range_start)
-                .map(|(index, _)| index)
-            else {
-                continue;
-            };
-            let Some(callee_memory_id) = file_chunks
-                .iter()
-                .find(|c| c.item_names.iter().any(|n| n == &call.callee_name))
-                .map(|c| c.memory_id)
-            else {
-                continue;
-            };
-            // A chunk that calls itself is not a connection between two
-            // things, and the index refuses the row outright.
-            if file_chunks[caller_index].memory_id == callee_memory_id {
-                continue;
-            }
-            let site = CodeCallSiteV1 {
-                byte_start: call.byte_start,
-                byte_end: call.byte_end,
-                callee_name: call.callee_name.clone(),
-                is_dynamic: call.is_dynamic,
-            };
-            let calls = &mut file_chunks[caller_index].payload.calls;
-            match calls
-                .iter_mut()
-                .find(|existing| existing.callee_memory_id == callee_memory_id.into_inner())
-            {
-                Some(existing) => existing.sites.push(site),
-                None => calls.push(CodeCallV1 {
-                    callee_memory_id: callee_memory_id.into_inner(),
-                    sites: vec![site],
-                }),
-            }
-        }
-
-        // One transaction for the file: the chunks reference each other, so
-        // they are written as a group and their index rows land after every
-        // member exists.
+    /// Write the file's slices in one transaction: the chunks reference each
+    /// other, so they are written as a group and their index rows land after
+    /// every member exists.
+    async fn append_file_chunks(
+        &self,
+        ctx: &CodeIngestContext<'_>,
+        pending: &PendingPresentBlob,
+        file_chunks: &[ChunkInfo],
+        report: &mut IndexReport,
+    ) -> Result<(), IndexError> {
         let payloads = file_chunks
             .iter()
             .map(|chunk| chunk.payload.clone())
@@ -1109,6 +1092,57 @@ impl LocalGitSource {
             report.chunks_tombstoned += tomb_payloads.len();
         }
         Ok(())
+    }
+}
+
+/// Resolve each call into the caller/callee chunk pair and record it in the
+/// *caller's payload*. Resolution is intra-file v1; cross-file calls wait for
+/// an indexed name table. Ten sites into the same callee are ten entries here
+/// and one index row — the multiplicity belongs to the node
+/// (docs/16 §The Model).
+fn resolve_intra_file_calls(calls: &[ExtractedCall], file_chunks: &mut [ChunkInfo]) {
+    for call in calls {
+        let Some(caller_index) = file_chunks
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                c.payload.byte_range_start <= call.byte_start
+                    && c.payload.byte_range_end >= call.byte_end
+            })
+            .max_by_key(|(_, c)| c.payload.byte_range_start)
+            .map(|(index, _)| index)
+        else {
+            continue;
+        };
+        let Some(callee_memory_id) = file_chunks
+            .iter()
+            .find(|c| c.item_names.iter().any(|n| n == &call.callee_name))
+            .map(|c| c.memory_id)
+        else {
+            continue;
+        };
+        // A chunk that calls itself is not a connection between two
+        // things, and the index refuses the row outright.
+        if file_chunks[caller_index].memory_id == callee_memory_id {
+            continue;
+        }
+        let site = CodeCallSiteV1 {
+            byte_start: call.byte_start,
+            byte_end: call.byte_end,
+            callee_name: call.callee_name.clone(),
+            is_dynamic: call.is_dynamic,
+        };
+        let calls = &mut file_chunks[caller_index].payload.calls;
+        match calls
+            .iter_mut()
+            .find(|existing| existing.callee_memory_id == callee_memory_id.into_inner())
+        {
+            Some(existing) => existing.sites.push(site),
+            None => calls.push(CodeCallV1 {
+                callee_memory_id: callee_memory_id.into_inner(),
+                sites: vec![site],
+            }),
+        }
     }
 }
 

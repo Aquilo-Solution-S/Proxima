@@ -8,11 +8,7 @@
 //! `read_memory_head` take the same transaction and exist to assert on that
 //! row from inside the crate; the authorized read surface is the query ports.
 
-#![allow(
-    clippy::missing_errors_doc,
-    clippy::doc_markdown,
-    clippy::too_many_lines
-)]
+#![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
 use proxima_core::edge::EdgeEndpoint;
 use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
@@ -548,40 +544,76 @@ pub(crate) async fn materialize_prepared_memory_admission(
 /// acquisition is the caller's.
 async fn materialize_prepared_memory_admission_after_locks(
     tx: &mut Transaction<'_, Postgres>,
-    prepared: Box<PreparedMemoryAdmissionNew>,
+    mut prepared: Box<PreparedMemoryAdmissionNew>,
     blob_id: Option<Uuid>,
     content_id: Option<Uuid>,
 ) -> Result<FactIngestOutcome, StorageError> {
     validate_prepared_memory_head(tx, &prepared).await?;
-    let mut draft = prepared.draft;
     if blob_id.is_some() {
-        draft.blob_id = blob_id;
+        prepared.draft.blob_id = blob_id;
     }
-    let kind = if draft.kind.is_empty() {
+    let kind = admission_kind(&prepared);
+    let content_id = resolve_admission_content_id(tx, &prepared, kind, content_id).await?;
+    advance_memory_head(tx, &prepared, kind).await?;
+    insert_memory_revision(tx, &prepared, kind, content_id).await?;
+    let seq = announce_memory_admission(tx, &prepared, kind).await?;
+    Ok(FactIngestOutcome {
+        receipt_id: None,
+        memory_id: MemoryId::new(prepared.t),
+        change_event_seq: seq,
+        idempotent_replay: false,
+        // Reports the blob this admission actually persisted. The predecessor
+        // always returned `None` here and left `ingest_core` to fill it in;
+        // every other caller passes a draft with no `blob_id`, so this is a
+        // narrowing of that gap rather than a change any caller observes.
+        cited_object_id: prepared.draft.blob_id,
+        handle: prepared.handle,
+    })
+}
+
+/// The `memory_kind` label an admission stores; a draft that names none is a
+/// Fact.
+fn admission_kind(prepared: &PreparedMemoryAdmissionNew) -> &str {
+    if prepared.draft.kind.is_empty() {
         "fact"
     } else {
-        draft.kind.as_str()
-    };
-    let content_id = if let Some(id) = content_id {
-        Some(id)
-    } else if kind == "fact" {
-        None
-    } else {
-        let text = draft
-            .rendered_text
-            .as_deref()
-            .map_or(draft.payload.as_slice(), str::as_bytes);
-        Some(
-            super::content::ensure_text_content(
-                tx,
-                prepared.owner_id,
-                draft.schema_id.as_str(),
-                text,
-            )
-            .await?,
-        )
-    };
+        prepared.draft.kind.as_str()
+    }
+}
 
+/// The owner-scoped content row this admission stores, materializing one from
+/// the draft payload when the caller did not already resolve it. Facts carry
+/// their payload inline and need none.
+async fn resolve_admission_content_id(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedMemoryAdmissionNew,
+    kind: &str,
+    content_id: Option<Uuid>,
+) -> Result<Option<Uuid>, StorageError> {
+    if let Some(id) = content_id {
+        return Ok(Some(id));
+    }
+    if kind == "fact" {
+        return Ok(None);
+    }
+    let draft = &prepared.draft;
+    let text = draft
+        .rendered_text
+        .as_deref()
+        .map_or(draft.payload.as_slice(), str::as_bytes);
+    Ok(Some(
+        super::content::ensure_text_content(tx, prepared.owner_id, draft.schema_id.as_str(), text)
+            .await?,
+    ))
+}
+
+/// Move the series head to this admission's `t`, refusing a handle already
+/// held under a different kind, schema or owner.
+async fn advance_memory_head(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedMemoryAdmissionNew,
+    kind: &str,
+) -> Result<(), StorageError> {
     // `GREATEST`, not `EXCLUDED.t`: the head only ever moves forward. Every
     // path that could rewind it is already refused — `validate_prepared_memory_head`
     // rejects an admission whose prepared head is no longer current, and the
@@ -600,7 +632,7 @@ async fn materialize_prepared_memory_admission_after_locks(
     )
     .bind(prepared.handle)
     .bind(kind)
-    .bind(draft.schema_id.as_str())
+    .bind(prepared.draft.schema_id.as_str())
     .bind(prepared.owner_id)
     .bind(prepared.t)
     .fetch_optional(tx.as_mut())
@@ -611,7 +643,17 @@ async fn materialize_prepared_memory_admission_after_locks(
             "memory_head kind/schema/owner mismatch".into(),
         ));
     }
+    Ok(())
+}
 
+/// Append the immutable Memory revision row itself.
+async fn insert_memory_revision(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedMemoryAdmissionNew,
+    kind: &str,
+    content_id: Option<Uuid>,
+) -> Result<(), StorageError> {
+    let draft = &prepared.draft;
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
@@ -635,7 +677,16 @@ async fn materialize_prepared_memory_admission_after_locks(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
+    Ok(())
+}
 
+/// Announce the append and refresh the Memory sketch, reporting the change
+/// event sequence the admission produced.
+async fn announce_memory_admission(
+    tx: &mut Transaction<'_, Postgres>,
+    prepared: &PreparedMemoryAdmissionNew,
+    kind: &str,
+) -> Result<Uuid, StorageError> {
     let seq: Uuid = sqlx::query_scalar(
         "INSERT INTO proxima_core.announce
             (owner_id, op, entity, handle, t)
@@ -654,22 +705,11 @@ async fn materialize_prepared_memory_admission_after_locks(
         prepared.owner_id,
         prepared.t,
         kind,
-        &super::sketch::sketch_line(kind, draft.rendered_text.as_deref(), &[]),
+        &super::sketch::sketch_line(kind, prepared.draft.rendered_text.as_deref(), &[]),
     )
     .await?;
 
-    Ok(FactIngestOutcome {
-        receipt_id: None,
-        memory_id: MemoryId::new(prepared.t),
-        change_event_seq: seq,
-        idempotent_replay: false,
-        // Reports the blob this admission actually persisted. The predecessor
-        // always returned `None` here and left `ingest_core` to fill it in;
-        // every other caller passes a draft with no `blob_id`, so this is a
-        // narrowing of that gap rather than a change any caller observes.
-        cited_object_id: draft.blob_id,
-        handle: prepared.handle,
-    })
+    Ok(seq)
 }
 
 /// Project authorized endpoints to the UUID array stored by Postgres while

@@ -13,7 +13,9 @@ pub use proxima_core as core;
 use proxima_core::StorageError;
 use proxima_core::env_value;
 use proxima_core::storage_ports::StoragePorts;
-use sqlx::PgPool;
+use sqlx::postgres::PgArguments;
+use sqlx::query::QueryScalar;
+use sqlx::{PgPool, Postgres};
 use std::sync::Arc;
 pub use verbs::fact_embeddings::{
     EmbeddingInlineDrainOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
@@ -303,11 +305,52 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
 /// Returns [`StorageError::Internal`] when any structural marker for the
 /// current lane is absent or has the wrong type, nullability, enum order, or
 /// processing-claim invariant.
-#[allow(clippy::too_many_lines)]
 pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageError> {
     ensure_lexical_language_stamps(pool).await?;
-    let marker_error: Option<String> = sqlx::query_scalar(
-        r"SELECT CASE
+    // These groups were one `CASE` whose first matching `WHEN` named the
+    // broken marker. Both the order of the calls below and the branch order
+    // inside each group are therefore load-bearing: the first group that
+    // reports a marker still names the same failure the single `CASE` did, and
+    // a later group may assume every marker before it holds — it probes
+    // columns of relations an earlier group proved present.
+    probe_marker_group(pool, sqlx::query_scalar(CORE_RELATION_MARKERS)).await?;
+    probe_marker_group(pool, sqlx::query_scalar(GOAL_REPLAY_DECLARATION_MARKERS)).await?;
+    probe_marker_group(pool, sqlx::query_scalar(BLOB_UPLOAD_HASH_MARKERS)).await?;
+    probe_marker_group(pool, sqlx::query_scalar(SUPPORT_RELATION_MARKERS)).await?;
+    probe_marker_group(pool, sqlx::query_scalar(COLD_PURGE_PENDING_MARKERS)).await?;
+    probe_marker_group(pool, sqlx::query_scalar(COOLED_COLUMN_MARKERS)).await?;
+    probe_marker_group(pool, sqlx::query_scalar(ERASED_PIN_TARGET_MARKERS)).await?;
+    probe_marker_group(pool, sqlx::query_scalar(PIN_LIFECYCLE_FUNCTION_MARKERS)).await?;
+    probe_marker_group(
+        pool,
+        sqlx::query_scalar(PIN_LIFECYCLE_FUNCTION_BODY_MARKERS),
+    )
+    .await?;
+    probe_marker_group(pool, sqlx::query_scalar(TRIGGER_WIRING_MARKERS)).await?;
+    probe_marker_group(pool, sqlx::query_scalar(LEXICAL_CONFIG_MARKERS)).await?;
+    probe_marker_group(pool, sqlx::query_scalar(ENUM_ORDER_MARKERS)).await?;
+    probe_marker_group(pool, sqlx::query_scalar(EMBEDDING_JOB_MARKERS)).await?;
+    Ok(())
+}
+
+/// Run one themed marker group and report the first marker in it that is
+/// missing or wrong as the boot error callers expect.
+async fn probe_marker_group(
+    pool: &PgPool,
+    probe: QueryScalar<'static, Postgres, Option<String>, PgArguments>,
+) -> Result<(), StorageError> {
+    let marker_error: Option<String> = probe.fetch_one(pool).await.map_err(internal)?;
+    if let Some(marker_error) = marker_error {
+        return Err(StorageError::Internal(format!(
+            "database is missing or has an incorrect current schema marker: {marker_error}; apply migrations before boot"
+        )));
+    }
+    Ok(())
+}
+
+/// Relations every core lane must have before any finer marker can be
+/// probed.
+const CORE_RELATION_MARKERS: &str = r"SELECT CASE
          WHEN to_regclass('proxima_core.memory') IS NULL
            THEN 'missing relation proxima_core.memory'
          WHEN to_regclass('proxima_core.memory_head') IS NULL
@@ -320,6 +363,12 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'missing relation proxima_core.goal'
          WHEN to_regclass('proxima_core.goal_replay_declaration') IS NULL
            THEN 'missing relation proxima_core.goal_replay_declaration'
+         ELSE NULL
+       END";
+
+/// Columns, keys, checks and the append-only trigger of
+/// `goal_replay_declaration`.
+const GOAL_REPLAY_DECLARATION_MARKERS: &str = r"SELECT CASE
          WHEN NOT EXISTS (
                   SELECT 1 FROM information_schema.columns
                    WHERE table_schema = 'proxima_core'
@@ -422,6 +471,11 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                          '%execute function proxima_core.enforce_row_append_only%'
                 )
            THEN 'goal_replay_declaration append-only trigger is missing or incorrect'
+         ELSE NULL
+       END";
+
+/// `blob_uploads` content-hash column and its digest-length check.
+const BLOB_UPLOAD_HASH_MARKERS: &str = r"SELECT CASE
          WHEN NOT EXISTS (
                   SELECT 1 FROM information_schema.columns
                    WHERE table_schema = 'proxima_core'
@@ -442,6 +496,11 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                                 'octet_length(content_hash) = 32') > 0
                 )
            THEN 'blob_uploads content-hash check is missing or incorrect'
+         ELSE NULL
+       END";
+
+/// Relations the later per-table marker groups probe columns of.
+const SUPPORT_RELATION_MARKERS: &str = r"SELECT CASE
          WHEN to_regclass('proxima_core.wake_config') IS NULL
            THEN 'missing relation proxima_core.wake_config'
          WHEN to_regclass('proxima_core.embeddings') IS NULL
@@ -454,6 +513,11 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'missing relation proxima_core.group_memberships'
          WHEN to_regclass('proxima_core.cold_purge_pending') IS NULL
            THEN 'missing relation proxima_core.cold_purge_pending'
+         ELSE NULL
+       END";
+
+/// Column shape and primary key of the cold-purge queue.
+const COLD_PURGE_PENDING_MARKERS: &str = r"SELECT CASE
          WHEN NOT EXISTS (
                   SELECT 1 FROM information_schema.columns
                    WHERE table_schema = 'proxima_core' AND table_name = 'cold_purge_pending'
@@ -502,6 +566,12 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                      AND data_type = 'timestamp with time zone' AND is_nullable = 'NO'
                 )
            THEN 'cold_purge_pending.enqueued_at must be timestamptz NOT NULL'
+         ELSE NULL
+       END";
+
+/// `cooled` column types plus the digest-length and NULL-element checks
+/// over its reference arrays.
+const COOLED_COLUMN_MARKERS: &str = r"SELECT CASE
          WHEN NOT EXISTS (
                   SELECT 1
                     FROM information_schema.columns
@@ -600,6 +670,12 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                      AND c.convalidated
                 )
            THEN 'cooled.goal_refs must reject NULL array elements'
+         ELSE NULL
+       END";
+
+/// The `pin_target_kind` enum, the `erased_pin_target` ledger shape, and
+/// the per-table triggers that record erased pin targets.
+const ERASED_PIN_TARGET_MARKERS: &str = r"SELECT CASE
          WHEN COALESCE((
                   SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder)
                     FROM pg_enum e
@@ -727,6 +803,11 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                      AND NOT tr.tgisinternal
                 )
            THEN 'goal erased-target trigger is missing'
+         ELSE NULL
+       END";
+
+/// Presence of the functions the pin-target and cooled triggers call.
+const PIN_LIFECYCLE_FUNCTION_MARKERS: &str = r"SELECT CASE
          WHEN to_regprocedure('proxima_core.lock_pin_targets(uuid[])') IS NULL
            THEN 'missing function proxima_core.lock_pin_targets(uuid[])'
          WHEN to_regprocedure('proxima_core.assert_erased_pin_target_insert()') IS NULL
@@ -735,6 +816,12 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'missing function proxima_core.cooled_identity_seal()'
          WHEN to_regprocedure('proxima_core.cooled_append_only()') IS NULL
            THEN 'missing function proxima_core.cooled_append_only()'
+         ELSE NULL
+       END";
+
+/// Statement order inside the pin-target and forget-grounding functions:
+/// the lock must be taken before the rows it guards are read.
+const PIN_LIFECYCLE_FUNCTION_BODY_MARKERS: &str = r"SELECT CASE
          WHEN NOT EXISTS (
                   SELECT 1
                     FROM pg_proc p
@@ -778,6 +865,11 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                          < strpos(lower(pg_get_functiondef(p.oid)), 'for update')
                 )
            THEN 'cooled_forget_grounding body/order is incorrect'
+         ELSE NULL
+       END";
+
+/// Timing, enablement and function wiring of every core lifecycle trigger.
+const TRIGGER_WIRING_MARKERS: &str = r"SELECT CASE
          WHEN NOT EXISTS (
                   SELECT 1
                     FROM pg_trigger tr
@@ -945,6 +1037,12 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                          '%execute function proxima_core.goal_erase_witness%'
                 )
            THEN 'goal witness trigger timing or wiring is incorrect'
+         ELSE NULL
+       END";
+
+/// The lexical language tables, the singleton default row, and the
+/// text-search functions.
+const LEXICAL_CONFIG_MARKERS: &str = r"SELECT CASE
          WHEN to_regclass('proxima_core.lexical_languages') IS NULL
            THEN 'missing relation proxima_core.lexical_languages'
          WHEN to_regclass('proxima_core.lexical_default') IS NULL
@@ -1041,6 +1139,11 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'missing function proxima_core.lexical_config()'
          WHEN to_regprocedure('proxima_core.lexical_language_forget(regconfig)') IS NULL
            THEN 'missing function proxima_core.lexical_language_forget(regconfig)'
+         ELSE NULL
+       END";
+
+/// Label order of the enums whose ordinals are persisted.
+const ENUM_ORDER_MARKERS: &str = r"SELECT CASE
          WHEN COALESCE((
                   SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder)
                     FROM pg_enum e
@@ -1059,6 +1162,11 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                      AND t.typname = 'announce_op'
                 ), ARRAY[]::text[]) <> ARRAY['append', 'forget', 'erase', 'transfer']
            THEN 'announce_op labels/order must be append, forget, erase, transfer'
+         ELSE NULL
+       END";
+
+/// `embedding_jobs` column shape and the processing-claim invariant.
+const EMBEDDING_JOB_MARKERS: &str = r"SELECT CASE
          WHEN NOT EXISTS (
                   SELECT 1
                     FROM information_schema.columns
@@ -1114,19 +1222,7 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                 )
            THEN 'embedding_jobs.processing claim check is missing or incorrect'
          ELSE NULL
-       END",
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(internal)?;
-
-    if let Some(marker_error) = marker_error {
-        return Err(StorageError::Internal(format!(
-            "database is missing or has an incorrect current schema marker: {marker_error}; apply migrations before boot"
-        )));
-    }
-    Ok(())
-}
+       END";
 
 /// Every `lexical_language` column in `proxima_core` is FK-stamped against
 /// `lexical_languages(config)`, and flavor #0 declared each one.

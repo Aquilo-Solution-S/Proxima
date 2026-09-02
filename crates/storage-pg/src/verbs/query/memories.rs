@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use futures_util::future::try_join_all;
 use proxima_core::read_models::MemorySchemaSpec;
 use proxima_core::verbs::query::{
-    EntityKind, QueryCursor, QueryRequest, QueryResponse, SupersessionStatus,
+    EntityKind, MemoryRow, QueryCursor, QueryRequest, QueryResponse, SupersessionStatus,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{MemoryId, SchemaId, SidecarPayload, StorageError};
@@ -21,7 +21,6 @@ use super::edges::query_edges;
 use super::goals::query_goals;
 use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water};
 
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn query_memories(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
@@ -47,14 +46,65 @@ pub(crate) async fn query_memories(
         });
     }
 
-    let cursor_t = match &req.page.after {
-        Some(QueryCursor::Memory { memory_id, .. }) => Some(memory_id.into_inner()),
-        _ => None,
-    };
     let single_memory_stream = matches!(
         req.entity_kind,
         Some(EntityKind::Fact | EntityKind::Abstraction | EntityKind::Perspective)
     );
+    let mut rows = fetch_memory_page(
+        pool,
+        req,
+        &owner_ids,
+        schema_id_filter.as_deref(),
+        single_memory_stream,
+    )
+    .await?;
+    let limit = usize::try_from(req.limit)
+        .map_err(|_| StorageError::Internal("query limit does not fit usize".into()))?;
+    let next_memory_cursor = if single_memory_stream && rows.len() > limit {
+        rows.truncate(limit);
+        rows.last().map(|row| QueryCursor::Memory {
+            created_at: row.created_at,
+            memory_id: MemoryId::new(row.memory_id),
+        })
+    } else {
+        None
+    };
+
+    let mut memories = project_memory_rows(pool, sidecars, req, schemas, rows).await?;
+    let (goals, next_goal_cursor) =
+        if req.entity_kind.is_none() || matches!(req.entity_kind, Some(EntityKind::Goal)) {
+            query_goals(pool, req, &owner_ids, schema_id_filter.as_deref()).await?
+        } else {
+            (Vec::new(), None)
+        };
+    let visible_goal_ids: Vec<Uuid> = goals.iter().map(|row| row.id.into_inner()).collect();
+    demote_invisible_goal_refs(&mut memories, &visible_goal_ids);
+    let edges = query_edges(req, &memories, &visible_goal_ids);
+    let seq_high_water = read_seq_high_water(pool, &owner_ids).await?;
+
+    Ok(QueryResponse {
+        memories,
+        goals,
+        edges,
+        next_cursor: next_memory_cursor.or(next_goal_cursor),
+        seq_high_water,
+    })
+}
+
+/// Read one page of memory rows for the request's filters. `single_memory_stream`
+/// asks for one row past the limit so the caller can tell a full page from an
+/// exhausted one.
+async fn fetch_memory_page(
+    pool: &PgPool,
+    req: &QueryRequest,
+    owner_ids: &[Uuid],
+    schema_id_filter: Option<&str>,
+    single_memory_stream: bool,
+) -> Result<Vec<MemoryRowDb>, StorageError> {
+    let cursor_t = match &req.page.after {
+        Some(QueryCursor::Memory { memory_id, .. }) => Some(memory_id.into_inner()),
+        _ => None,
+    };
     let fetch_limit = if single_memory_stream {
         u64::from(req.limit) + 1
     } else {
@@ -78,9 +128,9 @@ pub(crate) async fn query_memories(
     );
 
     // SQL-POLICY: fixed-fragment
-    let mut q = sqlx::query_as::<_, MemoryRowDb>(sqlx::AssertSqlSafe(sql)).bind(&owner_ids);
-    if let Some(sid) = &schema_id_filter {
-        q = q.bind(sid.clone());
+    let mut q = sqlx::query_as::<_, MemoryRowDb>(sqlx::AssertSqlSafe(sql)).bind(owner_ids);
+    if let Some(sid) = schema_id_filter {
+        q = q.bind(sid.to_owned());
     }
     if let Some(kind) = kind_filter {
         q = q.bind(kind);
@@ -92,19 +142,18 @@ pub(crate) async fn query_memories(
         q = q.bind(t);
     }
 
-    let mut rows: Vec<MemoryRowDb> = q.fetch_all(pool).await.map_err(map_err)?;
-    let limit = usize::try_from(req.limit)
-        .map_err(|_| StorageError::Internal("query limit does not fit usize".into()))?;
-    let next_memory_cursor = if single_memory_stream && rows.len() > limit {
-        rows.truncate(limit);
-        rows.last().map(|row| QueryCursor::Memory {
-            created_at: row.created_at,
-            memory_id: MemoryId::new(row.memory_id),
-        })
-    } else {
-        None
-    };
+    q.fetch_all(pool).await.map_err(map_err)
+}
 
+/// Resolve each row's schema, verify its sidecar stamp, and project the page
+/// into read-model rows.
+async fn project_memory_rows(
+    pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
+    req: &QueryRequest,
+    schemas: &[MemorySchemaSpec],
+    rows: Vec<MemoryRowDb>,
+) -> Result<Vec<MemoryRow>, StorageError> {
     let mut schema_versions = HashMap::new();
     for row in &rows {
         let kind = parse_memory_kind(&row.kind)?;
@@ -149,17 +198,15 @@ pub(crate) async fn query_memories(
         let payload = req.include_payloads.then_some(loaded_payload).flatten();
         memories.push(memory_row_from_db(row, payload, schema_version)?);
     }
+    Ok(memories)
+}
 
-    let (goals, next_goal_cursor) =
-        if req.entity_kind.is_none() || matches!(req.entity_kind, Some(EntityKind::Goal)) {
-            query_goals(pool, req, &owner_ids, schema_id_filter.as_deref()).await?
-        } else {
-            (Vec::new(), None)
-        };
-    let visible_goal_ids: Vec<Uuid> = goals.iter().map(|row| row.id.into_inner()).collect();
+/// A Goal reference the caller may not read is not a Goal edge for this
+/// response; it stays a plain reference rather than disappearing.
+fn demote_invisible_goal_refs(memories: &mut [MemoryRow], visible_goal_ids: &[Uuid]) {
     let visible_goal_set: std::collections::HashSet<Uuid> =
         visible_goal_ids.iter().copied().collect();
-    for memory in &mut memories {
+    for memory in memories {
         let mut visible = Vec::with_capacity(memory.goal_refs.len());
         for goal in memory.goal_refs.drain(..) {
             if visible_goal_set.contains(&goal.into_inner()) {
@@ -170,16 +217,6 @@ pub(crate) async fn query_memories(
         }
         memory.goal_refs = visible;
     }
-    let edges = query_edges(req, &memories, &visible_goal_ids);
-    let seq_high_water = read_seq_high_water(pool, &owner_ids).await?;
-
-    Ok(QueryResponse {
-        memories,
-        goals,
-        edges,
-        next_cursor: next_memory_cursor.or(next_goal_cursor),
-        seq_high_water,
-    })
 }
 
 async fn load_row_payloads_batch(
