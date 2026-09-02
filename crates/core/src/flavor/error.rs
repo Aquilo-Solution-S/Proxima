@@ -333,9 +333,76 @@ pub enum FlavorRegistryError {
 }
 
 impl std::fmt::Display for FlavorRegistryError {
-    // Every variant renders its own message; splitting the match would put
-    // half the vocabulary in a second place to forget one.
+    // The dispatch is exhaustive on purpose: a new variant does not compile until
+    // it is routed to a family, and that family is the single place its wording
+    // lives.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateSchema { .. }
+            | Self::DuplicateMemorySchemaSelector { .. }
+            | Self::DuplicateTool { .. }
+            | Self::DuplicateFlavor { .. }
+            | Self::DuplicateOwnerResolver
+            | Self::DuplicateFlavorOrdinal { .. } => self.fmt_duplicate_registration(f),
+            Self::InvalidCapabilityTag { .. }
+            | Self::SchemaIngressMismatch { .. }
+            | Self::OpaqueSchemaKind { .. }
+            | Self::UnregisteredSchemaCapabilityTags { .. }
+            | Self::NaturalKeyDisagreement { .. }
+            | Self::ContractSchemaPrefix { .. }
+            | Self::ContractSchemaNotRegistered { .. }
+            | Self::SchemaWithoutContract { .. } => self.fmt_schema_registration(f),
+            Self::InvalidToolName { .. }
+            | Self::UndeclaredToolBehavior { .. }
+            | Self::DispatcherWithoutActionSpecs { .. }
+            | Self::InvalidActionSpecs { .. }
+            | Self::ConflictingActionVocabularies { .. }
+            | Self::ToolActionsDisagreement { .. }
+            | Self::ToolIdempotenceDisagreement { .. }
+            | Self::ContractToolNotRegistered { .. } => self.fmt_tool_declaration(f),
+            Self::ScopeNotDeclared { .. }
+            | Self::DuplicateScopeDeclaration { .. }
+            | Self::InvalidScopeDeclaration { .. }
+            | Self::ResourcesNotPermitted { .. }
+            | Self::MissingCoreContract
+            | Self::UnclaimedRegistration { .. } => self.fmt_contract_wiring(f),
+            Self::UnreachableExportSurface { .. }
+            | Self::UndeletableSurface { .. }
+            | Self::BespokeEraseLegMismatch { .. }
+            | Self::UnmovableSurface { .. }
+            | Self::BespokeTransferLegMismatch { .. }
+            | Self::UnforgettableSurface { .. }
+            | Self::UnenforcedTransferRefusal { .. }
+            | Self::CitationSidecarNotRemappable { .. } => self.fmt_lifecycle_surface(f),
+            Self::EmbeddabilityDisagreement { .. }
+            | Self::EmptyEmbeddingUnits { .. }
+            | Self::EmbeddedSidecarNotMemoryKeyed { .. } => self.fmt_embedding(f),
+            Self::ProjectedSidecarNotMemoryKeyed { .. }
+            | Self::UnreachableSearchProjection { .. }
+            | Self::ProjectionWeightLevels { .. } => self.fmt_search_projection(f),
+            Self::ProjectionLanguageColumn { .. }
+            | Self::ProjectionRenderNotUniform { .. }
+            | Self::ProjectionBandName { .. }
+            | Self::ProjectionBandOutsideCoreWindow { .. } => self.fmt_projection_rendering(f),
+        }
+    }
+}
+
+impl FlavorRegistryError {
+    /// The escape hatch for a variant that reached the wrong family helper.
+    ///
+    /// `fmt` routes every variant to exactly one family and each family covers
+    /// exactly what is routed to it, so nothing reaches this today. It renders
+    /// the `Debug` form rather than panicking: `Display` runs on the reporting
+    /// path, and an error that panics while being logged takes down the thing
+    /// trying to tell you about it.
+    fn fmt_misrouted(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+
+    /// Registrations that collide: one selector, name, id or ordinal claimed
+    /// twice.
+    fn fmt_duplicate_registration(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DuplicateSchema {
                 schema_id,
@@ -360,6 +427,20 @@ impl std::fmt::Display for FlavorRegistryError {
             Self::DuplicateFlavor { flavor_id } => {
                 write!(f, "duplicate flavor descriptor registered: {flavor_id}")
             }
+            Self::DuplicateOwnerResolver => f.write_str("duplicate owner resolver registered"),
+            Self::DuplicateFlavorOrdinal { ordinal, flavor_id } => write!(
+                f,
+                "flavor {flavor_id} claims ordinal {ordinal}, which another flavor already holds; \
+                 ordinals are load-bearing at runtime and cannot collide"
+            ),
+            other => other.fmt_misrouted(f),
+        }
+    }
+
+    /// Schema registrations that do not hold up: bad tags, mismatched ingress,
+    /// and registration disagreeing with the declaring contract.
+    fn fmt_schema_registration(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
             Self::InvalidCapabilityTag {
                 schema_id,
                 schema_version,
@@ -370,15 +451,6 @@ impl std::fmt::Display for FlavorRegistryError {
                 f,
                 "schema {schema_id} v{schema_version} {kind:?} has invalid capability tag {tag:?}: {message}"
             ),
-            Self::InvalidToolName {
-                name,
-                expected_prefix,
-                message,
-            } => write!(
-                f,
-                "tool name {name:?} is invalid for prefix {expected_prefix:?}: {message}"
-            ),
-            Self::DuplicateOwnerResolver => f.write_str("duplicate owner resolver registered"),
             Self::SchemaIngressMismatch {
                 schema_id,
                 schema_version,
@@ -402,6 +474,58 @@ impl std::fmt::Display for FlavorRegistryError {
             } => write!(
                 f,
                 "schema capability tags reference unregistered schema: {schema_id} v{schema_version} {kind:?}"
+            ),
+            Self::NaturalKeyDisagreement {
+                flavor_id,
+                schema_id,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares natural key columns for {schema_id} that are \
+                 not the ones the ingest reads off the payload trait"
+            ),
+            Self::ContractSchemaPrefix {
+                flavor_id,
+                schema_id,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares schema {schema_id}, which does not carry its prefix"
+            ),
+            Self::ContractSchemaNotRegistered {
+                flavor_id,
+                schema_id,
+                schema_version,
+                kind,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares {schema_id} v{schema_version} {kind:?} in its \
+                 contract but never registered it"
+            ),
+            Self::SchemaWithoutContract {
+                flavor_id,
+                schema_id,
+                schema_version,
+                kind,
+            } => write!(
+                f,
+                "schema {schema_id} v{schema_version} {kind:?} is registered under flavor \
+                 {flavor_id} but its contract does not declare it, so every registry walk \
+                 (erase, export, forget, transfer) would miss its surfaces"
+            ),
+            other => other.fmt_misrouted(f),
+        }
+    }
+
+    /// MCP tool declarations: names, behaviour, action vocabularies, and the
+    /// contract agreeing with what was registered.
+    fn fmt_tool_declaration(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidToolName {
+                name,
+                expected_prefix,
+                message,
+            } => write!(
+                f,
+                "tool name {name:?} is invalid for prefix {expected_prefix:?}: {message}"
             ),
             Self::UndeclaredToolBehavior { name } => write!(
                 f,
@@ -427,11 +551,34 @@ impl std::fmt::Display for FlavorRegistryError {
                  single enumeration of the tool's actions under its own dispatch shape, so \
                  declare exactly one"
             ),
-            Self::DuplicateFlavorOrdinal { ordinal, flavor_id } => write!(
+            Self::ToolActionsDisagreement { flavor_id, name } => write!(
                 f,
-                "flavor {flavor_id} claims ordinal {ordinal}, which another flavor already holds; \
-                 ordinals are load-bearing at runtime and cannot collide"
+                "flavor {flavor_id} declares actions for {name} that are not, in order, \
+                 the actions its registered dispatcher accepts"
             ),
+            Self::ToolIdempotenceDisagreement {
+                flavor_id,
+                name,
+                declared,
+                resolved,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares {name} idempotent = {declared}; its resolved \
+                 MCP annotations say {resolved}, and the wire believes the annotations"
+            ),
+            Self::ContractToolNotRegistered { flavor_id, name } => write!(
+                f,
+                "flavor {flavor_id} declares MCP tool {name} in its contract but never \
+                 registered it"
+            ),
+            other => other.fmt_misrouted(f),
+        }
+    }
+
+    /// How a flavor is wired into the binary: lifecycle scopes, resources, and
+    /// the contract itself.
+    fn fmt_contract_wiring(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
             Self::ScopeNotDeclared { schema_id, kind } => write!(
                 f,
                 "schema {schema_id} declares lifecycle scope {kind}, which no linked flavor \
@@ -466,13 +613,23 @@ impl std::fmt::Display for FlavorRegistryError {
             Self::MissingCoreContract => f.write_str(
                 "flavor contracts were registered but none is flavor #0; core is non-removable",
             ),
-            Self::ContractSchemaPrefix {
-                flavor_id,
-                schema_id,
-            } => write!(
+            Self::UnclaimedRegistration { flavor_id } => write!(
                 f,
-                "flavor {flavor_id} declares schema {schema_id}, which does not carry its prefix"
+                "flavor {flavor_id} is linked into this binary and declares no FlavorContract, \
+                 so every registry walk (erase, export, forget, transfer) skips whatever it \
+                 registers and its Memory writes are refused later by a flavor_surface \
+                 constraint naming none of this; declare a FlavorContract for {flavor_id} and \
+                 register it, which for a flavor built with proxima_flavor! means adding \
+                 `contract = &<YOUR_CONTRACT>` to the macro"
             ),
+            other => other.fmt_misrouted(f),
+        }
+    }
+
+    /// Declared surfaces no registry walk can reach: erase, export, forget and
+    /// transfer legs, and the citation columns a transfer has to repoint.
+    fn fmt_lifecycle_surface(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
             Self::UnreachableExportSurface { flavor_id, table } => write!(
                 f,
                 "flavor {flavor_id} declares {table} exportable, but it carries no owner \
@@ -508,6 +665,40 @@ impl std::fmt::Display for FlavorRegistryError {
                 f,
                 "flavor {flavor_id} declares a bespoke transfer leg for {table}, which {why}"
             ),
+            Self::UnforgettableSurface { flavor_id, table } => write!(
+                f,
+                "flavor {flavor_id} declares that forget deletes {table} with the memory, and \
+                 the forget reaches none of its rows: the key is neither a memory nor an entity \
+                 t, and no completeness constraint claims them either"
+            ),
+            Self::UnenforcedTransferRefusal {
+                flavor_id,
+                schema_id,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares {schema_id} NotTransferable but names no enforcement \
+                 site; a refusal nothing backs is a comment"
+            ),
+            Self::CitationSidecarNotRemappable {
+                flavor_id,
+                schema_id,
+                table,
+            } => write!(
+                f,
+                "flavor {flavor_id} schema {schema_id} declares sidecar table {table} for a \
+                 citation payload; a cross-owner transfer now dedupes a shared blob onto a \
+                 NEW blob row, and the columns that must follow it are the ones declared on \
+                 `TransferRule::FollowOrDedupe` -- a citation sidecar points at a blob by \
+                 convention with no SQL foreign key, so nothing would repoint it and the \
+                 rows would keep naming the source owner's row"
+            ),
+            other => other.fmt_misrouted(f),
+        }
+    }
+
+    /// What the embedding drain can and cannot resolve for a declared schema.
+    fn fmt_embedding(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
             Self::EmbeddabilityDisagreement {
                 flavor_id,
                 schema_id,
@@ -531,73 +722,25 @@ impl std::fmt::Display for FlavorRegistryError {
                  EmbeddingRecipe::Never says — declare Never and state why, because \
                  Units answers `false` to is_never() and the enqueue lane believes it"
             ),
-            Self::NaturalKeyDisagreement {
+            Self::EmbeddedSidecarNotMemoryKeyed {
                 flavor_id,
                 schema_id,
+                table,
             } => write!(
                 f,
-                "flavor {flavor_id} declares natural key columns for {schema_id} that are \
-                 not the ones the ingest reads off the payload trait"
+                "flavor {flavor_id} declares {schema_id} an embed unit on sidecar {table}, and \
+                 no surface of this flavor declares {table} keyed on the memory t; the drain \
+                 filters the text read on that column, so there is no statement to generate -- \
+                 declare a surface for {table} with `key: KeyShape::MemoryT {{ column: .. }}`"
             ),
-            Self::ToolActionsDisagreement { flavor_id, name } => write!(
-                f,
-                "flavor {flavor_id} declares actions for {name} that are not, in order, \
-                 the actions its registered dispatcher accepts"
-            ),
-            Self::ToolIdempotenceDisagreement {
-                flavor_id,
-                name,
-                declared,
-                resolved,
-            } => write!(
-                f,
-                "flavor {flavor_id} declares {name} idempotent = {declared}; its resolved \
-                 MCP annotations say {resolved}, and the wire believes the annotations"
-            ),
-            Self::UnforgettableSurface { flavor_id, table } => write!(
-                f,
-                "flavor {flavor_id} declares that forget deletes {table} with the memory, and \
-                 the forget reaches none of its rows: the key is neither a memory nor an entity \
-                 t, and no completeness constraint claims them either"
-            ),
-            Self::UnenforcedTransferRefusal {
-                flavor_id,
-                schema_id,
-            } => write!(
-                f,
-                "flavor {flavor_id} declares {schema_id} NotTransferable but names no enforcement \
-                 site; a refusal nothing backs is a comment"
-            ),
-            Self::ContractSchemaNotRegistered {
-                flavor_id,
-                schema_id,
-                schema_version,
-                kind,
-            } => write!(
-                f,
-                "flavor {flavor_id} declares {schema_id} v{schema_version} {kind:?} in its \
-                 contract but never registered it"
-            ),
-            Self::SchemaWithoutContract {
-                flavor_id,
-                schema_id,
-                schema_version,
-                kind,
-            } => write!(
-                f,
-                "schema {schema_id} v{schema_version} {kind:?} is registered under flavor \
-                 {flavor_id} but its contract does not declare it, so every registry walk \
-                 (erase, export, forget, transfer) would miss its surfaces"
-            ),
-            Self::UnclaimedRegistration { flavor_id } => write!(
-                f,
-                "flavor {flavor_id} is linked into this binary and declares no FlavorContract, \
-                 so every registry walk (erase, export, forget, transfer) skips whatever it \
-                 registers and its Memory writes are refused later by a flavor_surface \
-                 constraint naming none of this; declare a FlavorContract for {flavor_id} and \
-                 register it, which for a flavor built with proxima_flavor! means adding \
-                 `contract = &<YOUR_CONTRACT>` to the macro"
-            ),
+            other => other.fmt_misrouted(f),
+        }
+    }
+
+    /// Search projections: the sidecar they are keyed on, whether a request can
+    /// reach them, and what `ts_rank` can be handed.
+    fn fmt_search_projection(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
             Self::ProjectedSidecarNotMemoryKeyed {
                 flavor_id,
                 schema_id,
@@ -609,17 +752,6 @@ impl std::fmt::Display for FlavorRegistryError {
                  the projection generator spells each projection row's key from that column, so \
                  there is no statement to generate -- declare a surface for {table} with \
                  `key: KeyShape::MemoryT {{ column: .. }}`"
-            ),
-            Self::EmbeddedSidecarNotMemoryKeyed {
-                flavor_id,
-                schema_id,
-                table,
-            } => write!(
-                f,
-                "flavor {flavor_id} declares {schema_id} an embed unit on sidecar {table}, and \
-                 no surface of this flavor declares {table} keyed on the memory t; the drain \
-                 filters the text read on that column, so there is no statement to generate -- \
-                 declare a surface for {table} with `key: KeyShape::MemoryT {{ column: .. }}`"
             ),
             Self::UnreachableSearchProjection {
                 flavor_id,
@@ -635,11 +767,6 @@ impl std::fmt::Display for FlavorRegistryError {
                  RankSource::SidecarWithProjectionOwner {{ why }} if the flavor's own tools \
                  rank it"
             ),
-            Self::ContractToolNotRegistered { flavor_id, name } => write!(
-                f,
-                "flavor {flavor_id} declares MCP tool {name} in its contract but never \
-                 registered it"
-            ),
             Self::ProjectionWeightLevels {
                 flavor_id,
                 schema_id,
@@ -653,19 +780,14 @@ impl std::fmt::Display for FlavorRegistryError {
                  12.3.1); collapsing two levels into one class would make ts_rank's weight \
                  array describe a document it is not scoring"
             ),
-            Self::CitationSidecarNotRemappable {
-                flavor_id,
-                schema_id,
-                table,
-            } => write!(
-                f,
-                "flavor {flavor_id} schema {schema_id} declares sidecar table {table} for a \
-                 citation payload; a cross-owner transfer now dedupes a shared blob onto a \
-                 NEW blob row, and the columns that must follow it are the ones declared on \
-                 `TransferRule::FollowOrDedupe` -- a citation sidecar points at a blob by \
-                 convention with no SQL foreign key, so nothing would repoint it and the \
-                 rows would keep naming the source owner's row"
-            ),
+            other => other.fmt_misrouted(f),
+        }
+    }
+
+    /// What the shared projection renderer can spell: one language column, one
+    /// statement per flavor, and bands it can resolve and compare.
+    fn fmt_projection_rendering(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
             Self::ProjectionLanguageColumn {
                 flavor_id,
                 schema_id,
@@ -713,6 +835,7 @@ impl std::fmt::Display for FlavorRegistryError {
                  [0, 1] window; a merge that compared those scores numerically would be \
                  comparing two different scales"
             ),
+            other => other.fmt_misrouted(f),
         }
     }
 }
