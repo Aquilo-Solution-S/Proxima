@@ -4,6 +4,11 @@ All notable changes to Proxima, generated from [Conventional Commits](https://ww
 
 Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpublished (`publish = false`).
 
+## [Unreleased]
+
+### Refactor
+- **breaking:** **core**: Drop the callerless EmbeddingWritePort convenience methods — `insert_fact_embedding`, `insert_memory_embedding`, `upsert_fact_embedding` and `upsert_memory_embedding` are gone; write through `insert_embedding` / `insert_embedding_chunks` with an `EmbeddableEntityRef`
+
 ## [0.0.9] - 2026-08-24
 
 ### Features
