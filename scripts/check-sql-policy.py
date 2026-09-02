@@ -829,7 +829,7 @@ def run_fixture(path: Path) -> int:
 # time, and the three values it compares are binds. Literal SQL cannot express
 # it because the registry table and its columns are named by an out-of-tree
 # flavor's declaration.
-EXPECTED_DYNAMIC_SQL_SITES = 118
+EXPECTED_DYNAMIC_SQL_SITES = 117
 
 
 def run_self_test() -> int:
