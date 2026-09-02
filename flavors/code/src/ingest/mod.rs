@@ -45,6 +45,12 @@ pub enum IngestError {
     Storage(String),
     #[error("protocol: {0}")]
     Protocol(#[from] ProtocolError),
+    /// The repository this write is filed under is not registered for the
+    /// owner — it never was, or an erase took its lifecycle fence first.
+    /// A repo-scoped write into a repository that has been erased is
+    /// refused, never admitted and left dangling.
+    #[error(transparent)]
+    Repo(#[from] crate::repos::RepoRegistryError),
 }
 
 impl From<sqlx::Error> for IngestError {

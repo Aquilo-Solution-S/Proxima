@@ -329,9 +329,10 @@ SELECT 'work_assignment_v1', t
 /// each other, and blocks an ingestion run starting against a repository
 /// that is being erased — `repo_ingestion_runs` carries a foreign key to
 /// this row, so starting a run needs `FOR KEY SHARE` on it. The sidecar
-/// tables do NOT reference `repos`, so this lock is not what makes the
-/// erase safe against a concurrent sidecar write;
-/// [`lock_admissions_for_erase`] is.
+/// tables do NOT reference `repos`, so this lock reaches no sidecar write:
+/// what makes the erase safe against one is the repository fence
+/// ([`super::fence::lock_repo_fence_exclusive_tx`]), taken before this and held
+/// through commit, plus [`lock_admissions_for_erase`] over the footprint.
 const REPO_EXISTS_SQL: &str = "\
 SELECT repo_id FROM proxima_code.repos
  WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3
@@ -457,6 +458,18 @@ async fn erase_repo_once(
     // a series cannot leave after the owner check and before its flavor rows
     // are deleted.
     proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner).await?;
+
+    // The repository fence, exclusively, BEFORE the first read of anything
+    // this erase intends to delete. The owner fence above is shared with
+    // every admission of this owner and the source fence is one lane for
+    // every repository, so neither separates this erase from a write into
+    // THIS repository; the sidecar tables carry a bare `repo_id` and no
+    // foreign key, so the row lock below does not either. Taking the fence
+    // here rather than after discovery is the same fence-before-select rule
+    // the whole-owner and source-scope erases follow: a same-repository
+    // write that has not started waits here, and one that has started
+    // committed before the footprint was read and is therefore in it.
+    super::fence::lock_repo_fence_exclusive_tx(&mut tx, owner, repo_id).await?;
 
     let exists: Option<(Uuid,)> = sqlx::query_as(REPO_EXISTS_SQL)
         .bind(kind)

@@ -238,9 +238,16 @@ the Memory/Goal scope as of fence acquisition, and the selected handles and
 upload admission take their shared owner fence before first-use owner-row
 arbitration. Transfer exclusively fences both endpoints in sorted owner order
 before its series locks, then locks its complete sorted series handle/`t` set
-and rechecks membership before rehoming. Repository sweeps share the
-source-owner boundary across discovery and deletion, but remain outside this
-complete-set bulk-erase guarantee.
+and rechecks membership before rehoming. A flavor scope the substrate cannot
+see fences itself in its own namespace: Code repository erase takes a fence
+(`proxima-code-repo-fence:<owner_kind>:<owner_id>:<repo_id>`) exclusively
+before it reads its footprint, and every transaction writing a Memory,
+sidecar, admission, or run row carrying that `repo_id` takes the same fence
+before its handle/`t` locks and revalidates the `repos` row under it. Order:
+owner fence, source fence, repository fence, handle/`t`, rows. Repository ids
+are never hashed into the `t`/handle namespace, distinct repositories never
+wait on each other, and a vanished repository row is a typed refusal on every
+ingest path rather than an unscoped write.
 
 <a id="scaling-envelope"></a>
 
