@@ -53,12 +53,10 @@ const BLOB_BATCH_BYTES: u64 = 8 * 1024 * 1024;
 use crate::calls::{ExtractedCall, ExtractedDefinition, extract_blob_callgraph};
 use crate::chunker::{Chunk, chunk_blob};
 use crate::ingest::{
-    FileRevisionHead, IngestError, append_code_slices_with_handles, assign_code_chunk_handles,
-    ingest_commit, ingest_file_revision,
+    ChunkInfo, FileRevisionHead, IngestError, append_code_slices_with_handles, ingest_commit,
+    ingest_file_revision, plan_file_chunks, resolve_intra_file_calls, tombstone_chunk,
 };
-use crate::payloads::{
-    CodeCallSiteV1, CodeCallV1, CodeChunkV1, CommitV1, FileRevisionV1, FileState,
-};
+use crate::payloads::{CommitV1, FileRevisionV1, FileState};
 use crate::repos::ScopeMatcher;
 use crate::store::CodeFlavorStore;
 
@@ -878,7 +876,13 @@ impl LocalGitSource {
             .await?;
         self.tombstone_vanished_slices(ctx, &pending, &heads, report)
             .await?;
-        let mut file_chunks = self.plan_file_chunks(&pending, &heads)?;
+        let mut file_chunks = plan_file_chunks(
+            self.repo_id,
+            &pending.path,
+            &pending.analysis.chunks,
+            &pending.analysis.definitions,
+            &heads,
+        )?;
         resolve_intra_file_calls(&pending.analysis.calls, &mut file_chunks);
         self.append_file_chunks(ctx, &pending, &file_chunks, report)
             .await
@@ -933,56 +937,6 @@ impl LocalGitSource {
             report.chunks_tombstoned += tomb_payloads.len();
         }
         Ok(())
-    }
-
-    /// Build this file's slice payloads and pair each with the series handle
-    /// it will be written under.
-    ///
-    /// Reuse listed series handles so intra-file calls can name callees
-    /// before insert. Mint only on miss.
-    fn plan_file_chunks(
-        &self,
-        pending: &PendingPresentBlob,
-        heads: &[proxima_storage_pg::query::ChunkSeriesHead],
-    ) -> Result<Vec<ChunkInfo>, IndexError> {
-        let mut bare_payloads: Vec<CodeChunkV1> = Vec::new();
-        for (idx, chunk) in pending.analysis.chunks.iter().enumerate() {
-            let chunk_index = u32::try_from(idx).unwrap_or(u32::MAX);
-            bare_payloads.push(CodeChunkV1 {
-                repo_id: self.repo_id,
-                file_path: pending.path.clone(),
-                chunk_index,
-                text: chunk.text.clone(),
-                language: chunk.language.map(str::to_string),
-                chunk_type: chunk.chunk_type.to_string(),
-                byte_range_start: chunk.byte_range_start,
-                byte_range_end: chunk.byte_range_end,
-                line_range_start: chunk.line_range_start,
-                line_range_end: chunk.line_range_end,
-                state: FileState::Present,
-                calls: Vec::new(),
-            });
-        }
-        let handles = assign_code_chunk_handles(heads, &bare_payloads)?;
-        let mut file_chunks: Vec<ChunkInfo> = Vec::new();
-        for (payload, handle) in bare_payloads.into_iter().zip(handles) {
-            let memory_id = MemoryId::new(handle);
-            let item_names: Vec<String> = pending
-                .analysis
-                .definitions
-                .iter()
-                .filter(|d| {
-                    d.byte_start >= payload.byte_range_start && d.byte_end <= payload.byte_range_end
-                })
-                .map(|d| d.name.clone())
-                .collect();
-            file_chunks.push(ChunkInfo {
-                memory_id,
-                payload,
-                item_names,
-            });
-        }
-        Ok(file_chunks)
     }
 
     /// Write the file's slices in one transaction: the chunks reference each
@@ -1092,307 +1046,6 @@ impl LocalGitSource {
             report.chunks_tombstoned += tomb_payloads.len();
         }
         Ok(())
-    }
-}
-
-/// Resolve each call into the caller/callee chunk pair and record it in the
-/// *caller's payload*. Resolution is intra-file v1; cross-file calls wait for
-/// an indexed name table. Ten sites into the same callee are ten entries here
-/// and one index row — the multiplicity belongs to the node
-/// (docs/16 §The Model).
-fn resolve_intra_file_calls(calls: &[ExtractedCall], file_chunks: &mut [ChunkInfo]) {
-    for call in calls {
-        let Some(caller_index) = file_chunks
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                c.payload.byte_range_start <= call.byte_start
-                    && c.payload.byte_range_end >= call.byte_end
-            })
-            .max_by_key(|(_, c)| c.payload.byte_range_start)
-            .map(|(index, _)| index)
-        else {
-            continue;
-        };
-        let Some(callee_memory_id) = file_chunks
-            .iter()
-            .find(|c| c.item_names.iter().any(|n| n == &call.callee_name))
-            .map(|c| c.memory_id)
-        else {
-            continue;
-        };
-        // A chunk that calls itself is not a connection between two
-        // things, and the index refuses the row outright.
-        if file_chunks[caller_index].memory_id == callee_memory_id {
-            continue;
-        }
-        let site = CodeCallSiteV1 {
-            byte_start: call.byte_start,
-            byte_end: call.byte_end,
-            callee_name: call.callee_name.clone(),
-            is_dynamic: call.is_dynamic,
-        };
-        let calls = &mut file_chunks[caller_index].payload.calls;
-        match calls
-            .iter_mut()
-            .find(|existing| existing.callee_memory_id == callee_memory_id.into_inner())
-        {
-            Some(existing) => existing.sites.push(site),
-            None => calls.push(CodeCallV1 {
-                callee_memory_id: callee_memory_id.into_inner(),
-                sites: vec![site],
-            }),
-        }
-    }
-}
-
-/// Build a tombstone `CodeChunkV1` payload for a `(repo, path, idx)`.
-/// `language` is `None` when the file itself was deleted; for shrink
-/// tombstones the file's current language is preserved so the head
-/// view stays self-consistent.
-fn tombstone_chunk(
-    repo_id: Uuid,
-    path: &str,
-    chunk_index: u32,
-    language: Option<String>,
-) -> CodeChunkV1 {
-    CodeChunkV1 {
-        repo_id,
-        file_path: path.to_string(),
-        chunk_index,
-        text: String::new(),
-        language,
-        chunk_type: "block".into(),
-        byte_range_start: 0,
-        byte_range_end: 0,
-        line_range_start: 0,
-        line_range_end: 0,
-        state: FileState::Tombstone,
-        // A tombstone slice asserts that the position is gone. It calls
-        // nothing, so it declares nothing and its index rows disappear
-        // with it.
-        calls: Vec::new(),
-    }
-}
-
-#[cfg(test)]
-mod resolve_tests {
-    use super::{ChunkInfo, resolve_intra_file_calls};
-    use crate::calls::ExtractedCall;
-    use crate::payloads::{CodeChunkV1, FileState};
-    use proxima_core::MemoryId;
-    use uuid::Uuid;
-
-    fn id(byte: u8) -> Uuid {
-        Uuid::from_bytes([byte; 16])
-    }
-
-    /// A planned chunk at `[start, end]` — the containment test is
-    /// inclusive on both ends, matching the payload's stored byte range.
-    fn chunk(marker: u8, start: u32, end: u32, item_names: &[&str]) -> ChunkInfo {
-        ChunkInfo {
-            memory_id: MemoryId::new(id(marker)),
-            payload: CodeChunkV1 {
-                repo_id: Uuid::nil(),
-                file_path: "a.rs".into(),
-                chunk_index: u32::from(marker),
-                text: String::new(),
-                language: None,
-                chunk_type: "block".into(),
-                byte_range_start: start,
-                byte_range_end: end,
-                line_range_start: 0,
-                line_range_end: 0,
-                state: FileState::Present,
-                calls: Vec::new(),
-            },
-            item_names: item_names.iter().map(|n| (*n).to_string()).collect(),
-        }
-    }
-
-    fn call(start: u32, end: u32, callee_name: &str) -> ExtractedCall {
-        ExtractedCall {
-            byte_start: start,
-            byte_end: end,
-            callee_name: callee_name.to_string(),
-            is_dynamic: false,
-        }
-    }
-
-    /// Every recorded connection as `(caller slice position, callee marker,
-    /// call-site byte starts in payload order)`.
-    fn recorded(file_chunks: &[ChunkInfo]) -> Vec<(usize, u8, Vec<u32>)> {
-        let mut out = Vec::new();
-        for (position, info) in file_chunks.iter().enumerate() {
-            for entry in &info.payload.calls {
-                out.push((
-                    position,
-                    entry.callee_memory_id.as_bytes()[0],
-                    entry.sites.iter().map(|site| site.byte_start).collect(),
-                ));
-            }
-        }
-        out
-    }
-
-    /// Two chunks that share no bytes; the call sits wholly inside the
-    /// second one.
-    #[test]
-    fn disjoint_chunks_resolve_the_containing_caller() {
-        let mut chunks = vec![chunk(1, 0, 10, &["callee"]), chunk(2, 10, 20, &[])];
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), vec![(1, 1, vec![12])]);
-    }
-
-    /// Containment is all-or-nothing: a call whose bytes straddle the
-    /// boundary belongs to neither chunk and is dropped rather than
-    /// attributed to a chunk that holds only part of it.
-    #[test]
-    fn call_crossing_a_chunk_boundary_is_dropped() {
-        let mut chunks = vec![chunk(1, 0, 10, &["callee"]), chunk(2, 10, 20, &[])];
-        resolve_intra_file_calls(&[call(8, 12, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), Vec::new());
-    }
-
-    /// Chunk coverage of a file can have holes; a call inside one has no
-    /// caller.
-    #[test]
-    fn call_in_a_gap_between_chunks_is_dropped() {
-        let mut chunks = vec![chunk(1, 0, 10, &["callee"]), chunk(2, 20, 30, &[])];
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), Vec::new());
-    }
-
-    /// The chunker's fallback path gives every window the whole blob as its
-    /// range, so every chunk contains every call. The tie-break is the
-    /// *last* of the equal-start run, not the first.
-    #[test]
-    fn identical_ranges_resolve_to_the_last_chunk() {
-        let mut chunks = vec![
-            chunk(1, 0, 100, &["callee"]),
-            chunk(2, 0, 100, &[]),
-            chunk(3, 0, 100, &[]),
-        ];
-        resolve_intra_file_calls(&[call(5, 9, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), vec![(2, 1, vec![5])]);
-    }
-
-    /// Defensive: the AST path emits disjoint spans, but if two chunks ever
-    /// nest, the innermost — the one with the largest start — is the caller.
-    #[test]
-    fn nested_chunks_resolve_to_the_innermost_start() {
-        let mut chunks = vec![chunk(1, 0, 100, &["callee"]), chunk(2, 10, 20, &[])];
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), vec![(1, 1, vec![12])]);
-    }
-
-    /// Adjacent chunks share the boundary byte; a call starting exactly on
-    /// it belongs to the later chunk, because the containment test is
-    /// inclusive and the largest start wins.
-    #[test]
-    fn call_starting_on_a_shared_boundary_takes_the_later_chunk() {
-        let mut chunks = vec![chunk(1, 0, 10, &["callee"]), chunk(2, 10, 20, &[])];
-        resolve_intra_file_calls(&[call(10, 12, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), vec![(1, 1, vec![10])]);
-    }
-
-    /// One name can be defined in more than one chunk (a re-export, a
-    /// duplicated helper, a merged span). The first chunk in slice order
-    /// that declares it wins.
-    #[test]
-    fn duplicate_callee_name_resolves_to_the_first_chunk() {
-        let mut chunks = vec![
-            chunk(1, 0, 10, &["callee"]),
-            chunk(2, 10, 20, &[]),
-            chunk(3, 20, 30, &["callee"]),
-        ];
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), vec![(1, 1, vec![12])]);
-    }
-
-    /// A chunk calling a name it defines itself is not a connection between
-    /// two things, and the index refuses the row.
-    #[test]
-    fn self_call_records_nothing() {
-        let mut chunks = vec![chunk(1, 0, 10, &[]), chunk(2, 10, 20, &["callee"])];
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), Vec::new());
-    }
-
-    /// Resolution is intra-file: a name no chunk in this file defines is
-    /// left unresolved rather than guessed at.
-    #[test]
-    fn unknown_callee_records_nothing() {
-        let mut chunks = vec![chunk(1, 0, 10, &["other"]), chunk(2, 10, 20, &[])];
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), Vec::new());
-    }
-
-    /// Ten sites into one callee are ten entries in one connection: the
-    /// multiplicity belongs to the node, and the sites keep call order.
-    #[test]
-    fn repeated_calls_share_one_entry_and_keep_site_order() {
-        let mut chunks = vec![chunk(1, 0, 10, &["callee"]), chunk(2, 10, 20, &[])];
-        resolve_intra_file_calls(
-            &[call(16, 18, "callee"), call(12, 14, "callee")],
-            &mut chunks,
-        );
-        assert_eq!(recorded(&chunks), vec![(1, 1, vec![16, 12])]);
-    }
-
-    /// Nothing depends on the chunk slice arriving sorted by start: the
-    /// same call resolves to the same chunk either way.
-    #[test]
-    fn unsorted_chunks_resolve_the_same_caller() {
-        let sorted = {
-            let mut chunks = vec![
-                chunk(1, 0, 10, &["callee"]),
-                chunk(2, 10, 20, &[]),
-                chunk(3, 20, 30, &[]),
-            ];
-            resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-            chunks
-        };
-        let shuffled = {
-            let mut chunks = vec![
-                chunk(3, 20, 30, &[]),
-                chunk(2, 10, 20, &[]),
-                chunk(1, 0, 10, &["callee"]),
-            ];
-            resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-            chunks
-        };
-        let by_marker = |chunks: &[ChunkInfo]| {
-            let mut out: Vec<(u8, u8, Vec<u32>)> = chunks
-                .iter()
-                .flat_map(|info| {
-                    info.payload.calls.iter().map(|entry| {
-                        (
-                            info.memory_id.into_inner().as_bytes()[0],
-                            entry.callee_memory_id.as_bytes()[0],
-                            entry.sites.iter().map(|site| site.byte_start).collect(),
-                        )
-                    })
-                })
-                .collect();
-            out.sort();
-            out
-        };
-        assert_eq!(by_marker(&sorted), vec![(2, 1, vec![12])]);
-        assert_eq!(by_marker(&shuffled), by_marker(&sorted));
-    }
-
-    /// Both degenerate inputs are ordinary, not error cases: a file with no
-    /// calls, and a blob that produced no chunks at all.
-    #[test]
-    fn empty_calls_or_chunks_are_no_ops() {
-        let mut chunks = vec![chunk(1, 0, 10, &["callee"])];
-        resolve_intra_file_calls(&[], &mut chunks);
-        assert_eq!(recorded(&chunks), Vec::new());
-
-        let mut empty: Vec<ChunkInfo> = Vec::new();
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut empty);
-        assert!(empty.is_empty());
     }
 }
 
@@ -1550,12 +1203,4 @@ struct PendingDeletedPath {
     path: String,
     file_revision: MemoryId,
     source_commit: Option<MemoryId>,
-}
-
-/// Chunk info for call resolution.
-#[derive(Debug, Clone)]
-struct ChunkInfo {
-    memory_id: MemoryId,
-    payload: CodeChunkV1,
-    item_names: Vec<String>,
 }
