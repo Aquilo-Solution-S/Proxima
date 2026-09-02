@@ -637,7 +637,6 @@ impl OwnerInversePort for OwnerInverseFake {
         &self,
         _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _group_id: GroupId,
-        _object_purge_planned: bool,
         _tables: &proxima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         fake_error()
@@ -647,7 +646,6 @@ impl OwnerInversePort for OwnerInverseFake {
         &self,
         _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _user_id: UserId,
-        _object_purge_planned: bool,
         _tables: &proxima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         fake_error()

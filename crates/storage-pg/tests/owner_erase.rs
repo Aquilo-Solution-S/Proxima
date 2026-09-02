@@ -67,6 +67,42 @@ impl ColdObjectStore for RefusingDeleteCold {
     }
 }
 
+/// A cold store that names the bucket it writes to, which is what the
+/// durable purge queue matches a debt against.
+#[derive(Debug)]
+struct BucketNamedCold {
+    inner: MemoryColdStore,
+    bucket: String,
+}
+
+impl BucketNamedCold {
+    fn new(bucket: &str) -> Self {
+        Self {
+            inner: MemoryColdStore::default(),
+            bucket: bucket.to_owned(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ColdObjectStore for BucketNamedCold {
+    fn backend(&self) -> &str {
+        &self.bucket
+    }
+
+    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        self.inner.put(key, bytes).await
+    }
+
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        self.inner.get(key).await
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+        self.inner.delete(key).await
+    }
+}
+
 /// The two synthetic surfaces, declared exactly as a flavor would declare
 /// them: keyed on a blob under a column of their own naming, carrying no
 /// `owner_id` of their own, and tallying into `sidecar_rows`.
@@ -534,7 +570,7 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
             drop_event_id: "test-drop".into(),
         });
         let outcome = pg
-            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
             .await?;
         let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
@@ -684,7 +720,7 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
             drop_event_id: "test-drop-cooled".into(),
         });
         let outcome = pg
-            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
             .await?;
         assert!(
             matches!(outcome, OwnerEraseOutcome::Completed { .. }),
@@ -771,7 +807,7 @@ async fn erase_personal_owner_destroys_wake_config() {
             drop_event_id: "test-drop-wake".into(),
         });
         let outcome = pg
-            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
             .await?;
         let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
@@ -936,7 +972,7 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
             drop_event_id: "test-drop-cold".into(),
         });
         let outcome = pg
-            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
             .await?;
         assert!(
             matches!(outcome, OwnerEraseOutcome::Completed { .. }),
@@ -983,13 +1019,12 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
             drop_event_id: "test-drop-retry".into(),
         });
         let outcome = pg
-            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
             .await?;
         assert!(matches!(
             outcome,
             OwnerEraseOutcome::Completed {
                 cold_object_purge_pending: true,
-                cited_object_purge_pending: false,
                 ..
             }
         ));
@@ -1063,6 +1098,184 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
     result.expect("cold purge retry test failed");
 }
 
+/// A deadlock inside the erase transaction is retried, not surfaced.
+///
+/// The erase takes object-key fences before its row deletes while a stage or
+/// an abort takes its upload row first, so the two orders cross and `40P01`
+/// is a normal outcome of correct code rather than a fault. An operator
+/// draining a departed owner must not have to re-run the verb by hand
+/// because someone uploaded at the wrong moment.
+///
+/// The injection is a real Postgres deadlock error raised by a trigger on the
+/// first DELETE statement against `memory` and never again — the sequence is
+/// non-transactional, so it survives the rollback the raise causes. The
+/// counter reading past one IS the retry: without the bounded loop the erase
+/// returns the error and the statement runs exactly once.
+#[tokio::test]
+async fn an_injected_deadlock_inside_owner_erase_is_retried() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url)
+            .await?
+            .with_cold(Arc::new(MemoryColdStore::default()));
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let user = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(user);
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+
+        sqlx::raw_sql(
+            "CREATE SEQUENCE public.erase_deadlock_probe;
+             CREATE FUNCTION public.inject_erase_deadlock() RETURNS trigger
+             LANGUAGE plpgsql AS $$
+             BEGIN
+                 IF nextval('public.erase_deadlock_probe') = 1 THEN
+                     RAISE EXCEPTION 'injected deadlock' USING ERRCODE = '40P01';
+                 END IF;
+                 RETURN NULL;
+             END
+             $$;
+             CREATE TRIGGER inject_erase_deadlock
+             AFTER DELETE ON proxima_core.memory
+             FOR EACH STATEMENT
+             EXECUTE FUNCTION public.inject_erase_deadlock();",
+        )
+        .execute(pool)
+        .await?;
+
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+            user_id: user,
+            drop_event_id: "retried-drop".into(),
+        });
+        let outcome = pg
+            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
+            .await?;
+        assert!(
+            matches!(outcome, OwnerEraseOutcome::Completed { .. }),
+            "the retried attempt commits: {outcome:?}"
+        );
+
+        let attempts: i64 =
+            sqlx::query_scalar("SELECT last_value FROM public.erase_deadlock_probe")
+                .fetch_one(pool)
+                .await?;
+        assert!(
+            attempts >= 2,
+            "the whole transaction was re-run after the deadlock, not just reported (fired \
+             {attempts} times)"
+        );
+        let rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory WHERE owner_id = $1",
+        )
+        .bind(owner.stored_owner_id())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(rows, 0, "and the retry finished the erase");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("erase retry test failed");
+}
+
+/// The drain refuses to run while the queue holds a debt against a bucket
+/// this process is not wired to.
+///
+/// Before the queue carried a backend, store and queue were matched by boot
+/// convention alone: point a process at the right database and the wrong
+/// bucket and every drain "succeeded", deleting nothing and clearing the
+/// debt, so bytes an erase promised to destroy survived with no record that
+/// they did. The refusal is what makes that mis-wiring loud. The same pass
+/// must still drain a matching debt, or the guard would just be an outage.
+#[tokio::test]
+async fn a_drain_refuses_debts_owed_by_another_backend() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let cold = Arc::new(BucketNamedCold::new("wired-bucket"));
+        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        // Mint the owner row the queue's FK needs.
+        pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+
+        cold.put("cold/mine", b"wired bytes").await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
+             VALUES ('cold/mine', $1, 'wired-bucket'),
+                    ('cold/theirs', $1, 'other-bucket')",
+        )
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+
+        let refused = pg
+            .retry_cold_object_purges(ColdPurgeRetryOptions {
+                batch_size: 10,
+                dry_run: false,
+            })
+            .await
+            .expect_err("a foreign debt stops the drain");
+        match &refused {
+            StorageError::ConstraintViolation(message) => {
+                assert!(
+                    message.contains("other-bucket=1"),
+                    "the operator is told which store is owed: {message}"
+                );
+                assert!(
+                    message.contains("wired-bucket"),
+                    "and which store is wired: {message}"
+                );
+            }
+            other => panic!("expected a constraint violation, got {other:?}"),
+        }
+        assert_eq!(
+            pending_debts(pool).await?,
+            2,
+            "a refused drain destroys nothing and clears nothing"
+        );
+        assert_eq!(
+            cold.get("cold/mine").await?,
+            b"wired bytes".to_vec(),
+            "including the debt it could have discharged"
+        );
+
+        // With the foreign debt gone the same wiring drains its own.
+        sqlx::query("DELETE FROM proxima_core.cold_purge_pending WHERE backend = 'other-bucket'")
+            .execute(pool)
+            .await?;
+        let drained = pg
+            .retry_cold_object_purges(ColdPurgeRetryOptions {
+                batch_size: 10,
+                dry_run: false,
+            })
+            .await?;
+        assert_eq!(
+            (drained.selected, drained.purged, drained.failed),
+            (1, 1, 0)
+        );
+        assert_eq!(pending_debts(pool).await?, 0);
+        assert!(
+            matches!(cold.get("cold/mine").await, Err(StorageError::NotFound)),
+            "the matching debt is discharged against the wired store"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("backend-matched drain test failed");
+}
+
 /// The rollback half of the same rule, on the bulk path. An outside owner's Goal
 /// arming this owner's wake row makes the wake deletion trip the RESTRICT FK
 /// *after* the cooled rows are gone from the transaction, so the whole erase
@@ -1108,7 +1321,7 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
             drop_event_id: "test-drop-abort".into(),
         });
         let err = pg
-            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
             .await
             .expect_err("the RESTRICT FK aborts the erase");
         assert!(err.to_string().contains("wake_config"), "got: {err}");
@@ -1185,7 +1398,7 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
             drop_event_id: "test-drop-blob".into(),
         });
         let outcome = pg
-            .erase_personal_owner(&auth, user, false, &citation_surfaces())
+            .erase_personal_owner(&auth, user, &citation_surfaces())
             .await?;
         let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
@@ -1367,7 +1580,7 @@ async fn erase_group_owner_refuses_while_membership_rows_exist() {
         let auth =
             EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id: group });
         let outcome = pg
-            .erase_group_owner(&auth, group, false, &contract_sidecar_tables())
+            .erase_group_owner(&auth, group, &contract_sidecar_tables())
             .await?;
         let OwnerEraseOutcome::Refused { reason, .. } = outcome else {
             panic!("expected OwnerNotAbandoned, got {outcome:?}");
@@ -1441,7 +1654,7 @@ async fn erase_group_owner_completes_when_abandoned() {
         let auth =
             EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id: group });
         let outcome = pg
-            .erase_group_owner(&auth, group, false, &contract_sidecar_tables())
+            .erase_group_owner(&auth, group, &contract_sidecar_tables())
             .await?;
         let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
@@ -1699,7 +1912,7 @@ async fn erasing_a_member_leaves_the_memberships_that_name_it() {
             drop_event_id: "test-drop".into(),
         });
         let outcome = pg
-            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
             .await?;
         let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
@@ -1806,7 +2019,6 @@ async fn owner_erase_includes_a_fact_that_committed_before_its_fence() {
                         OwnerRef::Personal(user_id) => user_id,
                         OwnerRef::Group(_) => unreachable!(),
                     },
-                    false,
                     &contract_sidecar_tables(),
                 )
                 .await
@@ -2108,7 +2320,7 @@ async fn owner_erase_excludes_a_memory_transferred_away_before_its_fence() {
                 drop_event_id: "owner-transfer-race".into(),
             });
             erase_pg
-                .erase_personal_owner(&auth, user_id, false, &contract_sidecar_tables())
+                .erase_personal_owner(&auth, user_id, &contract_sidecar_tables())
                 .await
         });
         wait_for_ungranted_advisory_label(pool, &owner_fence_key(owner)).await?;
@@ -2209,7 +2421,7 @@ async fn destination_erase_includes_a_memory_transferred_in_before_its_fence() {
             };
             let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
             erase_pg
-                .erase_group_owner(&auth, group_id, false, &contract_sidecar_tables())
+                .erase_group_owner(&auth, group_id, &contract_sidecar_tables())
                 .await
         });
         wait_for_ungranted_advisory_label(pool, &owner_fence_key(destination)).await?;
@@ -2385,7 +2597,7 @@ async fn owner_erase_includes_a_goal_that_committed_before_its_fence() {
                 drop_event_id: "owner-late-goal".into(),
             });
             erase_pg
-                .erase_personal_owner(&auth, user_id, false, &contract_sidecar_tables())
+                .erase_personal_owner(&auth, user_id, &contract_sidecar_tables())
                 .await
         });
         wait_for_ungranted_advisory_label(pool, &owner_fence_key(owner)).await?;

@@ -10,7 +10,7 @@ use crate::owner_inverse::{
 };
 use crate::storage_ports::OperatorMaintenanceProof;
 use crate::{EmbeddingAnnObservability, EmbeddingOrphanSweepOutcome};
-use crate::{GroupId, OwnerRef, SourceId, UserId};
+use crate::{GroupId, SourceId, UserId};
 
 /// The verdict of [`Engine::admit_erase`].
 enum EraseAdmission {
@@ -173,67 +173,6 @@ impl Engine {
         }
     }
 
-    /// True iff a cited-object erase port is wired, i.e. an owner-scope erase
-    /// will attempt a post-commit object-store purge. The storage verb
-    /// persists this planned state as `cited_object_purge_pending` on the
-    /// audit row inside the same transaction as the erase, so the durable
-    /// record never claims a clean erase while a purge is still outstanding.
-    fn owner_object_purge_planned(&self) -> bool {
-        self.cited_object_erase().is_some()
-    }
-
-    /// Reclaim cited-object payloads from the host-wired object store after an
-    /// owner-scope erase completes in Postgres, and report on the receipt
-    /// whether a debt is outstanding:
-    ///
-    /// - no port configured: nothing was planned, so nothing is pending.
-    /// - purge succeeds: `false`.
-    /// - purge fails: `true`, and the host retries out-of-band.
-    ///
-    /// There is no fourth case, because there is no durable flag to fail at
-    /// clearing: the receipt states what this operation did, and the host
-    /// records it if its promises require a record.
-    async fn finalize_owner_erase_with_object_purge(
-        &self,
-        owner: OwnerRef,
-        outcome: OwnerEraseOutcome,
-    ) -> OwnerEraseOutcome {
-        let OwnerEraseOutcome::Completed {
-            operation_id,
-            counts,
-            cold_object_purge_pending,
-            ..
-        } = outcome
-        else {
-            return outcome;
-        };
-        let cited_object_purge_pending = if let Some(port) = self.cited_object_erase() {
-            match port.purge_owner_objects(owner).await {
-                Ok(purged) => {
-                    tracing::debug!(?owner, purged, "owner-scope erase purged cited objects");
-                    false
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        ?owner,
-                        %error,
-                        "owner-scope owner erase committed but cited-object purge failed; \
-                         object-store cleanup must be retried out-of-band"
-                    );
-                    true
-                }
-            }
-        } else {
-            false
-        };
-        OwnerEraseOutcome::Completed {
-            operation_id,
-            counts,
-            cited_object_purge_pending,
-            cold_object_purge_pending,
-        }
-    }
-
     /// The front half of every owner erase: open the audit row, check
     /// owner-erase authority, and — when the target names a drop
     /// event — verify it before storage can receive a deletion token.
@@ -326,17 +265,12 @@ impl Engine {
             EraseAdmission::Refused(outcome) => return Ok(outcome),
         };
         let surfaces = self.owner_surfaces();
-        let object_purge_planned = self.owner_object_purge_planned();
-        let outcome = self
-            .storage
+        self.storage
             .owner_inverse
             .owner_erase
-            .erase_group_owner(&auth, group_id, object_purge_planned, &surfaces)
+            .erase_group_owner(&auth, group_id, &surfaces)
             .await
-            .map_err(|e| ProtocolError::internal(format!("erase_group_owner: {e}")))?;
-        Ok(self
-            .finalize_owner_erase_with_object_purge(OwnerRef::Group(group_id), outcome)
-            .await)
+            .map_err(|e| ProtocolError::internal(format!("erase_group_owner: {e}")))
     }
 
     /// Erase a dropped personal owner and all its owned rows.
@@ -365,17 +299,12 @@ impl Engine {
             EraseAdmission::Refused(outcome) => return Ok(outcome),
         };
         let surfaces = self.owner_surfaces();
-        let object_purge_planned = self.owner_object_purge_planned();
-        let outcome = self
-            .storage
+        self.storage
             .owner_inverse
             .owner_erase
-            .erase_personal_owner(&auth, user_id, object_purge_planned, &surfaces)
+            .erase_personal_owner(&auth, user_id, &surfaces)
             .await
-            .map_err(|e| ProtocolError::internal(format!("erase_personal_owner: {e}")))?;
-        Ok(self
-            .finalize_owner_erase_with_object_purge(OwnerRef::Personal(user_id), outcome)
-            .await)
+            .map_err(|e| ProtocolError::internal(format!("erase_personal_owner: {e}")))
     }
 
     /// Erase one source scope for an abandoned group owner.
@@ -399,10 +328,9 @@ impl Engine {
             EraseAdmission::Refused(outcome) => return Ok(outcome),
         };
         let surfaces = self.owner_surfaces();
-        // Source-scope blob purge is deferred: a source scope is a partial
-        // owner, and the object store keys purely by owner, so a prefix-delete
-        // would over-delete the owner's other sources. Only owner-scope erase
-        // purges the object store.
+        // A source scope is a partial owner: the storage verb enqueues only
+        // the object keys its own selection orphans, and reports the debt on
+        // `cold_object_purge_pending` like every other scope.
         self.storage
             .owner_inverse
             .owner_erase
@@ -436,9 +364,7 @@ impl Engine {
             EraseAdmission::Refused(outcome) => return Ok(outcome),
         };
         let surfaces = self.owner_surfaces();
-        // Source-scope blob purge is deferred (see
-        // `erase_group_source_scope`): prefix-delete keys by owner,
-        // so it would over-delete the owner's other sources.
+        // See `erase_group_source_scope`: the selection decides the debt.
         self.storage
             .owner_inverse
             .owner_erase
@@ -450,8 +376,8 @@ impl Engine {
 
 #[cfg(test)]
 mod purge_tests {
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
 
@@ -464,8 +390,7 @@ mod purge_tests {
     };
     use crate::storage::StorageError;
     use crate::storage_ports::{
-        CitedObjectErasePort, OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort,
-        StoragePorts,
+        OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort, StoragePorts,
     };
     use crate::{GroupId, OwnerRef, SourceId, UserId};
 
@@ -513,7 +438,6 @@ mod purge_tests {
                 outcome: OwnerEraseOutcome::Completed {
                     operation_id: uuid::Uuid::now_v7(),
                     counts: OwnerEraseCounts::default(),
-                    cited_object_purge_pending: false,
                     cold_object_purge_pending: true,
                 },
                 erase_calls: AtomicUsize::new(0),
@@ -525,7 +449,6 @@ mod purge_tests {
                 outcome: OwnerEraseOutcome::Completed {
                     operation_id: uuid::Uuid::now_v7(),
                     counts: OwnerEraseCounts::default(),
-                    cited_object_purge_pending: false,
                     cold_object_purge_pending: false,
                 },
                 erase_calls: AtomicUsize::new(0),
@@ -539,7 +462,6 @@ mod purge_tests {
             &self,
             _auth: &EraseAuthorization,
             _group_id: GroupId,
-            _object_purge_planned: bool,
             _tables: &crate::owner_inverse::OwnerSurfaces,
         ) -> Result<OwnerEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
@@ -550,7 +472,6 @@ mod purge_tests {
             &self,
             _auth: &EraseAuthorization,
             _user_id: UserId,
-            _object_purge_planned: bool,
             _tables: &crate::owner_inverse::OwnerSurfaces,
         ) -> Result<OwnerEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
@@ -588,25 +509,6 @@ mod purge_tests {
         }
     }
 
-    /// Records every owner it was asked to purge; optionally fails every call.
-    #[derive(Debug, Default)]
-    struct RecordingPurge {
-        purged: Mutex<Vec<OwnerRef>>,
-        fail: bool,
-    }
-
-    #[async_trait]
-    impl CitedObjectErasePort for RecordingPurge {
-        async fn purge_owner_objects(&self, owner: OwnerRef) -> Result<u64, StorageError> {
-            self.purged.lock().unwrap().push(owner);
-            if self.fail {
-                Err(StorageError::Unavailable("s3 unavailable".into()))
-            } else {
-                Ok(3)
-            }
-        }
-    }
-
     /// `OwnerDropProofPort` that always verifies the drop (personal-owner path).
     #[derive(Debug)]
     struct DropVerified;
@@ -641,14 +543,10 @@ mod purge_tests {
         AuthzContext::for_subject(UserId::new(uuid::Uuid::now_v7()), AuthPath::System)
     }
 
-    fn engine_with(
-        erase: Arc<FixedOutcomeErase>,
-        drop_proof: Option<Arc<DropVerified>>,
-        purge: Arc<RecordingPurge>,
-    ) -> Engine {
+    fn engine_with(erase: Arc<FixedOutcomeErase>, drop_proof: Option<Arc<DropVerified>>) -> Engine {
         let drop_proof = drop_proof.map(|d| d as Arc<dyn OwnerDropProofPort>);
         let storage = StoragePorts::rejecting_with_owner_inverse(erase, drop_proof);
-        Engine::compose_or_panic_for_tests(storage, |_| {}).with_cited_object_erase(purge)
+        Engine::compose_or_panic_for_tests(storage, |_| {})
     }
 
     #[tokio::test]
@@ -673,70 +571,19 @@ mod purge_tests {
         assert_eq!(admin.calls.load(Ordering::SeqCst), 0);
     }
 
+    /// The ONE external-debt receipt. Cited upload objects and cold Memory
+    /// objects share `cold_purge_pending`, so the storage verb's answer is
+    /// the whole answer: the engine adds no post-commit object-store pass of
+    /// its own to report on. The vestigial `CitedObjectErasePort` that used
+    /// to run here enumerated rows the same transaction had just deleted, so
+    /// its `false` was vacuous rather than earned.
     #[tokio::test]
-    async fn completed_group_owner_erase_purges_once_with_owner() {
+    async fn owner_erase_reports_the_storage_verbs_cold_debt_verbatim() {
         let group = GroupId::new(uuid::Uuid::now_v7());
-        let purge = Arc::new(RecordingPurge::default());
-        let erase = Arc::new(FixedOutcomeErase::completed());
-        let engine = engine_with(erase.clone(), None, purge.clone());
-
-        let outcome = engine
-            .erase_group_owner(&system_authz(), group)
-            .await
-            .expect("erase returns an outcome");
-
-        let OwnerEraseOutcome::Completed {
-            cited_object_purge_pending,
-            ..
-        } = outcome
-        else {
-            panic!("expected completed erase, got {outcome:?}");
-        };
-        assert!(
-            !cited_object_purge_pending,
-            "a successful purge leaves no debt on the receipt"
+        let engine = engine_with(
+            Arc::new(FixedOutcomeErase::completed_with_cold_pending()),
+            None,
         );
-        assert_eq!(
-            purge.purged.lock().unwrap().as_slice(),
-            &[OwnerRef::Group(group)]
-        );
-    }
-
-    #[tokio::test]
-    async fn completed_personal_owner_erase_purges_once_with_owner() {
-        let user = UserId::new(uuid::Uuid::now_v7());
-        let purge = Arc::new(RecordingPurge::default());
-        let erase = Arc::new(FixedOutcomeErase::completed());
-        let engine = engine_with(erase.clone(), Some(Arc::new(DropVerified)), purge.clone());
-
-        let outcome = engine
-            .erase_personal_owner(&system_authz(), user, "drop-1".into())
-            .await
-            .expect("erase returns an outcome");
-
-        let OwnerEraseOutcome::Completed {
-            cited_object_purge_pending,
-            ..
-        } = outcome
-        else {
-            panic!("expected completed erase, got {outcome:?}");
-        };
-        assert!(
-            !cited_object_purge_pending,
-            "a successful purge leaves no debt on the receipt"
-        );
-        assert_eq!(
-            purge.purged.lock().unwrap().as_slice(),
-            &[OwnerRef::Personal(user)]
-        );
-    }
-
-    #[tokio::test]
-    async fn cited_object_finalization_preserves_independent_cold_purge_state() {
-        let group = GroupId::new(uuid::Uuid::now_v7());
-        let purge = Arc::new(RecordingPurge::default());
-        let erase = Arc::new(FixedOutcomeErase::completed_with_cold_pending());
-        let engine = engine_with(erase, None, purge);
 
         let outcome = engine
             .erase_group_owner(&system_authz(), group)
@@ -745,25 +592,37 @@ mod purge_tests {
         assert!(matches!(
             outcome,
             OwnerEraseOutcome::Completed {
-                cited_object_purge_pending: false,
                 cold_object_purge_pending: true,
+                ..
+            }
+        ));
+
+        let engine = engine_with(
+            Arc::new(FixedOutcomeErase::completed()),
+            Some(Arc::new(DropVerified)),
+        );
+        let outcome = engine
+            .erase_personal_owner(
+                &system_authz(),
+                UserId::new(uuid::Uuid::now_v7()),
+                "drop-1".into(),
+            )
+            .await
+            .expect("erase returns an outcome");
+        assert!(matches!(
+            outcome,
+            OwnerEraseOutcome::Completed {
+                cold_object_purge_pending: false,
                 ..
             }
         ));
     }
 
     #[tokio::test]
-    async fn completed_source_scope_erase_does_not_purge() {
+    async fn completed_source_scope_erase_returns_a_completed_outcome() {
         let group = GroupId::new(uuid::Uuid::now_v7());
         let source = SourceId::new("source/a");
-        let purge = Arc::new(RecordingPurge::default());
-        // A source scope is a partial owner; even a Completed outcome must not
-        // trigger an owner-wide prefix purge.
-        let engine = engine_with(
-            Arc::new(FixedOutcomeErase::completed()),
-            None,
-            purge.clone(),
-        );
+        let engine = engine_with(Arc::new(FixedOutcomeErase::completed()), None);
 
         let outcome = engine
             .erase_group_source_scope(&system_authz(), group, source)
@@ -771,36 +630,6 @@ mod purge_tests {
             .expect("source-scope erase completes");
 
         assert!(matches!(outcome, OwnerEraseOutcome::Completed { .. }));
-        assert!(purge.purged.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn purge_error_does_not_fail_completed_erase() {
-        let group = GroupId::new(uuid::Uuid::now_v7());
-        let purge = Arc::new(RecordingPurge {
-            purged: Mutex::default(),
-            fail: true,
-        });
-        let erase = Arc::new(FixedOutcomeErase::completed());
-        let engine = engine_with(erase.clone(), None, purge.clone());
-
-        let outcome = engine
-            .erase_group_owner(&system_authz(), group)
-            .await
-            .expect("best-effort purge failure must not fail the erase");
-
-        assert!(
-            matches!(
-                outcome,
-                OwnerEraseOutcome::Completed {
-                    cited_object_purge_pending: true,
-                    ..
-                }
-            ),
-            "purge failure must surface cited_object_purge_pending on Completed"
-        );
-        // Attempted exactly once even though it errored.
-        assert_eq!(purge.purged.lock().unwrap().len(), 1);
     }
 
     /// Drive all four erase entry points against one engine, so a gate that
@@ -834,11 +663,7 @@ mod purge_tests {
         // No `OwnerEraseAuthorityPort` and a caller who is not `System`: nothing
         // can vouch for this attempt, so none of the four may reach storage.
         let erase = Arc::new(FixedOutcomeErase::completed());
-        let engine = engine_with(
-            erase.clone(),
-            Some(Arc::new(DropVerified)),
-            Arc::new(RecordingPurge::default()),
-        );
+        let engine = engine_with(erase.clone(), Some(Arc::new(DropVerified)));
         let authz =
             AuthzContext::for_subject(UserId::new(uuid::Uuid::now_v7()), AuthPath::HostBearer);
 

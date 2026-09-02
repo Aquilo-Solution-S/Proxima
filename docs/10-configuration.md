@@ -389,6 +389,15 @@ Credentials use the standard AWS SDK provider chain. Missing S3 config
 does not fail boot; cited-blob commands fail typed at call time. Commands
 return presigned URLs only, never `bucket` or `object_key`.
 
+`PROXIMA_S3_BUCKET` is also the identity the durable object-purge queue
+records its debts against. Boot asserts that the cold object store it wires
+into storage reports exactly the configured bucket, and a purge drain refuses
+to run while the queue holds a debt against some other store. Repointing a
+deployment at a different bucket without draining the queue first is
+therefore a loud startup or maintenance failure rather than a silent one:
+objects an erase promised to destroy would otherwise survive with the debt
+cleared against the wrong store.
+
 In-process consumers resolve `CitedBlobReadService` from `FlavorServices`.
 `collect_verified` requires a non-zero per-call byte ceiling in addition to
 the upload cap, authorizes Fact-read before locator/Postgres/S3 access, and

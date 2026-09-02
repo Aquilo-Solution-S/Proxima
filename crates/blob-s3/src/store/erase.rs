@@ -5,72 +5,19 @@
 //! `DELETE`. A host that has promised a user their documents are gone has
 //! not kept that promise while the objects are still fetchable, so the
 //! inverse of storing a blob has to include this half.
+//!
+//! The half lives in ONE place: the erase transaction enqueues every object
+//! key it orphans in `proxima_core.cold_purge_pending` — under the object-key
+//! lock, so the refcount that decided it is true at decision time — and the
+//! wired `ColdObjectStore` drains that queue after the commit. There is no
+//! second, owner-enumerating pass here. The `CitedObjectErasePort` that used
+//! to run one was vacuous by construction: it read `blob_uploads` and
+//! `cooled` for the owner AFTER the same transaction had deleted every one
+//! of those rows, so it always enumerated nothing and always reported a
+//! clean purge.
 
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
-use proxima_core::storage_ports::CitedObjectErasePort;
-use proxima_core::{Owner, StorageError};
-
-use super::CitedBlobStore;
-
-#[async_trait::async_trait]
-impl CitedObjectErasePort for CitedBlobStore {
-    /// Purge every S3 object this owner's rows point at.
-    ///
-    /// Enumerated from Postgres, not from a key prefix. Keys carry no owner
-    /// — that is what lets a transfer move a series without touching S3 —
-    /// so there is no owner-scoped prefix to list. The rows are the index:
-    /// `blob_uploads` for cited blobs at
-    /// every status (pending bytes are as PII-bearing as committed ones)
-    /// and `cooled` for cold Memory objects.
-    ///
-    /// The consequence is deliberate and worth naming: an object whose row
-    /// is already gone (a crashed prepare, an abandoned upload) is no
-    /// longer reachable by this purge. Those are reclaimed by the mandatory
-    /// S3 lifecycle rule on `pending/` and by the orphan sweep
-    /// `reconcile_all` reports.
-    ///
-    /// Wired in-band by the owner-scope erase so destroying an owner takes
-    /// the owner's uploaded documents with it, not just the Postgres rows.
-    /// Best-effort: the caller has already committed the row deletes and
-    /// treats any error here as non-fatal.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::Unavailable`] when the row enumeration or any
-    /// S3 deletion fails.
-    async fn purge_owner_objects(&self, owner: Owner) -> Result<u64, StorageError> {
-        let client = self
-            .client()
-            .await
-            .map_err(|e| StorageError::Unavailable(format!("s3 client: {e}")))?;
-        let mut deleted = 0_u64;
-        for key in owned_object_keys(&self.pool, &owner).await? {
-            deleted =
-                deleted.saturating_add(purge_exact_key(client, &self.config.bucket, &key).await?);
-        }
-        Ok(deleted)
-    }
-}
-
-/// Every object key reachable from `owner`'s rows, deduplicated.
-///
-/// `blob_uploads` is read at every status on purpose: a pending row still
-/// names bytes that were uploaded, and an aborted one may too.
-async fn owned_object_keys(
-    pool: &sqlx::PgPool,
-    owner: &Owner,
-) -> Result<Vec<String>, StorageError> {
-    let owner_id = owner.stored_owner_id();
-    sqlx::query_scalar::<_, String>(
-        "SELECT object_key FROM proxima_core.blob_uploads WHERE owner_id = $1
-         UNION
-         SELECT object_key FROM proxima_core.cooled WHERE owner_id = $1",
-    )
-    .bind(owner_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| StorageError::Unavailable(format!("enumerate owner object keys: {e}")))
-}
+use proxima_core::StorageError;
 
 /// Permanently delete every version and delete marker of exactly one key.
 /// Prefix-colliding keys are deliberately excluded.

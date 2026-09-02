@@ -705,7 +705,6 @@ impl OwnerInversePort for RejectingStorage {
         &self,
         _auth: &crate::owner_inverse::EraseAuthorization,
         _group_id: GroupId,
-        _object_purge_planned: bool,
         _tables: &crate::owner_inverse::OwnerSurfaces,
     ) -> Result<crate::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
@@ -717,7 +716,6 @@ impl OwnerInversePort for RejectingStorage {
         &self,
         _auth: &crate::owner_inverse::EraseAuthorization,
         _user_id: UserId,
-        _object_purge_planned: bool,
         _tables: &crate::owner_inverse::OwnerSurfaces,
     ) -> Result<crate::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(

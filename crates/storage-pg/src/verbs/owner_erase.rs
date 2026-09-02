@@ -15,9 +15,9 @@ use crate::access::owner_columns::{
     lock_group_membership_tx, lock_owner_fence_exclusive_tx, lock_owner_fence_shared_tx,
     lock_source_fence_exclusive_tx, owner_binds,
 };
-use crate::error::map_err;
+use crate::error::{map_err, with_bounded_retry};
 use crate::pg_ident::PgIdent;
-use crate::verbs::forget::ColdPurgePlan;
+use crate::verbs::forget::{ColdPurgeEntry, ColdPurgePlan};
 
 type Tx<'a> = Transaction<'a, Postgres>;
 
@@ -66,30 +66,67 @@ async fn begin_bulk_erase_tx(pool: &PgPool) -> Result<Tx<'_>, StorageError> {
     Ok(tx)
 }
 
+/// What one attempt of the erase transaction produced: the committed receipt,
+/// and the object debt the post-commit drain still owes.
+///
+/// Separated from the entry points because the retry boundary is exactly the
+/// transaction. Provider work is NOT re-run: destroying an object twice is
+/// safe, but re-running a committed erase is not a thing that can be asked
+/// for, so the drain stays outside the loop.
+enum EraseAttempt {
+    Completed(ColdPurgePlan, OwnerEraseOutcome),
+    Refused(OwnerEraseOutcome),
+}
+
+/// Run one erase transaction, retrying the WHOLE transaction on a transient
+/// conflict.
+///
+/// The erase now takes object-key fences before its row deletes while an
+/// upload abort or a stage takes its row lock first, so the two orders cross
+/// and `40P01` is a normal outcome rather than a fault. `with_bounded_retry`
+/// is the only correct answer to it: roll back, open a fresh transaction, and
+/// try again — which is safe here precisely because the closure opens its own
+/// transaction, so a deadlocked attempt leaves nothing behind.
+async fn erase_with_retry<'a, F, Fut>(
+    pool: &'a PgPool,
+    cold: &dyn ColdObjectStore,
+    attempt: F,
+) -> Result<OwnerEraseOutcome, StorageError>
+where
+    F: Fn(&'a PgPool) -> Fut,
+    Fut: std::future::Future<Output = Result<EraseAttempt, StorageError>>,
+{
+    match with_bounded_retry(|| attempt(pool)).await? {
+        EraseAttempt::Refused(outcome) => Ok(outcome),
+        EraseAttempt::Completed(cold_purge, outcome) => {
+            Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
+        }
+    }
+}
+
 pub async fn erase_group_owner(
     pool: &PgPool,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     group_id: GroupId,
-    object_purge_planned: bool,
     surfaces: &OwnerSurfaces,
 ) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
-    let mut tx = begin_bulk_erase_tx(pool).await?;
-    lock_group_membership_tx(&mut tx, group_id).await?;
-    if group_member_count(&mut tx, group_id).await? > 0 {
-        return Ok(refused(auth, OwnerEraseRefusal::OwnerNotAbandoned));
-    }
-    let cold_purge = erase_selected(&mut tx, owner, SelectionScope::Owner, surfaces).await?;
-    let counts = final_counts(&mut tx).await?;
-    let outcome = OwnerEraseOutcome::Completed {
-        operation_id: auth.audit().operation_id(),
-        counts,
-        cited_object_purge_pending: object_purge_planned,
-        cold_object_purge_pending: !cold_purge.is_empty(),
-    };
-    tx.commit().await.map_err(map_err)?;
-    Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
+    erase_with_retry(pool, cold, |pool| async move {
+        let mut tx = begin_bulk_erase_tx(pool).await?;
+        lock_group_membership_tx(&mut tx, group_id).await?;
+        if group_member_count(&mut tx, group_id).await? > 0 {
+            return Ok(EraseAttempt::Refused(refused(
+                auth,
+                OwnerEraseRefusal::OwnerNotAbandoned,
+            )));
+        }
+        let cold_purge = erase_selected(&mut tx, owner, SelectionScope::Owner, surfaces).await?;
+        let outcome = complete(auth, &mut tx, &cold_purge).await?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(EraseAttempt::Completed(cold_purge, outcome))
+    })
+    .await
 }
 
 pub async fn erase_personal_owner(
@@ -97,21 +134,17 @@ pub async fn erase_personal_owner(
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     user_id: UserId,
-    object_purge_planned: bool,
     surfaces: &OwnerSurfaces,
 ) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
-    let mut tx = begin_bulk_erase_tx(pool).await?;
-    let cold_purge = erase_selected(&mut tx, owner, SelectionScope::Owner, surfaces).await?;
-    let counts = final_counts(&mut tx).await?;
-    let outcome = OwnerEraseOutcome::Completed {
-        operation_id: auth.audit().operation_id(),
-        counts,
-        cited_object_purge_pending: object_purge_planned,
-        cold_object_purge_pending: !cold_purge.is_empty(),
-    };
-    tx.commit().await.map_err(map_err)?;
-    Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
+    erase_with_retry(pool, cold, |pool| async move {
+        let mut tx = begin_bulk_erase_tx(pool).await?;
+        let cold_purge = erase_selected(&mut tx, owner, SelectionScope::Owner, surfaces).await?;
+        let outcome = complete(auth, &mut tx, &cold_purge).await?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(EraseAttempt::Completed(cold_purge, outcome))
+    })
+    .await
 }
 
 pub async fn erase_group_source_scope(
@@ -123,22 +156,22 @@ pub async fn erase_group_source_scope(
     surfaces: &OwnerSurfaces,
 ) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
-    let mut tx = begin_bulk_erase_tx(pool).await?;
-    lock_group_membership_tx(&mut tx, group_id).await?;
-    if group_member_count(&mut tx, group_id).await? > 0 {
-        return Ok(refused(auth, OwnerEraseRefusal::SourceScopeOwnerStillLive));
-    }
-    let cold_purge =
-        erase_selected(&mut tx, owner, SelectionScope::Source(source_id), surfaces).await?;
-    let counts = final_counts(&mut tx).await?;
-    let outcome = OwnerEraseOutcome::Completed {
-        operation_id: auth.audit().operation_id(),
-        counts,
-        cited_object_purge_pending: false,
-        cold_object_purge_pending: !cold_purge.is_empty(),
-    };
-    tx.commit().await.map_err(map_err)?;
-    Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
+    erase_with_retry(pool, cold, |pool| async move {
+        let mut tx = begin_bulk_erase_tx(pool).await?;
+        lock_group_membership_tx(&mut tx, group_id).await?;
+        if group_member_count(&mut tx, group_id).await? > 0 {
+            return Ok(EraseAttempt::Refused(refused(
+                auth,
+                OwnerEraseRefusal::SourceScopeOwnerStillLive,
+            )));
+        }
+        let cold_purge =
+            erase_selected(&mut tx, owner, SelectionScope::Source(source_id), surfaces).await?;
+        let outcome = complete(auth, &mut tx, &cold_purge).await?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(EraseAttempt::Completed(cold_purge, outcome))
+    })
+    .await
 }
 
 pub async fn erase_personal_source_scope(
@@ -150,18 +183,29 @@ pub async fn erase_personal_source_scope(
     surfaces: &OwnerSurfaces,
 ) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
-    let mut tx = begin_bulk_erase_tx(pool).await?;
-    let cold_purge =
-        erase_selected(&mut tx, owner, SelectionScope::Source(source_id), surfaces).await?;
-    let counts = final_counts(&mut tx).await?;
-    let outcome = OwnerEraseOutcome::Completed {
+    erase_with_retry(pool, cold, |pool| async move {
+        let mut tx = begin_bulk_erase_tx(pool).await?;
+        let cold_purge =
+            erase_selected(&mut tx, owner, SelectionScope::Source(source_id), surfaces).await?;
+        let outcome = complete(auth, &mut tx, &cold_purge).await?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(EraseAttempt::Completed(cold_purge, outcome))
+    })
+    .await
+}
+
+/// The receipt, read off the per-transaction count table and the debt the
+/// transaction just enqueued. One place, so the four scopes cannot drift.
+async fn complete(
+    auth: &EraseAuthorization,
+    tx: &mut Tx<'_>,
+    cold_purge: &ColdPurgePlan,
+) -> Result<OwnerEraseOutcome, StorageError> {
+    Ok(OwnerEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
-        counts,
-        cited_object_purge_pending: false,
+        counts: final_counts(tx).await?,
         cold_object_purge_pending: !cold_purge.is_empty(),
-    };
-    tx.commit().await.map_err(map_err)?;
-    Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
+    })
 }
 
 async fn finalize_cold_purge(
@@ -174,7 +218,6 @@ async fn finalize_cold_purge(
     let OwnerEraseOutcome::Completed {
         operation_id,
         counts,
-        cited_object_purge_pending,
         ..
     } = outcome
     else {
@@ -183,7 +226,6 @@ async fn finalize_cold_purge(
     OwnerEraseOutcome::Completed {
         operation_id,
         counts,
-        cited_object_purge_pending,
         cold_object_purge_pending: purge.pending,
     }
 }
@@ -436,11 +478,11 @@ async fn erase_selected(
     record_count(tx, "blob_uploads", blobs.uploads).await?;
     record_count(tx, "blobs", blobs.blobs).await?;
     sync_selected_heads(tx, owner.stored_owner_id()).await?;
-    let mut object_keys = cold_purge.object_keys().to_vec();
-    object_keys.extend_from_slice(blobs.cold_purge.object_keys());
-    object_keys.sort_unstable();
-    object_keys.dedup();
-    Ok(ColdPurgePlan::from_keys(object_keys))
+    let mut entries = cold_purge.entries().to_vec();
+    entries.extend_from_slice(blobs.cold_purge.entries());
+    entries.sort_unstable_by(|a, b| a.object_key.cmp(&b.object_key));
+    entries.dedup_by(|a, b| a.object_key == b.object_key);
+    Ok(ColdPurgePlan::from_entries(entries))
 }
 
 /// Build the selection sets and open the per-transaction count table the
@@ -490,6 +532,7 @@ async fn open_erase_bookkeeping(
     create_selected_sets(tx, owner, scope).await?;
     lock_selected_memory_handles(tx).await?;
     lock_selected_lifecycle_targets(tx).await?;
+    lock_selected_object_keys(tx, owner, scope).await?;
     capture_selected_handles(tx).await?;
     sqlx::query("CREATE TEMP TABLE erase_counts(name text PRIMARY KEY, count bigint NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)
@@ -527,6 +570,51 @@ async fn lock_selected_lifecycle_targets(tx: &mut Tx<'_>) -> Result<(), StorageE
     .await
     .map_err(map_err)?;
     super::forget::lock_lifecycle_targets_tx(tx, &ids).await
+}
+
+/// Every upload object key this scope MIGHT owe, fenced before the retain
+/// decision that will settle each one.
+///
+/// The set is a superset by construction: source scope narrows `selected_blobs`
+/// later (a blob a surviving Fact still cites is dropped from it), and an owner
+/// erase never asks whether it owes a key before this point. Over-locking is
+/// the same trade `cited_blobs_locked_for_erase` makes one level down — which
+/// keys are orphans is not known until the deletes have run, and a lock taken
+/// after the question is answered is a lock taken too late.
+///
+/// This is what makes `enqueue_blob_object_keys`' anti-join true at decision
+/// time. Two owners erasing a shared mounted object concurrently each saw the
+/// other's row under READ COMMITTED, each withheld, and the object was
+/// destroyed zero times. Holding the key to commit makes the second wait and
+/// then observe the first's deletes.
+async fn lock_selected_object_keys(
+    tx: &mut Tx<'_>,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+) -> Result<(), StorageError> {
+    let (_owner_kind, owner_id) = owner_binds(&owner);
+    let keys: Vec<String> = match scope {
+        SelectionScope::Owner => sqlx::query_scalar(
+            "SELECT DISTINCT object_key
+               FROM proxima_core.blob_uploads
+              WHERE owner_id = $1
+              ORDER BY object_key",
+        )
+        .bind(owner_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(map_err)?,
+        SelectionScope::Source(_) => sqlx::query_scalar(
+            "SELECT DISTINCT u.object_key
+               FROM proxima_core.blob_uploads u
+               JOIN selected_blobs sb ON sb.blob_id = u.blob_id
+              ORDER BY u.object_key",
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(map_err)?,
+    };
+    crate::access::owner_columns::lock_object_keys_tx(tx, &keys).await
 }
 
 async fn create_selected_sets(
@@ -906,6 +994,10 @@ async fn delete_selected_cooled(
     scope: SelectionScope<'_>,
 ) -> Result<(u64, ColdPurgePlan), StorageError> {
     let owner_id = owner.stored_owner_id();
+    // No backend recorded: a cold Memory object is written by the deployment's
+    // one wired `ColdObjectStore`, so there is no second store it could be in
+    // (see `proxima_core::UNRECORDED_BACKEND`). `cooled` carries no bucket
+    // column for the same reason.
     let keys: Vec<String> = sqlx::query_scalar(
         "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
          SELECT c.object_key, c.owner_id
@@ -1129,7 +1221,7 @@ async fn delete_blobs(
     // The blob-keyed sweep tallies itself into whatever counter each
     // surface declares, so nothing is returned here to be re-counted.
     delete_keyed_surfaces(tx, surfaces, KeyedSet::Blobs).await?;
-    let object_keys = enqueue_blob_object_keys(tx, owner_id, scope).await?;
+    let cold_purge = enqueue_blob_object_keys(tx, owner_id, scope).await?;
     let uploads = match scope {
         SelectionScope::Owner => {
             sqlx::query("DELETE FROM proxima_core.blob_uploads WHERE owner_id = $1")
@@ -1161,7 +1253,7 @@ async fn delete_blobs(
     Ok(BlobEraseCounts {
         uploads,
         blobs,
-        cold_purge: ColdPurgePlan::from_keys(object_keys),
+        cold_purge: ColdPurgePlan::from_entries(cold_purge),
     })
 }
 
@@ -1186,11 +1278,16 @@ async fn enqueue_blob_object_keys(
     tx: &mut Tx<'_>,
     owner_id: uuid::Uuid,
     scope: SelectionScope<'_>,
-) -> Result<Vec<String>, StorageError> {
-    match scope {
-        SelectionScope::Owner => sqlx::query_scalar(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
-             SELECT DISTINCT u.object_key, u.owner_id
+) -> Result<Vec<ColdPurgeEntry>, StorageError> {
+    // `u.bucket` travels with the key: the queue outlives the process that
+    // wrote it, and the object store a debt was incurred against is row data
+    // here, not deployment convention. `DISTINCT ON` rather than `DISTINCT`
+    // because two mounted rows over one key carry the same bucket but differ
+    // in `owner_id`, and the insert needs exactly one row per key.
+    let rows: Vec<(String, String)> = match scope {
+        SelectionScope::Owner => sqlx::query_as(
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
+             SELECT DISTINCT ON (u.object_key) u.object_key, u.owner_id, u.bucket
                FROM proxima_core.blob_uploads u
               WHERE u.owner_id = $1
                 AND NOT EXISTS (
@@ -1199,16 +1296,18 @@ async fn enqueue_blob_object_keys(
                          WHERE other.object_key = u.object_key
                            AND other.owner_id <> $1
                     )
-             ON CONFLICT (object_key) DO UPDATE SET enqueued_at = now()
-             RETURNING object_key",
+              ORDER BY u.object_key, u.upload_id
+             ON CONFLICT (object_key) DO UPDATE
+                SET enqueued_at = now(), backend = EXCLUDED.backend
+             RETURNING object_key, backend",
         )
         .bind(owner_id)
         .fetch_all(&mut **tx)
         .await
-        .map_err(map_err),
-        SelectionScope::Source(_) => sqlx::query_scalar(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
-             SELECT DISTINCT u.object_key, u.owner_id
+        .map_err(map_err)?,
+        SelectionScope::Source(_) => sqlx::query_as(
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
+             SELECT DISTINCT ON (u.object_key) u.object_key, u.owner_id, u.bucket
                FROM proxima_core.blob_uploads u
                JOIN selected_blobs sb ON sb.blob_id = u.blob_id
               WHERE NOT EXISTS (
@@ -1222,13 +1321,22 @@ async fn enqueue_blob_object_keys(
                                     WHERE sb2.blob_id = other.blob_id
                                )
                     )
-             ON CONFLICT (object_key) DO UPDATE SET enqueued_at = now()
-             RETURNING object_key",
+              ORDER BY u.object_key, u.upload_id
+             ON CONFLICT (object_key) DO UPDATE
+                SET enqueued_at = now(), backend = EXCLUDED.backend
+             RETURNING object_key, backend",
         )
         .fetch_all(&mut **tx)
         .await
-        .map_err(map_err),
-    }
+        .map_err(map_err)?,
+    };
+    Ok(rows
+        .into_iter()
+        .map(|(object_key, backend)| ColdPurgeEntry {
+            object_key,
+            backend,
+        })
+        .collect())
 }
 
 /// Delete persisted projector source cursors for the erased scope inside the

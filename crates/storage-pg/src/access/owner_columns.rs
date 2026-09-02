@@ -181,6 +181,90 @@ async fn lock_source_fence(
     Ok(())
 }
 
+/// Object-key fence: its own advisory-lock namespace, keyed by the object key
+/// itself.
+///
+/// The invariant it buys: **every writer that creates, moves or destroys a
+/// `blob_uploads` row's reference to an object key holds this lock, and every
+/// reader that decides whether the object may be destroyed holds it too.**
+/// That is what makes the retain anti-join ("no surviving `blob_uploads` row
+/// names this key") true AT DECISION TIME rather than true of a READ
+/// COMMITTED snapshot. Advisory xact locks are held to commit, so the second
+/// of two concurrent erasers of a shared mounted object waits, then observes
+/// the first's committed deletes — and the object is enqueued exactly once
+/// instead of withheld by both.
+///
+/// Position in the global order: AFTER the owner and source fences, AFTER the
+/// Memory handle and lifecycle `t` locks, and AFTER any row lock the caller
+/// already holds — and BEFORE the retain/purge decision and the
+/// `cold_purge_pending` insert that follows it. Erase is the one caller that
+/// takes it before its row locks, because its rows are the ones the anti-join
+/// is about; the pair can therefore still deadlock against a caller that
+/// locked its row first, which is a `40P01` and exactly what the bounded
+/// retry around both transactions is for.
+///
+/// `cooled.object_key` is deliberately NOT in this namespace. It is
+/// `cold/<t>`: one object per Memory version, already fenced by the lifecycle
+/// `t` lock, and never shared. Only `blob_uploads` keys are many-to-one.
+///
+/// Takers: owner and source-scope erase (every key they might owe), upload
+/// abort, the stage locator write, blob GC, and the two transfer legs that
+/// re-home an upload row over an object — the in-place move and the mount.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] when Postgres cannot acquire the transaction
+/// advisory lock.
+pub async fn lock_object_keys_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    object_keys: &[String],
+) -> Result<(), StorageError> {
+    if object_keys.is_empty() {
+        return Ok(());
+    }
+    // Sorted and deduplicated for the same reason the owner fences are:
+    // crossed callers holding two keys each must agree on one order, and one
+    // round trip must not take the same lock twice.
+    let mut keys: Vec<&str> = object_keys.iter().map(String::as_str).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    // SQL-POLICY: fixed-fragment
+    sqlx::query(LOCK_OBJECT_KEYS_SQL)
+        .bind(&keys)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
+const LOCK_OBJECT_KEYS_SQL: &str = "\
+SELECT pg_advisory_xact_lock(
+           hashtextextended('proxima-object-key:' || k, 0)
+       )
+  FROM unnest($1::text[]) AS f(k)";
+
+/// Every object key the upload rows of `blob_ids` name, sorted for
+/// [`lock_object_keys_tx`]. Both transfer legs that re-home an upload row over
+/// an object take this set before they touch a row.
+pub(crate) async fn blob_upload_object_keys(
+    tx: &mut Transaction<'_, Postgres>,
+    blob_ids: &[uuid::Uuid],
+) -> Result<Vec<String>, StorageError> {
+    if blob_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar(
+        "SELECT DISTINCT object_key
+           FROM proxima_core.blob_uploads
+          WHERE blob_id = ANY($1::uuid[])
+          ORDER BY object_key",
+    )
+    .bind(blob_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)
+}
+
 /// Insert `proxima_core.owners` or confirm the stored kind matches `owner`.
 ///
 /// The only production owners upsert. Memory / goal / wake / citation /
@@ -1182,6 +1266,14 @@ async fn transfer_cited_blobs(
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)?;
+    // Both re-homing legs below put a `blob_uploads` row over an object key
+    // that another owner's erase may be deciding about right now: the in-place
+    // move hands the row to the destination, and the mount inserts a second
+    // row naming the SAME object. Take the whole sorted key set once, here,
+    // before any of it — a per-leg lock would grow the set item by item, which
+    // is precisely the shape the lock-order rule forbids.
+    let object_keys = blob_upload_object_keys(tx, &blob_ids).await?;
+    lock_object_keys_tx(tx, &object_keys).await?;
     for blob_id in blob_ids {
         transfer_one_cited_blob(tx, leg, handle, from_id, to_id, blob_id).await?;
     }

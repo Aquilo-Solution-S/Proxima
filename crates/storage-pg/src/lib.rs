@@ -485,9 +485,16 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                   SELECT 1 FROM information_schema.columns
                    WHERE table_schema = 'proxima_core' AND table_name = 'cold_purge_pending'
                      AND column_name = 'owner_id' AND data_type = 'uuid'
+                     AND is_nullable = 'YES'
+                )
+           THEN 'cold_purge_pending.owner_id must be a nullable uuid'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core' AND table_name = 'cold_purge_pending'
+                     AND column_name = 'backend' AND data_type = 'text'
                      AND is_nullable = 'NO'
                 )
-           THEN 'cold_purge_pending.owner_id must be uuid NOT NULL'
+           THEN 'cold_purge_pending.backend must be text NOT NULL'
          WHEN NOT EXISTS (
                   SELECT 1 FROM information_schema.columns
                    WHERE table_schema = 'proxima_core' AND table_name = 'cold_purge_pending'
@@ -1809,14 +1816,15 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
              0003_v010_reference_integrity.sql, 0004_v011_goal_refs.sql, \
              the hard-erase witness is 0005_erased_pin_targets.sql, \
              0006_v013_goal_replay_declaration.sql, \
-             0007_upload_content_identity.sql, 0008_cold_integrity_digest.sql \
-             and 0009_declared_sidecar_presence.sql"
+             0007_upload_content_identity.sql, 0008_cold_integrity_digest.sql, \
+             0009_declared_sidecar_presence.sql \
+             and 0010_purge_queue_backend.sql"
         );
     }
 
@@ -1839,99 +1847,76 @@ mod tests {
     fn no_legacy_alter_version_survives_the_v008_squash() {
         let migrator = super::core_migrator();
         let versions: Vec<i64> = migrator.iter().map(|migration| migration.version).collect();
-        let version_2 = migrator
-            .iter()
-            .find(|migration| migration.version == 2)
-            .expect("version 2 is v0.0.9's additive migration");
-        assert!(
-            version_2
-                .sql
-                .as_str()
-                .contains("assert_memory_declares_sidecar"),
-            "version 2 must be the v0.0.9 declaration-trigger migration, not a resurrected \
-             legacy ALTER"
+        let carries = |version: i64, needles: &[&str], must: &str| {
+            let migration = migrator
+                .iter()
+                .find(|migration| migration.version == version)
+                .unwrap_or_else(|| panic!("version {version} is a current additive migration"));
+            for needle in needles {
+                assert!(
+                    migration.sql.as_str().contains(needle),
+                    "version {version} must {must}, not a resurrected legacy ALTER (no {needle})"
+                );
+            }
+        };
+        carries(
+            2,
+            &["assert_memory_declares_sidecar"],
+            "be the v0.0.9 declaration-trigger migration",
         );
-        let version_3 = migrator
-            .iter()
-            .find(|migration| migration.version == 3)
-            .expect("version 3 is the reference-integrity additive migration");
-        assert!(
-            version_3.sql.as_str().contains("memory_pin_checks")
-                && version_3
-                    .sql
-                    .as_str()
-                    .contains("cooled_origins_no_null_chk"),
-            "version 3 must be the reference-integrity migration"
+        carries(
+            3,
+            &["memory_pin_checks", "cooled_origins_no_null_chk"],
+            "be the reference-integrity migration",
         );
-        let version_4 = migrator
-            .iter()
-            .find(|migration| migration.version == 4)
-            .expect("version 4 is the goal-reference additive migration");
-        assert!(
-            version_4.sql.as_str().contains("goal_refs")
-                && version_4
-                    .sql
-                    .as_str()
-                    .contains("memory_goal_refs_no_null_chk"),
-            "version 4 must be the goal-reference split, not a resurrected legacy ALTER"
+        carries(
+            4,
+            &["goal_refs", "memory_goal_refs_no_null_chk"],
+            "be the goal-reference split",
         );
-        let version_5 = migrator
-            .iter()
-            .find(|migration| migration.version == 5)
-            .expect("version 5 is the witness-composition migration");
-        assert!(
-            version_5.sql.as_str().contains("historical_restore")
-                && version_5.sql.as_str().contains("NEW.goal_refs")
-                && version_5.sql.as_str().contains("cooled_identity_seal"),
-            "version 5 must restore witness-aware typed pin checks"
+        carries(
+            5,
+            &[
+                "historical_restore",
+                "NEW.goal_refs",
+                "cooled_identity_seal",
+            ],
+            "restore witness-aware typed pin checks",
         );
-        let version_6 = migrator
-            .iter()
-            .find(|migration| migration.version == 6)
-            .expect("version 6 is v0.0.13's exact Goal replay migration");
-        assert!(
-            version_6.sql.as_str().contains("goal_replay_declaration")
-                && version_6
-                    .sql
-                    .as_str()
-                    .contains("goal_replay_declaration_append_only"),
-            "version 6 must persist immutable Goal replay declarations"
+        carries(
+            6,
+            &[
+                "goal_replay_declaration",
+                "goal_replay_declaration_append_only",
+            ],
+            "persist immutable Goal replay declarations",
         );
-        let version_7 = migrator
-            .iter()
-            .find(|migration| migration.version == 7)
-            .expect("version 7 is the upload-content migration");
-        assert!(
-            version_7
-                .sql
-                .as_str()
-                .contains("blob_uploads_content_hash_chk")
-                && version_7
-                    .sql
-                    .as_str()
-                    .contains("blob_uploads_terminal_content_idx"),
-            "version 7 must persist exact pre-publication upload content identity"
+        carries(
+            7,
+            &[
+                "blob_uploads_content_hash_chk",
+                "blob_uploads_terminal_content_idx",
+            ],
+            "persist exact pre-publication upload content identity",
         );
-        let version_8 = migrator
-            .iter()
-            .find(|migration| migration.version == 8)
-            .expect("version 8 is the cold integrity migration");
-        assert!(
-            version_8.sql.as_str().contains("cold_digest")
-                && version_8
-                    .sql
-                    .as_str()
-                    .contains("cooled_cold_digest_len_chk")
-                && version_8
-                    .sql
-                    .as_str()
-                    .contains("NEW.cold_digest IS DISTINCT FROM OLD.cold_digest"),
-            "version 8 must persist the exact cold-object digest witness"
+        carries(
+            8,
+            &[
+                "cold_digest",
+                "cooled_cold_digest_len_chk",
+                "NEW.cold_digest IS DISTINCT FROM OLD.cold_digest",
+            ],
+            "persist the exact cold-object digest witness",
         );
-        // The legacy range shrinks as the head advances: versions 7, 8 and 9
-        // are current additive migrations, so only 10..=21 remain retired by
+        carries(
+            10,
+            &["cold_purge_pending", "ADD COLUMN backend"],
+            "give the durable purge queue its backend identity",
+        );
+        // The legacy range shrinks as the head advances: versions 7 through 10
+        // are current additive migrations, so only 11..=21 remain retired by
         // the v0.0.8 squash.
-        for dead in 10..=21 {
+        for dead in 11..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"

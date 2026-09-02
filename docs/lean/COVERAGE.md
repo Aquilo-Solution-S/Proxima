@@ -233,6 +233,7 @@ instead of every reader re-deriving it (E1, E7, E-SPINE below).
 | CI-15/16 | S3 bytes, presigned URLs | excluded: engine storage |
 | CI-18 | An upload is one write: the artefact, its typed row, the citation, the Fact and any flavor extension commit together or not at all | excluded: the kernel models a set of rows — no partial state, no write ordering, no transaction. Same stance as CN-9 |
 | CI-19 | A Fact may decline a vector, and the declination survives every repair path | excluded: the kernel has no embedding vocabulary at all. ST-15..17 makes the structural ABSENCE of an `Embedding` entity the invariant, which is the opposite direction from "this particular Fact has no vector" |
+| CI-20 | An upload object's bytes outlive exactly the rows that name them | excluded: the kernel has no object store, so it can state neither the refcount nor the concurrency it must be read under. The claim lives entirely in storage — an advisory fence per object key, held across the anti-join and the durable purge enqueue — and is carried by tests, not by a theorem. CO-7/ST-13 erasure completeness is unchanged: it is a claim about rows, and rows are what the kernel models |
 
 ## 13 — Compliance (CO)
 

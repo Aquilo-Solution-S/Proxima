@@ -34,6 +34,49 @@ use super::transitions::{
 };
 use crate::error::BlobError;
 
+/// Re-run a whole `begin → body → commit` transaction while it fails with a
+/// transient conflict, up to the workspace-wide attempt budget.
+///
+/// The upload lane now takes object-key fences, and it takes them in a
+/// different relative order from erase — erase fences the key before deleting
+/// its rows, an abort locks its row before fencing the key — so `40P01` is a
+/// normal outcome of two correct transactions rather than a fault. The only
+/// correct answer is to roll back and try again, which is safe exactly because
+/// `op` opens its own transaction each call.
+///
+/// Provider work is deliberately not inside `op`: an S3 failure is not a
+/// serialization failure, and re-running a conditional PUT is a different
+/// decision from re-running a database transaction.
+async fn with_retried_tx<T, F, Fut>(mut op: F) -> Result<T, BlobError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, BlobError>>,
+{
+    let mut attempt = 1;
+    loop {
+        match op().await {
+            Err(BlobError::Db(error))
+                if attempt < proxima_storage_pg::MAX_TRANSACTION_ATTEMPTS
+                    && proxima_storage_pg::is_transient_conflict(&error) =>
+            {
+                attempt += 1;
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+/// What the abort transaction committed, and what is left to do outside it.
+enum AbortCommit {
+    /// Nothing further: the row was already terminal in a way that owes no
+    /// provider work.
+    Settled(CitedBlobUploadAbortOutcomeTs),
+    /// The row was already aborted; only the transfer-key cleanup remains.
+    CleanUpThenAborted,
+    /// A pending row was transitioned; classify `(locked status, rows)`.
+    Decide(UploadStatus, u64),
+}
+
 enum ObjectReadError {
     Missing,
     Other(BlobError),
@@ -462,33 +505,6 @@ impl CitedBlobStore {
         etag: Option<String>,
         streamed: &super::digest::StreamedObject,
     ) -> Result<CitedBlobStaged, BlobError> {
-        // The S3 copy is intentionally outside the database critical section.
-        // Re-enter it under the owner fence and lock the row before publishing
-        // the locator: an abort, expiry, or finish that won the status race
-        // must be observed, and its terminal state must not leave a canonical
-        // object with no readable row. `content_hash` is written here because
-        // finish refuses to publish an upload with no exact staged identity.
-        let mut tx = self.pool.begin().await.map_err(BlobError::Db)?;
-        proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
-            .await
-            .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
-        let rows_affected = sqlx::query(
-            "UPDATE proxima_core.blob_uploads \
-                SET object_key = $1, content_hash = $2, sha256 = $3, etag = $4 \
-              WHERE owner_id = $5 AND upload_id = $6 AND status = 'pending'",
-        )
-        .bind(&canonical_key)
-        .bind(&streamed.blake3[..])
-        .bind(&streamed.sha256[..])
-        .bind(&etag)
-        .bind(owner.stored_owner_id())
-        .bind(upload_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(BlobError::Db)?
-        .rows_affected();
-        tx.commit().await.map_err(BlobError::Db)?;
-
         let staged = CitedBlobStaged {
             payload: UploadedBlobPayload {
                 content_hash: streamed.blake3,
@@ -498,27 +514,22 @@ impl CitedBlobStore {
                 byte_len: streamed.byte_len,
                 mime: row.mime.clone(),
                 filename: row.filename.clone(),
-                etag,
+                etag: etag.clone(),
                 uploaded_at: OffsetDateTime::now_utc(),
             },
             already_completed: None,
         };
-        let decision = if rows_affected == 0 {
-            let Some(observed) =
-                super::rows::load_upload_optional(&self.pool, owner, upload_id).await?
-            else {
-                // The owner row may have been erased while the provider write
-                // was in flight. The derived pending key is the only key this
-                // upload owns without a row; canonical bytes must remain for
-                // an in-place transfer or mounted reference.
-                self.purge_pending_upload_best_effort(&row.bucket, upload_id)
-                    .await;
-                return Err(BlobError::State("upload not found for Owner".into()));
-            };
-            stage_locator_decision(observed.status, observed.blob_id, rows_affected)?
-        } else {
-            stage_locator_decision(row.status, None, rows_affected)?
-        };
+        let decision = with_retried_tx(|| {
+            self.commit_stage_locator(
+                owner,
+                upload_id,
+                row,
+                &canonical_key,
+                etag.as_deref(),
+                streamed,
+            )
+        })
+        .await?;
         match decision {
             StageLocatorDecision::Staged => {
                 self.purge_pending_upload_best_effort(&row.bucket, upload_id)
@@ -533,6 +544,146 @@ impl CitedBlobStore {
                     .await
             }
         }
+    }
+
+    /// The database half of a stage, in ONE transaction so the locator write
+    /// and the answer to "what did a zero-row update mean" share a snapshot.
+    ///
+    /// The S3 copy is intentionally outside this critical section. Re-enter it
+    /// under the owner fence and the canonical key's object fence, then lock
+    /// the row before publishing the locator: an abort, expiry, or finish that
+    /// won the status race must be observed, and its terminal state must not
+    /// leave a canonical object with no readable row. `content_hash` is written
+    /// here because finish refuses to publish an upload with no exact staged
+    /// identity.
+    async fn commit_stage_locator(
+        &self,
+        owner: &OwnerRef,
+        upload_id: Uuid,
+        row: &super::rows::UploadRow,
+        canonical_key: &str,
+        etag: Option<&str>,
+        streamed: &super::digest::StreamedObject,
+    ) -> Result<StageLocatorDecision, BlobError> {
+        let mut tx = self.pool.begin().await.map_err(BlobError::Db)?;
+        proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
+            .await
+            .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
+        // The canonical key is about to gain (or has just lost) its only row
+        // reference. An owner erase decides "no surviving row names this key"
+        // under the same lock, so holding it here is what keeps the two
+        // answers from being taken against different snapshots.
+        proxima_storage_pg::access::owner_columns::lock_object_keys_tx(
+            &mut tx,
+            std::slice::from_ref(&canonical_key.to_owned()),
+        )
+        .await
+        .map_err(|err| BlobError::State(format!("lock upload object key: {err}")))?;
+        let rows_affected = sqlx::query(
+            "UPDATE proxima_core.blob_uploads \
+                SET object_key = $1, content_hash = $2, sha256 = $3, etag = $4 \
+              WHERE owner_id = $5 AND upload_id = $6 AND status = 'pending'",
+        )
+        .bind(canonical_key)
+        .bind(&streamed.blake3[..])
+        .bind(&streamed.sha256[..])
+        .bind(etag)
+        .bind(owner.stored_owner_id())
+        .bind(upload_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(BlobError::Db)?
+        .rows_affected();
+        let decision = if rows_affected == 0 {
+            if let Some(observed) =
+                super::rows::load_upload_optional_for_update(&mut tx, owner, upload_id).await?
+            {
+                stage_locator_decision(observed.status, observed.blob_id, rows_affected)?
+            } else {
+                self.resolve_erased_owner_row(&mut tx, upload_id, canonical_key, &row.bucket)
+                    .await?;
+                tx.commit().await.map_err(BlobError::Db)?;
+                self.purge_pending_upload_best_effort(&row.bucket, upload_id)
+                    .await;
+                return Err(BlobError::State("upload not found for Owner".into()));
+            }
+        } else {
+            stage_locator_decision(row.status, None, rows_affected)?
+        };
+        tx.commit().await.map_err(BlobError::Db)?;
+        Ok(decision)
+    }
+
+    /// The row this stage was writing is gone. Decide, under the canonical
+    /// key's object fence, whether the bytes it just published are owed to
+    /// anyone — and if they are not, OWE them durably.
+    ///
+    /// The previous shape kept the canonical object on the reasoning that "an
+    /// in-place transfer or mounted reference may still own them". That is a
+    /// real case but not the only one, and the other one leaks: an owner erase
+    /// that committed while the provider write was in flight enqueued the key
+    /// the row named at the time, `pending/<upload_id>` — never the canonical
+    /// key this stage went on to PUT. Nothing then referenced the canonical
+    /// object and nothing was owed it, so it survived every erase, every
+    /// drain, and `reconcile_all`'s report, which only reports.
+    ///
+    /// The question is a refcount, asked while holding the key: does any
+    /// `blob_uploads` row under ANY owner name this object — by key, by being
+    /// the upload that minted it, or by mounting it? The `mounted_from_upload_id`
+    /// arm and the `object_key` arm are both needed: a mount records the
+    /// MINTING id, and an in-place move keeps the original row.
+    ///
+    /// The "yes" branch IS reachable, contrary to what #271's
+    /// `assert_no_unpublished_upload` alone would suggest. That check refuses
+    /// to transfer a series while one of its uploads is unpublished, so a
+    /// PENDING row can never be moved out from under a stage. But a stage can
+    /// be a retry: an earlier stage set `content_hash`, `finish_upload`
+    /// completed the row, and a transfer then moved that completed row to
+    /// another owner. This stage's snapshot still says "pending", its update
+    /// matches nothing, and the row it is looking for is alive elsewhere. The
+    /// bytes are owed to that owner, so nothing is enqueued.
+    async fn resolve_erased_owner_row(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        upload_id: Uuid,
+        canonical_key: &str,
+        bucket: &str,
+    ) -> Result<(), BlobError> {
+        let still_referenced: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1
+                   FROM proxima_core.blob_uploads
+                  WHERE object_key = $1
+                     OR upload_id = $2
+                     OR mounted_from_upload_id = $2
+             )",
+        )
+        .bind(canonical_key)
+        .bind(upload_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(BlobError::Db)?;
+        if still_referenced {
+            return Ok(());
+        }
+        // `owner_id` is NULL, not this owner's id: the owner row is exactly
+        // what may have been erased, and `cold_purge_pending.owner_id` carries
+        // a foreign key to `owners`. The debt is about an OBJECT; whose erase
+        // incurred it is metadata, and unavailable metadata is not a reason to
+        // drop a debt on the floor. The backend is not: it is the bucket this
+        // stage published to, so the drain deletes against the right store.
+        sqlx::query(
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
+             VALUES ($1, NULL, $2)
+             ON CONFLICT (object_key) DO UPDATE
+                SET enqueued_at = now(), backend = EXCLUDED.backend",
+        )
+        .bind(canonical_key)
+        .bind(bucket)
+        .execute(&mut **tx)
+        .await
+        .map_err(BlobError::Db)?;
+        Ok(())
     }
 
     /// A concurrent stage may already have recorded the canonical locator and
@@ -695,6 +846,24 @@ impl CitedBlobStore {
     ) -> Result<(), BlobError> {
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_opaque_identifier(upload_id)?;
+        let bucket = with_retried_tx(|| self.commit_finish(&owner, upload_id, blob_id)).await?;
+
+        // The pending transfer copy is expendable only after the transition
+        // decision has been resolved. Replays run this too, so provider
+        // failures after a successful status write are retryable.
+        self.purge_pending_upload_best_effort(&bucket, upload_id)
+            .await;
+        Ok(())
+    }
+
+    /// The one transaction a finish runs, so [`with_retried_tx`] can re-run it
+    /// whole. Returns the bucket whose pending copy is now expendable.
+    async fn commit_finish(
+        &self,
+        owner: &OwnerRef,
+        upload_id: Uuid,
+        blob_id: Uuid,
+    ) -> Result<String, BlobError> {
         // Finish is the publication half of the upload protocol. It shares
         // the owner fence with Memory/citation admission and transfer, then
         // makes its status decision against a row locked in that same
@@ -702,10 +871,20 @@ impl CitedBlobStore {
         // transfer that moves the blob while this stale pending row is still
         // allowed to finish under the source owner.
         let mut tx = self.pool.begin().await.map_err(BlobError::Db)?;
-        proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, &owner)
+        proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
             .await
             .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
-        let row = load_upload_for_update(&mut tx, &owner, upload_id).await?;
+        // Before the row lock, so this stays in the global fence → key → row
+        // order. `complete_terminal_upload` below writes `object_key`, which
+        // is a reference to this key, and an erase deciding whether to destroy
+        // it takes the same lock.
+        proxima_storage_pg::access::owner_columns::lock_object_keys_tx(
+            &mut tx,
+            std::slice::from_ref(&canonical_object_key(upload_id)),
+        )
+        .await
+        .map_err(|err| BlobError::State(format!("lock upload object key: {err}")))?;
+        let row = load_upload_for_update(&mut tx, owner, upload_id).await?;
         let owner_id = owner.stored_owner_id();
         // The cited blob must be the object this upload actually staged. A
         // terminal row keeps its canonical bytes, so there is nothing to
@@ -781,16 +960,10 @@ impl CitedBlobStore {
             // an expiry sweep wrote while the transaction was in flight.
             // Failing here would report a committed write as failed and
             // leave an upload id the caller can never retry.
-            complete_terminal_upload(&mut tx, &owner, upload_id, blob_id).await?;
+            complete_terminal_upload(&mut tx, owner, upload_id, blob_id).await?;
         }
         tx.commit().await.map_err(BlobError::Db)?;
-
-        // The pending transfer copy is expendable only after the transition
-        // decision has been resolved. Replays run this too, so provider
-        // failures after a successful status write are retryable.
-        self.purge_pending_upload_best_effort(&row.bucket, upload_id)
-            .await;
-        Ok(())
+        Ok(row.bucket)
     }
 
     /// Abort a pending upload.
@@ -806,33 +979,81 @@ impl CitedBlobStore {
         let owner = req.owner();
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_opaque_identifier(&req.upload_id)?;
+        match with_retried_tx(|| self.commit_abort(&owner, upload_id)).await? {
+            AbortCommit::Settled(outcome) => Ok(outcome),
+            AbortCommit::CleanUpThenAborted => {
+                self.cleanup_aborted_upload(&owner, upload_id).await;
+                Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
+            }
+            AbortCommit::Decide(status, rows_affected) => {
+                // The row was locked for that transaction, so a zero-row result
+                // is only an external writer violating the protocol. Classify
+                // against the locked state rather than opening a second,
+                // weaker read.
+                match abort_transition_decision(status, rows_affected)? {
+                    AbortTransitionDecision::WonPending
+                    | AbortTransitionDecision::AlreadyAborted => {
+                        self.cleanup_aborted_upload(&owner, upload_id).await;
+                        Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
+                    }
+                    AbortTransitionDecision::Completed => {
+                        Ok(CitedBlobUploadAbortOutcomeTs { aborted: false })
+                    }
+                    AbortTransitionDecision::AlreadyExpired => {
+                        Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
+                    }
+                }
+            }
+        }
+    }
+
+    /// The one transaction an abort runs, so [`with_retried_tx`] can re-run it
+    /// whole. Provider cleanup happens after it returns, never inside it.
+    async fn commit_abort(
+        &self,
+        owner: &OwnerRef,
+        upload_id: Uuid,
+    ) -> Result<AbortCommit, BlobError> {
         // Abort participates in the same owner fence as finish and transfer.
         // The row lock is the exact status revalidation: an earlier pool read
         // must never authorize a pending->aborted write after another
         // transition published the upload.
         let mut tx = self.pool.begin().await.map_err(BlobError::Db)?;
-        proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, &owner)
+        proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
             .await
             .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
-        let row = load_upload_for_update(&mut tx, &owner, upload_id).await?;
+        // Before the row lock, in the global fence → key → row order. An abort
+        // retires the only row that keeps this upload's canonical object
+        // reachable, which is the same question an erase's retain anti-join
+        // asks; the derived key is used rather than the row's, because the
+        // fence has to be held before the row is read.
+        proxima_storage_pg::access::owner_columns::lock_object_keys_tx(
+            &mut tx,
+            std::slice::from_ref(&canonical_object_key(upload_id)),
+        )
+        .await
+        .map_err(|err| BlobError::State(format!("lock upload object key: {err}")))?;
+        let row = load_upload_for_update(&mut tx, owner, upload_id).await?;
         match row.status {
             UploadStatus::Completed => {
                 tx.commit().await.map_err(BlobError::Db)?;
-                return Ok(CitedBlobUploadAbortOutcomeTs { aborted: false });
+                return Ok(AbortCommit::Settled(CitedBlobUploadAbortOutcomeTs {
+                    aborted: false,
+                }));
             }
             UploadStatus::Aborted => {
                 tx.commit().await.map_err(BlobError::Db)?;
-                self.cleanup_aborted_upload(&owner, upload_id).await;
-                return Ok(CitedBlobUploadAbortOutcomeTs { aborted: true });
+                return Ok(AbortCommit::CleanUpThenAborted);
             }
             UploadStatus::Expired => {
                 tx.commit().await.map_err(BlobError::Db)?;
-                return Ok(CitedBlobUploadAbortOutcomeTs { aborted: true });
+                return Ok(AbortCommit::Settled(CitedBlobUploadAbortOutcomeTs {
+                    aborted: true,
+                }));
             }
             UploadStatus::Pending => {}
         }
 
-        let owner_id = owner.stored_owner_id();
         let rows_affected = sqlx::query(
             "UPDATE proxima_core.blob_uploads \
                 SET status = 'aborted', aborted_at = now() \
@@ -840,7 +1061,7 @@ impl CitedBlobStore {
                 AND upload_id = $2 \
                 AND status = 'pending'",
         )
-        .bind(owner_id)
+        .bind(owner.stored_owner_id())
         .bind(upload_id)
         .execute(&mut *tx)
         .await
@@ -851,22 +1072,7 @@ impl CitedBlobStore {
         // and `cleanup_aborted_upload` re-reads the row on another connection
         // that would otherwise block on this transaction's own row lock.
         tx.commit().await.map_err(BlobError::Db)?;
-
-        // The row was locked for that transaction, so a zero-row result is
-        // only an external writer violating the protocol. Classify against
-        // the locked state rather than opening a second, weaker read.
-        match abort_transition_decision(row.status, rows_affected)? {
-            AbortTransitionDecision::WonPending | AbortTransitionDecision::AlreadyAborted => {
-                self.cleanup_aborted_upload(&owner, upload_id).await;
-                Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
-            }
-            AbortTransitionDecision::Completed => {
-                Ok(CitedBlobUploadAbortOutcomeTs { aborted: false })
-            }
-            AbortTransitionDecision::AlreadyExpired => {
-                Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
-            }
-        }
+        Ok(AbortCommit::Decide(row.status, rows_affected))
     }
 
     /// Remove the expendable transfer key an aborted upload may have left

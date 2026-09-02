@@ -17,26 +17,25 @@ use crate::{GroupId, SourceId, UserId};
 #[allow(clippy::too_many_arguments)]
 #[async_trait::async_trait]
 pub trait OwnerInversePort: Send + Sync {
-    /// `object_purge_planned` is true iff the engine has a cited-object erase
-    /// port configured for this owner-scope erase. It is echoed back on the
-    /// outcome so the receipt never claims a clean erase while a planned
-    /// purge is still outstanding — a fact about THIS operation, handed to
-    /// the caller, not a row core keeps.
+    /// Erase every row an abandoned group owner owns.
+    ///
+    /// External object debt is reported through
+    /// `OwnerEraseOutcome::Completed::cold_object_purge_pending` alone: the
+    /// erase transaction enqueues every object key it owes in
+    /// `cold_purge_pending`, so the receipt is derived from the durable queue
+    /// rather than from what the engine had wired.
     async fn erase_group_owner(
         &self,
         auth: &crate::owner_inverse::EraseAuthorization,
         group_id: GroupId,
-        object_purge_planned: bool,
         tables: &crate::owner_inverse::OwnerSurfaces,
     ) -> Result<crate::owner_inverse::OwnerEraseOutcome, StorageError>;
 
-    /// See [`OwnerInversePort::erase_group_owner`] for the
-    /// meaning of `object_purge_planned`.
+    /// See [`OwnerInversePort::erase_group_owner`].
     async fn erase_personal_owner(
         &self,
         auth: &crate::owner_inverse::EraseAuthorization,
         user_id: UserId,
-        object_purge_planned: bool,
         tables: &crate::owner_inverse::OwnerSurfaces,
     ) -> Result<crate::owner_inverse::OwnerEraseOutcome, StorageError>;
 

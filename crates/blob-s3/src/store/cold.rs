@@ -22,6 +22,12 @@ impl CitedBlobStore {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for S3ColdStore {
+    /// The bucket, which is exactly what `blob_uploads.bucket` records and
+    /// what the durable purge queue matches a debt against.
+    fn backend(&self) -> &str {
+        self.store.bucket()
+    }
+
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
         let client = self
             .store

@@ -438,13 +438,10 @@ pub enum OwnerEraseOutcome {
     Completed {
         operation_id: uuid::Uuid,
         counts: OwnerEraseCounts,
-        /// Postgres rows are deleted but cited-object purge in the wired object
-        /// store failed or was not attempted. Operators must retry purge
-        /// out-of-band before treating erasure as fully complete.
-        #[serde(default)]
-        cited_object_purge_pending: bool,
-        /// Postgres rows are deleted but one or more exact cold/object-store
-        /// keys still have a durable purge debt.
+        /// Postgres rows are deleted but one or more exact object-store keys
+        /// still have a durable purge debt in `cold_purge_pending`. This is
+        /// the ONE external-debt receipt: cold Memory objects and cited
+        /// upload objects share the same durable queue.
         #[serde(default)]
         cold_object_purge_pending: bool,
     },

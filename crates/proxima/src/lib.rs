@@ -52,6 +52,7 @@ use proxima_core::llm::EmbeddingClient;
 // re-exported through `host::*`
 // above, and a private import of the same name would shadow that
 // re-export back out of the public facade (`hidden_glob_reexports`).
+use proxima_core::ColdObjectStore;
 use proxima_core::FlavorRegistry;
 use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
@@ -437,13 +438,32 @@ impl ProximaBuilder {
             .with_embedding_runtime_policy(embedding_runtime_policy);
 
         let pool = pg.clone_pool_for_backend();
+        let configured_bucket = config.s3.as_ref().map(|s3| s3.bucket.clone());
         let blobs = config
             .s3
             .map(|s3| CitedBlobStore::new(pool.clone(), s3))
             .transpose()
             .map_err(|error| EmbedError::Config(error.to_string()))?;
         let pg = match &blobs {
-            Some(store) => pg.with_cold(Arc::new(store.cold_store())),
+            Some(store) => {
+                let cold = store.cold_store();
+                // Assert the composition the purge queue's `backend` column
+                // depends on. `cold_purge_pending` records the bucket an
+                // upload row named, and the drain refuses any row whose
+                // backend is not the wired store's — so a store wired against
+                // a different bucket than the one uploads publish to must
+                // fail here, at boot, not silently stop reclaiming bytes.
+                let configured_bucket = configured_bucket.as_deref().unwrap_or_default();
+                if ColdObjectStore::backend(&cold) != configured_bucket {
+                    return Err(EmbedError::Config(format!(
+                        "cold object store reports backend {:?} but cited uploads publish to \
+                         bucket {configured_bucket:?}; the purge queue and the object store \
+                         must name one backend",
+                        ColdObjectStore::backend(&cold),
+                    )));
+                }
+                pg.with_cold(Arc::new(cold))
+            }
             None => pg,
         };
 
@@ -452,14 +472,6 @@ impl ProximaBuilder {
             .with_embedding_runtime_policy(embedding_runtime_policy);
         if let Some(scope) = deployment_tool_scope {
             engine = engine.with_deployment_tool_scope(scope);
-        }
-        if let Some(store) = &blobs {
-            // The object-store half of the inverse, wired in-band: register
-            // the blob backend so an owner-scope erase destroys the owner's
-            // S3 objects (uploaded OCR docs, etc.) and not just the Postgres
-            // rows. Optional — no S3 configured ⇒ no port ⇒ erase behaves as
-            // rows-only, which is complete over what it can reach.
-            engine = engine.with_cited_object_erase(Arc::new(store.clone()));
         }
         if let Some(client) = embed_client {
             // Fail fast on a dimension mismatch. The `embeddings.embedding`

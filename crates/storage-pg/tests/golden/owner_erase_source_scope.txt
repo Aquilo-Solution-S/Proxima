@@ -40,7 +40,7 @@
 ## export proxima_core.task_goal_v1 (2)
 {"due_at":"<ts027>","priority":null,"t":"<id018>"}
 {"due_at":"<ts027>","priority":null,"t":"<id020>"}
-## outcome Completed cited_pending=false cold_pending=false
+## outcome Completed cold_pending=false
 ## proxima_core.agent_derivation_v1 (0)
 ## proxima_core.agent_note_v1 (2)
 {"body":"body","embed_text":"three body","idempotency_key":null,"note_id":"<id005>","t":"<id006>","tags":[],"title":"three"}

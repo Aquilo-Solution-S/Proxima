@@ -9,7 +9,6 @@ mod change;
 mod cited_blob;
 mod cited_blob_read;
 mod cited_blob_reconcile;
-mod cited_object_erase;
 mod cursors;
 mod delegated_authority;
 mod embeddings;
@@ -44,7 +43,6 @@ pub use cited_blob_reconcile::{
     CitedBlobOwnerReconcilePort, CitedBlobOwnerReconcileService, CitedBlobReconcileOutcome,
     CitedBlobReconcilePort, MAX_RECONCILE_SAMPLE,
 };
-pub use cited_object_erase::CitedObjectErasePort;
 pub use cursors::SourceCursorPort;
 pub use delegated_authority::{
     DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegationGrant,

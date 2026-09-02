@@ -23,12 +23,49 @@ pub fn cold_object_key(t: Uuid) -> String {
     format!("cold/{t}")
 }
 
+/// A `cold_purge_pending` row that records no backend belongs to whatever
+/// `ColdObjectStore` the deployment wired.
+///
+/// Two kinds of row mean it. A cold Memory object has exactly one store by
+/// construction — core wires a single `ColdObjectStore` — so there is no
+/// second backend it could have been written to. And a row enqueued before
+/// the `backend` column existed predates the question entirely. Cited upload
+/// objects DO record theirs, because `blob_uploads.bucket` is row data that a
+/// redeployment against a different bucket can change underneath the queue.
+pub const UNRECORDED_BACKEND: &str = "";
+
 /// One object per Memory `t` under `cold/<t>`.
 #[async_trait::async_trait]
 pub trait ColdObjectStore: Send + Sync {
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError>;
     async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError>;
     async fn delete(&self, key: &str) -> Result<(), StorageError>;
+
+    /// This store's backend identity — the S3 bucket for the S3 adapter.
+    ///
+    /// The durable purge queue records the backend each debt was incurred
+    /// against, and the drain refuses a row whose backend is not this one:
+    /// matching store to queue by boot convention alone means a deployment
+    /// that changed buckets deletes against the wrong store, or silently
+    /// stops reclaiming. Returning [`UNRECORDED_BACKEND`] declares no
+    /// identity and therefore adopts every row — correct only for a store
+    /// that has no bucket to be wrong about, i.e. the in-memory dev/test
+    /// store.
+    fn backend(&self) -> &str {
+        UNRECORDED_BACKEND
+    }
+}
+
+/// Whether the store wired now may drain a queue row enqueued against
+/// `row_backend`.
+///
+/// Not equality: an unrecorded backend on either side is a declared absence
+/// of identity, not a different identity (see [`UNRECORDED_BACKEND`]).
+#[must_use]
+pub fn cold_backend_matches(store_backend: &str, row_backend: &str) -> bool {
+    row_backend == UNRECORDED_BACKEND
+        || store_backend == UNRECORDED_BACKEND
+        || row_backend == store_backend
 }
 
 #[cfg(test)]

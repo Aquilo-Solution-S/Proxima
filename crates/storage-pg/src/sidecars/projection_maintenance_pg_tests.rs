@@ -363,7 +363,7 @@ async fn an_owner_erase_takes_the_owners_projection_rows_by_cascade() {
             &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
         );
         let outcome = pg
-            .erase_personal_owner(&auth, user, false, &sidecar_tables)
+            .erase_personal_owner(&auth, user, &sidecar_tables)
             .await?;
         assert!(
             matches!(outcome, OwnerEraseOutcome::Completed { .. }),

@@ -32,7 +32,7 @@ use crate::Owner;
 use crate::authz::{EngineAuthority, EngineOperationAuthority, context_for_engine_operation};
 use crate::error::ProtocolError;
 use crate::llm::EmbeddingClient;
-use crate::storage_ports::{CitedObjectErasePort, EngineStoragePorts, OwnerWritePermit};
+use crate::storage_ports::{EngineStoragePorts, OwnerWritePermit};
 use crate::verbs::schema::FlavorRegistryFrozen;
 
 pub use access_admin::GroupMemberPage;
@@ -69,7 +69,6 @@ pub struct Engine {
     embed: Arc<RwLock<Option<Arc<dyn EmbeddingClient>>>>,
     embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy,
     embedding_reloader: Option<Arc<dyn EmbeddingClientReloader>>,
-    cited_object_erase: Option<Arc<dyn CitedObjectErasePort>>,
     pub(crate) mcp_listen_addr: SocketAddr,
     pub(crate) mcp_listener: Option<Arc<dyn EngineMcpListener>>,
     pub(crate) mcp_url: Arc<RwLock<Option<String>>>,
@@ -169,14 +168,6 @@ impl Engine {
 
     pub async fn set_embed_client(&self, embed: Option<Arc<dyn EmbeddingClient>>) {
         *self.embed.write().await = embed;
-    }
-
-    /// Host-wired external object-store erase port. `None` when no blob backend
-    /// is configured — owner-scope owner erase then touches Postgres rows
-    /// only (see [`crate::storage_ports::CitedObjectErasePort`]).
-    #[must_use]
-    pub fn cited_object_erase(&self) -> Option<Arc<dyn CitedObjectErasePort>> {
-        self.cited_object_erase.clone()
     }
 
     /// Rebuilds the embedding client via the configured reload hook and
