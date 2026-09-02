@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::CodeFlavorStore;
 use crate::contract::{COMMIT_SCHEMA_ID, COMMIT_SUMMARY_SCHEMA_ID, band, substring_arm};
 use crate::payloads::{CommitSummaryV1, CommitV1};
 
@@ -104,101 +105,18 @@ impl Tool for CodeSearchCommitsTool {
             let candidate_limit = i64::from(limit.saturating_mul(4).max(limit).min(200));
 
             let read_owner_ids = super::read_owner_ids(&engine, &ctx).await?;
-            let commit_rows = search_commit_rows(
-                pool.pool(),
+            let scan = CommitScan {
                 query,
                 repo_id,
+                change_kind: args.change_kind.as_deref(),
                 candidate_limit,
-                &read_owner_ids,
-            )
-            .await?;
-            let commit_ids = commit_rows
-                .iter()
-                .map(|row| row.memory_id)
-                .collect::<Vec<_>>();
-            let commit_scores = commit_rows
-                .into_iter()
-                .map(|row| (row.memory_id, row.score))
-                .collect::<std::collections::HashMap<_, _>>();
-            let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
-            let mut commit_payloads = pool
-                .authorized_fact_payloads::<CommitV1>(
-                    &engine,
-                    ctx.authz(),
-                    ctx.owner(),
-                    &commit_ids,
-                    page_len.saturating_add(1),
-                )
-                .await?;
-            let commits_has_more = commit_payloads.len() > page_len;
-            commit_payloads.truncate(page_len);
-            let commits = commit_payloads
-                .into_iter()
-                .map(|(memory_id, row)| CommitMatch {
-                    handle: ctx.format_fact_memory(memory_id),
-                    repo_handle: ctx.format_flavor_object(
-                        super::REPO_HANDLE_KIND,
-                        row.repo_id,
-                        super::REPO_HANDLE_PREFIX,
-                    ),
-                    sha: row.sha,
-                    author_name: row.author_name,
-                    committer_time: row.committer_time,
-                    message_snippet: row.message.chars().take(480).collect(),
-                    score: commit_scores
-                        .get(&memory_id.into_inner())
-                        .copied()
-                        .unwrap_or_default(),
-                })
-                .collect();
-
-            let summary_rows = search_summary_rows(
-                pool.pool(),
-                query,
-                repo_id,
-                args.change_kind.as_deref(),
-                candidate_limit,
-                &read_owner_ids,
-            )
-            .await?;
-            let summary_ids = summary_rows
-                .iter()
-                .map(|row| row.memory_id)
-                .collect::<Vec<_>>();
-            let summary_scores = summary_rows
-                .into_iter()
-                .map(|row| (row.memory_id, row.score))
-                .collect::<std::collections::HashMap<_, _>>();
-            let mut summary_payloads = pool
-                .authorized_abstraction_payloads::<CommitSummaryV1>(
-                    &engine,
-                    ctx.authz(),
-                    ctx.owner(),
-                    &summary_ids,
-                    page_len.saturating_add(1),
-                )
-                .await?;
-            let summaries_has_more = summary_payloads.len() > page_len;
-            summary_payloads.truncate(page_len);
-            let summaries = summary_payloads
-                .into_iter()
-                .map(|(memory_id, row)| SummaryMatch {
-                    handle: ctx.format_abstraction_memory(memory_id),
-                    repo_handle: ctx.format_flavor_object(
-                        super::REPO_HANDLE_KIND,
-                        row.repo_id,
-                        super::REPO_HANDLE_PREFIX,
-                    ),
-                    commit_sha: row.commit_sha,
-                    change_kind: row.change_kind,
-                    key_files: row.key_files,
-                    summary: row.summary,
-                    score: summary_scores
-                        .get(&memory_id.into_inner())
-                        .copied()
-                        .unwrap_or_default(),
-                })
-                .collect();
+                page_len: usize::try_from(limit).unwrap_or(usize::MAX),
+                read_owner_ids: &read_owner_ids,
+            };
+            let (commits, commits_has_more) =
+                load_commit_matches(&ctx, &pool, &engine, &scan).await?;
+            let (summaries, summaries_has_more) =
+                load_summary_matches(&ctx, &pool, &engine, &scan).await?;
 
             Ok(CodeSearchCommitsOutput {
                 commits,
@@ -208,6 +126,136 @@ impl Tool for CodeSearchCommitsTool {
             })
         })
     }
+}
+
+/// One commit search's resolved scope. Both arms read the same filters and
+/// the same candidate budget from here, so the two cannot drift apart.
+struct CommitScan<'a> {
+    query: &'a str,
+    repo_id: Option<Uuid>,
+    change_kind: Option<&'a str>,
+    candidate_limit: i64,
+    page_len: usize,
+    read_owner_ids: &'a [Uuid],
+}
+
+/// Scan, admit, and render the commit-Fact arm.
+///
+/// The `bool` is `commits_has_more`: at least one further authorized commit
+/// exists past `page_len` in the scanned candidate window.
+async fn load_commit_matches(
+    ctx: &ToolCtx,
+    pool: &CodeFlavorStore,
+    engine: &proxima_core::Engine,
+    scan: &CommitScan<'_>,
+) -> Result<(Vec<CommitMatch>, bool), ToolError> {
+    let commit_rows = search_commit_rows(
+        pool.pool(),
+        scan.query,
+        scan.repo_id,
+        scan.candidate_limit,
+        scan.read_owner_ids,
+    )
+    .await?;
+    let commit_ids = commit_rows
+        .iter()
+        .map(|row| row.memory_id)
+        .collect::<Vec<_>>();
+    let commit_scores = commit_rows
+        .into_iter()
+        .map(|row| (row.memory_id, row.score))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut commit_payloads = pool
+        .authorized_fact_payloads::<CommitV1>(
+            engine,
+            ctx.authz(),
+            ctx.owner(),
+            &commit_ids,
+            scan.page_len.saturating_add(1),
+        )
+        .await?;
+    let commits_has_more = commit_payloads.len() > scan.page_len;
+    commit_payloads.truncate(scan.page_len);
+    let commits = commit_payloads
+        .into_iter()
+        .map(|(memory_id, row)| CommitMatch {
+            handle: ctx.format_fact_memory(memory_id),
+            repo_handle: ctx.format_flavor_object(
+                super::REPO_HANDLE_KIND,
+                row.repo_id,
+                super::REPO_HANDLE_PREFIX,
+            ),
+            sha: row.sha,
+            author_name: row.author_name,
+            committer_time: row.committer_time,
+            message_snippet: row.message.chars().take(480).collect(),
+            score: commit_scores
+                .get(&memory_id.into_inner())
+                .copied()
+                .unwrap_or_default(),
+        })
+        .collect();
+    Ok((commits, commits_has_more))
+}
+
+/// Scan, admit, and render the commit-summary Abstraction arm.
+///
+/// The `bool` is `summaries_has_more`, the same signal `load_commit_matches`
+/// reports for its own list.
+async fn load_summary_matches(
+    ctx: &ToolCtx,
+    pool: &CodeFlavorStore,
+    engine: &proxima_core::Engine,
+    scan: &CommitScan<'_>,
+) -> Result<(Vec<SummaryMatch>, bool), ToolError> {
+    let summary_rows = search_summary_rows(
+        pool.pool(),
+        scan.query,
+        scan.repo_id,
+        scan.change_kind,
+        scan.candidate_limit,
+        scan.read_owner_ids,
+    )
+    .await?;
+    let summary_ids = summary_rows
+        .iter()
+        .map(|row| row.memory_id)
+        .collect::<Vec<_>>();
+    let summary_scores = summary_rows
+        .into_iter()
+        .map(|row| (row.memory_id, row.score))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut summary_payloads = pool
+        .authorized_abstraction_payloads::<CommitSummaryV1>(
+            engine,
+            ctx.authz(),
+            ctx.owner(),
+            &summary_ids,
+            scan.page_len.saturating_add(1),
+        )
+        .await?;
+    let summaries_has_more = summary_payloads.len() > scan.page_len;
+    summary_payloads.truncate(scan.page_len);
+    let summaries = summary_payloads
+        .into_iter()
+        .map(|(memory_id, row)| SummaryMatch {
+            handle: ctx.format_abstraction_memory(memory_id),
+            repo_handle: ctx.format_flavor_object(
+                super::REPO_HANDLE_KIND,
+                row.repo_id,
+                super::REPO_HANDLE_PREFIX,
+            ),
+            commit_sha: row.commit_sha,
+            change_kind: row.change_kind,
+            key_files: row.key_files,
+            summary: row.summary,
+            score: summary_scores
+                .get(&memory_id.into_inner())
+                .copied()
+                .unwrap_or_default(),
+        })
+        .collect();
+    Ok((summaries, summaries_has_more))
 }
 
 /// The commit GIN arm, over `proxima_code.projection`.

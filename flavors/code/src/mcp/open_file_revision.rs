@@ -1,4 +1,4 @@
-use proxima_core::{AccessKind, Tool, ToolCtx, ToolError};
+use proxima_core::{AccessKind, Owner, Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -102,8 +102,13 @@ impl Tool for CodeOpenFileRevisionTool {
                 ));
             }
             let line_window = requested_line_window(args.line_start, args.line_limit)?;
-            let include_text =
-                args.include_text || line_window.is_some() || args.max_text_bytes.is_some();
+            let projection = TextProjection {
+                include_text: args.include_text
+                    || line_window.is_some()
+                    || args.max_text_bytes.is_some(),
+                line_window,
+                max_text_bytes: args.max_text_bytes,
+            };
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
             let pool = code_store(&ctx)?;
             let engine = super::engine(&ctx)?;
@@ -112,41 +117,12 @@ impl Tool for CodeOpenFileRevisionTool {
             // owner the caller can read — a shared repo simply lives under a
             // group. Query decides visibility; own `t` is listed first.
             let read_owners = ctx.authz().readable_owners(AccessKind::Fact);
-            let revision_ids = pool
-                .readable_file_revision_head_ts(ctx.owner(), &read_owners, repo_id, &args.file_path)
-                .await?;
-            let revision_with_id = pool
-                .authorized_fact_payloads::<FileRevisionV1>(
-                    &engine,
-                    ctx.authz(),
-                    ctx.owner(),
-                    &revision_ids,
-                    1,
-                )
-                .await?
-                .into_iter()
-                .find(|(_, row)| row.repo_id == repo_id && row.file_path == args.file_path)
-                .map(|(memory_id, row)| {
-                    let size_bytes = i64::try_from(row.size_bytes)
-                        .map_err(|_| ToolError::Other("file revision size exceeds i64".into()))?;
-                    Ok::<_, ToolError>((
-                        memory_id,
-                        FileRevisionInfo {
-                            handle: ctx.format_fact_memory(memory_id),
-                            repo_handle: ctx.format_flavor_object(
-                                super::REPO_HANDLE_KIND,
-                                row.repo_id,
-                                super::REPO_HANDLE_PREFIX,
-                            ),
-                            file_path: row.file_path,
-                            language: row.language,
-                            size_bytes,
-                            indexed_commit_sha: row.indexed_commit_sha,
-                            state: row.state,
-                        },
-                    ))
-                })
-                .transpose()?;
+            let scope = HeadFileScope {
+                read_owners: &read_owners,
+                repo_id,
+                file_path: &args.file_path,
+            };
+            let revision_with_id = load_head_revision(&ctx, &pool, &engine, &scope).await?;
             let (revision_memory_id, revision) = match revision_with_id {
                 Some((memory_id, revision)) => (Some(memory_id), Some(revision)),
                 None => (None, None),
@@ -166,70 +142,147 @@ impl Tool for CodeOpenFileRevisionTool {
                 return Err(ToolError::Other("authorized revision disappeared".into()));
             }
 
-            let chunk_ids = pool
-                .readable_chunk_head_ts_for_file(
-                    ctx.owner(),
-                    &read_owners,
-                    repo_id,
-                    &args.file_path,
-                )
-                .await?;
-            let mut chunks = pool
-                .authorized_abstraction_payloads::<CodeChunkV1>(
-                    &engine,
-                    ctx.authz(),
-                    ctx.owner(),
-                    &chunk_ids,
-                    2_000,
-                )
-                .await?
-                .into_iter()
-                .filter(|(_, row)| {
-                    let in_line_window = match line_window {
-                        Some((start, end)) => {
-                            i64::from(row.line_range_end) >= start
-                                && i64::from(row.line_range_start) <= end
-                        }
-                        None => true,
-                    };
-                    row.repo_id == repo_id
-                        && row.file_path == args.file_path
-                        && row.state == FileState::Present
-                        && in_line_window
-                })
-                .map(|(memory_id, row)| {
-                    let projected = project_text(
-                        include_text.then_some(row.text.clone()),
-                        i64::from(row.line_range_start),
-                        line_window,
-                        args.max_text_bytes,
-                    );
-                    let ProjectedText {
-                        text,
-                        text_line_range,
-                        text_truncated,
-                    } = projected;
-                    Ok::<_, ToolError>(ChunkSummary {
-                        handle: ctx.format_abstraction_memory(memory_id),
-                        chunk_index: i32::try_from(row.chunk_index)
-                            .map_err(|_| ToolError::Other("chunk_index exceeds i32".into()))?,
-                        chunk_type: row.chunk_type,
-                        line_range: (
-                            i64::from(row.line_range_start),
-                            i64::from(row.line_range_end),
-                        ),
-                        snippet: row.text.chars().take(480).collect(),
-                        text,
-                        text_line_range,
-                        text_truncated,
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            chunks.sort_by_key(|chunk| chunk.chunk_index);
+            let chunks = load_head_chunks(&ctx, &pool, &engine, &scope, &projection).await?;
 
             Ok(CodeOpenFileRevisionOutput { revision, chunks })
         })
     }
+}
+
+/// One repo-relative path, resolved against the caller's read set. Both head
+/// reads below are scoped by exactly this triple.
+struct HeadFileScope<'a> {
+    read_owners: &'a [Owner],
+    repo_id: uuid::Uuid,
+    file_path: &'a str,
+}
+
+/// What the caller asked chunk text to look like, carried as one value so
+/// the projection cannot be applied with half its arguments.
+struct TextProjection {
+    include_text: bool,
+    line_window: Option<(i64, i64)>,
+    max_text_bytes: Option<usize>,
+}
+
+/// The head file revision for `scope`, with the `MemoryId` it was admitted
+/// under. `None` when nothing readable answers the path.
+async fn load_head_revision(
+    ctx: &ToolCtx,
+    pool: &crate::CodeFlavorStore,
+    engine: &proxima_core::Engine,
+    scope: &HeadFileScope<'_>,
+) -> Result<Option<(proxima_core::MemoryId, FileRevisionInfo)>, ToolError> {
+    let revision_ids = pool
+        .readable_file_revision_head_ts(
+            ctx.owner(),
+            scope.read_owners,
+            scope.repo_id,
+            scope.file_path,
+        )
+        .await?;
+    pool.authorized_fact_payloads::<FileRevisionV1>(
+        engine,
+        ctx.authz(),
+        ctx.owner(),
+        &revision_ids,
+        1,
+    )
+    .await?
+    .into_iter()
+    .find(|(_, row)| row.repo_id == scope.repo_id && row.file_path == scope.file_path)
+    .map(|(memory_id, row)| {
+        let size_bytes = i64::try_from(row.size_bytes)
+            .map_err(|_| ToolError::Other("file revision size exceeds i64".into()))?;
+        Ok::<_, ToolError>((
+            memory_id,
+            FileRevisionInfo {
+                handle: ctx.format_fact_memory(memory_id),
+                repo_handle: ctx.format_flavor_object(
+                    super::REPO_HANDLE_KIND,
+                    row.repo_id,
+                    super::REPO_HANDLE_PREFIX,
+                ),
+                file_path: row.file_path,
+                language: row.language,
+                size_bytes,
+                indexed_commit_sha: row.indexed_commit_sha,
+                state: row.state,
+            },
+        ))
+    })
+    .transpose()
+}
+
+/// The present head chunks for `scope`, projected per `projection` and
+/// ordered by `chunk_index`.
+async fn load_head_chunks(
+    ctx: &ToolCtx,
+    pool: &crate::CodeFlavorStore,
+    engine: &proxima_core::Engine,
+    scope: &HeadFileScope<'_>,
+    projection: &TextProjection,
+) -> Result<Vec<ChunkSummary>, ToolError> {
+    let chunk_ids = pool
+        .readable_chunk_head_ts_for_file(
+            ctx.owner(),
+            scope.read_owners,
+            scope.repo_id,
+            scope.file_path,
+        )
+        .await?;
+    let mut chunks = pool
+        .authorized_abstraction_payloads::<CodeChunkV1>(
+            engine,
+            ctx.authz(),
+            ctx.owner(),
+            &chunk_ids,
+            2_000,
+        )
+        .await?
+        .into_iter()
+        .filter(|(_, row)| {
+            let in_line_window = match projection.line_window {
+                Some((start, end)) => {
+                    i64::from(row.line_range_end) >= start && i64::from(row.line_range_start) <= end
+                }
+                None => true,
+            };
+            row.repo_id == scope.repo_id
+                && row.file_path == scope.file_path
+                && row.state == FileState::Present
+                && in_line_window
+        })
+        .map(|(memory_id, row)| {
+            let projected = project_text(
+                projection.include_text.then_some(row.text.clone()),
+                i64::from(row.line_range_start),
+                projection.line_window,
+                projection.max_text_bytes,
+            );
+            let ProjectedText {
+                text,
+                text_line_range,
+                text_truncated,
+            } = projected;
+            Ok::<_, ToolError>(ChunkSummary {
+                handle: ctx.format_abstraction_memory(memory_id),
+                chunk_index: i32::try_from(row.chunk_index)
+                    .map_err(|_| ToolError::Other("chunk_index exceeds i32".into()))?,
+                chunk_type: row.chunk_type,
+                line_range: (
+                    i64::from(row.line_range_start),
+                    i64::from(row.line_range_end),
+                ),
+                snippet: row.text.chars().take(480).collect(),
+                text,
+                text_line_range,
+                text_truncated,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    chunks.sort_by_key(|chunk| chunk.chunk_index);
+    Ok(chunks)
 }
 
 /// Default window height when only `line_start` is given.

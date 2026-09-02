@@ -335,153 +335,36 @@ impl Tool for CodeSearchChunksTool {
             let (effective_mode, query_embedding) =
                 resolve_query_embedding(&engine, args.mode, query).await?;
 
-            // Phase 1: sidecar-only content scan, narrowed to the caller's
-            // resolved read set so the projection's composite
-            // `gin(owner_id, search_tsv)` can serve it. Still overfetch: the
-            // read set admits a whole group, and phase 2 drops non-head ts.
             let read_owner_ids = super::read_owner_ids(&engine, &ctx).await?;
             let needed = seen.saturating_add(limit);
             let candidate_limit = i64::from(needed.saturating_mul(20).max(needed).min(1_000));
-            let lexical_rows: Vec<ChunkCandidateRow> =
-                if effective_mode == ChunkSearchMode::Semantic {
-                    Vec::new()
-                } else {
-                    {
-                        let scan = ChunkSidecarScan {
-                            repo_id,
-                            language: args.language.as_deref(),
-                            chunk_type: args.chunk_type.as_deref(),
-                            exact_pattern: &exact_pattern,
-                            candidate_limit,
-                            distinctive: &distinctive_terms(query),
-                            read_owner_ids: &read_owner_ids,
-                        };
-                        let gin = scan_chunk_sidecar(pool.pool(), query, &scan).await?;
-                        // The substring arm is DECLARED, not blanket. A
-                        // schema whose contract says `SubstringArm::Off`
-                        // contributes no statement and no rows; the price
-                        // for stopword-only and partial-word queries is
-                        // then paid per declaration, visibly, instead of
-                        // being a mechanism nobody can turn off.
-                        if gin.is_empty() && chunk_substring_arm_is_declared() {
-                            scan_chunk_sidecar_like(pool.pool(), query, &scan).await?
-                        } else {
-                            gin
-                        }
-                    }
-                };
-
-            // The semantic arm draws on the same candidate budget as the
-            // lexical one and applies the same structural filters — pushed
-            // into the neighbour scan rather than applied to its output,
-            // because a search scoped to one repository would otherwise spend
-            // its whole budget on whichever repository is largest and come
-            // back empty.
-            let semantic_rows = match query_embedding.as_ref() {
-                Some((embedding, model_id)) => {
-                    pool.nearest_code_chunk_candidates(
-                        ctx.owner(),
-                        model_id,
-                        embedding,
-                        CodeChunkVectorFilters {
-                            repo_id,
-                            language: args.language.as_deref(),
-                            chunk_type: args.chunk_type.as_deref(),
-                        },
-                        usize::try_from(candidate_limit).unwrap_or(0),
-                    )
-                    .await?
-                }
-                None => Vec::new(),
+            let scan = ChunkCandidateScan {
+                query,
+                effective_mode,
+                repo_id,
+                language: args.language.as_deref(),
+                chunk_type: args.chunk_type.as_deref(),
+                exact_pattern: &exact_pattern,
+                candidate_limit,
+                read_owner_ids: &read_owner_ids,
+                query_embedding: query_embedding.as_ref(),
             };
+            let (rows, score_by_id) = collect_candidates(&ctx, &pool, &engine, &scan).await?;
 
-            // Admit: Query HeadsOnly. Content hits on a superseded t drop.
-            let fused = fuse_candidates(effective_mode, &lexical_rows, &semantic_rows);
-            let candidate_ids = fused
-                .iter()
-                .map(|scores| scores.memory_id)
-                .collect::<Vec<_>>();
-            let score_by_id = fused
-                .into_iter()
-                .map(|scores| (scores.memory_id, scores))
-                .collect::<HashMap<_, _>>();
-            let rows = pool
-                .authorized_abstraction_payloads::<CodeChunkV1>(
-                    &engine,
-                    ctx.authz(),
-                    ctx.owner(),
-                    &candidate_ids,
-                    candidate_ids.len(),
-                )
-                .await?;
-
-            let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
-            let mut eligible = Vec::new();
-            for (memory_id, payload) in rows {
-                if payload.state != FileState::Present {
-                    continue;
-                }
-                let raw_id = memory_id.into_inner();
-                let scores = score_by_id.get(&raw_id).copied().unwrap_or_default();
-                if after.is_some_and(|pos| !ranks_after_chunk_cursor(scores, pos)) {
-                    continue;
-                }
-                eligible.push((memory_id, payload, scores));
-            }
-            let has_more = eligible.len() > page_len;
-            eligible.truncate(page_len);
-            let next_cursor = (has_more && !eligible.is_empty()).then(|| {
-                let (_, _, scores) = eligible.last().expect("non-empty page");
-                CHUNK_CURSOR.encode(
-                    &fingerprint,
-                    &ChunkCursorPos {
-                        score_bits: scores.score.to_bits(),
-                        memory_id: scores.memory_id,
-                        seen: seen
-                            .saturating_add(u32::try_from(eligible.len()).unwrap_or(u32::MAX)),
-                    },
-                )
-            });
-            let mut matches = Vec::with_capacity(eligible.len());
-            let mut chunk_ids = Vec::with_capacity(eligible.len());
-            for (memory_id, payload, scores) in eligible {
-                chunk_ids.push(memory_id.into_inner());
-                let (match_kind, matched_line, matched_excerpt) = match_metadata(
-                    query,
-                    &payload.file_path,
-                    &payload.text,
-                    payload.line_range_start,
-                );
-                matches.push(ChunkMatch {
-                    handle: ctx.format_abstraction_memory(memory_id),
-                    repo_handle: ctx.format_flavor_object(
-                        super::REPO_HANDLE_KIND,
-                        payload.repo_id,
-                        super::REPO_HANDLE_PREFIX,
-                    ),
-                    file_path: payload.file_path,
-                    chunk_index: i32::try_from(payload.chunk_index)
-                        .map_err(|_| ToolError::Other("chunk_index exceeds i32".into()))?,
-                    language: payload.language,
-                    chunk_type: payload.chunk_type,
-                    line_range: (
-                        i64::from(payload.line_range_start),
-                        i64::from(payload.line_range_end),
-                    ),
-                    byte_range: (
-                        i64::from(payload.byte_range_start),
-                        i64::from(payload.byte_range_end),
-                    ),
-                    snippet: payload.text.chars().take(snippet_max_chars).collect(),
-                    snippet_truncated: payload.text.chars().count() > snippet_max_chars,
-                    match_kind,
-                    matched_line,
-                    matched_excerpt,
-                    score: scores.score,
-                    lexical_score: scores.lexical_score,
-                    similarity_score: scores.similarity_score,
-                });
-            }
+            let ChunkPage {
+                eligible,
+                has_more,
+                next_cursor,
+            } = select_chunk_page(
+                rows,
+                &score_by_id,
+                after,
+                usize::try_from(limit).unwrap_or(usize::MAX),
+                &fingerprint,
+                seen,
+            );
+            let (matches, chunk_ids) =
+                render_chunk_matches(&ctx, query, snippet_max_chars, eligible)?;
 
             // Phase 3: the call-neighbour pins, only when the caller asks
             // for them and the page phase 2 admitted is non-empty. Keyed on
@@ -502,6 +385,219 @@ impl Tool for CodeSearchChunksTool {
             })
         })
     }
+}
+
+/// One chunk search's resolved scope, shared by both candidate arms so a
+/// filter cannot reach one arm and miss the other.
+struct ChunkCandidateScan<'a> {
+    query: &'a str,
+    effective_mode: ChunkSearchMode,
+    repo_id: Option<Uuid>,
+    language: Option<&'a str>,
+    chunk_type: Option<&'a str>,
+    exact_pattern: &'a str,
+    candidate_limit: i64,
+    read_owner_ids: &'a [Uuid],
+    /// The query embedding and the model that produced it, `None` when the
+    /// semantic arm does not run.
+    query_embedding: Option<&'a (Vec<f32>, String)>,
+}
+
+/// Phases 1 and 2: scan both content arms, fuse their ranks, and admit the
+/// fused candidates.
+///
+/// Returns the admitted head payloads and, keyed by row id, the scores each
+/// candidate was ranked by.
+async fn collect_candidates(
+    ctx: &ToolCtx,
+    pool: &crate::CodeFlavorStore,
+    engine: &proxima_core::Engine,
+    scan: &ChunkCandidateScan<'_>,
+) -> Result<(Vec<(MemoryId, CodeChunkV1)>, HashMap<Uuid, MatchScores>), ToolError> {
+    let lexical_rows = scan_lexical_candidates(pool, scan).await?;
+    let semantic_rows = scan_semantic_candidates(ctx, pool, scan).await?;
+
+    // Admit: Query HeadsOnly. Content hits on a superseded t drop.
+    let fused = fuse_candidates(scan.effective_mode, &lexical_rows, &semantic_rows);
+    let candidate_ids = fused
+        .iter()
+        .map(|scores| scores.memory_id)
+        .collect::<Vec<_>>();
+    let score_by_id = fused
+        .into_iter()
+        .map(|scores| (scores.memory_id, scores))
+        .collect::<HashMap<_, _>>();
+    let rows = pool
+        .authorized_abstraction_payloads::<CodeChunkV1>(
+            engine,
+            ctx.authz(),
+            ctx.owner(),
+            &candidate_ids,
+            candidate_ids.len(),
+        )
+        .await?;
+    Ok((rows, score_by_id))
+}
+
+/// Phase 1: sidecar-only content scan, narrowed to the caller's resolved
+/// read set so the projection's composite `gin(owner_id, search_tsv)` can
+/// serve it. Still overfetch: the read set admits a whole group, and phase 2
+/// drops non-head ts.
+async fn scan_lexical_candidates(
+    pool: &crate::CodeFlavorStore,
+    scan: &ChunkCandidateScan<'_>,
+) -> Result<Vec<ChunkCandidateRow>, ToolError> {
+    if scan.effective_mode == ChunkSearchMode::Semantic {
+        return Ok(Vec::new());
+    }
+    let sidecar = ChunkSidecarScan {
+        repo_id: scan.repo_id,
+        language: scan.language,
+        chunk_type: scan.chunk_type,
+        exact_pattern: scan.exact_pattern,
+        candidate_limit: scan.candidate_limit,
+        distinctive: &distinctive_terms(scan.query),
+        read_owner_ids: scan.read_owner_ids,
+    };
+    let gin = scan_chunk_sidecar(pool.pool(), scan.query, &sidecar).await?;
+    // The substring arm is DECLARED, not blanket. A schema whose contract
+    // says `SubstringArm::Off` contributes no statement and no rows; the
+    // price for stopword-only and partial-word queries is then paid per
+    // declaration, visibly, instead of being a mechanism nobody can turn
+    // off.
+    if gin.is_empty() && chunk_substring_arm_is_declared() {
+        scan_chunk_sidecar_like(pool.pool(), scan.query, &sidecar).await
+    } else {
+        Ok(gin)
+    }
+}
+
+/// The semantic arm draws on the same candidate budget as the lexical one
+/// and applies the same structural filters — pushed into the neighbour scan
+/// rather than applied to its output, because a search scoped to one
+/// repository would otherwise spend its whole budget on whichever repository
+/// is largest and come back empty.
+async fn scan_semantic_candidates(
+    ctx: &ToolCtx,
+    pool: &crate::CodeFlavorStore,
+    scan: &ChunkCandidateScan<'_>,
+) -> Result<Vec<CodeChunkVectorCandidate>, ToolError> {
+    let Some((embedding, model_id)) = scan.query_embedding else {
+        return Ok(Vec::new());
+    };
+    pool.nearest_code_chunk_candidates(
+        ctx.owner(),
+        model_id,
+        embedding,
+        CodeChunkVectorFilters {
+            repo_id: scan.repo_id,
+            language: scan.language,
+            chunk_type: scan.chunk_type,
+        },
+        usize::try_from(scan.candidate_limit).unwrap_or(0),
+    )
+    .await
+}
+
+/// One page of admitted candidates, with the truncation signal and the
+/// cursor that resumes past it.
+struct ChunkPage {
+    eligible: Vec<(MemoryId, CodeChunkV1, MatchScores)>,
+    has_more: bool,
+    next_cursor: Option<String>,
+}
+
+/// Drop absent files and anything an earlier page already returned, cut the
+/// page to `page_len`, and mint the resume token when more remain.
+fn select_chunk_page(
+    rows: Vec<(MemoryId, CodeChunkV1)>,
+    score_by_id: &HashMap<Uuid, MatchScores>,
+    after: Option<ChunkCursorPos>,
+    page_len: usize,
+    fingerprint: &str,
+    seen: u32,
+) -> ChunkPage {
+    let mut eligible = Vec::new();
+    for (memory_id, payload) in rows {
+        if payload.state != FileState::Present {
+            continue;
+        }
+        let raw_id = memory_id.into_inner();
+        let scores = score_by_id.get(&raw_id).copied().unwrap_or_default();
+        if after.is_some_and(|pos| !ranks_after_chunk_cursor(scores, pos)) {
+            continue;
+        }
+        eligible.push((memory_id, payload, scores));
+    }
+    let has_more = eligible.len() > page_len;
+    eligible.truncate(page_len);
+    let next_cursor = (has_more && !eligible.is_empty()).then(|| {
+        let (_, _, scores) = eligible.last().expect("non-empty page");
+        CHUNK_CURSOR.encode(
+            fingerprint,
+            &ChunkCursorPos {
+                score_bits: scores.score.to_bits(),
+                memory_id: scores.memory_id,
+                seen: seen.saturating_add(u32::try_from(eligible.len()).unwrap_or(u32::MAX)),
+            },
+        )
+    });
+    ChunkPage {
+        eligible,
+        has_more,
+        next_cursor,
+    }
+}
+
+/// Render the page into wire matches, and collect the same page's row ids
+/// for the call-neighbour phase.
+fn render_chunk_matches(
+    ctx: &ToolCtx,
+    query: &str,
+    snippet_max_chars: usize,
+    eligible: Vec<(MemoryId, CodeChunkV1, MatchScores)>,
+) -> Result<(Vec<ChunkMatch>, Vec<Uuid>), ToolError> {
+    let mut matches = Vec::with_capacity(eligible.len());
+    let mut chunk_ids = Vec::with_capacity(eligible.len());
+    for (memory_id, payload, scores) in eligible {
+        chunk_ids.push(memory_id.into_inner());
+        let (match_kind, matched_line, matched_excerpt) = match_metadata(
+            query,
+            &payload.file_path,
+            &payload.text,
+            payload.line_range_start,
+        );
+        matches.push(ChunkMatch {
+            handle: ctx.format_abstraction_memory(memory_id),
+            repo_handle: ctx.format_flavor_object(
+                super::REPO_HANDLE_KIND,
+                payload.repo_id,
+                super::REPO_HANDLE_PREFIX,
+            ),
+            file_path: payload.file_path,
+            chunk_index: i32::try_from(payload.chunk_index)
+                .map_err(|_| ToolError::Other("chunk_index exceeds i32".into()))?,
+            language: payload.language,
+            chunk_type: payload.chunk_type,
+            line_range: (
+                i64::from(payload.line_range_start),
+                i64::from(payload.line_range_end),
+            ),
+            byte_range: (
+                i64::from(payload.byte_range_start),
+                i64::from(payload.byte_range_end),
+            ),
+            snippet: payload.text.chars().take(snippet_max_chars).collect(),
+            snippet_truncated: payload.text.chars().count() > snippet_max_chars,
+            match_kind,
+            matched_line,
+            matched_excerpt,
+            score: scores.score,
+            lexical_score: scores.lexical_score,
+            similarity_score: scores.similarity_score,
+        });
+    }
+    Ok((matches, chunk_ids))
 }
 
 /// The per-chunk scores a search ranked by, in one place so the ordering
