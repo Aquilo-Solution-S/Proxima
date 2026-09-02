@@ -557,14 +557,23 @@ pub(crate) fn resolve_intra_file_calls(calls: &[ExtractedCall], file_chunks: &mu
 /// Both endpoints of every call, in call order — `None` where the call has
 /// no caller chunk or names nothing this file defines.
 ///
-/// Caller: the chunk containing the call whose byte-range start is largest,
-/// found by binary search over the chunks ordered by start rather than by
-/// scanning them all. The sort is stable, so an equal-start run keeps slice
-/// order and `partition_point` lands on that run's *last* member — the same
-/// chunk the earlier `max_by_key` returned, which is what the chunker's
-/// fallback path (every window carrying the whole blob as its range) depends
-/// on. Chunk spans do not nest on the AST path, so the containment check on
-/// the one candidate is the whole test.
+/// Caller: among the chunks containing the call, the one whose byte-range
+/// start is largest. `partition_point` skips straight past every chunk that
+/// starts after the call, then the search walks backwards until a chunk also
+/// ends at or after the call — decreasing start order, so the first hit is
+/// the largest-start container, and no containing chunk is ever missed
+/// because a nearer non-containing one sat in front of it.
+///
+/// The sort is stable, so an equal-start run keeps slice order and the
+/// backwards walk enters it from its *last* member. Both halves of the old
+/// rule therefore survive: the enclosing chunk wins when spans nest, and the
+/// last of an equal-start run wins when they coincide — which is what the
+/// chunker's fallback path (every window carrying the whole blob as its
+/// range) depends on.
+///
+/// Cost: on the AST path spans are disjoint and ascending, so the walk stops
+/// on its first candidate and this is one comparison. Only genuinely nested
+/// or non-containing spans pay for more.
 ///
 /// Callee: the first chunk in slice order declaring the name, which is what
 /// the earlier linear `find` answered.
@@ -598,10 +607,11 @@ fn resolve_call_endpoints(
         .iter()
         .map(|call| {
             let above = by_start.partition_point(|&(start, ..)| start <= call.byte_start);
-            let &(_, end, caller_index) = by_start.get(above.checked_sub(1)?)?;
-            if end < call.byte_end {
-                return None;
-            }
+            let &(_, _, caller_index) = by_start
+                .get(..above)?
+                .iter()
+                .rev()
+                .find(|&&(_, end, _)| end >= call.byte_end)?;
             let callee = *callee_by_name.get(call.callee_name.as_str())?;
             // A chunk that calls itself is not a connection between two
             // things, and the index refuses the row outright.
@@ -751,6 +761,30 @@ mod resolve_tests {
         let mut chunks = vec![chunk(1, 0, 100, &["callee"]), chunk(2, 10, 20, &[])];
         resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
         assert_eq!(recorded(&chunks), vec![(1, 1, vec![12])]);
+    }
+
+    /// The inner chunk is the nearest candidate by start, but it does not
+    /// hold the whole call. Attribution falls back to the enclosing chunk
+    /// that does, rather than dropping the call.
+    #[test]
+    fn nested_chunks_fall_back_to_the_enclosing_chunk() {
+        let mut chunks = vec![chunk(1, 0, 100, &[]), chunk(2, 10, 20, &["callee"])];
+        resolve_intra_file_calls(&[call(12, 30, "callee")], &mut chunks);
+        assert_eq!(recorded(&chunks), vec![(0, 2, vec![12])]);
+    }
+
+    /// Three levels deep: the innermost is too small and the outermost is
+    /// not the nearest, so the caller is the middle chunk — the containing
+    /// chunk with the largest start, not simply the nearest or the widest.
+    #[test]
+    fn nested_chunks_resolve_to_the_innermost_containing_level() {
+        let mut chunks = vec![
+            chunk(1, 0, 100, &["callee"]),
+            chunk(2, 10, 60, &[]),
+            chunk(3, 20, 30, &[]),
+        ];
+        resolve_intra_file_calls(&[call(22, 50, "callee")], &mut chunks);
+        assert_eq!(recorded(&chunks), vec![(1, 1, vec![22])]);
     }
 
     /// Adjacent chunks share the boundary byte; a call starting exactly on
