@@ -1599,20 +1599,67 @@ async fn schema_markers_reject_every_reference_integrity_trigger_when_disabled()
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
         let pool = pg.pool_for_tests();
+        // Third field: the exact marker text the trigger-wiring group reports
+        // for that trigger. Anything looser lets one trigger's break pass
+        // while another trigger's marker is the one that actually fired.
         let triggers = [
-            ("memory", "memory_pin_checks"),
-            ("erased_pin_target", "erased_pin_target_insert_guard"),
-            ("erased_pin_target", "erased_pin_target_append_only"),
-            ("cooled", "cooled_forget_grounding"),
-            ("cooled", "cooled_identity_seal"),
-            ("cooled", "cooled_append_only"),
-            ("goal", "goal_pin_target_checks"),
-            ("wake_config", "wake_pin_target_checks"),
-            ("memory", "memory_erased_pin_target"),
-            ("cooled", "cooled_erased_pin_target"),
-            ("goal", "goal_erased_pin_target"),
+            (
+                "memory",
+                "memory_pin_checks",
+                "memory_pin_checks trigger must be enabled BEFORE INSERT and wired to its function",
+            ),
+            (
+                "erased_pin_target",
+                "erased_pin_target_insert_guard",
+                "erased_pin_target insert guard timing or wiring is incorrect",
+            ),
+            (
+                "erased_pin_target",
+                "erased_pin_target_append_only",
+                "erased_pin_target append-only trigger timing or wiring is incorrect",
+            ),
+            (
+                "cooled",
+                "cooled_forget_grounding",
+                "cooled forget-grounding trigger timing or wiring is incorrect",
+            ),
+            (
+                "cooled",
+                "cooled_identity_seal",
+                "cooled identity-seal trigger timing or wiring is incorrect",
+            ),
+            (
+                "cooled",
+                "cooled_append_only",
+                "cooled append-only trigger timing or wiring is incorrect",
+            ),
+            (
+                "goal",
+                "goal_pin_target_checks",
+                "goal target trigger timing or wiring is incorrect",
+            ),
+            (
+                "wake_config",
+                "wake_pin_target_checks",
+                "wake target trigger timing or wiring is incorrect",
+            ),
+            (
+                "memory",
+                "memory_erased_pin_target",
+                "memory witness trigger timing or wiring is incorrect",
+            ),
+            (
+                "cooled",
+                "cooled_erased_pin_target",
+                "cooled witness trigger timing or wiring is incorrect",
+            ),
+            (
+                "goal",
+                "goal_erased_pin_target",
+                "goal witness trigger timing or wiring is incorrect",
+            ),
         ];
-        for (table, trigger) in triggers {
+        for (table, trigger, marker) in triggers {
             // SQL-POLICY: fixed-fragment — both interpolations come only from
             // the closed literal trigger tuple matrix immediately above.
             sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -1624,10 +1671,8 @@ async fn schema_markers_reject_every_reference_integrity_trigger_when_disabled()
                 .await
                 .expect_err("a disabled reference-integrity trigger must fail the marker probe");
             assert!(
-                err.to_string().contains(table)
-                    || err.to_string().contains("trigger")
-                    || err.to_string().contains("marker"),
-                "marker error for {table}.{trigger} should identify the trigger: {err}"
+                err.to_string().contains(marker),
+                "marker error for {table}.{trigger} must be {marker:?}: {err}"
             );
             // SQL-POLICY: fixed-fragment — the same closed literal tuple
             // matrix supplies the identifiers; no external input is used.
@@ -1643,6 +1688,91 @@ async fn schema_markers_reject_every_reference_integrity_trigger_when_disabled()
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("reference-integrity trigger marker test failed");
+}
+
+/// Assert the marker probe names `relation` as missing rather than aborting
+/// on a later group's `regclass` cast.
+async fn assert_missing_relation_marker(pool: &sqlx::PgPool, relation: &str) {
+    let err = ensure_core_schema_markers(pool)
+        .await
+        .expect_err("a relation a marker group casts must fail the probe when absent");
+    let marker = format!("missing relation {relation}");
+    assert!(
+        err.to_string().contains(&marker),
+        "marker error for a missing {relation} must be {marker:?}: {err}"
+    );
+    assert!(
+        !err.to_string().contains("does not exist"),
+        "a missing {relation} must surface as a marker message, not as a raw Postgres \
+         planner error from a later group's regclass cast: {err}"
+    );
+}
+
+/// Every relation a marker group reaches with a `'<relation>'::regclass` cast
+/// must be proved present by a group that runs *earlier*. Postgres
+/// constant-folds such a cast while planning the statement, so an absent
+/// relation aborts the whole `CASE` with a raw planner error even when an
+/// earlier `WHEN` arm of the same group would have matched — a presence leaf
+/// added to the casting group itself would never run. Hiding each cast
+/// relation in turn pins both the presence leaves and the group call order in
+/// `ensure_core_schema_markers` that makes them reachable.
+///
+/// Renaming rather than dropping hides the relation from `to_regclass` and
+/// from `information_schema` exactly as an unapplied migration would, and
+/// leaves its columns, constraints and triggers intact for the repair.
+#[tokio::test]
+async fn schema_markers_name_a_missing_relation_before_any_group_casts_it() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        ensure_core_schema_markers(pool).await?;
+
+        // Cast by GOAL_REPLAY_DECLARATION_MARKERS as the foreign-key target.
+        sqlx::query("ALTER TABLE proxima_core.goal RENAME TO goal_marker_probe")
+            .execute(pool)
+            .await?;
+        assert_missing_relation_marker(pool, "proxima_core.goal").await;
+        sqlx::query("ALTER TABLE proxima_core.goal_marker_probe RENAME TO goal")
+            .execute(pool)
+            .await?;
+        ensure_core_schema_markers(pool).await?;
+
+        // Cast by GOAL_REPLAY_DECLARATION_MARKERS for its own constraints.
+        sqlx::query(
+            "ALTER TABLE proxima_core.goal_replay_declaration
+             RENAME TO goal_replay_declaration_marker_probe",
+        )
+        .execute(pool)
+        .await?;
+        assert_missing_relation_marker(pool, "proxima_core.goal_replay_declaration").await;
+        sqlx::query(
+            "ALTER TABLE proxima_core.goal_replay_declaration_marker_probe
+             RENAME TO goal_replay_declaration",
+        )
+        .execute(pool)
+        .await?;
+        ensure_core_schema_markers(pool).await?;
+
+        // Cast by BLOB_UPLOAD_HASH_MARKERS for its content-hash check.
+        sqlx::query("ALTER TABLE proxima_core.blob_uploads RENAME TO blob_uploads_marker_probe")
+            .execute(pool)
+            .await?;
+        assert_missing_relation_marker(pool, "proxima_core.blob_uploads").await;
+        sqlx::query("ALTER TABLE proxima_core.blob_uploads_marker_probe RENAME TO blob_uploads")
+            .execute(pool)
+            .await?;
+        ensure_core_schema_markers(pool).await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("cast-relation marker ordering test failed");
 }
 
 /// Function names alone are insufficient boot markers: a replaced function
