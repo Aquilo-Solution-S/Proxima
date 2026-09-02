@@ -1,10 +1,5 @@
 //! Generic read-side consolidation helpers.
 
-// The sites are `sqlx::query_as` row tuples read straight into a destructuring
-// `let`. Naming them would put a type alias between the SELECT list and the
-// binding that mirrors it, which is where the drift would start.
-#![allow(clippy::type_complexity)]
-
 mod events;
 mod memories;
 
