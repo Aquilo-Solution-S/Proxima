@@ -278,47 +278,13 @@ async fn resolve_derived_content_id(
     ))
 }
 
-/// Append one Derived row, optional typed sidecar, and one change event.
+/// Append one Derived row, optional typed sidecar, and one change event,
+/// resolving typed Content from the admission's payloads after the complete
+/// lifecycle target set is held.
 ///
 /// # Errors
 ///
 /// Returns storage constraint/internal errors from Postgres.
-#[cfg(test)]
-pub(crate) async fn append_derived_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    permit: &OwnerWritePermit,
-    draft: &DerivedDraft<'_>,
-    origins: &[EdgeEndpoint],
-    references: &[EdgeEndpoint],
-    sidecar_tables: &[String],
-    content_id: Option<uuid::Uuid>,
-    sidecar: impl for<'t> FnOnce(
-        &'t mut Transaction<'_, Postgres>,
-        &'t DerivedOutcome,
-    ) -> PgSidecarFuture<'t>,
-) -> Result<DerivedOutcome, StorageError> {
-    append_derived_with_content_payloads_in_tx(
-        tx,
-        permit,
-        draft,
-        DerivedAdmissionInput {
-            origins,
-            references,
-            sidecar_tables,
-            scopes: &[],
-            content: ContentResolution {
-                content_id,
-                payloads: None,
-            },
-        },
-        sidecar,
-    )
-    .await
-}
-
-/// Append a derived row while resolving typed Content from its sidecar after
-/// the complete lifecycle target set is held. The ordinary entry point above
-/// remains available for callers that use text-derived Content.
 pub(crate) async fn append_derived_with_content_payloads_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     permit: &OwnerWritePermit,
