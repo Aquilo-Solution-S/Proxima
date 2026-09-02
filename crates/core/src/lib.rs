@@ -92,7 +92,7 @@ pub use tool::*;
 
 pub use verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
-    FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
+    CitationAttachmentRequest, FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
 };
 pub use verbs::goal_write::{
     GoalAssignmentTarget, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite,

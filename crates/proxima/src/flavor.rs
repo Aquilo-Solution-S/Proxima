@@ -70,8 +70,9 @@ pub use proxima_core::storage_ports::{
 /// slice; without these names an out-of-tree flavor can only spell
 /// `CitationSpec` (opaque hash) or take `proxima-core`.
 pub use proxima_core::verbs::fact_ingest::{
-    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, CitationSpec, FactIngestOutcome,
-    FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, CitationAttachmentRequest,
+    CitationSpec, FactIngestOutcome, FactWriteCommand, InlineCitationMappingDraft,
+    InlineCitedObjectDraft,
 };
 pub use proxima_core::verbs::query::{
     GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, hybrid_degraded_to_lexical,
