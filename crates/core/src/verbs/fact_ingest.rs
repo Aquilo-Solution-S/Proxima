@@ -6,7 +6,6 @@
 
 use uuid::Uuid;
 
-#[cfg(any(test, feature = "test-fixtures"))]
 use crate::EntityKind;
 use crate::edge::EdgeEndpoint;
 use crate::engine::MemoryPermit;
@@ -110,6 +109,21 @@ pub struct InlineCitationMappingDraft {
     pub payload_bytes: Vec<u8>,
 }
 
+/// What a citation attachment asks for: which memory it attaches to, the
+/// kind the caller declares that memory is, and the two typed payloads.
+///
+/// A request, not a witness — it carries no permit and proves nothing. The
+/// authorization triple (`authz`, `relation`, `requested_owner`) stays
+/// outside it, because that is what the engine checks and this is what it
+/// checks the request against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitationAttachmentRequest {
+    pub memory_id: MemoryId,
+    pub memory_kind: EntityKind,
+    pub cited_object: InlineCitedObjectDraft,
+    pub mapping: InlineCitationMappingDraft,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FactReceiptDraft {
     pub source_id: SourceId,
@@ -180,17 +194,73 @@ pub struct FactWriteCommand {
     pub kind: String,
 }
 
+/// The five values every authorized Fact witness carries: the mint gate,
+/// the owner-stamped command, the Fact's sidecar contract, and the index
+/// rows storage must assert alongside the Fact row.
+///
+/// `pub(crate)`, and no `pub` accessor hands one out. A witness that could
+/// yield its core would let a citing write be routed through the plain-Fact
+/// persistence path, which drops the citation; a witness reveals its core's
+/// values one getter at a time instead.
+#[derive(Debug)]
+pub(crate) struct AuthorizedFactCore {
+    permit: MemoryPermit,
+    draft: FactWriteCommand,
+    fact_sidecar_table: Option<String>,
+    fact_natural_key_columns: Vec<String>,
+    links: AuthorizedNodeLinks,
+}
+
+impl AuthorizedFactCore {
+    pub(crate) fn new(
+        permit: MemoryPermit,
+        draft: FactWriteCommand,
+        fact_sidecar_table: Option<String>,
+        fact_natural_key_columns: Vec<String>,
+        links: AuthorizedNodeLinks,
+    ) -> Self {
+        Self {
+            permit,
+            draft,
+            fact_sidecar_table,
+            fact_natural_key_columns,
+            links,
+        }
+    }
+
+    pub(crate) const fn links(&self) -> &AuthorizedNodeLinks {
+        &self.links
+    }
+
+    pub(crate) const fn permit(&self) -> &MemoryPermit {
+        &self.permit
+    }
+
+    pub(crate) const fn draft(&self) -> &FactWriteCommand {
+        &self.draft
+    }
+
+    pub(crate) fn fact_sidecar_table(&self) -> Option<&str> {
+        self.fact_sidecar_table.as_deref()
+    }
+
+    pub(crate) fn fact_natural_key_columns(&self) -> &[String] {
+        &self.fact_natural_key_columns
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expire_delegated_write_for_test(&mut self) {
+        self.permit.expire_delegated_write_for_test();
+    }
+}
+
 /// Proof that a Fact write passed authorization + schema validation
 /// and had its owner stamped from the authz context.
 /// The only constructor is `Engine::authorize_fact_ingest`, so a
 /// caller cannot reach the sidecar-ingest primitive below the gate.
 #[derive(Debug)]
 pub struct AuthorizedFactWrite {
-    permit: MemoryPermit,
-    draft: FactWriteCommand,
-    fact_sidecar_table: Option<String>,
-    fact_natural_key_columns: Vec<String>,
-    links: AuthorizedNodeLinks,
+    core: AuthorizedFactCore,
 }
 
 /// The index rows a node write is admitted to assert, resolved and
@@ -316,7 +386,7 @@ impl AuthorizedFactWrite {
         fact_natural_key_columns: Vec<String>,
         links: AuthorizedNodeLinks,
     ) -> Self {
-        Self::new(
+        Self::new(AuthorizedFactCore::new(
             crate::engine::MemoryPermit::owner_scoped_with_write_for_tests(
                 owner_write,
                 crate::access::Relation::Editor,
@@ -325,35 +395,23 @@ impl AuthorizedFactWrite {
             fact_sidecar_table,
             fact_natural_key_columns,
             links,
-        )
+        ))
     }
 
-    pub(crate) fn new(
-        permit: MemoryPermit,
-        draft: FactWriteCommand,
-        fact_sidecar_table: Option<String>,
-        fact_natural_key_columns: Vec<String>,
-        links: AuthorizedNodeLinks,
-    ) -> Self {
-        Self {
-            permit,
-            draft,
-            fact_sidecar_table,
-            fact_natural_key_columns,
-            links,
-        }
+    pub(crate) const fn new(core: AuthorizedFactCore) -> Self {
+        Self { core }
     }
 
     /// Index rows storage must assert alongside the Fact row, in the
     /// same transaction.
     #[must_use]
-    pub fn links(&self) -> &AuthorizedNodeLinks {
-        &self.links
+    pub const fn links(&self) -> &AuthorizedNodeLinks {
+        self.core.links()
     }
 
     #[must_use]
-    pub fn permit(&self) -> &MemoryPermit {
-        &self.permit
+    pub const fn permit(&self) -> &MemoryPermit {
+        self.core.permit()
     }
 
     /// # Panics
@@ -362,29 +420,30 @@ impl AuthorizedFactWrite {
     /// engine fact-ingest authorization path.
     #[must_use]
     pub fn owner_write_permit(&self) -> &OwnerWritePermit {
-        self.permit
+        self.core
+            .permit()
             .owner_write_permit()
             .expect("AuthorizedFactWrite is constructed from a write permit")
     }
 
     #[must_use]
-    pub fn draft(&self) -> &FactWriteCommand {
-        &self.draft
+    pub const fn draft(&self) -> &FactWriteCommand {
+        self.core.draft()
     }
 
     #[must_use]
     pub fn fact_sidecar_table(&self) -> Option<&str> {
-        self.fact_sidecar_table.as_deref()
+        self.core.fact_sidecar_table()
     }
 
     #[must_use]
     pub fn fact_natural_key_columns(&self) -> &[String] {
-        &self.fact_natural_key_columns
+        self.core.fact_natural_key_columns()
     }
 
     #[cfg(test)]
     pub(crate) fn expire_delegated_write_for_test(&mut self) {
-        self.permit.expire_delegated_write_for_test();
+        self.core.expire_delegated_write_for_test();
     }
 }
 
@@ -550,45 +609,33 @@ impl AuthorizedCitationAttachment {
 /// mapping target validation.
 #[derive(Debug)]
 pub struct AuthorizedFactWithCitation {
-    permit: MemoryPermit,
-    draft: FactWriteCommand,
+    core: AuthorizedFactCore,
     cited_object: AuthorizedInlineCitedObject,
     mapping: AuthorizedInlineCitationMapping,
-    fact_sidecar_table: Option<String>,
-    fact_natural_key_columns: Vec<String>,
-    links: AuthorizedNodeLinks,
 }
 
 impl AuthorizedFactWithCitation {
-    pub(crate) fn new(
-        permit: MemoryPermit,
-        draft: FactWriteCommand,
+    pub(crate) const fn new(
+        core: AuthorizedFactCore,
         cited_object: AuthorizedInlineCitedObject,
         mapping: AuthorizedInlineCitationMapping,
-        fact_sidecar_table: Option<String>,
-        fact_natural_key_columns: Vec<String>,
-        links: AuthorizedNodeLinks,
     ) -> Self {
         Self {
-            permit,
-            draft,
+            core,
             cited_object,
             mapping,
-            fact_sidecar_table,
-            fact_natural_key_columns,
-            links,
         }
     }
 
     /// Index rows storage must assert alongside the Fact row.
     #[must_use]
-    pub fn links(&self) -> &AuthorizedNodeLinks {
-        &self.links
+    pub const fn links(&self) -> &AuthorizedNodeLinks {
+        self.core.links()
     }
 
     #[must_use]
-    pub fn permit(&self) -> &MemoryPermit {
-        &self.permit
+    pub const fn permit(&self) -> &MemoryPermit {
+        self.core.permit()
     }
 
     /// # Panics
@@ -597,14 +644,15 @@ impl AuthorizedFactWithCitation {
     /// engine fact-with-citation authorization path.
     #[must_use]
     pub fn owner_write_permit(&self) -> &OwnerWritePermit {
-        self.permit
+        self.core
+            .permit()
             .owner_write_permit()
             .expect("AuthorizedFactWithCitation is constructed from a write permit")
     }
 
     #[must_use]
-    pub fn draft(&self) -> &FactWriteCommand {
-        &self.draft
+    pub const fn draft(&self) -> &FactWriteCommand {
+        self.core.draft()
     }
 
     #[must_use]
@@ -619,12 +667,12 @@ impl AuthorizedFactWithCitation {
 
     #[must_use]
     pub fn fact_sidecar_table(&self) -> Option<&str> {
-        self.fact_sidecar_table.as_deref()
+        self.core.fact_sidecar_table()
     }
 
     #[must_use]
     pub fn fact_natural_key_columns(&self) -> &[String] {
-        &self.fact_natural_key_columns
+        self.core.fact_natural_key_columns()
     }
 }
 
@@ -641,49 +689,36 @@ impl AuthorizedFactWithCitation {
 /// replay short-circuits before any citation row is written.
 #[derive(Debug)]
 pub struct AuthorizedFactWithCitationRef {
-    permit: MemoryPermit,
-    draft: FactWriteCommand,
+    core: AuthorizedFactCore,
     cited_object_id: Uuid,
     expected_object_schema: SchemaId,
     mapping: AuthorizedInlineCitationMapping,
-    fact_sidecar_table: Option<String>,
-    fact_natural_key_columns: Vec<String>,
-    links: AuthorizedNodeLinks,
 }
 
 impl AuthorizedFactWithCitationRef {
-    #[allow(clippy::too_many_arguments)] // one parameter per authorized fact
-    pub(crate) fn new(
-        permit: MemoryPermit,
-        draft: FactWriteCommand,
+    pub(crate) const fn new(
+        core: AuthorizedFactCore,
         cited_object_id: Uuid,
         expected_object_schema: SchemaId,
         mapping: AuthorizedInlineCitationMapping,
-        fact_sidecar_table: Option<String>,
-        fact_natural_key_columns: Vec<String>,
-        links: AuthorizedNodeLinks,
     ) -> Self {
         Self {
-            permit,
-            draft,
+            core,
             cited_object_id,
             expected_object_schema,
             mapping,
-            fact_sidecar_table,
-            fact_natural_key_columns,
-            links,
         }
     }
 
     /// Index rows storage must assert alongside the Fact row.
     #[must_use]
-    pub fn links(&self) -> &AuthorizedNodeLinks {
-        &self.links
+    pub const fn links(&self) -> &AuthorizedNodeLinks {
+        self.core.links()
     }
 
     #[must_use]
-    pub fn permit(&self) -> &MemoryPermit {
-        &self.permit
+    pub const fn permit(&self) -> &MemoryPermit {
+        self.core.permit()
     }
 
     /// # Panics
@@ -692,14 +727,15 @@ impl AuthorizedFactWithCitationRef {
     /// engine by-ref fact-with-citation authorization path.
     #[must_use]
     pub fn owner_write_permit(&self) -> &OwnerWritePermit {
-        self.permit
+        self.core
+            .permit()
             .owner_write_permit()
             .expect("AuthorizedFactWithCitationRef is constructed from a write permit")
     }
 
     #[must_use]
-    pub fn draft(&self) -> &FactWriteCommand {
-        &self.draft
+    pub const fn draft(&self) -> &FactWriteCommand {
+        self.core.draft()
     }
 
     #[must_use]
@@ -721,12 +757,12 @@ impl AuthorizedFactWithCitationRef {
 
     #[must_use]
     pub fn fact_sidecar_table(&self) -> Option<&str> {
-        self.fact_sidecar_table.as_deref()
+        self.core.fact_sidecar_table()
     }
 
     #[must_use]
     pub fn fact_natural_key_columns(&self) -> &[String] {
-        &self.fact_natural_key_columns
+        self.core.fact_natural_key_columns()
     }
 }
 

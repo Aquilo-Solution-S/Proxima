@@ -228,17 +228,16 @@ async fn load_work_item(ctx: &ToolCtx, memory_id: MemoryId) -> Result<WorkItemRo
     let pool = code_store(ctx)?;
     let engine = super::engine(ctx)?;
     let candidates = [memory_id.into_inner()];
-    if let Some((_, row)) = pool
-        .authorized_fact_payloads::<ExecutionRequestV1>(
-            &engine,
-            ctx.authz(),
-            ctx.owner(),
-            &candidates,
-            1,
-        )
-        .await?
-        .into_iter()
-        .next()
+    if let Some((_, row)) = proxima::flavor::authorized_fact_payloads::<ExecutionRequestV1>(
+        &engine,
+        ctx.authz(),
+        ctx.owner(),
+        &candidates,
+        1,
+    )
+    .await?
+    .into_iter()
+    .next()
     {
         let repo_id = row.repo_id;
         return Ok(WorkItemRow {
@@ -252,17 +251,16 @@ async fn load_work_item(ctx: &ToolCtx, memory_id: MemoryId) -> Result<WorkItemRo
             },
         });
     }
-    if let Some((_, row)) = pool
-        .authorized_fact_payloads::<TestRequestV1>(
-            &engine,
-            ctx.authz(),
-            ctx.owner(),
-            &candidates,
-            1,
-        )
-        .await?
-        .into_iter()
-        .next()
+    if let Some((_, row)) = proxima::flavor::authorized_fact_payloads::<TestRequestV1>(
+        &engine,
+        ctx.authz(),
+        ctx.owner(),
+        &candidates,
+        1,
+    )
+    .await?
+    .into_iter()
+    .next()
     {
         let repo_id = row.repo_id;
         let criteria = pool.test_requested_criteria(memory_id.into_inner()).await?;
@@ -333,17 +331,16 @@ async fn load_criteria(
         .iter()
         .map(|group| group.memory_id.into_inner())
         .collect();
-    let visible = pool
-        .authorized_memory_ids(
-            &engine,
-            ctx.authz(),
-            ctx.owner(),
-            &candidate_ts,
-            EntityKind::Fact,
-            Some(AcceptanceCriteriaV1::schema_id()),
-            candidate_ts.len(),
-        )
-        .await?;
+    let visible = proxima::flavor::authorized_memory_ids(
+        &engine,
+        ctx.authz(),
+        ctx.owner(),
+        &candidate_ts,
+        EntityKind::Fact,
+        Some(AcceptanceCriteriaV1::schema_id()),
+        candidate_ts.len(),
+    )
+    .await?;
     Ok(groups
         .into_iter()
         .filter(|group| visible.contains(&group.memory_id))
@@ -423,7 +420,6 @@ async fn load_work_item_neighbours(
         .iter()
         .map(|id| (*id).into_inner())
         .collect::<Vec<_>>();
-    let pool = code_store(ctx)?;
     let engine = super::engine(ctx)?;
     let mut out = Vec::new();
     for schema_id in [
@@ -431,7 +427,7 @@ async fn load_work_item_neighbours(
         <TestRequestV1 as FactPayload>::schema_id(),
     ] {
         out.extend(
-            pool.authorized_memory_ids(
+            proxima::flavor::authorized_memory_ids(
                 &engine,
                 ctx.authz(),
                 ctx.owner(),
@@ -464,20 +460,19 @@ async fn load_target_perspectives(
     }
     let pool = code_store(ctx)?;
     let engine = super::engine(ctx)?;
-    let assignments = pool
-        .authorized_memory_ids(
-            &engine,
-            ctx.authz(),
-            ctx.owner(),
-            &candidates
-                .into_iter()
-                .map(MemoryId::into_inner)
-                .collect::<Vec<_>>(),
-            EntityKind::Perspective,
-            Some(<CodeWorkAssignmentV1 as PerspectivePayload>::schema_id()),
-            500,
-        )
-        .await?;
+    let assignments = proxima::flavor::authorized_memory_ids(
+        &engine,
+        ctx.authz(),
+        ctx.owner(),
+        &candidates
+            .into_iter()
+            .map(MemoryId::into_inner)
+            .collect::<Vec<_>>(),
+        EntityKind::Perspective,
+        Some(<CodeWorkAssignmentV1 as PerspectivePayload>::schema_id()),
+        500,
+    )
+    .await?;
     if assignments.is_empty() {
         return Ok(Vec::new());
     }
@@ -496,7 +491,7 @@ async fn load_target_perspectives(
     .fetch_all(pool.pool())
     .await
     .map_err(map_storage)?;
-    pool.authorized_memory_ids(
+    proxima::flavor::authorized_memory_ids(
         &engine,
         ctx.authz(),
         ctx.owner(),
@@ -515,9 +510,8 @@ async fn load_plan_sources(ctx: &ToolCtx, memory_id: MemoryId) -> Result<Vec<Mem
     let candidates =
         load_memory_edge_targets(ctx, memory_id, EdgeKind::Reference, EdgeDirection::Incoming)
             .await?;
-    let pool = code_store(ctx)?;
     let engine = super::engine(ctx)?;
-    pool.authorized_memory_ids(
+    proxima::flavor::authorized_memory_ids(
         &engine,
         ctx.authz(),
         ctx.owner(),

@@ -1052,6 +1052,20 @@ fn flavor_sdk_names_query_and_ingest_types() {
         schema_version: proxima::flavor::SchemaVersion::new(1),
         payload_bytes: Vec::new(),
     };
+    let _attachment = proxima::flavor::CitationAttachmentRequest {
+        memory_id: proxima::MemoryId::new(uuid::Uuid::nil()),
+        memory_kind: proxima::EntityKind::Fact,
+        cited_object: proxima::flavor::InlineCitedObjectDraft {
+            schema_id: proxima::flavor::SchemaId::new("core/upload-v1".into()),
+            schema_version: proxima::flavor::SchemaVersion::new(1),
+            payload_bytes: Vec::new(),
+        },
+        mapping: proxima::flavor::InlineCitationMappingDraft {
+            schema_id: proxima::flavor::SchemaId::new("core/upload-whole-v1".into()),
+            schema_version: proxima::flavor::SchemaVersion::new(1),
+            payload_bytes: Vec::new(),
+        },
+    };
 }
 
 #[cfg(feature = "auth-oidc")]

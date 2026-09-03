@@ -14,7 +14,6 @@ use crate::{GroupId, SourceId, UserId};
 /// if its own rules say to. Core's contribution is that the inverse is
 /// COMPLETE and derivable from the declarations, which is the only part a
 /// host cannot write for itself.
-#[allow(clippy::too_many_arguments)]
 #[async_trait::async_trait]
 pub trait OwnerInversePort: Send + Sync {
     /// Erase every row an abandoned group owner owns.

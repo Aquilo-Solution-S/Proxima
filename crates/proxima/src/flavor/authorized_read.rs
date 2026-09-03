@@ -32,7 +32,6 @@ const MAX_AUTHZ_CANDIDATES: usize = 2_000;
 ///
 /// Returns whatever [`Engine::query`] returns for an unauthorized owner or
 /// storage failure.
-#[allow(clippy::too_many_arguments)]
 pub async fn authorized_memory_ids(
     engine: &Engine,
     authz: &AuthzContext,
@@ -42,7 +41,7 @@ pub async fn authorized_memory_ids(
     schema_id: Option<SchemaId>,
     limit: usize,
 ) -> Result<Vec<MemoryId>, ToolError> {
-    let candidates = bounded_candidates(candidates, limit);
+    let candidates = bounded_candidates(candidates);
     if candidates.is_empty() || limit == 0 {
         return Ok(Vec::new());
     }
@@ -96,7 +95,6 @@ where
         candidates,
         EntityKind::Fact,
         P::schema_id(),
-        SupersessionStatus::HeadsOnly,
         limit,
     )
     .await?;
@@ -133,7 +131,6 @@ where
         candidates,
         EntityKind::Abstraction,
         P::schema_id(),
-        SupersessionStatus::HeadsOnly,
         limit,
     )
     .await?;
@@ -168,7 +165,6 @@ pub async fn read_owner_ids(
         .collect())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn authorized_payloads(
     engine: &Engine,
     authz: &AuthzContext,
@@ -176,10 +172,9 @@ async fn authorized_payloads(
     candidates: &[uuid::Uuid],
     entity_kind: EntityKind,
     schema_id: SchemaId,
-    supersession: SupersessionStatus,
     limit: usize,
 ) -> Result<Vec<(MemoryId, SidecarPayload)>, ToolError> {
-    let candidates = bounded_candidates(candidates, limit);
+    let candidates = bounded_candidates(candidates);
     if candidates.is_empty() || limit == 0 {
         return Ok(Vec::new());
     }
@@ -187,7 +182,7 @@ async fn authorized_payloads(
     let mut req = QueryRequest::for_owner(owner);
     req.entity_kind = Some(entity_kind);
     req.schema_id = Some(schema_id);
-    req.supersession = supersession;
+    req.supersession = SupersessionStatus::HeadsOnly;
     req.limit = u32::try_from(candidates.len()).unwrap_or(u32::MAX);
     req.include_payloads = true;
     req.memory_ids = candidates.iter().copied().map(MemoryId::new).collect();
@@ -210,7 +205,7 @@ async fn authorized_payloads(
         .collect())
 }
 
-fn bounded_candidates(candidates: &[uuid::Uuid], _limit: usize) -> Vec<uuid::Uuid> {
+fn bounded_candidates(candidates: &[uuid::Uuid]) -> Vec<uuid::Uuid> {
     let cap = candidates.len().min(MAX_AUTHZ_CANDIDATES);
     let mut seen = HashSet::with_capacity(cap);
     candidates

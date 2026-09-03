@@ -129,10 +129,14 @@ impl WriteSession for PgWriteSession {
             &mut self.tx,
             authorized,
             embedding_model_id,
-            &tables,
-            None,
-            &content_payloads,
-            &scopes,
+            verbs::fact_ingest::FactAdmissionInput {
+                sidecar_tables: &tables,
+                scopes: &scopes,
+                content: verbs::fact_ingest::ContentResolution {
+                    content_id: None,
+                    payloads: Some(&content_payloads),
+                },
+            },
             move |tx, outcome| {
                 Box::pin(async move {
                     for payload in &payloads {

@@ -106,35 +106,6 @@ impl EmbeddingWritePort for PgStorage {
         tx.commit().await.map_err(crate::error::map_err)?;
         Ok(outcome)
     }
-
-    async fn upsert_fact_embedding(
-        &self,
-        owner: &Owner,
-        memory_id: MemoryId,
-        model_id: &str,
-        dim: usize,
-        vec: &[f32],
-        proof: proxima_core::storage_ports::EmbeddingWriteProof,
-    ) -> Result<(), StorageError> {
-        self.insert_fact_embedding(owner, memory_id, model_id, dim, vec, proof)
-            .await?;
-        Ok(())
-    }
-
-    async fn upsert_memory_embedding(
-        &self,
-        owner: &Owner,
-        entity_kind: proxima_core::EntityKind,
-        memory_id: MemoryId,
-        model_id: &str,
-        dim: usize,
-        vec: &[f32],
-        proof: proxima_core::storage_ports::EmbeddingWriteProof,
-    ) -> Result<(), StorageError> {
-        self.insert_memory_embedding(owner, entity_kind, memory_id, model_id, dim, vec, proof)
-            .await?;
-        Ok(())
-    }
 }
 
 #[async_trait::async_trait]

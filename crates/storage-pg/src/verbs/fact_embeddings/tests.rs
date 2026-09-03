@@ -295,10 +295,14 @@ mod pg_tests {
             &mut tx,
             &authorized,
             embedding_model_id,
-            &[AGENT_NOTE.to_owned()],
-            None,
-            &[],
-            &[],
+            crate::verbs::fact_ingest::FactAdmissionInput {
+                sidecar_tables: &[AGENT_NOTE.to_owned()],
+                scopes: &[],
+                content: crate::verbs::fact_ingest::ContentResolution {
+                    content_id: None,
+                    payloads: Some(&[]),
+                },
+            },
             move |tx, outcome| {
                 Box::pin(async move {
                     sqlx::query(

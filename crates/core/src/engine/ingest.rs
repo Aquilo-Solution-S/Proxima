@@ -11,10 +11,10 @@ use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::storage_ports::EmbeddingJobHandle;
 
 use crate::verbs::fact_ingest::{
-    AuthorizedCitationAttachment, AuthorizedFactWithCitation, AuthorizedFactWithCitationRef,
-    AuthorizedFactWrite, AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject,
-    AuthorizedNodeLinks, CitationSpec, FactIngestOutcome, FactWriteCommand,
-    InlineCitationMappingDraft, InlineCitedObjectDraft,
+    AuthorizedCitationAttachment, AuthorizedFactCore, AuthorizedFactWithCitation,
+    AuthorizedFactWithCitationRef, AuthorizedFactWrite, AuthorizedInlineCitationMapping,
+    AuthorizedInlineCitedObject, AuthorizedNodeLinks, CitationAttachmentRequest, CitationSpec,
+    FactIngestOutcome, FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
 use crate::verbs::persist_mcp_call::{
     MCP_CALL_CITATION_SCHEMA, MCP_CALL_IO_SCHEMA, MCP_CALL_SOURCE_ID, McpCallLogInput,
@@ -193,13 +193,13 @@ impl Engine {
                 session_visible_kinds,
             )
             .await?;
-        Ok(AuthorizedFactWrite::new(
+        Ok(AuthorizedFactWrite::new(AuthorizedFactCore::new(
             permit.into(),
             draft,
             fact_sidecar_table,
             fact_natural_key_columns,
             links,
-        ))
+        )))
     }
 
     /// Authorize + schema-validate + owner-stamp a Fact with typed
@@ -242,13 +242,15 @@ impl Engine {
             .await?;
 
         Ok(AuthorizedFactWithCitation::new(
-            permit.into(),
-            draft,
+            AuthorizedFactCore::new(
+                permit.into(),
+                draft,
+                fact_sidecar_table,
+                fact_natural_key_columns,
+                links,
+            ),
             cited_object,
             mapping,
-            fact_sidecar_table,
-            fact_natural_key_columns,
-            links,
         ))
     }
 
@@ -290,14 +292,16 @@ impl Engine {
             .await?;
 
         Ok(AuthorizedFactWithCitationRef::new(
-            permit.into(),
-            draft,
+            AuthorizedFactCore::new(
+                permit.into(),
+                draft,
+                fact_sidecar_table,
+                fact_natural_key_columns,
+                links,
+            ),
             cited_object_id,
             expected_object_schema,
             mapping,
-            fact_sidecar_table,
-            fact_natural_key_columns,
-            links,
         ))
     }
 
@@ -673,17 +677,19 @@ impl Engine {
     /// validation fails or `memory_kind` is not a kind that cites
     /// directly; or `Internal` when a registered cited-object schema has
     /// no sidecar inserter.
-    #[allow(clippy::too_many_arguments)] // one parameter per authorized fact
     pub async fn authorize_citation_attachment(
         &self,
         authz: &AuthzContext,
         relation: Relation,
         requested_owner: OwnerRef,
-        memory_id: MemoryId,
-        memory_kind: EntityKind,
-        cited_object: InlineCitedObjectDraft,
-        mapping: InlineCitationMappingDraft,
+        request: CitationAttachmentRequest,
     ) -> Result<AuthorizedCitationAttachment, ProtocolError> {
+        let CitationAttachmentRequest {
+            memory_id,
+            memory_kind,
+            cited_object,
+            mapping,
+        } = request;
         let requested = requested_owner;
         let permit = self.authorize_write(authz, &requested, relation).await?;
         let owner = *permit.owner();

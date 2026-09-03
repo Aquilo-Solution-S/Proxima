@@ -19,10 +19,11 @@ use proxima_core::verbs::fact_ingest::{
 };
 use proxima_core::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, FactPayload,
-    MemoryId, Owner, SchemaId, SidecarPayload, StorageError,
+    MemoryId, Owner, SchemaId, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
+pub(crate) use super::memory_timeseries::ContentResolution;
 use crate::access::scope_surfaces::ScopeFenceTarget;
 use crate::error::{internal, map_err, with_bounded_retry};
 use crate::sidecars::PgSidecarRegistryFrozen;
@@ -49,19 +50,29 @@ pub trait PgFactSidecar: FactPayload + Sized {
         Self: 't;
 }
 
-/// What [`ingest_core`] needs beyond the draft: which embedding model to
-/// enqueue, how the draft's citation resolves to a `blob_id`, and which
-/// flavor-declared lifecycle scopes this write's payloads belong to.
+/// How [`ingest_core`] settles the write's side effects: which embedding
+/// model to enqueue and how the draft's citation resolves to a `blob_id`.
 #[derive(Debug, Clone, Copy)]
 struct IngestCoreOptions<'a> {
     embedding_model_id: Option<&'a str>,
     citation_plan: CitationPlan<'a>,
+}
+
+/// What this Fact admission declares about its own rows: the sidecar tables
+/// it actually inserts, the lifecycle scopes its payloads belong to, and how
+/// its owner-scoped `Content` resolves. One value, because the three are read
+/// off the same payload set and a route that carried the tables without the
+/// scopes would admit a row a concurrent scope erase cannot see.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FactAdmissionInput<'a> {
+    pub(crate) sidecar_tables: &'a [String],
     /// The declared scopes to fence, already sorted and deduplicated. Empty
     /// for a payload-less write; a write whose payload declares a scope and
     /// whose caller passes `&[]` here would admit a row a concurrent scope
-    /// erase cannot see, which is the defect this parameter exists to make
+    /// erase cannot see, which is the defect this field exists to make
     /// unspellable at the call site.
-    scopes: &'a [ScopeFenceTarget],
+    pub(crate) scopes: &'a [ScopeFenceTarget],
+    pub(crate) content: ContentResolution<'a>,
 }
 
 /// Authorization-bearing inputs shared by every Fact persistence route.
@@ -138,11 +149,6 @@ pub(crate) async fn ingest_fact_command_in_tx(
     let options = IngestCoreOptions {
         embedding_model_id,
         citation_plan: CitationPlan::DraftHint,
-        // The untyped Fact write: this route carries no `SidecarPayload` at
-        // all (`FactIngestPort::ingest_authorized_fact_atomic` refuses one
-        // that declares references), so there is no payload to read a scope
-        // off and no sidecar row for a scope erase to sweep.
-        scopes: &[],
     };
     ingest_core(
         tx,
@@ -152,9 +158,18 @@ pub(crate) async fn ingest_fact_command_in_tx(
             authorized.links(),
         ),
         options,
-        &[],
-        None,
-        None,
+        FactAdmissionInput {
+            sidecar_tables: &[],
+            // The untyped Fact write: this route carries no `SidecarPayload`
+            // at all (`FactIngestPort::ingest_authorized_fact_atomic` refuses
+            // one that declares references), so there is no payload to read a
+            // scope off and no sidecar row for a scope erase to sweep.
+            scopes: &[],
+            content: ContentResolution {
+                content_id: None,
+                payloads: None,
+            },
+        },
         |_tx, _outcome| Box::pin(async { Ok(()) }),
     )
     .await
@@ -169,14 +184,12 @@ pub(crate) async fn ingest_fact_command_in_tx(
 /// Fact sidecar insertion, cited-object sidecar insertion, or
 /// citation-mapping sidecar insertion. The caller owns transaction
 /// rollback/commit.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ingest_fact_with_citation_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitation,
     embedding_model_id: Option<&str>,
-    sidecar_tables: &[String],
-    scopes: &[ScopeFenceTarget],
+    input: FactAdmissionInput<'_>,
     fact_sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -185,14 +198,13 @@ where
         &'t FactIngestOutcome,
     ) -> FactIngestSidecarFuture<'t>,
 {
-    reject_unstamped_memory_tables(sidecars, sidecar_tables)?;
+    reject_unstamped_memory_tables(sidecars, input.sidecar_tables)?;
     let draft = authorized.draft();
     let options = IngestCoreOptions {
         embedding_model_id,
         citation_plan: CitationPlan::Inline {
             cited_object: authorized.cited_object(),
         },
-        scopes,
     };
     ingest_core(
         tx,
@@ -202,9 +214,7 @@ where
             authorized.links(),
         ),
         options,
-        sidecar_tables,
-        None,
-        None,
+        input,
         fact_sidecar,
     )
     .await
@@ -226,14 +236,12 @@ where
 /// otherwise storage errors from core row materialization, Fact sidecar
 /// insertion, or citation-mapping sidecar insertion. The caller owns
 /// transaction rollback/commit.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ingest_fact_with_citation_ref_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitationRef,
     embedding_model_id: Option<&str>,
-    sidecar_tables: &[String],
-    scopes: &[ScopeFenceTarget],
+    input: FactAdmissionInput<'_>,
     fact_sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -242,7 +250,7 @@ where
         &'t FactIngestOutcome,
     ) -> FactIngestSidecarFuture<'t>,
 {
-    reject_unstamped_memory_tables(sidecars, sidecar_tables)?;
+    reject_unstamped_memory_tables(sidecars, input.sidecar_tables)?;
     let draft = authorized.draft();
     let options = IngestCoreOptions {
         embedding_model_id,
@@ -250,7 +258,6 @@ where
             cited_object_id: authorized.cited_object_id(),
             expected_object_schema: authorized.expected_object_schema(),
         },
-        scopes,
     };
     ingest_core(
         tx,
@@ -260,9 +267,7 @@ where
             authorized.links(),
         ),
         options,
-        sidecar_tables,
-        None,
-        None,
+        input,
         fact_sidecar,
     )
     .await
@@ -421,15 +426,11 @@ async fn verify_cited_object_ref_in_tx(
 ///
 /// Returns storage errors from Fact materialization or sidecar
 /// insertion. The caller owns transaction rollback/commit.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ingest_fact_with_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedFactWrite,
     embedding_model_id: Option<&str>,
-    sidecar_tables: &[String],
-    content_id: Option<uuid::Uuid>,
-    content_payloads: &[SidecarPayload],
-    scopes: &[ScopeFenceTarget],
+    input: FactAdmissionInput<'_>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -442,7 +443,6 @@ where
     let options = IngestCoreOptions {
         embedding_model_id,
         citation_plan: CitationPlan::DraftHint,
-        scopes,
     };
     ingest_core(
         tx,
@@ -452,9 +452,7 @@ where
             authorized.links(),
         ),
         options,
-        sidecar_tables,
-        content_id,
-        Some(content_payloads),
+        input,
         sidecar,
     )
     .await
@@ -464,9 +462,7 @@ async fn ingest_core<F>(
     tx: &mut Transaction<'_, Postgres>,
     authorized: AuthorizedFactInput<'_>,
     options: IngestCoreOptions<'_>,
-    sidecar_tables: &[String],
-    content_id: Option<uuid::Uuid>,
-    content_payloads: Option<&[SidecarPayload]>,
+    input: FactAdmissionInput<'_>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -482,12 +478,14 @@ where
     } = authorized;
     let prepared = super::memory_timeseries::prepare_memory_admission(
         tx,
-        owner,
-        draft,
-        links.origins(),
-        links.references(),
-        sidecar_tables,
-        options.scopes,
+        super::memory_timeseries::MemoryAdmissionDraft {
+            owner,
+            draft,
+            origins: links.origins(),
+            references: links.references(),
+            sidecar_tables: input.sidecar_tables,
+            scopes: input.scopes,
+        },
     )
     .await?;
     super::memory_timeseries::lock_prepared_memory_admission(tx, &prepared).await?;
@@ -503,7 +501,7 @@ where
         write.blob_id =
             persist_citation_timeseries(tx, owner, draft, options.citation_plan).await?;
     }
-    let content_id = match (content_id, content_payloads) {
+    let content_id = match (input.content.content_id, input.content.payloads) {
         (Some(content_id), _) => Some(content_id),
         (None, Some(payloads)) => {
             crate::verbs::content::ensure_content_from_payloads(

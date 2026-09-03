@@ -1,7 +1,4 @@
-use proxima_core::verbs::query::EntityKind;
-use proxima_core::{
-    AbstractionPayload, AuthzContext, FactPayload, GoalId, MemoryId, Owner, SchemaId, ToolError,
-};
+use proxima_core::{AbstractionPayload, FactPayload, GoalId, MemoryId, Owner, ToolError};
 use proxima_storage_pg::query::{
     ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
     active_goals_for_memory_targets, nearest_code_chunk_candidates, owned_chunk_series_heads,
@@ -15,7 +12,8 @@ use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceV
 
 /// Private code-flavor storage service passed to tools by the host.
 ///
-/// Authz-filtered payload reads delegate to `proxima::flavor` (`&Engine`).
+/// Authz-filtered payload reads go straight to `proxima::flavor`
+/// (`&Engine`), never through this store.
 /// Code-series head / ANN helpers call `proxima_storage_pg::query` here —
 /// they need the flavor's private pool and must not sit on the Flavor SDK.
 /// `pool()` stays private (`from_backend_pool_for_host`/`for_tests`).
@@ -92,61 +90,6 @@ impl CodeFlavorStore {
 
     pub(crate) fn surfaces(&self) -> &proxima_core::owner_inverse::OwnerSurfaces {
         &self.surfaces
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn authorized_memory_ids(
-        &self,
-        engine: &proxima_core::Engine,
-        authz: &AuthzContext,
-        owner: Owner,
-        candidates: &[uuid::Uuid],
-        entity_kind: EntityKind,
-        schema_id: Option<SchemaId>,
-        limit: usize,
-    ) -> Result<Vec<MemoryId>, ToolError> {
-        proxima::flavor::authorized_memory_ids(
-            engine,
-            authz,
-            owner,
-            candidates,
-            entity_kind,
-            schema_id,
-            limit,
-        )
-        .await
-    }
-
-    pub(crate) async fn authorized_fact_payloads<P>(
-        &self,
-        engine: &proxima_core::Engine,
-        authz: &AuthzContext,
-        owner: Owner,
-        candidates: &[uuid::Uuid],
-        limit: usize,
-    ) -> Result<Vec<(MemoryId, P)>, ToolError>
-    where
-        P: FactPayload + Clone,
-    {
-        proxima::flavor::authorized_fact_payloads::<P>(engine, authz, owner, candidates, limit)
-            .await
-    }
-
-    pub(crate) async fn authorized_abstraction_payloads<P>(
-        &self,
-        engine: &proxima_core::Engine,
-        authz: &AuthzContext,
-        owner: Owner,
-        candidates: &[uuid::Uuid],
-        limit: usize,
-    ) -> Result<Vec<(MemoryId, P)>, ToolError>
-    where
-        P: AbstractionPayload + Clone,
-    {
-        proxima::flavor::authorized_abstraction_payloads::<P>(
-            engine, authz, owner, candidates, limit,
-        )
-        .await
     }
 
     /// Owner-only current file-revision heads of `repo_id` for `file_paths`.
@@ -250,7 +193,7 @@ impl CodeFlavorStore {
     /// Nearest `code-chunk-v1` chunks to a query embedding, best-first.
     ///
     /// Candidate producer: merge with lexical hits, then
-    /// [`Self::authorized_abstraction_payloads`] (Query `HeadsOnly`).
+    /// [`proxima::flavor::authorized_abstraction_payloads`] (Query `HeadsOnly`).
     /// Embeddings live in `proxima_core.embeddings`, which flavor SQL
     /// may not join, so the query itself is backend-owned.
     pub(crate) async fn nearest_code_chunk_candidates(

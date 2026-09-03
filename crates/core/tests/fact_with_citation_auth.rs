@@ -1,7 +1,8 @@
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::verbs::fact_ingest::{
-    FactReceiptDraft, FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
+    CitationAttachmentRequest, FactReceiptDraft, FactWriteCommand, InlineCitationMappingDraft,
+    InlineCitedObjectDraft,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
@@ -240,10 +241,12 @@ async fn authorize_citation_attachment_accepts_valid_pair() {
             &authz,
             Relation::Ingest,
             owner,
-            memory_id,
-            EntityKind::Fact,
-            cited_object(),
-            mapping(TestCitationMapping::schema_id()),
+            CitationAttachmentRequest {
+                memory_id,
+                memory_kind: EntityKind::Fact,
+                cited_object: cited_object(),
+                mapping: mapping(TestCitationMapping::schema_id()),
+            },
         )
         .await
         .expect("registered citation attachment payloads must authorize");
@@ -267,10 +270,12 @@ async fn authorize_citation_attachment_rejects_mapping_target_mismatch() {
             &authz,
             Relation::Ingest,
             owner,
-            proxima_core::MemoryId::new(Uuid::now_v7()),
-            EntityKind::Fact,
-            cited_object(),
-            mapping(MismatchedCitationMapping::schema_id()),
+            CitationAttachmentRequest {
+                memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                memory_kind: EntityKind::Fact,
+                cited_object: cited_object(),
+                mapping: mapping(MismatchedCitationMapping::schema_id()),
+            },
         )
         .await
         .expect_err("mapping target schema must match cited object schema");
@@ -333,10 +338,12 @@ async fn an_abstraction_may_cite_and_a_perspective_may_not() {
                 &authz,
                 Relation::Ingest,
                 owner,
-                memory_id,
-                kind,
-                cited_object(),
-                mapping(TestCitationMapping::schema_id()),
+                CitationAttachmentRequest {
+                    memory_id,
+                    memory_kind: kind,
+                    cited_object: cited_object(),
+                    mapping: mapping(TestCitationMapping::schema_id()),
+                },
             )
             .await
             .unwrap_or_else(|err| panic!("{kind:?} must be able to cite directly: {err}"));
@@ -348,10 +355,12 @@ async fn an_abstraction_may_cite_and_a_perspective_may_not() {
                 &authz,
                 Relation::Ingest,
                 owner,
-                memory_id,
-                kind,
-                cited_object(),
-                mapping(TestCitationMapping::schema_id()),
+                CitationAttachmentRequest {
+                    memory_id,
+                    memory_kind: kind,
+                    cited_object: cited_object(),
+                    mapping: mapping(TestCitationMapping::schema_id()),
+                },
             )
             .await
             .unwrap_err();

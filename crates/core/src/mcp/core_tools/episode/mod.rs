@@ -175,6 +175,19 @@ struct EpisodeSlots {
     stance: Vec<Slot>,
 }
 
+/// The one context every `episode_commit` write phase needs: the open
+/// transaction, the handles minted so far, and the ordered ledger of
+/// handles that pinned the write-act.
+struct EpisodeWrite<'a> {
+    ctx: &'a McpToolCtx,
+    uow: UnitOfWork<'a>,
+    bind: &'a BindSet,
+    owner: crate::Owner,
+    act_id: MemoryId,
+    slots: EpisodeSlots,
+    bound: Vec<String>,
+}
+
 impl McpTool for EpisodeCommitTool {
     const NAME: &'static str = protocol_tool::CORE_EPISODE_COMMIT;
     const DESCRIPTION: &'static str = "Commit one episode in a single transaction: remember Facts, optional derive, stance[], goal[], mint a write-act Fact, and pin only bind[] members to that act (`remember:N`, `derive`, `stance:N`, `goal:N`). Not a connect verb.";
@@ -214,57 +227,23 @@ async fn episode_commit(
         )
         .await?;
     let act_id = write_act.memory_id;
-    let mut slots = EpisodeSlots::default();
-    let mut bound = Vec::new();
-    write_remembered(
-        &ctx,
-        &mut uow,
-        &args.remember,
-        &bind,
+    let mut write = EpisodeWrite {
+        ctx: &ctx,
+        uow,
+        bind: &bind,
+        owner: space.owner,
         act_id,
-        &mut slots,
-        &mut bound,
-    )
-    .await?;
+        slots: EpisodeSlots::default(),
+        bound: Vec::new(),
+    };
+    write.write_remembered(&args.remember).await?;
     let derived = match args.derive.as_ref() {
-        Some(item) => Some(
-            write_derive(
-                &ctx,
-                &mut uow,
-                space.owner,
-                item,
-                bind.derive,
-                act_id,
-                &mut slots,
-                &mut bound,
-            )
-            .await?,
-        ),
+        Some(item) => Some(write.write_derive(item).await?),
         None => None,
     };
-    write_stances(
-        &ctx,
-        &mut uow,
-        space.owner,
-        &args.stance,
-        &bind,
-        act_id,
-        &mut slots,
-        &mut bound,
-    )
-    .await?;
-    let goals = write_goals(
-        &ctx,
-        &mut uow,
-        space.owner,
-        &args.goal,
-        &bind,
-        act_id,
-        &slots,
-        &mut bound,
-    )
-    .await?;
-    uow.commit().await?;
+    write.write_stances(&args.stance).await?;
+    let goals = write.write_goals(&args.goal).await?;
+    let (slots, bound) = write.commit().await?;
     Ok(EpisodeCommitOutput {
         write_act: ctx.format_memory_with_class(write_act.memory_id, MemoryHandleClass::Fact),
         remembered: slots.remember.into_iter().map(|slot| slot.handle).collect(),
@@ -318,298 +297,298 @@ fn validate_episode_shape(args: &EpisodeCommitArgs) -> Result<(), McpToolError> 
     Ok(())
 }
 
-async fn write_remembered(
-    ctx: &McpToolCtx,
-    uow: &mut UnitOfWork<'_>,
-    items: &[EpisodeRememberItem],
-    bind: &BindSet,
-    act_id: MemoryId,
-    slots: &mut EpisodeSlots,
-    bound: &mut Vec<String>,
-) -> Result<(), McpToolError> {
-    for (idx, item) in items.iter().enumerate() {
-        let title = validate_trimmed_len("title", &item.title, 240)?;
-        let body = validate_trimmed_len("body", &item.body, 20_000)?;
-        let idempotency_key = normalize_idempotency_key(item.idempotency_key.clone())?;
-        let tags = normalize_tags(item.tags.clone())?;
-        let note_id = idempotency_key
-            .as_deref()
-            .map_or_else(uuid::Uuid::now_v7, |key| {
-                uuid::Uuid::new_v5(&NOTE_NAMESPACE, key.as_bytes())
+impl EpisodeWrite<'_> {
+    async fn write_remembered(
+        &mut self,
+        items: &[EpisodeRememberItem],
+    ) -> Result<(), McpToolError> {
+        let ctx = self.ctx;
+        let bind = self.bind;
+        let act_id = self.act_id;
+        for (idx, item) in items.iter().enumerate() {
+            let title = validate_trimmed_len("title", &item.title, 240)?;
+            let body = validate_trimmed_len("body", &item.body, 20_000)?;
+            let idempotency_key = normalize_idempotency_key(item.idempotency_key.clone())?;
+            let tags = normalize_tags(item.tags.clone())?;
+            let note_id = idempotency_key
+                .as_deref()
+                .map_or_else(uuid::Uuid::now_v7, |key| {
+                    uuid::Uuid::new_v5(&NOTE_NAMESPACE, key.as_bytes())
+                });
+            let payload = AgentNoteV1 {
+                note_id,
+                title: title.to_string(),
+                body: body.to_string(),
+                tags,
+                idempotency_key,
+            };
+            let pin = bind.remember.contains(&idx);
+            // A remember item takes no `language`, so this write keeps the
+            // builder's default: an explicit request for the deployment
+            // configuration, which is what an omitted `language` resolves to
+            // on the standalone `core_remember` too.
+            let mut spec = TypedFactIngest::new("core/episode-remember", &payload);
+            if pin {
+                spec = spec.refs([act_id.into_inner()]);
+            }
+            let outcome = self
+                .uow
+                .ingest_typed(spec)
+                .await
+                .map_err(|err| map_bound_fact_error(err, "remember", pin))?;
+            reject_bound_replay(pin, outcome.idempotent_replay, "remember")?;
+            let handle = ctx.format_memory_with_class(outcome.memory_id, MemoryHandleClass::Fact);
+            if pin {
+                self.bound.push(handle.clone());
+            }
+            self.slots.remember.push(Slot {
+                id: outcome.memory_id,
+                handle,
+                class: MemoryHandleClass::Fact,
             });
-        let payload = AgentNoteV1 {
-            note_id,
-            title: title.to_string(),
-            body: body.to_string(),
-            tags,
-            idempotency_key,
-        };
-        let pin = bind.remember.contains(&idx);
-        // A remember item takes no `language`, so this write keeps the
-        // builder's default: an explicit request for the deployment
-        // configuration, which is what an omitted `language` resolves to
-        // on the standalone `core_remember` too.
-        let mut spec = TypedFactIngest::new("core/episode-remember", &payload);
-        if pin {
-            spec = spec.refs([act_id.into_inner()]);
         }
-        let outcome = uow
-            .ingest_typed(spec)
-            .await
-            .map_err(|err| map_bound_fact_error(err, "remember", pin))?;
-        reject_bound_replay(pin, outcome.idempotent_replay, "remember")?;
-        let handle = ctx.format_memory_with_class(outcome.memory_id, MemoryHandleClass::Fact);
-        if pin {
-            bound.push(handle.clone());
-        }
-        slots.remember.push(Slot {
-            id: outcome.memory_id,
-            handle,
-            class: MemoryHandleClass::Fact,
-        });
+        Ok(())
     }
-    Ok(())
-}
 
-#[allow(clippy::too_many_arguments)]
-async fn write_derive(
-    ctx: &McpToolCtx,
-    uow: &mut UnitOfWork<'_>,
-    owner: crate::Owner,
-    item: &EpisodeDeriveItem,
-    pin: bool,
-    act_id: MemoryId,
-    slots: &mut EpisodeSlots,
-    bound: &mut Vec<String>,
-) -> Result<String, McpToolError> {
-    let authored = derive::authored_derivation(
-        ctx,
-        derive::DerivationFields {
-            title: &item.title,
-            body: &item.body,
-            tags: &item.tags,
-            model_id: item.model_id.as_deref(),
-            idempotency_key: item.idempotency_key.as_deref(),
-        },
-    )?;
-    if item.source_handles.len() > MAX_SOURCE_HANDLES {
-        return Err(McpToolError::InvalidInput(format!(
-            "source_handles must contain at most {MAX_SOURCE_HANDLES} handles"
-        )));
-    }
-    let sources = dedup_resolved(
-        &item.source_handles,
-        MAX_SOURCE_HANDLES,
-        "source_handles",
-        "source_handles must be nonempty for operator derivation",
-        |handle| resolve_memory_source(ctx, slots, handle),
-    )?;
-    let lexical_language = crate::lexical_language::resolve_lexical_language(
-        item.language.as_deref(),
-        &format!("{}\n{}", authored.title, authored.body),
-    )
-    .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-    let kind = DerivedKind::Abstraction;
-    let derive::DerivationPlan {
-        memory_id,
-        operator_kind,
-        derived_from,
-        sidecar,
-        authored,
-    } = derive::plan_derivation(ctx, &owner, kind, authored, &sources)?;
-    let extra_refs = pin.then_some(act_id).into_iter().collect::<Vec<_>>();
-    let outcome = uow
-        .author_derived(AuthorDerivedRequestInput {
-            memory_id,
-            owner,
-            kind: kind.to_entity_kind(),
-            text: authored.body.clone(),
-            schema_id: SchemaId::new(<AgentDerivationV1 as AbstractionPayload>::SCHEMA_ID.into()),
-            schema_version: SchemaVersion::new(
-                <AgentDerivationV1 as AbstractionPayload>::SCHEMA_VERSION,
-            ),
-            operator_kind,
-            operator_id: core_derive_operator_id(kind),
-            input_contract_id: core_derive_input_contract_id(kind),
-            model_id: &authored.model_id,
-            sidecar_payload: SidecarPayload::abstraction(sidecar),
-            derived_from: &derived_from,
-            extra_refs: &extra_refs,
-            supersedes: None,
-            lexical_language: Some(lexical_language.as_str()),
-        })
-        .await
-        .map_err(|err| map_bound_derived_error(err, "derive", pin))?;
-    reject_bound_replay(pin, outcome.idempotent_replay, "derive")?;
-    let handle = ctx.format_memory_with_class(outcome.memory_id, MemoryHandleClass::Abstraction);
-    if pin {
-        bound.push(handle.clone());
-    }
-    slots.derive = Some(Slot {
-        id: outcome.memory_id,
-        handle: handle.clone(),
-        class: MemoryHandleClass::Abstraction,
-    });
-    Ok(handle)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn write_stances(
-    ctx: &McpToolCtx,
-    uow: &mut UnitOfWork<'_>,
-    owner: crate::Owner,
-    items: &[EpisodeStanceItem],
-    bind: &BindSet,
-    act_id: MemoryId,
-    slots: &mut EpisodeSlots,
-    bound: &mut Vec<String>,
-) -> Result<(), McpToolError> {
-    for (idx, item) in items.iter().enumerate() {
-        let claim = validate_trimmed_len("claim", &item.claim, MAX_CLAIM_CHARS)?.to_string();
-        if item.confidence > 100 {
-            return Err(McpToolError::InvalidInput(
-                "confidence must be 0..=100".into(),
-            ));
-        }
-        if item.subjects.is_empty() {
-            return Err(McpToolError::InvalidInput(
-                "an interpretation must be about at least one memory".into(),
-            ));
-        }
-        if item.subjects.len() > MAX_SUBJECTS {
+    async fn write_derive(&mut self, item: &EpisodeDeriveItem) -> Result<String, McpToolError> {
+        let ctx = self.ctx;
+        let owner = self.owner;
+        let act_id = self.act_id;
+        let pin = self.bind.derive;
+        let authored = derive::authored_derivation(
+            ctx,
+            derive::DerivationFields {
+                title: &item.title,
+                body: &item.body,
+                tags: &item.tags,
+                model_id: item.model_id.as_deref(),
+                idempotency_key: item.idempotency_key.as_deref(),
+            },
+        )?;
+        if item.source_handles.len() > MAX_SOURCE_HANDLES {
             return Err(McpToolError::InvalidInput(format!(
-                "subjects must contain at most {MAX_SUBJECTS} handles"
+                "source_handles must contain at most {MAX_SOURCE_HANDLES} handles"
             )));
         }
-        let model_id = super::memory::util::operator_label(ctx, item.model_id.as_deref())?;
-        let (subject_memory_ids, subject_kinds): (Vec<uuid::Uuid>, Vec<_>) = dedup_resolved(
-            &item.subjects,
-            MAX_SUBJECTS,
-            "subjects",
-            "an interpretation must be about at least one memory",
-            |handle| resolve_stance_subject(ctx, slots, handle),
-        )?
-        .into_iter()
-        .map(|(memory_id, kind)| (memory_id.into_inner(), kind))
-        .unzip();
-        let memory_id = MemoryId::new(interpretation_memory_id(
-            &owner,
-            &model_id,
-            &claim,
-            item.confidence,
-            &subject_memory_ids,
-        ));
-        reject_self_subject(memory_id, &subject_memory_ids)?;
-        let payload = InterpretationV1 {
-            claim: claim.clone(),
-            confidence: item.confidence,
-            subject_memory_ids,
-            subject_kinds,
-            model_id: model_id.clone(),
-            client_name: ctx.author.client_name.clone(),
-            client_version: ctx.author.client_version.clone(),
-        };
-        let pin = bind.stance.contains(&idx);
+        let sources = dedup_resolved(
+            &item.source_handles,
+            MAX_SOURCE_HANDLES,
+            "source_handles",
+            "source_handles must be nonempty for operator derivation",
+            |handle| resolve_memory_source(ctx, &self.slots, handle),
+        )?;
+        let lexical_language = crate::lexical_language::resolve_lexical_language(
+            item.language.as_deref(),
+            &format!("{}\n{}", authored.title, authored.body),
+        )
+        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+        let kind = DerivedKind::Abstraction;
+        let derive::DerivationPlan {
+            memory_id,
+            operator_kind,
+            derived_from,
+            sidecar,
+            authored,
+        } = derive::plan_derivation(ctx, &owner, kind, authored, &sources)?;
         let extra_refs = pin.then_some(act_id).into_iter().collect::<Vec<_>>();
-        let outcome = uow
+        let outcome = self
+            .uow
             .author_derived(AuthorDerivedRequestInput {
                 memory_id,
                 owner,
-                kind: EntityKind::Perspective,
-                text: claim,
+                kind: kind.to_entity_kind(),
+                text: authored.body.clone(),
                 schema_id: SchemaId::new(
-                    <InterpretationV1 as PerspectivePayload>::SCHEMA_ID.into(),
+                    <AgentDerivationV1 as AbstractionPayload>::SCHEMA_ID.into(),
                 ),
                 schema_version: SchemaVersion::new(
-                    <InterpretationV1 as PerspectivePayload>::SCHEMA_VERSION,
+                    <AgentDerivationV1 as AbstractionPayload>::SCHEMA_VERSION,
                 ),
-                operator_kind: crate::MemoryOperatorKind::AtoP,
-                operator_id: interpret_operator_id(),
-                input_contract_id: interpret_input_contract_id(),
-                model_id: &model_id,
-                sidecar_payload: SidecarPayload::perspective(payload),
-                derived_from: &[],
+                operator_kind,
+                operator_id: core_derive_operator_id(kind),
+                input_contract_id: core_derive_input_contract_id(kind),
+                model_id: &authored.model_id,
+                sidecar_payload: SidecarPayload::abstraction(sidecar),
+                derived_from: &derived_from,
                 extra_refs: &extra_refs,
                 supersedes: None,
-                // A stance item takes no `language`, and the
-                // interpretation schema declares `LanguagePolicy::PerRow`.
-                // The write names the deployment configuration rather than
-                // carrying no language at all — see `memory::interpret`.
-                lexical_language: Some(
-                    crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT,
-                ),
+                lexical_language: Some(lexical_language.as_str()),
             })
             .await
-            .map_err(|err| map_bound_derived_error(err, "stance", pin))?;
-        reject_bound_replay(pin, outcome.idempotent_replay, "stance")?;
+            .map_err(|err| map_bound_derived_error(err, "derive", pin))?;
+        reject_bound_replay(pin, outcome.idempotent_replay, "derive")?;
         let handle =
-            ctx.format_memory_with_class(outcome.memory_id, MemoryHandleClass::Perspective);
+            ctx.format_memory_with_class(outcome.memory_id, MemoryHandleClass::Abstraction);
         if pin {
-            bound.push(handle.clone());
+            self.bound.push(handle.clone());
         }
-        slots.stance.push(Slot {
+        self.slots.derive = Some(Slot {
             id: outcome.memory_id,
-            handle,
-            class: MemoryHandleClass::Perspective,
+            handle: handle.clone(),
+            class: MemoryHandleClass::Abstraction,
         });
+        Ok(handle)
     }
-    Ok(())
-}
 
-#[allow(clippy::too_many_arguments)]
-async fn write_goals(
-    ctx: &McpToolCtx,
-    uow: &mut UnitOfWork<'_>,
-    owner: crate::Owner,
-    items: &[EpisodeGoalItem],
-    bind: &BindSet,
-    act_id: MemoryId,
-    slots: &EpisodeSlots,
-    bound: &mut Vec<String>,
-) -> Result<Vec<String>, McpToolError> {
-    let mut goals = Vec::new();
-    for (idx, item) in items.iter().enumerate() {
-        if item.evidence.is_empty() {
-            return Err(McpToolError::InvalidInput(
-                "goal set requires >=1 Abstraction evidence handle motivating the goal".into(),
+    async fn write_stances(&mut self, items: &[EpisodeStanceItem]) -> Result<(), McpToolError> {
+        let ctx = self.ctx;
+        let owner = self.owner;
+        let bind = self.bind;
+        let act_id = self.act_id;
+        for (idx, item) in items.iter().enumerate() {
+            let claim = validate_trimmed_len("claim", &item.claim, MAX_CLAIM_CHARS)?.to_string();
+            if item.confidence > 100 {
+                return Err(McpToolError::InvalidInput(
+                    "confidence must be 0..=100".into(),
+                ));
+            }
+            if item.subjects.is_empty() {
+                return Err(McpToolError::InvalidInput(
+                    "an interpretation must be about at least one memory".into(),
+                ));
+            }
+            if item.subjects.len() > MAX_SUBJECTS {
+                return Err(McpToolError::InvalidInput(format!(
+                    "subjects must contain at most {MAX_SUBJECTS} handles"
+                )));
+            }
+            let model_id = super::memory::util::operator_label(ctx, item.model_id.as_deref())?;
+            let (subject_memory_ids, subject_kinds): (Vec<uuid::Uuid>, Vec<_>) = dedup_resolved(
+                &item.subjects,
+                MAX_SUBJECTS,
+                "subjects",
+                "an interpretation must be about at least one memory",
+                |handle| resolve_stance_subject(ctx, &self.slots, handle),
+            )?
+            .into_iter()
+            .map(|(memory_id, kind)| (memory_id.into_inner(), kind))
+            .unzip();
+            let memory_id = MemoryId::new(interpretation_memory_id(
+                &owner,
+                &model_id,
+                &claim,
+                item.confidence,
+                &subject_memory_ids,
             ));
-        }
-        let payload = encode_goal_payload(ctx, item.payload.clone())?;
-        let evidence = resolve_goal_evidence(ctx, slots, &item.evidence)?;
-        let assignment = resolve_goal_assignment(ctx, slots, item.target_perspective.as_deref())?;
-        let wake = item
-            .wake
-            .clone()
-            .map(|wake| encode_wake_config(ctx, wake))
-            .transpose()?;
-        let topology = GoalTopologyWrite::new(assignment, Vec::new(), evidence)
-            .map_err(McpToolError::Protocol)?;
-        let request_id =
-            IdempotencyKey::optional_or_generated("episode_goal", item.idempotency_key.clone())
-                .map_err(McpToolError::InvalidInput)?;
-        let pin = bind.goal.contains(&idx);
-        let outcome = uow
-            .create_goal(
-                GoalCreatePayloadWriteRequest {
+            reject_self_subject(memory_id, &subject_memory_ids)?;
+            let payload = InterpretationV1 {
+                claim: claim.clone(),
+                confidence: item.confidence,
+                subject_memory_ids,
+                subject_kinds,
+                model_id: model_id.clone(),
+                client_name: ctx.author.client_name.clone(),
+                client_version: ctx.author.client_version.clone(),
+            };
+            let pin = bind.stance.contains(&idx);
+            let extra_refs = pin.then_some(act_id).into_iter().collect::<Vec<_>>();
+            let outcome = self
+                .uow
+                .author_derived(AuthorDerivedRequestInput {
+                    memory_id,
                     owner,
-                    topology,
-                    wake,
-                    payload,
-                    request_id,
-                    authorship: system_operator_authorship(ctx, "episode_commit"),
-                    author_self_perspective_id: ctx.caller_self_perspective,
-                },
-                pin.then_some(act_id),
-            )
-            .await?;
-        reject_bound_replay(pin, outcome.idempotent_replay, "goal")?;
-        let handle = ctx.format_goal(outcome.goal_id);
-        if pin {
-            bound.push(handle.clone());
+                    kind: EntityKind::Perspective,
+                    text: claim,
+                    schema_id: SchemaId::new(
+                        <InterpretationV1 as PerspectivePayload>::SCHEMA_ID.into(),
+                    ),
+                    schema_version: SchemaVersion::new(
+                        <InterpretationV1 as PerspectivePayload>::SCHEMA_VERSION,
+                    ),
+                    operator_kind: crate::MemoryOperatorKind::AtoP,
+                    operator_id: interpret_operator_id(),
+                    input_contract_id: interpret_input_contract_id(),
+                    model_id: &model_id,
+                    sidecar_payload: SidecarPayload::perspective(payload),
+                    derived_from: &[],
+                    extra_refs: &extra_refs,
+                    supersedes: None,
+                    // A stance item takes no `language`, and the
+                    // interpretation schema declares `LanguagePolicy::PerRow`.
+                    // The write names the deployment configuration rather than
+                    // carrying no language at all — see `memory::interpret`.
+                    lexical_language: Some(
+                        crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT,
+                    ),
+                })
+                .await
+                .map_err(|err| map_bound_derived_error(err, "stance", pin))?;
+            reject_bound_replay(pin, outcome.idempotent_replay, "stance")?;
+            let handle =
+                ctx.format_memory_with_class(outcome.memory_id, MemoryHandleClass::Perspective);
+            if pin {
+                self.bound.push(handle.clone());
+            }
+            self.slots.stance.push(Slot {
+                id: outcome.memory_id,
+                handle,
+                class: MemoryHandleClass::Perspective,
+            });
         }
-        goals.push(handle);
+        Ok(())
     }
-    Ok(goals)
+
+    async fn write_goals(
+        &mut self,
+        items: &[EpisodeGoalItem],
+    ) -> Result<Vec<String>, McpToolError> {
+        let ctx = self.ctx;
+        let owner = self.owner;
+        let bind = self.bind;
+        let act_id = self.act_id;
+        let mut goals = Vec::new();
+        for (idx, item) in items.iter().enumerate() {
+            if item.evidence.is_empty() {
+                return Err(McpToolError::InvalidInput(
+                    "goal set requires >=1 Abstraction evidence handle motivating the goal".into(),
+                ));
+            }
+            let payload = encode_goal_payload(ctx, item.payload.clone())?;
+            let evidence = resolve_goal_evidence(ctx, &self.slots, &item.evidence)?;
+            let assignment =
+                resolve_goal_assignment(ctx, &self.slots, item.target_perspective.as_deref())?;
+            let wake = item
+                .wake
+                .clone()
+                .map(|wake| encode_wake_config(ctx, wake))
+                .transpose()?;
+            let topology = GoalTopologyWrite::new(assignment, Vec::new(), evidence)
+                .map_err(McpToolError::Protocol)?;
+            let request_id =
+                IdempotencyKey::optional_or_generated("episode_goal", item.idempotency_key.clone())
+                    .map_err(McpToolError::InvalidInput)?;
+            let pin = bind.goal.contains(&idx);
+            let outcome = self
+                .uow
+                .create_goal(
+                    GoalCreatePayloadWriteRequest {
+                        owner,
+                        topology,
+                        wake,
+                        payload,
+                        request_id,
+                        authorship: system_operator_authorship(ctx, "episode_commit"),
+                        author_self_perspective_id: ctx.caller_self_perspective,
+                    },
+                    pin.then_some(act_id),
+                )
+                .await?;
+            reject_bound_replay(pin, outcome.idempotent_replay, "goal")?;
+            let handle = ctx.format_goal(outcome.goal_id);
+            if pin {
+                self.bound.push(handle.clone());
+            }
+            goals.push(handle);
+        }
+        Ok(goals)
+    }
+
+    /// Commit the transaction and hand back the minted slots and the
+    /// bound-handle ledger, in write order.
+    async fn commit(self) -> Result<(EpisodeSlots, Vec<String>), McpToolError> {
+        self.uow.commit().await?;
+        Ok((self.slots, self.bound))
+    }
 }
 
 fn reject_bound_replay(pin: bool, replay: bool, kind: &str) -> Result<(), McpToolError> {

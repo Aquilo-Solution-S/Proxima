@@ -81,14 +81,20 @@ async fn append_with_edges(
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     super::validate_derived_origins_in_tx(&mut tx, draft, origins).await?;
     super::validate_derived_reference_kinds_in_tx(&mut tx, references).await?;
-    let outcome = super::append_derived_in_tx(
+    let outcome = super::append_derived_with_content_payloads_in_tx(
         &mut tx,
         permit,
         draft,
-        origins,
-        references,
-        &[],
-        None,
+        super::DerivedAdmissionInput {
+            origins,
+            references,
+            sidecar_tables: &[],
+            scopes: &[],
+            content: super::ContentResolution {
+                content_id: None,
+                payloads: None,
+            },
+        },
         |_, _| Box::pin(async { Ok(()) }),
     )
     .await?;

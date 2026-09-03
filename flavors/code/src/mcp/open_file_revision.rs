@@ -181,7 +181,7 @@ async fn load_head_revision(
             scope.file_path,
         )
         .await?;
-    pool.authorized_fact_payloads::<FileRevisionV1>(
+    proxima::flavor::authorized_fact_payloads::<FileRevisionV1>(
         engine,
         ctx.authz(),
         ctx.owner(),
@@ -231,56 +231,55 @@ async fn load_head_chunks(
             scope.file_path,
         )
         .await?;
-    let mut chunks = pool
-        .authorized_abstraction_payloads::<CodeChunkV1>(
-            engine,
-            ctx.authz(),
-            ctx.owner(),
-            &chunk_ids,
-            2_000,
-        )
-        .await?
-        .into_iter()
-        .filter(|(_, row)| {
-            let in_line_window = match projection.line_window {
-                Some((start, end)) => {
-                    i64::from(row.line_range_end) >= start && i64::from(row.line_range_start) <= end
-                }
-                None => true,
-            };
-            row.repo_id == scope.repo_id
-                && row.file_path == scope.file_path
-                && row.state == FileState::Present
-                && in_line_window
-        })
-        .map(|(memory_id, row)| {
-            let projected = project_text(
-                projection.include_text.then_some(row.text.clone()),
+    let mut chunks = proxima::flavor::authorized_abstraction_payloads::<CodeChunkV1>(
+        engine,
+        ctx.authz(),
+        ctx.owner(),
+        &chunk_ids,
+        2_000,
+    )
+    .await?
+    .into_iter()
+    .filter(|(_, row)| {
+        let in_line_window = match projection.line_window {
+            Some((start, end)) => {
+                i64::from(row.line_range_end) >= start && i64::from(row.line_range_start) <= end
+            }
+            None => true,
+        };
+        row.repo_id == scope.repo_id
+            && row.file_path == scope.file_path
+            && row.state == FileState::Present
+            && in_line_window
+    })
+    .map(|(memory_id, row)| {
+        let projected = project_text(
+            projection.include_text.then_some(row.text.clone()),
+            i64::from(row.line_range_start),
+            projection.line_window,
+            projection.max_text_bytes,
+        );
+        let ProjectedText {
+            text,
+            text_line_range,
+            text_truncated,
+        } = projected;
+        Ok::<_, ToolError>(ChunkSummary {
+            handle: ctx.format_abstraction_memory(memory_id),
+            chunk_index: i32::try_from(row.chunk_index)
+                .map_err(|_| ToolError::Other("chunk_index exceeds i32".into()))?,
+            chunk_type: row.chunk_type,
+            line_range: (
                 i64::from(row.line_range_start),
-                projection.line_window,
-                projection.max_text_bytes,
-            );
-            let ProjectedText {
-                text,
-                text_line_range,
-                text_truncated,
-            } = projected;
-            Ok::<_, ToolError>(ChunkSummary {
-                handle: ctx.format_abstraction_memory(memory_id),
-                chunk_index: i32::try_from(row.chunk_index)
-                    .map_err(|_| ToolError::Other("chunk_index exceeds i32".into()))?,
-                chunk_type: row.chunk_type,
-                line_range: (
-                    i64::from(row.line_range_start),
-                    i64::from(row.line_range_end),
-                ),
-                snippet: row.text.chars().take(480).collect(),
-                text,
-                text_line_range,
-                text_truncated,
-            })
+                i64::from(row.line_range_end),
+            ),
+            snippet: row.text.chars().take(480).collect(),
+            text,
+            text_line_range,
+            text_truncated,
         })
-        .collect::<Result<Vec<_>, _>>()?;
+    })
+    .collect::<Result<Vec<_>, _>>()?;
     chunks.sort_by_key(|chunk| chunk.chunk_index);
     Ok(chunks)
 }

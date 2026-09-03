@@ -615,7 +615,7 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
     }
     storage_pg_verbs = {
         "crates/storage-pg/src/verbs/derive_append.rs": [
-            "append_derived_in_tx",
+            "append_derived_with_content_payloads_in_tx",
         ],
         "crates/storage-pg/src/verbs/fact_embeddings/jobs.rs": ["enqueue_missing_embedding_jobs"],
         "crates/storage-pg/src/verbs/source_cursors.rs": ["store_source_cursor"],
