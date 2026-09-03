@@ -23,6 +23,11 @@ mod tests;
 
 pub use behavior::{Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall};
 pub use core_tools::list_substrate_tools::scope_permits_action;
+// The one enforcement point for the reserved `model_id` operator label.
+// Published because a flavor tool that accepts `model_id` must resolve it
+// the same way the core authoring tools do — the transport edges only see a
+// top-level field, so re-implementing this is how a nested one gets through.
+pub use core_tools::memory::util::operator_label;
 pub use error::{McpToolError, McpToolErrorKind};
 pub use handles::{
     MemoryHandleClass, PrefixedUuidClass, PrefixedUuidError, format_prefixed_uuid,
@@ -40,4 +45,7 @@ pub use tool::{
     McpToolOrigin,
 };
 pub(crate) use tool::{prepare_flat_tool_args, resolve_argv_action, validate_action_args};
-pub use types::{McpAuthorContext, McpToolCtx};
+pub use types::{
+    MAX_OPERATOR_LABEL_CHARS, McpAuthorContext, McpToolCtx, OperatorLabelConflict,
+    UNKNOWN_OPERATOR_LABEL, resolve_operator_label,
+};

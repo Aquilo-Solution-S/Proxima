@@ -320,6 +320,57 @@ fn flavor_sdk_exposes_mcp_tool_authoring_surface() {
     )> = None;
 }
 
+/// A flavor tool that accepts its own `model_id`, written against the
+/// transport-neutral [`Tool`](proxima::flavor::Tool) trait — the shape the
+/// operator-label rule has to be reachable from.
+struct TierLabelledTool;
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct TierLabelledArgs {
+    #[serde(default)]
+    model_id: Option<String>,
+}
+
+impl proxima::flavor::Tool for TierLabelledTool {
+    const NAME: &'static str = "tier_labelled";
+    const DESCRIPTION: &'static str = "resolve an operator label from a flavor tool";
+
+    type Args = TierLabelledArgs;
+    type Output = String;
+
+    fn call(
+        ctx: proxima::flavor::ToolCtx,
+        args: Self::Args,
+    ) -> futures::future::BoxFuture<'static, Result<Self::Output, proxima::flavor::ToolError>> {
+        // The point of the test: `Tool::call` is handed a `ToolCtx`, whose
+        // fields are private and which cannot produce an `McpToolCtx`. If
+        // this does not compile, an out-of-tree tool that takes `model_id`
+        // has no way to honour a token-bound model identity.
+        Box::pin(async move { ctx.operator_label(args.model_id.as_deref()) })
+    }
+}
+
+/// The operator-label rule must be reachable from *both* tool traits, or a
+/// flavor that takes its own `model_id` has to reimplement it — and a
+/// reimplementation is how a nested label got past the edge in the first
+/// place.
+#[test]
+fn flavor_sdk_exposes_the_operator_label_rule_to_both_tool_traits() {
+    use proxima::flavor::{McpToolCtx, McpToolError, ToolCtx, ToolError, TrustedModelIdError};
+
+    fn needs_tool<T: proxima::flavor::Tool>() {}
+    needs_tool::<TierLabelledTool>();
+
+    // The `McpTool` spelling: a free function over the MCP context.
+    let _: fn(&McpToolCtx, Option<&str>) -> Result<String, McpToolError> =
+        proxima::flavor::operator_label;
+    // The `Tool` spelling: an inherent method on the neutral context.
+    let _: fn(&ToolCtx, Option<&str>) -> Result<String, ToolError> = ToolCtx::operator_label;
+    // Binding provenance onto the caller copy is fallible for the same
+    // reason it is on `AuthzContext`.
+    let _: Option<TrustedModelIdError> = None;
+}
+
 /// A stateful Fact declared through the SDK alone: one hot head per natural
 /// key, plus catalog metadata identifying which payload value means "gone".
 /// Query still returns that deletion-observation head.

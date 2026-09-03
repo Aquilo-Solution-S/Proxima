@@ -546,6 +546,24 @@ where
             ctx.author.client_name.clone(),
             ctx.author.client_version.clone(),
         );
+        // From the authorization context, not from the author copy: the
+        // credential is the only authority on provenance, and this is the
+        // last point where the two could differ.
+        let caller = match ctx.authz.trusted_model_id() {
+            None => caller,
+            Some(trusted) => match caller.with_trusted_model_id(trusted) {
+                Ok(caller) => caller,
+                Err(err) => {
+                    // Unreachable through `AuthzContext`, which applies the
+                    // same rule when the value is bound. Reported rather
+                    // than unwrapped so a future carrier that skips that
+                    // check fails the call instead of the process.
+                    return Box::pin(std::future::ready(Err(McpToolError::Other(format!(
+                        "authenticated model identity is unusable: {err}"
+                    )))));
+                }
+            },
+        };
         let mut services = ctx.services.into_tool_services();
         services.insert(presentation);
         let tool_ctx = ToolCtx::from_parts(
@@ -695,6 +713,7 @@ mod flat_tool_tests {
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "planner/model".into(),
+                trusted_model_id: None,
                 client_name: "planner-client".into(),
                 client_version: "2.4.1".into(),
                 caller_self_perspective: Some(caller_self_perspective),

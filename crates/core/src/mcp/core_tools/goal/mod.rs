@@ -739,10 +739,25 @@ fn target_perspective(
     }
 }
 
+/// Operator identity for a Goal write.
+///
+/// Deliberately *not* routed through
+/// [`operator_label`](super::memory::util::operator_label), unlike every
+/// authoring path that records a label. Nothing here is persisted as a
+/// label: `SystemOrigin::Operator` has no goal-authorship column, and
+/// replay collapses it to `system_operator`, so the only thing the label
+/// reaches is the v5 hash below. Validating it would buy no provenance and
+/// would turn a blank or over-long request-context `model_id` into a
+/// refused `goal_set` — a caller told its intent was rejected over a field
+/// the goal never keeps.
+///
+/// The bound identity already reaches this: the edge resolves
+/// `ctx.author.model_id` to the trusted id when the token binds one.
 pub(crate) fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str) -> GoalAuthorship {
+    let model_id = &ctx.author.model_id;
     let operator_key = format!(
         "{}\0{}\0{}\0{}",
-        ctx.author.client_name, ctx.author.client_version, ctx.author.model_id, prompt_version
+        ctx.author.client_name, ctx.author.client_version, model_id, prompt_version
     );
     let operator_id = uuid::Uuid::new_v5(&MCP_OPERATOR_NAMESPACE, operator_key.as_bytes());
     let input_contract_id = uuid::Uuid::new_v5(
@@ -757,7 +772,7 @@ pub(crate) fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str)
         operator_id: OperatorId::new(operator_id),
         operator_kind: OperatorKind::AtoGoal,
         input_contract_id: InputContractId::new(input_contract_id),
-        model_id: ModelId::new(ctx.author.model_id.clone()),
+        model_id: ModelId::new(model_id.clone()),
         prompt_version: PromptVersion::new(prompt_version),
     })
 }
@@ -791,6 +806,7 @@ mod tests {
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "m".into(),
+                trusted_model_id: None,
                 client_name: "c".into(),
                 client_version: "0".into(),
                 caller_self_perspective: None,
@@ -834,6 +850,7 @@ mod tests {
             registry: std::sync::Arc::new(crate::FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test-model".into(),
+                trusted_model_id: None,
                 client_name: "test-client".into(),
                 client_version: "1".into(),
                 caller_self_perspective: Some(target),

@@ -34,8 +34,8 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_OIDC_JWKS_URI` | OIDC auth | discovery default | non-default JWKS | overrides discovery |
 | `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` | OIDC auth | `10` | slower issuer response budget | complete discovery/JWKS request timeout, including connect and body read; range `1..=300`; invalid values fail boot |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | OIDC auth | unset | subject allowlist desired | comma-separated `sub` values |
-| `PROXIMA_OIDC_SUBJECT_MAP_JSON` | OIDC auth | unset | OIDC deployment unless shorthand is used | issuer-aware `(iss, sub) -> user_id` JSON map; mutually exclusive with `PROXIMA_OIDC_SUBJECT_MAP` |
-| `PROXIMA_OIDC_SUBJECT_MAP` | OIDC auth | unset | OIDC deployment unless JSON map is used | single-issuer `sub:<uuid>` shorthand bound to `PROXIMA_OIDC_ISSUER`; mutually exclusive with JSON map |
+| `PROXIMA_OIDC_SUBJECT_MAP_JSON` | OIDC auth | unset | OIDC deployment unless shorthand is used | issuer-aware `(iss, sub) -> user_id` JSON map; mutually exclusive with `PROXIMA_OIDC_SUBJECT_MAP`; optional per-entry `trusted_model_id` — see below |
+| `PROXIMA_OIDC_SUBJECT_MAP` | OIDC auth | unset | OIDC deployment unless JSON map is used | single-issuer `sub:<uuid>` shorthand bound to `PROXIMA_OIDC_ISSUER`; mutually exclusive with JSON map; never yields a `trusted_model_id` |
 | `PROXIMA_STREAM_MAX_LIFETIME` | MCP stream auth | source default | long-lived Streamable HTTP responses | max seconds before re-validation |
 | `PROXIMA_STREAM_EPOCH_INTERVAL` | MCP stream auth | source default | open response stream auth checks | auth-epoch re-check seconds |
 | `PROXIMA_REST_ENABLED` | REST surface | `false` | serving `/v1` beside `/mcp` | renders the tool manifest as REST ([17](../17-rest-surface.md)); also needs the `rest` cargo feature at build time |
@@ -70,6 +70,39 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_S3_READ_TTL_SECONDS` | cited blobs | `300` | non-default read TTL | presigned read URL TTL |
 
 Removed in v0.0.8: `PROXIMA_PG_SEMANTIC_INDEX_FIRST`, `PROXIMA_PG_CANDIDATE_WINDOW_DEDUP`, `PROXIMA_PG_SEMANTIC_OVERFETCH_PER_RESULT`, `PROXIMA_PG_SEMANTIC_OVERFETCH_MIN`. The knobs they set were consumed by no query path; leaving one of them set now refuses boot with an error naming the removal, so a deployment carrying a dead knob learns immediately instead of silently running the shipped path.
+
+### Subject map entries
+
+`PROXIMA_OIDC_SUBJECT_MAP_JSON` is an array of `{iss, sub, user_id}` objects,
+each with an optional `trusted_model_id`:
+
+```json
+[
+  {"iss": "https://zitadel.example.com",
+   "sub": "human-subject-id",
+   "user_id": "550e8400-e29b-41d4-a716-446655440000"},
+  {"iss": "https://zitadel.example.com",
+   "sub": "runner-service-user-id",
+   "user_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+   "trusted_model_id": "acme/runner-v3"}
+]
+```
+
+`trusted_model_id` is trimmed, must be non-blank, and is bounded at 120
+characters (the operator-label bound); an invalid value fails boot, as does an
+unrecognised key anywhere in an entry — a typo such as `trusted_model` must
+not degrade silently into "this principal binds nothing". It
+certifies **which configured runner principal reached the edge** — the
+deployment's own statement about a credential it issued — not that a model
+produced any particular content. It reaches tools as
+`AuthzContext::trusted_model_id()` / `ToolCaller::trusted_model_id` and
+becomes the persisted operator label, outranking a caller-supplied
+`model_id` argument or `X-Proxima-Model-Id` header (a *differing*
+caller-supplied label is refused, a blank one treated as absent; see
+[17 §Call Context](../17-rest-surface.md#call-context)). Entries without the
+field, and principals absent from the map, are unchanged. The
+`PROXIMA_OIDC_SUBJECT_MAP` shorthand has no field for it and never yields
+one.
 
 ## CLI Flags That Behave Like Configuration
 

@@ -126,7 +126,10 @@ impl OidcBinding {
             return Err(AuthError::InvalidCredentials);
         }
 
-        let Some(subject) = self.subject_map.resolve(&claims.issuer, &claims.subject) else {
+        let Some(binding) = self
+            .subject_map
+            .resolve_binding(&claims.issuer, &claims.subject)
+        else {
             tracing::debug!(
                 sub = %claims.subject,
                 iss = %claims.issuer,
@@ -137,14 +140,17 @@ impl OidcBinding {
         };
         let roles = self
             .owner_access
-            .resolve_roles_for_subject(subject)
+            .resolve_roles_for_subject(binding.user_id)
             .await
             .map_err(|err| {
                 tracing::warn!(error = %err, "oidc binding set: owner-access resolution failed");
                 AuthError::InvalidCredentials
             })?;
-        let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer)
-            .with_expires_at(Some(claims.expires_at));
+        let ctx = crate::authenticator::bind_trusted_model_id(
+            AuthzContext::server_resolved(roles, AuthPath::HostBearer)
+                .with_expires_at(Some(claims.expires_at)),
+            binding.trusted_model_id,
+        )?;
         Ok(self.role_shape.apply(ctx))
     }
 }
@@ -383,6 +389,65 @@ mod tests {
             OidcBindingSet::new([agent_binding, owner_binding]).expect("binding set"),
             agent_group,
         )
+    }
+
+    /// Trusted model provenance is per-binding, resolved from that
+    /// binding's own subject map — the agent audience certifies a runner,
+    /// the owner audience certifies a person.
+    #[tokio::test]
+    async fn a_binding_attaches_its_own_trusted_model_id() {
+        let keys = test_keys();
+        let agent = UserId::new(Uuid::from_u128(0xA9E1));
+        let owner = UserId::new(Uuid::from_u128(0x0E1E));
+        let agent_group = proxima_core::GroupId::new(Uuid::now_v7());
+        let owner_group = proxima_core::GroupId::new(Uuid::now_v7());
+        let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
+            agent,
+            owner,
+            agent_group,
+            owner_group,
+        });
+        let mut agent_map = OidcSubjectMap::new();
+        agent_map
+            .insert_binding(
+                ISSUER,
+                "agent-sub",
+                crate::SubjectBinding::new(agent).with_trusted_model_id("acme/runner-v3"),
+            )
+            .expect("subject map");
+        let bindings = OidcBindingSet::new([
+            OidcBinding::new(
+                config(AGENT_AUD),
+                resolver(keys.decoding.clone()),
+                agent_map,
+                owner_access.clone(),
+            )
+            .expect("agent binding"),
+            OidcBinding::new(
+                config(OWNER_AUD),
+                resolver(keys.decoding.clone()),
+                subject_map("owner-sub", owner),
+                owner_access,
+            )
+            .expect("owner binding"),
+        ])
+        .expect("binding set");
+
+        let agent_ctx = bindings
+            .authenticate(&Credentials::Bearer(token(&keys, AGENT_AUD, "agent-sub")))
+            .await
+            .expect("agent binding authenticates");
+        assert_eq!(agent_ctx.trusted_model_id(), Some("acme/runner-v3"));
+
+        let owner_ctx = bindings
+            .authenticate(&Credentials::Bearer(token(&keys, OWNER_AUD, "owner-sub")))
+            .await
+            .expect("owner binding authenticates");
+        assert_eq!(
+            owner_ctx.trusted_model_id(),
+            None,
+            "a binding that declares no runner certifies none"
+        );
     }
 
     #[tokio::test]

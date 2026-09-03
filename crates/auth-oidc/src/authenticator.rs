@@ -165,6 +165,25 @@ impl OidcAuthenticator {
     }
 }
 
+/// Attach the subject map's trusted model id, if it declares one.
+///
+/// The map validated the value at parse time, so a rejection here means the
+/// two bounds disagree — a deployment fault, not a caller fault. Failing the
+/// authentication is the fail-closed answer: a context that silently lost
+/// its provenance would write under the caller's own label.
+pub(crate) fn bind_trusted_model_id(
+    ctx: AuthzContext,
+    trusted_model_id: Option<String>,
+) -> Result<AuthzContext, AuthError> {
+    let Some(trusted_model_id) = trusted_model_id else {
+        return Ok(ctx);
+    };
+    ctx.with_trusted_model_id(trusted_model_id).map_err(|err| {
+        tracing::error!(error = %err, "oidc auth: configured trusted_model_id is unusable");
+        AuthError::InvalidCredentials
+    })
+}
+
 #[async_trait]
 impl Authenticator for OidcAuthenticator {
     async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
@@ -177,7 +196,10 @@ impl Authenticator for OidcAuthenticator {
             return Err(AuthError::InvalidCredentials);
         }
 
-        let Some(subject) = self.subject_map.resolve(&claims.issuer, &claims.subject) else {
+        let Some(binding) = self
+            .subject_map
+            .resolve_binding(&claims.issuer, &claims.subject)
+        else {
             tracing::debug!(
                 sub = %claims.subject,
                 iss = %claims.issuer,
@@ -187,15 +209,16 @@ impl Authenticator for OidcAuthenticator {
         };
         let roles = self
             .owner_access
-            .resolve_roles_for_subject(subject)
+            .resolve_roles_for_subject(binding.user_id)
             .await
             .map_err(|err| {
                 tracing::warn!(error = %err, "oidc auth: owner-access resolution failed");
                 AuthError::InvalidCredentials
             })?;
         tracing::debug!(sub = %claims.subject, "oidc token accepted (host-resolved)");
-        Ok(AuthzContext::server_resolved(roles, AuthPath::HostBearer)
-            .with_expires_at(Some(claims.expires_at)))
+        let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer)
+            .with_expires_at(Some(claims.expires_at));
+        bind_trusted_model_id(ctx, binding.trusted_model_id)
     }
 }
 
@@ -460,6 +483,65 @@ mod tests {
         assert_eq!(ctx.principal(), owner);
         assert!(ctx.can_access_owner(&owner));
         assert!(ctx.expires_at().is_some());
+    }
+
+    /// The subject map is the only source of trusted model provenance on
+    /// this path, and it reaches the caller's `AuthzContext` intact.
+    #[tokio::test]
+    async fn a_mapped_runner_principal_carries_its_trusted_model_id() {
+        let keys = test_keys();
+        let subject = UserId::new(Uuid::now_v7());
+        let mut map = OidcSubjectMap::new();
+        map.insert_binding(
+            ISSUER,
+            "runner-sub",
+            crate::SubjectBinding::new(subject).with_trusted_model_id("acme/runner-v3"),
+        )
+        .expect("insert");
+        let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
+            subject,
+            roles: Vec::new(),
+        });
+        let auth = OidcAuthenticator::new(
+            config(),
+            resolver(KID, keys.decoding.clone()),
+            map,
+            owner_access,
+        )
+        .expect("valid oidc config");
+        let token = token(&keys, KID, ISSUER, AUDIENCE, "runner-sub", future_exp());
+
+        let ctx = auth
+            .authenticate(&Credentials::Bearer(token))
+            .await
+            .expect("authenticate valid token");
+
+        assert_eq!(ctx.subject(), Some(subject));
+        assert_eq!(ctx.trusted_model_id(), Some("acme/runner-v3"));
+    }
+
+    /// A mapped principal the deployment did not declare a runner for stays
+    /// exactly as it was: authenticated, with no model provenance.
+    #[tokio::test]
+    async fn a_mapped_principal_without_the_field_carries_no_trusted_model_id() {
+        let keys = test_keys();
+        let subject = UserId::new(Uuid::now_v7());
+        let auth = mapped_authenticator(
+            config(),
+            KID,
+            keys.decoding.clone(),
+            "subject-1",
+            subject,
+            Vec::new(),
+        );
+        let token = token(&keys, KID, ISSUER, AUDIENCE, "subject-1", future_exp());
+
+        let ctx = auth
+            .authenticate(&Credentials::Bearer(token))
+            .await
+            .expect("authenticate valid token");
+
+        assert_eq!(ctx.trusted_model_id(), None);
     }
 
     #[tokio::test]

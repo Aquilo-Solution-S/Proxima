@@ -17,10 +17,13 @@ use aws_lc_rs::rsa::KeySize;
 use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
-use proxima_auth_oidc::{OidcAuthConfig, OidcTokenValidator, StaticJwksResolver};
+use proxima_auth_oidc::{
+    OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, OidcTokenValidator, StaticJwksResolver,
+    SubjectBinding,
+};
 use proxima_core::{
-    AccessError, AuthError, AuthPath, AuthzContext, GroupId, Owner, OwnerAccessPort, OwnerRef,
-    OwnerRoles, Role, ToolScope, UserId,
+    AccessError, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, GroupId, Owner,
+    OwnerAccessPort, OwnerRef, OwnerRoles, Role, ToolScope, UserId,
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -229,4 +232,123 @@ async fn unknown_audience_is_rejected_by_both_validators() {
         .await
         .expect_err("neither validator accepts an unknown audience");
     assert_eq!(err, AuthError::InvalidCredentials);
+}
+
+// ------------------------------------- trusted model provenance at the edge
+
+/// The default host-resolved path with a subject map, as a deployment
+/// configures it. Only the map decides whether a principal is a configured
+/// runner; nothing on the wire does.
+fn mapped_authenticator(keys: &TestKeys, map: OidcSubjectMap, group: GroupId) -> OidcAuthenticator {
+    let config = OidcAuthConfig {
+        issuer: ISSUER.to_owned(),
+        jwks_uri: None,
+        audience: AGENT_AUD.to_owned(),
+        allowed_subjects: None,
+        leeway_secs: 0,
+    };
+    OidcAuthenticator::new(
+        config,
+        resolver(keys.decoding.clone()),
+        map,
+        Arc::new(StaticOwnerAccess { group }),
+    )
+    .expect("valid oidc config")
+}
+
+const RUNNER_SUB: &str = "agent-service-user";
+const RUNNER_MODEL: &str = "acme/runner-v3";
+
+fn runner_map(user_id: UserId, trusted: bool) -> OidcSubjectMap {
+    let mut map = OidcSubjectMap::new();
+    let binding = if trusted {
+        SubjectBinding::new(user_id).with_trusted_model_id(RUNNER_MODEL)
+    } else {
+        SubjectBinding::new(user_id)
+    };
+    map.insert_binding(ISSUER, RUNNER_SUB, binding)
+        .expect("subject map");
+    map
+}
+
+/// A principal the deployment declared as a configured runner reaches the
+/// engine with that runner identity bound to its `AuthzContext` — the value
+/// flavors read through `ctx.caller()`.
+#[tokio::test]
+async fn a_mapped_runner_principal_reaches_the_edge_with_its_trusted_model_id() {
+    let keys = test_keys();
+    let group = GroupId::new(Uuid::now_v7());
+    let user_id = UserId::new(Uuid::now_v7());
+    let auth = mapped_authenticator(&keys, runner_map(user_id, true), group);
+    let token = token(&keys, ISSUER, AGENT_AUD, RUNNER_SUB, future_exp());
+
+    let ctx = auth
+        .authenticate(&Credentials::Bearer(token))
+        .await
+        .expect("mapped principal authenticates");
+
+    assert_eq!(ctx.trusted_model_id(), Some(RUNNER_MODEL));
+    assert_eq!(ctx.subject(), Some(user_id));
+
+    // Owner narrowing is the last thing the edge does before dispatch; the
+    // bound identity must still be there afterwards.
+    let narrowed = ctx
+        .narrowed_to_owner(OwnerRef::Group(group))
+        .expect("editor narrows to the group owner");
+    assert_eq!(narrowed.trusted_model_id(), Some(RUNNER_MODEL));
+}
+
+/// The same principal, with no `trusted_model_id` in the map: authenticated
+/// exactly as before, certifying no model. Unmapped deployments are
+/// unchanged by this feature.
+#[tokio::test]
+async fn a_principal_the_map_declares_no_runner_for_carries_none() {
+    let keys = test_keys();
+    let group = GroupId::new(Uuid::now_v7());
+    let user_id = UserId::new(Uuid::now_v7());
+    let auth = mapped_authenticator(&keys, runner_map(user_id, false), group);
+    let token = token(&keys, ISSUER, AGENT_AUD, RUNNER_SUB, future_exp());
+
+    let ctx = auth
+        .authenticate(&Credentials::Bearer(token))
+        .await
+        .expect("mapped principal authenticates");
+
+    assert_eq!(ctx.trusted_model_id(), None);
+    assert_eq!(ctx.subject(), Some(user_id));
+}
+
+/// A caller that merely *presents* the runner's `sub` gains nothing: an
+/// entry in the map is what binds a runner, and a subject that is not in
+/// the map is not authenticated at all.
+#[tokio::test]
+async fn an_unmapped_subject_cannot_claim_the_runner_identity() {
+    let keys = test_keys();
+    let group = GroupId::new(Uuid::now_v7());
+    let auth = mapped_authenticator(&keys, runner_map(UserId::new(Uuid::now_v7()), true), group);
+    let token = token(&keys, ISSUER, AGENT_AUD, "some-other-sub", future_exp());
+
+    assert_eq!(
+        auth.authenticate(&Credentials::Bearer(token)).await,
+        Err(AuthError::InvalidCredentials)
+    );
+}
+
+/// A custom host that shapes its own context binds no model identity unless
+/// it says so — `TwoAudienceHost` above never calls
+/// `with_trusted_model_id`, so neither of its audiences certifies a model.
+#[tokio::test]
+async fn a_custom_host_that_binds_nothing_certifies_nothing() {
+    let keys = test_keys();
+    let group = GroupId::new(Uuid::now_v7());
+    let host = TwoAudienceHost::new(
+        resolver(keys.decoding.clone()),
+        Arc::new(StaticOwnerAccess { group }),
+    );
+
+    for audience in [AGENT_AUD, OWNER_AUD] {
+        let token = token(&keys, ISSUER, audience, "anyone", future_exp());
+        let ctx = host.authenticate(&token).await.expect("authenticates");
+        assert_eq!(ctx.trusted_model_id(), None, "audience {audience}");
+    }
 }

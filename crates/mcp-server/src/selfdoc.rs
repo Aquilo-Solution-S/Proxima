@@ -154,8 +154,10 @@ pub fn build_instructions(
         }
         out.push_str(
             "Pass `idempotency_key` on any write you might replay (imports, re-runs) so replays \
-             are no-ops, not duplicates; tag consistently (domain + kind) and pass `model_id` as \
-             your operator label. ",
+             are no-ops, not duplicates, and tag consistently (domain + kind). `model_id` is an \
+             optional operator label; when your token already binds a model identity that \
+             identity is recorded, so omit `model_id` or send exactly the bound value — a \
+             different one is refused. ",
         );
     }
 
@@ -277,8 +279,7 @@ fn push_law(out: &mut String, s: Surface) {
     out.push_str("```\n");
     out.push_str(
         "core_derive(kind=\"Abstraction\", title=..., body=...,\n\
-        \x20           source_handles=[\"F:aaaa\", \"F:bbbb\", \"F:cccc\"],\n\
-        \x20           model_id=\"<your-operator-label>\")\n",
+        \x20           source_handles=[\"F:aaaa\", \"F:bbbb\", \"F:cccc\"])\n",
     );
     out.push_str("```\n\n");
     out.push_str(

@@ -165,11 +165,30 @@ fn wire_references_round_trip_through_a_transport_neutral_tool_ctx() {
         registry,
         ToolServices::with(McpToolPresentation::new()),
     )
-    .with_caller(Some(ToolCaller::new("test/model", "test-client", "1.0")));
+    .with_caller(Some(
+        ToolCaller::new("test/model", "test-client", "1.0")
+            .with_trusted_model_id("acme/runner-v3")
+            .expect("a well-formed runner id binds"),
+    ));
 
     assert_eq!(
         ctx.caller(),
-        Some(&ToolCaller::new("test/model", "test-client", "1.0"))
+        Some(
+            &ToolCaller::new("test/model", "test-client", "1.0")
+                .with_trusted_model_id("acme/runner-v3")
+                .expect("a well-formed runner id binds")
+        )
+    );
+
+    // Trusted model provenance is visible to an out-of-tree flavor as a
+    // field on the caller it already reads. `ToolCaller::new` keeps its
+    // three-argument shape and binds nothing, so a flavor that never asks
+    // for authenticated provenance is unaffected.
+    let caller = ctx.caller().expect("caller attached");
+    assert_eq!(caller.trusted_model_id.as_deref(), Some("acme/runner-v3"));
+    assert_eq!(
+        ToolCaller::new("test/model", "test-client", "1.0").trusted_model_id,
+        None
     );
 
     let fact = MemoryId::new(Uuid::now_v7());

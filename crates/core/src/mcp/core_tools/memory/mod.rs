@@ -4,7 +4,7 @@ pub mod interpret;
 pub mod record_utterance;
 pub mod remember;
 pub mod search;
-pub(super) mod util;
+pub(crate) mod util;
 
 pub use derive::DeriveTool;
 pub use forget::ForgetTool;

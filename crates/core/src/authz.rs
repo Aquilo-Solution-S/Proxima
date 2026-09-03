@@ -38,6 +38,13 @@ pub struct Identity {
     expires_at: Option<SystemTime>,
     /// Revocation generation; hosts bump it to force re-auth.
     auth_epoch: u64,
+    /// Model/runner identity the authenticator bound to this principal.
+    ///
+    /// Authenticated provenance, on the same footing as `subject`: it
+    /// travels with the identity through narrowing and revalidation, and no
+    /// transport payload can set it. `None` means the deployment binds no
+    /// model identity to this principal.
+    trusted_model_id: Option<String>,
 }
 
 impl Identity {
@@ -45,6 +52,18 @@ impl Identity {
     pub fn can_access_principal(&self, principal: &OwnerRef) -> bool {
         self.accessible_principals.contains(principal)
     }
+}
+
+/// Rejected input to [`AuthzContext::with_trusted_model_id`].
+///
+/// A configuration fault in the authenticator, never a caller fault: the
+/// value it names came from a credential mapping the deployment wrote.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TrustedModelIdError {
+    #[error("trusted model id must not be blank")]
+    Blank,
+    #[error("trusted model id must be at most {max} characters, got {chars}")]
+    TooLong { chars: usize, max: usize },
 }
 
 /// WHAT: tool palette + access scope, separate from identity.
@@ -414,6 +433,17 @@ impl AuthzContext {
         self.identity.auth_epoch
     }
 
+    /// Model/runner identity certified by the authenticating token, if the
+    /// deployment binds one to this principal.
+    ///
+    /// This is the only trustworthy answer to "which model is calling".
+    /// Flavors may build policy on it; the caller-supplied `model_id` label
+    /// is a claim, not a credential.
+    #[must_use]
+    pub fn trusted_model_id(&self) -> Option<&str> {
+        self.identity.trusted_model_id.as_deref()
+    }
+
     #[must_use]
     pub fn identity_for_revalidation(&self) -> Identity {
         self.identity.clone()
@@ -500,6 +530,7 @@ impl AuthzContext {
                 accessible_principals,
                 expires_at: None,
                 auth_epoch: 0,
+                trusted_model_id: None,
             },
             capabilities: CapabilitySet::all(),
             auth_path,
@@ -511,6 +542,39 @@ impl AuthzContext {
     pub fn with_tool_scope(mut self, tool_scope: ToolScope) -> Self {
         self.capabilities.tool_scope = tool_scope;
         self
+    }
+
+    /// Bind the model/runner identity this credential certifies.
+    ///
+    /// **For authenticators only.** The value must come from the credential
+    /// itself — an OIDC subject binding, or the equivalent in a custom host
+    /// — never from a tool argument, request header, MCP `clientInfo`, or
+    /// any other caller-controlled payload. A transport that lets a caller
+    /// reach this builder has published a forgeable provenance field.
+    ///
+    /// Takes a `String`, deliberately not an `Option`: there is no "clear
+    /// it" call, so no later step in a builder chain can quietly drop
+    /// provenance an authenticator already established. The value is
+    /// trimmed here, once, so the stored label, the conflict comparison and
+    /// any idempotency key derived from it are the same string.
+    ///
+    /// Bounded by [`MAX_OPERATOR_LABEL_CHARS`](crate::MAX_OPERATOR_LABEL_CHARS) at the point of binding
+    /// rather than at the point of use: an id a tool would later refuse as
+    /// over-long is a deployment that authenticates and cannot write, and
+    /// the refusal would surface on a write instead of at the boundary that
+    /// produced it.
+    ///
+    /// # Errors
+    ///
+    /// [`TrustedModelIdError`] when the value is blank after trimming or
+    /// longer than [`MAX_OPERATOR_LABEL_CHARS`](crate::MAX_OPERATOR_LABEL_CHARS).
+    pub fn with_trusted_model_id(
+        mut self,
+        trusted_model_id: impl Into<String>,
+    ) -> Result<Self, TrustedModelIdError> {
+        self.identity.trusted_model_id =
+            Some(crate::tool::validate_trusted_model_id(trusted_model_id)?);
+        Ok(self)
     }
 
     #[must_use]
@@ -595,6 +659,7 @@ impl AuthzContext {
                 accessible_principals: HashSet::new(),
                 expires_at: None,
                 auth_epoch: 0,
+                trusted_model_id: None,
             },
             capabilities: CapabilitySet {
                 tool_scope: ToolScope::Palette(Vec::new()),
@@ -790,6 +855,7 @@ const fn non_zero_duration(duration: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MAX_OPERATOR_LABEL_CHARS;
     use crate::access::Role;
     use crate::protocol::tool as protocol_tool;
     use crate::protocol::{action as protocol_action, resource as protocol_resource};
@@ -816,6 +882,7 @@ mod tests {
             accessible_principals,
             expires_at,
             auth_epoch,
+            trusted_model_id: None,
         }
     }
 
@@ -916,6 +983,116 @@ mod tests {
         let writable = ctx.writable_owners(AccessKind::Goal);
         assert!(writable.contains(&OwnerRef::Personal(subject)));
         assert!(!writable.contains(&group));
+    }
+
+    /// `trusted_model_id` is identity, not a capability: it must survive
+    /// every narrowing the edge performs between authentication and the
+    /// tool call, exactly like `subject`.
+    #[test]
+    fn a_trusted_model_id_survives_owner_narrowing_and_revalidation() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let roles = OwnerRoles::for_subject(subject, [(group, Role::editor())]).unwrap();
+
+        let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer)
+            .with_trusted_model_id("runner/pinned")
+            .expect("a well-formed runner id binds");
+
+        assert_eq!(ctx.trusted_model_id(), Some("runner/pinned"));
+        assert_eq!(
+            ctx.identity_for_revalidation().trusted_model_id.as_deref(),
+            Some("runner/pinned"),
+            "a revalidated stream keeps the bound model identity"
+        );
+
+        let narrowed = ctx
+            .clone()
+            .narrowed_to_owner(group)
+            .expect("editor narrows to the group owner");
+        assert_eq!(narrowed.trusted_model_id(), Some("runner/pinned"));
+        assert_eq!(narrowed.subject(), Some(subject));
+
+        let personal = ctx
+            .narrowed_to_owner(OwnerRef::Personal(subject))
+            .expect("own personal owner narrows");
+        assert_eq!(personal.trusted_model_id(), Some("runner/pinned"));
+    }
+
+    /// Nothing binds a model identity unless an authenticator says so: the
+    /// test constructors and the fail-closed context all leave it absent.
+    #[test]
+    fn contexts_carry_no_trusted_model_id_by_default() {
+        let owner = owner();
+        assert_eq!(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer).trusted_model_id(),
+            None
+        );
+        assert_eq!(
+            AuthzContext::for_subject(UserId::new(uuid::Uuid::now_v7()), AuthPath::HostBearer)
+                .trusted_model_id(),
+            None
+        );
+        assert_eq!(
+            AuthzContext::denied_for_owner(&owner).trusted_model_id(),
+            None
+        );
+    }
+
+    /// The bound is applied where the value is bound, not where it is
+    /// later used: an authenticator that binds an unusable id learns at the
+    /// boundary that produced it, not on some later write.
+    #[test]
+    fn a_bound_trusted_model_id_is_trimmed_and_bounded() {
+        let owner = owner();
+        let base = || AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        assert_eq!(
+            base()
+                .with_trusted_model_id("  runner/pinned  ")
+                .expect("trims")
+                .trusted_model_id(),
+            Some("runner/pinned"),
+            "one trim, at the boundary, so every later comparison is on the same string"
+        );
+
+        for blank in ["", "   "] {
+            assert_eq!(
+                base().with_trusted_model_id(blank).unwrap_err(),
+                TrustedModelIdError::Blank
+            );
+        }
+
+        assert!(
+            base()
+                .with_trusted_model_id("m".repeat(MAX_OPERATOR_LABEL_CHARS))
+                .is_ok(),
+            "the bound itself fits"
+        );
+        assert_eq!(
+            base()
+                .with_trusted_model_id("m".repeat(MAX_OPERATOR_LABEL_CHARS + 1))
+                .unwrap_err(),
+            TrustedModelIdError::TooLong {
+                chars: MAX_OPERATOR_LABEL_CHARS + 1,
+                max: MAX_OPERATOR_LABEL_CHARS,
+            }
+        );
+    }
+
+    /// There is no way to spell "clear it": the builder takes a `String`,
+    /// so no later step in a chain can drop provenance an authenticator
+    /// established.
+    #[test]
+    fn a_bound_trusted_model_id_cannot_be_cleared_by_a_later_builder_step() {
+        let owner = owner();
+        let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .with_trusted_model_id("runner/pinned")
+            .expect("binds")
+            .with_tool_scope(ToolScope::Palette(Vec::new()))
+            .with_expires_at(Some(SystemTime::UNIX_EPOCH))
+            .with_auth_epoch(7);
+
+        assert_eq!(ctx.trusted_model_id(), Some("runner/pinned"));
     }
 
     #[test]

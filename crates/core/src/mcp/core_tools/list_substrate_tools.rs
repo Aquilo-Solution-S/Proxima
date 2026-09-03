@@ -211,6 +211,7 @@ mod tests {
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),
+                trusted_model_id: None,
                 client_name: "test".into(),
                 client_version: "0".into(),
                 caller_self_perspective: None,

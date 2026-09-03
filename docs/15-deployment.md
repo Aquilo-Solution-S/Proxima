@@ -102,8 +102,8 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_OIDC_AUDIENCE` | yes | `https://proxima.example.com` | Public-origin resource id expected in token `aud`; one token covers `/mcp` and an enabled `/v1`. |
 | `PROXIMA_OIDC_JWKS_URI` | no | `https://zitadel.example.com/oauth/v2/keys` | Overrides OIDC discovery. |
 | `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` | no | `10` | Complete-request timeout for discovery and JWKS HTTP requests, including connect and body read. Default `10`; range `1..=300`; invalid values fail boot. |
-| `PROXIMA_OIDC_SUBJECT_MAP_JSON` | yes* | `[{"iss":"https://zitadel.example.com","sub":"...","user_id":"550e8400-e29b-41d4-a716-446655440000"}]` | Issuer-aware `(iss, sub) -> user_id` identity map. Required whenever `PROXIMA_OIDC_ISSUER` is set, unless `PROXIMA_OIDC_SUBJECT_MAP` is given instead (the two are mutually exclusive). |
-| `PROXIMA_OIDC_SUBJECT_MAP` | yes* | `sub-1:550e8400-e29b-41d4-a716-446655440000` | Legacy single-issuer shorthand `sub:<uuid>,sub2:<uuid2>`; every entry binds to `PROXIMA_OIDC_ISSUER`. Valid only because exactly one issuer is ever accepted here. |
+| `PROXIMA_OIDC_SUBJECT_MAP_JSON` | yes* | `[{"iss":"https://zitadel.example.com","sub":"...","user_id":"550e8400-e29b-41d4-a716-446655440000","trusted_model_id":"acme/runner-v3"}]` | Issuer-aware `(iss, sub) -> user_id` identity map. Required whenever `PROXIMA_OIDC_ISSUER` is set, unless `PROXIMA_OIDC_SUBJECT_MAP` is given instead (the two are mutually exclusive). Optional per-entry `trusted_model_id` (non-blank, ≤120 chars) — see [§Trusted model provenance](#trusted-model-provenance). |
+| `PROXIMA_OIDC_SUBJECT_MAP` | yes* | `sub-1:550e8400-e29b-41d4-a716-446655440000` | Legacy single-issuer shorthand `sub:<uuid>,sub2:<uuid2>`; every entry binds to `PROXIMA_OIDC_ISSUER`. Valid only because exactly one issuer is ever accepted here. Has no field for `trusted_model_id` and never certifies a runner. |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist layered on top of the subject map above; never an identity source by itself. |
 | `PROXIMA_REST_ENABLED` | no | `true` | Serve `/v1` on the MCP listener. Default `false`; has no effect unless the binary was built with the `rest` feature. |
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_transfer`). Set `full` to advertise the whole surface incl. `core_transfer` (moves a memory's owner to another group) — logged at startup. |
@@ -177,6 +177,64 @@ preflight (`OPTIONS` + `Origin` + `Access-Control-Request-Method`) returns
 still requires its normal bearer. The response echoes the allowed Origin and
 requested method/header names, never `*`, and does not enable cookie
 credentials. Native clients that omit `Origin` retain the same auth path.
+
+<a id="trusted-model-provenance"></a>
+## Trusted model provenance
+
+A `PROXIMA_OIDC_SUBJECT_MAP_JSON` entry may add `trusted_model_id`:
+
+```json
+[
+  {"iss": "https://zitadel.example.com",
+   "sub": "human-subject-id",
+   "user_id": "550e8400-e29b-41d4-a716-446655440000"},
+  {"iss": "https://zitadel.example.com",
+   "sub": "runner-service-user-id",
+   "user_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+   "trusted_model_id": "acme/runner-v3"}
+]
+```
+
+| Property | Value |
+|---|---|
+| Validation | trimmed; non-blank; ≤120 chars (the operator-label bound). Unknown entry keys and invalid values both fail boot |
+| Carrier | `AuthzContext::trusted_model_id()`; survives owner narrowing and stream revalidation |
+| Reaches tools as | `ToolCaller::trusted_model_id` / `McpAuthorContext::trusted_model_id` |
+| Persisted label | trusted id if present, else caller-supplied, else `unknown` |
+| Conflict | caller-supplied label ≠ trusted id ⇒ MCP invalid-params / REST `400` |
+| Blank caller label | treated as absent on both transports, never a conflict |
+| Shorthand `PROXIMA_OIDC_SUBJECT_MAP` | never yields one |
+| Unmapped `(iss, sub)` | unchanged — no entry, no authentication |
+
+What it certifies: **which configured runner principal reached the edge**. It
+is a deployment's own statement about a credential it issued, not evidence
+that a model produced any particular content. Nothing on the wire can set it
+— not tool arguments, not `X-Proxima-Model-Id`, not MCP `clientInfo`, not the
+`_proxima_*` reserved arguments. Entries without the field are unaffected: the
+caller-supplied `model_id` label keeps its existing meaning and precedence.
+
+### Where the rule is enforced
+
+Not at the transport edge. `author_from_args` and `author_from_headers` see
+only a **top-level** `model_id`, so they give the early, transport-shaped
+error and nothing more. The rule itself lives in core's operator-label
+resolver, which every tool that records a label calls — which is what covers
+`core_episode_commit`'s per-item `derive.model_id` / `stance[].model_id`, the
+embedded `CoreMcpTools` host API (whose arguments pass no edge at all), and
+any future tool that accepts a `model_id` argument. A flavor tool that takes
+one must call `ToolCtx::operator_label` (or `proxima::flavor::operator_label`
+for an `McpTool`) rather than reading the caller's label — see
+[09 §Trusted model provenance](09-developing-flavors.md).
+
+### Delegated worker phases carry no trusted id
+
+`DelegatedAuthorityService::redeem_phase` rebuilds its `AuthzContext` from
+currently-resolved `OwnerRoles`, not from the bearer that issued the grant, so
+a durable/background worker phase has `trusted_model_id() == None` and its
+writes record `unknown` unless they name a label. That is intended: the grant
+outlives the request that minted it, and a model identity certified minutes or
+days ago is not evidence about the run happening now. Fail closed — do not
+re-attach it at redemption.
 
 ## Build & run
 

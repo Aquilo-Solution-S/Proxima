@@ -213,13 +213,60 @@ silently ignored duplicate.
 |---|---|---|
 | `Authorization: Bearer` | `AuthzContext` | required; unchanged from MCP |
 | `X-Proxima-Owner` | `Owner` selection | selects the owner for this call |
-| `X-Proxima-Model-Id` | `McpAuthorContext.model_id` | optional; falls back to the token's model id, then `unknown` |
+| `X-Proxima-Model-Id` | `McpAuthorContext.model_id` | optional; outranked by a token-bound `trusted_model_id`, `400` if it names a different model; else the label, else `unknown` |
 | `X-Proxima-Self-Perspective` | `caller_self_perspective` | optional; `P:` reference |
 | `User-Agent` | `client_name` / `client_version` | parsed; unattributed calls record the adapter's own name |
 
-For generic SDK tools, the shared adapter projects `model_id`, `client_name`,
-and `client_version` into `ToolCtx::caller()`. The caller Self Perspective
-remains available separately through `ToolCtx::caller_self_perspective()`.
+For generic SDK tools, the shared adapter projects `model_id`,
+`trusted_model_id`, `client_name`, and `client_version` into
+`ToolCtx::caller()`. The caller Self Perspective remains available separately
+through `ToolCtx::caller_self_perspective()`.
+
+### Model id precedence
+
+`X-Proxima-Model-Id` is a caller *claim*. When the bearer token binds a model
+identity (`AuthzContext::trusted_model_id()`, from a subject-map entry's
+`trusted_model_id` — see [15 §Trusted model
+provenance](15-deployment.md#trusted-model-provenance)), that identity is what
+is persisted:
+
+| Token binds | Header sent | Persisted `model_id` | Status |
+|---|---|---|---|
+| `acme/runner-v3` | — | `acme/runner-v3` | `200` |
+| `acme/runner-v3` | `acme/runner-v3` | `acme/runner-v3` | `200` |
+| `acme/runner-v3` | `other/model` | — | `400 model-id-conflict` |
+| — | `other/model` | `other/model` | `200` |
+| — | — | `unknown` | `200` |
+| either | blank/whitespace | as if absent | `200` |
+
+Comparison is after trimming, and a blank header is dropped before it can
+mean anything — the MCP `model_id` argument is dropped on the same rule, so
+the two surfaces cannot disagree about what an empty label means. The
+conflict is refused rather than silently overridden for the same reason the
+reserved-argument check below exists: the caller believes it is labelling an
+append-only write, and a surface that quietly relabels it teaches the caller
+nothing.
+
+```json
+{
+  "type": "https://proxima.dev/errors/model-id-conflict",
+  "title": "Model id conflicts with the authenticated token",
+  "status": 400,
+  "detail": "X-Proxima-Model-Id is \"other/model\", but the authenticated token already binds the model identity \"acme/runner-v3\"; omit X-Proxima-Model-Id or send the bound value",
+  "instance": "/v1/tools/core_remember"
+}
+```
+
+MCP applies the same precedence to the reserved `model_id` argument through
+the same core helper, refusing a differing claim as invalid params. Neither
+surface ever derives `trusted_model_id` from a header, an argument, MCP
+`clientInfo`, or `User-Agent`.
+
+Both header and argument checks are the *early* error, not the guarantee: a
+transport sees only a top-level `model_id`. The rule is enforced again inside
+core's operator-label resolver, which is what covers nested per-item labels and
+the embedded host API (see [15 §Trusted model
+provenance](15-deployment.md#trusted-model-provenance)).
 
 A request body containing `model_id`, `caller_self_perspective`,
 `_proxima_caller_self_perspective`, or
