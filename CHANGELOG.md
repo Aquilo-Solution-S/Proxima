@@ -4,6 +4,43 @@ All notable changes to Proxima, generated from [Conventional Commits](https://ww
 
 Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpublished (`publish = false`).
 
+## [0.0.10] - 2026-09-03
+
+### Features
+- **breaking:** **auth**: Bind trusted model provenance to the authenticated edge ([`7a92d3f`](https://github.com/Aquilo-Solution-S/Proxima/commit/7a92d3f1078aa902ef5a520a8ca36e6ffe0586de)) in [#283](https://github.com/Aquilo-Solution-S/Proxima/pull/283) by @HeinrichvH
+- **core**: Declare flavor-owned lifecycle scopes ([`b1023b4`](https://github.com/Aquilo-Solution-S/Proxima/commit/b1023b4b84dad838945ced3c3ee8a27314a1b485)) in [#277](https://github.com/Aquilo-Solution-S/Proxima/pull/277) by @HeinrichvH
+- **core**: Authorize exact cold memory hydration ([`a67df5e`](https://github.com/Aquilo-Solution-S/Proxima/commit/a67df5e0059969a1678e6d2137628fa4ccab9dca)) in [#272](https://github.com/Aquilo-Solution-S/Proxima/pull/272) by @HeinrichvH
+- **proxima**: Expose the boot-wired MCP handler ([`089329f`](https://github.com/Aquilo-Solution-S/Proxima/commit/089329f0b1e55a1bf7edd79e0a315eba0ae2c3a2)) in [#273](https://github.com/Aquilo-Solution-S/Proxima/pull/273) by @HeinrichvH
+- **core**: Validate upload completion expectations ([`86dc8dd`](https://github.com/Aquilo-Solution-S/Proxima/commit/86dc8dd4089e32057cc24e337ae8349cd1f1b56a)) in [#261](https://github.com/Aquilo-Solution-S/Proxima/pull/261) by @HeinrichvH
+- **storage-pg**: Split Goal references into their own pin column ([`6f73585`](https://github.com/Aquilo-Solution-S/Proxima/commit/6f7358590d374b571357b1f870bedf706c8c2178)) in [#263](https://github.com/Aquilo-Solution-S/Proxima/pull/263) by @HeinrichvH
+- **core**: Publish dispatcher action schemas ([`1d9d83a`](https://github.com/Aquilo-Solution-S/Proxima/commit/1d9d83a8754daebc99bdda92dcd1d88a10d71c73)) in [#259](https://github.com/Aquilo-Solution-S/Proxima/pull/259) by @HeinrichvH
+- **core**: Expose structured search memory ids ([`c6e4288`](https://github.com/Aquilo-Solution-S/Proxima/commit/c6e428830ab46de6c5142cf433a498b4e8f686a5)) in [#257](https://github.com/Aquilo-Solution-S/Proxima/pull/257) by @HeinrichvH
+
+### Bug Fixes
+- **breaking:** **storage-pg**: Fence cited-upload object lifetime across stage, transfer and erase ([`c2649e7`](https://github.com/Aquilo-Solution-S/Proxima/commit/c2649e77abce8a3329f5d7f18b0871123f1c659f)) in [#276](https://github.com/Aquilo-Solution-S/Proxima/pull/276) by @HeinrichvH
+- **flavors-code**: Fence repository erase against late ingestion ([`8ae4e31`](https://github.com/Aquilo-Solution-S/Proxima/commit/8ae4e31dad4dd74665be119c47a496d68ece204a)) in [#275](https://github.com/Aquilo-Solution-S/Proxima/pull/275) by @HeinrichvH
+- **storage-pg**: Bound Memory transfer locking ([`661c0f9`](https://github.com/Aquilo-Solution-S/Proxima/commit/661c0f980a5d8bbeec4319c99b2871689aa5978b)) in [#271](https://github.com/Aquilo-Solution-S/Proxima/pull/271) by @HeinrichvH
+- **storage-pg**: Persist exact Goal replay declarations ([`96ed49b`](https://github.com/Aquilo-Solution-S/Proxima/commit/96ed49b70a4cfbb6da04ab18cdb4f7004ba931c6)) in [#267](https://github.com/Aquilo-Solution-S/Proxima/pull/267) by @HeinrichvH
+- **storage-pg**: Seal bulk erase scope ([`7cc7ba1`](https://github.com/Aquilo-Solution-S/Proxima/commit/7cc7ba1fda0e1b60fd3b04241aa016aacf99a8fa)) in [#266](https://github.com/Aquilo-Solution-S/Proxima/pull/266) by @HeinrichvH
+- **storage-pg**: Linearize Memory series lifecycle ([`27cd46d`](https://github.com/Aquilo-Solution-S/Proxima/commit/27cd46d3280386b98bc7511b34d59e2d0bcc10c8)) in [#265](https://github.com/Aquilo-Solution-S/Proxima/pull/265) by @HeinrichvH
+- **storage-pg**: Preserve erased pin targets ([`6428186`](https://github.com/Aquilo-Solution-S/Proxima/commit/6428186e070afe29f23d01a01c2cfa56e95f3339)) in [#264](https://github.com/Aquilo-Solution-S/Proxima/pull/264) by @HeinrichvH
+- **core**: Batch Fact reference kind loads and gate home_owner on entity kind ([`1a8cbd1`](https://github.com/Aquilo-Solution-S/Proxima/commit/1a8cbd1bd1ee7bfa04b3f538f5c4175508b174e2)) in [#262](https://github.com/Aquilo-Solution-S/Proxima/pull/262) by @HeinrichvH
+- **storage-pg**: Persist authorized Fact references ([`3108833`](https://github.com/Aquilo-Solution-S/Proxima/commit/310883384c02d02cedb3f664b1f6b48cedee8fe5)) in [#260](https://github.com/Aquilo-Solution-S/Proxima/pull/260) by @HeinrichvH
+- **core**: Enforce operator Goal evidence ([`75c4059`](https://github.com/Aquilo-Solution-S/Proxima/commit/75c405948e2898118fe8d9a1ee73fb5c39da4bb3)) in [#258](https://github.com/Aquilo-Solution-S/Proxima/pull/258) by @HeinrichvH
+- **storage-pg**: Resolve registered Memory schema versions ([`53a5382`](https://github.com/Aquilo-Solution-S/Proxima/commit/53a5382508d9606e87f89e3f003e574fdc744504)) in [#256](https://github.com/Aquilo-Solution-S/Proxima/pull/256) by @HeinrichvH
+- **proxima**: Expose batch-memory read DTOs ([`f29e3a8`](https://github.com/Aquilo-Solution-S/Proxima/commit/f29e3a89f1821a86886e42a12325d56cd50c4d55)) in [#255](https://github.com/Aquilo-Solution-S/Proxima/pull/255) by @HeinrichvH
+
+### Refactor
+- Redesign every function over the seven-parameter limit ([`9c91803`](https://github.com/Aquilo-Solution-S/Proxima/commit/9c9180342da459ff8cd385bdeb80cbb9cd107403)) in [#281](https://github.com/Aquilo-Solution-S/Proxima/pull/281) by @HeinrichvH
+- Redesign the shapes the too_many_lines splits exposed ([`b743c70`](https://github.com/Aquilo-Solution-S/Proxima/commit/b743c70184def70bca05be4d681da14d3c27c1ef)) in [#280](https://github.com/Aquilo-Solution-S/Proxima/pull/280) by @HeinrichvH
+- Retire every non-test too_many_lines allow ([`05dfbc4`](https://github.com/Aquilo-Solution-S/Proxima/commit/05dfbc433293e98d149a8ab3d40f43d7a5b55f5d)) in [#279](https://github.com/Aquilo-Solution-S/Proxima/pull/279) by @HeinrichvH
+- **breaking:** Retire the dead source-batch seam ([`59aff09`](https://github.com/Aquilo-Solution-S/Proxima/commit/59aff090e23968374d8b854b3bc120f485d97a08)) in [#274](https://github.com/Aquilo-Solution-S/Proxima/pull/274) by @HeinrichvH
+
+### Dependencies
+- **deps**: Bump the cargo-minor-patch group with 2 updates ([`b98a4d3`](https://github.com/Aquilo-Solution-S/Proxima/commit/b98a4d37f89a855bbff54e560059f764196ce11e)) in [#270](https://github.com/Aquilo-Solution-S/Proxima/pull/270) by @dependabot[bot]
+- **deps**: Bump rust from `e70e2ee` to `82150a5` ([`06d2401`](https://github.com/Aquilo-Solution-S/Proxima/commit/06d2401313ce6d5cacfaf8aba44e4c55785cd8b3)) in [#268](https://github.com/Aquilo-Solution-S/Proxima/pull/268) by @dependabot[bot]
+- **deps**: Refresh chacha20 lock entry ([`5246015`](https://github.com/Aquilo-Solution-S/Proxima/commit/5246015124f5088fead81b33cc05a86ca90d14c6)) by @HeinrichvH
+
 ## [0.0.9] - 2026-08-24
 
 ### Features
@@ -25,6 +62,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** One write path — the port is the only public door to storage ([`4b51fe3`](https://github.com/Aquilo-Solution-S/Proxima/commit/4b51fe371eba3a7c61c884839750af9db1ebd018)) in [#241](https://github.com/Aquilo-Solution-S/Proxima/pull/241) by @HeinrichvH
 
 ### Documentation
+- **changelog**: Stamp v0.0.9 ([`ab9bd5f`](https://github.com/Aquilo-Solution-S/Proxima/commit/ab9bd5f0b683e9695c3361a84d9ccbce6cce91d1)) in [#253](https://github.com/Aquilo-Solution-S/Proxima/pull/253) by @HeinrichvH
 - One git selector form per graph, and why the mixed form fails ([`f4dc0e3`](https://github.com/Aquilo-Solution-S/Proxima/commit/f4dc0e39e2845eb377129cc73f45f6b01883b6ed)) in [#238](https://github.com/Aquilo-Solution-S/Proxima/pull/238) by @HeinrichvH
 
 ### Dependencies
@@ -1201,6 +1239,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - @HeinrichvH made their first contribution
 - @boreas-aquilo made their first contribution
 - @ made their first contribution
+[0.0.10]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.9...v0.0.10
 [0.0.9]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/Aquilo-Solution-S/Proxima/compare/v0.0.6...v0.0.7
