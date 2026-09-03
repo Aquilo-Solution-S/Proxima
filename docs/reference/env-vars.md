@@ -89,14 +89,16 @@ each with an optional `trusted_model_id`:
 ```
 
 `trusted_model_id` is trimmed, must be non-blank, and is bounded at 120
-characters (the operator-label bound); an invalid value fails boot. It
+characters (the operator-label bound); an invalid value fails boot, as does an
+unrecognised key anywhere in an entry — a typo such as `trusted_model` must
+not degrade silently into "this principal binds nothing". It
 certifies **which configured runner principal reached the edge** — the
 deployment's own statement about a credential it issued — not that a model
 produced any particular content. It reaches tools as
 `AuthzContext::trusted_model_id()` / `ToolCaller::trusted_model_id` and
 becomes the persisted operator label, outranking a caller-supplied
 `model_id` argument or `X-Proxima-Model-Id` header (a *differing*
-caller-supplied label is refused; see
+caller-supplied label is refused, a blank one treated as absent; see
 [17 §Call Context](../17-rest-surface.md#call-context)). Entries without the
 field, and principals absent from the map, are unchanged. The
 `PROXIMA_OIDC_SUBJECT_MAP` shorthand has no field for it and never yields

@@ -146,9 +146,11 @@ impl OidcBinding {
                 tracing::warn!(error = %err, "oidc binding set: owner-access resolution failed");
                 AuthError::InvalidCredentials
             })?;
-        let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer)
-            .with_expires_at(Some(claims.expires_at))
-            .with_trusted_model_id(binding.trusted_model_id);
+        let ctx = crate::authenticator::bind_trusted_model_id(
+            AuthzContext::server_resolved(roles, AuthPath::HostBearer)
+                .with_expires_at(Some(claims.expires_at)),
+            binding.trusted_model_id,
+        )?;
         Ok(self.role_shape.apply(ctx))
     }
 }

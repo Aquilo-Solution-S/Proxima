@@ -165,6 +165,25 @@ impl OidcAuthenticator {
     }
 }
 
+/// Attach the subject map's trusted model id, if it declares one.
+///
+/// The map validated the value at parse time, so a rejection here means the
+/// two bounds disagree — a deployment fault, not a caller fault. Failing the
+/// authentication is the fail-closed answer: a context that silently lost
+/// its provenance would write under the caller's own label.
+pub(crate) fn bind_trusted_model_id(
+    ctx: AuthzContext,
+    trusted_model_id: Option<String>,
+) -> Result<AuthzContext, AuthError> {
+    let Some(trusted_model_id) = trusted_model_id else {
+        return Ok(ctx);
+    };
+    ctx.with_trusted_model_id(trusted_model_id).map_err(|err| {
+        tracing::error!(error = %err, "oidc auth: configured trusted_model_id is unusable");
+        AuthError::InvalidCredentials
+    })
+}
+
 #[async_trait]
 impl Authenticator for OidcAuthenticator {
     async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
@@ -197,9 +216,9 @@ impl Authenticator for OidcAuthenticator {
                 AuthError::InvalidCredentials
             })?;
         tracing::debug!(sub = %claims.subject, "oidc token accepted (host-resolved)");
-        Ok(AuthzContext::server_resolved(roles, AuthPath::HostBearer)
-            .with_expires_at(Some(claims.expires_at))
-            .with_trusted_model_id(binding.trusted_model_id))
+        let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer)
+            .with_expires_at(Some(claims.expires_at));
+        bind_trusted_model_id(ctx, binding.trusted_model_id)
     }
 }
 

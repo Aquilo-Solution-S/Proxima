@@ -93,9 +93,14 @@ impl McpToolHost {
     /// All references cross the wire as typed prefixed uuids
     /// (`F:`/`A:`/`P:`/`G:`).
     #[must_use]
-    pub fn ctx_for(&self, author: McpAuthorContext, auth: &McpAuthContext) -> McpToolCtx {
+    pub fn ctx_for(&self, mut author: McpAuthorContext, auth: &McpAuthContext) -> McpToolCtx {
         let owner = auth.owner;
         let authz = auth.authz.clone();
+        // The authenticated context is the only authority on trusted model
+        // provenance. Re-deriving it here rather than trusting the author
+        // means an out-of-tree host that builds an `McpAuthorContext` by
+        // hand can neither invent a binding nor keep a stale one.
+        author.trusted_model_id = authz.trusted_model_id().map(ToString::to_string);
         McpToolCtx {
             owner,
             authz,

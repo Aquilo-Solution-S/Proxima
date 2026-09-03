@@ -49,6 +49,16 @@ pub use proxima_core::mcp::{
     McpActionArgSpec, McpAuthorContext, McpPresentationExt, McpTool, McpToolAnnotations,
     McpToolCtx, McpToolError, McpToolErrorKind, McpToolPresentation,
 };
+/// Resolves the operator label a write is recorded under, and is the only
+/// sanctioned way for a flavor tool that accepts its own `model_id` argument
+/// to read one. Reading `ctx.author.model_id` directly would silently let a
+/// caller-supplied label outrank a model identity the authenticated token
+/// binds: the transport edges only ever inspect a *top-level* `model_id`, so
+/// a nested or per-item one — and every argument arriving through the
+/// embedded host API, which passes no edge at all — reaches the tool
+/// untouched. This is where the bound identity wins, a differing claim
+/// becomes [`McpToolError::InvalidInput`], and the length bound is applied.
+pub use proxima_core::operator_label;
 /// Host-wired cited-blob lane, resolved by tools and workers from
 /// [`FlavorServices`]. Present only when the host configured S3; the concrete
 /// backend (`proxima-blob-s3`) is never named across this seam.

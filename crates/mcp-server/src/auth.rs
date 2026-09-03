@@ -378,8 +378,9 @@ mod tests {
     #[tokio::test]
     async fn a_hosts_trusted_model_id_survives_edge_resolution() {
         let owner = fake_owner();
-        let authz =
-            host_owner_context(owner).with_trusted_model_id(Some("acme/runner-v3".to_string()));
+        let authz = host_owner_context(owner)
+            .with_trusted_model_id("acme/runner-v3")
+            .expect("a well-formed runner id binds");
         let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
 
         let ctx = auth

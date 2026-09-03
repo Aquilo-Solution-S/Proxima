@@ -250,6 +250,38 @@ mod tests {
         AuthPath, FlavorRegistry, McpTool, McpToolCtx, McpToolError, OwnerRef, StorageError, UserId,
     };
 
+    /// A tool that resolves its operator label exactly the way the core
+    /// authoring tools do, and answers with it.
+    struct LabelEchoTool;
+
+    impl McpTool for LabelEchoTool {
+        const NAME: &'static str = "test_label_echo";
+        const DESCRIPTION: &'static str = "echo the resolved operator label";
+        const ANNOTATIONS: Option<proxima_core::McpToolAnnotations> = Some(
+            proxima_core::McpToolAnnotations::new()
+                .read_only(true)
+                .open_world(false),
+        );
+
+        type Args = LabelEchoArgs;
+        type Output = String;
+
+        fn call(
+            ctx: McpToolCtx,
+            args: Self::Args,
+        ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
+            async move { proxima_core::operator_label(&ctx, args.model_id.as_deref()) }.boxed()
+        }
+    }
+
+    /// Declares `model_id`, exactly as `core_derive` and `core_interpret`
+    /// do — which is why the argument reaches the tool at all.
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    struct LabelEchoArgs {
+        #[serde(default)]
+        model_id: Option<String>,
+    }
+
     #[derive(Clone)]
     struct MarkerService(&'static str);
 
@@ -286,6 +318,118 @@ mod tests {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let authz = proxima_core::AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         McpAuthContext { owner, authz }
+    }
+
+    fn trusted_authz(owner: OwnerRef) -> AuthzContext {
+        proxima_core::AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .with_trusted_model_id("acme/runner-v3")
+            .expect("a well-formed runner id binds")
+    }
+
+    fn untrusted_authz(owner: OwnerRef) -> AuthzContext {
+        proxima_core::AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+    }
+
+    /// The embedded host API takes its own `model_id`; the bound identity
+    /// still wins, and the host is told rather than silently overridden.
+    #[test]
+    fn host_author_applies_the_same_precedence_as_the_transports() {
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+
+        let bound = host_author(&trusted_authz(owner), None).expect("no claim, no conflict");
+        assert_eq!(bound.model_id, "acme/runner-v3");
+        assert_eq!(bound.trusted_model_id.as_deref(), Some("acme/runner-v3"));
+
+        let agreeing = host_author(&trusted_authz(owner), Some("  acme/runner-v3  "))
+            .expect("an agreeing claim is not a conflict");
+        assert_eq!(agreeing.model_id, "acme/runner-v3");
+
+        let unbound = host_author(&untrusted_authz(owner), Some("host/label"))
+            .expect("no binding, the host label stands");
+        assert_eq!(unbound.model_id, "host/label");
+        assert_eq!(unbound.trusted_model_id, None);
+
+        let unattributed =
+            host_author(&untrusted_authz(owner), None).expect("no binding, no claim");
+        assert_eq!(unattributed.model_id, "unknown");
+        assert_eq!(unattributed.trusted_model_id, None);
+    }
+
+    #[test]
+    fn host_author_refuses_a_model_id_that_differs_from_the_bound_identity() {
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+
+        let err = host_author(&trusted_authz(owner), Some("openai/gpt-9"))
+            .expect_err("a host may not relabel an authenticated runner");
+
+        assert_eq!(err.kind(), CoreMcpErrorKind::InvalidInput);
+        let CoreMcpError::Tool { message, .. } = err else {
+            panic!("a bad reserved argument is a tool input error");
+        };
+        assert!(message.contains("model_id"), "{message}");
+        assert!(message.contains("openai/gpt-9"), "{message}");
+        assert!(message.contains("acme/runner-v3"), "{message}");
+    }
+
+    /// Regression: `call_core_tool` hands `args` to the tool host verbatim,
+    /// and nothing on this path strips a `model_id` out of them. The guard
+    /// that catches it lives in core's `operator_label`, and this proves it
+    /// is reached through the embedded host API — not only through a
+    /// transport edge.
+    #[tokio::test]
+    async fn a_model_id_argument_that_differs_from_the_bound_identity_is_refused() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<LabelEchoTool>("test");
+        let registry = Arc::new(registry.freeze_or_panic_for_tests());
+        let tools = CoreMcpTools::new(
+            registry.clone(),
+            Arc::new(proxima_core::Engine::new((*registry).clone())),
+            FlavorServices::default(),
+        );
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+
+        let err = tools
+            .call_core_tool(
+                trusted_authz(owner),
+                owner,
+                None,
+                "test_label_echo",
+                serde_json::json!({ "model_id": "openai/gpt-9" }),
+            )
+            .await
+            .expect_err("an argument may not relabel an authenticated runner");
+        assert_eq!(err.kind(), CoreMcpErrorKind::InvalidInput);
+        let CoreMcpError::Tool { message, .. } = err else {
+            panic!("a bad reserved argument is a tool input error");
+        };
+        assert!(
+            message.contains("authenticated token already binds"),
+            "refused for the binding, not for being an unexpected field: {message}"
+        );
+
+        let agreeing = tools
+            .call_core_tool(
+                trusted_authz(owner),
+                owner,
+                None,
+                "test_label_echo",
+                serde_json::json!({ "model_id": "acme/runner-v3" }),
+            )
+            .await
+            .expect("an agreeing argument is accepted");
+        assert_eq!(agreeing, serde_json::json!("acme/runner-v3"));
+
+        let absent = tools
+            .call_core_tool(
+                trusted_authz(owner),
+                owner,
+                None,
+                "test_label_echo",
+                serde_json::json!({}),
+            )
+            .await
+            .expect("an omitted argument records the bound identity");
+        assert_eq!(absent, serde_json::json!("acme/runner-v3"));
     }
 
     #[tokio::test]

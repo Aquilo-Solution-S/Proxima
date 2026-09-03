@@ -51,8 +51,7 @@ connect verb to reach for.
 
 ```
 core_derive(kind="Abstraction", title=..., body=...,
-            source_handles=["F:aaaa", "F:bbbb", "F:cccc"],
-            model_id="<your-operator-label>")
+            source_handles=["F:aaaa", "F:bbbb", "F:cccc"])
 ```
 
 `source_handles` lands `origin` entries from the new Abstraction/Perspective

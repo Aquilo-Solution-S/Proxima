@@ -39,11 +39,16 @@ pub enum OidcSubjectMapError {
     InvalidTrustedModelId {
         index: usize,
         value: String,
-        reason: &'static str,
+        reason: String,
     },
 }
 
+/// `deny_unknown_fields` is load-bearing, not tidiness: a typo like
+/// `"trusted_model"` would otherwise parse, bind nothing, and leave an
+/// operator believing a runner is certified when every write it makes is
+/// labelled by the caller. A misspelled key fails boot instead.
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawEntry {
     iss: String,
     sub: String,
@@ -296,14 +301,14 @@ fn validate_trusted_model_id(index: usize, raw: String) -> Result<String, OidcSu
         return Err(OidcSubjectMapError::InvalidTrustedModelId {
             index,
             value: raw,
-            reason: "must not be blank",
+            reason: "must not be blank".to_string(),
         });
     }
     if trimmed.chars().count() > MAX_OPERATOR_LABEL_CHARS {
         return Err(OidcSubjectMapError::InvalidTrustedModelId {
             index,
             value: raw,
-            reason: "must be at most 120 characters",
+            reason: format!("must be at most {MAX_OPERATOR_LABEL_CHARS} characters"),
         });
     }
     Ok(trimmed.to_string())
@@ -516,6 +521,43 @@ mod tests {
             OidcSubjectMap::from_json(&raw),
             Err(OidcSubjectMapError::InvalidTrustedModelId { index: 0, .. })
         ));
+    }
+
+    /// A misspelled key must fail boot, not parse into "no runner bound".
+    /// The silent version leaves an operator believing a runner is
+    /// certified while every write it makes carries the caller's own label.
+    #[test]
+    fn from_json_rejects_an_unknown_entry_field() {
+        let user_id = uuid_str();
+        let raw = format!(
+            r#"[{{"iss":"{ISSUER_A}","sub":"runner","user_id":"{user_id}",
+                  "trusted_model":"acme/runner-v3"}}]"#
+        );
+
+        let err = OidcSubjectMap::from_json(&raw).expect_err("a typo must not parse");
+        let OidcSubjectMapError::InvalidJson(message) = err else {
+            panic!("an unknown field is a JSON shape error");
+        };
+        assert!(message.contains("trusted_model"), "{message}");
+    }
+
+    /// The message quotes the same constant the check uses, so the two
+    /// cannot drift apart.
+    #[test]
+    fn the_over_long_message_states_the_shared_bound() {
+        let user_id = uuid_str();
+        let over_limit = "m".repeat(MAX_OPERATOR_LABEL_CHARS + 1);
+        let raw = format!(
+            r#"[{{"iss":"{ISSUER_A}","sub":"runner","user_id":"{user_id}",
+                  "trusted_model_id":"{over_limit}"}}]"#
+        );
+
+        let err = OidcSubjectMap::from_json(&raw).expect_err("over-long is rejected");
+        assert!(
+            err.to_string()
+                .contains(&format!("at most {MAX_OPERATOR_LABEL_CHARS} characters")),
+            "{err}"
+        );
     }
 
     #[test]

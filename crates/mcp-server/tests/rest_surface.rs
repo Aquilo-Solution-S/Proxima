@@ -390,7 +390,8 @@ fn trusted_auth() -> McpAuthContext {
     McpAuthContext {
         owner,
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
-            .with_trusted_model_id(Some(TRUSTED_MODEL.to_string())),
+            .with_trusted_model_id(TRUSTED_MODEL)
+            .expect("a well-formed runner id binds"),
     }
 }
 
@@ -469,6 +470,19 @@ async fn an_unbound_caller_gains_no_trusted_status_by_naming_the_model() {
     let bare = caller_context(&ctx, &[]).await;
     assert_eq!(bare.json()["model_id"], "unknown");
     assert_eq!(bare.json()["trusted_model_id"], serde_json::Value::Null);
+}
+
+/// A blank header is no claim on this surface and, since the shared helper
+/// now drops it, on MCP either.
+#[tokio::test]
+async fn a_blank_model_id_header_is_absent_end_to_end() {
+    let bound = caller_context(&trusted_auth(), &[("X-Proxima-Model-Id", "   ")]).await;
+    assert_eq!(bound.status, StatusCode::OK);
+    assert_eq!(bound.json()["model_id"], TRUSTED_MODEL);
+
+    let unbound = caller_context(&auth(ToolScope::All), &[("X-Proxima-Model-Id", "   ")]).await;
+    assert_eq!(unbound.status, StatusCode::OK);
+    assert_eq!(unbound.json()["model_id"], "unknown");
 }
 
 /// `User-Agent` names the client, never the trusted model — the only

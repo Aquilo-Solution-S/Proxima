@@ -193,8 +193,14 @@ mod tests {
         let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         McpAuthContext {
             owner,
-            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
-                .with_trusted_model_id(trusted_model_id.map(ToString::to_string)),
+            authz: trusted_model_id.map_or_else(
+                || AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+                |id| {
+                    AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+                        .with_trusted_model_id(id)
+                        .expect("a well-formed runner id binds")
+                },
+            ),
         }
     }
 
@@ -248,6 +254,29 @@ mod tests {
                 .expect("author");
         assert_eq!(unattributed.model_id, "unknown");
         assert_eq!(unattributed.trusted_model_id, None);
+    }
+
+    /// Blank is absent on both transports — this side already dropped an
+    /// empty header, and MCP now drops an empty argument the same way.
+    #[test]
+    fn a_blank_model_id_header_is_absent_on_both_paths() {
+        for blank in ["", "   "] {
+            let unbound = author_from_headers(
+                &headers(&[(MODEL_ID_HEADER, blank)]),
+                &auth(None),
+                "/v1/tools/core_remember",
+            )
+            .expect("a blank header is absent, not an empty label");
+            assert_eq!(unbound.model_id, "unknown", "blank {blank:?}");
+
+            let bound = author_from_headers(
+                &headers(&[(MODEL_ID_HEADER, blank)]),
+                &auth(Some("runner/pinned")),
+                "/v1/tools/core_remember",
+            )
+            .expect("a blank header cannot conflict");
+            assert_eq!(bound.model_id, "runner/pinned", "blank {blank:?}");
+        }
     }
 
     #[test]

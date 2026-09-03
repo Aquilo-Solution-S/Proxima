@@ -197,11 +197,12 @@ A `PROXIMA_OIDC_SUBJECT_MAP_JSON` entry may add `trusted_model_id`:
 
 | Property | Value |
 |---|---|
-| Validation | trimmed; non-blank; ≤120 chars (the operator-label bound). Invalid ⇒ boot fails |
+| Validation | trimmed; non-blank; ≤120 chars (the operator-label bound). Unknown entry keys and invalid values both fail boot |
 | Carrier | `AuthzContext::trusted_model_id()`; survives owner narrowing and stream revalidation |
 | Reaches tools as | `ToolCaller::trusted_model_id` / `McpAuthorContext::trusted_model_id` |
 | Persisted label | trusted id if present, else caller-supplied, else `unknown` |
 | Conflict | caller-supplied label ≠ trusted id ⇒ MCP invalid-params / REST `400` |
+| Blank caller label | treated as absent on both transports, never a conflict |
 | Shorthand `PROXIMA_OIDC_SUBJECT_MAP` | never yields one |
 | Unmapped `(iss, sub)` | unchanged — no entry, no authentication |
 
@@ -211,6 +212,28 @@ that a model produced any particular content. Nothing on the wire can set it
 — not tool arguments, not `X-Proxima-Model-Id`, not MCP `clientInfo`, not the
 `_proxima_*` reserved arguments. Entries without the field are unaffected: the
 caller-supplied `model_id` label keeps its existing meaning and precedence.
+
+### Where the rule is enforced
+
+Not at the transport edge. `author_from_args` and `author_from_headers` see
+only a **top-level** `model_id`, so they give the early, transport-shaped
+error and nothing more. The rule itself lives in core's `operator_label`,
+which every authoring tool calls — which is what covers
+`core_episode_commit`'s per-item `derive.model_id` / `stance[].model_id`, the
+embedded `CoreMcpTools` host API (whose arguments pass no edge at all), and
+any future tool that accepts a `model_id` argument. A flavor tool that takes
+one must call `proxima::flavor::operator_label` rather than reading
+`ctx.author.model_id`.
+
+### Delegated worker phases carry no trusted id
+
+`DelegatedAuthorityService::redeem_phase` rebuilds its `AuthzContext` from
+currently-resolved `OwnerRoles`, not from the bearer that issued the grant, so
+a durable/background worker phase has `trusted_model_id() == None` and its
+writes record `unknown` unless they name a label. That is intended: the grant
+outlives the request that minted it, and a model identity certified minutes or
+days ago is not evidence about the run happening now. Fail closed — do not
+re-attach it at redemption.
 
 ## Build & run
 

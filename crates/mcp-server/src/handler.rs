@@ -938,7 +938,8 @@ mod tests {
                 &owner,
                 proxima_core::AuthPath::HostBearer,
             )
-            .with_trusted_model_id(Some(trusted_model_id.to_string())),
+            .with_trusted_model_id(trusted_model_id)
+            .expect("a well-formed runner id binds"),
         }
     }
 
@@ -1063,6 +1064,32 @@ mod tests {
             .expect("author context");
         assert_eq!(unattributed.model_id, "unknown");
         assert_eq!(unattributed.trusted_model_id, None);
+    }
+
+    /// A blank argument is no claim, matching REST — where an empty header
+    /// is dropped before it can mean anything. Without the shared rule the
+    /// same request would be an error here and `unknown` there.
+    #[test]
+    fn a_blank_model_id_argument_is_absent_on_both_paths() {
+        for blank in ["", "   "] {
+            let unbound = author_from_args(
+                &serde_json::json!({ "model_id": blank }),
+                Some(&full_auth(ToolScope::All)),
+                "unknown",
+                "0",
+            )
+            .expect("a blank argument is absent, not an empty label");
+            assert_eq!(unbound.model_id, "unknown", "blank {blank:?}");
+
+            let bound = author_from_args(
+                &serde_json::json!({ "model_id": blank }),
+                Some(&trusted_auth("runner/pinned")),
+                "unknown",
+                "0",
+            )
+            .expect("a blank argument cannot conflict");
+            assert_eq!(bound.model_id, "runner/pinned", "blank {blank:?}");
+        }
     }
 
     /// `clientInfo` is peer-declared and unauthenticated; it names the

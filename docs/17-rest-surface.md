@@ -237,11 +237,15 @@ is persisted:
 | `acme/runner-v3` | `other/model` | — | `400 model-id-conflict` |
 | — | `other/model` | `other/model` | `200` |
 | — | — | `unknown` | `200` |
+| either | blank/whitespace | as if absent | `200` |
 
-Comparison is after trimming. The conflict is refused rather than silently
-overridden for the same reason the reserved-argument check below exists: the
-caller believes it is labelling an append-only write, and a surface that
-quietly relabels it teaches the caller nothing.
+Comparison is after trimming, and a blank header is dropped before it can
+mean anything — the MCP `model_id` argument is dropped on the same rule, so
+the two surfaces cannot disagree about what an empty label means. The
+conflict is refused rather than silently overridden for the same reason the
+reserved-argument check below exists: the caller believes it is labelling an
+append-only write, and a surface that quietly relabels it teaches the caller
+nothing.
 
 ```json
 {
@@ -257,6 +261,12 @@ MCP applies the same precedence to the reserved `model_id` argument through
 the same core helper, refusing a differing claim as invalid params. Neither
 surface ever derives `trusted_model_id` from a header, an argument, MCP
 `clientInfo`, or `User-Agent`.
+
+Both header and argument checks are the *early* error, not the guarantee: a
+transport sees only a top-level `model_id`. The rule is enforced again inside
+core's `operator_label`, which is what covers nested per-item labels and the
+embedded host API (see [15 §Trusted model
+provenance](15-deployment.md#trusted-model-provenance)).
 
 A request body containing `model_id`, `caller_self_perspective`,
 `_proxima_caller_self_perspective`, or

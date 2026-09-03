@@ -5,11 +5,13 @@ use crate::{FlavorServices, MemoryId, Owner, verbs::schema::FlavorRegistryFrozen
 
 /// Upper bound on the reserved `model_id` operator label, in characters.
 ///
-/// Shared by every surface that can name an operator: the tool-argument
-/// label, the REST header, and the `trusted_model_id` an authenticator
-/// binds. One bound, one constant — a token-bound id that a tool would
-/// then refuse as over-long is a deployment that authenticates and cannot
-/// write.
+/// Enforced in two places, both of which must agree or a deployment can
+/// authenticate and then fail every write:
+/// [`AuthzContext::with_trusted_model_id`](crate::AuthzContext::with_trusted_model_id)
+/// (and the OIDC subject map that feeds it) bounds what an authenticator
+/// may bind, and `operator_label` bounds the label a tool actually
+/// persists. Transport edges do *not* apply it: they only decide
+/// precedence, and a nested or per-item `model_id` never reaches them.
 pub const MAX_OPERATOR_LABEL_CHARS: usize = 120;
 
 /// Recorded operator label when neither the authenticated edge nor the
@@ -71,14 +73,22 @@ impl OperatorLabelConflict {
 }
 
 /// Resolve the operator label that reaches append-only provenance, for one
-/// call on any transport.
+/// call on any surface.
 ///
 /// Precedence: the authenticated `trusted` id, else the caller-supplied
 /// label, else [`UNKNOWN_OPERATOR_LABEL`]. A caller-supplied label that
-/// differs from a bound one (after trimming) is a conflict, not an
-/// override — the token, not the payload, decides which model this is.
+/// differs from a bound one is a conflict, not an override — the token,
+/// not the payload, decides which model this is.
 ///
-/// Both transports call this so their precedence cannot drift.
+/// Both values are trimmed first, and a `supplied` that is blank after
+/// trimming is treated as absent. That is not cosmetic: REST drops an empty
+/// header before it can reach here, so without the same rule an empty
+/// `model_id` argument on MCP would mean something the identical REST
+/// request does not.
+///
+/// Every surface that can name an operator calls this — both transport
+/// edges, the embedded host API, and `operator_label` inside the tools
+/// themselves — so their precedence cannot drift.
 ///
 /// # Errors
 ///
@@ -88,13 +98,12 @@ pub fn resolve_operator_label(
     trusted: Option<&str>,
     supplied: Option<&str>,
 ) -> Result<String, OperatorLabelConflict> {
-    match (trusted, supplied) {
-        (Some(trusted), Some(supplied)) if supplied.trim() != trusted.trim() => {
-            Err(OperatorLabelConflict {
-                trusted: trusted.to_string(),
-                supplied: supplied.to_string(),
-            })
-        }
+    let supplied = supplied.map(str::trim).filter(|value| !value.is_empty());
+    match (trusted.map(str::trim), supplied) {
+        (Some(trusted), Some(supplied)) if supplied != trusted => Err(OperatorLabelConflict {
+            trusted: trusted.to_string(),
+            supplied: supplied.to_string(),
+        }),
         (Some(trusted), _) => Ok(trusted.to_string()),
         (None, Some(supplied)) => Ok(supplied.to_string()),
         (None, None) => Ok(UNKNOWN_OPERATOR_LABEL.to_string()),
@@ -170,6 +179,39 @@ mod tests {
         assert!(
             detail.contains("authenticated token already binds"),
             "{detail}"
+        );
+    }
+
+    /// A blank claim is no claim, on either transport. REST already drops
+    /// an empty header upstream; if MCP did not drop an empty argument here,
+    /// two identical requests would mean different things.
+    #[test]
+    fn a_blank_supplied_label_is_absent_not_a_conflict() {
+        for blank in ["", "   ", "\t"] {
+            assert_eq!(
+                resolve_operator_label(Some("runner/pinned"), Some(blank))
+                    .expect("a blank claim cannot conflict"),
+                "runner/pinned"
+            );
+            assert_eq!(
+                resolve_operator_label(None, Some(blank)).expect("no conflict"),
+                UNKNOWN_OPERATOR_LABEL,
+                "blank {blank:?} is absent, not an empty label"
+            );
+        }
+    }
+
+    /// Whatever is recorded is the trimmed form: the stored label and any
+    /// idempotency key derived from it must be the same string.
+    #[test]
+    fn both_sides_are_returned_trimmed() {
+        assert_eq!(
+            resolve_operator_label(Some("  runner/pinned  "), None).expect("no conflict"),
+            "runner/pinned"
+        );
+        assert_eq!(
+            resolve_operator_label(None, Some("  caller/model  ")).expect("no conflict"),
+            "caller/model"
         );
     }
 

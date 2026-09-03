@@ -1601,6 +1601,134 @@ async fn facade_core_episode_commit_binds_derive_stance_and_goal() {
     result.expect("episode derive/stance/goal bind test failed");
 }
 
+/// A bound principal, as the OIDC subject map produces for a configured
+/// runner.
+fn trusted_host_authz(owner: &Owner, trusted_model_id: &str) -> ResolvedAuthz {
+    host_authz(owner, ToolScope::All)
+        .with_trusted_model_id(trusted_model_id)
+        .expect("a well-formed runner id binds")
+}
+
+/// Regression: `core_episode_commit` carries `model_id` *per item*
+/// (`derive.model_id`, `stance[].model_id`). The transport edges only ever
+/// see a top-level field, so neither `author_from_args` nor
+/// `reject_reserved_arguments` can see these — before the rule moved into
+/// core's `operator_label`, a caller string landed in
+/// `AgentDerivationV1.model_id` / `InterpretationV1.model_id` and in the
+/// `{model_id}:{hex}` idempotency key while the token said otherwise.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn facade_core_episode_commit_refuses_nested_model_id_against_the_bound_identity() {
+    let db_name = unique_db_name("proxima_core_episode_trusted");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = trusted_host_authz(&owner, "acme/runner-v3");
+
+        let episode = |derive_label: Option<&str>, stance_label: Option<&str>| {
+            let mut derive = serde_json::json!({
+                "title": "Episode pattern",
+                "body": "the two observations form a pattern",
+                "source_handles": ["remember:0", "remember:1"],
+            });
+            if let Some(label) = derive_label {
+                derive["model_id"] = serde_json::json!(label);
+            }
+            let mut stance = serde_json::json!({
+                "claim": "the pattern is the stance I hold in this episode",
+                "confidence": 80,
+                "subjects": ["remember:0", "derive"],
+            });
+            if let Some(label) = stance_label {
+                stance["model_id"] = serde_json::json!(label);
+            }
+            serde_json::json!({
+                "remember": [
+                    {"title": "Bound fact", "body": "first observation", "tags": ["ep"]},
+                    {"title": "Other fact", "body": "second observation", "tags": ["ep"]}
+                ],
+                "derive": derive,
+                "stance": [stance],
+            })
+        };
+
+        // A nested claim that contradicts the token is refused, from either slot.
+        for (derive_label, stance_label) in [
+            (Some("anthropic/claude-opus-5"), None),
+            (None, Some("openai/gpt-9")),
+        ] {
+            let err = tools
+                .call_core_tool(
+                    authz.clone(),
+                    owner,
+                    None,
+                    "core_episode_commit",
+                    episode(derive_label, stance_label),
+                )
+                .await
+                .expect_err("a nested model_id may not relabel an authenticated runner");
+            assert_eq!(err.kind(), CoreMcpErrorKind::InvalidInput);
+            assert!(
+                err.to_string()
+                    .contains("authenticated token already binds"),
+                "{err}"
+            );
+        }
+
+        // Agreeing is accepted, and an omitted one records the bound identity.
+        for (derive_label, stance_label) in [
+            (Some("acme/runner-v3"), Some("acme/runner-v3")),
+            (None, None),
+        ] {
+            let committed = tools
+                .call_core_tool(
+                    authz.clone(),
+                    owner,
+                    None,
+                    "core_episode_commit",
+                    episode(derive_label, stance_label),
+                )
+                .await?;
+            let derived = committed["derived"].as_str().expect("derived");
+            let stance = committed["stances"][0].as_str().expect("stance");
+
+            for handle in [derived, stance] {
+                // No host label: the shared precedence applies to resource
+                // reads through this API too, so passing one that disagrees
+                // with the token would be refused here as well.
+                let memory = tools
+                    .read_core_resource(
+                        authz.clone(),
+                        owner,
+                        None,
+                        &format!("proxima://memory/{handle}"),
+                    )
+                    .await?;
+                assert_eq!(
+                    memory["payload"]["model_id"], "acme/runner-v3",
+                    "the persisted operator label is the bound identity, not a caller string: \
+                     {memory}"
+                );
+            }
+        }
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("episode nested model_id binding test failed");
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_core_episode_commit_bound_replay_fails() {
