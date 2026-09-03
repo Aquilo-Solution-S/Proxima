@@ -283,7 +283,7 @@ async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput,
         GoalTopologyWrite::new(assignment, Vec::new(), evidence).map_err(McpToolError::Protocol)?;
     let request_id = IdempotencyKey::optional_or_generated("goal_set", args.idempotency_key)
         .map_err(McpToolError::InvalidInput)?;
-    let authorship = system_operator_authorship(&ctx, "goal_set")?;
+    let authorship = system_operator_authorship(&ctx, "goal_set");
     let engine = ctx.require_engine()?;
     let outcome = engine
         .create_goal_from_payload_write(
@@ -468,7 +468,7 @@ async fn goal_modify(
                 prior_goal_id: prior,
                 replacement: payload,
                 wake,
-                authorship: system_operator_authorship(&ctx, "goal_modify")?,
+                authorship: system_operator_authorship(&ctx, "goal_modify"),
                 request_id,
                 evidence,
                 author_self_perspective_id: ctx.caller_self_perspective,
@@ -562,7 +562,7 @@ async fn goal_decompose(
             &GoalDecomposeRequest {
                 owner: ctx.owner,
                 parent_goal_id: parent,
-                authorship: system_operator_authorship(&ctx, "goal_decompose")?,
+                authorship: system_operator_authorship(&ctx, "goal_decompose"),
                 topology,
                 children,
                 author_self_perspective_id: ctx.caller_self_perspective,
@@ -741,19 +741,20 @@ fn target_perspective(
 
 /// Operator identity for a Goal write.
 ///
-/// Goes through `operator_label` rather than reading `ctx.author.model_id`
-/// directly, so a Goal write records the same label a Memory write would —
-/// including the bound `trusted_model_id` when the token carries one — and
-/// so an unvalidated label can never reach the operator key or `ModelId`.
+/// Deliberately *not* routed through
+/// [`operator_label`](super::memory::util::operator_label), unlike every
+/// authoring path that records a label. Nothing here is persisted as a
+/// label: `SystemOrigin::Operator` has no goal-authorship column, and
+/// replay collapses it to `system_operator`, so the only thing the label
+/// reaches is the v5 hash below. Validating it would buy no provenance and
+/// would turn a blank or over-long request-context `model_id` into a
+/// refused `goal_set` — a caller told its intent was rejected over a field
+/// the goal never keeps.
 ///
-/// # Errors
-///
-/// Returns [`McpToolError::InvalidInput`] for an unusable operator label.
-pub(crate) fn system_operator_authorship(
-    ctx: &McpToolCtx,
-    prompt_version: &str,
-) -> Result<GoalAuthorship, McpToolError> {
-    let model_id = super::memory::util::operator_label(ctx, None)?;
+/// The bound identity already reaches this: the edge resolves
+/// `ctx.author.model_id` to the trusted id when the token binds one.
+pub(crate) fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str) -> GoalAuthorship {
+    let model_id = &ctx.author.model_id;
     let operator_key = format!(
         "{}\0{}\0{}\0{}",
         ctx.author.client_name, ctx.author.client_version, model_id, prompt_version
@@ -767,13 +768,13 @@ pub(crate) fn system_operator_authorship(
         )
         .as_bytes(),
     );
-    Ok(GoalAuthorship::System(SystemOrigin::Operator {
+    GoalAuthorship::System(SystemOrigin::Operator {
         operator_id: OperatorId::new(operator_id),
         operator_kind: OperatorKind::AtoGoal,
         input_contract_id: InputContractId::new(input_contract_id),
-        model_id: ModelId::new(model_id),
+        model_id: ModelId::new(model_id.clone()),
         prompt_version: PromptVersion::new(prompt_version),
-    }))
+    })
 }
 
 fn format_goal_write_output(ctx: &McpToolCtx, outcome: &GoalWriteOutcome) -> GoalWriteOutput {

@@ -1054,12 +1054,21 @@ match ctx.caller().and_then(|caller| caller.trusted_model_id.as_deref()) {
 }
 ```
 
-A flavor MCP tool that accepts its own `model_id` argument must resolve it
-with `proxima::flavor::operator_label(&ctx, args.model_id.as_deref())?`, never
-by reading `ctx.author.model_id`. The transport edge only ever inspects a
-*top-level* `model_id`, so a nested or per-item one — and every argument on
-the embedded host API — reaches the tool untouched; `operator_label` is where
-the bound identity wins and a differing claim becomes `InvalidInput`.
+A flavor tool that accepts its own `model_id` argument must resolve it
+through the shared rule, never by reading the caller's label:
+
+```rust
+// `Tool` (transport-neutral): an inherent method on the context you are handed.
+let model_id = ctx.operator_label(args.model_id.as_deref())?;
+// `McpTool`: the same resolver, over the MCP context.
+let model_id = proxima::flavor::operator_label(&ctx, args.model_id.as_deref())?;
+```
+
+The transport edge only ever inspects a *top-level* `model_id`, so a nested or
+per-item one — and every argument on the embedded host API — reaches the tool
+untouched. This is where the bound identity wins, a differing claim becomes
+`InvalidInput`, a blank one counts as no claim, and the 120-character bound is
+applied.
 
 Paged reads: call `proxima::flavor::reject_zero_limit(args.limit)?` before
 anything else, then clamp the upper bound however the tool likes. The two

@@ -124,7 +124,7 @@ A `PROXIMA_OIDC_SUBJECT_MAP_JSON` entry may carry an optional
 | Persisted label | trusted id if present, else the caller-supplied `model_id` / `X-Proxima-Model-Id`, else `unknown` |
 | Conflicting caller label | refused: MCP invalid params, REST `400` |
 | Sources that can set it | the authenticator only; never an argument, header, `clientInfo`, or `_proxima_*` field |
-| Enforced in | core's `operator_label` (every authoring tool); the transport edges only add the early error |
+| Enforced in | core's operator-label resolver (every tool that records an operator label); the transport edges only add the early error |
 | Delegated worker phases | carry none — a redeemed grant records `unknown` (fail-closed) |
 
 Principals with no entry, and entries without the field, are unchanged —

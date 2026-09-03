@@ -18,7 +18,7 @@ use proxima_core::mcp::core_tools::{
 };
 use proxima_core::mcp::{
     McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind, Next, TerminalDispatch, ToolCall,
-    tool_name_matches,
+    resolve_operator_label, tool_name_matches,
 };
 use proxima_core::protocol::resource as protocol_resource;
 use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices};
@@ -92,16 +92,33 @@ impl McpToolHost {
     ///
     /// All references cross the wire as typed prefixed uuids
     /// (`F:`/`A:`/`P:`/`G:`).
-    #[must_use]
-    pub fn ctx_for(&self, mut author: McpAuthorContext, auth: &McpAuthContext) -> McpToolCtx {
+    ///
+    /// The author context is re-reconciled against the authenticated one
+    /// rather than trusted as given. Both halves of the invariant
+    /// [`McpAuthorContext`] documents — the bound identity, and
+    /// `model_id` equalling it when present — are restored here, because
+    /// an out-of-tree host builds this struct by hand and
+    /// [`ToolCaller`](proxima_core::ToolCaller) hands `model_id` on to
+    /// flavor tools as the label to record.
+    ///
+    /// # Errors
+    ///
+    /// [`McpToolError::InvalidInput`] when the author names a model other
+    /// than the one the authenticated token binds. In-tree transports
+    /// resolved that at the edge already, so reaching this is a host
+    /// assembling an author context the credential does not support.
+    pub fn ctx_for(
+        &self,
+        mut author: McpAuthorContext,
+        auth: &McpAuthContext,
+    ) -> Result<McpToolCtx, McpToolError> {
         let owner = auth.owner;
         let authz = auth.authz.clone();
-        // The authenticated context is the only authority on trusted model
-        // provenance. Re-deriving it here rather than trusting the author
-        // means an out-of-tree host that builds an `McpAuthorContext` by
-        // hand can neither invent a binding nor keep a stale one.
-        author.trusted_model_id = authz.trusted_model_id().map(ToString::to_string);
-        McpToolCtx {
+        let trusted = authz.trusted_model_id();
+        author.model_id = resolve_operator_label(trusted, Some(&author.model_id))
+            .map_err(|conflict| McpToolError::InvalidInput(conflict.detail("model_id")))?;
+        author.trusted_model_id = trusted.map(ToString::to_string);
+        Ok(McpToolCtx {
             owner,
             authz,
             registry: self.registry.clone(),
@@ -109,7 +126,7 @@ impl McpToolHost {
             services: self.services.clone(),
             author,
             engine: self.engine.clone(),
-        }
+        })
     }
 
     /// # Errors
@@ -129,7 +146,7 @@ impl McpToolHost {
             .iter()
             .find(|d| tool_name_matches(d.name, name))
         {
-            let ctx = self.ctx_for(author, &auth);
+            let ctx = self.ctx_for(author, &auth)?;
             let call_fn = descriptor.call;
             let terminal: TerminalDispatch<'_> = Box::new(move |call| {
                 let ToolCall { args, ctx, .. } = call;
@@ -155,7 +172,7 @@ impl McpToolHost {
         let parsed = parse_resource_uri(uri).map_err(|err| err.into_invocation_error(uri))?;
         let auth =
             auth.ok_or_else(|| ToolInvocationError::NotAuthorized(parsed.scope_key().to_string()))?;
-        let ctx = self.ctx_for(author, &auth);
+        let ctx = self.ctx_for(author, &auth)?;
         let scope_key = parsed.scope_key();
 
         let terminal: TerminalDispatch<'_> = Box::new(move |call| {
@@ -521,6 +538,74 @@ mod tests {
         }
     }
 
+    /// The author context is a per-call struct an out-of-tree host builds
+    /// by hand, and `ToolCaller::model_id` — the label a flavor tool
+    /// records — is copied straight out of it. Restoring only
+    /// `trusted_model_id` would leave the documented invariant ("when
+    /// present, `model_id` equals it") false for exactly the callers that
+    /// did not go through a transport edge.
+    #[test]
+    fn ctx_for_reconciles_both_model_fields_against_the_credential() {
+        let server = make_server();
+        let owner = fake_owner();
+        let auth = McpAuthContext {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+                .with_trusted_model_id("acme/runner-v3")
+                .expect("a well-formed runner id binds"),
+        };
+        let author = |model_id: &str| McpAuthorContext {
+            model_id: model_id.into(),
+            trusted_model_id: None,
+            client_name: "test".into(),
+            client_version: "0".into(),
+            caller_self_perspective: None,
+        };
+
+        let ctx = server
+            .ctx_for(author("acme/runner-v3"), &auth)
+            .expect("an agreeing author is accepted");
+        assert_eq!(ctx.author.model_id, "acme/runner-v3");
+        assert_eq!(
+            ctx.author.trusted_model_id.as_deref(),
+            Some("acme/runner-v3"),
+            "the binding is restored even though the author omitted it"
+        );
+
+        let err = server
+            .ctx_for(author("openai/gpt-9"), &auth)
+            .expect_err("a stale label may not reach a flavor as the one to record");
+        assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
+    }
+
+    /// Without a binding the author's own label stands, and an author that
+    /// invented a trusted id does not keep it.
+    #[test]
+    fn ctx_for_strips_a_binding_the_credential_does_not_carry() {
+        let server = make_server();
+        let owner = fake_owner();
+        let auth = McpAuthContext {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        };
+
+        let ctx = server
+            .ctx_for(
+                McpAuthorContext {
+                    model_id: "caller/model".into(),
+                    trusted_model_id: Some("acme/runner-v3".into()),
+                    client_name: "test".into(),
+                    client_version: "0".into(),
+                    caller_self_perspective: None,
+                },
+                &auth,
+            )
+            .expect("no binding, no conflict");
+
+        assert_eq!(ctx.author.model_id, "caller/model");
+        assert_eq!(ctx.author.trusted_model_id, None);
+    }
+
     #[test]
     fn parse_resource_uri_projects_known_resources() {
         let memory = parse_resource_uri(
@@ -729,7 +814,9 @@ mod tests {
                 .expect("personal owner narrows"),
         };
 
-        let ctx = server.ctx_for(author, &auth);
+        let ctx = server
+            .ctx_for(author, &auth)
+            .expect("no binding, no conflict");
         let id = proxima_core::MemoryId::new(uuid::Uuid::now_v7());
         let wire = ctx.format_fact_memory(id);
         assert_eq!(wire, format!("F:{}", id.into_inner()));

@@ -21,7 +21,6 @@ use tokio::time::{Instant, Interval, Sleep};
 use crate::access::{AccessKind, OwnerRoles};
 use crate::auth::{AuthError, Credentials};
 use crate::error::ProtocolError;
-use crate::mcp::MAX_OPERATOR_LABEL_CHARS;
 use crate::{Owner, OwnerRef, UserId};
 
 pub use hooks::{
@@ -559,7 +558,7 @@ impl AuthzContext {
     /// trimmed here, once, so the stored label, the conflict comparison and
     /// any idempotency key derived from it are the same string.
     ///
-    /// Bounded by [`MAX_OPERATOR_LABEL_CHARS`] at the point of binding
+    /// Bounded by [`MAX_OPERATOR_LABEL_CHARS`](crate::MAX_OPERATOR_LABEL_CHARS) at the point of binding
     /// rather than at the point of use: an id a tool would later refuse as
     /// over-long is a deployment that authenticates and cannot write, and
     /// the refusal would surface on a write instead of at the boundary that
@@ -568,24 +567,13 @@ impl AuthzContext {
     /// # Errors
     ///
     /// [`TrustedModelIdError`] when the value is blank after trimming or
-    /// longer than [`MAX_OPERATOR_LABEL_CHARS`].
+    /// longer than [`MAX_OPERATOR_LABEL_CHARS`](crate::MAX_OPERATOR_LABEL_CHARS).
     pub fn with_trusted_model_id(
         mut self,
         trusted_model_id: impl Into<String>,
     ) -> Result<Self, TrustedModelIdError> {
-        let raw = trusted_model_id.into();
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Err(TrustedModelIdError::Blank);
-        }
-        let chars = trimmed.chars().count();
-        if chars > MAX_OPERATOR_LABEL_CHARS {
-            return Err(TrustedModelIdError::TooLong {
-                chars,
-                max: MAX_OPERATOR_LABEL_CHARS,
-            });
-        }
-        self.identity.trusted_model_id = Some(trimmed.to_string());
+        self.identity.trusted_model_id =
+            Some(crate::tool::validate_trusted_model_id(trusted_model_id)?);
         Ok(self)
     }
 
@@ -867,6 +855,7 @@ const fn non_zero_duration(duration: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MAX_OPERATOR_LABEL_CHARS;
     use crate::access::Role;
     use crate::protocol::tool as protocol_tool;
     use crate::protocol::{action as protocol_action, resource as protocol_resource};

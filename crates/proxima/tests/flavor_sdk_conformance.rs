@@ -167,14 +167,16 @@ fn wire_references_round_trip_through_a_transport_neutral_tool_ctx() {
     )
     .with_caller(Some(
         ToolCaller::new("test/model", "test-client", "1.0")
-            .with_trusted_model_id(Some("acme/runner-v3".to_string())),
+            .with_trusted_model_id("acme/runner-v3")
+            .expect("a well-formed runner id binds"),
     ));
 
     assert_eq!(
         ctx.caller(),
         Some(
             &ToolCaller::new("test/model", "test-client", "1.0")
-                .with_trusted_model_id(Some("acme/runner-v3".to_string()))
+                .with_trusted_model_id("acme/runner-v3")
+                .expect("a well-formed runner id binds")
         )
     );
 

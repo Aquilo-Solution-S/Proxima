@@ -49,14 +49,19 @@ pub use proxima_core::mcp::{
     McpActionArgSpec, McpAuthorContext, McpPresentationExt, McpTool, McpToolAnnotations,
     McpToolCtx, McpToolError, McpToolErrorKind, McpToolPresentation,
 };
-/// Resolves the operator label a write is recorded under, and is the only
-/// sanctioned way for a flavor tool that accepts its own `model_id` argument
-/// to read one. Reading `ctx.author.model_id` directly would silently let a
-/// caller-supplied label outrank a model identity the authenticated token
-/// binds: the transport edges only ever inspect a *top-level* `model_id`, so
-/// a nested or per-item one — and every argument arriving through the
-/// embedded host API, which passes no edge at all — reaches the tool
-/// untouched. This is where the bound identity wins, a differing claim
+/// Resolves the operator label a write is recorded under, for a tool
+/// written against [`McpTool`] — the [`ToolCtx`] spelling, and the one a
+/// transport-neutral [`Tool`] must use, is
+/// [`ToolCtx::operator_label`](proxima_core::ToolCtx::operator_label).
+/// Both call the same resolver.
+///
+/// A flavor tool that accepts its own `model_id` argument has to go
+/// through one of them. Reading the caller's label directly would silently
+/// let a caller-supplied value outrank a model identity the authenticated
+/// token binds: the transport edges only ever inspect a *top-level*
+/// `model_id`, so a nested or per-item one — and every argument arriving
+/// through the embedded host API, which passes no edge at all — reaches the
+/// tool untouched. This is where the bound identity wins, a differing claim
 /// becomes [`McpToolError::InvalidInput`], and the length bound is applied.
 pub use proxima_core::operator_label;
 /// Host-wired cited-blob lane, resolved by tools and workers from
@@ -106,7 +111,7 @@ pub use proxima_core::{
     MemoryHydrationOutcome, MemoryHydrationStatus, MemoryId, ModelId, OperatorId,
     PayloadKeyBuilder, PerspectivePayload, PromptVersion, SchemaId, SchemaVersion,
     SearchProjectionColumnKind, SidecarPayload, Tool, ToolCaller, ToolCtx, ToolError, ToolServices,
-    is_loopback_endpoint, is_loopback_host, proxima_flavor, proxima_schema_id,
+    TrustedModelIdError, is_loopback_endpoint, is_loopback_host, proxima_flavor, proxima_schema_id,
     validate_endpoint_url,
 };
 /// Derived-memory authoring: the request/outcome types of

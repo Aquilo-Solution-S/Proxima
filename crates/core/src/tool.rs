@@ -7,6 +7,7 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 
 use crate::access::AccessKind;
+use crate::authz::TrustedModelIdError;
 use crate::storage_ports::OwnerWritePermit;
 use crate::text_bounds::check_trimmed_len;
 use crate::{AuthzContext, Engine, FlavorRegistryFrozen, MemoryId, Owner};
@@ -237,10 +238,28 @@ impl ToolCaller {
     ///
     /// **For transport adapters only** — the value must originate in the
     /// credential (`AuthzContext::trusted_model_id`), never in a payload.
-    #[must_use]
-    pub fn with_trusted_model_id(mut self, trusted_model_id: Option<String>) -> Self {
-        self.trusted_model_id = trusted_model_id;
-        self
+    ///
+    /// Same shape as
+    /// [`AuthzContext::with_trusted_model_id`](crate::AuthzContext::with_trusted_model_id)
+    /// and for the same reasons: a `String` rather than an `Option` so no
+    /// later builder step can clear provenance, trimmed once so every
+    /// comparison is on the same string, and bounded so a value that a
+    /// tool would later refuse cannot reach a flavor's policy check
+    /// looking legitimate. The only in-tree caller already holds a value
+    /// that passed those checks at the authenticating edge; validating
+    /// again here costs a trim and buys the same guarantee for
+    /// out-of-tree adapters.
+    ///
+    /// # Errors
+    ///
+    /// [`TrustedModelIdError`] when the value is blank after trimming or
+    /// longer than [`MAX_OPERATOR_LABEL_CHARS`](crate::MAX_OPERATOR_LABEL_CHARS).
+    pub fn with_trusted_model_id(
+        mut self,
+        trusted_model_id: impl Into<String>,
+    ) -> Result<Self, TrustedModelIdError> {
+        self.trusted_model_id = Some(validate_trusted_model_id(trusted_model_id)?);
+        Ok(self)
     }
 }
 
@@ -383,6 +402,108 @@ impl ToolCtx {
     pub fn service<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
         self.services.get::<T>()
     }
+
+    /// Resolve the operator label this call's writes are recorded under.
+    ///
+    /// The transport-neutral entry point, and the one a flavor [`Tool`]
+    /// that accepts its own `model_id` argument must use instead of
+    /// reading [`ToolCaller::model_id`]. A transport edge only ever
+    /// inspects a *top-level* `model_id`, so a nested or per-item one —
+    /// and every argument arriving through the embedded host API, which
+    /// passes no edge at all — reaches the tool untouched. This is where
+    /// a bound model identity wins over a caller's claim.
+    ///
+    /// Reads the bound identity from the authorization context rather
+    /// than from [`ToolCaller`]: the caller struct is a copy handed to the
+    /// tool, and only the credential decides provenance.
+    ///
+    /// # Errors
+    ///
+    /// [`ToolError::InvalidInput`] when `explicit` names a model other
+    /// than the one the authenticated token binds, or when the resolved
+    /// label is longer than
+    /// [`MAX_OPERATOR_LABEL_CHARS`](crate::MAX_OPERATOR_LABEL_CHARS).
+    pub fn operator_label(&self, explicit: Option<&str>) -> Result<String, ToolError> {
+        resolve_recorded_operator_label(
+            self.authz.trusted_model_id(),
+            self.caller.as_ref().map(|caller| caller.model_id.as_str()),
+            explicit,
+        )
+    }
+}
+
+/// Reserved argument name for the operator label, on every surface.
+pub(crate) const OPERATOR_LABEL_FIELD: &str = "model_id";
+
+/// Trim and bound a model identity an authenticated edge wants to bind.
+///
+/// Shared by [`AuthzContext::with_trusted_model_id`](crate::AuthzContext::with_trusted_model_id)
+/// and [`ToolCaller::with_trusted_model_id`] so the carrier and the copy
+/// handed to tools cannot disagree about what is bindable.
+///
+/// # Errors
+///
+/// [`TrustedModelIdError`] when blank after trimming or over the bound.
+pub(crate) fn validate_trusted_model_id(
+    value: impl Into<String>,
+) -> Result<String, TrustedModelIdError> {
+    let raw = value.into();
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(TrustedModelIdError::Blank);
+    }
+    let chars = trimmed.chars().count();
+    if chars > crate::mcp::MAX_OPERATOR_LABEL_CHARS {
+        return Err(TrustedModelIdError::TooLong {
+            chars,
+            max: crate::mcp::MAX_OPERATOR_LABEL_CHARS,
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+/// The one implementation of "which operator label does this write carry".
+///
+/// Both tool traits reach it — [`ToolCtx::operator_label`] for a
+/// transport-neutral [`Tool`], `proxima_core::operator_label` for an
+/// [`McpTool`](crate::mcp::McpTool) — so a tool cannot pick a different
+/// answer by picking a different trait.
+///
+/// `explicit` is normalised before anything else looks at it: blank is no
+/// claim, so it can neither conflict with a bound identity nor be stored
+/// as an operator. REST already dropped an empty header at the edge, and
+/// without the same rule here `{"derive": {"model_id": ""}}` would fail a
+/// request the identical REST call accepts.
+///
+/// `context_label` is the fallback, never a claim: it is the label the
+/// edge already resolved for this call, so it is not re-checked against
+/// the binding.
+pub(crate) fn resolve_recorded_operator_label(
+    trusted: Option<&str>,
+    context_label: Option<&str>,
+    explicit: Option<&str>,
+) -> Result<String, ToolError> {
+    fn claimed(value: Option<&str>) -> Option<&str> {
+        value.map(str::trim).filter(|value| !value.is_empty())
+    }
+
+    let explicit = claimed(explicit);
+    let bound = crate::mcp::resolve_operator_label(trusted, explicit)
+        .map_err(|conflict| ToolError::InvalidInput(conflict.detail(OPERATOR_LABEL_FIELD)))?;
+    // `bound` is already the answer whenever anything named one: the
+    // trusted identity when the token binds one — whatever the caller sent,
+    // because a differing claim was refused above — and otherwise the
+    // caller's own claim. Only a call that named nothing falls back.
+    let raw = match (trusted, explicit) {
+        (Some(_), _) | (None, Some(_)) => bound,
+        (None, None) => claimed(context_label).map_or(bound, ToString::to_string),
+    };
+    Ok(validate_trimmed_len(
+        OPERATOR_LABEL_FIELD,
+        &raw,
+        crate::mcp::MAX_OPERATOR_LABEL_CHARS,
+    )?
+    .to_string())
 }
 
 /// Reject `limit: 0` on any paged read. `None` means the caller omitted
@@ -758,5 +879,158 @@ mod shared_arg_rule_tests {
     #[test]
     fn the_shared_text_cap_is_the_number_both_tools_documented() {
         assert_eq!(MAX_TEXT_CAP_CHARS, 8_000);
+    }
+}
+
+#[cfg(test)]
+mod operator_label_tests {
+    use std::sync::Arc;
+
+    use super::{ToolCaller, ToolCtx, ToolError, ToolServices};
+    use crate::authz::TrustedModelIdError;
+    use crate::{
+        AuthPath, AuthzContext, FlavorRegistry, MAX_OPERATOR_LABEL_CHARS, Owner, OwnerRef, UserId,
+    };
+
+    fn owner() -> Owner {
+        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
+    }
+
+    /// A transport-neutral context shaped the way the MCP blanket impl
+    /// builds one: the caller carries the label the edge resolved, the
+    /// binding lives on the authorization context.
+    fn ctx(trusted: Option<&str>, caller_label: Option<&str>) -> ToolCtx {
+        let owner = owner();
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = match trusted {
+            None => authz,
+            Some(trusted) => authz
+                .with_trusted_model_id(trusted)
+                .expect("a well-formed runner id binds"),
+        };
+        ToolCtx::new(
+            owner,
+            authz,
+            Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            ToolServices::default(),
+        )
+        .with_caller(caller_label.map(|label| ToolCaller::new(label, "test-client", "0")))
+    }
+
+    /// The entry a flavor `Tool` can actually reach. `Tool::call` is handed
+    /// a `ToolCtx` whose fields are private and which cannot produce an
+    /// `McpToolCtx`, so without this an out-of-tree tool taking its own
+    /// `model_id` had no way to resolve it and would fall back to reading
+    /// the caller label — the exact bypass the binding exists to close.
+    #[test]
+    fn a_flavor_context_resolves_the_same_label_the_mcp_path_does() {
+        assert_eq!(
+            ctx(Some("acme/runner-v3"), Some("acme/runner-v3"))
+                .operator_label(None)
+                .expect("bound identity"),
+            "acme/runner-v3"
+        );
+        assert_eq!(
+            ctx(None, Some("caller/model"))
+                .operator_label(None)
+                .expect("caller label"),
+            "caller/model"
+        );
+        assert_eq!(
+            ctx(None, Some("caller/model"))
+                .operator_label(Some("explicit/model"))
+                .expect("explicit label"),
+            "explicit/model"
+        );
+        assert_eq!(
+            ctx(None, None).operator_label(None).expect("no claim"),
+            "unknown",
+            "a context with no caller at all still resolves"
+        );
+    }
+
+    #[test]
+    fn a_flavor_tool_cannot_relabel_a_bound_identity() {
+        let err = ctx(Some("acme/runner-v3"), Some("acme/runner-v3"))
+            .operator_label(Some("openai/gpt-9"))
+            .expect_err("a flavor argument may not relabel an authenticated runner");
+
+        let ToolError::InvalidInput(message) = err else {
+            panic!("a bad reserved argument is invalid input");
+        };
+        assert!(message.contains("model_id"), "{message}");
+        assert!(
+            message.contains("authenticated token already binds"),
+            "{message}"
+        );
+    }
+
+    /// Reads the binding from the authorization context, not from the
+    /// caller struct: `ToolCaller` is a copy handed to the tool, and a
+    /// flavor that mutated its own copy must not change what is recorded.
+    #[test]
+    fn the_binding_is_read_from_the_credential_not_the_caller_copy() {
+        let ctx = ctx(Some("acme/runner-v3"), Some("stale/label"));
+
+        assert_eq!(
+            ctx.operator_label(None).expect("bound identity wins"),
+            "acme/runner-v3"
+        );
+    }
+
+    /// Blank is no claim on this path too, so a flavor tool with an
+    /// optional `model_id` argument does not have to special-case `""`.
+    #[test]
+    fn a_blank_flavor_argument_is_absent() {
+        assert_eq!(
+            ctx(None, Some("caller/model"))
+                .operator_label(Some("   "))
+                .expect("blank is no claim"),
+            "caller/model"
+        );
+    }
+
+    #[test]
+    fn an_over_long_flavor_argument_is_refused() {
+        assert!(
+            ctx(None, Some("caller/model"))
+                .operator_label(Some(&"m".repeat(MAX_OPERATOR_LABEL_CHARS + 1)))
+                .is_err()
+        );
+    }
+
+    /// The caller copy is bound by the same rule as the credential, so an
+    /// out-of-tree adapter cannot hand a flavor a value that
+    /// `AuthzContext` would have refused.
+    #[test]
+    fn the_caller_builder_validates_what_it_binds() {
+        let caller = || ToolCaller::new("caller/model", "test-client", "0");
+
+        assert_eq!(
+            caller()
+                .with_trusted_model_id("  acme/runner-v3  ")
+                .expect("trims")
+                .trusted_model_id
+                .as_deref(),
+            Some("acme/runner-v3")
+        );
+        assert_eq!(
+            caller().with_trusted_model_id("   ").unwrap_err(),
+            TrustedModelIdError::Blank
+        );
+        assert_eq!(
+            caller()
+                .with_trusted_model_id("m".repeat(MAX_OPERATOR_LABEL_CHARS + 1))
+                .unwrap_err(),
+            TrustedModelIdError::TooLong {
+                chars: MAX_OPERATOR_LABEL_CHARS + 1,
+                max: MAX_OPERATOR_LABEL_CHARS,
+            }
+        );
+        assert_eq!(
+            caller().trusted_model_id,
+            None,
+            "the three-argument shape still binds nothing"
+        );
     }
 }

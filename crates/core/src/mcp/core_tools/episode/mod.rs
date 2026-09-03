@@ -567,7 +567,7 @@ impl EpisodeWrite<'_> {
                         wake,
                         payload,
                         request_id,
-                        authorship: system_operator_authorship(ctx, "episode_commit")?,
+                        authorship: system_operator_authorship(ctx, "episode_commit"),
                         author_self_perspective_id: ctx.caller_self_perspective,
                     },
                     pin.then_some(act_id),

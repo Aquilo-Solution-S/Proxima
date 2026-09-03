@@ -1,14 +1,16 @@
 use crate::McpToolError;
-use crate::mcp::{MAX_OPERATOR_LABEL_CHARS, McpToolCtx, resolve_operator_label};
+use crate::MemoryId;
+use crate::mcp::McpToolCtx;
 use crate::verbs::goal_write::IdempotencyKey;
-use crate::{MemoryId, tool::validate_trimmed_len};
-
-/// Reserved argument name for the operator label, on every surface.
-pub(crate) const OPERATOR_LABEL_FIELD: &str = "model_id";
 
 /// Resolve the reserved operator label for an authoring write.
 ///
-/// This is the enforcement point for trusted model provenance, not a
+/// The [`McpTool`](crate::mcp::McpTool) spelling of
+/// [`ToolCtx::operator_label`](crate::ToolCtx::operator_label); both call
+/// the same resolver, so a tool cannot get a different answer by picking a
+/// different trait.
+///
+/// This is an enforcement point for trusted model provenance, not a
 /// restatement of a transport check. `author_from_args` and
 /// `author_from_headers` only ever see a *top-level* `model_id`; a nested
 /// one (`core_episode_commit`'s per-item `derive.model_id` /
@@ -16,14 +18,15 @@ pub(crate) const OPERATOR_LABEL_FIELD: &str = "model_id";
 /// the tool untouched. Putting the rule here is what makes it hold for any
 /// tool that takes a `model_id` argument, including ones not written yet.
 ///
-/// Precedence is [`resolve_operator_label`]'s, so there is exactly one
-/// implementation: a bound `trusted_model_id` wins, a differing `explicit`
-/// is refused, and an absent one falls back to the request-context label
-/// (which the MCP server strips out of the reserved request field into
-/// `ctx.author.model_id`).
+/// Precedence: a bound `trusted_model_id` wins, a differing `explicit` is
+/// refused, a blank one is no claim at all, and an absent one falls back to
+/// the request-context label (which the MCP server strips out of the
+/// reserved request field into `ctx.author.model_id`).
 ///
-/// Without a binding the rule is unchanged, blank explicit label included:
-/// a caller that sends `"  "` is told, not silently attributed.
+/// The bound identity is read from `ctx.authz`, not from
+/// `ctx.author.trusted_model_id`: the author context is a per-call struct a
+/// host can build by hand, while the authorization context is the carrier
+/// the authenticator hardened.
 ///
 /// The label is trimmed before it is *used*, not just before it is checked:
 /// the stored label and any idempotency key derived from it must be the
@@ -34,20 +37,14 @@ pub(crate) const OPERATOR_LABEL_FIELD: &str = "model_id";
 ///
 /// Returns [`McpToolError::InvalidInput`] when `explicit` names a model
 /// other than the one the authenticated token binds, or when the resolved
-/// label is blank after trimming or longer than
-/// [`MAX_OPERATOR_LABEL_CHARS`].
+/// label is longer than
+/// [`MAX_OPERATOR_LABEL_CHARS`](crate::mcp::MAX_OPERATOR_LABEL_CHARS).
 pub fn operator_label(ctx: &McpToolCtx, explicit: Option<&str>) -> Result<String, McpToolError> {
-    let trusted = ctx.author.trusted_model_id.as_deref();
-    let bound = resolve_operator_label(trusted, explicit)
-        .map_err(|conflict| McpToolError::InvalidInput(conflict.detail(OPERATOR_LABEL_FIELD)))?;
-    let raw = if trusted.is_some() {
-        // The token decided. `bound` is that identity whatever the caller
-        // sent, because a differing claim was refused above.
-        bound
-    } else {
-        explicit.map_or_else(|| ctx.author.model_id.clone(), ToString::to_string)
-    };
-    Ok(validate_trimmed_len(OPERATOR_LABEL_FIELD, &raw, MAX_OPERATOR_LABEL_CHARS)?.to_string())
+    Ok(crate::tool::resolve_recorded_operator_label(
+        ctx.authz.trusted_model_id(),
+        Some(ctx.author.model_id.as_str()),
+        explicit,
+    )?)
 }
 
 /// Resolve a caller's handle list to memories in request order with repeats
@@ -196,9 +193,10 @@ pub fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, McpToolError> {
 mod tests {
     use super::super::super::memory_spaces::test_ctx::ctx_for;
     use super::{
-        MAX_OPERATOR_LABEL_CHARS, MAX_TAGS, McpToolError, dedup_resolved,
-        normalize_idempotency_key, normalize_tags, operator_label, parse_observed_at,
+        MAX_TAGS, McpToolError, dedup_resolved, normalize_idempotency_key, normalize_tags,
+        operator_label, parse_observed_at,
     };
+    use crate::mcp::MAX_OPERATOR_LABEL_CHARS;
     use crate::verbs::goal_write::IdempotencyKey;
     use crate::{McpToolCtx, MemoryId, UserId};
     use uuid::Uuid;
@@ -235,17 +233,42 @@ mod tests {
     }
 
     #[test]
-    fn blank_and_oversized_operator_labels_are_rejected() {
+    fn an_oversized_operator_label_is_rejected() {
         let ctx = test_ctx();
-        assert!(operator_label(&ctx, Some("   ")).is_err());
         assert!(operator_label(&ctx, Some(&"m".repeat(MAX_OPERATOR_LABEL_CHARS))).is_ok());
         assert!(operator_label(&ctx, Some(&"m".repeat(MAX_OPERATOR_LABEL_CHARS + 1))).is_err());
     }
 
+    /// A blank label is no claim, so the request context's label stands —
+    /// the same answer REST gives, where an empty `X-Proxima-Model-Id` is
+    /// dropped at the edge and never reaches a tool. Rejecting it here
+    /// would make `{"derive": {"model_id": ""}}` fail a request that the
+    /// byte-identical REST call accepts.
+    #[test]
+    fn a_blank_operator_label_is_absent_not_an_error() {
+        let ctx = test_ctx();
+        for blank in ["", "   "] {
+            assert_eq!(
+                operator_label(&ctx, Some(blank)).expect("blank is no claim"),
+                "test",
+                "blank {blank:?}"
+            );
+        }
+    }
+
     /// A context whose token binds a runner identity, with a deliberately
     /// different `model_id` so a test cannot pass by reading the label slot.
+    ///
+    /// The binding lives on `authz`, not on the author context: that is
+    /// the carrier the authenticator hardened, and the only one
+    /// `operator_label` consults.
     fn trusted_ctx() -> McpToolCtx {
         let mut ctx = test_ctx();
+        ctx.authz = ctx
+            .authz
+            .clone()
+            .with_trusted_model_id("acme/runner-v3")
+            .expect("a well-formed runner id binds");
         ctx.author.trusted_model_id = Some("acme/runner-v3".to_string());
         ctx.author.model_id = "acme/runner-v3".to_string();
         ctx
@@ -295,17 +318,24 @@ mod tests {
         );
     }
 
-    /// The bound identity is recorded even if the request-context label
-    /// disagrees, so a host that builds an author context by hand cannot
-    /// launder a label past the binding.
+    /// The bound identity is recorded even if the author context
+    /// disagrees on both of its model fields, so a host that assembles
+    /// one by hand cannot launder a label past the binding. The transport
+    /// reconciles this at `ctx_for`; the tool does not depend on it having
+    /// done so.
     #[test]
-    fn the_bound_identity_outranks_a_mismatched_request_context_label() {
+    fn the_bound_identity_outranks_a_mismatched_author_context() {
         let mut ctx = trusted_ctx();
         ctx.author.model_id = "stale/label".to_string();
+        ctx.author.trusted_model_id = None;
 
         assert_eq!(
             operator_label(&ctx, None).expect("bound identity wins"),
             "acme/runner-v3"
+        );
+        assert!(
+            operator_label(&ctx, Some("openai/gpt-9")).is_err(),
+            "the binding still refuses a differing claim"
         );
     }
 

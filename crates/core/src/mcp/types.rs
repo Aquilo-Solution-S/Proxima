@@ -9,9 +9,17 @@ use crate::{FlavorServices, MemoryId, Owner, verbs::schema::FlavorRegistryFrozen
 /// authenticate and then fail every write:
 /// [`AuthzContext::with_trusted_model_id`](crate::AuthzContext::with_trusted_model_id)
 /// (and the OIDC subject map that feeds it) bounds what an authenticator
-/// may bind, and `operator_label` bounds the label a tool actually
-/// persists. Transport edges do *not* apply it: they only decide
-/// precedence, and a nested or per-item `model_id` never reaches them.
+/// may bind, and the operator-label resolvers
+/// ([`ToolCtx::operator_label`](crate::ToolCtx::operator_label) and
+/// `operator_label` for [`McpTool`](crate::mcp::McpTool)) bound the label a
+/// tool records through them.
+///
+/// Two things it does not cover, deliberately. Transport edges only decide
+/// precedence — a nested or per-item `model_id` never reaches them — and a
+/// label that feeds a hash rather than a stored column (Goal
+/// system-operator identity, which no replay reads back) is not routed
+/// through a resolver, because bounding it would turn a caller's long
+/// label into a failed write with nothing gained.
 pub const MAX_OPERATOR_LABEL_CHARS: usize = 120;
 
 /// Recorded operator label when neither the authenticated edge nor the
@@ -29,7 +37,11 @@ pub const UNKNOWN_OPERATOR_LABEL: &str = "unknown";
 pub struct McpAuthorContext {
     pub model_id: String,
     /// Model identity certified by the authenticated token, if any.
-    /// When present, `model_id` equals it.
+    ///
+    /// When present, `model_id` equals it. That is an invariant of this
+    /// struct, not of whoever built it: both fields are re-derived from
+    /// the authorization context in `McpToolHost::ctx_for`, because a host
+    /// assembles this by hand and `model_id` is what a tool records.
     pub trusted_model_id: Option<String>,
     pub client_name: String,
     pub client_version: String,
@@ -53,7 +65,13 @@ impl OperatorLabelConflict {
         &self.trusted
     }
 
-    /// The label the caller sent.
+    /// The label the caller sent, bounded for echoing back.
+    ///
+    /// Truncated to [`MAX_OPERATOR_LABEL_CHARS`] with a `…` marker at
+    /// construction: the conflict is decided *before* the length check, so
+    /// the value reaching here is whatever the caller sent, and a refusal
+    /// that quoted it whole would let a request choose how much of itself
+    /// to write into every error log that records the refusal.
     #[must_use]
     pub fn supplied(&self) -> &str {
         &self.supplied
@@ -70,6 +88,19 @@ impl OperatorLabelConflict {
             trusted = self.trusted,
         )
     }
+}
+
+/// Bound a caller-supplied value before it is quoted back in a refusal.
+///
+/// The conflict is decided before the length check — it has to be, or a
+/// caller could relabel a bound write by padding the claim — so this is the
+/// only thing standing between an unbounded argument and the error text.
+fn bounded_for_echo(supplied: &str) -> String {
+    if supplied.chars().count() <= MAX_OPERATOR_LABEL_CHARS {
+        return supplied.to_string();
+    }
+    let kept: String = supplied.chars().take(MAX_OPERATOR_LABEL_CHARS).collect();
+    format!("{kept}…")
 }
 
 /// Resolve the operator label that reaches append-only provenance, for one
@@ -102,7 +133,7 @@ pub fn resolve_operator_label(
     match (trusted.map(str::trim), supplied) {
         (Some(trusted), Some(supplied)) if supplied != trusted => Err(OperatorLabelConflict {
             trusted: trusted.to_string(),
-            supplied: supplied.to_string(),
+            supplied: bounded_for_echo(supplied),
         }),
         (Some(trusted), _) => Ok(trusted.to_string()),
         (None, Some(supplied)) => Ok(supplied.to_string()),
@@ -232,5 +263,40 @@ mod tests {
     #[test]
     fn the_operator_label_bound_is_the_shared_constant() {
         assert_eq!(MAX_OPERATOR_LABEL_CHARS, 120);
+    }
+
+    /// The conflict is decided before any length check — it has to be, or
+    /// padding a claim would evade the binding — so the refusal is the one
+    /// place an unbounded argument could reach a log. It is quoted back
+    /// bounded, and still says enough for the caller to recognise what it
+    /// sent.
+    #[test]
+    fn an_over_long_claim_is_bounded_before_it_is_quoted_back() {
+        let claim = "x".repeat(200);
+        let conflict = resolve_operator_label(Some("runner/pinned"), Some(&claim))
+            .expect_err("a differing claim conflicts however long it is");
+
+        assert_eq!(
+            conflict.supplied().chars().count(),
+            MAX_OPERATOR_LABEL_CHARS + 1,
+            "the bound plus the marker, not the caller's 200"
+        );
+        assert!(conflict.supplied().ends_with('…'), "truncation is visible");
+        assert!(conflict.supplied().starts_with("xxx"));
+        assert!(
+            conflict.detail("model_id").chars().count() < claim.chars().count() + 120,
+            "the message cannot grow without bound with the claim"
+        );
+    }
+
+    /// A claim exactly at the bound is quoted whole: the truncation is
+    /// there to bound the echo, not to mangle every refusal.
+    #[test]
+    fn a_claim_within_the_bound_is_quoted_whole() {
+        let claim = "x".repeat(MAX_OPERATOR_LABEL_CHARS);
+        let conflict = resolve_operator_label(Some("runner/pinned"), Some(&claim))
+            .expect_err("still a conflict");
+
+        assert_eq!(conflict.supplied(), claim);
     }
 }

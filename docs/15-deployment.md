@@ -217,13 +217,14 @@ caller-supplied `model_id` label keeps its existing meaning and precedence.
 
 Not at the transport edge. `author_from_args` and `author_from_headers` see
 only a **top-level** `model_id`, so they give the early, transport-shaped
-error and nothing more. The rule itself lives in core's `operator_label`,
-which every authoring tool calls — which is what covers
+error and nothing more. The rule itself lives in core's operator-label
+resolver, which every tool that records a label calls — which is what covers
 `core_episode_commit`'s per-item `derive.model_id` / `stance[].model_id`, the
 embedded `CoreMcpTools` host API (whose arguments pass no edge at all), and
 any future tool that accepts a `model_id` argument. A flavor tool that takes
-one must call `proxima::flavor::operator_label` rather than reading
-`ctx.author.model_id`.
+one must call `ToolCtx::operator_label` (or `proxima::flavor::operator_label`
+for an `McpTool`) rather than reading the caller's label — see
+[09 §Trusted model provenance](09-developing-flavors.md).
 
 ### Delegated worker phases carry no trusted id
 

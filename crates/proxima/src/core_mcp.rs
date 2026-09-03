@@ -452,7 +452,10 @@ mod tests {
             caller_self_perspective: None,
         };
 
-        let ctx = handler.server.ctx_for(author.clone(), &auth);
+        let ctx = handler
+            .server
+            .ctx_for(author.clone(), &auth)
+            .expect("no binding, no conflict");
         assert_eq!(
             ctx.service::<MarkerService>().as_deref().map(|v| v.0),
             Some("boot-wired")
