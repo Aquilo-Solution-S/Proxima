@@ -545,7 +545,8 @@ where
             ctx.author.model_id.clone(),
             ctx.author.client_name.clone(),
             ctx.author.client_version.clone(),
-        );
+        )
+        .with_trusted_model_id(ctx.author.trusted_model_id.clone());
         let mut services = ctx.services.into_tool_services();
         services.insert(presentation);
         let tool_ctx = ToolCtx::from_parts(
@@ -695,6 +696,7 @@ mod flat_tool_tests {
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "planner/model".into(),
+                trusted_model_id: None,
                 client_name: "planner-client".into(),
                 client_version: "2.4.1".into(),
                 caller_self_perspective: Some(caller_self_perspective),

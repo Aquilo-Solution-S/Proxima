@@ -130,6 +130,7 @@ fn ctx(registry: &Arc<FlavorRegistryFrozen>, scope: ToolScope) -> McpToolCtx {
         registry: registry.clone(),
         author: McpAuthorContext {
             model_id: "test".into(),
+            trusted_model_id: None,
             client_name: "test".into(),
             client_version: "0".into(),
             caller_self_perspective: None,
@@ -153,6 +154,7 @@ fn viewer_ctx(registry: &Arc<FlavorRegistryFrozen>, scope: ToolScope) -> McpTool
         registry: registry.clone(),
         author: McpAuthorContext {
             model_id: "test".into(),
+            trusted_model_id: None,
             client_name: "test".into(),
             client_version: "0".into(),
             caller_self_perspective: None,

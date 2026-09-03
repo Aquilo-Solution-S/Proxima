@@ -40,4 +40,7 @@ pub use tool::{
     McpToolOrigin,
 };
 pub(crate) use tool::{prepare_flat_tool_args, resolve_argv_action, validate_action_args};
-pub use types::{McpAuthorContext, McpToolCtx};
+pub use types::{
+    MAX_OPERATOR_LABEL_CHARS, McpAuthorContext, McpToolCtx, OperatorLabelConflict,
+    UNKNOWN_OPERATOR_LABEL, resolve_operator_label,
+};

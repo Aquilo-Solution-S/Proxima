@@ -103,7 +103,9 @@ before reading.
 - **Tag consistently** — domain + kind (e.g. `["<project>", "<subsystem>", "<kind>"]`)
   so hybrid and tag search cluster related memories.
 - **`model_id` on derive** = your operator label — provenance for who did the
-  abstracting.
+  abstracting. A deployment may bind a model identity to your token, in which
+  case that identity is recorded and sending a *different* `model_id` is
+  refused; omit it or send the bound value.
 - Store the durable **why**, not a transcript or what version control already
   records.
 

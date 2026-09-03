@@ -23,4 +23,4 @@ pub use keys::{
     DEFAULT_HTTP_REQUEST_TIMEOUT, HttpJwksResolver, KeyError, KeyResolver,
     MAX_HTTP_REQUEST_TIMEOUT, StaticJwksResolver,
 };
-pub use subject_map::{OidcSubjectMap, OidcSubjectMapError};
+pub use subject_map::{OidcSubjectMap, OidcSubjectMapError, SubjectBinding};

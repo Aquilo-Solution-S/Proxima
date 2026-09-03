@@ -1,4 +1,4 @@
-//! Issuer-aware `(iss, sub) -> UserId` identity map for the default
+//! Issuer-aware `(iss, sub) -> SubjectBinding` identity map for the default
 //! Proxima MCP group-auth path.
 //!
 //! `OidcAuthConfig` carries no identity mapping (see `config.rs`): the
@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use proxima_core::UserId;
+use proxima_core::{MAX_OPERATOR_LABEL_CHARS, UserId};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum OidcSubjectMapError {
@@ -35,6 +35,12 @@ pub enum OidcSubjectMapError {
     AmbiguousIssuerForShorthand { count: usize },
     #[error("shorthand subject map entry {index} is not \"sub:uuid\": {raw:?}")]
     MalformedShorthandEntry { index: usize, raw: String },
+    #[error("subject map entry {index} has an invalid trusted_model_id {value:?}: {reason}")]
+    InvalidTrustedModelId {
+        index: usize,
+        value: String,
+        reason: &'static str,
+    },
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -42,13 +48,48 @@ struct RawEntry {
     iss: String,
     sub: String,
     user_id: String,
+    #[serde(default)]
+    trusted_model_id: Option<String>,
 }
 
-/// Issuer-aware `(iss, sub) -> UserId` map. Construction always validates:
-/// no duplicate `(iss, sub)` keys, no empty fields, no invalid UUIDs.
+/// What one configured `(iss, sub)` pair binds.
+///
+/// `trusted_model_id` is the deployment's statement that this principal *is*
+/// a particular configured runner. It certifies which runner reached the
+/// edge — not that a model produced any particular content — and is the only
+/// model provenance a flavor may build policy on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubjectBinding {
+    pub user_id: UserId,
+    pub trusted_model_id: Option<String>,
+}
+
+impl SubjectBinding {
+    /// A binding that names no runner. The common case: an ordinary human
+    /// principal.
+    #[must_use]
+    pub const fn new(user_id: UserId) -> Self {
+        Self {
+            user_id,
+            trusted_model_id: None,
+        }
+    }
+
+    /// Bind a configured runner identity to this principal.
+    #[must_use]
+    pub fn with_trusted_model_id(mut self, trusted_model_id: impl Into<String>) -> Self {
+        self.trusted_model_id = Some(trusted_model_id.into());
+        self
+    }
+}
+
+/// Issuer-aware `(iss, sub) -> SubjectBinding` map. Construction always
+/// validates: no duplicate `(iss, sub)` keys, no empty fields, no invalid
+/// UUIDs, and a `trusted_model_id` that is non-blank and within
+/// [`MAX_OPERATOR_LABEL_CHARS`] when present.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OidcSubjectMap {
-    entries: HashMap<(String, String), UserId>,
+    entries: HashMap<(String, String), SubjectBinding>,
 }
 
 impl OidcSubjectMap {
@@ -67,11 +108,21 @@ impl OidcSubjectMap {
         self.entries.len()
     }
 
+    /// Everything the configured `(iss, sub)` pair binds — the user and,
+    /// when the deployment declares one, the trusted runner identity.
     #[must_use]
-    pub fn resolve(&self, issuer: &str, subject: &str) -> Option<UserId> {
+    pub fn resolve_binding(&self, issuer: &str, subject: &str) -> Option<SubjectBinding> {
         self.entries
             .get(&(issuer.to_string(), subject.to_string()))
-            .copied()
+            .cloned()
+    }
+
+    /// Identity-only view of [`Self::resolve_binding`], for call sites that
+    /// answer "who is this" and nothing else.
+    #[must_use]
+    pub fn resolve(&self, issuer: &str, subject: &str) -> Option<UserId> {
+        self.resolve_binding(issuer, subject)
+            .map(|binding| binding.user_id)
     }
 
     /// # Errors
@@ -85,7 +136,21 @@ impl OidcSubjectMap {
         subject: impl Into<String>,
         user_id: UserId,
     ) -> Result<(), OidcSubjectMapError> {
-        self.insert_at(0, issuer.into(), subject.into(), user_id)
+        self.insert_binding(issuer, subject, SubjectBinding::new(user_id))
+    }
+
+    /// # Errors
+    ///
+    /// As [`Self::insert`], plus
+    /// [`OidcSubjectMapError::InvalidTrustedModelId`] for a blank or
+    /// over-long `trusted_model_id`.
+    pub fn insert_binding(
+        &mut self,
+        issuer: impl Into<String>,
+        subject: impl Into<String>,
+        binding: SubjectBinding,
+    ) -> Result<(), OidcSubjectMapError> {
+        self.insert_at(0, issuer.into(), subject.into(), binding)
     }
 
     fn insert_at(
@@ -93,7 +158,7 @@ impl OidcSubjectMap {
         index: usize,
         issuer: String,
         subject: String,
-        user_id: UserId,
+        binding: SubjectBinding,
     ) -> Result<(), OidcSubjectMapError> {
         if issuer.is_empty() {
             return Err(OidcSubjectMapError::EmptyField {
@@ -107,16 +172,26 @@ impl OidcSubjectMap {
                 field: "sub",
             });
         }
+        let binding = SubjectBinding {
+            user_id: binding.user_id,
+            trusted_model_id: binding
+                .trusted_model_id
+                .map(|raw| validate_trusted_model_id(index, raw))
+                .transpose()?,
+        };
         let key = (issuer.clone(), subject.clone());
         if self.entries.contains_key(&key) {
             return Err(OidcSubjectMapError::DuplicateEntry { issuer, subject });
         }
-        self.entries.insert(key, user_id);
+        self.entries.insert(key, binding);
         Ok(())
     }
 
     /// Parse the issuer-aware JSON array format:
     /// `[{"iss":"https://issuer.example","sub":"subject","user_id":"<uuid>"}]`
+    ///
+    /// Each entry may add `"trusted_model_id":"<label>"` to declare that this
+    /// principal is a configured runner; see [`SubjectBinding`].
     ///
     /// # Errors
     ///
@@ -140,13 +215,25 @@ impl OidcSubjectMap {
                     reason: err.to_string(),
                 }
             })?;
-            map.insert_at(index, entry.iss, entry.sub, UserId::new(uuid))?;
+            map.insert_at(
+                index,
+                entry.iss,
+                entry.sub,
+                SubjectBinding {
+                    user_id: UserId::new(uuid),
+                    trusted_model_id: entry.trusted_model_id,
+                },
+            )?;
         }
         Ok(map)
     }
 
     /// Parse the `sub:uuid,sub2:uuid2` shorthand. Every entry binds
     /// to `accepted_issuers[0]`.
+    ///
+    /// The shorthand has no field for a trusted model id and never yields
+    /// one: a deployment that wants trusted model provenance uses the JSON
+    /// form.
     ///
     /// # Errors
     ///
@@ -193,11 +280,33 @@ impl OidcSubjectMap {
                 index,
                 issuer.clone(),
                 subject.to_string(),
-                UserId::new(uuid),
+                SubjectBinding::new(UserId::new(uuid)),
             )?;
         }
         Ok(map)
     }
+}
+
+/// Trim, then bound. The label lands in append-only provenance and is
+/// compared against the caller's own `model_id`, so the stored form and the
+/// compared form must be the same string.
+fn validate_trusted_model_id(index: usize, raw: String) -> Result<String, OidcSubjectMapError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(OidcSubjectMapError::InvalidTrustedModelId {
+            index,
+            value: raw,
+            reason: "must not be blank",
+        });
+    }
+    if trimmed.chars().count() > MAX_OPERATOR_LABEL_CHARS {
+        return Err(OidcSubjectMapError::InvalidTrustedModelId {
+            index,
+            value: raw,
+            reason: "must be at most 120 characters",
+        });
+    }
+    Ok(trimmed.to_string())
 }
 
 #[cfg(test)]
@@ -311,6 +420,144 @@ mod tests {
                 field: "sub"
             })
         ));
+    }
+
+    #[test]
+    fn from_json_binds_an_optional_trusted_model_id() {
+        let plain = uuid_str();
+        let runner = uuid_str();
+        let raw = format!(
+            r#"[{{"iss":"{ISSUER_A}","sub":"human","user_id":"{plain}"}},
+                {{"iss":"{ISSUER_A}","sub":"runner","user_id":"{runner}",
+                  "trusted_model_id":"acme/runner-v3"}}]"#
+        );
+
+        let map = OidcSubjectMap::from_json(&raw).expect("valid json");
+
+        let human = map.resolve_binding(ISSUER_A, "human").expect("mapped");
+        assert_eq!(
+            human.user_id,
+            UserId::new(uuid::Uuid::parse_str(&plain).unwrap())
+        );
+        assert_eq!(
+            human.trusted_model_id, None,
+            "an entry without the field binds no runner"
+        );
+
+        let bound = map.resolve_binding(ISSUER_A, "runner").expect("mapped");
+        assert_eq!(bound.trusted_model_id.as_deref(), Some("acme/runner-v3"));
+
+        assert_eq!(
+            map.resolve(ISSUER_A, "runner"),
+            Some(UserId::new(uuid::Uuid::parse_str(&runner).unwrap())),
+            "the identity-only wrapper still answers"
+        );
+        assert_eq!(map.resolve_binding(ISSUER_A, "absent"), None);
+    }
+
+    #[test]
+    fn from_json_trims_the_trusted_model_id() {
+        let user_id = uuid_str();
+        let raw = format!(
+            r#"[{{"iss":"{ISSUER_A}","sub":"runner","user_id":"{user_id}",
+                  "trusted_model_id":"  acme/runner-v3  "}}]"#
+        );
+
+        let map = OidcSubjectMap::from_json(&raw).expect("valid json");
+
+        assert_eq!(
+            map.resolve_binding(ISSUER_A, "runner")
+                .expect("mapped")
+                .trusted_model_id
+                .as_deref(),
+            Some("acme/runner-v3"),
+            "the stored label and the compared label must be one string"
+        );
+    }
+
+    #[test]
+    fn from_json_rejects_a_blank_trusted_model_id() {
+        let user_id = uuid_str();
+        for blank in ["", "   "] {
+            let raw = format!(
+                r#"[{{"iss":"{ISSUER_A}","sub":"runner","user_id":"{user_id}",
+                      "trusted_model_id":"{blank}"}}]"#
+            );
+            assert!(
+                matches!(
+                    OidcSubjectMap::from_json(&raw),
+                    Err(OidcSubjectMapError::InvalidTrustedModelId { index: 0, .. })
+                ),
+                "blank {blank:?} must be rejected rather than stored"
+            );
+        }
+    }
+
+    #[test]
+    fn from_json_bounds_the_trusted_model_id_at_the_operator_label_limit() {
+        let user_id = uuid_str();
+        let at_limit = "m".repeat(MAX_OPERATOR_LABEL_CHARS);
+        let over_limit = "m".repeat(MAX_OPERATOR_LABEL_CHARS + 1);
+
+        let raw = format!(
+            r#"[{{"iss":"{ISSUER_A}","sub":"runner","user_id":"{user_id}",
+                  "trusted_model_id":"{at_limit}"}}]"#
+        );
+        assert!(
+            OidcSubjectMap::from_json(&raw).is_ok(),
+            "the bound itself fits"
+        );
+
+        let raw = format!(
+            r#"[{{"iss":"{ISSUER_A}","sub":"runner","user_id":"{user_id}",
+                  "trusted_model_id":"{over_limit}"}}]"#
+        );
+        assert!(matches!(
+            OidcSubjectMap::from_json(&raw),
+            Err(OidcSubjectMapError::InvalidTrustedModelId { index: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn programmatic_insert_validates_the_trusted_model_id_too() {
+        let mut map = OidcSubjectMap::new();
+        assert!(matches!(
+            map.insert_binding(
+                ISSUER_A,
+                "runner",
+                SubjectBinding::new(UserId::new(uuid::Uuid::now_v7())).with_trusted_model_id("   "),
+            ),
+            Err(OidcSubjectMapError::InvalidTrustedModelId { .. })
+        ));
+    }
+
+    /// The shorthand has no field for it, so it can never certify a runner.
+    #[test]
+    fn legacy_shorthand_never_yields_a_trusted_model_id() {
+        let raw = format!("subject-1:{}", uuid_str());
+        let map = OidcSubjectMap::from_legacy_shorthand(&raw, &[ISSUER_A.to_string()])
+            .expect("single-issuer shorthand accepted");
+
+        assert_eq!(
+            map.resolve_binding(ISSUER_A, "subject-1")
+                .expect("mapped")
+                .trusted_model_id,
+            None
+        );
+    }
+
+    /// `insert` is the identity-only door; it binds no runner.
+    #[test]
+    fn plain_insert_binds_no_trusted_model_id() {
+        let mut map = OidcSubjectMap::new();
+        map.insert(ISSUER_A, "subject-1", UserId::new(uuid::Uuid::now_v7()))
+            .expect("insert");
+        assert_eq!(
+            map.resolve_binding(ISSUER_A, "subject-1")
+                .expect("mapped")
+                .trusted_model_id,
+            None
+        );
     }
 
     #[test]

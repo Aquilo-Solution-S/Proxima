@@ -11,7 +11,7 @@
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, header};
-use proxima_core::mcp::McpAuthorContext;
+use proxima_core::mcp::{McpAuthorContext, resolve_operator_label};
 use proxima_core::{MemoryId, RELEASE_VERSION};
 
 use crate::auth::McpAuthContext;
@@ -50,14 +50,13 @@ pub const RESERVED_ARGUMENTS: &[(&str, &str)] = &[
     ),
 ];
 
-/// The full [`McpAuthContext`] — owner, authz and model id — as injected by
-/// the shared `mcp_auth` layer.
+/// The full [`McpAuthContext`] — owner and authz — as injected by the
+/// shared `mcp_auth` layer.
 ///
 /// Deliberately the whole context rather than `proxima::app::Authz`'s
 /// `AuthzContext` alone: the dispatch seam needs the bound `Owner` to build
-/// an `McpToolCtx`, and the token's model id is the fallback when the caller
-/// sends no `X-Proxima-Model-Id`. Nothing here authenticates — the layer
-/// already did, and re-implementing authentication here is forbidden.
+/// an `McpToolCtx`. Nothing here authenticates — the layer already did, and
+/// re-implementing authentication here is forbidden.
 #[derive(Debug, Clone)]
 pub struct RestAuth(pub McpAuthContext);
 
@@ -79,21 +78,38 @@ where
 
 /// Build the author context for one REST call from its headers.
 ///
+/// `X-Proxima-Model-Id` is a caller *claim*. When the bearer token binds a
+/// model identity, that identity is the persisted label and a differing
+/// header is refused. The precedence itself lives in
+/// [`resolve_operator_label`], shared with the MCP surface so the two
+/// transports cannot drift.
+///
 /// # Errors
 ///
-/// Returns a `400` problem when `X-Proxima-Self-Perspective` is not a `P:`
-/// reference to a UUID.
+/// Returns a `400` problem when `X-Proxima-Model-Id` names a model other
+/// than the one the token binds, or when `X-Proxima-Self-Perspective` is
+/// not a `P:` reference to a UUID.
 pub fn author_from_headers(
     headers: &HeaderMap,
     auth: &McpAuthContext,
     instance: &str,
 ) -> Result<McpAuthorContext, Problem> {
     let (client_name, client_version) = client_implementation(headers);
+    let trusted = auth.authz.trusted_model_id();
+    let model_id = resolve_operator_label(trusted, header_str(headers, MODEL_ID_HEADER)).map_err(
+        |conflict| {
+            Problem::new(
+                axum::http::StatusCode::BAD_REQUEST,
+                "model-id-conflict",
+                "Model id conflicts with the authenticated token",
+                conflict.detail(MODEL_ID_HEADER),
+                instance,
+            )
+        },
+    )?;
     Ok(McpAuthorContext {
-        model_id: header_str(headers, MODEL_ID_HEADER)
-            .or(auth.model_id.as_deref())
-            .unwrap_or("unknown")
-            .to_string(),
+        model_id,
+        trusted_model_id: trusted.map(ToString::to_string),
         client_name,
         client_version,
         caller_self_perspective: self_perspective(headers, instance)?,
@@ -173,12 +189,12 @@ mod tests {
     use super::*;
     use proxima_core::{AuthPath, AuthzContext, Owner, OwnerRef, UserId};
 
-    fn auth(model_id: Option<&str>) -> McpAuthContext {
+    fn auth(trusted_model_id: Option<&str>) -> McpAuthContext {
         let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         McpAuthContext {
             owner,
-            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            model_id: model_id.map(ToString::to_string),
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+                .with_trusted_model_id(trusted_model_id.map(ToString::to_string)),
         }
     }
 
@@ -194,27 +210,66 @@ mod tests {
     }
 
     #[test]
-    fn model_id_prefers_the_header_then_the_token_then_unknown() {
-        let with_header = author_from_headers(
-            &headers(&[(MODEL_ID_HEADER, "example-model")]),
-            &auth(Some("token-model")),
-            "/v1/tools/core_remember",
-        )
-        .expect("author");
-        assert_eq!(with_header.model_id, "example-model");
-
+    fn the_bound_model_identity_outranks_the_header_and_absence_is_unknown() {
         let from_token = author_from_headers(
             &headers(&[]),
-            &auth(Some("token-model")),
+            &auth(Some("runner/pinned")),
             "/v1/tools/core_remember",
         )
         .expect("author");
-        assert_eq!(from_token.model_id, "token-model");
+        assert_eq!(from_token.model_id, "runner/pinned");
+        assert_eq!(
+            from_token.trusted_model_id.as_deref(),
+            Some("runner/pinned")
+        );
+
+        let agreeing = author_from_headers(
+            &headers(&[(MODEL_ID_HEADER, "runner/pinned")]),
+            &auth(Some("runner/pinned")),
+            "/v1/tools/core_remember",
+        )
+        .expect("an agreeing header is not a conflict");
+        assert_eq!(agreeing.model_id, "runner/pinned");
+
+        let header_only = author_from_headers(
+            &headers(&[(MODEL_ID_HEADER, "example-model")]),
+            &auth(None),
+            "/v1/tools/core_remember",
+        )
+        .expect("author");
+        assert_eq!(header_only.model_id, "example-model");
+        assert_eq!(
+            header_only.trusted_model_id, None,
+            "a header is a claim, never trusted provenance"
+        );
 
         let unattributed =
             author_from_headers(&headers(&[]), &auth(None), "/v1/tools/core_remember")
                 .expect("author");
         assert_eq!(unattributed.model_id, "unknown");
+        assert_eq!(unattributed.trusted_model_id, None);
+    }
+
+    #[test]
+    fn a_header_naming_another_model_than_the_token_is_a_400() {
+        let err = author_from_headers(
+            &headers(&[(MODEL_ID_HEADER, "claimed/model")]),
+            &auth(Some("runner/pinned")),
+            "/v1/tools/core_remember",
+        )
+        .expect_err("a caller may not relabel an authenticated runner");
+
+        let json = err.to_json();
+        assert_eq!(json["status"], 400);
+        assert_eq!(json["type"], "https://proxima.dev/errors/model-id-conflict");
+        let detail = json["detail"].as_str().expect("detail");
+        assert!(detail.contains(MODEL_ID_HEADER), "{detail}");
+        assert!(detail.contains("claimed/model"), "{detail}");
+        assert!(detail.contains("runner/pinned"), "{detail}");
+        assert!(
+            detail.contains("authenticated token already binds"),
+            "{detail}"
+        );
     }
 
     #[test]

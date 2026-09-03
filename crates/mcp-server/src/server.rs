@@ -683,17 +683,14 @@ mod tests {
         let owner = fake_owner();
         let author = McpAuthorContext {
             model_id: "test-model".into(),
+            trusted_model_id: None,
             client_name: "test-client".into(),
             client_version: "0.1.0".into(),
             caller_self_perspective: None,
         };
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer)
             .with_tool_scope(ToolScope::Palette(Vec::new()));
-        let auth = McpAuthContext {
-            owner,
-            authz,
-            model_id: None,
-        };
+        let auth = McpAuthContext { owner, authz };
 
         let err = server
             .read_resource("proxima://schemas", author, Some(auth))
@@ -714,6 +711,7 @@ mod tests {
         let server = make_server();
         let author = McpAuthorContext {
             model_id: "test-model".into(),
+            trusted_model_id: None,
             client_name: "test-client".into(),
             client_version: "0.1.0".into(),
             caller_self_perspective: None,
@@ -724,7 +722,6 @@ mod tests {
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
                 .narrowed_to_owner(owner)
                 .expect("personal owner narrows"),
-            model_id: None,
         };
 
         let ctx = server.ctx_for(author, &auth);
@@ -744,6 +741,7 @@ mod tests {
         let server = make_server();
         let author = McpAuthorContext {
             model_id: "test-model".into(),
+            trusted_model_id: None,
             client_name: "test-client".into(),
             client_version: "0.1.0".into(),
             caller_self_perspective: None,

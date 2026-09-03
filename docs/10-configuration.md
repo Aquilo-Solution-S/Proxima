@@ -104,6 +104,34 @@ connect and body read, to `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` (`10` by default;
 and use it inside `authenticate`; a custom authenticator owns the equivalent
 server-side role resolution.
 
+### Trusted model provenance
+
+A `PROXIMA_OIDC_SUBJECT_MAP_JSON` entry may carry an optional
+`trusted_model_id` beside `{iss, sub, user_id}`:
+
+```json
+[{"iss": "https://zitadel.example.com",
+  "sub": "runner-service-user-id",
+  "user_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "trusted_model_id": "acme/runner-v3"}]
+```
+
+| | |
+|---|---|
+| Certifies | which configured runner principal reached the edge — **not** that a model produced any particular content |
+| Validation | trimmed, non-blank, ≤120 chars (the operator-label bound); invalid ⇒ boot fails |
+| Carrier | `AuthzContext::trusted_model_id()` → `ToolCaller::trusted_model_id` |
+| Persisted label | trusted id if present, else the caller-supplied `model_id` / `X-Proxima-Model-Id`, else `unknown` |
+| Conflicting caller label | refused: MCP invalid params, REST `400` |
+| Sources that can set it | the authenticator only; never an argument, header, `clientInfo`, or `_proxima_*` field |
+
+Principals with no entry, and entries without the field, are unchanged —
+the caller-supplied label keeps its existing meaning. A custom
+`Authenticator` binds the equivalent with
+`AuthzContext::with_trusted_model_id(..)`. Full contract:
+[15 §Trusted model provenance](15-deployment.md#trusted-model-provenance);
+flavor use: [09 §MCP Tools](09-developing-flavors.md#mcp-tools).
+
 `PROXIMA_ALLOWED_ORIGINS` is the listener-wide browser CORS policy. It covers
 `/mcp`, `/v1`, mounted flavor routes, OAuth metadata, and fallback responses.
 An allowed preflight returns `204` before bearer auth; the subsequent actual

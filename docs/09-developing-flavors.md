@@ -1030,10 +1030,29 @@ let caller = ctx.caller().ok_or_else(|| ToolError::Other("caller metadata requir
 let model_id = caller.model_id.as_str();
 ```
 
-`ToolCaller` carries `model_id`, `client_name`, and `client_version`. MCP and
-REST adapters populate it; direct `ToolCtx::new` calls leave it absent unless
-the host adds `.with_caller(Some(...))`. The optional
-`ctx.caller_self_perspective()` stays separate.
+`ToolCaller` carries `model_id`, `trusted_model_id`, `client_name`, and
+`client_version`. MCP and REST adapters populate it; direct `ToolCtx::new`
+calls leave it absent unless the host adds `.with_caller(Some(...))`. The
+optional `ctx.caller_self_perspective()` stays separate.
+
+Build policy on `caller.trusted_model_id`, never on `caller.model_id`.
+`model_id` is the operator *label* that reaches append-only provenance and may
+be caller-supplied — any client can send any string.
+`trusted_model_id: Option<String>` is what the authenticated edge certified:
+it comes from the deployment's OIDC subject map (see [15 §Trusted model
+provenance](15-deployment.md#trusted-model-provenance)), travels on
+`AuthzContext` through owner narrowing, and no request payload can set it.
+`None` means the deployment binds no runner identity to this principal — treat
+that as "unknown caller", not as a default to grant. When a trusted id *is*
+present, `model_id` equals it, so a flavor that only records the label needs
+no change.
+
+```rust
+match ctx.caller().and_then(|caller| caller.trusted_model_id.as_deref()) {
+    Some("acme/runner-v3") => { /* the configured runner: policy applies */ }
+    Some(_) | None => return Err(ToolError::Other("not an authorized runner".into())),
+}
+```
 
 Paged reads: call `proxima::flavor::reject_zero_limit(args.limit)?` before
 anything else, then clamp the upper bound however the tool likes. The two

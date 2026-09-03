@@ -1982,6 +1982,7 @@ fn ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpT
         registry,
         author: McpAuthorContext {
             model_id: "test/0".into(),
+            trusted_model_id: None,
             client_name: "test".into(),
             client_version: "0".into(),
             caller_self_perspective: None,
@@ -2009,6 +2010,7 @@ fn shell_ctx(
         registry,
         author: McpAuthorContext {
             model_id: "test/0".into(),
+            trusted_model_id: None,
             client_name: "test".into(),
             client_version: "0".into(),
             caller_self_perspective: Some(caller_self_perspective),
@@ -2278,6 +2280,7 @@ fn embedding_ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen
         registry,
         author: McpAuthorContext {
             model_id: "test/0".into(),
+            trusted_model_id: None,
             client_name: "test".into(),
             client_version: "0".into(),
             caller_self_perspective: None,

@@ -81,7 +81,8 @@ pub struct ToolCtx {
 }
 
 pub struct ToolCaller {
-    pub model_id: String,
+    pub model_id: String,              // operator label; may be caller-supplied
+    pub trusted_model_id: Option<String>, // certified by the authenticated edge
     pub client_name: String,
     pub client_version: String,
 }

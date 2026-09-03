@@ -3,7 +3,7 @@ use std::sync::Arc;
 use proxima_core::{
     AuthzContext, Engine, FlavorRegistryFrozen, FlavorServices, McpAuthorContext,
     McpToolDescriptor, McpToolErrorKind, Owner, ToolScope, provider_safe_tool_name,
-    tool_name_matches,
+    resolve_operator_label, tool_name_matches,
 };
 use proxima_mcp_server::{DynamicHandler, McpAuthContext, McpToolHost, ToolInvocationError};
 
@@ -158,17 +158,8 @@ impl CoreMcpTools {
         };
         let canonical_name = descriptor.name;
 
-        let author = McpAuthorContext {
-            model_id: model_id.clone().unwrap_or_else(|| "unknown".to_string()),
-            client_name: "host".into(),
-            client_version: "0".into(),
-            caller_self_perspective: None,
-        };
-        let auth = McpAuthContext {
-            owner,
-            authz,
-            model_id,
-        };
+        let author = host_author(&authz, model_id.as_deref())?;
+        let auth = McpAuthContext { owner, authz };
 
         self.host
             .call_tool(canonical_name, args, author, Some(auth))
@@ -190,17 +181,8 @@ impl CoreMcpTools {
         model_id: Option<String>,
         uri: &str,
     ) -> Result<serde_json::Value, CoreMcpError> {
-        let author = McpAuthorContext {
-            model_id: model_id.clone().unwrap_or_else(|| "unknown".to_string()),
-            client_name: "host".into(),
-            client_version: "0".into(),
-            caller_self_perspective: None,
-        };
-        let auth = McpAuthContext {
-            owner,
-            authz,
-            model_id,
-        };
+        let author = host_author(&authz, model_id.as_deref())?;
+        let auth = McpAuthContext { owner, authz };
 
         self.host
             .read_resource(uri, author, Some(auth))
@@ -211,6 +193,30 @@ impl CoreMcpTools {
     fn find_tool(&self, name: &str) -> Option<&McpToolDescriptor> {
         find_tool_descriptor(self.host.registry().list_mcp_tools(), name)
     }
+}
+
+/// Operator provenance for one in-process host call.
+///
+/// Same precedence as the MCP and REST edges: a model identity bound by the
+/// caller's own `AuthzContext` wins, and a host that passes a different
+/// `model_id` is told rather than silently overridden.
+fn host_author(
+    authz: &AuthzContext,
+    model_id: Option<&str>,
+) -> Result<McpAuthorContext, CoreMcpError> {
+    let trusted = authz.trusted_model_id();
+    let model_id =
+        resolve_operator_label(trusted, model_id).map_err(|conflict| CoreMcpError::Tool {
+            kind: McpToolErrorKind::InvalidInput,
+            message: conflict.detail("model_id"),
+        })?;
+    Ok(McpAuthorContext {
+        model_id,
+        trusted_model_id: trusted.map(ToString::to_string),
+        client_name: "host".into(),
+        client_version: "0".into(),
+        caller_self_perspective: None,
+    })
 }
 
 fn find_tool_descriptor<'a>(
@@ -279,11 +285,7 @@ mod tests {
     fn marker_auth() -> McpAuthContext {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let authz = proxima_core::AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-        McpAuthContext {
-            owner,
-            authz,
-            model_id: Some("marker-test".into()),
-        }
+        McpAuthContext { owner, authz }
     }
 
     #[tokio::test]
@@ -300,6 +302,7 @@ mod tests {
         let auth = marker_auth();
         let author = McpAuthorContext {
             model_id: "marker-test".into(),
+            trusted_model_id: None,
             client_name: "test".into(),
             client_version: "1".into(),
             caller_self_perspective: None,
@@ -325,6 +328,7 @@ mod tests {
                 serde_json::json!({}),
                 McpAuthorContext {
                     model_id: "marker-test".into(),
+                    trusted_model_id: None,
                     client_name: "test".into(),
                     client_version: "1".into(),
                     caller_self_perspective: None,

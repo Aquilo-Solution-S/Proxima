@@ -1,16 +1,16 @@
 use crate::McpToolError;
-use crate::mcp::McpToolCtx;
+use crate::mcp::{MAX_OPERATOR_LABEL_CHARS, McpToolCtx};
 use crate::verbs::goal_write::IdempotencyKey;
 use crate::{MemoryId, tool::validate_trimmed_len};
-
-/// Upper bound on the reserved `model_id` operator label, in characters.
-const MAX_OPERATOR_LABEL_CHARS: usize = 120;
 
 /// Resolve the reserved operator label for an authoring write.
 ///
 /// `model_id` may arrive as an explicit argument or via the request-context
 /// `model_id` (which the MCP server strips into `ctx.author.model_id`); an
-/// omitted argument falls back to the latter. The label is trimmed before it
+/// omitted argument falls back to the latter. When the authenticated token
+/// binds a model identity, `ctx.author.model_id` already *is* that identity
+/// and a differing claim was refused at the transport edge (see
+/// [`crate::mcp::resolve_operator_label`]). The label is trimmed before it
 /// is *used*, not just before it is checked: the stored label and any
 /// idempotency key derived from it must be the same string, or `" example "`
 /// and `"example"` are one label to the validator and two to the dedup key.

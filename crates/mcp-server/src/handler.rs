@@ -13,7 +13,10 @@ use proxima_core::mcp::{
     McpToolAnnotations, McpToolDescriptor, McpToolError, McpToolErrorKind, all_core_resources,
     provider_safe_tool_name, scope_permits_action, tool_name_matches,
 };
-use proxima_core::{AccessKind, FlavorRegistryFrozen, McpAuthorContext, MemoryId};
+use proxima_core::{
+    AccessKind, FlavorRegistryFrozen, McpAuthorContext, MemoryId, UNKNOWN_OPERATOR_LABEL,
+    resolve_operator_label,
+};
 use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
@@ -587,15 +590,23 @@ fn author_from_ctx(
     client_name: &str,
     client_version: &str,
 ) -> McpAuthorContext {
+    let trusted = trusted_model_id(auth);
     McpAuthorContext {
-        model_id: auth
-            .and_then(|ctx| ctx.model_id.as_deref())
-            .unwrap_or("unknown")
-            .to_string(),
+        model_id: trusted
+            .clone()
+            .unwrap_or_else(|| UNKNOWN_OPERATOR_LABEL.to_string()),
+        trusted_model_id: trusted,
         client_name: client_name.to_string(),
         client_version: client_version.to_string(),
         caller_self_perspective: None,
     }
+}
+
+/// The only source of trusted model provenance on this transport: the
+/// authenticated context. Never `clientInfo`, never an argument.
+fn trusted_model_id(auth: Option<&McpAuthContext>) -> Option<String> {
+    auth.and_then(|ctx| ctx.authz.trusted_model_id())
+        .map(ToString::to_string)
 }
 
 /// Client `(name, version)` from the initialize handshake's `client_info`,
@@ -772,21 +783,30 @@ const UNAUTHENTICATED_SCOPE_ALLOWS: bool = false;
 #[cfg(test)]
 const UNAUTHENTICATED_SCOPE_ALLOWS: bool = true;
 
+/// Author context for one `tools/call`.
+///
+/// The reserved `model_id` argument is a caller *claim*. When the token
+/// binds a model identity, that identity wins and a differing claim is
+/// refused as invalid params — the same error class this function already
+/// returns for malformed reserved metadata. Precedence itself lives in
+/// [`resolve_operator_label`], shared with the REST surface so the two
+/// transports cannot drift.
 fn author_from_args(
     args: &serde_json::Value,
     auth: Option<&McpAuthContext>,
     client_name: &str,
     client_version: &str,
 ) -> Result<McpAuthorContext, ErrorData> {
-    let model_id = args
-        .get("model_id")
-        .and_then(serde_json::Value::as_str)
-        .or_else(|| auth.and_then(|ctx| ctx.model_id.as_deref()))
-        .unwrap_or("unknown")
-        .to_string();
+    let trusted = trusted_model_id(auth);
+    let model_id = resolve_operator_label(
+        trusted.as_deref(),
+        args.get("model_id").and_then(serde_json::Value::as_str),
+    )
+    .map_err(|conflict| ErrorData::invalid_params(conflict.detail("model_id"), None))?;
     let caller_self_perspective = caller_self_perspective_from_args(args)?;
     Ok(McpAuthorContext {
         model_id,
+        trusted_model_id: trusted,
         client_name: client_name.to_string(),
         client_version: client_version.to_string(),
         caller_self_perspective,
@@ -904,7 +924,21 @@ mod tests {
                 proxima_core::AuthPath::HostBearer,
             )
             .with_tool_scope(scope),
-            model_id: None,
+        }
+    }
+
+    /// An auth context whose token binds a model identity, as the OIDC
+    /// subject map produces for a configured runner principal.
+    fn trusted_auth(trusted_model_id: &str) -> McpAuthContext {
+        let owner =
+            proxima_core::OwnerRef::Personal(proxima_core::UserId::new(uuid::Uuid::now_v7()));
+        McpAuthContext {
+            owner,
+            authz: proxima_core::AuthzContext::single_owner(
+                &owner,
+                proxima_core::AuthPath::HostBearer,
+            )
+            .with_trusted_model_id(Some(trusted_model_id.to_string())),
         }
     }
 
@@ -952,6 +986,127 @@ mod tests {
         assert_eq!(author.model_id, "example-model");
 
         let mut args = args;
+        strip_call_context_args(&mut args);
+        assert!(args.get("model_id").is_none(), "model_id stripped: {args}");
+        assert_eq!(args["action"], "set");
+    }
+
+    #[test]
+    fn a_bound_model_identity_becomes_the_persisted_label() {
+        let auth = trusted_auth("runner/pinned");
+        let author = author_from_args(&serde_json::json!({}), Some(&auth), "unknown", "0")
+            .expect("no caller claim, no conflict");
+
+        assert_eq!(author.trusted_model_id.as_deref(), Some("runner/pinned"));
+        assert_eq!(
+            author.model_id, "runner/pinned",
+            "the persisted label is the bound identity, not `unknown`"
+        );
+    }
+
+    #[test]
+    fn a_matching_model_id_argument_is_accepted() {
+        let auth = trusted_auth("runner/pinned");
+        let author = author_from_args(
+            &serde_json::json!({ "model_id": "  runner/pinned  " }),
+            Some(&auth),
+            "unknown",
+            "0",
+        )
+        .expect("an agreeing claim is not a conflict");
+
+        assert_eq!(author.model_id, "runner/pinned");
+        assert_eq!(author.trusted_model_id.as_deref(), Some("runner/pinned"));
+    }
+
+    #[test]
+    fn a_differing_model_id_argument_is_invalid_params() {
+        let auth = trusted_auth("runner/pinned");
+        let err = author_from_args(
+            &serde_json::json!({ "model_id": "claimed/model" }),
+            Some(&auth),
+            "unknown",
+            "0",
+        )
+        .expect_err("a caller may not relabel an authenticated runner");
+
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("model_id"), "{}", err.message);
+        assert!(
+            err.message.contains("authenticated token already binds"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// Without a bound identity nothing changes: the caller's label stands,
+    /// and an unmapped caller that merely *says* a runner name gains no
+    /// trusted status from having said it.
+    #[test]
+    fn an_unmapped_caller_keeps_its_own_label_and_gains_no_trusted_status() {
+        let auth = full_auth(ToolScope::All);
+        let author = author_from_args(
+            &serde_json::json!({ "model_id": "runner/pinned" }),
+            Some(&auth),
+            "unknown",
+            "0",
+        )
+        .expect("no bound identity, no conflict");
+
+        assert_eq!(author.model_id, "runner/pinned");
+        assert_eq!(
+            author.trusted_model_id, None,
+            "claiming the string is not being bound to it"
+        );
+
+        let unattributed = author_from_args(&serde_json::json!({}), Some(&auth), "unknown", "0")
+            .expect("author context");
+        assert_eq!(unattributed.model_id, "unknown");
+        assert_eq!(unattributed.trusted_model_id, None);
+    }
+
+    /// `clientInfo` is peer-declared and unauthenticated; it names the
+    /// client, never the trusted model.
+    #[test]
+    fn client_info_never_becomes_the_trusted_model_id() {
+        let auth = full_auth(ToolScope::All);
+        let author = author_from_args(
+            &serde_json::json!({}),
+            Some(&auth),
+            "runner/pinned",
+            "1.0.0",
+        )
+        .expect("author context");
+
+        assert_eq!(author.client_name, "runner/pinned");
+        assert_eq!(author.trusted_model_id, None);
+        assert_eq!(author.model_id, "unknown");
+    }
+
+    /// Resource reads take the same precedence, with no argument object to
+    /// claim from.
+    #[test]
+    fn resource_author_context_carries_the_bound_identity() {
+        let bound = author_from_ctx(Some(&trusted_auth("runner/pinned")), "unknown", "0");
+        assert_eq!(bound.model_id, "runner/pinned");
+        assert_eq!(bound.trusted_model_id.as_deref(), Some("runner/pinned"));
+
+        let unbound = author_from_ctx(Some(&full_auth(ToolScope::All)), "unknown", "0");
+        assert_eq!(unbound.model_id, "unknown");
+        assert_eq!(unbound.trusted_model_id, None);
+    }
+
+    /// A bound identity is captured into the author context and the argument
+    /// is still stripped, so a dispatcher tool never sees it as an
+    /// unexpected field.
+    #[test]
+    fn strip_call_context_args_still_removes_an_agreeing_model_id() {
+        let auth = trusted_auth("runner/pinned");
+        let mut args = serde_json::json!({ "action": "set", "model_id": "runner/pinned" });
+        let author =
+            author_from_args(&args, Some(&auth), "unknown", "0").expect("agreeing claim accepted");
+        assert_eq!(author.model_id, "runner/pinned");
+
         strip_call_context_args(&mut args);
         assert!(args.get("model_id").is_none(), "model_id stripped: {args}");
         assert_eq!(args["action"], "set");
@@ -1231,7 +1386,6 @@ mod tests {
                 [(owner, Role::viewer())],
                 AuthPath::HostBearer,
             ),
-            model_id: None,
         };
 
         let read = flavor_descriptor(
@@ -1281,7 +1435,6 @@ mod tests {
             .with_tool_scope(ToolScope::Palette(vec![
                 "proxima-stub_search:bogus".to_owned(),
             ])),
-            model_id: None,
         };
 
         assert!(descriptor.action_arg_specs.is_empty());
@@ -1300,7 +1453,6 @@ mod tests {
                 [(owner, Role::viewer())],
                 AuthPath::HostBearer,
             ),
-            model_id: None,
         };
         let mixed = McpToolDescriptor {
             args_schema: serde_json::json!({
@@ -1338,7 +1490,6 @@ mod tests {
                 AuthPath::HostBearer,
             )
             .with_tool_scope(ToolScope::All),
-            model_id: None,
         };
         assert_eq!(
             project_dispatcher_actions_for_auth(&mixed, Some(&writer))["properties"]["action"]["enum"],
@@ -1370,7 +1521,6 @@ mod tests {
                 [(owner, Role::viewer())],
                 AuthPath::HostBearer,
             ),
-            model_id: None,
         };
         let projected = project_dispatcher_actions_for_auth(descriptor, Some(&viewer));
         let actions = projected["x-proxima-actions"]
@@ -1410,7 +1560,6 @@ mod tests {
                 AuthPath::HostBearer,
             )
             .with_tool_scope(ToolScope::All),
-            model_id: None,
         };
         let cli = McpToolDescriptor {
             argv_action_specs: MIXED_ARGV_ACTIONS,
@@ -1447,7 +1596,6 @@ mod tests {
                 AuthPath::HostBearer,
             )
             .with_tool_scope(ToolScope::All),
-            model_id: None,
         };
         assert_eq!(
             annotations_for_auth(Some(&writer), &cli).and_then(|value| value.read_only),
@@ -1506,7 +1654,6 @@ mod tests {
                 AuthPath::HostBearer,
             )
             .with_tool_scope(ToolScope::All),
-            model_id: None,
         };
         let err = tool_invocation_error_to_error_data(
             &registry,

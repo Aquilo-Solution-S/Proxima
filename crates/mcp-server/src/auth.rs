@@ -30,36 +30,35 @@ fn parse_wire_token(raw: &str) -> WireToken {
 }
 
 /// Per-request MCP auth context injected by the edge middleware.
-/// `authz` is the core authorization currency; the remaining fields
-/// are MCP-session specifics the tool host needs.
+/// `authz` is the core authorization currency; `owner` is the
+/// MCP-session specific the tool host needs.
+///
+/// There is no model-id slot here. Trusted model provenance lives on
+/// `authz` ([`AuthzContext::trusted_model_id`]) because that is the value
+/// an authenticator produced; a second, edge-local copy could only ever
+/// disagree with it.
 #[derive(Debug, Clone)]
 pub struct McpAuthContext {
     pub owner: Owner,
     pub authz: AuthzContext,
-    pub model_id: Option<String>,
 }
 
 impl McpAuthContext {
     #[must_use]
-    fn bound(authz: AuthzContext, owner: Owner, model_id: Option<String>) -> Self {
-        Self {
-            owner,
-            authz,
-            model_id,
-        }
+    fn bound(authz: AuthzContext, owner: Owner) -> Self {
+        Self { owner, authz }
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedAuth {
     authz: AuthzContext,
-    model_id: Option<String>,
 }
 
 impl ResolvedAuth {
     pub(crate) fn narrowed_to_owner(self, owner: Owner) -> Option<McpAuthContext> {
         let authz = self.authz.narrowed_to_owner(owner)?;
-        Some(McpAuthContext::bound(authz, owner, self.model_id))
+        Some(McpAuthContext::bound(authz, owner))
     }
 }
 
@@ -138,10 +137,7 @@ impl McpEdgeAuth {
         }
         let tool_scope = authz.tool_scope().intersect(&self.tool_scope);
         authz = authz.with_tool_scope(tool_scope);
-        Some(ResolvedAuth {
-            authz,
-            model_id: None,
-        })
+        Some(ResolvedAuth { authz })
     }
 }
 
@@ -375,6 +371,38 @@ mod tests {
             .expect_err("viewer role must not be able to manage group membership");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    /// The edge carries authenticated model provenance through unchanged.
+    /// It has no slot of its own to hold — or to contradict — it.
+    #[tokio::test]
+    async fn a_hosts_trusted_model_id_survives_edge_resolution() {
+        let owner = fake_owner();
+        let authz =
+            host_owner_context(owner).with_trusted_model_id(Some("acme/runner-v3".to_string()));
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
+
+        let ctx = auth
+            .resolve("host-token", owner)
+            .await
+            .expect("host resolves");
+
+        assert_eq!(ctx.authz.trusted_model_id(), Some("acme/runner-v3"));
+    }
+
+    #[tokio::test]
+    async fn a_host_that_binds_no_model_identity_yields_none() {
+        let owner = fake_owner();
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth {
+            result: Ok(host_owner_context(owner)),
+        }));
+
+        let ctx = auth
+            .resolve("host-token", owner)
+            .await
+            .expect("host resolves");
+
+        assert_eq!(ctx.authz.trusted_model_id(), None);
     }
 
     #[tokio::test]

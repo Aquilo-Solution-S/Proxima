@@ -434,6 +434,7 @@ mod tests {
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),
+                trusted_model_id: None,
                 client_name: "test".into(),
                 client_version: "0".into(),
                 caller_self_perspective: None,
@@ -531,6 +532,7 @@ mod argv_scope_tests {
             registry: Arc::new(registry.freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),
+                trusted_model_id: None,
                 client_name: "test".into(),
                 client_version: "0".into(),
                 caller_self_perspective: None,
@@ -696,6 +698,7 @@ mod owner_role_tests {
             registry: Arc::new(registry.freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "t".into(),
+                trusted_model_id: None,
                 client_name: "t".into(),
                 client_version: "0".into(),
                 caller_self_perspective: None,

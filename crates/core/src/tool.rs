@@ -197,14 +197,28 @@ where
 ///
 /// Transport adapters populate this from their authenticated call context.
 /// Direct hosts may omit it when caller provenance is unavailable.
+///
+/// Two model fields, deliberately: `model_id` is the operator *label* that
+/// reaches append-only provenance and may be caller-supplied, while
+/// `trusted_model_id` is what the authenticated edge certifies. Build
+/// policy on the latter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCaller {
     pub model_id: String,
+    /// Model/runner identity bound by the authenticating credential, if the
+    /// deployment binds one. Never populated from tool arguments, request
+    /// headers, or MCP `clientInfo`.
+    pub trusted_model_id: Option<String>,
     pub client_name: String,
     pub client_version: String,
 }
 
 impl ToolCaller {
+    /// Caller provenance with no authenticated model identity.
+    ///
+    /// The three-argument shape is load-bearing: out-of-tree flavors and
+    /// direct hosts call it. Authenticated provenance is layered on with
+    /// [`Self::with_trusted_model_id`].
     #[must_use]
     pub fn new(
         model_id: impl Into<String>,
@@ -213,9 +227,20 @@ impl ToolCaller {
     ) -> Self {
         Self {
             model_id: model_id.into(),
+            trusted_model_id: None,
             client_name: client_name.into(),
             client_version: client_version.into(),
         }
+    }
+
+    /// Attach the model identity the authenticated edge certified.
+    ///
+    /// **For transport adapters only** — the value must originate in the
+    /// credential (`AuthzContext::trusted_model_id`), never in a payload.
+    #[must_use]
+    pub fn with_trusted_model_id(mut self, trusted_model_id: Option<String>) -> Self {
+        self.trusted_model_id = trusted_model_id;
+        self
     }
 }
 

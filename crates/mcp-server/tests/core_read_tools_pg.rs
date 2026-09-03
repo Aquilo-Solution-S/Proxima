@@ -37,7 +37,6 @@ async fn core_read_resources_return_prefixed_ids_and_author()
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
             .narrowed_to_owner(owner)
             .expect("personal owner narrows"),
-        model_id: None,
     };
 
     let fetched = server
@@ -136,7 +135,6 @@ async fn search_results_expose_structured_memory_id() -> Result<(), Box<dyn std:
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
             .narrowed_to_owner(owner)
             .expect("personal owner narrows"),
-        model_id: None,
     };
 
     let output = server
@@ -193,7 +191,6 @@ async fn batch_memories_resource_error_classes_and_lineage_paging()
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
             .narrowed_to_owner(owner)
             .expect("personal owner narrows"),
-        model_id: None,
     };
 
     // One call returns the visible subset in request order and names the
@@ -395,7 +392,6 @@ async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
             .narrowed_to_owner(owner)
             .expect("personal owner narrows"),
-        model_id: None,
     };
 
     let output = server
@@ -473,7 +469,6 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
             .narrowed_to_owner(owner)
             .expect("personal owner narrows"),
-        model_id: None,
     };
 
     // Paginate Active goals two-at-a-time: disjoint, exhaustive, terminated.
@@ -572,7 +567,6 @@ async fn edge_resources_read_back_interpretation_references()
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
             .narrowed_to_owner(owner)
             .expect("personal owner narrows"),
-        model_id: None,
     };
 
     let interpreted = server
@@ -1039,6 +1033,7 @@ async fn insert_origin_edge(
 fn author_ctx() -> McpAuthorContext {
     McpAuthorContext {
         model_id: "codex-test".into(),
+        trusted_model_id: None,
         client_name: "codex".into(),
         client_version: "1".into(),
         caller_self_perspective: None,

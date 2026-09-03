@@ -791,6 +791,7 @@ mod tests {
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "m".into(),
+                trusted_model_id: None,
                 client_name: "c".into(),
                 client_version: "0".into(),
                 caller_self_perspective: None,
@@ -834,6 +835,7 @@ mod tests {
             registry: std::sync::Arc::new(crate::FlavorRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test-model".into(),
+                trusted_model_id: None,
                 client_name: "test-client".into(),
                 client_version: "1".into(),
                 caller_self_perspective: Some(target),

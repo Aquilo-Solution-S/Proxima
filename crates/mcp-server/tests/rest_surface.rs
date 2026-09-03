@@ -41,6 +41,7 @@ struct CallerContextArgs {}
 #[derive(Debug, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 struct CallerContextOutput {
     model_id: String,
+    trusted_model_id: Option<String>,
     client_name: String,
     client_version: String,
     caller_self_perspective: Option<String>,
@@ -71,6 +72,7 @@ impl proxima_core::Tool for CallerContextTool {
                 .ok_or_else(|| proxima_core::ToolError::Other("caller metadata missing".into()))?;
             Ok(CallerContextOutput {
                 model_id: caller.model_id.clone(),
+                trusted_model_id: caller.trusted_model_id.clone(),
                 client_name: caller.client_name.clone(),
                 client_version: caller.client_version.clone(),
                 caller_self_perspective: ctx
@@ -238,7 +240,6 @@ fn auth(scope: ToolScope) -> McpAuthContext {
     McpAuthContext {
         owner,
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(scope),
-        model_id: None,
     }
 }
 
@@ -252,13 +253,13 @@ fn viewer_auth(scope: ToolScope) -> McpAuthContext {
             AuthPath::HostBearer,
         )
         .with_tool_scope(scope),
-        model_id: None,
     }
 }
 
 fn author() -> McpAuthorContext {
     McpAuthorContext {
         model_id: "test-model".into(),
+        trusted_model_id: None,
         client_name: "test".into(),
         client_version: "0".into(),
         caller_self_perspective: None,
@@ -370,11 +371,119 @@ async fn rest_projects_headers_into_generic_tool_caller_context() {
         answer.json(),
         serde_json::json!({
             "model_id": "planner/model",
+            "trusted_model_id": null,
             "client_name": "planner-client",
             "client_version": "2.4.1",
             "caller_self_perspective": caller_self_perspective.to_string(),
         })
     );
+}
+
+// --------------------------------------------- trusted model provenance
+
+const TRUSTED_MODEL: &str = "acme/runner-v3";
+
+/// A principal whose bearer token binds a model identity — what an OIDC
+/// subject map entry carrying `trusted_model_id` produces at this edge.
+fn trusted_auth() -> McpAuthContext {
+    let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    McpAuthContext {
+        owner,
+        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .with_trusted_model_id(Some(TRUSTED_MODEL.to_string())),
+    }
+}
+
+async fn caller_context(ctx: &McpAuthContext, headers: &[(&str, &str)]) -> Answer {
+    call_with_headers(
+        &app(caller_context_host()),
+        Method::POST,
+        &format!("/v1/tools/{CALLER_CONTEXT_TOOL}"),
+        ctx,
+        Some(serde_json::json!({})),
+        headers,
+    )
+    .await
+}
+
+/// The tool — the seam a flavor builds policy on — sees the bound identity,
+/// and the label that reaches append-only provenance equals it even though
+/// the caller sent no header at all.
+#[tokio::test]
+async fn a_bound_model_identity_reaches_the_tool_and_becomes_the_label() {
+    let answer = caller_context(&trusted_auth(), &[]).await;
+
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(answer.json()["trusted_model_id"], TRUSTED_MODEL);
+    assert_eq!(answer.json()["model_id"], TRUSTED_MODEL);
+}
+
+/// A header that agrees with the token is accepted and changes nothing.
+#[tokio::test]
+async fn a_matching_model_id_header_is_accepted() {
+    let answer = caller_context(&trusted_auth(), &[("X-Proxima-Model-Id", TRUSTED_MODEL)]).await;
+
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(answer.json()["trusted_model_id"], TRUSTED_MODEL);
+    assert_eq!(answer.json()["model_id"], TRUSTED_MODEL);
+}
+
+/// A header naming another model is refused rather than silently
+/// overridden: the caller believes it is labelling an append-only write.
+#[tokio::test]
+async fn a_differing_model_id_header_is_a_400_naming_the_header() {
+    let answer = caller_context(&trusted_auth(), &[("X-Proxima-Model-Id", "claimed/model")]).await;
+
+    assert_eq!(answer.status, StatusCode::BAD_REQUEST);
+    let problem = answer.json();
+    assert_eq!(
+        problem["type"],
+        "https://proxima.dev/errors/model-id-conflict"
+    );
+    let detail = problem["detail"].as_str().expect("detail");
+    assert!(detail.contains("X-Proxima-Model-Id"), "{detail}");
+    assert!(detail.contains("claimed/model"), "{detail}");
+    assert!(detail.contains(TRUSTED_MODEL), "{detail}");
+    assert!(
+        detail.contains("authenticated token already binds"),
+        "{detail}"
+    );
+}
+
+/// A caller with no bound identity is unchanged: its header is the label,
+/// nothing is certified, and sending the runner's exact string buys no
+/// trusted status.
+#[tokio::test]
+async fn an_unbound_caller_gains_no_trusted_status_by_naming_the_model() {
+    let ctx = auth(ToolScope::All);
+
+    let claiming = caller_context(&ctx, &[("X-Proxima-Model-Id", TRUSTED_MODEL)]).await;
+    assert_eq!(claiming.status, StatusCode::OK);
+    assert_eq!(claiming.json()["model_id"], TRUSTED_MODEL);
+    assert_eq!(
+        claiming.json()["trusted_model_id"],
+        serde_json::Value::Null,
+        "saying the name is not being bound to it"
+    );
+
+    let bare = caller_context(&ctx, &[]).await;
+    assert_eq!(bare.json()["model_id"], "unknown");
+    assert_eq!(bare.json()["trusted_model_id"], serde_json::Value::Null);
+}
+
+/// `User-Agent` names the client, never the trusted model — the only
+/// source is the authenticated context.
+#[tokio::test]
+async fn the_user_agent_cannot_become_the_trusted_model_id() {
+    let answer = caller_context(
+        &auth(ToolScope::All),
+        &[(header::USER_AGENT.as_str(), &format!("{TRUSTED_MODEL}/1.0"))],
+    )
+    .await;
+
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(answer.json()["trusted_model_id"], serde_json::Value::Null);
+    assert_eq!(answer.json()["model_id"], "unknown");
 }
 
 async fn get(router: &Router, uri: &str, ctx: &McpAuthContext) -> Answer {
