@@ -748,9 +748,12 @@ Contract points that are easy to get wrong:
   asks for it.** A schema declaring `EmbeddingRecipe::Never` is never
   embedded and never queued, whatever embedding client the host has
   configured; the rest of this bullet is about the schemas that declare
-  units. A refused text is not a lost write: the memory lands with no
-  vector and a durable `embedding_jobs` row enqueued in the same
-  transaction, and the outcome's `embedding_deferred` says so. Several
+  units. A text the provider refuses whole is embedded in pieces and lands
+  as one chunked embedding version in the same transaction (the drain's
+  bisecting rescue, run inline). A text refused at every length is not a
+  lost write either: the memory lands with no vector and a durable
+  `embedding_jobs` row enqueued in the same transaction, and the outcome's
+  `embedding_deferred` says so. Several
   derived rows that must commit together use
   `UnitOfWork::author_derived_all` (embed the batch, then one `BEGIN`). A
   derived write after the transaction is already open defers the vector

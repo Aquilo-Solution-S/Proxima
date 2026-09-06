@@ -224,6 +224,24 @@ async fn settle_derived_embedding(
             .await
             .map(|_| ())
         }
+        DerivedEmbedding::ReadyChunks { model_id, vectors } => {
+            // The drain's chunk path, inside the row's own transaction: one
+            // version, the same dim check, no job.
+            let chunks: Vec<&[f32]> = vectors.iter().map(Vec::as_slice).collect();
+            crate::verbs::fact_embeddings::insert_embedding_chunks(
+                tx,
+                &draft.owner,
+                proxima_core::EmbeddableEntityRef::Memory {
+                    kind: draft.kind,
+                    memory_id,
+                },
+                model_id,
+                EMBEDDING_DIM,
+                &chunks,
+            )
+            .await
+            .map(|_| ())
+        }
         DerivedEmbedding::Deferred { model_id } => {
             crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
                 tx,

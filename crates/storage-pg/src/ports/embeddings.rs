@@ -129,6 +129,13 @@ impl EmbeddingJobPort for PgStorage {
         verbs::fact_embeddings::renew_embedding_jobs(&self.pool, claims).await
     }
 
+    async fn reclaim_stale_embedding_jobs(
+        &self,
+        older_than_seconds: i64,
+    ) -> Result<u64, StorageError> {
+        verbs::fact_embeddings::reclaim_stale_embedding_jobs(&self.pool, older_than_seconds).await
+    }
+
     async fn fail_embedding_job(
         &self,
         claim: &EmbeddingJobClaim,

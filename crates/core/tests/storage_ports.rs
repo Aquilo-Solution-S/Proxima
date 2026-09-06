@@ -302,6 +302,13 @@ impl EmbeddingJobPort for EmbeddingJobFake {
         fake_error()
     }
 
+    async fn reclaim_stale_embedding_jobs(
+        &self,
+        _older_than_seconds: i64,
+    ) -> Result<u64, StorageError> {
+        fake_error()
+    }
+
     async fn fail_embedding_job(
         &self,
         claim: &EmbeddingJobClaim,

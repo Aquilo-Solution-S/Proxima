@@ -20,7 +20,15 @@ mod pg_tests {
     use uuid::Uuid;
 
     use proxima_core::EmbeddableEntityRef;
+    use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
     use proxima_core::llm::EMBEDDING_DIM;
+    use proxima_core::llm::{
+        CHUNKED_EMBED_MIN_BYTES, EMBED_LIVENESS_PROBE, MIN_EMBED_INPUT_CAP_CHARS,
+    };
+    use proxima_core::{
+        AbstractionPayload, AgentDerivationV1, AuthorDerivedRequestInput, EdgeEndpoint,
+        InputContractId, MemoryId, MemoryOperatorKind, OperatorId, SidecarPayload,
+    };
 
     use super::super::{
         EmbeddingReconcileOptions, EmbeddingReconcileScope, claim_pending_embedding_jobs,
@@ -2248,6 +2256,330 @@ mod pg_tests {
             assert!(
                 wrong.is_err(),
                 "spelling the key `t` reaches no column of a sidecar keyed otherwise"
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// A drainer stopped between claim and completion leaves its rows
+    /// `processing`. Only reconcile used to free them, and the runtime
+    /// reconciles once at boot — so a restart inside the stale window left
+    /// them stuck until some later boot happened to land after the timeout.
+    /// The drain now reclaims first, on its own.
+    #[tokio::test]
+    async fn engine_drain_reclaims_stale_processing_claims_without_reconcile()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let mut written = Vec::new();
+            for label in ["abandoned", "live"] {
+                let mut draft = fact_draft(label);
+                draft.schema_id = SchemaId::new("core/agent-note-v1".into());
+                written.push(
+                    ingest_note_fact(&pg, &owner, &draft, Some("stub-fact-embed"), label, label)
+                        .await?
+                        .memory_id,
+                );
+            }
+            let (abandoned, live) = (written[0], written[1]);
+            let pool = pg.pool_for_tests();
+
+            // A previous process claimed both and died holding them; one
+            // claim is older than the stale window, the other is not.
+            let claims = claim_pending_embedding_jobs(pool, "stub-fact-embed", 2).await?;
+            assert_eq!(claims.len(), 2);
+            let policy = EmbeddingRuntimePolicy::new(
+                std::time::Duration::from_secs(1),
+                2,
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(3),
+            )?;
+            sqlx::query(
+                "UPDATE proxima_core.embedding_jobs
+                    SET claimed_at = now() - make_interval(secs => $2::double precision)
+                  WHERE entity_id = $1",
+            )
+            .bind(abandoned.into_inner())
+            .bind(f64::from(u32::try_from(policy.stale_claim_timeout_seconds())?) * 2.0)
+            .execute(pool)
+            .await?;
+
+            let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+            let pg = pg.clone().with_flavors(&registry);
+            let engine = Engine::new(registry)
+                .with_storage_ports(Arc::new(pg.clone()).storage_ports())
+                .with_embedding_runtime_policy(policy)
+                .with_embed(Arc::new(RecordingBatchEmbedding {
+                    batch_widths: Arc::new(std::sync::Mutex::new(Vec::new())),
+                }));
+
+            // No reconcile anywhere: the drain alone must free the claim.
+            let outcome = engine.drain_embedding_jobs(5).await?;
+            assert_eq!(
+                outcome.processed, 1,
+                "the stale claim is reclaimed and drained; the live one is left alone"
+            );
+            assert_eq!(outcome.failed, 0);
+            assert_eq!(
+                load_embedding_head_version(
+                    pool,
+                    EntityKind::Fact,
+                    abandoned.into_inner(),
+                    "stub-fact-embed"
+                )
+                .await?,
+                Some(1),
+                "the reclaimed job was embedded"
+            );
+            let abandoned_jobs: i64 = sqlx::query_scalar(
+                "SELECT count(*)::bigint
+                   FROM proxima_core.embedding_jobs
+                  WHERE entity_id = $1",
+            )
+            .bind(abandoned.into_inner())
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(abandoned_jobs, 0, "a completed job is deleted");
+            assert_eq!(
+                job_state(pool, live.into_inner()).await?.0,
+                "processing",
+                "a claim inside the window still belongs to its drainer"
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// Refuses whole inputs over `max_chars` the way a client-side cap
+    /// does, and records every length offered — so a test can assert what
+    /// was *sent*, not merely what came back.
+    #[derive(Debug)]
+    struct CappedEmbedding {
+        max_chars: usize,
+        offered: Arc<std::sync::Mutex<Vec<usize>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl EmbeddingClient for CappedEmbedding {
+        async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+            let chars = text.chars().count();
+            self.offered
+                .lock()
+                .expect("test lock is not poisoned")
+                .push(chars);
+            if chars > self.max_chars {
+                return Err(LlmError::EmbedPermanent(format!(
+                    "input of {chars} chars exceeds the {}-char limit",
+                    self.max_chars
+                )));
+            }
+            Ok(padded_embedding([0.5, 0.6, 0.7]))
+        }
+
+        fn model_id(&self) -> &'static str {
+            "stub-fact-embed"
+        }
+
+        fn dim(&self) -> usize {
+            EMBEDDING_DIM
+        }
+    }
+
+    fn derived_request(
+        owner: Owner,
+        origins: &[EdgeEndpoint],
+        text: String,
+    ) -> AuthorDerivedRequestInput<'_> {
+        AuthorDerivedRequestInput {
+            memory_id: MemoryId::new(Uuid::now_v7()),
+            owner,
+            kind: EntityKind::Abstraction,
+            text,
+            schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+            schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+            operator_kind: MemoryOperatorKind::FtoA,
+            operator_id: OperatorId::new(Uuid::now_v7()),
+            input_contract_id: InputContractId::new(Uuid::now_v7()),
+            model_id: "test",
+            sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
+                title: "long derivation".into(),
+                body: "long derivation".into(),
+                tags: Vec::new(),
+                idempotency_key: None,
+                source_memory_ids: origins
+                    .iter()
+                    .filter_map(|origin| origin.memory_id())
+                    .map(MemoryId::into_inner)
+                    .collect(),
+                model_id: "test".into(),
+                client_name: "test".into(),
+                client_version: "1".into(),
+            }),
+            derived_from: origins,
+            extra_refs: &[],
+            supersedes: None,
+            // `agent-derivation-v1` declares `LanguagePolicy::PerRow`.
+            lexical_language: Some(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT),
+        }
+    }
+
+    /// Engine over this storage with a capped provider, plus one origin
+    /// Fact for the derived write to declare.
+    async fn capped_authoring_fixture(
+        pg: &crate::PgStorage,
+        owner: &Owner,
+        max_chars: usize,
+    ) -> Result<
+        (
+            Engine,
+            AuthzContext,
+            MemoryId,
+            Arc<std::sync::Mutex<Vec<usize>>>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let Owner::Personal(user_id) = owner else {
+            return Err("fixture owner is personal".into());
+        };
+        let mut draft = fact_draft("origin");
+        draft.schema_id = SchemaId::new("core/agent-note-v1".into());
+        let origin = ingest_note_fact(pg, owner, &draft, None, "origin", "origin").await?;
+        let offered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let configured_pg = pg.clone().with_flavors(&registry);
+        let engine = Engine::new(registry)
+            .with_storage_ports(Arc::new(configured_pg).storage_ports())
+            .with_embed(Arc::new(CappedEmbedding {
+                max_chars,
+                offered: offered.clone(),
+            }));
+        let authz = AuthzContext::for_subject(*user_id, AuthPath::HostBearer);
+        Ok((engine, authz, origin.memory_id, offered))
+    }
+
+    async fn count_jobs(pool: &sqlx::PgPool, entity_id: Uuid) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT count(*)::bigint
+               FROM proxima_core.embedding_jobs
+              WHERE entity_id = $1",
+        )
+        .bind(entity_id)
+        .fetch_one(pool)
+        .await
+    }
+
+    /// One long unit used to be refused at authoring, written without a
+    /// vector, and rescued into chunks by a later drain — a warning, a
+    /// second round trip, and a window of semantic invisibility per unit,
+    /// for what is routine in a corpus of long texts. The rescue now runs
+    /// inline: the chunked version lands with the row and no job is filed.
+    #[tokio::test]
+    async fn author_derived_embeds_over_limit_text_inline_as_chunks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let cap = MIN_EMBED_INPUT_CAP_CHARS;
+            let (engine, authz, origin, offered) =
+                capped_authoring_fixture(&pg, &owner, cap).await?;
+            let origins = [EdgeEndpoint::memory(EntityKind::Fact, origin)];
+            let pool = pg.pool_for_tests();
+
+            let outcome = engine
+                .author_derived_authorized(
+                    &authz,
+                    derived_request(owner, &origins, "a".repeat(cap * 3)),
+                )
+                .await?;
+
+            assert!(
+                !outcome.embedding_deferred,
+                "an over-limit text is chunked inline, not deferred"
+            );
+            assert_eq!(
+                count_jobs(pool, outcome.memory_id.into_inner()).await?,
+                0,
+                "no job is filed for a text the chunked rescue covered"
+            );
+            assert_eq!(
+                load_embedding_head_version(
+                    pool,
+                    EntityKind::Abstraction,
+                    outcome.memory_id.into_inner(),
+                    "stub-fact-embed"
+                )
+                .await?,
+                Some(1),
+                "the chunked version landed in the same write as the row"
+            );
+            let offered = offered.lock().expect("test lock is not poisoned").clone();
+            assert!(
+                offered.iter().any(|chars| *chars > cap),
+                "the whole text is offered first: {offered:?}"
+            );
+            let accepted = offered.iter().filter(|chars| **chars <= cap).count();
+            assert!(
+                accepted > 1,
+                "the text came back split into provider-acceptable pieces: {offered:?}"
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// The job path is still the right place for a text the provider
+    /// rejects at every length: terminal failures and retries live there.
+    /// The provider answers the liveness probe, so this is the input's
+    /// fault and the write goes through without a vector.
+    #[tokio::test]
+    async fn author_derived_defers_text_refused_at_every_length()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            // Accepts the probe and nothing the bisection can produce.
+            let (engine, authz, origin, _offered) =
+                capped_authoring_fixture(&pg, &owner, EMBED_LIVENESS_PROBE.len()).await?;
+            let origins = [EdgeEndpoint::memory(EntityKind::Fact, origin)];
+            let pool = pg.pool_for_tests();
+
+            let outcome = engine
+                .author_derived_authorized(
+                    &authz,
+                    derived_request(owner, &origins, "a".repeat(CHUNKED_EMBED_MIN_BYTES * 3)),
+                )
+                .await?;
+
+            assert!(
+                outcome.embedding_deferred,
+                "a text refused at every length still defers to a job"
+            );
+            assert_eq!(
+                job_state(pool, outcome.memory_id.into_inner()).await?,
+                ("pending".to_owned(), None, true),
+                "the job is enqueued with the row"
+            );
+            assert_eq!(
+                load_embedding_head_version(
+                    pool,
+                    EntityKind::Abstraction,
+                    outcome.memory_id.into_inner(),
+                    "stub-fact-embed"
+                )
+                .await?,
+                None,
+                "no vector was written"
             );
             Ok(())
         }

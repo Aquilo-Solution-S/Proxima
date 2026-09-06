@@ -284,11 +284,15 @@ impl Engine {
     /// unit, the Engine embeds before storage; otherwise storage receives
     /// [`DerivedEmbedding::None`] and persists no embedding row.
     ///
-    /// An input this client cannot embed does not fail the write. The
-    /// memory lands with no vector and a pending embedding job enqueued in
-    /// the same transaction ([`DerivedEmbedding::Deferred`]), so
-    /// [`Engine::drain_embedding_jobs`] — which owns the bisecting
-    /// over-limit rescue that this path has never had — picks it up. The
+    /// An input this client cannot embed does not fail the write. A text
+    /// refused whole is bisected into pieces the client accepts and lands
+    /// as one chunked embedding version in the same transaction as the
+    /// row ([`DerivedEmbedding::ReadyChunks`]) — the drain's rescue, run
+    /// inline, so a long unit costs no job and no round trip. A text
+    /// rejected at every length lands with no vector and a pending
+    /// embedding job enqueued in the same transaction
+    /// ([`DerivedEmbedding::Deferred`]), so [`Engine::drain_embedding_jobs`]
+    /// — which owns terminal failures and retries — picks it up. The
     /// alternative is what production hit: a derive phase that dies
     /// deterministically, forever, on one over-long section, discarding
     /// every model call already paid for upstream of it.
@@ -531,13 +535,17 @@ impl Engine {
 /// Decide what a derived write should do about its vector, given a
 /// configured embedding client.
 ///
-/// A text this client will not embed downgrades the write (vector is
-/// recoverable by a drain that bisects) only after a liveness probe: an
-/// outage says nothing about the text.
+/// A text this client refuses whole is bisected into pieces it accepts
+/// ([`crate::llm::embed_in_chunks_after_failure`], the drain's rescue) —
+/// but only after a liveness probe, because an outage says nothing about
+/// the text. An over-limit text is routine for a corpus of long units, so
+/// it is embedded inline as chunks rather than refused now and rescued by
+/// a job later. Only a text rejected at every length, or a rescue that
+/// fails midway, downgrades the write to a job.
 ///
 /// # Errors
 ///
-/// `ConstraintViolation` when the vector's length disagrees with the
+/// `ConstraintViolation` when a vector's length disagrees with the
 /// client's declared `dim` (a misconfiguration, never the input's fault,
 /// so it is not deferrable), and `Internal` when the provider fails and
 /// does not answer a liveness probe.
@@ -546,36 +554,80 @@ pub(in crate::engine) async fn resolve_derived_embedding<'client>(
     memory_id: MemoryId,
     text: &str,
 ) -> Result<DerivedEmbedding<'client>, StorageError> {
-    match client.embed(text).await {
+    let err = match client.embed(text).await {
         Ok(vector) => {
-            if vector.len() != client.dim() {
-                return Err(StorageError::ConstraintViolation(format!(
-                    "embedding dim mismatch: client dim {} but vector len {}",
-                    client.dim(),
-                    vector.len(),
-                )));
-            }
-            Ok(DerivedEmbedding::Ready {
+            ensure_derived_embedding_dim(client, std::slice::from_ref(&vector))?;
+            return Ok(DerivedEmbedding::Ready {
                 model_id: client.model_id(),
                 vector,
+            });
+        }
+        Err(err) if crate::llm::embed_failure_blames_the_input(client, &err).await => err,
+        Err(err) => {
+            return Err(StorageError::Internal(format!(
+                "embed derived memory text: {err}"
+            )));
+        }
+    };
+    let refusal = err.to_string();
+    match crate::llm::embed_in_chunks_after_failure(client, text, err).await {
+        Ok(Some(vectors)) => {
+            ensure_derived_embedding_dim(client, &vectors)?;
+            tracing::info!(
+                memory_id = ?memory_id,
+                chunks = vectors.len(),
+                text_bytes = text.len(),
+                "over-limit derived memory text embedded inline as chunks"
+            );
+            Ok(DerivedEmbedding::ReadyChunks {
+                model_id: client.model_id(),
+                vectors,
             })
         }
-        Err(err) if crate::llm::embed_failure_blames_the_input(client, &err).await => {
+        Ok(None) => {
             tracing::warn!(
-                error = %err,
+                error = %refusal,
                 memory_id = ?memory_id,
                 text_bytes = text.len(),
-                "derived memory text refused by a live embedding provider; \
+                "derived memory text refused by a live embedding provider at every length; \
                  writing the memory without a vector and enqueueing an embedding job"
             );
             Ok(DerivedEmbedding::Deferred {
                 model_id: client.model_id(),
             })
         }
-        Err(err) => Err(StorageError::Internal(format!(
-            "embed derived memory text: {err}"
-        ))),
+        Err(rescue_err) => {
+            tracing::warn!(
+                error = %refusal,
+                rescue_error = %rescue_err,
+                memory_id = ?memory_id,
+                text_bytes = text.len(),
+                "derived memory text refused by a live embedding provider and the chunked \
+                 rescue failed; writing the memory without a vector and enqueueing an \
+                 embedding job"
+            );
+            Ok(DerivedEmbedding::Deferred {
+                model_id: client.model_id(),
+            })
+        }
     }
+}
+
+/// The inline write's dim check, shared by the whole-text and chunked arms
+/// and the same one the drain applies before its chunk insert.
+fn ensure_derived_embedding_dim(
+    client: &dyn crate::llm::EmbeddingClient,
+    vectors: &[Vec<f32>],
+) -> Result<(), StorageError> {
+    if vectors.is_empty() || vectors.iter().any(|vector| vector.len() != client.dim()) {
+        return Err(StorageError::ConstraintViolation(format!(
+            "embedding dim mismatch: client dim {} but got {} vector(s) of lens {:?}",
+            client.dim(),
+            vectors.len(),
+            vectors.iter().map(Vec::len).collect::<Vec<_>>(),
+        )));
+    }
+    Ok(())
 }
 
 pub(in crate::engine) fn validate_operator_memory_invocation_request(
