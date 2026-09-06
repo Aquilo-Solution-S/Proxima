@@ -460,13 +460,25 @@ pub enum DerivedEmbedding<'a> {
     /// The client embedded the text. Storage writes the vector inline, in
     /// the same transaction as the row.
     Ready { model_id: &'a str, vector: Vec<f32> },
-    /// The client could not embed this text but the provider is up, so the
-    /// input — not the provider — is what failed. Storage writes no vector
-    /// and enqueues a durable embedding job for `model_id` **in the same
-    /// transaction as the row**, so the drain (which owns the bisecting
-    /// over-limit rescue) picks the memory up. Losing the whole write, and
-    /// every model call upstream of it, is not the right answer to an input
-    /// one provider call refused.
+    /// The client refused the whole text but embedded it in pieces
+    /// ([`crate::llm::embed_in_chunks_after_failure`], the same bisecting
+    /// rescue the drain uses). Storage writes one chunked embedding version
+    /// inline, in the same transaction as the row, through the same chunk
+    /// insert the drain uses — so an over-limit text costs no job, no
+    /// second round trip, and no window in which the memory is lexically
+    /// findable but semantically invisible.
+    ReadyChunks {
+        model_id: &'a str,
+        vectors: Vec<Vec<f32>>,
+    },
+    /// The client could not embed this text at any length, or the chunked
+    /// rescue itself failed, while the provider is up — so the input, not
+    /// the provider, is what failed. Storage writes no vector and enqueues
+    /// a durable embedding job for `model_id` **in the same transaction as
+    /// the row**, so the drain (which owns terminal failures and retries)
+    /// picks the memory up. Losing the whole write, and every model call
+    /// upstream of it, is not the right answer to an input one provider
+    /// call refused.
     Deferred { model_id: &'a str },
 }
 
@@ -526,7 +538,9 @@ pub struct AuthorDerivedOutcome {
     /// job instead ([`DerivedEmbedding::Deferred`]). Until a drain runs, the
     /// memory is lexically findable and semantically invisible — a caller
     /// that needs it searchable now must say so, which it cannot do if the
-    /// only record is a log line.
+    /// only record is a log line. An over-limit text the client accepted
+    /// in pieces ([`DerivedEmbedding::ReadyChunks`]) is *not* deferred: its
+    /// chunked version landed with the row.
     pub embedding_deferred: bool,
 }
 

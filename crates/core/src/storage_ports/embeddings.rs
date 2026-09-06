@@ -151,6 +151,20 @@ pub trait EmbeddingJobPort: Send + Sync {
     async fn renew_embedding_jobs(&self, claims: &[EmbeddingJobClaim])
     -> Result<u64, StorageError>;
 
+    /// Return `processing` jobs claimed more than `older_than_seconds` ago
+    /// to `pending`, for every model. Returns the number reclaimed.
+    ///
+    /// The one recovery path for a drainer that died holding a claim: the
+    /// job's unique key blocks any re-enqueue, so nothing else can ever
+    /// free the row. Runs at the head of every drain, not only at boot —
+    /// a process restarted inside the stale window would otherwise leave
+    /// its predecessor's claims `processing` until some later boot
+    /// happens to land after the timeout.
+    async fn reclaim_stale_embedding_jobs(
+        &self,
+        older_than_seconds: i64,
+    ) -> Result<u64, StorageError>;
+
     /// Fail an attempted job for a retryable cause. The job holds `error`
     /// and waits for a reconciliation pass to requeue it.
     async fn fail_embedding_job(

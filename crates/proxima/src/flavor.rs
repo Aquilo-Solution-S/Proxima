@@ -131,11 +131,13 @@ pub use proxima_core::{
 /// is a lineage pointer on the two rows and writes no edge at all.
 ///
 /// A derived memory is embedded *synchronously*, **before** the write
-/// transaction begins. A text the provider refuses leaves the memory
-/// written with no vector and an embedding job enqueued in the same
-/// transaction, and [`AuthorDerivedAuthorizedOutcome::embedding_deferred`]
-/// says so. Only a provider that fails a liveness probe still fails the
-/// write. Several derived rows that must commit together use
+/// transaction begins. A text the provider refuses whole is embedded in
+/// pieces and stored as one chunked version with the row. A text refused
+/// at every length leaves the memory written with no vector and an
+/// embedding job enqueued in the same transaction, and
+/// [`AuthorDerivedAuthorizedOutcome::embedding_deferred`] says so. Only a
+/// provider that fails a liveness probe still fails the write. Several
+/// derived rows that must commit together use
 /// [`UnitOfWork::author_derived_all`] (embed the batch, then one
 /// begin). A derived write after the transaction is already open defers
 /// the vector rather than hold the pool slot across HTTP.
