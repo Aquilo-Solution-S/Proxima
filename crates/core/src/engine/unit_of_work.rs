@@ -21,8 +21,17 @@ use crate::{
 /// used by [`DerivedEmbedding`].
 enum PreparedEmbedding {
     None,
-    Ready { model_id: String, vector: Vec<f32> },
-    Deferred { model_id: String },
+    Ready {
+        model_id: String,
+        vector: Vec<f32>,
+    },
+    ReadyChunks {
+        model_id: String,
+        vectors: Vec<Vec<f32>>,
+    },
+    Deferred {
+        model_id: String,
+    },
 }
 
 impl PreparedEmbedding {
@@ -32,6 +41,10 @@ impl PreparedEmbedding {
             Self::Ready { model_id, vector } => DerivedEmbedding::Ready {
                 model_id,
                 vector: vector.clone(),
+            },
+            Self::ReadyChunks { model_id, vectors } => DerivedEmbedding::ReadyChunks {
+                model_id,
+                vectors: vectors.clone(),
             },
             Self::Deferred { model_id } => DerivedEmbedding::Deferred { model_id },
         }
@@ -633,6 +646,12 @@ impl UnitOfWork<'_> {
                     model_id: model_id.to_owned(),
                     vector,
                 },
+                DerivedEmbedding::ReadyChunks { model_id, vectors } => {
+                    PreparedEmbedding::ReadyChunks {
+                        model_id: model_id.to_owned(),
+                        vectors,
+                    }
+                }
                 DerivedEmbedding::Deferred { model_id } => PreparedEmbedding::Deferred {
                     model_id: model_id.to_owned(),
                 },

@@ -982,6 +982,14 @@ impl Engine {
     /// texts per provider call. Direct core hosts can install the policy with
     /// [`Engine::with_embedding_runtime_policy`].
     ///
+    /// Every invocation first returns `processing` claims older than the
+    /// policy's stale-claim timeout to `pending` (one statement, all models):
+    /// a drainer that died holding a claim — a process stopped between claim
+    /// and completion — is otherwise recovered only by a reconcile, which the
+    /// runtime runs once at boot. A restart inside the stale window would
+    /// leave its predecessor's claims `processing` until some later boot
+    /// happened to land after the timeout.
+    ///
     /// Failure semantics:
     /// - a *transient* batch failure (429/5xx/network) releases the claimed
     ///   jobs back to `pending` without burning retry attempts — a provider
@@ -1008,6 +1016,7 @@ impl Engine {
             return Ok(EmbeddingDrainOutcome::default());
         };
         let policy = self.embedding_runtime_policy();
+        self.reclaim_stale_embedding_claims(policy).await?;
         let mut outcome = EmbeddingDrainOutcome::default();
         let mut remaining = limit;
         while remaining > 0 {
@@ -1081,53 +1090,88 @@ impl Engine {
                         .await?;
                 }
                 Err(err) => {
-                    // A transient batch error is supposed to mean the
-                    // provider failed rather than any input being bad — but
-                    // the two are indistinguishable from the response when
-                    // the provider fails *because of* an input. Observed
-                    // against a local runner: one scanned page whose OCR
-                    // hallucinated a 300-row CJK table killed the model
-                    // process, which surfaces as `400 {"error": "… EOF"}`,
-                    // correctly classified transient because nothing looked
-                    // at the input. Released unburned, the whole claim of 32
-                    // came back every drain and 31 innocent pages of the book
-                    // stayed unembedded indefinitely.
-                    //
-                    // Probing separates the cases. If the provider answers a
-                    // trivial input right after refusing the batch, it is up,
-                    // and this batch's failure is attributable to its
-                    // contents — so isolate them the same way a permanent
-                    // rejection is isolated. If the probe also fails, the
-                    // provider really is down: release without burning
-                    // attempts, exactly as before, for one extra tiny call.
-                    if client.embed(TRANSIENT_BATCH_PROBE).await.is_ok() {
-                        tracing::warn!(
-                            error = %err,
-                            jobs = batch.len(),
-                            "transient embedding batch failure but the provider answers; \
-                             isolating inputs instead of holding the batch"
-                        );
-                        self.embed_claims_individually(&client, batch, &mut outcome)
-                            .await?;
-                        continue;
+                    if !self
+                        .recover_transient_embedding_batch(&client, batch, &mut outcome, &err)
+                        .await?
+                    {
+                        break;
                     }
-                    let claims: Vec<EmbeddingJobClaim> =
-                        batch.into_iter().map(|(claim, _)| claim).collect();
-                    tracing::warn!(
-                        error = %err,
-                        jobs = claims.len(),
-                        "transient embedding batch failure; releasing claims without burning attempts"
-                    );
-                    self.storage
-                        .ingest
-                        .embedding_job
-                        .release_embedding_jobs(&claims, &format!("embed memory text: {err}"))
-                        .await?;
-                    break;
                 }
             }
         }
         Ok(outcome)
+    }
+
+    /// A transient batch error is supposed to mean the provider failed
+    /// rather than any input being bad — but the two are indistinguishable
+    /// from the response when the provider fails *because of* an input.
+    /// Observed against a local runner: one scanned page whose OCR
+    /// hallucinated a 300-row CJK table killed the model process, which
+    /// surfaces as `400 {"error": "… EOF"}`, correctly classified transient
+    /// because nothing looked at the input. Released unburned, the whole
+    /// claim of 32 came back every drain and 31 innocent pages of the book
+    /// stayed unembedded indefinitely.
+    ///
+    /// Probing separates the cases. If the provider answers a trivial input
+    /// right after refusing the batch, it is up, and this batch's failure is
+    /// attributable to its contents — so isolate them the same way a
+    /// permanent rejection is isolated, and the drain continues (`true`).
+    /// If the probe also fails, the provider really is down: release
+    /// without burning attempts, exactly as before, for one extra tiny
+    /// call, and the drain ends (`false`).
+    async fn recover_transient_embedding_batch(
+        &self,
+        client: &Arc<dyn EmbeddingClient>,
+        batch: Vec<(EmbeddingJobClaim, String)>,
+        outcome: &mut EmbeddingDrainOutcome,
+        err: &LlmError,
+    ) -> Result<bool, StorageError> {
+        if client.embed(TRANSIENT_BATCH_PROBE).await.is_ok() {
+            tracing::warn!(
+                error = %err,
+                jobs = batch.len(),
+                "transient embedding batch failure but the provider answers; \
+                 isolating inputs instead of holding the batch"
+            );
+            self.embed_claims_individually(client, batch, outcome)
+                .await?;
+            return Ok(true);
+        }
+        let claims: Vec<EmbeddingJobClaim> = batch.into_iter().map(|(claim, _)| claim).collect();
+        tracing::warn!(
+            error = %err,
+            jobs = claims.len(),
+            "transient embedding batch failure; releasing claims without burning attempts"
+        );
+        self.storage
+            .ingest
+            .embedding_job
+            .release_embedding_jobs(&claims, &format!("embed memory text: {err}"))
+            .await?;
+        Ok(false)
+    }
+
+    /// Once per drain, not per batch: one UPDATE that frees what a dead
+    /// drainer left `processing`. The heartbeat keeps a live drainer's
+    /// claims inside the window, so this cannot steal in-flight work.
+    async fn reclaim_stale_embedding_claims(
+        &self,
+        policy: crate::EmbeddingRuntimePolicy,
+    ) -> Result<(), StorageError> {
+        let reclaimed = self
+            .storage
+            .ingest
+            .embedding_job
+            .reclaim_stale_embedding_jobs(policy.stale_claim_timeout_seconds())
+            .await?;
+        if reclaimed > 0 {
+            tracing::info!(
+                reclaimed,
+                stale_after_seconds = policy.stale_claim_timeout_seconds(),
+                "reclaimed abandoned processing embedding jobs before draining"
+            );
+        }
+        Ok(())
     }
 
     async fn release_malformed_embedding_batch(

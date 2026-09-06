@@ -340,6 +340,15 @@ impl EmbeddingJobPort for RejectingStorage {
         ))
     }
 
+    async fn reclaim_stale_embedding_jobs(
+        &self,
+        _older_than_seconds: i64,
+    ) -> Result<u64, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
     async fn fail_embedding_job(
         &self,
         _claim: &EmbeddingJobClaim,
