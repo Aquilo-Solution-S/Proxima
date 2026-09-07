@@ -36,8 +36,8 @@
 //! `RankSource::Projection` — a score this merge cannot compare and a shape
 //! this renderer cannot serve are both exclusions the contract states. The
 //! semantic arm honours the same scope: a tagged request restricts its
-//! candidate scan to memories those flavors' projection rows tag
-//! ([`semantic_search_sql`]).
+//! candidate scan to memories those flavors' projection rows satisfy the
+//! request's optional tag predicate ([`semantic_search_sql`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -71,12 +71,11 @@ use super::lineage::load_one_schema_snippets;
 /// rather than of the shard.
 const REQUEST_OVERFETCH_FACTOR: u32 = 20;
 
-/// The semantic arm's fixed fragment: the UNTAGGED scan. `$1` is the owner
-/// set, `$2` the model id, `$3` the query vector, `$4` the candidate budget,
-/// `$5`/`$6` the `since`/`until` window. A tagged request runs
-/// [`semantic_search_sql`] instead, which splices the tag predicate ahead of
-/// [`SEMANTIC_SEARCH_TAIL`] and binds from `$7` on.
-const SEMANTIC_SEARCH_SQL: &str = "SELECT emb.entity_id AS t,
+/// The semantic arm's fixed scan. `$1` is the owner set, `$2` the model id,
+/// `$3` the query vector, `$4` the candidate budget, `$5`/`$6` the
+/// `since`/`until` window. [`semantic_search_sql`] adds the participating
+/// flavor probes ahead of [`SEMANTIC_SEARCH_TAIL`].
+const SEMANTIC_SEARCH_SCAN: &str = "SELECT emb.entity_id AS t,
                 GREATEST(0.0, (1 - (emb.vec <=> $3::vector)))::real AS similarity_score
            FROM proxima_core.embeddings emb
            JOIN proxima_core.embedding_heads head
@@ -92,10 +91,9 @@ const SEMANTIC_SEARCH_SQL: &str = "SELECT emb.entity_id AS t,
           ORDER BY emb.vec <=> $3::vector
           LIMIT $4";
 
-/// The fixed fragment's `ORDER BY` / `LIMIT`, spelled once: the tagged
-/// variant is the SAME scan with one more conjunct, and this is where the
-/// conjunct goes. `SEMANTIC_SEARCH_SQL` ends with it, which
-/// `the_semantic_arm_binds_the_tags_where_the_scan_binds_them` pins.
+/// The fixed scan's `ORDER BY` / `LIMIT`, spelled once. Projection probes
+/// must precede this tail so filtering happens before the HNSW candidate
+/// window is applied.
 const SEMANTIC_SEARCH_TAIL: &str = "
           ORDER BY emb.vec <=> $3::vector
           LIMIT $4";
@@ -1006,9 +1004,9 @@ fn rank_tsquery_expr(multilingual: bool) -> &'static str {
     }
 }
 
-/// The semantic arm's statement: the fixed fragment, or — when the request
-/// carries tags — that same scan restricted to memories whose projection row
-/// in a participating flavor matches the tag predicate.
+/// The semantic arm's statement: the embedding scan restricted to memories
+/// whose projection row belongs to a participating flavor and, when
+/// requested, matches the tag predicate.
 ///
 /// The restriction sits on the CANDIDATE side for the reason
 /// [`admit_side_restriction`] gives: `emb.vec <=> $3` walks the HNSW index
@@ -1025,46 +1023,57 @@ fn rank_tsquery_expr(multilingual: bool) -> &'static str {
 /// projection's primary key `(memory_id, schema_id)` and binds ITS flavor's
 /// schema set, so no flavor's table is asked about another flavor's schemas.
 ///
-/// An empty `flavors` under tags is the caller's case: `scan_embeddings`
-/// returns no rows rather than the unfiltered scan, because "no flavor
-/// declares a `tag_column` this request can reach" is an empty tagged
-/// result, not an untagged one.
+/// An empty `flavors` is the caller's case: `scan_embeddings` returns no rows
+/// rather than an unfiltered scan, because no participating schema means an
+/// empty result for both tagged and untagged requests.
 fn semantic_search_sql(
     flavors: &[FlavorScan<'_>],
     req: &MemorySearchRequest,
 ) -> Result<String, StorageError> {
-    if req.tags.is_empty() {
-        return Ok(SEMANTIC_SEARCH_SQL.to_owned());
-    }
-    let Some(scan) = SEMANTIC_SEARCH_SQL.strip_suffix(SEMANTIC_SEARCH_TAIL) else {
+    let Some(scan) = SEMANTIC_SEARCH_SCAN.strip_suffix(SEMANTIC_SEARCH_TAIL) else {
         return Err(StorageError::Internal(
-            "SEMANTIC_SEARCH_SQL no longer ends with SEMANTIC_SEARCH_TAIL".into(),
+            "SEMANTIC_SEARCH_SCAN no longer ends with SEMANTIC_SEARCH_TAIL".into(),
         ));
     };
     let op = tag_operator(req.tag_match);
+    let schema_bind_base = if req.tags.is_empty() {
+        SEMANTIC_TAGS_BIND
+    } else {
+        SEMANTIC_SCHEMA_BIND_BASE
+    };
     let probes = flavors
         .iter()
         .enumerate()
         .map(|(index, flavor)| {
             let table = PgIdent::table(&flavor.head().projection_table)?;
+            let tag_pred = if req.tags.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\n                            AND p.tag {op} ${SEMANTIC_TAGS_BIND}::text[]"
+                )
+            };
             // SQL-POLICY: PgIdent
             Ok(format!(
                 "EXISTS (SELECT 1
                            FROM {table} p
                           WHERE p.memory_id = emb.entity_id
                             AND p.owner_id = ANY($1::uuid[])
-                            AND p.schema_id = ANY(${schema_bind}::text[])
-                            AND p.tag {op} ${SEMANTIC_TAGS_BIND}::text[])",
+                            AND p.schema_id = ANY(${schema_bind}::text[]){tag_pred})",
                 table = table.as_str(),
-                schema_bind = SEMANTIC_SCHEMA_BIND_BASE + index,
+                schema_bind = schema_bind_base + index,
             ))
         })
         .collect::<Result<Vec<_>, StorageError>>()?;
-    let tag_pred = probes.join("\n                 OR ");
+    let projection_pred = if probes.is_empty() {
+        "FALSE".to_owned()
+    } else {
+        probes.join("\n                 OR ")
+    };
     // SQL-POLICY: PgIdent
     Ok(format!(
         "{scan}
-            AND ({tag_pred}){SEMANTIC_SEARCH_TAIL}"
+            AND ({projection_pred}){SEMANTIC_SEARCH_TAIL}"
     ))
 }
 
@@ -1090,9 +1099,9 @@ async fn scan_embeddings(
             "semantic search embedding length must be {EMBEDDING_DIM}"
         )));
     }
-    // A tagged request no flavor participates in has no projection table to
-    // probe: it returns nothing, not the unfiltered scan.
-    if !req.tags.is_empty() && flavors.is_empty() {
+    // No participating flavor has a projection table to probe: return
+    // nothing, not an unfiltered scan.
+    if flavors.is_empty() {
         return Ok(Vec::new());
     }
     let owner_ids: Vec<uuid::Uuid> = req
@@ -1128,12 +1137,13 @@ async fn scan_embeddings(
         .bind(req.since)
         .bind(req.until);
     if !req.tags.is_empty() {
-        // `$7`, then one schema set per flavor in `flavors` order — the
-        // order `semantic_search_sql` numbered them from `$8`.
+        // `$7` is the tag array; schema sets start at `$8` in `flavors`
+        // order — the order `semantic_search_sql` numbered them.
         query = query.bind(&req.tags);
-        for schema_ids in &schema_sets {
-            query = query.bind(schema_ids);
-        }
+    }
+    // Untagged schema sets start at `$7`; tagged schema sets start at `$8`.
+    for schema_ids in &schema_sets {
+        query = query.bind(schema_ids);
     }
     let rows: Vec<EmbeddingScanRow> = query.fetch_all(&mut *tx).await.map_err(map_err)?;
     tx.commit().await.map_err(map_err)?;
@@ -1306,9 +1316,12 @@ pub fn substring_sql_for_tests(
 
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 #[doc(hidden)]
-#[must_use]
-pub fn semantic_search_sql_for_tests() -> &'static str {
-    SEMANTIC_SEARCH_SQL
+pub fn semantic_search_sql_for_tests(
+    req: &MemorySearchRequest,
+    projections: &[MemorySearchProjection],
+) -> Result<String, StorageError> {
+    let flavors = core_search_flavors(req, projections);
+    semantic_search_sql(&flavors, req)
 }
 
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
@@ -1365,8 +1378,7 @@ mod tests {
         );
         assert!(
             prod.contains("semantic_search_sql(flavors, req)"),
-            "the semantic scan must run the builder, which is the fixed \
-             fragment until the request carries tags"
+            "the semantic scan must run the builder for every request shape"
         );
         let admit = format!("{}{}", "search_admit_sql(matches!(", "");
         assert!(prod.contains(&admit), "admit must run search_admit_sql");
@@ -1612,9 +1624,9 @@ mod tests {
             "the tag predicate narrows the scan; it does not trim its window"
         );
         assert!(
-            super::SEMANTIC_SEARCH_SQL.ends_with(super::SEMANTIC_SEARCH_TAIL)
+            super::SEMANTIC_SEARCH_SCAN.ends_with(super::SEMANTIC_SEARCH_TAIL)
                 && tagged.ends_with(super::SEMANTIC_SEARCH_TAIL),
-            "the tagged variant is the fixed fragment plus one conjunct"
+            "the semantic variant keeps the fixed scan tail"
         );
 
         req.tag_match = TagMatch::All;
@@ -1622,13 +1634,31 @@ mod tests {
             super::semantic_search_sql(std::slice::from_ref(&flavor), &req).expect("semantic");
         assert!(all.contains("p.tag @> $7::text[]"), "`All` is `@>`");
 
-        // Without tags: the fixed fragment, byte for byte — `$7` simply
-        // goes unmentioned.
+        // Without tags: the same participating-schema probe remains, with
+        // schemas moving into the first post-fixed-fragment bind `$7`.
         req.tags.clear();
         let untagged =
             super::semantic_search_sql(std::slice::from_ref(&flavor), &req).expect("semantic");
-        assert_eq!(untagged, super::SEMANTIC_SEARCH_SQL);
-        assert!(!untagged.contains("p.tag") && !untagged.contains("$7"));
+        assert!(untagged.contains("p.schema_id = ANY($7::text[])"));
+        assert!(!untagged.contains("p.tag") && !untagged.contains("$8"));
+    }
+
+    #[test]
+    fn the_semantic_arm_empty_participating_set_is_a_valid_empty_query() {
+        let mut req = request_with_tags();
+        req.tags.clear();
+        let sql = super::semantic_search_sql(&[], &req).expect("empty semantic query");
+        assert!(sql.contains("AND (FALSE)"));
+        assert!(sql.ends_with(super::SEMANTIC_SEARCH_TAIL));
+        assert!(!sql.contains("FROM proxima_core.projection"));
+
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let mut excluded = req;
+        excluded.schema_id = Some(proxima_core::SchemaId::new("does-not-exist".into()));
+        let wrapped =
+            super::semantic_search_sql_for_tests(&excluded, registry.search_projections())
+                .expect("empty participating set");
+        assert!(wrapped.contains("AND (FALSE)"));
     }
 
     /// One `EXISTS` probe per participating flavor, against THAT flavor's
@@ -1690,11 +1720,16 @@ mod tests {
             "an invalid projection table identifier is refused, not spliced"
         );
 
-        // Without tags the flavor set is irrelevant: the fixed fragment,
-        // whatever was handed in.
+        // Without tags the same per-flavor probes remain, with schema sets
+        // starting at `$7`.
         req.tags.clear();
         let untagged = super::semantic_search_sql(&flavors, &req).expect("semantic");
-        assert_eq!(untagged, super::SEMANTIC_SEARCH_SQL);
+        assert!(untagged.contains("FROM proxima_core.projection p"));
+        assert!(untagged.contains("p.schema_id = ANY($7::text[])"));
+        assert!(untagged.contains("FROM proxima_docs.projection p"));
+        assert!(untagged.contains("p.schema_id = ANY($8::text[])"));
+        assert!(!untagged.contains("p.tag"));
+        assert!(super::semantic_search_sql(&hostile, &req).is_err());
     }
 
     /// The substring leg probes the sidecar on the column the CONTRACT

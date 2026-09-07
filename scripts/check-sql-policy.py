@@ -832,10 +832,10 @@ def run_fixture(path: Path) -> int:
 #
 # 117 -> 118: the tag filter reaches the semantic arm. One
 # `sqlx::query_as(AssertSqlSafe(sql))` in `verbs/query/search.rs::scan_embeddings`,
-# running `semantic_search_sql`: the fixed fragment `SEMANTIC_SEARCH_SQL`
-# until the request carries tags, then that same scan plus one `EXISTS` probe
-# per participating flavor's projection table — the table through
-# `PgIdent::table`, the tag array and every schema set bound (`$7`, `$8`…).
+# running `semantic_search_sql`: `SEMANTIC_SEARCH_SCAN` plus one `EXISTS` probe
+# per participating flavor's projection table on every request. The table
+# passes through `PgIdent::table`; schema sets and optional tags are bound
+# from `$7` onward. Without tags, only flavor #0's schemas participate.
 # Literal SQL cannot express it because the projection table is named by the
 # flavor's declaration, exactly as the ranked arm's is.
 EXPECTED_DYNAMIC_SQL_SITES = 118
