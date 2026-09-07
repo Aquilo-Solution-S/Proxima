@@ -2480,10 +2480,10 @@ mod pg_tests {
     /// vector, and rescued into chunks by a later drain — a warning, a
     /// second round trip, and a window of semantic invisibility per unit,
     /// for what is routine in a corpus of long texts. The rescue now runs
-    /// inline: the chunked version lands with the row and no job is filed.
+    /// inline: one vector lands with the row and no job is filed.
     #[tokio::test]
-    async fn author_derived_embeds_over_limit_text_inline_as_chunks()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn author_derived_embeds_over_limit_text_inline() -> Result<(), Box<dyn std::error::Error>>
+    {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -2502,12 +2502,17 @@ mod pg_tests {
 
             assert!(
                 !outcome.embedding_deferred,
-                "an over-limit text is chunked inline, not deferred"
+                "an over-limit text is rescued inline, not deferred"
             );
             assert_eq!(
                 count_jobs(pool, outcome.memory_id.into_inner()).await?,
                 0,
                 "no job is filed for a text the chunked rescue covered"
+            );
+            assert_eq!(
+                count_fact_embeddings(pool, outcome.memory_id).await?,
+                1,
+                "storage keeps one vec per version"
             );
             assert_eq!(
                 load_embedding_head_version(
@@ -2518,7 +2523,7 @@ mod pg_tests {
                 )
                 .await?,
                 Some(1),
-                "the chunked version landed in the same write as the row"
+                "the vector landed in the same write as the row"
             );
             let offered = offered.lock().expect("test lock is not poisoned").clone();
             assert!(

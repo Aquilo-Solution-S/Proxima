@@ -285,10 +285,10 @@ impl Engine {
     /// [`DerivedEmbedding::None`] and persists no embedding row.
     ///
     /// An input this client cannot embed does not fail the write. A text
-    /// refused whole is bisected into pieces the client accepts and lands
-    /// as one chunked embedding version in the same transaction as the
-    /// row ([`DerivedEmbedding::ReadyChunks`]) — the drain's rescue, run
-    /// inline, so a long unit costs no job and no round trip. A text
+    /// refused whole is rescued by the drain's bisection and lands as
+    /// [`DerivedEmbedding::Ready`] in the same transaction as the row —
+    /// so a long unit costs no job and no second round trip. Storage keeps
+    /// one vec per version, so the first piece is what is stored. A text
     /// rejected at every length lands with no vector and a pending
     /// embedding job enqueued in the same transaction
     /// ([`DerivedEmbedding::Deferred`]), so [`Engine::drain_embedding_jobs`]
@@ -539,9 +539,11 @@ impl Engine {
 /// ([`crate::llm::embed_in_chunks_after_failure`], the drain's rescue) —
 /// but only after a liveness probe, because an outage says nothing about
 /// the text. An over-limit text is routine for a corpus of long units, so
-/// it is embedded inline as chunks rather than refused now and rescued by
-/// a job later. Only a text rejected at every length, or a rescue that
-/// fails midway, downgrades the write to a job.
+/// it is rescued inline rather than refused now and rescued by a job
+/// later. Storage keeps one vec per version, so a successful rescue lands
+/// as [`DerivedEmbedding::Ready`] with the first piece. Only a text
+/// rejected at every length, or a rescue that fails midway, downgrades
+/// the write to a job.
 ///
 /// # Errors
 ///
@@ -572,16 +574,20 @@ pub(in crate::engine) async fn resolve_derived_embedding<'client>(
     let refusal = err.to_string();
     match crate::llm::embed_in_chunks_after_failure(client, text, err).await {
         Ok(Some(vectors)) => {
-            ensure_derived_embedding_dim(client, &vectors)?;
+            let Some(vector) = vectors.into_iter().next() else {
+                return Err(StorageError::ConstraintViolation(
+                    "embedding version needs at least one chunk".into(),
+                ));
+            };
+            ensure_derived_embedding_dim(client, std::slice::from_ref(&vector))?;
             tracing::info!(
                 memory_id = ?memory_id,
-                chunks = vectors.len(),
                 text_bytes = text.len(),
-                "over-limit derived memory text embedded inline as chunks"
+                "over-limit derived memory text embedded inline"
             );
-            Ok(DerivedEmbedding::ReadyChunks {
+            Ok(DerivedEmbedding::Ready {
                 model_id: client.model_id(),
-                vectors,
+                vector,
             })
         }
         Ok(None) => {

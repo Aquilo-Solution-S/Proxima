@@ -983,12 +983,9 @@ impl Engine {
     /// [`Engine::with_embedding_runtime_policy`].
     ///
     /// Every invocation first returns `processing` claims older than the
-    /// policy's stale-claim timeout to `pending` (one statement, all models):
-    /// a drainer that died holding a claim — a process stopped between claim
-    /// and completion — is otherwise recovered only by a reconcile, which the
-    /// runtime runs once at boot. A restart inside the stale window would
-    /// leave its predecessor's claims `processing` until some later boot
-    /// happened to land after the timeout.
+    /// policy's stale-claim timeout to `pending` (one statement, all models),
+    /// then claims. A drainer that died holding a claim — a process stopped
+    /// between claim and completion — is recovered here, not only at boot.
     ///
     /// Failure semantics:
     /// - a *transient* batch failure (429/5xx/network) releases the claimed
