@@ -23,8 +23,37 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  changes:
+    name: changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.paths.outputs.rust }}
+      docs: ${{ steps.paths.outputs.docs }}
+      lean: ${{ steps.paths.outputs.lean }}
+      dependencies: ${{ steps.paths.outputs.dependencies }}
+      image: ${{ steps.paths.outputs.image }}
+      release: ${{ steps.paths.outputs.release }}
+      all: ${{ steps.paths.outputs.all }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # dorny/paths-filter@v4; PRs use the API, pushes compare before..after.
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d
+        id: paths
+        with:
+          base: ${{ github.ref }}
+          predicate-quantifier: some-with-excludes
+          filters: .github/ci-paths.yml
+
+  # Keep required check names and workflow triggers stable. Skipped jobs
+  # satisfy branch protection; skipped workflows leave checks pending.
+  # If path detection fails, run validation instead of skipping it.
   lint:
     name: fmt + clippy + doc
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     steps:
       # actions/checkout@v7
@@ -45,18 +74,33 @@ jobs:
 
   docs:
     name: docs links + status + lean
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: install docs dependencies
+        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.docs == 'true' }}
         run: python3 -m pip install -r requirements-docs.txt
       - name: mkdocs strict build
+        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.docs == 'true' }}
         run: python3 -m mkdocs build --strict
       - name: markdown local links
         run: python3 scripts/check-doc-links.py
       - name: docs status labels
         run: python3 scripts/check-doc-status.py
+      - name: install git-cliff
+        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.release == 'true' }}
+        # taiki-e/install-action@v2; same generator as the tag workflow.
+        uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419
+        with:
+          tool: git-cliff@2.13.1
+      - name: release-note configuration
+        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.release == 'true' }}
+        run: |
+          shellcheck scripts/changelog.sh
+          git cliff --offline --unreleased --output "${RUNNER_TEMP}/release-notes.md"
       - name: architecture guardrails
         run: |
           python3 scripts/check-sql-policy.py --self-test
@@ -68,6 +112,7 @@ jobs:
           python3 scripts/check-schema-ids.py
           python3 scripts/check-migration-ranges.py
       - name: set up Lean/Lake
+        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.lean == 'true' }}
         # leanprover/lean-action@v1
         uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596
         with:
@@ -75,14 +120,18 @@ jobs:
           build: false
           test: false
       - name: lean kernel
+        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.lean == 'true' }}
         run: cd docs/lean && lake build
       - name: lean axiom pin
+        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.lean == 'true' }}
         run: |
           python3 scripts/check-lean-axioms.py --self-test
           python3 scripts/check-lean-axioms.py
 
   deny:
     name: cargo-deny (advisories + licenses + bans + sources)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.dependencies == 'true') }}
     runs-on: ubuntu-latest
     steps:
       # actions/checkout@v7
@@ -96,6 +145,8 @@ jobs:
 
   image:
     name: docker build
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.image == 'true') }}
     runs-on: ubuntu-latest
     steps:
       # actions/checkout@v7
@@ -118,6 +169,8 @@ jobs:
 
   test:
     name: test (postgres + pgvector)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -180,7 +233,7 @@ jobs:
         run: |
           # Any HTTP response means it is up. Not `curl -f`: an S3 root
           # request is unauthenticated, so a healthy server answers 403.
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             curl -s -o /dev/null http://localhost:9000 && break
             sleep 2
           done

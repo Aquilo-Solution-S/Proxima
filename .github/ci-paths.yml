@@ -1,0 +1,39 @@
+# dorny/paths-filter uses some-with-excludes: include matches minus exclusions.
+# Unknown non-documentation paths deliberately keep full Rust validation.
+rust:
+  - '**'
+  - '!docs/**'
+  - '!*.md'
+  - '!llms*.txt'
+  - '!{apps,crates,flavors,tools}/*/README.md'
+  - '!mkdocs.yml'
+  - '!requirements-docs.txt'
+  - '!cliff.toml'
+  - '!scripts/changelog.sh'
+  - '!deny.toml'
+  - '!Dockerfile'
+  - '!.dockerignore'
+  - '!LICENSE*'
+docs:
+  - '**/*.md'
+  - 'docs/**'
+  - 'llms*.txt'
+  - 'mkdocs.yml'
+  - 'requirements-docs.txt'
+lean:
+  - 'docs/lean/**'
+  - 'scripts/check-lean-axioms.py'
+dependencies:
+  - '**/Cargo.toml'
+  - 'Cargo.lock'
+  - 'deny.toml'
+image:
+  - 'Dockerfile'
+  - '.dockerignore'
+release:
+  - 'cliff.toml'
+  - 'scripts/changelog.sh'
+  - '.github/workflows/release.yml'
+all:
+  - '.github/**'
+  - 'rust-toolchain.toml'
