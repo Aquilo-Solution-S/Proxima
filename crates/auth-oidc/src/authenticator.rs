@@ -112,12 +112,15 @@ impl OidcTokenValidator {
 
         let data = decode::<Claims>(token, &key, &validation)
             .map_err(|_| AuthError::InvalidCredentials)?;
+        let expires_at = UNIX_EPOCH
+            .checked_add(Duration::from_secs(data.claims.exp))
+            .ok_or(AuthError::InvalidCredentials)?;
 
         Ok(ValidatedOidcClaims {
             issuer: self.issuer.clone(),
             audience: self.audience.clone(),
             subject: data.claims.sub,
-            expires_at: UNIX_EPOCH + Duration::from_secs(data.claims.exp),
+            expires_at,
         })
     }
 }
@@ -456,6 +459,19 @@ mod tests {
         assert_eq!(claims.audience, AUDIENCE);
         assert_eq!(claims.subject, "subject-1");
         assert_eq!(claims.expires_at, UNIX_EPOCH + Duration::from_secs(exp));
+    }
+
+    #[tokio::test]
+    async fn rejects_expiration_outside_system_time_range() {
+        let keys = test_keys();
+        let validator = OidcTokenValidator::new(config(), resolver(KID, keys.decoding.clone()))
+            .expect("valid oidc config");
+        let token = token(&keys, KID, ISSUER, AUDIENCE, "subject-1", u64::MAX);
+
+        assert_eq!(
+            validator.validate(&token).await,
+            Err(AuthError::InvalidCredentials)
+        );
     }
 
     #[tokio::test]
