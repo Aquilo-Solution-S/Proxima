@@ -529,9 +529,9 @@ async fn hot_path_plans_use_expected_indexes() {
         )))
         .execute(&mut *tx)
         .await?;
-        let semantic = semantic_search_sql_for_tests();
+        let semantic = semantic_search_sql_for_tests(&req, std::slice::from_ref(&projection))?;
         let semantic_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {semantic}");
-        // SQL-POLICY: fixed-fragment
+        // SQL-POLICY: PgIdent — production semantic builder
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(semantic_explain))
             .bind(&owner_ids)
             .bind("test-embed")
@@ -539,9 +539,16 @@ async fn hot_path_plans_use_expected_indexes() {
             .bind(20_i64)
             .bind(None::<time::OffsetDateTime>)
             .bind(None::<time::OffsetDateTime>)
+            .bind(&schema_ids)
             .fetch_one(&mut *tx)
             .await?;
         assert_plan_names(&plan, "idx_embeddings_vec_hnsw");
+        let projection_scan = scan_of(&plan, "projection")
+            .unwrap_or_else(|| panic!("semantic candidates must probe participating schemas; plan:\n{plan}"));
+        assert!(
+            predicates(&projection_scan).contains("schema_id"),
+            "the participating schema set must narrow semantic candidates; plan:\n{plan}"
+        );
 
         let admit = search_admit_sql_for_tests(true);
         let admit_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {admit}");
