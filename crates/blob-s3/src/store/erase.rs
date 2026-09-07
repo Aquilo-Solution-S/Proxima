@@ -16,8 +16,18 @@
 //! of those rows, so it always enumerated nothing and always reported a
 //! clean purge.
 
+use std::collections::HashSet;
+
+use aws_sdk_s3::operation::list_object_versions::ListObjectVersionsOutput;
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 use proxima_core::StorageError;
+
+#[cfg(test)]
+#[path = "erase_entry_tests.rs"]
+mod entry_tests;
+#[cfg(test)]
+#[path = "erase_pagination_tests.rs"]
+mod pagination_tests;
 
 /// Permanently delete every version and delete marker of exactly one key.
 /// Prefix-colliding keys are deliberately excluded.
@@ -47,6 +57,7 @@ async fn purge_versions(
     let mut deleted = 0_u64;
     let mut key_marker: Option<String> = None;
     let mut version_id_marker: Option<String> = None;
+    let mut seen_markers = HashSet::new();
     loop {
         let mut list = client
             .list_object_versions()
@@ -61,34 +72,33 @@ async fn purge_versions(
         let page = list.send().await.map_err(|e| {
             StorageError::Unavailable(format!("list object versions under {listing_prefix}: {e}"))
         })?;
+        if page.is_truncated() == Some(true) {
+            // A key may span pages, so progress is the complete cursor pair.
+            // Check before deleting: a broken cursor must not repeat a batch.
+            let next_key = page.next_key_marker().filter(|key| !key.is_empty()).ok_or_else(|| {
+                StorageError::Unavailable(format!(
+                    "truncated version listing under {listing_prefix} omitted its next key marker"
+                ))
+            })?;
+            // S3 also supports key-only cursors. Empty version markers mean
+            // no version; the literal version ID "null" remains meaningful.
+            let next_version = page
+                .next_version_id_marker()
+                .filter(|version| !version.is_empty());
+            let next_marker = (next_key.to_owned(), next_version.map(str::to_owned));
+            if !seen_markers.insert(next_marker.clone()) {
+                return Err(StorageError::Unavailable(format!(
+                    "truncated version listing under {listing_prefix} repeated its cursor"
+                )));
+            }
+            key_marker = Some(next_marker.0);
+            version_id_marker = next_marker.1;
+        }
 
         // A single `list_object_versions` page returns at most `max-keys`
         // (default 1000) versions + delete markers combined, which is within
         // `delete_objects`' 1000-identifier limit, so one batch per page fits.
-        let mut identifiers = Vec::new();
-        for (key, version_id) in page
-            .versions()
-            .iter()
-            .map(|v| (v.key(), v.version_id()))
-            .chain(
-                page.delete_markers()
-                    .iter()
-                    .map(|m| (m.key(), m.version_id())),
-            )
-        {
-            if let Some(key) = key
-                && (!exact || key == listing_prefix)
-            {
-                let mut id = ObjectIdentifier::builder().key(key);
-                if let Some(vid) = version_id {
-                    id = id.version_id(vid);
-                }
-                identifiers.push(
-                    id.build()
-                        .map_err(|e| StorageError::Internal(format!("object identifier: {e}")))?,
-                );
-            }
-        }
+        let identifiers = version_identifiers(&page, listing_prefix, exact)?;
         if !identifiers.is_empty() {
             let batch = Delete::builder()
                 .set_objects(Some(identifiers))
@@ -118,12 +128,51 @@ async fn purge_versions(
                 deleted.saturating_add(u64::try_from(response.deleted().len()).unwrap_or(u64::MAX));
         }
 
-        if page.is_truncated() == Some(true) {
-            key_marker = page.next_key_marker().map(str::to_string);
-            version_id_marker = page.next_version_id_marker().map(str::to_string);
-        } else {
+        if page.is_truncated() != Some(true) {
             break;
         }
     }
     Ok(deleted)
+}
+
+fn version_identifiers(
+    page: &ListObjectVersionsOutput,
+    listing_prefix: &str,
+    exact: bool,
+) -> Result<Vec<ObjectIdentifier>, StorageError> {
+    let mut identifiers = Vec::new();
+    for (key, version_id) in page
+        .versions()
+        .iter()
+        .map(|version| (version.key(), version.version_id()))
+        .chain(
+            page.delete_markers()
+                .iter()
+                .map(|marker| (marker.key(), marker.version_id())),
+        )
+    {
+        let key = key.filter(|key| !key.is_empty()).ok_or_else(|| {
+            StorageError::Unavailable(format!(
+                "version listing under {listing_prefix} contained an entry without a key"
+            ))
+        })?;
+        if exact && key != listing_prefix {
+            continue;
+        }
+        // A missing version must never become a key-only delete, which can
+        // merely add a delete marker. Validate the whole page before sending.
+        let version = version_id.filter(|id| !id.is_empty()).ok_or_else(|| {
+            StorageError::Unavailable(format!(
+                "version listing under {listing_prefix} omitted a target version identity"
+            ))
+        })?;
+        identifiers.push(
+            ObjectIdentifier::builder()
+                .key(key)
+                .version_id(version)
+                .build()
+                .map_err(|error| StorageError::Internal(format!("object identifier: {error}")))?,
+        );
+    }
+    Ok(identifiers)
 }
