@@ -24,8 +24,23 @@ pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
 /// verb: without it the result of a completion cannot be bound to a
 /// named local or returned from a flavor's own function.
 pub use proxima_core::citations::UploadedBlobPayload;
+/// Goal write DTOs, including the nested topology and wake declarations.
+pub use proxima_core::engine::GoalCreatePayloadWriteRequest;
 pub use proxima_core::engine::{TypedFactIngest, UnitOfWork};
 pub use proxima_core::engine::{UploadCompleted, UploadCompletionExpectation};
+/// Build-time flavor declaration vocabulary. These are const-constructible
+/// contract values; no runtime registry or storage handle crosses the SDK.
+pub use proxima_core::flavor::{
+    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
+    CounterRule, DEFAULT_RANK_WEIGHTS, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe,
+    EmbeddingSlot, Enforcement, EraseLeg, EraseRule, ExportRule, FlavorContract, ForgetLeg,
+    ForgetRule, KeyShape, LanguagePolicy, PROJECTION_MEMORY_COLUMN, PROJECTION_MEMORY_FK,
+    PROJECTION_TABLE_NAME, ProjectionDecl, ProjectionSpec, Provenance, RankSource,
+    ResolvedEmbedUnit, ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef,
+    SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, TSVECTOR_WEIGHT_CLASSES, ToolContract,
+    TransferLeg, TransferRule, WEIGHT_UNIFORM, WeightedField,
+};
 /// MCP tool-authoring surface: implement [`McpTool`] with typed
 /// [`McpToolCtx`] / [`McpToolError`] instead of reaching into
 /// `proxima_core::mcp`. Mirrors what `docs/tutorials/add-first-mcp-tool.md`
@@ -80,6 +95,8 @@ pub use proxima_core::storage_ports::{
     CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadCompleted,
     CitedBlobUploadHeader, CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, VerifiedCitedBlob,
 };
+/// Transaction-scoped, owner-stamped sidecar precondition reads.
+pub use proxima_core::storage_ports::{SIDECAR_SESSION_READ_MAX_ROWS, SidecarSessionRead};
 /// Typed inline citation drafts and the Engine admission witnesses they
 /// produce. `authorize_fact_with_citation` takes the drafts plus a sidecar
 /// slice; without these names an out-of-tree flavor can only spell
@@ -89,9 +106,16 @@ pub use proxima_core::verbs::fact_ingest::{
     CitationSpec, FactIngestOutcome, FactWriteCommand, InlineCitationMappingDraft,
     InlineCitedObjectDraft,
 };
-pub use proxima_core::verbs::query::{
-    GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, hybrid_degraded_to_lexical,
+pub use proxima_core::verbs::goal_write::{
+    GoalAssignmentTarget, GoalAuthorship, GoalDependencyRef, GoalEvidenceRef, GoalPayloadWrite,
+    GoalState, GoalTopologyWrite, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger,
+    GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey, OperatorKind, SystemOrigin,
 };
+pub use proxima_core::verbs::query::{
+    GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, SupersessionStatus,
+    hybrid_degraded_to_lexical,
+};
+pub use proxima_core::verbs::schema::PayloadKind;
 /// [`FactTombstone`] is the return type of [`FactPayload::tombstone`], so a
 /// flavor that declares a *stateful* Fact schema — one with a head per
 /// natural key and an explicit deletion observation — cannot write that
@@ -107,12 +131,12 @@ pub use proxima_core::{
     DelegationId, DelegationIssued, DelegationRevocation, EndpointUrlError, EndpointUrlPolicy,
     EngineAuthority, FactPayload, FactReceiptId, FactTombstone, FlavorDescriptor, FlavorProvenance,
     FlavorRegistry, FlavorRegistryError, FlavorRegistryFrozen, FlavorServiceError, FlavorServices,
-    GoalId, GoalPayload, InputContractId, MAX_MEMORY_HYDRATION_BATCH, MemoryHydrationBatchOutcome,
-    MemoryHydrationOutcome, MemoryHydrationStatus, MemoryId, ModelId, OperatorId,
-    PayloadKeyBuilder, PerspectivePayload, PromptVersion, SchemaId, SchemaVersion,
-    SearchProjectionColumnKind, SidecarPayload, Tool, ToolCaller, ToolCtx, ToolError, ToolServices,
-    TrustedModelIdError, is_loopback_endpoint, is_loopback_host, proxima_flavor, proxima_schema_id,
-    validate_endpoint_url,
+    GoalId, GoalPayload, GroupId, InputContractId, MAX_MEMORY_HYDRATION_BATCH,
+    MemoryHydrationBatchOutcome, MemoryHydrationOutcome, MemoryHydrationStatus, MemoryId, ModelId,
+    OperatorId, OwnerRef, PayloadKeyBuilder, PerspectivePayload, PromptVersion, SchemaId,
+    SchemaVersion, SearchProjectionColumnKind, SidecarPayload, Tool, ToolCaller, ToolCtx,
+    ToolError, ToolId, ToolServices, TrustedModelIdError, UserId, is_loopback_endpoint,
+    is_loopback_host, proxima_flavor, proxima_schema_id, validate_endpoint_url,
 };
 /// Derived-memory authoring: the request/outcome types of
 /// [`proxima_core::Engine::author_derived_authorized`], which is how a

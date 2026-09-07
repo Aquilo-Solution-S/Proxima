@@ -14,12 +14,20 @@ Post-PR9 supported Rust tiers:
 | Host API | `use proxima::{Proxima, RuntimeBuilder, RuntimeConfig, Engine, CancellationToken, AccessKind, AccessCeiling, OwnerRoles};` | boot composed binaries; call graph/admin/projector verbs through server-resolved `AuthzContext`. `Role::new` / `Role::may_write` / `OwnerRoles::for_subject` name `AccessKind`, `AccessCeiling`, `AccessError`, `OwnerRoles` |
 | Host extra-table | `AppContext::{clone_pool_for_host, pg_tuning_for_host}` | host `FlavorApp::services` only: wrap the pool and resolved query policy in a flavor-owned store immediately. Tools resolve the store via `FlavorServices`. Not Flavor SDK. No `proxima_core.*` SQL |
 | Host API (REST OpenAPI) | `use proxima::host::build_openapi_document;` | build the complete registry document with the same generator as `/v1/openapi.json` without depending on `proxima-mcp-server` internals; requires feature `rest` |
-| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar, InlineCitedObjectDraft, InlineCitationMappingDraft, CitationAttachmentRequest};` | build-time schemas, payload references, tools, sidecars. Typed citation drafts, the citation-attachment request + `AuthorizedFactWithCitation{,Ref}` are nameable here; `Engine` stays Host API |
+| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorContract, SchemaContract, Surface, FactPayload, pg_sidecar, InlineCitedObjectDraft, InlineCitationMappingDraft, CitationAttachmentRequest};` | build-time schemas, complete contract declarations, payload references, tools, sidecars. Typed citation drafts and the citation-attachment request + `AuthorizedFactWithCitation{,Ref}` are nameable here; `Engine` stays Host API |
 | Flavor SDK (services) | `use proxima::flavor::{FlavorServices, FlavorServiceError};` | return typed services from `FlavorApp::services`; tuple composition rejects duplicate concrete types and shares one set with MCP, REST, and workers |
 | Flavor SDK (generic tools) | `use proxima::flavor::{Tool, ToolCtx, ToolCaller, ToolError};` | author transport-neutral tools; MCP and REST populate optional caller provenance directly on `ToolCtx` |
 | Flavor SDK (MCP tools) | `use proxima::flavor::{McpTool, McpToolCtx, McpToolError, McpToolErrorKind, McpToolAnnotations, McpActionArgSpec, McpAuthorContext};` | author flavor MCP tools without reaching into `proxima_core::mcp` — see [add-first-mcp-tool](../tutorials/add-first-mcp-tool.md) |
 | Flavor SDK (authorized reads) | `use proxima::flavor::{authorized_memory_ids, authorized_fact_payloads, authorized_abstraction_payloads, SidecarAtom, QueryRequest, hybrid_degraded_to_lexical};` | typed, authz-filtered candidate/payload reads — see [Authorized Flavor-Read Facade](#authorized-flavor-read-facade) below. `Engine` is Host API (`use proxima::Engine`). Code-series `&PgPool` helpers live in `flavors/code`, not this SDK. |
 | Flavor SDK (outbound endpoints) | `use proxima::flavor::{validate_endpoint_url, EndpointUrlPolicy};` | enforce HTTPS with the shared, exact loopback-only plaintext exception; never reproduce it with string prefixes |
+
+Flavor contract declarations are const-constructible and imported from
+`proxima::flavor`. The same module owns `SchemaRef`, `KeyShape`, the erase /
+transfer / export / forget / counter rules, projection and embedding
+declarations, and tool/resource contracts. Goal write DTOs, including
+`GoalCreatePayloadWriteRequest` and `GoalTopologyWrite`, use the same facade.
+`SidecarSessionRead` remains a bounded, owner-stamped request for an existing
+authorized write session; it does not expose a connection or pool.
 
 Cold-memory repair is part of the Host API: `Engine::hydrate_memory` and
 `Engine::hydrate_memories` accept an owner plus `MemoryId` values and use the

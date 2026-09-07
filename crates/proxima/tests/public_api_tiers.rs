@@ -1,5 +1,22 @@
 use std::num::NonZeroU32;
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct SdkGoalPayload {
+    key: String,
+}
+
+impl proxima::flavor::GoalPayload for SdkGoalPayload {
+    const SCHEMA_ID: &'static str = "sdk_test/goal-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn goal_key(&self) -> Vec<u8> {
+        let mut key =
+            proxima::flavor::PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("key", &self.key);
+        key.finish()
+    }
+}
+
 #[test]
 fn host_api_imports_from_root() {
     fn assert_send_sync<T: Send + Sync>() {}
@@ -298,6 +315,131 @@ fn flavor_sdk_imports_from_flavor_module() {
     let _ = SchemaId::new("test/schema-v1".to_owned());
     let _ = FlavorRegistry::new();
     let _ = PgSidecarRegistry::new();
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn flavor_sdk_constructs_contract_goal_and_session_values() {
+    use proxima::flavor::{
+        CounterRule, DbConstraint, EmbedUnit, EmbeddingRecipe, EraseRule, ExportRule,
+        FlavorContract, FlavorDescriptor, FlavorProvenance, ForgetRule, GoalAssignmentTarget,
+        GoalAuthorship, GoalCreatePayloadWriteRequest, GoalDependencyRef, GoalEvidenceRef,
+        GoalPayloadWrite, GoalTopologyWrite, IdempotencyKey, KeyShape, LanguagePolicy, PayloadKind,
+        ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, SidecarAtom,
+        SidecarSessionRead, Surface, TransferRule,
+    };
+
+    const SURFACE: Surface = Surface {
+        table: "sdk_test.rows",
+        key: KeyShape::OwnerId,
+        owner_column: Some("owner_id"),
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Rows,
+        forget: ForgetRule::Keep { why: "fixture" },
+        lexical_language_column: None,
+        counter: CounterRule::Counted("rows"),
+        completeness: None,
+    };
+    const SCHEMA: SchemaContract = SchemaContract {
+        id: SchemaRef::new("sdk_test", "goal", 1),
+        kind: PayloadKind::Goal,
+        sidecar_table: None,
+        search: SearchProjectionDecl::None { why: "fixture" },
+        embedding: EmbeddingRecipe::Never { why: "fixture" },
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[],
+        natural_key_columns: &[],
+    };
+    const CONTRACT: FlavorContract = FlavorContract {
+        flavor_id: "sdk_test",
+        ordinal: 7,
+        schemas: &[SCHEMA],
+        state_surfaces: &[SURFACE],
+        scopes: &[],
+        kernel_surfaces: &[],
+        tools: &[],
+        resources: &[],
+        projection: ProjectionDecl::None { why: "fixture" },
+        bespoke_erase_legs: &[],
+        bespoke_transfer_legs: &[],
+    };
+
+    let mut registry = proxima::flavor::FlavorRegistry::new();
+    registry
+        .try_add_goal_schema::<SdkGoalPayload>()
+        .expect("typed Goal schema is registered through the public path");
+    registry
+        .try_add_flavor(FlavorDescriptor {
+            flavor_id: "sdk_test".to_owned(),
+            display_name: "SDK test".to_owned(),
+            package_version: "0.1.0".to_owned(),
+            author: None,
+            provenance: FlavorProvenance::Builtin,
+        })
+        .expect("descriptor is accepted");
+    registry
+        .try_add_contract(&CONTRACT)
+        .expect("contract is accepted");
+    let frozen = registry.try_freeze().expect("facade contract freezes");
+    assert_eq!(
+        frozen.flavor_contract("sdk_test").unwrap().schemas[0].id,
+        SCHEMA.id
+    );
+
+    let owner =
+        proxima::flavor::OwnerRef::Personal(proxima::flavor::UserId::new(uuid::Uuid::nil()));
+    let memory = proxima::flavor::MemoryId::new(uuid::Uuid::now_v7());
+    let goal = proxima::flavor::GoalId::new(uuid::Uuid::now_v7());
+    let topology = GoalTopologyWrite::new(
+        GoalAssignmentTarget::perspective(memory),
+        vec![GoalDependencyRef::new(goal)],
+        vec![GoalEvidenceRef::new(memory)],
+    )
+    .expect("nested goal topology builds");
+    let request = GoalCreatePayloadWriteRequest {
+        owner,
+        topology,
+        wake: None,
+        payload: GoalPayloadWrite::from_payload(
+            "title",
+            "text",
+            SdkGoalPayload {
+                key: "sdk-goal".to_owned(),
+            },
+        )
+        .expect("typed Goal payload builds through the facade"),
+        request_id: IdempotencyKey::new("sdk-test").expect("key builds"),
+        authorship: GoalAuthorship::User,
+        author_self_perspective_id: None,
+    };
+    assert_eq!(request.payload.text, "text");
+    let outcome: Option<proxima::flavor::GoalWriteOutcome> = None;
+    let authorship = GoalAuthorship::System(proxima::flavor::SystemOrigin::Tool {
+        tool_id: proxima::flavor::ToolId::new("sdk_test/tool"),
+    });
+    assert!(matches!(authorship, GoalAuthorship::System(_)));
+    assert!(outcome.is_none());
+
+    let predicate = [("kind", SidecarAtom::Text("opaque".to_owned()))];
+    let read = SidecarSessionRead {
+        table: "sdk_test.rows",
+        predicates: &predicate,
+        limit: Some(1),
+    };
+    assert_eq!(read.limit, Some(1));
+    let _ = (
+        LanguagePolicy::Pinned("simple"),
+        EmbedUnit {
+            column: "text",
+            slot: proxima::flavor::SLOT_DEFAULT,
+        },
+        DbConstraint {
+            relation: "sdk_test.rows",
+            name: "rows_owner",
+        },
+    );
 }
 
 #[test]
