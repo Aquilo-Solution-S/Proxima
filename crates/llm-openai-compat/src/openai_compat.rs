@@ -5,7 +5,7 @@ use proxima_core::llm::{EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS};
 use proxima_core::models::EmbedCaps;
 use serde::{Deserialize, Serialize};
 
-use crate::{build_client, ensure_secure_base_url, join_endpoint};
+use crate::{build_client, embedding_endpoint};
 
 // =====================================================================
 // OpenAI-compatible embedding client — /embeddings
@@ -20,6 +20,8 @@ pub const DEFAULT_EMBED_TIMEOUT: Duration = proxima_core::llm::DEFAULT_EMBED_REQ
 
 #[derive(Clone)]
 pub struct OpenAiCompatConfig {
+    /// Provider base URL. `/embeddings` is appended to its path; query
+    /// parameters are preserved. Fragments are rejected at construction.
     pub base_url: String,
     pub timeout: Duration,
     pub bearer_token: Option<String>,
@@ -73,6 +75,7 @@ struct EmbedRequest<'a> {
 pub struct OpenAiCompatEmbeddingClient {
     config: OpenAiCompatConfig,
     client: reqwest::Client,
+    endpoint: reqwest::Url,
     model_id: String,
     caps: EmbedCaps,
 }
@@ -85,8 +88,9 @@ impl OpenAiCompatEmbeddingClient {
     ///
     /// # Errors
     /// Returns `LlmError::Internal` if the HTTP client cannot be built, if
-    /// `config.base_url` is a non-loopback plaintext `http://` endpoint (which
-    /// would leak the bearer token in transit), or if
+    /// `config.base_url` is invalid, contains a fragment, or is a non-loopback
+    /// plaintext `http://` endpoint (which would leak the bearer token in
+    /// transit), or if
     /// [`EmbedCaps::max_input_chars`] is set below
     /// [`proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS`].
     pub fn new(
@@ -94,7 +98,7 @@ impl OpenAiCompatEmbeddingClient {
         caps: EmbedCaps,
         config: OpenAiCompatConfig,
     ) -> Result<Self, LlmError> {
-        ensure_secure_base_url(&config.base_url)?;
+        let endpoint = embedding_endpoint(&config.base_url)?;
         // Rejected at construction rather than tolerated at call time: a cap
         // under the floor makes over-long input terminal instead of chunked,
         // and it does so invisibly — every component behaves as documented
@@ -113,6 +117,7 @@ impl OpenAiCompatEmbeddingClient {
         Ok(Self {
             config,
             client,
+            endpoint,
             model_id: model_id.into(),
             caps,
         })
@@ -257,14 +262,13 @@ impl OpenAiCompatEmbeddingClient {
 
     async fn embed_call(&self, inputs: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
         self.refuse_over_cap(inputs)?;
-        let url = join_endpoint(&self.config.base_url, "embeddings");
         let body = EmbedRequest {
             model: &self.model_id,
             input: inputs,
             dimensions: self.caps.matryoshka.then_some(self.caps.dim),
         };
 
-        let mut req = self.client.post(&url).json(&body);
+        let mut req = self.client.post(self.endpoint.clone()).json(&body);
         if let Some(token) = &self.config.bearer_token {
             req = req.bearer_auth(token);
         }
@@ -636,6 +640,21 @@ mod tests {
     }
 
     #[test]
+    fn client_rejects_base_url_fragments_at_construction() {
+        for base in ["http://127.0.0.1:9/v1#anchor", "https://api.example/v1#"] {
+            let result = super::OpenAiCompatEmbeddingClient::new(
+                "test-embed",
+                probe_caps(),
+                super::OpenAiCompatConfig::new(base, None),
+            );
+            assert!(
+                matches!(result, Err(LlmError::Internal(_))),
+                "fragment-bearing base must fail at construction: {base}",
+            );
+        }
+    }
+
+    #[test]
     fn status_policy_is_independent_of_error_body() {
         use reqwest::StatusCode;
         let bodies = [
@@ -845,6 +864,51 @@ mod redirect_tests {
         )
         .expect("build test client with production redirect policy");
         client
+    }
+
+    #[tokio::test]
+    async fn embedding_base_query_preserves_request_path_and_parameters() {
+        for (base_path, expected_target) in [
+            (
+                "/v1?api-version=2026-09&tenant=a%2Fb&route=/",
+                "/v1/embeddings?api-version=2026-09&tenant=a%2Fb&route=/",
+            ),
+            ("/v1/?mode=x&mode=y", "/v1/embeddings?mode=x&mode=y"),
+            ("/v1%2Ftenant?mode=x", "/v1%2Ftenant/embeddings?mode=x"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
+            let addr = listener.local_addr().expect("server address");
+            let request_task = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let request = read_request(&mut stream).await;
+                let body = r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("respond");
+                request
+            });
+            let client = OpenAiCompatEmbeddingClient::new(
+                "test-embed",
+                EmbedCaps::new(2, false),
+                OpenAiCompatConfig::new(format!("http://{addr}{base_path}"), None)
+                    .with_timeout(Duration::from_secs(5)),
+            )
+            .expect("query-bearing base is valid");
+            assert_eq!(
+                client.embed("test text").await.expect("embed"),
+                vec![1.0, 0.0]
+            );
+            let request = request_task.await.expect("request captured");
+            assert_eq!(
+                request.lines().next().expect("request line"),
+                format!("POST {expected_target} HTTP/1.1"),
+            );
+        }
     }
 
     #[tokio::test]
