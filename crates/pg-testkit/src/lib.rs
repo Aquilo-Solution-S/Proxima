@@ -81,7 +81,9 @@ pub async fn create_db(name: &str) -> Result<(), sqlx::Error> {
 ///
 /// Serialized by a session-scoped advisory lock on the admin DB. `build`
 /// runs only when `template` did not already exist, against a
-/// max-one-connection pool to the newly created template database.
+/// max-one-connection pool to a staging database. The template name becomes
+/// visible only after the build succeeds, so failed or interrupted builds
+/// cannot be reused as complete templates.
 ///
 /// # Errors
 ///
@@ -112,19 +114,42 @@ where
             return Ok(());
         }
 
+        let staging = unique_db_name("proxima_tmpl_build");
         sqlx::raw_sql(AssertSqlSafe(format!(
             "CREATE DATABASE {}",
-            quoted_ident(template)
+            quoted_ident(&staging)
         )))
         .execute(&mut conn)
         .await?;
 
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&db_url(template))
+        let build_result: Result<(), sqlx::Error> = async {
+            let pool = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&db_url(&staging))
+                .await?;
+            let outcome = build(pool.clone()).await;
+            pool.close().await;
+            outcome?;
+            sqlx::raw_sql(AssertSqlSafe(format!(
+                "ALTER DATABASE {} RENAME TO {}",
+                quoted_ident(&staging),
+                quoted_ident(template)
+            )))
+            .execute(&mut conn)
             .await?;
-        let build_result = build(pool.clone()).await;
-        pool.close().await;
+            Ok(())
+        }
+        .await;
+        if build_result.is_err()
+            && let Err(error) = sqlx::raw_sql(AssertSqlSafe(format!(
+                "DROP DATABASE IF EXISTS {}",
+                quoted_ident(&staging)
+            )))
+            .execute(&mut conn)
+            .await
+        {
+            tracing::warn!(database = staging, %error, "failed to clean up incomplete test template");
+        }
         build_result
     }
     .await;
