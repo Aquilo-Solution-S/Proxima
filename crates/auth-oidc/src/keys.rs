@@ -127,6 +127,9 @@ impl std::fmt::Debug for HttpJwksResolver {
 }
 
 impl HttpJwksResolver {
+    /// Build a resolver whose discovery and JWKS redirects obey the same
+    /// issuer-aware URL policy as the initial endpoints.
+    ///
     /// # Errors
     ///
     /// Returns an error when the issuer is not HTTPS or loopback HTTP, or
@@ -148,13 +151,19 @@ impl HttpJwksResolver {
         jwks_uri: Option<String>,
         request_timeout: Duration,
     ) -> Result<Self, OidcConfigError> {
-        Self::with_http_client(issuer, jwks_uri, reqwest::Client::new(), request_timeout)
+        let http = build_http_client(&issuer, reqwest::Client::builder());
+        Self::with_http_client(issuer, jwks_uri, http, request_timeout)
     }
 
     /// Construct a resolver with an injected HTTP client and an explicit
     /// complete-request timeout. The timeout is applied to each request, so a
     /// client with a weaker or absent default cannot make discovery or JWKS
     /// body reads unbounded.
+    ///
+    /// The host owns the injected client's redirect policy. It must disable
+    /// redirects or validate every target against the issuer's HTTPS/loopback
+    /// policy before following it. Unlike the default constructors, this
+    /// method cannot replace the policy on an already-built client.
     ///
     /// # Errors
     ///
@@ -261,6 +270,20 @@ impl HttpJwksResolver {
     async fn mark_attempt(&self) {
         *self.last_attempt.write().await = Some(Instant::now());
     }
+}
+
+fn build_http_client(issuer: &str, builder: reqwest::ClientBuilder) -> reqwest::Client {
+    let issuer = issuer.to_owned();
+    let policy = reqwest::redirect::Policy::custom(move |attempt| {
+        if let Err(error) = validate_jwks_url("redirect target", attempt.url().as_str(), &issuer) {
+            return attempt.error(error);
+        }
+        reqwest::redirect::Policy::default().redirect(attempt)
+    });
+    builder
+        .redirect(policy)
+        .build()
+        .expect("initialize OIDC HTTP client")
 }
 
 fn validate_request_timeout(request_timeout: Duration) -> Result<(), OidcConfigError> {
@@ -370,7 +393,7 @@ mod http_tests {
 
     use super::{
         DEFAULT_HTTP_REQUEST_TIMEOUT, HttpJwksResolver, JWKS_MAX_AGE, JWKS_REFRESH_COOLDOWN,
-        KeyError, KeyResolver, MAX_HTTP_REQUEST_TIMEOUT,
+        KeyError, KeyResolver, MAX_HTTP_REQUEST_TIMEOUT, build_http_client,
     };
 
     // Static 2048-bit RSA public key as JWK n/e (base64url). Baked so this
@@ -523,6 +546,65 @@ mod http_tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn plaintext_nonloopback_redirect_is_rejected_before_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("read listener addr");
+        let issuer = format!("http://{addr}");
+        let destination = format!("http://redirect.example:{}/redirect-target", addr.port());
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let jwks = serde_json::json!({
+            "keys": [{ "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }]
+        })
+        .to_string();
+        let redirect = move || async move { axum::response::Redirect::temporary(&destination) };
+        let intermediate = || async { axum::response::Redirect::temporary("/intermediate") };
+        let app = Router::new()
+            .route("/keys", get(intermediate))
+            .route("/.well-known/openid-configuration", get(intermediate))
+            .route("/intermediate", get(redirect))
+            .route(
+                "/redirect-target",
+                get({
+                    let fetches = Arc::clone(&fetches);
+                    move || {
+                        let fetches = Arc::clone(&fetches);
+                        let jwks = jwks.clone();
+                        async move {
+                            fetches.fetch_add(1, Ordering::SeqCst);
+                            jwks
+                        }
+                    }
+                }),
+            );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("mock idp server");
+        });
+        let http = build_http_client(
+            &issuer,
+            reqwest::Client::builder()
+                .no_proxy()
+                .resolve("redirect.example", addr),
+        );
+        for jwks_uri in [None, Some(format!("{issuer}/keys"))] {
+            let resolver = HttpJwksResolver::with_http_client(
+                issuer.clone(),
+                jwks_uri,
+                http.clone(),
+                DEFAULT_HTTP_REQUEST_TIMEOUT,
+            )
+            .expect("loopback issuer");
+
+            let result = resolver.key_for("k1").await;
+
+            assert_eq!(fetches.load(Ordering::SeqCst), 0);
+            assert!(matches!(result, Err(KeyError::Fetch(_))));
+        }
+        server.abort();
+    }
+
     /// Serves `jwks` from a loopback mock `IdP`, counting `/keys` fetches.
     /// Returns `(issuer, fetch_counter, server_handle)`.
     async fn spawn_mock_idp(
@@ -553,6 +635,23 @@ mod http_tests {
                         }
                     }
                 }),
+            )
+            .route(
+                "/redirect/keys",
+                get(|| async { axum::response::Redirect::temporary("/keys") }),
+            )
+            .route(
+                "/redirect/loop",
+                get({
+                    let fetches = Arc::clone(&fetches);
+                    move || {
+                        let fetches = Arc::clone(&fetches);
+                        async move {
+                            fetches.fetch_add(1, Ordering::SeqCst);
+                            axum::response::Redirect::temporary("/redirect/loop")
+                        }
+                    }
+                }),
             );
         let server = tokio::spawn(async move {
             axum::serve(listener, app)
@@ -560,6 +659,37 @@ mod http_tests {
                 .expect("mock idp server failed");
         });
         (issuer, fetches, server)
+    }
+
+    #[tokio::test]
+    async fn default_client_follows_valid_loopback_redirect() {
+        let jwks = serde_json::json!({
+            "keys": [{ "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }]
+        })
+        .to_string();
+        let (issuer, fetches, server) = spawn_mock_idp(jwks).await;
+        let resolver =
+            HttpJwksResolver::new(issuer.clone(), Some(format!("{issuer}/redirect/keys")))
+                .expect("loopback issuer");
+
+        assert!(resolver.key_for("k1").await.is_ok());
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn default_client_limits_redirect_loops() {
+        let (issuer, fetches, server) = spawn_mock_idp(String::new()).await;
+        let resolver =
+            HttpJwksResolver::new(issuer.clone(), Some(format!("{issuer}/redirect/loop")))
+                .expect("loopback issuer");
+
+        assert!(matches!(
+            resolver.key_for("k1").await,
+            Err(KeyError::Fetch(_))
+        ));
+        assert_eq!(fetches.load(Ordering::SeqCst), 11);
+        server.abort();
     }
 
     /// Serves a failing explicit JWKS endpoint and counts fetch attempts.
