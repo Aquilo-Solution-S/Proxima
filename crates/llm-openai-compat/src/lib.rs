@@ -16,8 +16,22 @@ pub mod openai_compat;
 pub use openai_compat::*;
 
 pub(crate) fn build_client(timeout: Duration) -> Result<reqwest::Client, LlmError> {
-    reqwest::Client::builder()
-        .timeout(timeout)
+    build_http_client(reqwest::Client::builder().timeout(timeout))
+}
+
+fn build_http_client(builder: reqwest::ClientBuilder) -> Result<reqwest::Client, LlmError> {
+    // Redirects can resend the embedding input even when credentials are
+    // stripped. Enforce the base URL's transport policy before every hop.
+    let policy = reqwest::redirect::Policy::custom(|attempt| {
+        if let Err(error) =
+            validate_endpoint_url(attempt.url().as_str(), EndpointUrlPolicy::AllowLoopbackHttp)
+        {
+            return attempt.error(error);
+        }
+        reqwest::redirect::Policy::default().redirect(attempt)
+    });
+    builder
+        .redirect(policy)
         .build()
         .map_err(|e| LlmError::Internal(format!("reqwest builder: {e}")))
 }
