@@ -322,35 +322,39 @@ fn ts_language_for(language: Option<&'static str>) -> Option<Language> {
 }
 
 /// File-window fallback for grammar-less languages and parser misses.
-/// Non-overlapping line windows; `chunk_type="file"`.
+/// Non-overlapping line windows; `chunk_type="file"`. Text is an exact
+/// source slice with the window's final line terminator excluded; interior
+/// line endings remain unchanged and byte ranges are file-relative.
 fn fallback_chunks(file_path: &str, text: &str, language: Option<&'static str>) -> Vec<Chunk> {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.is_empty() {
-        return Vec::new();
-    }
-
     let mut out = Vec::new();
-    let mut start = 0usize;
-    while start < lines.len() {
-        let end = (start + FALLBACK_LINE_WINDOW).min(lines.len());
-        let chunk_text = lines[start..end].join("\n");
+    let mut start_byte = 0;
+    let mut end_byte = 0;
+    let mut start_line = 1;
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        end_byte += line.len();
+        let end_line = index + 1;
+        if end_line % FALLBACK_LINE_WINDOW != 0 && end_byte < text.len() {
+            continue;
+        }
+
+        let window = &text[start_byte..end_byte];
+        let chunk_text = window
+            .strip_suffix('\n')
+            .map_or(window, |line| line.strip_suffix('\r').unwrap_or(line));
         if !chunk_text.trim().is_empty() {
-            let text_len = u32::try_from(chunk_text.len()).unwrap_or(u32::MAX);
             out.push(Chunk {
                 file_path: file_path.to_string(),
-                text: chunk_text,
+                text: chunk_text.to_string(),
                 language,
                 chunk_type: "file",
-                byte_range_start: 0,
-                byte_range_end: text_len,
-                line_range_start: u32::try_from(start + 1).unwrap_or(u32::MAX),
-                line_range_end: u32::try_from(end).unwrap_or(u32::MAX),
+                byte_range_start: u32::try_from(start_byte).unwrap_or(u32::MAX),
+                byte_range_end: u32::try_from(start_byte + chunk_text.len()).unwrap_or(u32::MAX),
+                line_range_start: u32::try_from(start_line).unwrap_or(u32::MAX),
+                line_range_end: u32::try_from(end_line).unwrap_or(u32::MAX),
             });
         }
-        if end == lines.len() {
-            break;
-        }
-        start += FALLBACK_LINE_WINDOW;
+        start_byte = end_byte;
+        start_line = end_line + 1;
     }
     out
 }
@@ -529,6 +533,63 @@ mod tests {
             chunks[0].line_range_end,
             u32::try_from(FALLBACK_LINE_WINDOW).unwrap()
         );
+    }
+
+    #[test]
+    fn fallback_windows_preserve_absolute_source_spans() {
+        use std::fmt::Write as _;
+
+        for newline in ["\n", "\r\n"] {
+            for trailing_newline in [false, true] {
+                let mut src = String::new();
+                for i in 0..(FALLBACK_LINE_WINDOW * 2 + 5) {
+                    write!(src, "Zeile {i}: Grüße 世界").unwrap();
+                    if i + 1 < FALLBACK_LINE_WINDOW * 2 + 5 || trailing_newline {
+                        src.push_str(newline);
+                    }
+                }
+                let chunks = chunk_blob("notes.md", src.as_bytes());
+                assert_eq!(chunks.len(), 3);
+
+                let mut expected_start = 0;
+                for (index, chunk) in chunks.iter().enumerate() {
+                    let start = chunk.byte_range_start as usize;
+                    let end = chunk.byte_range_end as usize;
+                    assert_eq!(start, expected_start, "window {index}, {newline:?}");
+                    assert_eq!(&src[start..end], chunk.text);
+                    assert_eq!(
+                        chunk.line_range_start as usize,
+                        index * FALLBACK_LINE_WINDOW + 1
+                    );
+                    assert_eq!(
+                        chunk.line_range_end as usize,
+                        ((index + 1) * FALLBACK_LINE_WINDOW).min(FALLBACK_LINE_WINDOW * 2 + 5)
+                    );
+                    assert!(!chunk.text.ends_with('\n'));
+                    assert!(!chunk.text.ends_with('\r'));
+                    assert!(chunk.text.contains(newline));
+                    expected_start = end + newline.len();
+                }
+                assert_eq!(
+                    chunks.last().unwrap().byte_range_end as usize,
+                    src.len() - if trailing_newline { newline.len() } else { 0 }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn skipped_blank_fallback_window_still_advances_offsets() {
+        let prefix = " \t\r\n".repeat(FALLBACK_LINE_WINDOW);
+        let src = format!("{prefix}Grüße 世界\r\n");
+        let chunks = chunk_blob("notes.md", src.as_bytes());
+        assert_eq!(chunks.len(), 1);
+        let chunk = &chunks[0];
+        assert_eq!(chunk.byte_range_start as usize, prefix.len());
+        assert_eq!(chunk.byte_range_end as usize, src.len() - 2);
+        assert_eq!(chunk.text, "Grüße 世界");
+        assert_eq!(chunk.line_range_start as usize, FALLBACK_LINE_WINDOW + 1);
+        assert_eq!(chunk.line_range_end, chunk.line_range_start);
     }
 
     #[test]
