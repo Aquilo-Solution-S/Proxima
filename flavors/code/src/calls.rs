@@ -234,7 +234,7 @@ fn run_defs(tree: &Tree, kind: LangKind, src: &str) -> Vec<ExtractedDefinition> 
     while let Some(m) = matches.next() {
         let mut def_node = None;
         let mut name_text: Option<&str> = None;
-        for cap in m.captures {
+        for cap in m.captures() {
             let idx = Some(cap.index);
             if idx == cap_def {
                 def_node = Some(cap.node);
@@ -275,7 +275,7 @@ fn run_calls(tree: &Tree, kind: LangKind, src: &str) -> Vec<ExtractedCall> {
         let mut call_node = None;
         let mut name_text: Option<&str> = None;
         let mut is_dynamic = false;
-        for cap in m.captures {
+        for cap in m.captures() {
             let idx = Some(cap.index);
             if idx == cap_call_free || idx == cap_call_method || idx == cap_call_scoped {
                 call_node = Some(cap.node);
