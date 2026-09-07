@@ -835,21 +835,17 @@ async fn upload_transitions_join_the_owner_fence() -> Result<(), Box<dyn std::er
 }
 
 /// Stage's S3 work may finish after a terminal transition has already locked
-/// the upload row. The locator publication must then refuse the terminal row
-/// and remove the just-created canonical object; an ignored zero-row UPDATE
-/// would report a staged payload whose locator was never committed.
-///
-/// The assertion is right, and this currently fails. Making it pass needs the
-/// locator publication to take the upload row `FOR UPDATE`, so it blocks on a
-/// mid-flight abort instead of reading `pending` through its own `WHERE`
-/// guard. That contradicts this module's standing rule that stage's S3 work
-/// stays outside every database critical section, and adding the lock here
-/// fails five of the races below. Reconciling the two is its own change.
-#[ignore = "needs the lock-first stage publication described above"]
+/// the upload row. Stage must return the terminal error while retaining a
+/// canonical locator that owner erase can discover. It removes only the
+/// expendable pending versions and creates no corpus rows or staged content
+/// identity for this first-stage failure. The abort-first barrier also proves
+/// that provider I/O remains outside the database publication locks.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn stage_rechecks_terminal_upload_before_publishing_locator()
 -> Result<(), Box<dyn std::error::Error>> {
+    use sqlx::Row as _;
+
     if !S3RuntimeConfig::present_in_env() {
         eprintln!("skipped: PROXIMA_S3_* unset");
         return Ok(());
@@ -861,6 +857,7 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
     let owner = owner_fixture();
     let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let body = b"terminal-race-bytes";
     let upload_id = staged_upload(
         &pool,
         &store,
@@ -868,7 +865,7 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
         &ctx,
         owner,
         "terminal-race.pdf",
-        b"terminal-race-bytes",
+        body,
     )
     .await;
 
@@ -946,26 +943,51 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
         "stage must refuse the terminal row, got {stage_result:?}"
     );
 
-    let (status, locator): (String, String) = sqlx::query_as(
-        "SELECT status::text, object_key
+    let row = sqlx::query(
+        "SELECT status::text, object_key, sha256, etag, blob_id, content_hash
            FROM proxima_core.blob_uploads
           WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(&upload_id)?)
     .fetch_one(&pool)
     .await?;
-    assert_eq!(status, "aborted");
-    assert_eq!(locator, format!("pending/{upload_id}"));
-    let client = s3_client(&config).await;
+    assert_eq!(row.try_get::<String, _>("status")?, "aborted");
+    assert_eq!(row.try_get::<String, _>("object_key")?, canonical_key);
+    let expected_sha256: [u8; 32] = sha2::Sha256::digest(body).into();
+    assert_eq!(
+        row.try_get::<Option<Vec<u8>>, _>("sha256")?.as_deref(),
+        Some(expected_sha256.as_slice()),
+        "terminal locator repair records the retained bytes' digest"
+    );
+    let etag: Option<String> = row.try_get("etag")?;
+    assert!(etag.as_deref().is_some_and(|value| !value.is_empty()));
+    assert!(row.try_get::<Option<Uuid>, _>("blob_id")?.is_none());
     assert!(
-        client
-            .head_object()
-            .bucket(&config.bucket)
-            .key(&canonical_key)
-            .send()
-            .await
-            .is_err(),
-        "terminal stage must clean the canonical object it just created"
+        row.try_get::<Option<Vec<u8>>, _>("content_hash")?.is_none(),
+        "a first-stage terminal repair must not manufacture staged identity"
+    );
+    let client = s3_client(&config).await;
+    let object = client
+        .get_object()
+        .bucket(&config.bucket)
+        .key(&canonical_key)
+        .send()
+        .await?;
+    assert_eq!(object.e_tag(), etag.as_deref());
+    assert_eq!(object.body.collect().await?.into_bytes().as_ref(), body);
+    assert_s3_key_versions_absent(&config, &format!("pending/{upload_id}")).await;
+    let corpus_counts: (i64, i64) = sqlx::query_as(
+        "SELECT
+            (SELECT count(*) FROM proxima_core.blob WHERE owner_id = $1),
+            (SELECT count(*) FROM proxima_core.memory WHERE owner_id = $1)",
+    )
+    .bind(owner.stored_owner_id())
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        corpus_counts,
+        (0, 0),
+        "a refused stage must create neither cited blobs nor Facts"
     );
 
     drop(pool);
