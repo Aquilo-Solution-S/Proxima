@@ -43,10 +43,7 @@ impl MemoryAuthoringPort for PgStorage {
                 lexical_language: req.lexical_language,
                 embedding: req.embedding.clone(),
             };
-            // ONE validator for both derived-write paths (this engine port and
-            // the flavor-SDK `append_derived_with_edges_in_tx`): a second copy
-            // here drifts, and the gate it drops is the created_at strict-time
-            // check on origins.
+            // Share origin validation with the write-session authoring path.
             verbs::derive_append::validate_derived_origins_in_tx(&mut tx, &draft, req.origins)
                 .await?;
             verbs::derive_append::validate_derived_reference_kinds_in_tx(&mut tx, req.references)

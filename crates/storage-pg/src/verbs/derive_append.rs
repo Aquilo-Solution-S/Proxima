@@ -387,21 +387,14 @@ fn validate_permit_owner(permit: &OwnerWritePermit, owner: &Owner) -> Result<(),
     }
 }
 
-/// Operator proof-ledger validation for BOTH derived-write paths: the
-/// flavor-SDK in-tx tier (`append_derived_with_edges_in_tx`) and the engine
-/// port (`PgStorage::author_derived`). One `pub(crate)` validator, not a copy
-/// per path — a second copy drifts, and the gate it drops silently is the
-/// `created_at` strict-time check.
+/// Shared origin validation for the storage and write-session authoring paths.
 ///
-/// The declared origins ARE the operator's inputs: what the write says it was
-/// made from is the whole claim. There is no separate ledger and no authorship
-/// kind, so the only questions are whether those rows exist, whether they are
-/// of the phase's input kind, and whether they are older than the row they
-/// ground.
+/// Each origin must name a unique memory row present in `proxima_core.memory`.
+/// Its declared kind must match the stored kind and the operator phase's input
+/// kind.
 ///
-/// A write that declares no origins declares no derivation, which is legal —
-/// an interpretation Perspective grounds through its references, not through
-/// inputs it consumed. F→A is the exception the batch rule keeps honest.
+/// Empty origins declare no derivation and pass this validator. An
+/// interpretation Perspective can ground through its references.
 pub(crate) async fn validate_derived_origins_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
