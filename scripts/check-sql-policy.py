@@ -829,7 +829,16 @@ def run_fixture(path: Path) -> int:
 # time, and the three values it compares are binds. Literal SQL cannot express
 # it because the registry table and its columns are named by an out-of-tree
 # flavor's declaration.
-EXPECTED_DYNAMIC_SQL_SITES = 117
+#
+# 117 -> 118: the tag filter reaches the semantic arm. One
+# `sqlx::query_as(AssertSqlSafe(sql))` in `verbs/query/search.rs::scan_embeddings`,
+# running `semantic_search_sql`: the fixed fragment `SEMANTIC_SEARCH_SQL`
+# until the request carries tags, then that same scan plus one `EXISTS` probe
+# per participating flavor's projection table — the table through
+# `PgIdent::table`, the tag array and every schema set bound (`$7`, `$8`…).
+# Literal SQL cannot express it because the projection table is named by the
+# flavor's declaration, exactly as the ranked arm's is.
+EXPECTED_DYNAMIC_SQL_SITES = 118
 
 
 def run_self_test() -> int:

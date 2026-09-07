@@ -102,7 +102,7 @@ async fn seed_note(
     title: &str,
     body: &str,
 ) -> Result<Uuid, sqlx::Error> {
-    seed_note_lang(pool, owner, title, body, None).await
+    seed_note_lang(pool, owner, title, body, None, &[]).await
 }
 
 async fn seed_note_lang(
@@ -111,6 +111,7 @@ async fn seed_note_lang(
     title: &str,
     body: &str,
     language: Option<&str>,
+    tags: &[&str],
 ) -> Result<Uuid, sqlx::Error> {
     let owner_id = owner.stored_owner_id();
     sqlx::query(
@@ -148,12 +149,13 @@ async fn seed_note_lang(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
-         VALUES ($1, $2, $3, $4, '{}')",
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(t)
     .bind(Uuid::now_v7())
     .bind(title)
     .bind(body)
+    .bind(tags)
     .execute(&mut *stamped)
     .await?;
     stamped.commit().await?;
@@ -532,6 +534,7 @@ async fn lexical_search_matches_german_via_lexical_languages() {
             "Tiere",
             "die Katzen schlafen auf dem Sofa",
             Some("german"),
+            &[],
         )
         .await?;
         let registered: bool = sqlx::query_scalar(
@@ -768,6 +771,115 @@ async fn semantic_search_respects_until() {
     result.expect("semantic until filter failed");
 }
 
+/// The tag filter reaches the SEMANTIC arm's candidate scan.
+///
+/// Two embedded notes under one owner, one tagged. A tagged `Semantic`
+/// search must return the tagged one alone, and so must a tagged `Hybrid`
+/// search — the default mode, whose semantic arm used to admit memories
+/// carrying none of the requested tags because only the lexical arm applied
+/// the predicate. And a tagged request no flavor participates in returns
+/// nothing, not the unfiltered scan.
+#[tokio::test]
+async fn tagged_semantic_search_returns_only_tagged_rows() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let tagged_t = seed_note_lang(
+            pool,
+            owner,
+            "Tagged",
+            "semantic neighbour body",
+            None,
+            &["bucket-0"],
+        )
+        .await?;
+        let plain_t = seed_note(pool, owner, "Plain", "semantic neighbour body").await?;
+        for t in [tagged_t, plain_t] {
+            sqlx::query(
+                "INSERT INTO proxima_core.embeddings
+                    (entity_id, model_id, embedding_version, vec, owner_id)
+                 VALUES ($1, 'test-embed', 1, $2::vector, $3)",
+            )
+            .bind(t)
+            .bind(embed_literal())
+            .bind(owner.stored_owner_id())
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.embedding_heads
+                    (entity_id, model_id, embedding_version, owner_id)
+                 VALUES ($1, 'test-embed', 1, $2)",
+            )
+            .bind(t)
+            .bind(owner.stored_owner_id())
+            .execute(pool)
+            .await?;
+        }
+        let ids = |page: &proxima_core::verbs::query::MemorySearchPage| {
+            let mut ids: Vec<Uuid> = page
+                .results
+                .iter()
+                .map(|result| result.memory_id.into_inner())
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+        let mut both = vec![tagged_t, plain_t];
+        both.sort_unstable();
+
+        // The word is in BOTH bodies, so the hybrid merge below has a
+        // lexical arm to merge with; the untagged row must still not
+        // reach the page through the semantic arm.
+        let mut semantic = search_req(owner, "neighbour");
+        semantic.mode = SearchMode::Semantic;
+        let mut query_vec = vec![0.0; 1024];
+        query_vec[0] = 1.0;
+        semantic.query_embedding = Some(query_vec);
+        semantic.embedding_model_id = Some("test-embed".into());
+        let untagged = pg.search_memories(&semantic, &[note_projection()]).await?;
+        assert_eq!(
+            ids(&untagged),
+            both,
+            "untagged, both embedded rows are semantic candidates"
+        );
+
+        semantic.tags = vec!["bucket-0".into()];
+        let page = pg.search_memories(&semantic, &[note_projection()]).await?;
+        assert_eq!(
+            ids(&page),
+            vec![tagged_t],
+            "a tagged semantic search returns only rows carrying the tag"
+        );
+
+        let mut hybrid = semantic.clone();
+        hybrid.mode = SearchMode::Hybrid;
+        let page = pg.search_memories(&hybrid, &[note_projection()]).await?;
+        assert_eq!(
+            ids(&page),
+            vec![tagged_t],
+            "…and so does hybrid, whose semantic arm used to leak untagged rows"
+        );
+
+        let page = pg.search_memories(&semantic, &[]).await?;
+        assert!(
+            page.results.is_empty(),
+            "a tagged request no flavor participates in returns nothing, \
+             not the unfiltered scan"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("tagged semantic search failed");
+}
+
 /// `since` is a LOWER bound and `until` is an UPPER one — proved by rows,
 /// not by the shape of the string.
 ///
@@ -880,7 +992,15 @@ async fn lexical_language_forget_refuses_while_rows_reference_it() {
         pg.run_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let t = seed_note_lang(pool, owner, "Tiere", "die Katzen schlafen", Some("german")).await?;
+        let t = seed_note_lang(
+            pool,
+            owner,
+            "Tiere",
+            "die Katzen schlafen",
+            Some("german"),
+            &[],
+        )
+        .await?;
 
         let err = sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
             .execute(pool)
@@ -988,6 +1108,7 @@ async fn lexical_remember_trigger_registers_before_the_fk_check() {
             "Salutation",
             "bonjour le monde",
             Some("french"),
+            &[],
         )
         .await?;
         let registered: bool = sqlx::query_scalar(
