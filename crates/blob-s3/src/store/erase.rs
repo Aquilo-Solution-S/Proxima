@@ -16,10 +16,10 @@
 //! of those rows, so it always enumerated nothing and always reported a
 //! clean purge.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use aws_sdk_s3::operation::list_object_versions::ListObjectVersionsOutput;
-use aws_sdk_s3::types::{Delete, ObjectIdentifier};
+use aws_sdk_s3::types::{Delete, DeletedObject, ObjectIdentifier};
 use proxima_core::StorageError;
 
 #[cfg(test)]
@@ -101,7 +101,7 @@ async fn purge_versions(
         let identifiers = version_identifiers(&page, listing_prefix, exact)?;
         if !identifiers.is_empty() {
             let batch = Delete::builder()
-                .set_objects(Some(identifiers))
+                .set_objects(Some(identifiers.clone()))
                 .build()
                 .map_err(|e| StorageError::Internal(format!("delete batch: {e}")))?;
             let response = client
@@ -124,6 +124,7 @@ async fn purge_versions(
                     errors.len()
                 )));
             }
+            validate_delete_acknowledgements(&identifiers, response.deleted(), listing_prefix)?;
             deleted =
                 deleted.saturating_add(u64::try_from(response.deleted().len()).unwrap_or(u64::MAX));
         }
@@ -133,6 +134,40 @@ async fn purge_versions(
         }
     }
     Ok(deleted)
+}
+
+fn validate_delete_acknowledgements(
+    requested: &[ObjectIdentifier],
+    deleted: &[DeletedObject],
+    listing_prefix: &str,
+) -> Result<(), StorageError> {
+    // Verbose DeleteObjects replies identify every successfully deleted
+    // version, including versions already absent. Counts alone cannot prove
+    // coverage: a duplicate or different identity may conceal a missing one.
+    let mut remaining = HashMap::<_, usize>::new();
+    for object in requested {
+        *remaining
+            .entry((Some(object.key()), object.version_id()))
+            .or_default() += 1;
+    }
+    for object in deleted {
+        if let Some(count) = remaining.get_mut(&(object.key(), object.version_id()))
+            && *count > 0
+        {
+            *count -= 1;
+        } else {
+            return Err(StorageError::Unavailable(format!(
+                "delete objects under {listing_prefix} returned an unexpected or repeated acknowledgement"
+            )));
+        }
+    }
+    let missing: usize = remaining.values().sum();
+    if missing > 0 {
+        return Err(StorageError::Unavailable(format!(
+            "delete objects under {listing_prefix} omitted {missing} version acknowledgement(s)"
+        )));
+    }
+    Ok(())
 }
 
 fn version_identifiers(
