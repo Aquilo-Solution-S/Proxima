@@ -67,6 +67,17 @@ cd docs/lean && lake build
 
 ## Pull Request Process
 
+CI selects jobs with `.github/ci-paths.yml`. Markdown-only changes run docs
+checks; Lean changes also build the kernel. Rust, migration, and test-fixture
+changes run Rust validation and the image build. Dependency changes run
+cargo-deny; Docker-only changes build the image. Release-note changes check
+the shell helper and git-cliff configuration. Workflow changes and failed
+path detection run all checks. Required check names remain stable.
+
+Changes inside `.rs` files, including comments, receive full Rust validation:
+path filters cannot distinguish comments from executable code. The scheduled
+security audit remains independent of changed paths.
+
 1. Fork the repository
 2. Create a feature branch from `main`
 3. Make your changes

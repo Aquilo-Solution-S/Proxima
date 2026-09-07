@@ -1,16 +1,12 @@
 # git-cliff ~ configuration file
 # https://git-cliff.org/docs/configuration
 #
-# CHANGELOG.md is GENERATED from Conventional Commit messages — do not hand-edit;
-# run `scripts/changelog.sh` to regenerate. Per-tag GitHub Release notes are
-# produced in CI from this same config (.github/workflows/release.yml runs
-# `git cliff --latest`).
+# GitHub Releases are the canonical release-note store. The tracked
+# CHANGELOG.md is a stable link and `scripts/changelog.sh` is a local preview.
+# Per-tag notes are produced in CI from this config.
 #
-# GitHub enrichment (PR links, authors, first-time contributors) needs a token:
-#   * locally  — scripts/changelog.sh exports `GITHUB_TOKEN=$(gh auth token)`
-#   * in CI    — the workflow passes `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}`
-# Running bare `git cliff` with NO token (or an empty one) panics because
-# [remote.github] makes it call the API — always go through scripts/changelog.sh.
+# CI supplies GITHUB_TOKEN for PR/author enrichment. Local previews use
+# --offline and need no token; commit and compare links still render.
 # Commit/compare URLs are hardcoded, so links never depend on the API succeeding.
 
 [remote.github]
@@ -21,8 +17,8 @@ repo = "Proxima"
 header = """
 # Changelog
 
-All notable changes to Proxima, generated from [Conventional Commits](https://www.conventionalcommits.org) \
-by [git-cliff](https://git-cliff.org). Do not edit by hand — run `scripts/changelog.sh` to regenerate.
+Release notes for Proxima, generated from [Conventional Commits](https://www.conventionalcommits.org) \
+by [git-cliff](https://git-cliff.org). Published notes live in [GitHub Releases](https://github.com/Aquilo-Solution-S/Proxima/releases).
 
 Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpublished (`publish = false`).\n
 """
