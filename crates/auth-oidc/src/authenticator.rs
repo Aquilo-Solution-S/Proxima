@@ -65,8 +65,8 @@ impl std::fmt::Debug for OidcTokenValidator {
 impl OidcTokenValidator {
     /// # Errors
     ///
-    /// Returns an error when the OIDC issuer or explicit JWKS endpoint is
-    /// not HTTPS. Test builds allow loopback HTTP for mock `IdPs`.
+    /// Returns an error when the issuer contains a query or fragment, or the
+    /// issuer/JWKS URL violates the HTTPS/loopback transport policy.
     pub fn new(
         config: OidcAuthConfig,
         keys: Arc<dyn KeyResolver>,
@@ -149,8 +149,8 @@ impl OidcAuthenticator {
     ///
     /// # Errors
     ///
-    /// Returns an error when the OIDC issuer or explicit JWKS endpoint is
-    /// not HTTPS.
+    /// Returns an error when the issuer contains a query or fragment, or the
+    /// issuer/JWKS URL violates the HTTPS/loopback transport policy.
     pub fn new(
         mut config: OidcAuthConfig,
         keys: Arc<dyn KeyResolver>,

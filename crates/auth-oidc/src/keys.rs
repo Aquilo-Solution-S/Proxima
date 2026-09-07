@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use jsonwebtoken::DecodingKey;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::config::{OidcConfigError, validate_https_url, validate_jwks_url};
+use crate::config::{OidcConfigError, validate_issuer_url, validate_jwks_url};
 
 /// Minimum spacing between JWKS refetches. Bounds the outbound-fetch rate so a
 /// flood of tokens carrying random unknown `kid`s cannot amplify into one
@@ -80,6 +80,7 @@ impl KeyResolver for StaticJwksResolver {
 
 #[derive(serde::Deserialize)]
 struct OpenIdConfig {
+    issuer: String,
     jwks_uri: String,
 }
 
@@ -103,6 +104,8 @@ struct JwkSet {
 
 /// Production resolver: discovers the JWKS endpoint and caches keys by kid,
 /// refreshing once on an unknown kid (key rotation).
+/// Discovery metadata must name the configured issuer exactly before its
+/// JWKS endpoint can be used.
 pub struct HttpJwksResolver {
     issuer: String,
     jwks_uri: Option<String>,
@@ -136,6 +139,7 @@ impl HttpJwksResolver {
     /// when the JWKS endpoint is plaintext HTTP that this issuer is not
     /// entitled to name — only a loopback issuer may point at a loopback
     /// JWKS, so a remote provider cannot move key resolution onto the host.
+    /// Issuer query and fragment components are rejected.
     pub fn new(issuer: String, jwks_uri: Option<String>) -> Result<Self, OidcConfigError> {
         Self::with_request_timeout(issuer, jwks_uri, DEFAULT_HTTP_REQUEST_TIMEOUT)
     }
@@ -174,7 +178,7 @@ impl HttpJwksResolver {
         http: reqwest::Client,
         request_timeout: Duration,
     ) -> Result<Self, OidcConfigError> {
-        validate_https_url("issuer", &issuer)?;
+        validate_issuer_url(&issuer)?;
         if let Some(uri) = &jwks_uri {
             validate_jwks_url("jwks_uri", uri, &issuer)?;
         }
@@ -217,6 +221,11 @@ impl HttpJwksResolver {
             .json()
             .await
             .map_err(|e| KeyError::Parse(e.to_string()))?;
+        if cfg.issuer != self.issuer {
+            return Err(KeyError::Config(
+                "discovered issuer does not match configured issuer".into(),
+            ));
+        }
         validate_jwks_url("discovered jwks_uri", &cfg.jwks_uri, &self.issuer)
             .map_err(|err| KeyError::Config(err.to_string()))?;
         Ok(cfg.jwks_uri)
@@ -438,6 +447,62 @@ mod http_tests {
         }
     }
 
+    #[test]
+    fn constructors_reject_issuer_query_or_fragment_components() {
+        let http = reqwest::Client::new();
+        for base in [
+            "https://issuer.example/tenant",
+            "http://127.0.0.1:4180/tenant",
+        ] {
+            for suffix in ["?region=eu", "?", "#anchor", "#"] {
+                let issuer = format!("{base}{suffix}");
+                for jwks_uri in [None, Some("https://issuer.example/keys?version=1".into())] {
+                    for result in [
+                        HttpJwksResolver::new(issuer.clone(), jwks_uri.clone()),
+                        HttpJwksResolver::with_request_timeout(
+                            issuer.clone(),
+                            jwks_uri.clone(),
+                            DEFAULT_HTTP_REQUEST_TIMEOUT,
+                        ),
+                        HttpJwksResolver::with_http_client(
+                            issuer.clone(),
+                            jwks_uri.clone(),
+                            http.clone(),
+                            DEFAULT_HTTP_REQUEST_TIMEOUT,
+                        ),
+                    ] {
+                        assert!(
+                            matches!(
+                                result,
+                                Err(OidcConfigError::InvalidUrl {
+                                    field: "issuer",
+                                    ..
+                                })
+                            ),
+                            "issuer component must be rejected: {issuer}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn constructors_preserve_path_issuers_and_jwks_queries() {
+        for issuer in [
+            "https://issuer.example/tenant/",
+            "https://issuer.example/tenant%3Fblue%23anchor",
+            "http://127.0.0.1:4180/tenant",
+        ] {
+            let jwks_uri = "https://issuer.example/keys?version=1";
+            let resolver = HttpJwksResolver::new(issuer.into(), Some(jwks_uri.into()))
+                .expect("path issuer and JWKS query allowed");
+
+            assert_eq!(resolver.issuer, issuer, "issuer identity is not normalized");
+            assert_eq!(resolver.jwks_uri.as_deref(), Some(jwks_uri));
+        }
+    }
+
     async fn stalled_body() -> Response {
         let body =
             Body::from_stream(futures::stream::pending::<Result<&'static [u8], Infallible>>());
@@ -509,7 +574,7 @@ mod http_tests {
         let addr = listener.local_addr().expect("read listener addr");
         let issuer = format!("http://{addr}");
         let jwks_uri = format!("{issuer}/keys");
-        let openid = serde_json::json!({ "jwks_uri": jwks_uri }).to_string();
+        let openid = serde_json::json!({ "issuer": issuer, "jwks_uri": jwks_uri }).to_string();
         let jwks = serde_json::json!({
             "keys": [{ "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }]
         })
@@ -544,6 +609,168 @@ mod http_tests {
         ));
 
         server.abort();
+    }
+
+    struct DiscoveryServer {
+        issuer: String,
+        jwks_uri: String,
+        discovery_fetches: Arc<AtomicUsize>,
+        jwks_fetches: Arc<AtomicUsize>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for DiscoveryServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn spawn_discovery_idp(
+        metadata_issuer: impl FnOnce(&str) -> Option<serde_json::Value>,
+    ) -> DiscoveryServer {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener address");
+        let issuer = format!("http://{addr}/tenant/");
+        let jwks_uri = format!("http://{addr}/keys?version=1");
+        let mut metadata = serde_json::json!({ "jwks_uri": jwks_uri });
+        if let Some(value) = metadata_issuer(&issuer) {
+            metadata["issuer"] = value;
+        }
+        let metadata = metadata.to_string();
+        let jwks = serde_json::json!({
+            "keys": [{ "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }]
+        })
+        .to_string();
+        let discovery_fetches = Arc::new(AtomicUsize::new(0));
+        let jwks_fetches = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route(
+                "/tenant/.well-known/openid-configuration",
+                get({
+                    let fetches = Arc::clone(&discovery_fetches);
+                    move || {
+                        let fetches = Arc::clone(&fetches);
+                        let metadata = metadata.clone();
+                        async move {
+                            fetches.fetch_add(1, Ordering::SeqCst);
+                            metadata
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/keys",
+                get({
+                    let fetches = Arc::clone(&jwks_fetches);
+                    move |query: axum::extract::RawQuery| {
+                        let fetches = Arc::clone(&fetches);
+                        let jwks = jwks.clone();
+                        async move {
+                            fetches.fetch_add(1, Ordering::SeqCst);
+                            assert_eq!(query.0.as_deref(), Some("version=1"));
+                            jwks
+                        }
+                    }
+                }),
+            );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("mock discovery server");
+        });
+        DiscoveryServer {
+            issuer,
+            jwks_uri,
+            discovery_fetches,
+            jwks_fetches,
+            task,
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_issuer_must_match_exactly_before_jwks_fetch() {
+        let mismatches: [fn(&str) -> String; 3] = [
+            |_| "http://another.example".into(),
+            |issuer| issuer.trim_end_matches('/').into(),
+            |issuer| issuer.replace("/tenant/", "/TENANT/"),
+        ];
+        for mismatch in mismatches {
+            let server =
+                spawn_discovery_idp(|issuer| Some(serde_json::json!(mismatch(issuer)))).await;
+            let resolver = HttpJwksResolver::new(server.issuer.clone(), None).expect("issuer");
+
+            assert!(matches!(
+                resolver.key_for("k1").await,
+                Err(KeyError::Config(_))
+            ));
+            assert_eq!(server.discovery_fetches.load(Ordering::SeqCst), 1);
+            assert_eq!(server.jwks_fetches.load(Ordering::SeqCst), 0);
+            assert!(resolver.cache.read().await.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_issuer_is_a_required_string() {
+        for issuer in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!(7)),
+        ] {
+            let server = spawn_discovery_idp(|_| issuer).await;
+            let resolver = HttpJwksResolver::new(server.issuer.clone(), None).expect("issuer");
+
+            assert!(matches!(
+                resolver.key_for("k1").await,
+                Err(KeyError::Parse(_))
+            ));
+            assert_eq!(server.discovery_fetches.load(Ordering::SeqCst), 1);
+            assert_eq!(server.jwks_fetches.load(Ordering::SeqCst), 0);
+            assert!(resolver.cache.read().await.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn matching_discovery_issuer_preserves_path_and_jwks_query() {
+        let server = spawn_discovery_idp(|issuer| Some(serde_json::json!(issuer))).await;
+        let resolver = HttpJwksResolver::new(server.issuer.clone(), None).expect("issuer");
+
+        assert!(resolver.key_for("k1").await.is_ok());
+        assert_eq!(server.discovery_fetches.load(Ordering::SeqCst), 1);
+        assert_eq!(server.jwks_fetches.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_jwks_endpoint_skips_discovery_metadata() {
+        let server =
+            spawn_discovery_idp(|_| Some(serde_json::json!("http://another.example"))).await;
+        let resolver = HttpJwksResolver::new(server.issuer.clone(), Some(server.jwks_uri.clone()))
+            .expect("explicit JWKS");
+
+        assert!(resolver.key_for("k1").await.is_ok());
+        assert_eq!(server.discovery_fetches.load(Ordering::SeqCst), 0);
+        assert_eq!(server.jwks_fetches.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn discovery_issuer_mismatch_preserves_only_previously_cached_keys() {
+        let server =
+            spawn_discovery_idp(|_| Some(serde_json::json!("http://another.example"))).await;
+        let resolver = HttpJwksResolver::new(server.issuer.clone(), None).expect("issuer");
+        let cached = seed_stale_key(&resolver, "old").await;
+
+        let returned = resolver.key_for("old").await.expect("trusted cached key");
+
+        assert!(Arc::ptr_eq(&returned, &cached));
+        assert_eq!(server.discovery_fetches.load(Ordering::SeqCst), 1);
+        assert_eq!(server.jwks_fetches.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            resolver.key_for("k1").await,
+            Err(KeyError::UnknownKid)
+        ));
+        assert_eq!(resolver.cache.read().await.len(), 1);
+        assert!(resolver.cache.read().await.contains_key("old"));
     }
 
     #[tokio::test]
@@ -615,7 +842,11 @@ mod http_tests {
             .expect("bind test listener");
         let addr = listener.local_addr().expect("read listener addr");
         let issuer = format!("http://{addr}");
-        let openid = serde_json::json!({ "jwks_uri": format!("{issuer}/keys") }).to_string();
+        let openid = serde_json::json!({
+            "issuer": issuer,
+            "jwks_uri": format!("{issuer}/keys")
+        })
+        .to_string();
         let fetches = Arc::new(AtomicUsize::new(0));
         let app = Router::new()
             .route(
