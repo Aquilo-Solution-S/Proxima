@@ -155,8 +155,10 @@ impl CitedBlobStore {
                 // the second chance would be reported as a missing object
                 // -- an alarm raised by the dedupe working correctly.
                 let named = objects.remove(&object_key) || claimed.contains(&object_key);
-                claimed.insert(object_key.clone());
                 if named {
+                    // Only remember keys proven present. Every row mounting
+                    // an absent object is itself a missing citation.
+                    claimed.insert(object_key);
                     continue;
                 }
                 outcome.missing_objects = outcome.missing_objects.saturating_add(1);
