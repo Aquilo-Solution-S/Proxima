@@ -108,12 +108,7 @@ async fn append_derived_timeseries(
         draft.memory_id
     };
     if draft.supersedes.is_none() {
-        let existing: Option<uuid::Uuid> =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
-                .bind(handle)
-                .fetch_optional(&mut **tx)
-                .await
-                .map_err(map_err)?;
+        let existing = load_derived_replay_head(tx, handle, draft, kind).await?;
         if let Some(t) = existing {
             let stored_origins = load_pin_ids(tx, t, PinColumn::Origins).await?;
             let incoming_origins = pin_memory_ids(input.origins);
@@ -176,6 +171,26 @@ async fn append_derived_timeseries(
         settle_derived_embedding(tx, draft, outcome.memory_id).await?;
     }
     Ok(outcome)
+}
+
+async fn load_derived_replay_head(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: uuid::Uuid,
+    draft: &DerivedDraft<'_>,
+    kind: &str,
+) -> Result<Option<uuid::Uuid>, StorageError> {
+    sqlx::query_scalar(
+        "SELECT t FROM proxima_core.memory_head
+          WHERE handle = $1 AND owner_id = $2
+            AND kind = $3::proxima_core.memory_kind AND schema_id = $4",
+    )
+    .bind(handle)
+    .bind(draft.owner.stored_owner_id())
+    .bind(kind)
+    .bind(draft.schema_id.as_str())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)
 }
 
 fn derived_memory_command(
