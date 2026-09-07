@@ -19,8 +19,8 @@ pub const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// Trims, and treats an empty or whitespace-only value as unset — the rule
 /// `proxima_core::env_value` states for every configuration variable in the
 /// workspace. Applied by hand rather than by calling it, because this is a
-/// deliberately minimal test-support crate (sqlx/tokio/tracing/uuid) and one
-/// env var does not justify a dependency on `proxima-core`.
+/// deliberately minimal test-support crate (sqlx/tokio/tracing/url/uuid) and
+/// one env var does not justify a dependency on `proxima-core`.
 ///
 /// Without the empty check, `PROXIMA_TEST_PG_URL=` handed an empty string
 /// straight to the connector, and every test in the run failed against a
@@ -34,13 +34,37 @@ pub fn admin_url() -> String {
         .unwrap_or_else(|| DEFAULT_ADMIN_URL.into())
 }
 
+/// URL for one test database, retaining the admin endpoint configuration.
+///
+/// # Panics
+///
+/// Panics if `PROXIMA_TEST_PG_URL` is not a valid URL. The diagnostic does
+/// not include the URL or its credentials.
 #[must_use]
 pub fn db_url(name: &str) -> String {
-    let admin = admin_url();
-    match admin.rfind('/') {
-        Some(idx) => format!("{}/{}", &admin[..idx], name),
-        None => format!("{admin}/{name}"),
-    }
+    db_url_from_admin(&admin_url(), name)
+        .expect("PROXIMA_TEST_PG_URL must be a valid database URL")
+        .into()
+}
+
+fn db_url_from_admin(admin: &str, name: &str) -> Result<url::Url, url::ParseError> {
+    let mut url = url::Url::parse(admin)?;
+    url.path_segments_mut()
+        .map_err(|()| url::ParseError::RelativeUrlWithCannotBeABaseBase)?
+        .clear()
+        .push(name);
+    let parameters: Vec<_> = url
+        .query_pairs()
+        .filter(|(key, _)| key != "dbname")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    url.set_query(None);
+    // SQLx gives dbname precedence over the path. Keep exactly one target
+    // override, including names (such as ".") that URL paths normalize.
+    url.query_pairs_mut()
+        .extend_pairs(parameters)
+        .append_pair("dbname", name);
+    Ok(url)
 }
 
 #[must_use]
@@ -305,7 +329,98 @@ fn is_sqlstate(err: &sqlx::Error, expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{advisory_lock_key, is_drop_retryable_sqlstate, quoted_ident, unique_db_name};
+    use sqlx::ConnectOptions;
+    use sqlx::postgres::{PgConnectOptions, PgSslMode};
+
+    use super::{
+        advisory_lock_key, db_url_from_admin, is_drop_retryable_sqlstate, quoted_ident,
+        unique_db_name,
+    };
+
+    #[test]
+    fn database_url_preserves_query_options_and_userinfo() {
+        let admin = url::Url::parse(
+            "postgres://user%40domain:p%40ss%2Fword@[::1]:55439/admin?sslmode=require\
+             &application_name=pg-testkit&options=-c%20statement_timeout%3D5000\
+             &sslrootcert=%2Ftmp%2Froot.crt#fragment",
+        )
+        .expect("test URL");
+        let target = db_url_from_admin(admin.as_str(), "isolated_test").expect("target URL");
+        let options = PgConnectOptions::from_url(&target).expect("target options");
+        assert_eq!(options.get_database(), Some("isolated_test"));
+        assert!(matches!(options.get_ssl_mode(), PgSslMode::Require));
+        assert_eq!(options.get_application_name(), Some("pg-testkit"));
+        assert_eq!(options.get_options(), Some("-c statement_timeout=5000"));
+        assert_eq!(target.username(), admin.username());
+        assert_eq!(target.password(), admin.password());
+        assert_eq!(target.host(), admin.host());
+        assert_eq!(target.port(), admin.port());
+        assert_eq!(target.fragment(), admin.fragment());
+        assert!(
+            target
+                .query_pairs()
+                .any(|(key, value)| { key == "sslrootcert" && value == "/tmp/root.crt" })
+        );
+    }
+
+    #[test]
+    fn database_url_preserves_socket_and_replaces_database_overrides() {
+        for host in ["/tmp/postgres", "%2Ftmp%2Fpostgres"] {
+            let admin = format!(
+                "postgres:///admin?dbname=admin&host={host}&db%6Eame=other&application_name=tests"
+            );
+            let target = db_url_from_admin(&admin, "isolated_test").expect("target URL");
+            let options = PgConnectOptions::from_url(&target).expect("target options");
+            assert_eq!(options.get_database(), Some("isolated_test"));
+            assert_eq!(
+                options.get_socket().map(std::path::PathBuf::as_path),
+                Some(std::path::Path::new("/tmp/postgres"))
+            );
+            assert_eq!(options.get_application_name(), Some("tests"));
+            let databases: Vec<_> = target
+                .query_pairs()
+                .filter(|(key, _)| key == "dbname")
+                .map(|(_, value)| value.into_owned())
+                .collect();
+            assert_eq!(databases, ["isolated_test"]);
+        }
+    }
+
+    #[test]
+    fn database_url_preserves_a_host_without_database_path() {
+        let target = db_url_from_admin(
+            "postgres://user:pass@localhost:55439?application_name=tests",
+            "isolated_test",
+        )
+        .expect("target URL");
+        let options = PgConnectOptions::from_url(&target).expect("target options");
+        assert_eq!(options.get_host(), "localhost");
+        assert_eq!(options.get_port(), 55439);
+        assert_eq!(options.get_database(), Some("isolated_test"));
+        assert_eq!(options.get_application_name(), Some("tests"));
+    }
+
+    #[test]
+    fn database_url_round_trips_database_names_as_data() {
+        for name in [
+            "Grüße 世界",
+            "a/b%2Fc?#&dbname=admin",
+            "/leading",
+            ".",
+            "..",
+        ] {
+            let target = db_url_from_admin("postgres://localhost/admin", name).expect("target URL");
+            let options = PgConnectOptions::from_url(&target).expect("target options");
+            assert_eq!(options.get_database(), Some(name));
+        }
+    }
+
+    #[test]
+    fn invalid_admin_url_error_contains_no_credentials() {
+        let result = db_url_from_admin("postgres://user:private-secret@[broken", "isolated_test");
+        let error = result.expect_err("invalid IPv6 address");
+        assert!(!error.to_string().contains("private-secret"));
+    }
 
     #[test]
     fn unique_db_name_uses_prefix_and_simple_uuidv7() {
