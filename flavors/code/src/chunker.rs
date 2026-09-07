@@ -16,7 +16,7 @@
 //!
 //! Pure module: parses bytes, returns chunks. No I/O, no async.
 
-use tree_sitter::{Language, Node, Parser};
+use tree_sitter::{Language, Node, Parser, Tree};
 
 /// Greedy-merge target, in non-whitespace characters. ~500 tokens of
 /// typical code under cl100k/o200k tokenizers — comfortably within
@@ -71,30 +71,40 @@ pub struct Chunk {
 /// at all.
 #[must_use]
 pub fn chunk_blob(file_path: &str, content: &[u8]) -> Vec<Chunk> {
+    chunk_blob_with_tree(file_path, content).0
+}
+
+/// Retain the successful parse for ingestion's callgraph queries. Rejected
+/// blobs and parser failures return no tree; chunk/fallback policy is shared
+/// with the public chunk-only entrypoint.
+pub(crate) fn chunk_blob_with_tree(file_path: &str, content: &[u8]) -> (Vec<Chunk>, Option<Tree>) {
     if content.len() > MAX_BLOB_BYTES {
-        return Vec::new();
+        return (Vec::new(), None);
     }
     if content.contains(&0) {
-        return Vec::new();
+        return (Vec::new(), None);
     }
     let Ok(text) = std::str::from_utf8(content) else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
     if text.is_empty() {
-        return Vec::new();
+        return (Vec::new(), None);
     }
 
     let language = detect_language(file_path);
+    let mut parsed_tree = None;
 
     if let Some(ts_lang) = ts_language_for(language)
-        && let Some(chunks) = ast_chunks(file_path, text, language, &ts_lang)
-        && !chunks.is_empty()
+        && let Some((chunks, tree)) = ast_chunks(file_path, text, language, &ts_lang)
     {
-        return chunks;
+        if !chunks.is_empty() {
+            return (chunks, Some(tree));
+        }
+        parsed_tree = Some(tree);
     }
 
     let fallback_lang = fallback_language(file_path);
-    fallback_chunks(file_path, text, fallback_lang)
+    (fallback_chunks(file_path, text, fallback_lang), parsed_tree)
 }
 
 /// AST path. Returns `None` only when tree-sitter fails entirely; an empty
@@ -104,7 +114,7 @@ fn ast_chunks(
     source: &str,
     language: Option<&'static str>,
     ts_lang: &Language,
-) -> Option<Vec<Chunk>> {
+) -> Option<(Vec<Chunk>, Tree)> {
     let mut parser = Parser::new();
     parser.set_language(ts_lang).ok()?;
     let tree = parser.parse(source, None)?;
@@ -115,7 +125,7 @@ fn ast_chunks(
     let mut spans: Vec<Span> = Vec::new();
     cast_split_merge(root, &nws_cumsum, &mut spans);
     if spans.is_empty() {
-        return Some(Vec::new());
+        return Some((Vec::new(), tree));
     }
 
     let mut out = Vec::with_capacity(spans.len());
@@ -143,7 +153,7 @@ fn ast_chunks(
             line_range_end: u32::try_from(s.end_row + 1).unwrap_or(u32::MAX),
         });
     }
-    Some(out)
+    Some((out, tree))
 }
 
 #[derive(Debug, Clone)]
