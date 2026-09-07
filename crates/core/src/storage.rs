@@ -458,15 +458,18 @@ pub enum DerivedEmbedding<'a> {
     /// these rows.
     None,
     /// The client embedded the text. Storage writes the vector inline, in
-    /// the same transaction as the row.
+    /// the same transaction as the row. An over-limit refusal whose
+    /// bisection then covered every piece also lands here: one vec per
+    /// version, so the first piece is what is stored.
     Ready { model_id: &'a str, vector: Vec<f32> },
-    /// The client could not embed this text but the provider is up, so the
-    /// input — not the provider — is what failed. Storage writes no vector
-    /// and enqueues a durable embedding job for `model_id` **in the same
-    /// transaction as the row**, so the drain (which owns the bisecting
-    /// over-limit rescue) picks the memory up. Losing the whole write, and
-    /// every model call upstream of it, is not the right answer to an input
-    /// one provider call refused.
+    /// The client could not embed this text at any length, or the chunked
+    /// rescue itself failed, while the provider is up — so the input, not
+    /// the provider, is what failed. Storage writes no vector and enqueues
+    /// a durable embedding job for `model_id` **in the same transaction as
+    /// the row**, so the drain (which owns terminal failures and retries)
+    /// picks the memory up. Losing the whole write, and every model call
+    /// upstream of it, is not the right answer to an input one provider
+    /// call refused.
     Deferred { model_id: &'a str },
 }
 
@@ -526,7 +529,9 @@ pub struct AuthorDerivedOutcome {
     /// job instead ([`DerivedEmbedding::Deferred`]). Until a drain runs, the
     /// memory is lexically findable and semantically invisible — a caller
     /// that needs it searchable now must say so, which it cannot do if the
-    /// only record is a log line.
+    /// only record is a log line. An over-limit text rescued inline as
+    /// [`DerivedEmbedding::Ready`] is *not* deferred: its vector landed
+    /// with the row.
     pub embedding_deferred: bool,
 }
 

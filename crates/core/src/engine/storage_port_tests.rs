@@ -393,6 +393,13 @@ mod storage_port_tests_support {
             Ok(u64::try_from(claims.len()).expect("test claim count fits u64"))
         }
 
+        async fn reclaim_stale_embedding_jobs(
+            &self,
+            _older_than_seconds: i64,
+        ) -> Result<u64, StorageError> {
+            Ok(0)
+        }
+
         async fn fail_embedding_job(
             &self,
             _claim: &crate::storage::EmbeddingJobClaim,
