@@ -23,7 +23,7 @@ explicit request.
 | `docs/02-memory.md` | F/A/P layering, edges, directionality |
 | `docs/16-edges.md` | the edge model: two closed kinds, kind-follows-operation, rebuildability |
 | `docs/03-schema-registry.md` | Payload traits (`FactPayload`, `AbstractionPayload`, `PerspectivePayload` — all required), sidecar tables, migration |
-| `docs/04-consolidation.md` | F→A and A→P operators; prompt locality |
+| `docs/04-consolidation.md` | F→A, A→A and A→P operators; prompt locality |
 | `docs/05-actions.md` | Actions as ordinary Facts; wake/tool boundary |
 | `docs/06-goals-and-self.md` | Goal entity (DAG, supersession); Self as pure query |
 | `docs/07-storage.md` | IDs, identity rules, append-only, vector store independence |

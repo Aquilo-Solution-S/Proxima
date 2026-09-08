@@ -103,7 +103,8 @@ pub fn build_instructions(
     let mut out = String::new();
     out.push_str(
         "Proxima is a shared-memory substrate, not an agent. It stores memory in three layers \
-         — Facts (immutable observations) → Abstractions (patterns over Facts) → Perspectives \
+         — Facts (immutable observations) → Abstractions (conclusions over Facts or Abstractions) \
+         → Perspectives \
          (stances / self-models) — and YOU are the cognition that moves between them: nothing \
          derives or reflects for you. ",
     );
@@ -115,15 +116,16 @@ pub fn build_instructions(
              entry from a schema-declared payload field. ",
         );
         out.push_str(
-            "To semantically relate Facts you `core_derive` an Abstraction (or Perspective) over \
-             them and pass their handles as `source_handles`, which lands the `origin` entries. ",
+            "Use `core_derive` with kind=Abstraction over Facts or Abstractions: pass a nonempty \
+             set from one input layer as `source_handles`. The new conclusion has its own \
+             `origin` entries; deriving from an Abstraction does not retire that premise. ",
         );
         if s.interpret {
             out.push_str(
                 "When the claim is a judgment about memories that already exist — a reason and a \
                  confidence — `core_interpret` authors an interpretation Perspective over its \
-                 `subjects` and returns a `P:` handle; the connections are that Perspective's own \
-                 references. ",
+                 `subjects` and returns a `P:` handle. Subjects may be Facts, Abstractions, or \
+                 Perspectives; the new Perspective declares references, not derivation origins. ",
             );
         }
         out.push_str(
@@ -141,9 +143,9 @@ pub fn build_instructions(
         }
         if s.derive {
             out.push_str(
-                "`core_derive` with kind=Abstraction captures a generalization over ≥2 Facts, \
-                 kind=Perspective records a stance or self-model — never store a generalization \
-                 as a Fact, it loses its grounding. ",
+                "`core_derive` with kind=Perspective requires Abstraction origins. An Abstraction \
+                 captures a conclusion over Facts or Abstractions; storing the conclusion as a \
+                 Fact loses its grounding. ",
             );
         }
         if s.goals {
@@ -238,7 +240,7 @@ pub fn how_to_markdown(
     out.push_str(
         "- **Fact** — an immutable observation; something that happened or that you learned. \
          Wire handle `F:<uuid>`.\n\
-         - **Abstraction** — a pattern, generalization, or lesson over ≥2 Facts. Wire handle \
+         - **Abstraction** — a conclusion over a nonempty set of Facts or Abstractions. Wire handle \
          `A:<uuid>`.\n\
          - **Perspective** — a stance or self-model (\"how I see X\", \"who I am\"). Wire handle \
          `P:<uuid>`.\n\n",
@@ -285,7 +287,8 @@ fn push_law(out: &mut String, s: Surface) {
     out.push_str(
         "`source_handles` lands `origin` entries from the new Abstraction/Perspective down to \
          each source. **That is the graph.** Wanting to connect two `F:` handles is the signal \
-         to *abstract*.",
+         to *abstract*. An Abstraction can also derive from a nonempty set of Abstractions; \
+         keep one input layer per call. A derived Perspective requires Abstraction origins.",
     );
     if s.interpret {
         out.push_str(
@@ -299,8 +302,8 @@ fn push_law(out: &mut String, s: Surface) {
         out.push_str("```\n\n");
         out.push_str(
             "It returns a `P:` handle. A reason and a confidence are a judgment, and a judgment \
-             is a Perspective; its subjects become that Perspective's own references. A Fact \
-             never interprets — layering refuses a Fact as an interpretation source.",
+             is a Perspective. Subjects may be Facts, Abstractions, or Perspectives; the new \
+             Perspective declares references, not derivation origins.",
         );
     }
     out.push_str("\n\n");
@@ -317,10 +320,10 @@ fn push_capture_table(out: &mut String, s: Surface) {
     }
     if s.derive {
         out.push_str(
-            "| Capture a recurring pattern / generalization / lesson across ≥2 Facts | \
-             `core_derive` kind=**Abstraction**, `source_handles`=those Facts |\n\
+            "| Derive a conclusion from Facts or prior Abstractions | \
+             `core_derive` kind=**Abstraction**, `source_handles`=a nonempty set from one input layer |\n\
              | Record or update a stance / self-model (\"how I see X\", \"who I am\") | \
-             `core_derive` kind=**Perspective** |\n\
+             `core_derive` kind=**Perspective**, `source_handles`=Abstractions |\n\
              | **Relate / connect memories** | derive an Abstraction/Perspective over them — \
              there is no connect verb |\n",
         );

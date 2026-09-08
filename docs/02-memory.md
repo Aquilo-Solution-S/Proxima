@@ -13,9 +13,9 @@ Four node kinds. Citation is provenance, not a node.
 
 | Term | What it is | Schema | Produced by |
 |---|---|---|---|
-| **Fact** | An admitted observation. Never revised. | `memory` (`kind = fact`) + optional sidecar | FactIngest |
-| **Abstraction** | A re-derivable interpretation over Facts (transitively). | `memory` (`kind = abstraction`) + required sidecar | F→A / A→A |
-| **Perspective** | A re-derivable integration over Abstractions. Self is a query, not a row. | `memory` (`kind = perspective`) + required sidecar | A→P |
+| **Fact** | Immutable admitted observation; new observations may advance its series. | `memory` (`kind = fact`) + optional sidecar | FactIngest |
+| **Abstraction** | Re-derivable conclusion over Facts or prior Abstractions. | `memory` (`kind = abstraction`) + required sidecar | F→A / A→A |
+| **Perspective** | Derived stance or interpretation of referenced memories. Self is a query, not a row. | `memory` (`kind = perspective`) + required sidecar | A→P / Interpretation |
 | **Goal** | A desired end-state with a lifecycle. | `goal` | GoalWrite / A→Goal |
 | **Citation** | Bibliographic proof. Not a node. | `memory.blob_id` 0..1 → `blob` | attached at write |
 
@@ -39,9 +39,12 @@ Typed payload is `Content` (owner-scoped). `memory.content_id` may be shared acr
 
 `Π` = active Perspective context.
 
-Forbidden: A→F, P→A, P→F writes. Upward pins (Fact→Abstraction, Fact→Perspective, Abstraction→Perspective). Facts as interpretation sources. Mutation of existing rows.
+Forbidden: A→F, P→A, P→F writes. Upward pins (Fact→Abstraction, Fact→Perspective, Abstraction→Perspective). Mutation of existing rows.
 
-Facts are accepted, not revised. A/P are re-derivable. Perspective changes affect future writes, not existing Facts.
+Fact rows are immutable; new observations may advance their series. A/P are
+re-derivable. Perspective changes affect future writes, not existing Facts.
+`core_interpret` authors a Perspective whose references may target Facts,
+Abstractions, or Perspectives; it declares no derivation origins.
 
 ## The Core Entity
 

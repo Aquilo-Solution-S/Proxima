@@ -8,6 +8,7 @@
 | Connect an LLM/coding agent | [getting-started/connect-agent.md](getting-started/connect-agent.md) |
 | Give an agent compact instructions | [llms.txt](https://github.com/Aquilo-Solution-S/Proxima/blob/main/llms.txt) / [agent/quickstart.md](agent/quickstart.md) |
 | Embed Proxima in a Rust host | [getting-started/local-dev.md](getting-started/local-dev.md) |
+| Upgrade the Rust SDK for v0.0.11 | [how-to/migrate-flavor-sdk.md](how-to/migrate-flavor-sdk.md) |
 | Build a flavor | [tutorials/build-first-flavor.md](tutorials/build-first-flavor.md) |
 | Add a first Fact schema | [tutorials/add-first-fact-schema.md](tutorials/add-first-fact-schema.md) |
 | Add a first MCP tool | [tutorials/add-first-mcp-tool.md](tutorials/add-first-mcp-tool.md) |

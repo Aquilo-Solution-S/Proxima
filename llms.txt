@@ -21,12 +21,14 @@ entry from the handles a write declares it was made from, a `reference` entry
 from a schema-declared payload field. Nothing you call takes an edge kind as an
 argument.
 
-To semantically relate Facts, derive an Abstraction over them with
+To derive a conclusion, use a nonempty set of Facts or a nonempty set of
+Abstractions (one input layer per call) with
 `core_derive(kind="Abstraction", source_handles=[...])`; those handles land the
 `origin` entries. When the claim is a judgment about memories that already
 exist — a reason and a confidence — call `core_interpret`, which authors an
-interpretation Perspective over its `subjects` and returns a `P:` handle. A Fact
-never interprets: layering refuses a Fact as an interpretation source.
+interpretation Perspective over its `subjects` and returns a `P:` handle. The
+subjects may be Facts, Abstractions, or Perspectives. The interpretation is the
+new Perspective; it declares references, not derivation origins.
 
 ## Tool Choice
 
@@ -34,8 +36,8 @@ never interprets: layering refuses a Fact as an interpretation source.
 |---|---|
 | find prior knowledge | `core_search_memories` |
 | record an observation | `core_remember` |
-| capture a pattern/lesson | `core_derive` as `Abstraction` |
-| record stance/self-model | `core_derive` as `Perspective` |
+| derive a conclusion from Facts or prior Abstractions | `core_derive` as `Abstraction` |
+| derive a stance/self-model from Abstractions | `core_derive` as `Perspective` |
 | claim what existing memories mean | `core_interpret` if advertised |
 | set/refine objective | `core_goal` if advertised |
 | relate/connect memories | no connect verb — derive or interpret over them |

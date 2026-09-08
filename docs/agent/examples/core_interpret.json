@@ -11,5 +11,5 @@
       "model_id": "docs-plan-operator"
     }
   },
-  "note": "Returns a P: handle. A reason and a confidence are a judgment, so the claim is an interpretation Perspective; its subjects become that Perspective's own references. There is no connect verb, and a Fact is never an interpretation source."
+  "note": "Returns a P: handle. A reason and a confidence are a judgment, so the claim is an interpretation Perspective; its subjects become that Perspective's own references. Subjects may be Facts, Abstractions, or Perspectives. The new Perspective declares references, not derivation origins; there is no connect verb."
 }

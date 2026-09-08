@@ -71,7 +71,8 @@ Two kinds only. A third kind fails the node-home test.
 
 Source of a pin is the declaring row. Layering: `ℓ(source) ≥ ℓ(target)` for
 memory endpoints. Goals sit outside the layer comparison. Facts cannot have
-origins. Facts cannot be interpretation sources.
+origins. An interpretation is a Perspective; its references may target Facts,
+Abstractions, or Perspectives.
 
 Write admitted iff write on source and read on target at write time.
 Unreadable targets redact independently.

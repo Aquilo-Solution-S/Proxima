@@ -463,6 +463,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     );
     let document: serde_json::Value = response.json().await?;
     assert_eq!(document["openapi"], "3.2.0");
+    assert_eq!(document["info"]["version"], proxima_core::RELEASE_VERSION);
     let rest_tool_paths: BTreeSet<String> = document["paths"]
         .as_object()
         .expect("OpenAPI paths")
@@ -669,7 +670,11 @@ async fn initialize(
         .ok_or("missing session id")?
         .to_str()?
         .to_string();
-    let _ = sse_json(response).await?;
+    let result = sse_json(response).await?;
+    assert_eq!(
+        result["result"]["serverInfo"]["version"],
+        proxima_core::RELEASE_VERSION
+    );
     Ok(session_id)
 }
 
