@@ -4,10 +4,11 @@ use std::sync::Arc;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
 use proxima::{
-    AuthPath, AuthzContext, EmbedConfig, EmbeddedProxima, GroupId, OwnerEraseOutcome, OwnerRef,
-    ProximaBuilder, Role, UserId,
+    AuthPath, AuthzContext, EmbedConfig, EmbeddedProxima, FactWrite, GroupId,
+    MemoryHydrationOutcome, MemoryId, OwnerEraseOutcome, OwnerRef, ProximaBuilder, Role, UserId,
 };
 use proxima_blob_s3::{CitedBlobUploadPrepareTs, S3RuntimeConfig};
+use proxima_core::error::{ErrorCode, ProtocolError};
 use proxima_core::storage_ports::CitedBlobService;
 use proxima_core::{AgentNoteV1, ColdObjectStore};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
@@ -23,6 +24,186 @@ struct EraseObservation {
     canonical_debt: Option<String>,
     bucket: String,
     versions_after_erase: usize,
+}
+
+#[derive(Debug)]
+struct ColdEraseObservation {
+    receipt: OwnerEraseOutcome,
+    debt_backend: Option<String>,
+    versions_after_erase: usize,
+    hydration_before_erase: Option<Result<MemoryHydrationOutcome, ProtocolError>>,
+}
+
+#[tokio::test]
+async fn reboot_without_s3_preserves_unrecorded_cold_purge_debt() -> TestResult<()> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return Ok(());
+    }
+    let observed = cold_reboot_fixture(false).await?;
+    eprintln!("no-S3 cold Memory reboot erase observation: {observed:?}");
+    let OwnerEraseOutcome::Completed {
+        cold_object_purge_pending,
+        ..
+    } = observed.receipt
+    else {
+        panic!("the authorized abandoned-owner erase must complete: {observed:?}");
+    };
+    assert!(
+        observed.versions_after_erase == 0
+            || (cold_object_purge_pending && observed.debt_backend.as_deref() == Some("")),
+        "retained cold S3 versions require a pending receipt and durable unrecorded-backend debt: {observed:?}",
+    );
+    assert!(
+        matches!(&observed.hydration_before_erase, Some(Err(error)) if error.code == ErrorCode::Internal),
+        "missing S3 configuration must report unavailability, not a missing object: {observed:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn reboot_with_s3_physically_erases_unrecorded_cold_versions() -> TestResult<()> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return Ok(());
+    }
+    let observed = cold_reboot_fixture(true).await?;
+    assert!(
+        matches!(
+            observed.receipt,
+            OwnerEraseOutcome::Completed {
+                cold_object_purge_pending: false,
+                ..
+            }
+        ),
+        "configured reboot must finish physical erasure: {observed:?}"
+    );
+    assert_eq!(observed.versions_after_erase, 0);
+    assert!(observed.debt_backend.is_none());
+    Ok(())
+}
+
+async fn cold_reboot_fixture(keep_s3: bool) -> TestResult<ColdEraseObservation> {
+    let database = unique_db_name("proxima_cold_s3_reboot");
+    create_db(&database).await?;
+    let result = run_cold_reboot(&database, keep_s3).await;
+    drop_db(&database).await?;
+    result
+}
+
+async fn run_cold_reboot(database: &str, keep_s3: bool) -> TestResult<ColdEraseObservation> {
+    let config = S3RuntimeConfig {
+        force_path_style: true,
+        ..S3RuntimeConfig::from_env()?
+    };
+    let group = GroupId::new(Uuid::now_v7());
+    let owner = OwnerRef::Group(group);
+    let initial = boot(database, owner, Some(config.clone())).await?;
+    let authz = host_context(owner, AuthPath::HostBearer);
+    let note = AgentNoteV1 {
+        note_id: Uuid::now_v7(),
+        title: "real S3 cold Memory restart".into(),
+        body: "cold payload must remain owed after S3 configuration removal".into(),
+        tags: Vec::new(),
+        idempotency_key: None,
+    };
+    let fact = initial
+        .engine
+        .ingest_fact(&authz, FactWrite::new(owner, "test/cold-s3-reboot", &note))
+        .await?;
+    assert_eq!(corpus_counts(initial.pool_for_tests()).await?, (0, 1));
+    initial
+        .engine
+        .forget_memory(&authz, owner, fact.memory_id)
+        .await?;
+    assert_eq!(corpus_counts(initial.pool_for_tests()).await?, (0, 0));
+    let cold_key: String =
+        sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
+            .bind(fact.memory_id.into_inner())
+            .fetch_one(initial.pool_for_tests())
+            .await?;
+    assert_eq!(cold_key, format!("cold/{}", fact.memory_id.into_inner()));
+    let cold_bytes = initial
+        .blobs
+        .as_ref()
+        .expect("configured cold store")
+        .cold_store()
+        .get(&cold_key)
+        .await?;
+    assert!(
+        cold_bytes
+            .windows(note.body.len())
+            .any(|part| part == note.body.as_bytes()),
+        "the real cold object contains the admitted typed Fact payload"
+    );
+    assert_eq!(object_versions(&config, &cold_key).await?, 1);
+    stop(initial).await;
+
+    let restarted = boot(database, owner, keep_s3.then(|| config.clone())).await?;
+    assert_eq!(restarted.blobs.is_some(), keep_s3);
+    let hydration_before_erase = if keep_s3 {
+        None
+    } else {
+        Some(
+            observe_unconfigured_hydration(&restarted, owner, fact.memory_id, &config, &cold_key)
+                .await?,
+        )
+    };
+    let system = host_context(owner, AuthPath::System);
+    let receipt = restarted.engine.erase_group_owner(&system, group).await?;
+    let cooled: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.cooled")
+        .fetch_one(restarted.pool_for_tests())
+        .await?;
+    assert_eq!(cooled, 0);
+    assert_eq!(corpus_counts(restarted.pool_for_tests()).await?, (0, 0));
+    let debt_backend: Option<String> = sqlx::query_scalar(
+        "SELECT backend FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+    )
+    .bind(&cold_key)
+    .fetch_optional(restarted.pool_for_tests())
+    .await?;
+    let versions_after_erase = object_versions(&config, &cold_key).await?;
+    stop(restarted).await;
+
+    // Retain the original receipt/debt/version observation while proving a
+    // configured host can later recover any debt through ordinary maintenance.
+    recover_and_cleanup(
+        database,
+        owner,
+        &config,
+        &cold_key,
+        debt_backend.as_deref(),
+        versions_after_erase,
+        &cold_bytes,
+    )
+    .await?;
+    Ok(ColdEraseObservation {
+        receipt,
+        debt_backend,
+        versions_after_erase,
+        hydration_before_erase,
+    })
+}
+
+async fn observe_unconfigured_hydration(
+    boot: &EmbeddedProxima,
+    owner: OwnerRef,
+    memory_id: MemoryId,
+    config: &S3RuntimeConfig,
+    cold_key: &str,
+) -> TestResult<Result<MemoryHydrationOutcome, ProtocolError>> {
+    let authz = host_context(owner, AuthPath::HostBearer);
+    let hydration = boot.engine.hydrate_memory(&authz, owner, memory_id).await;
+    let cooled: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.cooled WHERE t = $1")
+        .bind(memory_id.into_inner())
+        .fetch_one(boot.pool_for_tests())
+        .await?;
+    assert_eq!(cooled, 1, "failed retrieval must preserve the cold locator");
+    assert_eq!(corpus_counts(boot.pool_for_tests()).await?, (0, 0));
+    assert_eq!(object_versions(config, cold_key).await?, 1);
+    // Capture the classification now; assert it only after the erase-debt
+    // assertion, so the baseline still reaches the original deletion defect.
+    Ok(hydration)
 }
 
 #[tokio::test]
@@ -82,16 +263,19 @@ async fn fresh_database_without_s3_still_erases_database_only_facts() -> TestRes
         assert!(boot.blobs.is_none());
         let authz = host_context(owner, AuthPath::HostBearer);
         boot.engine
-            .ingest_typed_fact(
+            .ingest_fact(
                 &authz,
-                "test/no-s3-fresh",
-                &AgentNoteV1 {
-                    note_id: Uuid::now_v7(),
-                    title: "database-only control".into(),
-                    body: "no external object exists".into(),
-                    tags: Vec::new(),
-                    idempotency_key: None,
-                },
+                FactWrite::new(
+                    owner,
+                    "test/no-s3-fresh",
+                    &AgentNoteV1 {
+                        note_id: Uuid::now_v7(),
+                        title: "database-only control".into(),
+                        body: "no external object exists".into(),
+                        tags: Vec::new(),
+                        idempotency_key: None,
+                    },
+                ),
             )
             .await?;
         assert_eq!(corpus_counts(boot.pool_for_tests()).await?, (0, 1));
@@ -207,6 +391,7 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
         &canonical,
         canonical_debt.as_deref(),
         versions_after_erase,
+        BODY,
     )
     .await?;
     Ok(EraseObservation {
@@ -224,6 +409,7 @@ async fn recover_and_cleanup(
     canonical: &str,
     canonical_debt: Option<&str>,
     versions_after_erase: usize,
+    expected_bytes: &[u8],
 ) -> TestResult<()> {
     // Observations are already saved. Restore configuration, then exercise
     // the public maintenance retry with this fresh facade's real S3 adapter.
@@ -233,7 +419,7 @@ async fn recover_and_cleanup(
     if versions_after_erase > 0 {
         assert_eq!(
             cold.get(canonical).await?,
-            BODY,
+            expected_bytes,
             "retained versions contain the original bytes"
         );
     }
@@ -520,7 +706,10 @@ async fn admit_cold_note(
     };
     let fact = host
         .engine
-        .ingest_typed_fact(authz, "test/missing-cold-object", &note)
+        .ingest_fact(
+            authz,
+            FactWrite::new(owner, "test/missing-cold-object", &note),
+        )
         .await?;
     let key = format!("cold/{}", fact.memory_id.into_inner());
     owned_keys.push(key.clone());

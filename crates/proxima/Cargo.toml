@@ -24,6 +24,7 @@ proxima-blob-s3 = { path = "../blob-s3" }
 proxima-llm-openai-compat = { path = "../llm-openai-compat", optional = true }
 proxima-mcp-server = { path = "../mcp-server" }
 proxima-pg-testkit = { path = "../pg-testkit", optional = true }
+async-trait = { workspace = true }
 axum = { workspace = true }
 http = { workspace = true }
 sqlx = { workspace = true }
@@ -45,7 +46,6 @@ rest = ["proxima-mcp-server/rest"]
 testkit = ["dep:proxima-pg-testkit"]
 
 [dev-dependencies]
-async-trait = { workspace = true }
 aws-config = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 futures = { workspace = true }
