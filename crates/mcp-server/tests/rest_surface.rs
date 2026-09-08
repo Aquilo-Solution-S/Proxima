@@ -8,6 +8,9 @@
 //! did.
 #![cfg(feature = "rest")]
 
+#[path = "rest_surface/nul_arguments.rs"]
+mod nul_arguments;
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
