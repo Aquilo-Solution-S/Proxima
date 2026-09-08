@@ -69,7 +69,6 @@ pub(crate) struct IngestStoragePorts {
 #[derive(Clone)]
 pub(crate) struct MemoryAuthoringStoragePorts {
     pub memory_authoring: MemoryAuthoringHandle,
-    pub owner_access_read: OwnerAccessReadHandle,
 }
 
 #[derive(Clone)]
@@ -260,7 +259,6 @@ impl From<StoragePorts> for EngineStoragePorts {
             },
             memory_authoring: MemoryAuthoringStoragePorts {
                 memory_authoring: ports.memory_authoring.clone(),
-                owner_access_read: ports.owner_access_read.clone(),
             },
             pipeline: PipelineStoragePorts {
                 owner_access_read: ports.owner_access_read.clone(),

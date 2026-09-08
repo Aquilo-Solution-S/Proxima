@@ -1,5 +1,22 @@
 use std::num::NonZeroU32;
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct SdkGoalPayload {
+    key: String,
+}
+
+impl proxima::flavor::GoalPayload for SdkGoalPayload {
+    const SCHEMA_ID: &'static str = "sdk_test/goal-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn goal_key(&self) -> Vec<u8> {
+        let mut key =
+            proxima::flavor::PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("key", &self.key);
+        key.finish()
+    }
+}
+
 #[test]
 fn host_api_imports_from_root() {
     fn assert_send_sync<T: Send + Sync>() {}
@@ -301,23 +318,136 @@ fn flavor_sdk_imports_from_flavor_module() {
 }
 
 #[test]
-fn flavor_sdk_exposes_mcp_tool_authoring_surface() {
-    // The MCP tool family is reachable from `proxima::flavor` so flavor
-    // authors never import `proxima_core::mcp` directly.
+#[allow(clippy::too_many_lines)]
+fn flavor_sdk_constructs_contract_goal_and_session_values() {
     use proxima::flavor::{
-        McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
-        McpToolErrorKind,
+        CounterRule, DbConstraint, EmbedUnit, EmbeddingRecipe, EraseRule, ExportRule,
+        FlavorContract, FlavorDescriptor, FlavorProvenance, ForgetRule, GoalAssignmentTarget,
+        GoalAuthorship, GoalCreateRequest, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite,
+        IdempotencyKey, KeyShape, LanguagePolicy, PayloadKind, ProjectionDecl, Provenance,
+        SchemaContract, SchemaRef, SearchProjectionDecl, SidecarAtom, SidecarSessionRead, Surface,
+        TransferRule,
     };
-    fn _needs_mcp_tool<T: McpTool>() {}
-    let _ = McpToolErrorKind::Internal;
-    // Name the remaining re-exports as types so an accidental removal fails.
+
+    const SURFACE: Surface = Surface {
+        table: "sdk_test.rows",
+        key: KeyShape::OwnerId,
+        owner_column: Some("owner_id"),
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Rows,
+        forget: ForgetRule::Keep { why: "fixture" },
+        lexical_language_column: None,
+        counter: CounterRule::Counted("rows"),
+        completeness: None,
+    };
+    const SCHEMA: SchemaContract = SchemaContract {
+        id: SchemaRef::new("sdk_test", "goal", 1),
+        kind: PayloadKind::Goal,
+        sidecar_table: None,
+        search: SearchProjectionDecl::None { why: "fixture" },
+        embedding: EmbeddingRecipe::Never { why: "fixture" },
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[],
+        natural_key_columns: &[],
+    };
+    const CONTRACT: FlavorContract = FlavorContract {
+        flavor_id: "sdk_test",
+        ordinal: 7,
+        schemas: &[SCHEMA],
+        state_surfaces: &[SURFACE],
+        scopes: &[],
+        kernel_surfaces: &[],
+        tools: &[],
+        resources: &[],
+        projection: ProjectionDecl::None { why: "fixture" },
+        bespoke_erase_legs: &[],
+        bespoke_transfer_legs: &[],
+    };
+
+    let mut registry = proxima::flavor::FlavorRegistry::new();
+    registry
+        .try_add_goal_schema::<SdkGoalPayload>()
+        .expect("typed Goal schema is registered through the public path");
+    registry
+        .try_add_flavor(FlavorDescriptor {
+            flavor_id: "sdk_test".to_owned(),
+            display_name: "SDK test".to_owned(),
+            package_version: "0.1.0".to_owned(),
+            author: None,
+            provenance: FlavorProvenance::Builtin,
+        })
+        .expect("descriptor is accepted");
+    registry
+        .try_add_contract(&CONTRACT)
+        .expect("contract is accepted");
+    let frozen = registry.try_freeze().expect("facade contract freezes");
+    assert_eq!(
+        frozen.flavor_contract("sdk_test").unwrap().schemas[0].id,
+        SCHEMA.id
+    );
+
+    let owner =
+        proxima::flavor::OwnerRef::Personal(proxima::flavor::UserId::new(uuid::Uuid::nil()));
+    let memory = proxima::flavor::MemoryId::new(uuid::Uuid::now_v7());
+    let goal = proxima::flavor::GoalId::new(uuid::Uuid::now_v7());
+    let topology = GoalTopologyWrite::new(
+        GoalAssignmentTarget::perspective(memory),
+        vec![GoalDependencyRef::new(goal)],
+        vec![GoalEvidenceRef::new(memory)],
+    )
+    .expect("nested goal topology builds");
+    let request = GoalCreateRequest {
+        owner,
+        topology,
+        wake: None,
+        title: "title".into(),
+        text: "text".into(),
+        payload: SdkGoalPayload {
+            key: "sdk-goal".to_owned(),
+        },
+        request_id: IdempotencyKey::new("sdk-test").expect("key builds"),
+        authorship: GoalAuthorship::User,
+        author_self_perspective_id: None,
+    };
+    assert_eq!(request.text, "text");
+    let outcome: Option<proxima::flavor::GoalWriteOutcome> = None;
+    let authorship = GoalAuthorship::System(proxima::flavor::SystemOrigin::Tool {
+        tool_id: proxima::flavor::ToolId::new("sdk_test/tool"),
+    });
+    assert!(matches!(authorship, GoalAuthorship::System(_)));
+    assert!(outcome.is_none());
+
+    let predicate = [("kind", SidecarAtom::Text("opaque".to_owned()))];
+    let read = SidecarSessionRead {
+        table: "sdk_test.rows",
+        predicates: &predicate,
+        limit: Some(1),
+    };
+    assert_eq!(read.limit, Some(1));
+    let _ = (
+        LanguagePolicy::Pinned("simple"),
+        EmbedUnit {
+            column: "text",
+            slot: proxima::flavor::SLOT_DEFAULT,
+        },
+        DbConstraint {
+            relation: "sdk_test.rows",
+            name: "rows_owner",
+        },
+    );
+}
+
+#[test]
+fn flavor_sdk_exposes_tool_authoring_and_metadata() {
+    use proxima::flavor::{
+        McpActionArgSpec, McpAuthorContext, McpToolAnnotations, Tool, ToolCtx, ToolError,
+    };
+    fn needs_tool<T: Tool>() {}
+    needs_tool::<TierLabelledTool>();
     let _: &[McpActionArgSpec] = &[];
-    let _: Option<(
-        &McpToolCtx,
-        &McpToolError,
-        &McpAuthorContext,
-        &McpToolAnnotations,
-    )> = None;
+    let _: Option<(&ToolCtx, &ToolError, &McpAuthorContext, &McpToolAnnotations)> = None;
 }
 
 /// A flavor tool that accepts its own `model_id`, written against the
@@ -355,15 +485,16 @@ impl proxima::flavor::Tool for TierLabelledTool {
 /// reimplementation is how a nested label got past the edge in the first
 /// place.
 #[test]
-fn flavor_sdk_exposes_the_operator_label_rule_to_both_tool_traits() {
-    use proxima::flavor::{McpToolCtx, McpToolError, ToolCtx, ToolError, TrustedModelIdError};
+fn flavor_sdk_exposes_the_operator_label_rule_and_host_adapter() {
+    use proxima::flavor::{ToolCtx, ToolError, TrustedModelIdError};
+    use proxima::host::{McpToolCtx, McpToolError};
 
     fn needs_tool<T: proxima::flavor::Tool>() {}
     needs_tool::<TierLabelledTool>();
 
     // The `McpTool` spelling: a free function over the MCP context.
     let _: fn(&McpToolCtx, Option<&str>) -> Result<String, McpToolError> =
-        proxima::flavor::operator_label;
+        proxima::host::operator_label;
     // The `Tool` spelling: an inherent method on the neutral context.
     let _: fn(&ToolCtx, Option<&str>) -> Result<String, ToolError> = ToolCtx::operator_label;
     // Binding provenance onto the caller copy is fallible for the same
@@ -582,9 +713,7 @@ impl proxima::flavor::AbstractionPayload for TierAbstraction {
 #[test]
 fn flavor_sdk_exposes_the_derived_memory_write_lane() {
     // `AbstractionPayload` and `PerspectivePayload` let a flavor *declare*
-    // derived schemas; without these types it could never *write* one,
-    // because `Engine::author_derived_authorized` takes an
-    // `AuthorDerivedRequestInput` an out-of-tree flavor could not name.
+    // derived schemas; `DerivedMemory` is the typed write request.
     // The in-tree precedent (`flavors/code`) reaches the same lane through
     // a direct `proxima-storage-pg` dependency, which a flavor depending
     // only on `proxima` does not have.
@@ -593,42 +722,31 @@ fn flavor_sdk_exposes_the_derived_memory_write_lane() {
     // a field added, removed or retyped upstream breaks here instead of
     // silently breaking every out-of-tree flavor at its next pin bump.
     use proxima::flavor::{
-        AbstractionPayload, AuthorDerivedRequestInput, EdgeEndpoint, EntityKind, InputContractId,
-        MemoryId, MemoryOperatorKind, OperatorId, SchemaVersion, SidecarPayload,
+        DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, InputContractId, MemoryId,
+        MemoryTarget, OperatorId, SeriesHandle,
     };
 
     let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
     let derived = MemoryId::new(uuid::Uuid::nil());
     let source_fact = MemoryId::new(uuid::Uuid::nil());
 
-    // What the write was made from, as endpoints. There is no kind here to
-    // pass and no relation to resolve: the entries become `origin` rows
-    // because of which field they arrived in (docs/16 §The Model).
-    let derived_from = [EdgeEndpoint::memory(EntityKind::Fact, source_fact)];
-
-    let _req = AuthorDerivedRequestInput {
-        memory_id: derived,
+    let _req = DerivedMemory::abstraction(
+        MemoryTarget::Series(SeriesHandle::new(derived.into_inner())),
         owner,
-        kind: EntityKind::Abstraction,
-        text: "the text a derived memory is embedded from".to_owned(),
-        schema_id: <TierAbstraction as proxima::flavor::AbstractionPayload>::schema_id(),
-        schema_version: SchemaVersion::new(TierAbstraction::SCHEMA_VERSION),
-        operator_kind: MemoryOperatorKind::FtoA,
-        operator_id: OperatorId::new(uuid::Uuid::nil()),
-        input_contract_id: InputContractId::new(uuid::Uuid::nil()),
-        model_id: "tier-test",
-        sidecar_payload: SidecarPayload::abstraction(TierAbstraction {
+        "the text a derived memory is embedded from",
+        TierAbstraction {
             note: "sidecar".to_owned(),
-        }),
-        derived_from: &derived_from,
-        extra_refs: &[],
-        supersedes: None,
-        lexical_language: None,
-    };
+        },
+        [source_fact],
+        DerivationIdentity::new(
+            OperatorId::new(uuid::Uuid::nil()),
+            InputContractId::new(uuid::Uuid::nil()),
+        ),
+    )
+    .expect("typed derived request builds");
 
     // The outcome type must be nameable too — a caller has to bind what
-    // `author_derived_authorized` returns.
-    let _: Option<&proxima::flavor::AuthorDerivedAuthorizedOutcome> = None;
+    let _: Option<&DerivedMemoryOutcome> = None;
 }
 
 /// A payload that points at another node, built through the facade alone.
@@ -1068,9 +1186,16 @@ fn flavor_sdk_names_query_and_ingest_types() {
         slot: "a".into(),
         state: "Present".into(),
     };
-    let _cite = proxima::flavor::TypedFactIngest::new("test/src", &fact).citation(
-        proxima::flavor::CitationSpec::v1("core/upload-v1", [0; 32], "core/upload-whole-v1"),
-    );
+    let _cite = proxima::flavor::FactWrite::new(
+        proxima::flavor::OwnerRef::Personal(proxima::flavor::UserId::new(uuid::Uuid::nil())),
+        "test/src",
+        &fact,
+    )
+    .citation(proxima::flavor::CitationSpec::v1(
+        "core/upload-v1",
+        [0; 32],
+        "core/upload-whole-v1",
+    ));
     let _: Option<proxima::flavor::UnitOfWork<'_>> = None;
     assert!(proxima::flavor::hybrid_degraded_to_lexical(
         proxima::flavor::SearchMode::Hybrid,
@@ -1083,8 +1208,7 @@ fn flavor_sdk_names_query_and_ingest_types() {
         false,
     ));
 
-    let owner = proxima::OwnerRef::Personal(proxima::UserId::new(uuid::Uuid::nil()));
-    let _: proxima::flavor::QueryRequest = proxima::flavor::QueryRequest::for_owner(owner);
+    let _: proxima::flavor::QueryRequest = proxima::flavor::QueryRequest::readable();
     let _: Option<(
         proxima::flavor::QueryResponse,
         proxima::flavor::GoalRow,

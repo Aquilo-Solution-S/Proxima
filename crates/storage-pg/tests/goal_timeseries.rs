@@ -28,7 +28,7 @@ fn fact_draft() -> FactWriteCommand {
         lexical_language: None,
         receipt: None,
         citation: None,
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
@@ -192,11 +192,12 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         let base = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
         let mut abstraction = fact_draft();
         abstraction.kind = "abstraction".into();
-        abstraction.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, base.memory_id)];
+        abstraction.additional_references =
+            vec![EdgeEndpoint::memory(EntityKind::Fact, base.memory_id)];
         let abstraction = pg.ingest_fact_atomic(&permit, &abstraction, None).await?;
         let mut perspective = fact_draft();
         perspective.kind = "perspective".into();
-        perspective.derived_from = vec![EdgeEndpoint::memory(
+        perspective.additional_references = vec![EdgeEndpoint::memory(
             EntityKind::Abstraction,
             abstraction.memory_id,
         )];
@@ -225,27 +226,27 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         .await?;
         tx.commit().await?;
 
-        let mut by_assignment = QueryRequest::for_owner(owner);
+        let mut by_assignment = QueryRequest::readable();
         by_assignment.entity_kind = Some(EntityKind::Goal);
         by_assignment.goal_state = Some(GoalState::Active);
         by_assignment.assignment = Some(assignment.memory_id);
-        let assigned = pg.query_memories(&by_assignment, &[]).await?;
+        let assigned = pg.query_memories(&[owner], &by_assignment, &[]).await?;
         assert_eq!(assigned.goals.len(), 1);
         assert_eq!(assigned.goals[0].id.into_inner(), created.t);
         assert_eq!(assigned.goals[0].assignment, Some(assignment.memory_id));
         assert_eq!(assigned.goals[0].evidence, vec![evidence.memory_id]);
 
-        let mut by_evidence = QueryRequest::for_owner(owner);
+        let mut by_evidence = QueryRequest::readable();
         by_evidence.entity_kind = Some(EntityKind::Goal);
         by_evidence.evidence_contains = Some(evidence.memory_id);
-        let evidenced = pg.query_memories(&by_evidence, &[]).await?;
+        let evidenced = pg.query_memories(&[owner], &by_evidence, &[]).await?;
         assert_eq!(evidenced.goals.len(), 1);
         assert_eq!(evidenced.goals[0].id.into_inner(), created.t);
 
-        let mut miss = QueryRequest::for_owner(owner);
+        let mut miss = QueryRequest::readable();
         miss.entity_kind = Some(EntityKind::Goal);
         miss.assignment = Some(MemoryId::new(Uuid::now_v7()));
-        let empty = pg.query_memories(&miss, &[]).await?;
+        let empty = pg.query_memories(&[owner], &miss, &[]).await?;
         assert!(empty.goals.is_empty());
         Ok(())
     }

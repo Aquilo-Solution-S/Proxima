@@ -120,6 +120,14 @@ impl WriteSession for PgWriteSession {
         let payloads = sidecar_payloads.to_vec();
         let content_payloads = payloads.clone();
         let tables = self.sidecars.tables_for_payloads(sidecar_payloads)?;
+        let natural_key = verbs::fact_ingest::fact_natural_key(
+            authorized.draft(),
+            authorized.fact_sidecar_table(),
+            authorized.fact_natural_key_columns(),
+            authorized.fact_natural_key_values(),
+            sidecar_payloads,
+            &self.sidecars,
+        )?;
         // The declared scopes come off the PAYLOADS, not off the caller: a
         // host writing a scoped payload straight through `Engine` reaches
         // this same line, and the fence it takes is the one the flavor's
@@ -130,6 +138,7 @@ impl WriteSession for PgWriteSession {
             authorized,
             embedding_model_id,
             verbs::fact_ingest::FactAdmissionInput {
+                natural_key: natural_key.as_ref(),
                 sidecar_tables: &tables,
                 scopes: &scopes,
                 content: verbs::fact_ingest::ContentResolution {

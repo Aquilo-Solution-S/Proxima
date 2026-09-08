@@ -12,6 +12,7 @@
 
 use proxima_core::edge::EdgeEndpoint;
 use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
+use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{MemoryId, Owner, SidecarPayload, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -40,6 +41,7 @@ pub struct MemoryRow {
 /// parameters a call site could permute.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MemoryAdmissionDraft<'a> {
+    pub(crate) natural_key: Option<&'a MemoryNaturalKey>,
     pub(crate) owner: &'a Owner,
     pub(crate) draft: &'a FactWriteCommand,
     pub(crate) origins: &'a [EdgeEndpoint],
@@ -54,6 +56,14 @@ pub(crate) struct MemoryAdmissionDraft<'a> {
     /// scope and whose caller leaves this empty would admit a row a
     /// concurrent scope erase cannot see.
     pub(crate) scopes: &'a [ScopeFenceTarget],
+}
+
+/// Backend-only natural identity, derived from an authorization-bound typed payload.
+#[derive(Debug, Clone)]
+pub(crate) struct MemoryNaturalKey {
+    pub(crate) sidecar_table: String,
+    pub(crate) memory_key_column: String,
+    pub(crate) columns: Vec<(String, SidecarAtom)>,
 }
 
 /// How an admission's owner-scoped `Content` row is resolved: an id the
@@ -107,6 +117,7 @@ pub(crate) async fn ingest_fact_timeseries(
     let prepared = prepare_memory_admission(
         tx,
         MemoryAdmissionDraft {
+            natural_key: None,
             owner,
             draft,
             origins,
@@ -171,6 +182,7 @@ pub(crate) async fn ingest_unpinned_fact_at(
     let prepared = prepare_memory_admission_at(
         tx,
         MemoryAdmissionDraft {
+            natural_key: None,
             owner,
             draft,
             origins: &[],
@@ -321,11 +333,7 @@ async fn prepare_memory_admission_at(
     // either waits for this write or observes it in the exact-scope
     // revalidation before deleting anything.
 
-    let handle = options
-        .identity
-        .map(|(handle, _)| handle)
-        .or(draft.handle)
-        .unwrap_or_else(Uuid::now_v7);
+    let handle = admission_handle(tx, admission, options.identity).await?;
     let t: Uuid = if let Some((_, t)) = options.identity {
         t
     } else {
@@ -371,6 +379,103 @@ async fn prepare_memory_admission_at(
             targets,
         },
     )))
+}
+
+async fn admission_handle(
+    tx: &mut Transaction<'_, Postgres>,
+    admission: MemoryAdmissionDraft<'_>,
+    reserved: Option<(Uuid, Uuid)>,
+) -> Result<Uuid, StorageError> {
+    if let Some(handle) = reserved
+        .map(|(handle, _)| handle)
+        .or(admission.draft.handle)
+    {
+        return Ok(handle);
+    }
+    let Some(key) = admission.natural_key else {
+        return Ok(Uuid::now_v7());
+    };
+    Ok(
+        resolve_natural_series_handle(tx, admission.owner, &admission.draft.schema_id, key)
+            .await?
+            .unwrap_or_else(Uuid::now_v7),
+    )
+}
+
+/// Runs after owner/source/scope fences and before handle/lifecycle locks.
+async fn resolve_natural_series_handle(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    schema_id: &proxima_core::SchemaId,
+    key: &MemoryNaturalKey,
+) -> Result<Option<Uuid>, StorageError> {
+    let lock = natural_key_lock(owner, schema_id, key);
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(lock)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    let columns = key
+        .columns
+        .iter()
+        .map(|(column, atom)| (column.as_str(), atom.clone()))
+        .collect::<Vec<_>>();
+    super::query::owned_head_handle(
+        tx.as_mut(),
+        *owner,
+        schema_id,
+        &key.sidecar_table,
+        &key.memory_key_column,
+        &columns,
+    )
+    .await
+}
+
+/// Stable, domain-separated lock key only; never a stored memory or series ID.
+fn natural_key_lock(
+    owner: &Owner,
+    schema_id: &proxima_core::SchemaId,
+    key: &MemoryNaturalKey,
+) -> i64 {
+    fn part(hash: &mut blake3::Hasher, bytes: &[u8]) {
+        hash.update(&(bytes.len() as u64).to_be_bytes());
+        hash.update(bytes);
+    }
+    let mut hash = blake3::Hasher::new();
+    part(&mut hash, b"proxima-natural-series-lock-v1");
+    part(&mut hash, owner.stored_owner_id().as_bytes());
+    part(&mut hash, schema_id.as_str().as_bytes());
+    part(&mut hash, key.sidecar_table.as_bytes());
+    part(&mut hash, key.memory_key_column.as_bytes());
+    for (column, atom) in &key.columns {
+        part(&mut hash, column.as_bytes());
+        match atom {
+            SidecarAtom::Uuid(value) => {
+                part(&mut hash, b"uuid");
+                part(&mut hash, value.as_bytes());
+            }
+            SidecarAtom::Text(value) => {
+                part(&mut hash, b"text");
+                part(&mut hash, value.as_bytes());
+            }
+            SidecarAtom::Bool(value) => {
+                part(&mut hash, b"bool");
+                part(&mut hash, &[u8::from(*value)]);
+            }
+            SidecarAtom::I32(value) => {
+                part(&mut hash, b"integer");
+                part(&mut hash, &i64::from(*value).to_be_bytes());
+            }
+            SidecarAtom::I64(value) => {
+                part(&mut hash, b"integer");
+                part(&mut hash, &value.to_be_bytes());
+            }
+        }
+    }
+    let digest = hash.finalize();
+    let mut bytes = [0; 8];
+    bytes.copy_from_slice(&digest.as_bytes()[..8]);
+    i64::from_be_bytes(bytes)
 }
 
 async fn load_ingest_replay(

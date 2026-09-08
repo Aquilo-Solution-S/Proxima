@@ -12,15 +12,14 @@
 //! and a clock cannot observe one.
 #![allow(clippy::doc_markdown)]
 
-use proxima_core::engine::TypedFactIngest;
 use proxima_core::flavor::{
     CounterRule, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape,
     ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, Surface,
     TransferRule,
 };
 use proxima_core::{
-    AuthPath, AuthzContext, FactPayload, FlavorRegistry, Owner, OwnerRef, PayloadKeyBuilder,
-    ScopeDecl, ScopeKind, UserId,
+    AuthPath, AuthzContext, FactPayload, FactWrite, FlavorRegistry, Owner, OwnerRef,
+    PayloadKeyBuilder, ScopeDecl, ScopeKind, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::access::owner_columns::lock_scope_fence_exclusive_tx;
@@ -344,7 +343,7 @@ fn spawn_scoped_ingest(
         let engine = engine(&pg, &registry);
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         engine
-            .ingest_typed_fact_with(&authz, TypedFactIngest::new("test/scope-fence", &payload))
+            .ingest_fact(&authz, FactWrite::new(owner, "test/scope-fence", &payload))
             .await
             .map(|outcome| outcome.memory_id.into_inner())
             .map_err(|err| err.to_string())
@@ -440,7 +439,7 @@ async fn an_unscoped_payload_takes_no_scope_fence() {
                 logical_id: "unfenced".to_owned(),
             };
             engine
-                .ingest_typed_fact_with(&authz, TypedFactIngest::new("test/scope-fence", &payload))
+                .ingest_fact(&authz, FactWrite::new(owner, "test/scope-fence", &payload))
                 .await
                 .map(|outcome| outcome.memory_id.into_inner())
                 .map_err(|err| err.to_string())
@@ -483,7 +482,7 @@ async fn an_admission_naming_an_unregistered_scope_is_refused() {
             thing_id,
         };
         let error = engine
-            .ingest_typed_fact_with(&authz, TypedFactIngest::new("test/scope-fence", &payload))
+            .ingest_fact(&authz, FactWrite::new(owner, "test/scope-fence", &payload))
             .await
             .expect_err("a write into an unregistered scope must be refused");
         assert_eq!(error.code, proxima_core::error::ErrorCode::NotFound);

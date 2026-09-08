@@ -143,6 +143,7 @@ impl MemoryReadPort for RejectingStorage {
 
     async fn query_memories(
         &self,
+        _read_owners: &[OwnerRef],
         _req: &crate::verbs::query::QueryRequest,
         _schemas: &[MemorySchemaSpec],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError> {

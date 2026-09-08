@@ -231,7 +231,6 @@ async fn load_work_item(ctx: &ToolCtx, memory_id: MemoryId) -> Result<WorkItemRo
     if let Some((_, row)) = proxima::flavor::authorized_fact_payloads::<ExecutionRequestV1>(
         &engine,
         ctx.authz(),
-        ctx.owner(),
         &candidates,
         1,
     )
@@ -254,7 +253,6 @@ async fn load_work_item(ctx: &ToolCtx, memory_id: MemoryId) -> Result<WorkItemRo
     if let Some((_, row)) = proxima::flavor::authorized_fact_payloads::<TestRequestV1>(
         &engine,
         ctx.authz(),
-        ctx.owner(),
         &candidates,
         1,
     )
@@ -334,7 +332,6 @@ async fn load_criteria(
     let visible = proxima::flavor::authorized_memory_ids(
         &engine,
         ctx.authz(),
-        ctx.owner(),
         &candidate_ts,
         EntityKind::Fact,
         Some(AcceptanceCriteriaV1::schema_id()),
@@ -381,7 +378,6 @@ async fn load_memory_edge_targets(
         .read_edges(
             ctx.authz(),
             &EdgeReadRequest {
-                owner: ctx.owner(),
                 filter,
                 limit: 500,
                 cursor: None,
@@ -430,7 +426,6 @@ async fn load_work_item_neighbours(
             proxima::flavor::authorized_memory_ids(
                 &engine,
                 ctx.authz(),
-                ctx.owner(),
                 &raw,
                 EntityKind::Fact,
                 Some(schema_id),
@@ -463,7 +458,6 @@ async fn load_target_perspectives(
     let assignments = proxima::flavor::authorized_memory_ids(
         &engine,
         ctx.authz(),
-        ctx.owner(),
         &candidates
             .into_iter()
             .map(MemoryId::into_inner)
@@ -494,7 +488,6 @@ async fn load_target_perspectives(
     proxima::flavor::authorized_memory_ids(
         &engine,
         ctx.authz(),
-        ctx.owner(),
         &workers,
         EntityKind::Perspective,
         None,
@@ -514,7 +507,6 @@ async fn load_plan_sources(ctx: &ToolCtx, memory_id: MemoryId) -> Result<Vec<Mem
     proxima::flavor::authorized_memory_ids(
         &engine,
         ctx.authz(),
-        ctx.owner(),
         &candidates
             .into_iter()
             .map(MemoryId::into_inner)

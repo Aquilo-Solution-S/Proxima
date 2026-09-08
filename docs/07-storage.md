@@ -247,7 +247,7 @@ declaration storage generates one fence key
 (`proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`) and
 one liveness probe over the named registry, spelling no name of its own.
 Every admission that persists a scoped payload — through `Engine`, a unit of
-work, `author_derived`, or a sidecar/replay path — takes that fence shared in
+work, `Engine::derive_memory`, or a sidecar/replay path — takes that fence shared in
 its write transaction before its handle/`t` locks and runs the probe under
 it; a scope erase takes it exclusively before it reads its footprint. A batch
 spanning several scopes takes the distinct keys as one sorted, deduplicated

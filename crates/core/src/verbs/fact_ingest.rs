@@ -4,6 +4,7 @@
 //! docs/01-event-source.md. The storage-side body lives in
 //! `proxima-storage-pg`.
 
+use crate::verbs::query::SidecarAtom;
 use uuid::Uuid;
 
 use crate::EntityKind;
@@ -171,18 +172,10 @@ pub struct FactWriteCommand {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<FactReceiptDraft>,
     pub citation: Option<Citation>,
-    /// What this Fact was made from — an OCR reading declaring the
-    /// upload it read, say. Each entry becomes an
-    /// [`crate::EdgeKind::Origin`] index row inside the Fact's own write
-    /// transaction, which is what makes the provenance idempotent
-    /// without an id scheme: replaying the ingest re-asserts the same
-    /// primary key.
-    ///
-    /// Not receipt key material and `skip`ped like `rendered_text`: the
-    /// same observation is the same Fact whether or not a caller repeats
-    /// the declaration, and a receipt replay must stay a replay.
+    /// Additional reference pins, separate from payload-declared references.
+    /// Excluded from receipt key material; replay still requires matching pins.
     #[serde(default, skip)]
-    pub derived_from: Vec<EdgeEndpoint>,
+    pub additional_references: Vec<EdgeEndpoint>,
     /// Observation-neutral pins (visit, write-act, parent).
     #[serde(default, skip)]
     pub refs: Vec<Uuid>,
@@ -208,6 +201,7 @@ pub(crate) struct AuthorizedFactCore {
     draft: FactWriteCommand,
     fact_sidecar_table: Option<String>,
     fact_natural_key_columns: Vec<String>,
+    fact_natural_key_values: Option<Vec<(String, SidecarAtom)>>,
     links: AuthorizedNodeLinks,
 }
 
@@ -224,8 +218,17 @@ impl AuthorizedFactCore {
             draft,
             fact_sidecar_table,
             fact_natural_key_columns,
+            fact_natural_key_values: None,
             links,
         }
+    }
+
+    pub(crate) fn with_natural_key_values(
+        mut self,
+        values: Option<Vec<(String, SidecarAtom)>>,
+    ) -> Self {
+        self.fact_natural_key_values = values;
+        self
     }
 
     pub(crate) const fn links(&self) -> &AuthorizedNodeLinks {
@@ -358,7 +361,10 @@ impl AuthorizedFactWrite {
         fact_sidecar_table: Option<String>,
         fact_natural_key_columns: Vec<String>,
     ) -> Self {
-        let origins = draft.derived_from.clone();
+        // Legacy backend fixtures also use this mint for derived rows. Their
+        // declared pins must keep their original kind; Engine Fact admission
+        // constructs AuthorizedNodeLinks independently and never emits origins.
+        let origins = draft.additional_references.clone();
         let references = draft
             .refs
             .iter()
@@ -439,6 +445,13 @@ impl AuthorizedFactWrite {
     #[must_use]
     pub fn fact_natural_key_columns(&self) -> &[String] {
         self.core.fact_natural_key_columns()
+    }
+
+    /// Exact natural-key values captured from the typed payload during authorization.
+    /// Storage compares them before automatic series selection.
+    #[must_use]
+    pub fn fact_natural_key_values(&self) -> Option<&[(String, SidecarAtom)]> {
+        self.core.fact_natural_key_values.as_deref()
     }
 
     #[cfg(test)]
@@ -674,6 +687,13 @@ impl AuthorizedFactWithCitation {
     pub fn fact_natural_key_columns(&self) -> &[String] {
         self.core.fact_natural_key_columns()
     }
+
+    /// Exact natural-key values captured from the typed payload during authorization.
+    /// Storage compares them before automatic series selection.
+    #[must_use]
+    pub fn fact_natural_key_values(&self) -> Option<&[(String, SidecarAtom)]> {
+        self.core.fact_natural_key_values.as_deref()
+    }
 }
 
 /// Proof that a Fact ingest citing an EXISTING cited object by id passed
@@ -764,6 +784,13 @@ impl AuthorizedFactWithCitationRef {
     pub fn fact_natural_key_columns(&self) -> &[String] {
         self.core.fact_natural_key_columns()
     }
+
+    /// Exact natural-key values captured from the typed payload during authorization.
+    /// Storage compares them before automatic series selection.
+    #[must_use]
+    pub fn fact_natural_key_values(&self) -> Option<&[(String, SidecarAtom)]> {
+        self.core.fact_natural_key_values.as_deref()
+    }
 }
 
 impl FactWriteCommand {
@@ -806,19 +833,17 @@ impl FactWriteCommand {
                 occurred_at: observed_at,
             }),
             citation: None,
-            derived_from: Vec::new(),
+            additional_references: Vec::new(),
             refs: Vec::new(),
             blob_id: None,
             kind: "fact".into(),
         }
     }
 
-    /// Declare what this Fact was made from. The index rows that follow
-    /// are `origin` rows because *that is what a derivation declaration
-    /// means* — the caller names targets, never a kind.
+    /// Add reference targets. Facts never acquire derivation origins.
     #[must_use]
-    pub fn with_derived_from(mut self, derived_from: Vec<EdgeEndpoint>) -> Self {
-        self.derived_from = derived_from;
+    pub fn with_additional_references(mut self, additional_references: Vec<EdgeEndpoint>) -> Self {
+        self.additional_references = additional_references;
         self
     }
 
@@ -933,7 +958,7 @@ mod tests {
                 occurred_at: now,
             }),
             citation: None,
-            derived_from: Vec::new(),
+            additional_references: Vec::new(),
             refs: Vec::new(),
             blob_id: None,
             kind: "fact".into(),
@@ -980,7 +1005,7 @@ mod tests {
                 occurred_at: time::OffsetDateTime::UNIX_EPOCH,
             }),
             citation: None,
-            derived_from: Vec::new(),
+            additional_references: Vec::new(),
             refs: Vec::new(),
             blob_id: None,
             kind: "fact".into(),

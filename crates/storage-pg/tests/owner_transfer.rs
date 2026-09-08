@@ -213,7 +213,7 @@ fn draft() -> FactWriteCommand {
         lexical_language: None,
         receipt: None,
         citation: None,
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
@@ -294,10 +294,11 @@ async fn hydrated_actor_payloads(
     let schemas = memory_schema_specs();
     let response = pg
         .query_memories(
+            &[owner],
             &QueryRequest {
                 memory_ids: vec![memory_id],
                 include_payloads: true,
-                ..QueryRequest::for_owner(owner)
+                ..QueryRequest::readable()
             },
             &schemas,
         )

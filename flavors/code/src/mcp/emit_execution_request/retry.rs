@@ -1,9 +1,8 @@
 use std::collections::HashSet;
 
 use proxima_core::{
-    AccessKind, AuthorDerivedRequestInput, EdgeEndpoint, EntityKind, FactPayload,
-    MemoryOperatorKind, PerspectivePayload, SchemaId, SchemaVersion, SidecarPayload, Tool, ToolCtx,
-    ToolError,
+    AccessKind, DerivedMemory, EdgeEndpoint, EntityKind, FactPayload, MemoryTarget,
+    PerspectivePayload, SeriesHandle, Tool, ToolCtx, ToolError,
 };
 
 use crate::payloads::{CodeWorkAssignmentV1, ExecutionRequestV1};
@@ -17,9 +16,7 @@ use super::retry_support::{
     resolve_target_perspective_id, retry_instructions, validate_target_perspective,
 };
 use super::types::{CodeRetryExecutionRequestArgs, CodeRetryExecutionRequestOutput};
-use super::{
-    work_assignment_input_contract_id, work_assignment_memory_id, work_assignment_operator_id,
-};
+use super::work_assignment_memory_id;
 
 #[derive(Debug)]
 pub struct CodeRetryExecutionRequestTool;
@@ -117,6 +114,7 @@ impl Tool for CodeRetryExecutionRequestTool {
                 .map_err(ToolError::Protocol)?;
             let outcome = ingest_execution_request(
                 &mut uow,
+                ctx.owner(),
                 &payload,
                 FactProvenance {
                     derived_from: &origins,
@@ -168,16 +166,13 @@ async fn author_assignment(
 ) -> Result<String, ToolError> {
     let engine = engine(ctx)?;
     let owner = ctx.owner();
-    let caller = ctx
-        .caller()
-        .ok_or_else(|| ToolError::Other("code flavor tools require caller metadata".into()))?;
     let payload = CodeWorkAssignmentV1 {
         repo_id,
         target_perspective_memory_id: target_perspective_memory_id.into_inner(),
         work_item_memory_id: work_item_memory_id.into_inner(),
         reason: "shell-author retry assignment".to_string(),
     };
-    // `author_derived_authorized` is this write inside a unit of work of
+    // `derive_memory` is this write inside a unit of work of
     // one, and either spelling is fenced: `CodeWorkAssignmentV1` declares
     // the `code-repo` scope, so the Engine takes it in whichever transaction
     // ends up writing the row.
@@ -186,33 +181,19 @@ async fn author_assignment(
         .await
         .map_err(ToolError::Protocol)?;
     let outcome = uow
-        .author_derived(AuthorDerivedRequestInput {
-            memory_id: work_assignment_memory_id(
-                &owner,
-                target_perspective_memory_id,
-                work_item_memory_id,
-            ),
+        .derive_memory(DerivedMemory::interpretation(
+            MemoryTarget::Series(SeriesHandle::new(
+                work_assignment_memory_id(
+                    &owner,
+                    target_perspective_memory_id,
+                    work_item_memory_id,
+                )
+                .into_inner(),
+            )),
             owner,
-            kind: EntityKind::Perspective,
-            text: payload.reason.clone(),
-            schema_id: SchemaId::new(
-                <CodeWorkAssignmentV1 as PerspectivePayload>::SCHEMA_ID.into(),
-            ),
-            schema_version: SchemaVersion::new(
-                <CodeWorkAssignmentV1 as PerspectivePayload>::SCHEMA_VERSION,
-            ),
-            operator_kind: MemoryOperatorKind::AtoP,
-            operator_id: work_assignment_operator_id(),
-            input_contract_id: work_assignment_input_contract_id(),
-            model_id: caller.model_id.as_str(),
-            sidecar_payload: SidecarPayload::perspective(payload),
-            // An assignment consumes nothing. It grounds through the
-            // references its payload carries.
-            derived_from: &[],
-            extra_refs: &[],
-            supersedes: None,
-            lexical_language: None,
-        })
+            payload.reason.clone(),
+            payload,
+        ))
         .await?;
     uow.commit().await.map_err(ToolError::Protocol)?;
     Ok(ctx.format_perspective_memory(outcome.memory_id))

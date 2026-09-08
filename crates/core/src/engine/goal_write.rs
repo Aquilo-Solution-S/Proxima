@@ -69,6 +69,23 @@ pub struct GoalDecomposeRequest {
 }
 
 impl Engine {
+    pub(in crate::engine) fn normalize_goal_request<P: GoalPayload>(
+        &self,
+        request: GoalCreateRequest<P>,
+    ) -> Result<GoalCreatePayloadWriteRequest, ProtocolError> {
+        let payload = GoalPayloadWrite::from_payload(request.title, request.text, request.payload)
+            .map_err(map_goal_build_error)?;
+        Ok(GoalCreatePayloadWriteRequest {
+            owner: request.owner,
+            topology: request.topology,
+            wake: request.wake,
+            payload: self.normalize_payload_write(payload)?,
+            request_id: request.request_id,
+            authorship: request.authorship,
+            author_self_perspective_id: request.author_self_perspective_id,
+        })
+    }
+
     /// Create an Active typed Goal for an embedded host or protocol
     /// caller without exposing `proxima_core.goal` storage shape.
     ///
@@ -95,7 +112,9 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &request.owner, Relation::Editor)
             .await?;
-        self.create_goal_authorized(authz, &permit, request).await
+        let request = self.normalize_goal_request(request)?;
+        self.create_goal_payload_authorized(authz, &permit, &request)
+            .await
     }
 
     /// Create an Active Goal from a dynamic protocol payload.
@@ -115,10 +134,23 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
-        let payload = self.normalize_payload_write(req.payload.clone())?;
+        let req = GoalCreatePayloadWriteRequest {
+            payload: self.normalize_payload_write(req.payload.clone())?,
+            ..req.clone()
+        };
+        self.create_goal_payload_authorized(authz, &permit, &req)
+            .await
+    }
+
+    async fn create_goal_payload_authorized(
+        &self,
+        authz: &AuthzContext,
+        permit: &WritePermit,
+        req: &GoalCreatePayloadWriteRequest,
+    ) -> Result<GoalWriteOutcome, ProtocolError> {
         let draft = GoalDraft::active_from_payload_write(
             *permit.owner(),
-            payload,
+            req.payload.clone(),
             req.topology.clone(),
             req.wake.clone(),
             req.authorship.clone(),
@@ -388,91 +420,6 @@ impl Engine {
             .decompose_goal_atomic(&atomic, permit.owner_write_permit())
             .await
             .map_err(map_goal_storage_error)
-    }
-
-    async fn create_goal_authorized<P>(
-        &self,
-        authz: &AuthzContext,
-        permit: &WritePermit,
-        request: GoalCreateRequest<P>,
-    ) -> Result<GoalWriteOutcome, ProtocolError>
-    where
-        P: GoalPayload,
-    {
-        let GoalCreateRequest {
-            owner: _,
-            topology,
-            wake,
-            title,
-            text,
-            payload,
-            request_id,
-            authorship,
-            author_self_perspective_id,
-        } = request;
-
-        // Registry-local schema validation runs before the storage-backed
-        // topology/wake checks, matching `create_goal_from_payload_write`:
-        // both create entry points answer a bad-schema + bad-topology
-        // request with `UnknownSchema` first.
-        let mut payload_write =
-            GoalPayloadWrite::from_payload(title, text, payload).map_err(map_goal_build_error)?;
-        let schema = self
-            .registry()
-            .lookup_payload(
-                &payload_write.schema_id,
-                payload_write.schema_version,
-                PayloadKind::Goal,
-            )
-            .ok_or_else(|| {
-                ProtocolError::unknown_schema(
-                    payload_write.schema_id.as_str(),
-                    payload_write.schema_version.into_inner(),
-                )
-            })?;
-        if schema.sidecar_table.is_none() {
-            payload_write.sidecar_payload = None;
-        }
-
-        let embedding_client = self.embed_client();
-        let draft = GoalDraft::active_from_payload_write(
-            *permit.owner(),
-            payload_write,
-            topology.clone(),
-            wake.clone(),
-            authorship,
-            request_id,
-        );
-        let context =
-            self.goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
-        let atomic = CreateGoalAtomicRequest {
-            draft,
-            context,
-            write_act_t: None,
-        };
-        if let Some(replay) = resolve_single_goal_replay(
-            &self.storage().goal_command,
-            GoalReplayRequest::Create(&atomic),
-            permit.owner_write_permit(),
-        )
-        .await?
-        {
-            return Ok(replay);
-        }
-        self.validate_goal_topology_authorized(authz, permit.owner(), &topology)
-            .await?;
-        self.author_self_perspective_authorized(authz, author_self_perspective_id)
-            .await?;
-        self.validate_wake_config_for_write(authz, wake.as_ref())
-            .await?;
-        let outcome = self
-            .storage()
-            .goal_command
-            .goal_write
-            .create_goal_atomic(&atomic, permit.owner_write_permit())
-            .await
-            .map_err(map_goal_storage_error)?;
-        Ok(outcome)
     }
 
     pub(in crate::engine) fn goal_atomic_context<'a>(

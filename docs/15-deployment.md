@@ -222,7 +222,7 @@ resolver, which every tool that records a label calls — which is what covers
 `core_episode_commit`'s per-item `derive.model_id` / `stance[].model_id`, the
 embedded `CoreMcpTools` host API (whose arguments pass no edge at all), and
 any future tool that accepts a `model_id` argument. A flavor tool that takes
-one must call `ToolCtx::operator_label` (or `proxima::flavor::operator_label`
+one must call `ToolCtx::operator_label` (or `proxima::host::operator_label`
 for an `McpTool`) rather than reading the caller's label — see
 [09 §Trusted model provenance](09-developing-flavors.md).
 

@@ -491,6 +491,9 @@ async fn collect_candidates(
 
     // Admit: Query HeadsOnly. Content hits on a superseded t drop.
     let fused = fuse_candidates(scan.effective_mode, &lexical_rows, &semantic_rows);
+    if fused.is_empty() {
+        return Ok((Vec::new(), HashMap::new()));
+    }
     let candidate_ids = fused
         .iter()
         .map(|scores| scores.memory_id)
@@ -502,7 +505,6 @@ async fn collect_candidates(
     let rows = proxima::flavor::authorized_abstraction_payloads::<CodeChunkV1>(
         engine,
         ctx.authz(),
-        ctx.owner(),
         &candidate_ids,
         candidate_ids.len(),
     )

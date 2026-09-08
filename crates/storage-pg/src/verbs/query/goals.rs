@@ -178,14 +178,13 @@ pub fn goal_page_sql_for_tests(req: &QueryRequest) -> String {
 
 #[cfg(test)]
 mod tests {
+    use proxima_core::MemoryId;
     use proxima_core::verbs::goal_write::GoalState;
     use proxima_core::verbs::query::QueryRequest;
-    use proxima_core::{MemoryId, OwnerRef, UserId};
 
     #[test]
     fn assignment_and_evidence_filters_are_bound() {
-        let mut req =
-            QueryRequest::for_owner(OwnerRef::Personal(UserId::new(uuid::Uuid::from_u128(1))));
+        let mut req = QueryRequest::readable();
         req.entity_kind = Some(proxima_core::verbs::query::EntityKind::Goal);
         req.goal_state = Some(GoalState::Active);
         req.assignment = Some(MemoryId::new(uuid::Uuid::nil()));

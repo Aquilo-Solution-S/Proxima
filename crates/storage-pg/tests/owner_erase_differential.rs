@@ -119,7 +119,7 @@ fn draft(
         lexical_language: None,
         receipt: None,
         citation: None,
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id,
         kind: "fact".into(),

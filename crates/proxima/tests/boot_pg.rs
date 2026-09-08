@@ -528,7 +528,10 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
         let authz = built.single_owner_authz().expect("single owner authz");
         let outcome = built
             .engine
-            .ingest_typed_fact(&authz, "test/facade-worker", &payload)
+            .ingest_fact(
+                &authz,
+                proxima::FactWrite::new(owner, "test/facade-worker", &payload),
+            )
             .await?;
         assert_eq!(
             count_fact_embeddings(built.pool_for_tests(), outcome.memory_id, model_id).await?,
@@ -577,7 +580,10 @@ async fn startup_reconcile_heals_facts_ingested_without_embed_client() {
         let authz = degraded.single_owner_authz().expect("single owner authz");
         let outcome = degraded
             .engine
-            .ingest_typed_fact(&authz, "test/startup-reconcile", &payload)
+            .ingest_fact(
+                &authz,
+                proxima::FactWrite::new(owner, "test/startup-reconcile", &payload),
+            )
             .await?;
         assert_eq!(
             count_embedding_jobs(degraded.pool_for_tests(), outcome.memory_id, model_id).await?,

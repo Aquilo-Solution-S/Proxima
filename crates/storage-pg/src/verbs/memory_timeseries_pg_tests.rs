@@ -32,7 +32,7 @@ fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
         lexical_language: None,
         receipt: None,
         citation: None,
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
@@ -302,7 +302,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
 
         let mut abs = draft(None);
         abs.kind = "abstraction".into();
-        abs.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+        abs.additional_references = vec![proxima_core::EdgeEndpoint::memory(
             proxima_core::EntityKind::Fact,
             chunk_out.memory_id,
         )];
@@ -313,7 +313,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
 
         let mut abs_many = draft(None);
         abs_many.kind = "abstraction".into();
-        abs_many.derived_from = vec![
+        abs_many.additional_references = vec![
             proxima_core::EdgeEndpoint::memory(proxima_core::EntityKind::Fact, chunk_out.memory_id),
             proxima_core::EdgeEndpoint::memory(proxima_core::EntityKind::Fact, other.memory_id),
         ];
@@ -323,7 +323,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
 
         let mut abs_from_abs = draft(None);
         abs_from_abs.kind = "abstraction".into();
-        abs_from_abs.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+        abs_from_abs.additional_references = vec![proxima_core::EdgeEndpoint::memory(
             proxima_core::EntityKind::Abstraction,
             abs_out.memory_id,
         )];
@@ -333,7 +333,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
 
         let mut persp_from_fact = draft(None);
         persp_from_fact.kind = "perspective".into();
-        persp_from_fact.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+        persp_from_fact.additional_references = vec![proxima_core::EdgeEndpoint::memory(
             proxima_core::EntityKind::Fact,
             chunk_out.memory_id,
         )];
@@ -348,7 +348,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
 
         let mut persp_ok = draft(None);
         persp_ok.kind = "perspective".into();
-        persp_ok.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+        persp_ok.additional_references = vec![proxima_core::EdgeEndpoint::memory(
             proxima_core::EntityKind::Abstraction,
             abs_out.memory_id,
         )];
@@ -359,7 +359,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
 
         let mut abs_from_p = draft(None);
         abs_from_p.kind = "abstraction".into();
-        abs_from_p.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+        abs_from_p.additional_references = vec![proxima_core::EdgeEndpoint::memory(
             proxima_core::EntityKind::Perspective,
             persp_out.memory_id,
         )];
@@ -388,7 +388,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
 
         let mut persp = draft(None);
         persp.kind = "perspective".into();
-        persp.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+        persp.additional_references = vec![proxima_core::EdgeEndpoint::memory(
             proxima_core::EntityKind::Abstraction,
             abs_out.memory_id,
         )];

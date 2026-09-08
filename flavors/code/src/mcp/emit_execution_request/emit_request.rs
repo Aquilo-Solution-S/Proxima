@@ -85,7 +85,8 @@ impl Tool for CodeEmitExecutionRequestTool {
             // `ExecutionRequestV1` declares the `code-repo` scope, so this
             // ingest takes the fence and re-asks whether the repository is
             // registered before it takes a handle.
-            let outcome = ingest_execution_request(&mut uow, &payload, provenance).await?;
+            let outcome =
+                ingest_execution_request(&mut uow, ctx.owner(), &payload, provenance).await?;
             let acceptance_memory_id =
                 if outcome.idempotent_replay || acceptance_criteria.is_empty() {
                     None
@@ -100,6 +101,7 @@ impl Tool for CodeEmitExecutionRequestTool {
                     };
                     let criteria_outcome = ingest_acceptance_criteria(
                         &mut uow,
+                        ctx.owner(),
                         &criteria_payload,
                         FactProvenance { derived_from: &[] },
                     )

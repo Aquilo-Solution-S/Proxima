@@ -1,5 +1,11 @@
 //! Host-facing facade exports.
 
+/// Transport adapters for hosts; flavor implementations use `flavor::Tool`.
+pub use proxima_core::mcp::{
+    McpTool, McpToolCtx, McpToolError, McpToolErrorKind, McpToolPresentation,
+};
+pub use proxima_core::operator_label;
+
 pub use crate::app::{AppContext, AppInfo, Authz, FlavorApp};
 pub use crate::config::EmbedConfig;
 pub use crate::core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};
@@ -27,14 +33,6 @@ pub use crate::runtime_config::{
 /// `BlobError` comes with them because `from_env` returns it.
 pub use proxima_blob_s3::{BlobError, CitedBlobStore, S3RuntimeConfig};
 pub use proxima_core::cursor::Cursor;
-/// The owner-authorized batch Memory read already exposed by
-/// [`proxima_core::Engine::get_memories`].
-///
-/// Keeping the request, response, and snapshot on the host facade makes the
-/// existing Engine signature nameable without reaching through the facade to
-/// `proxima-core`. Authorization and the absent/invisible collapse remain in
-/// the Engine verb; this export adds no storage access.
-pub use proxima_core::engine::{GetMemoriesReadRequest, GetMemoriesReadResponse};
 /// The read verb a flavor searches its own corpus with.
 ///
 /// [`proxima_core::Engine::search`] was already public, but every type in
@@ -48,10 +46,22 @@ pub use proxima_core::engine::{GetMemoriesReadRequest, GetMemoriesReadResponse};
 /// no per-column filter, so a flavor that wants "search inside this book"
 /// declares a `tag_column` on its projection and filters here.
 pub use proxima_core::engine::{
-    ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse, SearchReadRequest,
-    SearchReadResponse, TypedFactIngest, UnitOfWork,
+    FactWrite, ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse, SearchReadRequest,
+    SearchReadResponse, UnitOfWork,
 };
-pub use proxima_core::error::ProtocolError;
+/// The owner-authorized batch Memory read already exposed by
+/// [`proxima_core::Engine::get_memories`].
+///
+/// Keeping the request, response, and snapshot on the host facade makes the
+/// existing Engine signature nameable without reaching through the facade to
+/// `proxima-core`. Authorization and the absent/invisible collapse remain in
+/// the Engine verb; this export adds no storage access.
+pub use proxima_core::engine::{
+    GetMemoriesReadRequest, GetMemoriesReadResponse, GetMemoryReadRequest, GetMemoryReadResponse,
+    GoalCreatePayloadWriteRequest, GoalDecomposeRequest, GoalMarkAchievedRequest,
+    GoalModifyRequest, GoalTransitionRequest,
+};
+pub use proxima_core::error::{ErrorCode, ProtocolError};
 pub use proxima_core::llm;
 /// [`EmbedCaps`] is the second parameter of
 /// [`OpenAiCompatEmbeddingClient::new`], so without it on the facade that
@@ -99,10 +109,15 @@ pub use proxima_core::verbs::fact_ingest::{
     CitationSpec, FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
 };
 pub use proxima_core::verbs::goal_write::{
-    GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalEvidenceRef, GoalPayloadWrite,
-    GoalState, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError,
-    GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS, MAX_GOAL_TITLE_CHARS,
-    MAX_WAKE_TOOL_ID_CHARS, OperatorKind, SystemOrigin,
+    ChildGoalDraft, DecomposeGoalOutcome, GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest,
+    GoalDependencyRef, GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite,
+    GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError, GoalWriteOutcome,
+    IdempotencyKey, MAX_GOAL_TEXT_CHARS, MAX_GOAL_TITLE_CHARS, MAX_WAKE_TOOL_ID_CHARS,
+    OperatorKind, SystemOrigin,
+};
+/// Typed derived-memory writes; handles identify series and outcomes identify rows.
+pub use proxima_core::{
+    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, MemoryTarget, SeriesHandle,
 };
 /// Typed result of the owner-authorized cold-memory hydration command. The
 /// facade exposes only ids and classifications; Postgres transactions,

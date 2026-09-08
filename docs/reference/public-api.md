@@ -5,21 +5,57 @@
 Workspace packages currently set `publish = false`; consume from git tags or
 repo checkouts unless release notes say crates.io publishing is available.
 
+Rust upgrade mapping: [Migrate the Flavor SDK](../how-to/migrate-flavor-sdk.md).
+
+## Typed Consumer Operations
+
+Import requests from `proxima::flavor` and `Engine` / `AuthzContext` from `proxima`.
+
+| Intent | Request | Standalone / transaction |
+|---|---|---|
+| Observe a Fact | `FactWrite::new(owner, source_id, &payload)` | `Engine::ingest_fact(&authz, request)` / `UnitOfWork::ingest_fact(request)` |
+| Derive an Abstraction | `DerivedMemory::abstraction(target, owner, text, payload, origins, identity)?` | `derive_memory` on either receiver |
+| Derive a Perspective | `DerivedMemory::perspective(target, owner, text, payload, origins, identity)?` | `derive_memory` on either receiver |
+| Interpret referenced knowledge | `DerivedMemory::interpretation(target, owner, text, payload)` | `derive_memory` on either receiver |
+| Create a typed Goal | `GoalCreateRequest::product(owner, assignment, request_id, title, text, payload)` | `Engine::create_goal(&authz, request)` / `UnitOfWork::create_goal(request)` |
+
+Standalone operations commit before returning. `engine.unit_of_work(&authz).await?`
+groups writes; `commit().await?` persists them, dropping the unit rolls them back.
+Goal `.with_evidence(...)` accepts admitted Fact/Abstraction row IDs, including
+writes earlier in the same transaction. Assignment requires a Perspective
+in the Goal's owner space.
+
+Fact `.refs(...)` adds reference pins, never origins. Automatic natural-key
+series selection is transactional; an explicit `.handle(SeriesHandle)` wins.
+Keep returned `memory_id` / `goal_id` values for reads and references. A series
+handle identifies the version stream, not an admitted row.
+
+Advanced host protocol adapters (`fact_ingest`, split authorization/citation
+writes, dynamic Goal payload writes) retain their protocol-specific contracts.
+Ordinary typed flavor code uses the operations above.
+
 ## Supported Tiers
 
-Post-PR9 supported Rust tiers:
+Supported Rust tiers:
 
 | Tier | Import | Use |
 |---|---|---|
 | Host API | `use proxima::{Proxima, RuntimeBuilder, RuntimeConfig, Engine, CancellationToken, AccessKind, AccessCeiling, OwnerRoles};` | boot composed binaries; call graph/admin/projector verbs through server-resolved `AuthzContext`. `Role::new` / `Role::may_write` / `OwnerRoles::for_subject` name `AccessKind`, `AccessCeiling`, `AccessError`, `OwnerRoles` |
 | Host extra-table | `AppContext::{clone_pool_for_host, pg_tuning_for_host}` | host `FlavorApp::services` only: wrap the pool and resolved query policy in a flavor-owned store immediately. Tools resolve the store via `FlavorServices`. Not Flavor SDK. No `proxima_core.*` SQL |
 | Host API (REST OpenAPI) | `use proxima::host::build_openapi_document;` | build the complete registry document with the same generator as `/v1/openapi.json` without depending on `proxima-mcp-server` internals; requires feature `rest` |
-| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar, InlineCitedObjectDraft, InlineCitationMappingDraft, CitationAttachmentRequest};` | build-time schemas, payload references, tools, sidecars. Typed citation drafts, the citation-attachment request + `AuthorizedFactWithCitation{,Ref}` are nameable here; `Engine` stays Host API |
+| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorContract, SchemaContract, Surface, FactPayload, pg_sidecar, InlineCitedObjectDraft, InlineCitationMappingDraft, CitationAttachmentRequest};` | build-time schemas, complete contract declarations, payload references, tools, sidecars. Typed citation drafts and the citation-attachment request + `AuthorizedFactWithCitation{,Ref}` are nameable here; `Engine` stays Host API |
 | Flavor SDK (services) | `use proxima::flavor::{FlavorServices, FlavorServiceError};` | return typed services from `FlavorApp::services`; tuple composition rejects duplicate concrete types and shares one set with MCP, REST, and workers |
-| Flavor SDK (generic tools) | `use proxima::flavor::{Tool, ToolCtx, ToolCaller, ToolError};` | author transport-neutral tools; MCP and REST populate optional caller provenance directly on `ToolCtx` |
-| Flavor SDK (MCP tools) | `use proxima::flavor::{McpTool, McpToolCtx, McpToolError, McpToolErrorKind, McpToolAnnotations, McpActionArgSpec, McpAuthorContext};` | author flavor MCP tools without reaching into `proxima_core::mcp` — see [add-first-mcp-tool](../tutorials/add-first-mcp-tool.md) |
+| Flavor SDK (tools) | `use proxima::flavor::{Tool, ToolCtx, ToolCaller, ToolError};` | author transport-neutral tools; MCP and REST populate optional caller provenance directly on `ToolCtx` |
 | Flavor SDK (authorized reads) | `use proxima::flavor::{authorized_memory_ids, authorized_fact_payloads, authorized_abstraction_payloads, SidecarAtom, QueryRequest, hybrid_degraded_to_lexical};` | typed, authz-filtered candidate/payload reads — see [Authorized Flavor-Read Facade](#authorized-flavor-read-facade) below. `Engine` is Host API (`use proxima::Engine`). Code-series `&PgPool` helpers live in `flavors/code`, not this SDK. |
 | Flavor SDK (outbound endpoints) | `use proxima::flavor::{validate_endpoint_url, EndpointUrlPolicy};` | enforce HTTPS with the shared, exact loopback-only plaintext exception; never reproduce it with string prefixes |
+
+Flavor contract declarations are const-constructible and imported from
+`proxima::flavor`. The same module owns `SchemaRef`, `KeyShape`, the erase /
+transfer / export / forget / counter rules, projection and embedding
+declarations, and tool/resource contracts. Goal write DTOs, including
+`GoalCreateRequest<P>` and `GoalTopologyWrite`, use the same facade.
+`SidecarSessionRead` remains a bounded, owner-stamped request for an existing
+authorized write session; it does not expose a connection or pool.
 
 Cold-memory repair is part of the Host API: `Engine::hydrate_memory` and
 `Engine::hydrate_memories` accept an owner plus `MemoryId` values and use the
@@ -72,7 +108,7 @@ there is no id-less owner — so `OwnerRef::columns()` returns
 | `AuthPath::System` | cannot mint by public `AuthzContext` shape alone; requires host-held `SystemAuthority` via `Engine::authorize_owner_write_with_system_authority` |
 | host witness | `BuiltProxima::system_authority()` / `RunningProxima::system_authority()` expose a borrowed witness to embedding hosts |
 | wire/flavor boundary | MCP tools and flavor `ToolCtx` do not receive `SystemAuthority`; normal membership/HostBearer paths need no witness |
-| target-owner Fact ingest | supported host path: narrow a server-resolved context to one authorized owner with `AuthzContext::narrowed_to_owner(owner)`, then call `Engine::fact_ingest(&owner_authz, draft)`. The engine stamps the write owner from resolved access; `FactWriteCommand` carries no owner field. |
+| typed Fact destination | `Engine::ingest_fact(&authz, FactWrite::new(owner, source_id, &payload))`; the engine authorizes the explicit destination. Keep the full authenticated context so readable foreign references remain available. |
 | sidecar-less Fact ingest | supported host path is `Engine::fact_ingest`. `proxima-storage-pg`'s write verbs are `pub(crate)` implementation detail of its port impls — there is no second entry point to reach past the engine with. |
 | guardrail | `scripts/check-architecture-guardrails.py` fails if listed storage write traits or `storage-pg` write verbs lose `OwnerWritePermit` |
 
@@ -111,7 +147,7 @@ Delegated-capable operations are closed and explicit:
 | Engine Fact split write | `authorize_fact_ingest` → `ingest_fact_with_typed_sidecar`; the returned witness rechecks runtime binding and expiry at commit |
 | Engine inline citation Fact | `authorize_fact_with_citation` → `ingest_fact_with_citation_and_typed_sidecar`; commit rechecks the witness |
 | Engine cited-object-reference Fact | `authorize_fact_with_citation_by_ref` → `ingest_fact_with_citation_ref_and_typed_sidecar`; commit rechecks the witness |
-| Engine derived memory | `author_derived_authorized` |
+| Engine derived memory | `derive_memory` |
 | Engine upload completion | `complete_upload_as_fact`, `complete_upload_as_fact_with_expectation` |
 | `CitedBlobService` | `prepare_upload`, `stage_upload`, `finish_upload`, `abort_upload`, `read_url`, `find_held_blobs` |
 | `CitedBlobReadService` | `collect_verified` |
@@ -155,6 +191,13 @@ Consumer lockstep check:
 
 `cargo test -p proxima --test registry_conformance` proves the hosted-app and
 embedded-consumer registration paths produce the same deterministic dump.
+
+## Read Selection
+
+`QueryRequest::readable()` searches the caller's complete authorized owner set.
+It accepts kind/schema/history/cursor/ID filters and has no owner selector.
+For known IDs, use `Engine::get_memory` / `get_memories`; absent and unreadable
+rows have the same response. `Engine::search` retains its explicit corpus owner.
 
 ## Authorized Flavor-Read Facade
 
@@ -371,7 +414,7 @@ execution or activity log projector):
 | Rule | Contract |
 |---|---|
 | owner | write under the tenant's `OwnerRef::Group(GroupId)`, not `OwnerRef::Personal(UserId)`. Tenant-shared evidence belongs to the group the tenant's members can read/manage together, not to one operator's personal owner. |
-| target-owner ingest | resolve the worker subject to roles, narrow that `AuthzContext` to the tenant `OwnerRef::Group(GroupId)` with `AuthzContext::narrowed_to_owner`, then call `Engine::fact_ingest`. A context that still resolves more than one writable owner is rejected before storage. |
+| target-owner ingest | resolve the worker subject to roles; call `Engine::ingest_fact(&authz, FactWrite::new(owner, source_id, &payload))`. The explicit destination is authorized without narrowing the caller's read access. |
 | idempotency keys | Proxima honors a caller-supplied idempotency key verbatim — it never invents a different projector-side key. `core_remember`'s `idempotency_key` deterministically becomes the note id via UUIDv5 over the caller's own bytes (`crates/core/src/mcp/core_tools/memory/remember.rs`); other Fact payload schemas declare their own `natural_key_columns()` from caller-supplied payload fields. Re-ingesting the same key with the same content is a no-op; re-ingesting the same key with changed content writes a new version and advances the head pointer — the identity a projector chooses is the identity Proxima keeps. |
 | source cursor bytes | `Cursor` is opaque byte state keyed by `(owner, source)`. A projector may encode `last_event_seq` into it; `store_source_cursor` persists the supplied bytes verbatim, and `load_source_cursor` returns the exact bytes last stored for that owner/source. No Centauri-side `piy_projection_cursor` table is required for that state. |
 | projection lag | `Engine::source_cursor_age(authz, owner, source)` returns the age of the owner/source cursor for EVD-012-style lag SLO evidence. It is owner-scoped and read-authorized (`Viewer`); `load_source_cursor` / `store_source_cursor` still require cursor mutation authority (`Ingest`) and do not expose cursor bytes to viewers. |

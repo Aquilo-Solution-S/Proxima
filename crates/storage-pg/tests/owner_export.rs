@@ -66,7 +66,7 @@ fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
         lexical_language: None,
         receipt: None,
         citation: None,
-        derived_from: origins
+        additional_references: origins
             .into_iter()
             .map(|t| EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(t)))
             .collect(),

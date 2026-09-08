@@ -15,7 +15,7 @@ The compiling witness is `flavors/code/src/mcp/`, served by `apps/proxima-mcp`.
 ## Args and Output Types
 
 Flavor crates already depend on `futures` and `schemars`. Define an args type
-with `Deserialize` and `JsonSchema`, and an output type with `Serialize`:
+with `Deserialize` and `JsonSchema`, and an output type with `Serialize` and `JsonSchema`:
 
 ```rust
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -24,7 +24,7 @@ pub struct ExampleLookupArgs {
     pub external_id: String,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct ExampleLookupOutput {
     pub found: bool,
 }
@@ -34,44 +34,63 @@ Field descriptions become the MCP schema. Keep schemas concrete and typed.
 
 ## Register at Build Time
 
-Implement `McpTool` and register it in the flavor macro. The MCP
-tool-authoring types are re-exported from `proxima::flavor` — flavor crates
-import them there rather than reaching into `proxima_core::mcp`:
+Implement transport-neutral `Tool`; MCP and REST adapt the same implementation.
+Import the authoring types from `proxima::flavor`:
 
 ```rust
-use proxima::flavor::{McpTool, McpToolCtx, McpToolError};
+use proxima::flavor::{FlavorContract, McpToolAnnotations, ProjectionDecl, Tool, ToolContract, ToolCtx, ToolError};
 
 pub struct ExampleLookupTool;
 
-impl McpTool for ExampleLookupTool {
+impl Tool for ExampleLookupTool {
     const NAME: &'static str = "my-flavor_lookup";
     const DESCRIPTION: &'static str = "Look up a my-flavor example row.";
+    const ANNOTATIONS: Option<McpToolAnnotations> = Some(McpToolAnnotations::new().read_only(true).idempotent(true));
 
     type Args = ExampleLookupArgs;
     type Output = ExampleLookupOutput;
 
     fn call(
-        ctx: McpToolCtx,
+        ctx: ToolCtx,
         args: Self::Args,
-    ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
+    ) -> futures::future::BoxFuture<'static, Result<Self::Output, ToolError>> {
         Box::pin(async move {
-            let _owner = ctx.owner;
+            let _owner = ctx.owner();
             let _external_id = args.external_id;
             Ok(ExampleLookupOutput { found: false })
         })
     }
 }
 
+const CONTRACT: FlavorContract = FlavorContract {
+    flavor_id: "my-flavor",
+    ordinal: 42, // choose an unused ordinal when adding this flavor to a host
+    schemas: &[],
+    state_surfaces: &[],
+    scopes: &[],
+    kernel_surfaces: &[],
+    tools: &[ToolContract { wire_name: "my-flavor_lookup", actions: &[], idempotent: true }],
+    resources: &[],
+    projection: ProjectionDecl::None { why: "this lookup example declares no memory schemas" },
+    bespoke_erase_legs: &[],
+    bespoke_transfer_legs: &[],
+};
+
 proxima::flavor::proxima_flavor! {
     name = "my-flavor",
     display_name = "My Flavor",
-    fact_schemas = [DocumentFiledV1],
+    fact_schemas = [],
     abstraction_schemas = [],
     perspective_schemas = [],
     goal_schemas = [],
     mcp_tools = [ExampleLookupTool],
+    contract = &CONTRACT,
 }
 ```
+
+For an existing flavor, add the tool to its existing macro and `CONTRACT.tools`
+array. Keep its schema and storage declarations. The example above registers
+a lookup tool without adding a memory schema.
 
 Flavor MCP tool names use provider-safe `<flavor>_<tool>` names.
 

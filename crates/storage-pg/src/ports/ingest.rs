@@ -39,11 +39,20 @@ impl FactIngestPort for PgStorage {
             .links()
             .validate_sidecar_references(sidecar_payloads)
             .map_err(StorageError::ConstraintViolation)?;
+        let natural_key = verbs::fact_ingest::fact_natural_key(
+            authorized.draft(),
+            authorized.fact_sidecar_table(),
+            authorized.fact_natural_key_columns(),
+            authorized.fact_natural_key_values(),
+            sidecar_payloads,
+            &self.sidecars,
+        )?;
         // Retry the whole begin→body→commit on transient deadlock/
         // serialization. The typed sidecar is data (`SidecarPayload`), so each
         // attempt re-clones it and rebuilds the insert closure — unlike an
         // `FnOnce` closure, this is safely re-runnable.
         with_bounded_retry(move || {
+            let natural_key = natural_key.clone();
             let fact_sidecars = self.sidecars.writing(authorized.draft());
             let payloads = sidecar_payloads.to_vec();
             let content_payloads = payloads.clone();
@@ -56,6 +65,7 @@ impl FactIngestPort for PgStorage {
                     authorized,
                     embedding_model_id,
                     verbs::fact_ingest::FactAdmissionInput {
+                        natural_key: natural_key.as_ref(),
                         sidecar_tables: &tables,
                         scopes: &scopes,
                         content: verbs::fact_ingest::ContentResolution {
@@ -93,9 +103,18 @@ impl FactIngestPort for PgStorage {
             .links()
             .validate_sidecar_references(sidecar_payloads)
             .map_err(StorageError::ConstraintViolation)?;
+        let natural_key = verbs::fact_ingest::fact_natural_key(
+            authorized.draft(),
+            authorized.fact_sidecar_table(),
+            authorized.fact_natural_key_columns(),
+            authorized.fact_natural_key_values(),
+            sidecar_payloads,
+            &self.sidecars,
+        )?;
         // Retry the whole begin→body→commit on transient deadlock/
         // serialization; re-clone the citation sidecar payload per attempt.
         with_bounded_retry(move || {
+            let natural_key = natural_key.clone();
             let sidecars = self.sidecars.clone();
             let fact_sidecars = sidecars.writing(authorized.draft());
             let payloads = sidecar_payloads.to_vec();
@@ -109,6 +128,7 @@ impl FactIngestPort for PgStorage {
                     authorized,
                     embedding_model_id,
                     verbs::fact_ingest::FactAdmissionInput {
+                        natural_key: natural_key.as_ref(),
                         sidecar_tables: &tables,
                         scopes: &scopes,
                         // A cited Fact resolves its `Content` the same way
@@ -148,10 +168,19 @@ impl FactIngestPort for PgStorage {
             .links()
             .validate_sidecar_references(sidecar_payloads)
             .map_err(StorageError::ConstraintViolation)?;
+        let natural_key = verbs::fact_ingest::fact_natural_key(
+            authorized.draft(),
+            authorized.fact_sidecar_table(),
+            authorized.fact_natural_key_columns(),
+            authorized.fact_natural_key_values(),
+            sidecar_payloads,
+            &self.sidecars,
+        )?;
         // Retry the whole begin→body→commit on transient deadlock/
         // serialization; re-clone the sidecar payload per attempt, same as
         // the inline-citation path above.
         with_bounded_retry(move || {
+            let natural_key = natural_key.clone();
             let sidecars = self.sidecars.clone();
             let fact_sidecars = sidecars.writing(authorized.draft());
             let payloads = sidecar_payloads.to_vec();
@@ -165,6 +194,7 @@ impl FactIngestPort for PgStorage {
                     authorized,
                     embedding_model_id,
                     verbs::fact_ingest::FactAdmissionInput {
+                        natural_key: natural_key.as_ref(),
                         sidecar_tables: &tables,
                         scopes: &scopes,
                         // A cited Fact resolves its `Content` the same way

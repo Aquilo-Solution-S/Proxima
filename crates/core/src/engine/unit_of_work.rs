@@ -1,91 +1,49 @@
 //! Backend-owned [`UnitOfWork`]: one transaction, several Engine writes.
 
 use super::Engine;
+use super::memory_authoring::PreparedDerived;
 use crate::access::Relation;
 use crate::authz::AuthzContext;
-use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
-use crate::storage::{AuthorDerivedRequest, DerivedEmbedding};
 use crate::storage_ports::{SidecarSessionRead, WriteSession};
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 use crate::verbs::goal_write::{
-    CreateGoalAtomicRequest, GoalDraft, GoalReplayRequest, GoalWriteOutcome,
+    CreateGoalAtomicRequest, GoalCreateRequest, GoalDraft, GoalReplayRequest, GoalWriteOutcome,
 };
 use crate::verbs::query::SidecarAtom;
 use crate::{
-    AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, FactPayload, MemoryId,
-    MemoryOperatorKind, Owner, SchemaId, SchemaVersion, SidecarPayload,
+    DerivedMemoryOutcome, EntityKind, FactPayload, GoalPayload, MemoryId, Owner, SchemaId,
+    SidecarPayload,
 };
 
-/// Owned embedding so a prepared batch can outlive the client borrow
-/// used by [`DerivedEmbedding`].
-enum PreparedEmbedding {
-    None,
-    Ready { model_id: String, vector: Vec<f32> },
-    Deferred { model_id: String },
-}
-
-impl PreparedEmbedding {
-    fn as_derived(&self) -> DerivedEmbedding<'_> {
-        match self {
-            Self::None => DerivedEmbedding::None,
-            Self::Ready { model_id, vector } => DerivedEmbedding::Ready {
-                model_id,
-                vector: vector.clone(),
-            },
-            Self::Deferred { model_id } => DerivedEmbedding::Deferred { model_id },
-        }
-    }
-}
-
-struct PreparedDerived {
-    write_permit: super::pipeline::WritePermit,
-    owner: Owner,
-    memory_id: MemoryId,
-    kind: EntityKind,
-    text: String,
-    schema_id: SchemaId,
-    schema_version: SchemaVersion,
-    operator_kind: MemoryOperatorKind,
-    model_id: String,
-    sidecar_payload: SidecarPayload,
-    supersedes: Option<MemoryId>,
-    lexical_language: Option<String>,
-    embedding: PreparedEmbedding,
-    origins: Vec<EdgeEndpoint>,
-    references: Vec<EdgeEndpoint>,
-}
-
-/// One typed Fact write: payload plus optional citation and origins.
-///
-/// Natural-key handle reuse is automatic when `handle` is unset and the
-/// schema declared `natural_key_columns`. That lookup reads committed
-/// heads only — two versions of the same key in one [`UnitOfWork`] must
-/// pass `handle` explicitly.
+/// One typed observation addressed to an explicit destination owner.
+/// Natural-key handle reuse includes earlier writes in the same transaction.
+/// Facts declare reference pins, never derivation origins.
 #[derive(Clone)]
-pub struct TypedFactIngest<'a, P: FactPayload> {
+pub struct FactWrite<'a, P: FactPayload> {
+    owner: Owner,
     source_id: &'a str,
     payload: &'a P,
     observed_at: Option<time::OffsetDateTime>,
     citation: Option<CitationSpec>,
-    derived_from: Vec<EdgeEndpoint>,
-    handle: Option<uuid::Uuid>,
+    handle: Option<crate::SeriesHandle>,
     lexical_language: Option<String>,
-    refs: Vec<uuid::Uuid>,
+    refs: Vec<MemoryId>,
 }
 
-impl<P: FactPayload> std::fmt::Debug for TypedFactIngest<'_, P> {
+impl<P: FactPayload> std::fmt::Debug for FactWrite<'_, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TypedFactIngest")
+        f.debug_struct("FactWrite")
             .field("source_id", &self.source_id)
             .field("schema_id", &P::SCHEMA_ID)
             .field("has_citation", &self.citation.is_some())
-            .field("derived_from", &self.derived_from.len())
+            .field("owner", &self.owner)
+            .field("refs", &self.refs.len())
             .finish_non_exhaustive()
     }
 }
 
-impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
+impl<'a, P: FactPayload> FactWrite<'a, P> {
     /// Typed sidecar Fact from `source_id`. Observe now unless the
     /// caller overrides.
     ///
@@ -97,13 +55,13 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
     /// the first and refuses the second, so this builder cannot produce
     /// the refusable state — [`Self::lexical_language`] overrides it.
     #[must_use]
-    pub fn new(source_id: &'a str, payload: &'a P) -> Self {
+    pub fn new(owner: Owner, source_id: &'a str, payload: &'a P) -> Self {
         Self {
+            owner,
             source_id,
             payload,
             observed_at: None,
             citation: None,
-            derived_from: Vec::new(),
             handle: None,
             lexical_language: Some(
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
@@ -126,16 +84,9 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
         self
     }
 
-    /// What this Fact was made from (`origin` rows in the same write).
-    #[must_use]
-    pub fn derived_from(mut self, origins: impl IntoIterator<Item = EdgeEndpoint>) -> Self {
-        self.derived_from = origins.into_iter().collect();
-        self
-    }
-
     /// Reuse this series handle. Unset ⇒ NK lookup, then mint.
     #[must_use]
-    pub const fn handle(mut self, handle: uuid::Uuid) -> Self {
+    pub const fn handle(mut self, handle: crate::SeriesHandle) -> Self {
         self.handle = Some(handle);
         self
     }
@@ -149,8 +100,8 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
 
     /// Observation-neutral reference pins (write-act, visit).
     #[must_use]
-    pub fn refs(mut self, refs: impl IntoIterator<Item = uuid::Uuid>) -> Self {
-        self.refs = refs.into_iter().collect();
+    pub fn refs(mut self, refs: impl IntoIterator<Item = MemoryId>) -> Self {
+        self.refs.extend(refs);
         self
     }
 }
@@ -158,11 +109,12 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
 /// One transaction the Engine can attach several authorized writes to.
 /// Drop without [`Self::commit`] rolls the transaction back.
 ///
-/// The transaction is not opened by [`Engine::unit_of_work`]. Authorization,
-/// natural-key lookup, and embedding run against the pool (or the embed
-/// client) first; [`crate::storage_ports::WriteSessionFactory::begin`] happens on the first
+/// The transaction is not opened by [`Engine::unit_of_work`]. Authorization
+/// and embedding run before persistence; automatic natural-key selection
+/// runs inside the storage transaction.
+/// [`crate::storage_ports::WriteSessionFactory::begin`] happens on the first
 /// write, advisory lock, or forget. A multi-derived batch
-/// ([`Self::author_derived_all`]) embeds every text before that begin, so
+/// ([`Self::derive_memories`]) embeds every text before that begin, so
 /// a file of N chunks does not hold a pool slot across N provider RTTs.
 pub struct UnitOfWork<'a> {
     engine: &'a Engine,
@@ -175,6 +127,8 @@ pub struct UnitOfWork<'a> {
     /// Session-visible `(t, kind)` pairs. A declaration must still agree
     /// with the kind of a row written earlier in this transaction.
     written_kinds: Vec<(MemoryId, EntityKind)>,
+    /// Resolved destinations, for owner-constrained pending Goal assignments.
+    written_owners: Vec<(MemoryId, Owner)>,
 }
 
 impl std::fmt::Debug for UnitOfWork<'_> {
@@ -206,42 +160,21 @@ impl Engine {
             committed: false,
             written: Vec::new(),
             written_kinds: Vec::new(),
+            written_owners: Vec::new(),
         })
     }
 
-    /// One-shot Fact + typed sidecar: [`UnitOfWork`] of one, then commit.
+    /// Persist one typed observation and commit it atomically.
     ///
     /// # Errors
-    ///
-    /// Authorization, schema, or storage faults from the ingest.
-    pub async fn ingest_typed_fact<P>(
+    /// Returns authorization, schema, citation, reference, or storage errors.
+    pub async fn ingest_fact<P: FactPayload + Clone>(
         &self,
         authz: &AuthzContext,
-        source_id: &str,
-        payload: &P,
-    ) -> Result<FactIngestOutcome, ProtocolError>
-    where
-        P: FactPayload + Clone,
-    {
-        self.ingest_typed_fact_with(authz, TypedFactIngest::new(source_id, payload))
-            .await
-    }
-
-    /// One-shot Fact + typed sidecar with citation / origins.
-    ///
-    /// # Errors
-    ///
-    /// Authorization, schema, or storage faults from the ingest.
-    pub async fn ingest_typed_fact_with<P>(
-        &self,
-        authz: &AuthzContext,
-        spec: TypedFactIngest<'_, P>,
-    ) -> Result<FactIngestOutcome, ProtocolError>
-    where
-        P: FactPayload + Clone,
-    {
+        spec: FactWrite<'_, P>,
+    ) -> Result<FactIngestOutcome, ProtocolError> {
         let mut uow = self.unit_of_work(authz).await?;
-        let outcome = uow.ingest_typed(spec).await?;
+        let outcome = uow.ingest_fact(spec).await?;
         uow.commit().await?;
         Ok(outcome)
     }
@@ -265,6 +198,56 @@ impl UnitOfWork<'_> {
         self.session
             .as_mut()
             .ok_or_else(|| ProtocolError::internal("unit of work session missing after begin"))
+    }
+
+    /// Append a typed derived row in this transaction, inferring its phase from readable origins.
+    ///
+    /// # Errors
+    /// Returns authorization, provenance, schema, embedding, or storage errors.
+    pub async fn derive_memory(
+        &mut self,
+        memory: crate::DerivedMemory,
+    ) -> Result<crate::DerivedMemoryOutcome, ProtocolError> {
+        let item = self
+            .engine
+            .prepare_derived_memory(
+                self.authz,
+                memory,
+                &self.written_kinds,
+                self.session.is_some(),
+            )
+            .await?;
+        self.write_prepared_derived(item).await
+    }
+
+    /// Prepare a batch before opening the write transaction, then append every row.
+    /// An already-open transaction defers embedding. Drop without commit rolls back the batch.
+    /// Use sequential `derive_memory` calls when one result is an input to the next.
+    ///
+    /// # Errors
+    /// Returns authorization, provenance, schema, embedding, or storage errors.
+    pub async fn derive_memories(
+        &mut self,
+        memories: impl IntoIterator<Item = crate::DerivedMemory>,
+    ) -> Result<Vec<crate::DerivedMemoryOutcome>, ProtocolError> {
+        let mut prepared = Vec::new();
+        for memory in memories {
+            prepared.push(
+                self.engine
+                    .prepare_derived_memory(
+                        self.authz,
+                        memory,
+                        &self.written_kinds,
+                        self.session.is_some(),
+                    )
+                    .await?,
+            );
+        }
+        let mut outcomes = Vec::with_capacity(prepared.len());
+        for item in prepared {
+            outcomes.push(self.write_prepared_derived(item).await?);
+        }
+        Ok(outcomes)
     }
 
     /// Serialize this transaction against `key` (`pg_advisory_xact_lock`).
@@ -372,61 +355,41 @@ impl UnitOfWork<'_> {
             .map_err(|err| ProtocolError::internal(err.to_string()))
     }
 
-    /// Authorize and persist one typed Fact + sidecar in this transaction.
+    /// Persist one typed observation in this transaction.
+    /// The destination is authorized before any natural-key lookup.
     ///
     /// # Errors
-    ///
-    /// Authorization, schema, or storage faults.
-    pub async fn ingest_fact<P>(
+    /// Returns authorization, schema, citation, reference, or storage errors.
+    pub async fn ingest_fact<P: FactPayload + Clone>(
         &mut self,
-        source_id: &str,
-        payload: &P,
-    ) -> Result<FactIngestOutcome, ProtocolError>
-    where
-        P: FactPayload + Clone,
-    {
-        self.ingest_typed(TypedFactIngest::new(source_id, payload))
-            .await
-    }
-
-    /// Authorize and persist one typed Fact with citation / origins.
-    ///
-    /// # Errors
-    ///
-    /// Authorization, schema, or storage faults.
-    pub async fn ingest_typed<P>(
-        &mut self,
-        spec: TypedFactIngest<'_, P>,
-    ) -> Result<FactIngestOutcome, ProtocolError>
-    where
-        P: FactPayload + Clone,
-    {
+        spec: FactWrite<'_, P>,
+    ) -> Result<FactIngestOutcome, ProtocolError> {
+        let permit = self
+            .engine
+            .authorize_write(self.authz, &spec.owner, Relation::Editor)
+            .await?;
         let observed_at = spec
             .observed_at
             .unwrap_or_else(time::OffsetDateTime::now_utc);
+        let references = self
+            .engine
+            .resolve_memory_targets(self.authz, &spec.refs, &self.written_kinds)
+            .await?;
         let mut draft = FactWriteCommand::from_payload(spec.source_id, spec.payload, observed_at)
-            .with_derived_from(spec.derived_from)
-            .with_handle(spec.handle);
+            .with_additional_references(references)
+            .with_handle(spec.handle.map(crate::SeriesHandle::into_inner));
         if let Some(citation) = spec.citation {
             draft = draft.with_citation(citation);
         }
-        if let Some(lexical_language) = spec.lexical_language {
-            draft = draft.with_lexical_language(Some(lexical_language));
-        }
-        if !spec.refs.is_empty() {
-            draft = draft.with_refs(spec.refs);
-        }
-        if draft.handle.is_none() {
-            let engine = self.engine;
-            let authz = self.authz;
-            draft.handle = owned_fact_series_handle(engine, authz, spec.payload).await?;
+        if let Some(language) = spec.lexical_language {
+            draft = draft.with_lexical_language(Some(language));
         }
         let sidecars = [SidecarPayload::fact(spec.payload.clone())];
         let authorized = self
             .engine
-            .authorize_fact_ingest_visible(
+            .authorize_fact_ingest_permitted_visible(
                 self.authz,
-                Relation::Editor,
+                permit,
                 draft,
                 &sidecars,
                 &self.written,
@@ -456,211 +419,17 @@ impl UnitOfWork<'_> {
             self.written.push(outcome.memory_id);
             self.written_kinds
                 .push((outcome.memory_id, EntityKind::Fact));
+            self.written_owners
+                .push((outcome.memory_id, *authorized.permit().owner()));
         }
         Ok(outcome)
-    }
-
-    /// Authorize and persist one derived memory in this transaction.
-    ///
-    /// Embedding runs before the transaction starts when this is the first
-    /// write. If the transaction is already open, the vector is deferred
-    /// (job enqueued, no provider call) so an open pool slot is not held
-    /// across HTTP. Prefer [`Self::author_derived_all`] when several
-    /// derived rows must share one transaction *and* land with vectors.
-    ///
-    /// # Errors
-    ///
-    /// Authorization or storage faults.
-    pub async fn author_derived(
-        &mut self,
-        req: AuthorDerivedRequestInput<'_>,
-    ) -> Result<AuthorDerivedAuthorizedOutcome, ProtocolError> {
-        let mut outcomes = self.author_derived_all(std::iter::once(req)).await?;
-        outcomes.pop().ok_or_else(|| {
-            ProtocolError::internal("author_derived_all returned no outcome for one request")
-        })
-    }
-
-    /// Authorize and persist many derived memories in one transaction.
-    ///
-    /// Every text is embedded (or deferred for a refused input) **before**
-    /// [`crate::storage_ports::WriteSessionFactory::begin`]. Use this for a self-referential
-    /// group (code slices of one file) so the pool slot is held only for
-    /// the writes.
-    ///
-    /// # Errors
-    ///
-    /// Authorization or storage faults from any member. No row is
-    /// committed unless the caller [`Self::commit`]s.
-    pub async fn author_derived_all(
-        &mut self,
-        reqs: impl IntoIterator<Item = AuthorDerivedRequestInput<'_>>,
-    ) -> Result<Vec<AuthorDerivedAuthorizedOutcome>, ProtocolError> {
-        let reqs: Vec<AuthorDerivedRequestInput<'_>> = reqs.into_iter().collect();
-        if reqs.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut prepared = Vec::with_capacity(reqs.len());
-        for req in reqs {
-            prepared.push(self.prepare_derived(req).await?);
-        }
-        let mut outcomes = Vec::with_capacity(prepared.len());
-        for item in prepared {
-            outcomes.push(self.write_prepared_derived(item).await?);
-        }
-        Ok(outcomes)
-    }
-
-    async fn prepare_derived(
-        &mut self,
-        req: AuthorDerivedRequestInput<'_>,
-    ) -> Result<PreparedDerived, ProtocolError> {
-        let write_permit = self
-            .engine
-            .authorize_write(self.authz, &req.owner, Relation::Editor)
-            .await?;
-        let owner = *write_permit.owner();
-        if let Some(prior) = req.supersedes {
-            let prior_home = self
-                .engine
-                .storage()
-                .memory_authoring
-                .owner_access_read
-                .home_owner(crate::EntityId::Memory(prior))
-                .await
-                .map_err(|err| ProtocolError::internal(err.to_string()))?;
-            if prior_home.as_ref() != Some(&owner) {
-                return Err(ProtocolError::forbidden(
-                    "supersedes target is not an owned entity of the same owner",
-                ));
-            }
-            let prior_kind = self.engine.load_required_memory_kind(&owner, prior).await?;
-            if prior_kind != req.kind {
-                return Err(ProtocolError::invalid_argument(
-                    "supersedes",
-                    "must supersede a memory of the same kind",
-                ));
-            }
-        }
-        let source = EdgeEndpoint::memory(req.kind, req.memory_id);
-        let origins = self
-            .engine
-            .authorized_index_targets_visible(
-                self.authz,
-                source,
-                req.derived_from,
-                "derived_from",
-                &self.written,
-            )
-            .await?;
-        let declared = req.sidecar_payload.references();
-        let mut references = self
-            .engine
-            .authorized_payload_references_visible(self.authz, source, &declared, &self.written)
-            .await?;
-        if !req.extra_refs.is_empty() {
-            let extras: Vec<EdgeEndpoint> = req
-                .extra_refs
-                .iter()
-                .copied()
-                .map(|id| EdgeEndpoint::memory(EntityKind::Fact, id))
-                .collect();
-            let extra = self
-                .engine
-                .authorized_index_targets_visible(
-                    self.authz,
-                    source,
-                    &extras,
-                    "refs",
-                    &self.written,
-                )
-                .await?;
-            references.extend(extra);
-        }
-        super::memory_authoring::validate_operator_memory_invocation_request(&req)
-            .map_err(super::memory_authoring::map_derived_storage_error)?;
-        let embedding = self
-            .prepare_embedding(req.memory_id, req.schema_id.as_str(), &req.text)
-            .await
-            .map_err(super::memory_authoring::map_derived_storage_error)?;
-        Ok(PreparedDerived {
-            write_permit,
-            owner,
-            memory_id: req.memory_id,
-            kind: req.kind,
-            text: req.text,
-            schema_id: req.schema_id,
-            schema_version: req.schema_version,
-            operator_kind: req.operator_kind,
-            model_id: req.model_id.to_owned(),
-            sidecar_payload: req.sidecar_payload,
-            supersedes: req.supersedes,
-            lexical_language: req.lexical_language.map(ToOwned::to_owned),
-            embedding,
-            origins,
-            references,
-        })
-    }
-
-    async fn prepare_embedding(
-        &mut self,
-        memory_id: MemoryId,
-        schema_id: &str,
-        text: &str,
-    ) -> Result<PreparedEmbedding, crate::storage::StorageError> {
-        let client = self.engine.embed_client();
-        let Some(client) = client.as_deref() else {
-            return Ok(PreparedEmbedding::None);
-        };
-        // A deferral is a promise the drain can keep. It cannot for a schema
-        // whose recipe resolves to no unit: the job would be claimed, find no
-        // text and be dropped, once per memory.
-        if !self.engine.registry().schema_is_embeddable(schema_id) {
-            return Ok(PreparedEmbedding::None);
-        }
-        // Transaction already open: do not hold the pool slot across HTTP.
-        if self.session.is_some() {
-            return Ok(PreparedEmbedding::Deferred {
-                model_id: client.model_id().to_owned(),
-            });
-        }
-        Ok(
-            match super::memory_authoring::resolve_derived_embedding(client, memory_id, text)
-                .await?
-            {
-                DerivedEmbedding::None => PreparedEmbedding::None,
-                DerivedEmbedding::Ready { model_id, vector } => PreparedEmbedding::Ready {
-                    model_id: model_id.to_owned(),
-                    vector,
-                },
-                DerivedEmbedding::Deferred { model_id } => PreparedEmbedding::Deferred {
-                    model_id: model_id.to_owned(),
-                },
-            },
-        )
     }
 
     async fn write_prepared_derived(
         &mut self,
         item: PreparedDerived,
-    ) -> Result<AuthorDerivedAuthorizedOutcome, ProtocolError> {
-        let embedding = item.embedding.as_derived();
-        let storage_req = AuthorDerivedRequest {
-            memory_id: item.memory_id,
-            owner: item.owner,
-            kind: item.kind,
-            text: item.text,
-            schema_id: item.schema_id,
-            schema_version: item.schema_version,
-            operator_kind: item.operator_kind,
-            model_id: &item.model_id,
-            sidecar_payload: item.sidecar_payload,
-            supersedes: item.supersedes,
-            lexical_language: item.lexical_language.as_deref(),
-            embedding,
-            origins: &item.origins,
-            references: &item.references,
-        };
+    ) -> Result<DerivedMemoryOutcome, ProtocolError> {
+        let storage_req = item.storage_request();
         let outcome = self
             .ensure_session()
             .await?
@@ -676,8 +445,10 @@ impl UnitOfWork<'_> {
         if !outcome.idempotent_replay {
             self.written.push(outcome.memory_id);
             self.written_kinds.push((outcome.memory_id, item.kind));
+            self.written_owners
+                .push((outcome.memory_id, *item.write_permit.owner()));
         }
-        Ok(AuthorDerivedAuthorizedOutcome {
+        Ok(DerivedMemoryOutcome {
             memory_id: outcome.memory_id,
             idempotent_replay: outcome.idempotent_replay,
             edge_count: outcome.edge_count,
@@ -687,13 +458,30 @@ impl UnitOfWork<'_> {
 
     /// Authorize and persist one Goal create in this transaction.
     ///
-    /// `write_act_t` attaches this episode's write-act (`Goal.write_act_t`).
-    /// Replay of a bound Goal is rejected by the episode protocol, not here.
+    /// Uses the same typed request as [`Engine::create_goal`]. Earlier Memory
+    /// writes in this transaction can supply assignment and evidence targets.
     ///
     /// # Errors
     ///
     /// Authorization or storage faults.
-    pub async fn create_goal(
+    pub async fn create_goal<P>(
+        &mut self,
+        request: GoalCreateRequest<P>,
+    ) -> Result<GoalWriteOutcome, ProtocolError>
+    where
+        P: GoalPayload,
+    {
+        let permit = self
+            .engine
+            .authorize_write(self.authz, &request.owner, Relation::Editor)
+            .await?;
+        let request = self.engine.normalize_goal_request(request)?;
+        self.create_goal_payload_authorized(request, None, &permit)
+            .await
+    }
+
+    /// Internal episode/protocol adapter with an optional write-act fact.
+    pub(crate) async fn create_goal_from_payload_write(
         &mut self,
         req: super::GoalCreatePayloadWriteRequest,
         write_act_t: Option<MemoryId>,
@@ -702,10 +490,23 @@ impl UnitOfWork<'_> {
             .engine
             .authorize_write(self.authz, &req.owner, Relation::Editor)
             .await?;
-        let payload = self.engine.normalize_payload_write(req.payload.clone())?;
+        let req = super::GoalCreatePayloadWriteRequest {
+            payload: self.engine.normalize_payload_write(req.payload)?,
+            ..req
+        };
+        self.create_goal_payload_authorized(req, write_act_t, &permit)
+            .await
+    }
+
+    async fn create_goal_payload_authorized(
+        &mut self,
+        req: super::GoalCreatePayloadWriteRequest,
+        write_act_t: Option<MemoryId>,
+        permit: &super::pipeline::WritePermit,
+    ) -> Result<GoalWriteOutcome, ProtocolError> {
         let draft = GoalDraft::active_from_payload_write(
             *permit.owner(),
-            payload,
+            req.payload.clone(),
             req.topology.clone(),
             req.wake.clone(),
             req.authorship.clone(),
@@ -746,9 +547,15 @@ impl UnitOfWork<'_> {
                 &self.written,
             )
             .await?;
-        self.engine
-            .author_self_perspective_authorized(self.authz, req.author_self_perspective_id)
-            .await?;
+        self.validate_pending_goal_targets(&req, permit.owner())?;
+        if req
+            .author_self_perspective_id
+            .is_none_or(|id| !self.written.contains(&id))
+        {
+            self.engine
+                .author_self_perspective_authorized(self.authz, req.author_self_perspective_id)
+                .await?;
+        }
         self.engine
             .validate_wake_config_for_write(self.authz, req.wake.as_ref())
             .await?;
@@ -765,6 +572,55 @@ impl UnitOfWork<'_> {
                 )
             })?;
         Ok(outcome)
+    }
+
+    fn validate_pending_goal_targets(
+        &self,
+        req: &super::GoalCreatePayloadWriteRequest,
+        goal_owner: &Owner,
+    ) -> Result<(), ProtocolError> {
+        let assignment = req.topology.assignment().perspective_id();
+        if let Some((_, owner)) = self.written_owners.iter().find(|(id, _)| *id == assignment)
+            && owner != goal_owner
+        {
+            return Err(ProtocolError::forbidden(
+                super::pipeline::ENTRY_NOT_FOUND_MESSAGE,
+            ));
+        }
+        if let Some((_, kind)) = self.written_kinds.iter().find(|(id, _)| *id == assignment)
+            && *kind != EntityKind::Perspective
+        {
+            return Err(ProtocolError::invalid_argument(
+                "assignment",
+                "Goal assignment must reference a Perspective",
+            ));
+        }
+        for evidence in req.topology.evidence() {
+            if let Some((_, kind)) = self
+                .written_kinds
+                .iter()
+                .find(|(id, _)| *id == evidence.memory_id())
+                && !matches!(kind, EntityKind::Fact | EntityKind::Abstraction)
+            {
+                return Err(ProtocolError::invalid_argument(
+                    "evidence",
+                    "Goal evidence must reference a Fact or Abstraction",
+                ));
+            }
+        }
+        if let Some(id) = req.author_self_perspective_id
+            && let Some((_, kind)) = self
+                .written_kinds
+                .iter()
+                .find(|(written, _)| *written == id)
+            && *kind != EntityKind::Perspective
+        {
+            return Err(ProtocolError::invalid_argument(
+                "author_self_perspective_id",
+                "author self must reference a Perspective",
+            ));
+        }
+        Ok(())
     }
 
     /// Cool one owned memory `t` in this transaction.
@@ -813,28 +669,4 @@ impl Drop for UnitOfWork<'_> {
     fn drop(&mut self) {
         self.session.take();
     }
-}
-
-async fn owned_fact_series_handle<P: FactPayload>(
-    engine: &Engine,
-    authz: &AuthzContext,
-    payload: &P,
-) -> Result<Option<uuid::Uuid>, ProtocolError> {
-    let Some(table) = P::sidecar_table() else {
-        return Ok(None);
-    };
-    let columns = P::natural_key_columns();
-    if columns.is_empty() {
-        return Ok(None);
-    }
-    let owner = engine.single_write_owner_for(authz, Relation::Editor)?;
-    let atoms = SidecarAtom::bind_columns(payload, columns)
-        .map_err(|err| ProtocolError::invalid_argument("natural_key", err))?;
-    let binds = atoms
-        .iter()
-        .map(|(column, value)| (column.as_str(), value.clone()))
-        .collect::<Vec<_>>();
-    engine
-        .owned_series_handle(authz, owner, &P::schema_id(), table, &binds)
-        .await
 }

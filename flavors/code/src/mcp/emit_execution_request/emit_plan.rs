@@ -183,8 +183,15 @@ async fn emit_plan_items(
         let provenance = FactProvenance {
             derived_from: item_origins,
         };
-        let outcome =
-            ingest_plan_item(uow, repo_id, item, depends_on_memory_ids, provenance).await?;
+        let outcome = ingest_plan_item(
+            uow,
+            ctx.owner(),
+            repo_id,
+            item,
+            depends_on_memory_ids,
+            provenance,
+        )
+        .await?;
         emitted.insert(key.clone(), outcome.memory_id);
         plan_payload_items.push(CodeExecutionPlanItemV1 {
             key: key.clone(),
@@ -234,6 +241,7 @@ fn resolve_item_dependencies(
 /// admission.
 async fn ingest_plan_item(
     uow: &mut UnitOfWork<'_>,
+    owner: proxima_core::Owner,
     repo_id: uuid::Uuid,
     item: ExecutionPlanItemArgs,
     depends_on_memory_ids: Vec<uuid::Uuid>,
@@ -248,7 +256,7 @@ async fn ingest_plan_item(
                 request_key: item.idempotency_key,
                 depends_on_memory_ids,
             };
-            let outcome = ingest_execution_request(uow, &payload, provenance).await?;
+            let outcome = ingest_execution_request(uow, owner, &payload, provenance).await?;
             if !outcome.idempotent_replay && !item.acceptance_criteria.is_empty() {
                 let criteria_payload = AcceptanceCriteriaV1 {
                     work_item_memory_id: outcome.memory_id.into_inner(),
@@ -256,6 +264,7 @@ async fn ingest_plan_item(
                 };
                 ingest_acceptance_criteria(
                     uow,
+                    owner,
                     &criteria_payload,
                     FactProvenance { derived_from: &[] },
                 )
@@ -272,7 +281,7 @@ async fn ingest_plan_item(
                 criteria: item.test_criteria,
                 depends_on_memory_ids,
             };
-            ingest_test_request(uow, &payload, provenance).await
+            ingest_test_request(uow, owner, &payload, provenance).await
         }
     }
 }

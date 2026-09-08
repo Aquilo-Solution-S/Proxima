@@ -24,46 +24,34 @@ pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
 /// verb: without it the result of a completion cannot be bound to a
 /// named local or returned from a flavor's own function.
 pub use proxima_core::citations::UploadedBlobPayload;
-pub use proxima_core::engine::{TypedFactIngest, UnitOfWork};
-pub use proxima_core::engine::{UploadCompleted, UploadCompletionExpectation};
-/// MCP tool-authoring surface: implement [`McpTool`] with typed
-/// [`McpToolCtx`] / [`McpToolError`] instead of reaching into
-/// `proxima_core::mcp`. Mirrors what `docs/tutorials/add-first-mcp-tool.md`
-/// imports.
-///
-/// [`FlavorServices`] is the seam for dependencies core cannot name. Each
-/// linked [`FlavorApp`](crate::FlavorApp) contributes a typed set once; the
-/// runtime rejects duplicate concrete types and shares the result with MCP,
-/// REST, and flavor workers. Generic tools resolve one with
-/// `ctx.service::<MyService>()`.
-///
-/// [`McpPresentationExt`] is how a flavor implementing the transport-neutral
-/// [`Tool`] trait mints and parses MCP wire references (`F:`/`A:`/`P:`/`G:`
-/// prefixed uuids — there is no edge prefix, because an edge has no id).
-/// [`McpToolCtx`] carries those as inherent methods,
-/// but [`Tool`] is handed a [`ToolCtx`], which deliberately knows nothing
-/// about the wire; importing this trait is the sanctioned bridge. Without
-/// it a flavor would reimplement the same forwarding over
-/// [`McpToolPresentation`].
-pub use proxima_core::mcp::{
-    McpActionArgSpec, McpAuthorContext, McpPresentationExt, McpTool, McpToolAnnotations,
-    McpToolCtx, McpToolError, McpToolErrorKind, McpToolPresentation,
+pub use proxima_core::engine::{FactWrite, UnitOfWork};
+/// Goal write DTOs, including the nested topology and wake declarations.
+pub use proxima_core::engine::{
+    GoalDecomposeRequest, GoalMarkAchievedRequest, GoalModifyRequest, GoalTransitionRequest,
 };
-/// Resolves the operator label a write is recorded under, for a tool
-/// written against [`McpTool`] — the [`ToolCtx`] spelling, and the one a
-/// transport-neutral [`Tool`] must use, is
-/// [`ToolCtx::operator_label`](proxima_core::ToolCtx::operator_label).
-/// Both call the same resolver.
-///
-/// A flavor tool that accepts its own `model_id` argument has to go
-/// through one of them. Reading the caller's label directly would silently
-/// let a caller-supplied value outrank a model identity the authenticated
-/// token binds: the transport edges only ever inspect a *top-level*
-/// `model_id`, so a nested or per-item one — and every argument arriving
-/// through the embedded host API, which passes no edge at all — reaches the
-/// tool untouched. This is where the bound identity wins, a differing claim
-/// becomes [`McpToolError::InvalidInput`], and the length bound is applied.
-pub use proxima_core::operator_label;
+pub use proxima_core::engine::{UploadCompleted, UploadCompletionExpectation};
+pub use proxima_core::error::{ErrorCode, ProtocolError};
+/// Build-time flavor declaration vocabulary. These are const-constructible
+/// contract values; no runtime registry or storage handle crosses the SDK.
+pub use proxima_core::flavor::{
+    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
+    CounterRule, DEFAULT_RANK_WEIGHTS, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe,
+    EmbeddingSlot, Enforcement, EraseLeg, EraseRule, ExportRule, FlavorContract, ForgetLeg,
+    ForgetRule, KeyShape, LanguagePolicy, PROJECTION_MEMORY_COLUMN, PROJECTION_MEMORY_FK,
+    PROJECTION_TABLE_NAME, ProjectionDecl, ProjectionSpec, Provenance, RankSource,
+    ResolvedEmbedUnit, ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef,
+    SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, TSVECTOR_WEIGHT_CLASSES, ToolContract,
+    TransferLeg, TransferRule, WEIGHT_UNIFORM, WeightedField,
+};
+/// Tool metadata and the MCP reference presentation bridge.
+/// Implement [`Tool`] with [`ToolCtx`] / [`ToolError`]; MCP and REST adapt it.
+/// Import [`McpPresentationExt`] to format and parse MCP references on `ToolCtx`.
+/// Resolve dependencies with `ctx.service::<T>()` and model labels with
+/// [`ToolCtx::operator_label`]. The authenticated model identity takes precedence.
+pub use proxima_core::mcp::{
+    McpActionArgSpec, McpAuthorContext, McpPresentationExt, McpToolAnnotations,
+};
 /// Host-wired cited-blob lane, resolved by tools and workers from
 /// [`FlavorServices`]. Present only when the host configured S3; the concrete
 /// backend (`proxima-blob-s3`) is never named across this seam.
@@ -80,6 +68,8 @@ pub use proxima_core::storage_ports::{
     CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadCompleted,
     CitedBlobUploadHeader, CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, VerifiedCitedBlob,
 };
+/// Transaction-scoped, owner-stamped sidecar precondition reads.
+pub use proxima_core::storage_ports::{SIDECAR_SESSION_READ_MAX_ROWS, SidecarSessionRead};
 /// Typed inline citation drafts and the Engine admission witnesses they
 /// produce. `authorize_fact_with_citation` takes the drafts plus a sidecar
 /// slice; without these names an out-of-tree flavor can only spell
@@ -89,9 +79,17 @@ pub use proxima_core::verbs::fact_ingest::{
     CitationSpec, FactIngestOutcome, FactWriteCommand, InlineCitationMappingDraft,
     InlineCitedObjectDraft,
 };
-pub use proxima_core::verbs::query::{
-    GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, hybrid_degraded_to_lexical,
+pub use proxima_core::verbs::goal_write::{
+    ChildGoalDraft, DecomposeGoalOutcome, GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest,
+    GoalDependencyRef, GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite,
+    GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError, GoalWriteOutcome,
+    IdempotencyKey, OperatorKind, SystemOrigin,
 };
+pub use proxima_core::verbs::query::{
+    GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, SupersessionStatus,
+    hybrid_degraded_to_lexical,
+};
+pub use proxima_core::verbs::schema::PayloadKind;
 /// [`FactTombstone`] is the return type of [`FactPayload::tombstone`], so a
 /// flavor that declares a *stateful* Fact schema — one with a head per
 /// natural key and an explicit deletion observation — cannot write that
@@ -107,42 +105,12 @@ pub use proxima_core::{
     DelegationId, DelegationIssued, DelegationRevocation, EndpointUrlError, EndpointUrlPolicy,
     EngineAuthority, FactPayload, FactReceiptId, FactTombstone, FlavorDescriptor, FlavorProvenance,
     FlavorRegistry, FlavorRegistryError, FlavorRegistryFrozen, FlavorServiceError, FlavorServices,
-    GoalId, GoalPayload, InputContractId, MAX_MEMORY_HYDRATION_BATCH, MemoryHydrationBatchOutcome,
-    MemoryHydrationOutcome, MemoryHydrationStatus, MemoryId, ModelId, OperatorId,
-    PayloadKeyBuilder, PerspectivePayload, PromptVersion, SchemaId, SchemaVersion,
-    SearchProjectionColumnKind, SidecarPayload, Tool, ToolCaller, ToolCtx, ToolError, ToolServices,
-    TrustedModelIdError, is_loopback_endpoint, is_loopback_host, proxima_flavor, proxima_schema_id,
-    validate_endpoint_url,
-};
-/// Derived-memory authoring: the request/outcome types of
-/// [`proxima_core::Engine::author_derived_authorized`], which is how a
-/// flavor writes the Abstractions and Perspectives its
-/// [`AbstractionPayload`] / [`PerspectivePayload`] schemas describe.
-///
-/// Without these the SDK could only *declare* derived schemas, never
-/// populate them: an out-of-tree flavor depends on `proxima` alone, and
-/// the in-tree precedent (`flavors/code`) reaches the same lane through a
-/// direct `proxima-storage-pg` dependency it cannot have.
-///
-/// Provenance is `derived_from` on the request: a slice of [`EdgeEndpoint`]s
-/// naming what the write was made from, which lands one
-/// [`EdgeKind::Origin`] row each inside the write's own transaction. A
-/// re-derivation that replaces an earlier output sets `supersedes`, which
-/// is a lineage pointer on the two rows and writes no edge at all.
-///
-/// A derived memory is embedded *synchronously*, **before** the write
-/// transaction begins. A text the provider refuses whole is rescued by
-/// the drain's bisection and stored as one vector with the row. A text
-/// refused at every length leaves the memory written with no vector and
-/// an embedding job enqueued in the same transaction, and
-/// [`AuthorDerivedAuthorizedOutcome::embedding_deferred`] says so. Only a
-/// provider that fails a liveness probe still fails the write. Several
-/// derived rows that must commit together use
-/// [`UnitOfWork::author_derived_all`] (embed the batch, then one
-/// begin). A derived write after the transaction is already open defers
-/// the vector rather than hold the pool slot across HTTP.
-pub use proxima_core::{
-    AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, MemoryOperatorKind,
+    GoalId, GoalPayload, GroupId, InputContractId, MAX_MEMORY_HYDRATION_BATCH,
+    MemoryHydrationBatchOutcome, MemoryHydrationOutcome, MemoryHydrationStatus, MemoryId, ModelId,
+    OperatorId, OwnerRef, PayloadKeyBuilder, PerspectivePayload, PromptVersion, SchemaId,
+    SchemaVersion, SearchProjectionColumnKind, SidecarPayload, Tool, ToolCaller, ToolCtx,
+    ToolError, ToolId, ToolServices, TrustedModelIdError, UserId, is_loopback_endpoint,
+    is_loopback_host, proxima_flavor, proxima_schema_id, validate_endpoint_url,
 };
 /// Query / ingest types a flavor names next to [`crate::Engine`]
 /// (Host API). `Engine` itself stays off this module (`docs/14`).
@@ -155,6 +123,14 @@ pub use proxima_core::{
 pub use proxima_core::{
     AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, EntityId,
     MembershipChange, OwnerResolver,
+};
+/// Typed derived-memory writes. `DerivedMemory` infers kind/schema from its payload;
+/// `Engine::derive_memory` resolves actual origin kinds and validates provenance.
+/// `MemoryTarget` distinguishes a new series from a revision. Always retain the returned row ID.
+/// `UnitOfWork::derive_memories` pre-embeds a batch before opening its transaction;
+/// an already-open transaction defers embedding, reported in `DerivedMemoryOutcome`.
+pub use proxima_core::{
+    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EntityKind, MemoryTarget, SeriesHandle,
 };
 /// The connection vocabulary a flavor is allowed to speak (docs/16-edges.md).
 ///

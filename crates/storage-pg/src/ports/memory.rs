@@ -323,10 +323,11 @@ impl MemoryReadPort for PgStorage {
 
     async fn query_memories(
         &self,
+        read_owners: &[OwnerRef],
         req: &QueryRequest,
         schemas: &[MemorySchemaSpec],
     ) -> Result<QueryResponse, StorageError> {
-        verbs::query::query_memories(&self.pool, &self.sidecars, req, schemas).await
+        verbs::query::query_memories(&self.pool, &self.sidecars, read_owners, req, schemas).await
     }
 
     async fn search_memories(

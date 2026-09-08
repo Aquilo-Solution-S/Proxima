@@ -14,7 +14,8 @@ mod pg_tests {
     use proxima_core::verbs::schema::MemoryEmbedUnit;
     use proxima_core::{
         AccessKind, AuthPath, AuthzContext, Engine, EntityId, EntityKind, FactIngestPort,
-        FlavorRegistry, GoalId, GroupId, Owner, SchemaId, SchemaVersion, SourceId, StorageError,
+        FlavorRegistry, GoalId, GroupId, InputContractId, MemoryTarget, Owner, ProtocolError,
+        SchemaId, SchemaVersion, SourceId, StorageError,
     };
     use proxima_pg_testkit::drop_db;
     use uuid::Uuid;
@@ -26,8 +27,7 @@ mod pg_tests {
         CHUNKED_EMBED_MIN_BYTES, EMBED_LIVENESS_PROBE, MIN_EMBED_INPUT_CAP_CHARS,
     };
     use proxima_core::{
-        AbstractionPayload, AgentDerivationV1, AuthorDerivedRequestInput, EdgeEndpoint,
-        InputContractId, MemoryId, MemoryOperatorKind, OperatorId, SidecarPayload,
+        AgentDerivationV1, DerivationIdentity, DerivedMemory, MemoryId, OperatorId, SeriesHandle,
     };
 
     use super::super::{
@@ -250,7 +250,7 @@ mod pg_tests {
                 occurred_at: now,
             }),
             citation: None,
-            derived_from: Vec::new(),
+            additional_references: Vec::new(),
             refs: Vec::new(),
             blob_id: None,
             kind: "fact".into(),
@@ -304,6 +304,7 @@ mod pg_tests {
             &authorized,
             embedding_model_id,
             crate::verbs::fact_ingest::FactAdmissionInput {
+                natural_key: None,
                 sidecar_tables: &[AGENT_NOTE.to_owned()],
                 scopes: &[],
                 content: crate::verbs::fact_ingest::ContentResolution {
@@ -2395,40 +2396,30 @@ mod pg_tests {
 
     fn derived_request(
         owner: Owner,
-        origins: &[EdgeEndpoint],
+        origins: &[MemoryId],
         text: String,
-    ) -> AuthorDerivedRequestInput<'_> {
-        AuthorDerivedRequestInput {
-            memory_id: MemoryId::new(Uuid::now_v7()),
+    ) -> Result<DerivedMemory, ProtocolError> {
+        DerivedMemory::abstraction(
+            MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
             owner,
-            kind: EntityKind::Abstraction,
             text,
-            schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
-            schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-            operator_kind: MemoryOperatorKind::FtoA,
-            operator_id: OperatorId::new(Uuid::now_v7()),
-            input_contract_id: InputContractId::new(Uuid::now_v7()),
-            model_id: "test",
-            sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
+            AgentDerivationV1 {
                 title: "long derivation".into(),
                 body: "long derivation".into(),
                 tags: Vec::new(),
                 idempotency_key: None,
-                source_memory_ids: origins
-                    .iter()
-                    .filter_map(|origin| origin.memory_id())
-                    .map(MemoryId::into_inner)
-                    .collect(),
+                source_memory_ids: origins.iter().copied().map(MemoryId::into_inner).collect(),
                 model_id: "test".into(),
                 client_name: "test".into(),
                 client_version: "1".into(),
-            }),
-            derived_from: origins,
-            extra_refs: &[],
-            supersedes: None,
-            // `agent-derivation-v1` declares `LanguagePolicy::PerRow`.
-            lexical_language: Some(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT),
-        }
+            },
+            origins.iter().copied(),
+            DerivationIdentity::new(
+                OperatorId::new(Uuid::now_v7()),
+                InputContractId::new(Uuid::now_v7()),
+            ),
+        )
+        .map(|memory| memory.lexical_language(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT))
     }
 
     /// Engine over this storage with a capped provider, plus one origin
@@ -2490,13 +2481,13 @@ mod pg_tests {
             let cap = MIN_EMBED_INPUT_CAP_CHARS;
             let (engine, authz, origin, offered) =
                 capped_authoring_fixture(&pg, &owner, cap).await?;
-            let origins = [EdgeEndpoint::memory(EntityKind::Fact, origin)];
+            let origins = [origin];
             let pool = pg.pool_for_tests();
 
             let outcome = engine
-                .author_derived_authorized(
+                .derive_memory(
                     &authz,
-                    derived_request(owner, &origins, "a".repeat(cap * 3)),
+                    derived_request(owner, &origins, "a".repeat(cap * 3))?,
                 )
                 .await?;
 
@@ -2556,13 +2547,13 @@ mod pg_tests {
             // Accepts the probe and nothing the bisection can produce.
             let (engine, authz, origin, _offered) =
                 capped_authoring_fixture(&pg, &owner, EMBED_LIVENESS_PROBE.len()).await?;
-            let origins = [EdgeEndpoint::memory(EntityKind::Fact, origin)];
+            let origins = [origin];
             let pool = pg.pool_for_tests();
 
             let outcome = engine
-                .author_derived_authorized(
+                .derive_memory(
                     &authz,
-                    derived_request(owner, &origins, "a".repeat(CHUNKED_EMBED_MIN_BYTES * 3)),
+                    derived_request(owner, &origins, "a".repeat(CHUNKED_EMBED_MIN_BYTES * 3))?,
                 )
                 .await?;
 

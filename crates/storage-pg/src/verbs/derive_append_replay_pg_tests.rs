@@ -1,4 +1,4 @@
-//! Derived replay compares origins and refs; a ref mismatch is Conflict.
+//! Derived replay requires matching head metadata and pins; content stays immutable.
 //!
 //! Crate-internal for the same reason as the origin-proof tests beside it.
 
@@ -26,7 +26,7 @@ fn fact_draft() -> FactWriteCommand {
         lexical_language: None,
         receipt: None,
         citation: None,
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
@@ -128,6 +128,133 @@ async fn same_origins_and_refs_replay() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("same pins must replay");
+}
+
+async fn head_snapshot(
+    pool: &sqlx::PgPool,
+    handle: Uuid,
+) -> Result<(Uuid, String, String, Uuid, i64), sqlx::Error> {
+    let row = sqlx::query_as::<_, (Uuid, String, String, Uuid)>(
+        "SELECT t, kind::text, schema_id, owner_id
+           FROM proxima_core.memory_head WHERE handle = $1",
+    )
+    .bind(handle)
+    .fetch_one(pool)
+    .await?;
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE handle = $1")
+            .bind(handle)
+            .fetch_one(pool)
+            .await?;
+    Ok((row.0, row.1, row.2, row.3, count))
+}
+
+async fn content_snapshot(
+    pool: &sqlx::PgPool,
+    handle: Uuid,
+) -> Result<(Uuid, Vec<u8>), sqlx::Error> {
+    sqlx::query_as(
+        "SELECT m.content_id, c.content_hash
+           FROM proxima_core.memory m
+           JOIN proxima_core.content c ON c.content_id = m.content_id
+          WHERE m.handle = $1",
+    )
+    .bind(handle)
+    .fetch_one(pool)
+    .await
+}
+
+#[tokio::test]
+async fn replay_metadata_mismatch_never_replays_or_mutates() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
+        let other_permit = OwnerWritePermit::new_for_tests(other_owner, AccessKind::Abstraction);
+        let pool = pg.pool_for_tests();
+        let fact = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let handle = Uuid::now_v7();
+        let origins = [EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
+        let first =
+            append_with_edges(pool, &permit, &derived_draft(owner, handle), &origins, &[]).await?;
+        let before = head_snapshot(pool, handle).await?;
+
+        let wrong_owner = derived_draft(other_owner, handle);
+        let owner_err = append_with_edges(pool, &other_permit, &wrong_owner, &origins, &[])
+            .await
+            .expect_err("wrong owner must not replay");
+        assert!(matches!(owner_err, StorageError::ConstraintViolation(_)));
+        assert_eq!(head_snapshot(pool, handle).await?, before);
+
+        let premise = first.memory_id;
+        let premise_origin = [EdgeEndpoint::memory(EntityKind::Abstraction, premise)];
+        let second_handle = Uuid::now_v7();
+        let mut second_draft = derived_draft(owner, second_handle);
+        second_draft.operator_kind = MemoryOperatorKind::AtoA;
+        let second = append_with_edges(pool, &permit, &second_draft, &premise_origin, &[]).await?;
+        let before_kind = head_snapshot(pool, second_handle).await?;
+        let mut wrong_kind = derived_draft(owner, second_handle);
+        wrong_kind.kind = EntityKind::Perspective;
+        wrong_kind.operator_kind = MemoryOperatorKind::AtoP;
+        let kind_err = append_with_edges(pool, &permit, &wrong_kind, &premise_origin, &[])
+            .await
+            .expect_err("wrong output kind must not replay");
+        assert!(matches!(kind_err, StorageError::ConstraintViolation(_)));
+        assert_eq!(head_snapshot(pool, second_handle).await?, before_kind);
+
+        let schema_handle = Uuid::now_v7();
+        let schema_first = append_with_edges(
+            pool,
+            &permit,
+            &derived_draft(owner, schema_handle),
+            &origins,
+            &[],
+        )
+        .await?;
+        let before_schema = head_snapshot(pool, schema_handle).await?;
+        let mut wrong_schema = derived_draft(owner, schema_handle);
+        wrong_schema.schema_id = SchemaId::new("p6/other-derived".into());
+        let schema_err = append_with_edges(pool, &permit, &wrong_schema, &origins, &[])
+            .await
+            .expect_err("wrong schema must not replay");
+        assert!(matches!(schema_err, StorageError::ConstraintViolation(_)));
+        assert_eq!(head_snapshot(pool, schema_handle).await?, before_schema);
+        assert_eq!(schema_first.memory_id.into_inner(), before_schema.0);
+        assert_eq!(second.memory_id.into_inner(), before_kind.0);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("metadata mismatch replay gate");
+}
+
+#[tokio::test]
+async fn same_metadata_replay_keeps_first_content() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
+        let pool = pg.pool_for_tests();
+        let fact = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let handle = Uuid::now_v7();
+        let origins = [EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
+        let first_draft = derived_draft(owner, handle);
+        let first = append_with_edges(pool, &permit, &first_draft, &origins, &[]).await?;
+        let before = head_snapshot(pool, handle).await?;
+        let content_before = content_snapshot(pool, handle).await?;
+        let mut changed = derived_draft(owner, handle);
+        changed.text = "changed text must be ignored on replay".into();
+        let replay = append_with_edges(pool, &permit, &changed, &origins, &[]).await?;
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.memory_id, first.memory_id);
+        assert_eq!(head_snapshot(pool, handle).await?, before);
+        assert_eq!(content_snapshot(pool, handle).await?, content_before);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("same metadata retry must preserve first content");
 }
 
 #[tokio::test]

@@ -5,7 +5,6 @@
 //! same engine, write-session, and Postgres paths used by a composed host.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::engine::TypedFactIngest;
 use proxima_core::flavor::{
     CounterRule, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule,
     KeyShape, ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, Surface,
@@ -24,11 +23,11 @@ use proxima_core::verbs::goal_write::{
 };
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
 use proxima_core::{
-    AccessKind, AgentDerivationV1, AuthPath, AuthorDerivedRequestInput, AuthzContext, EdgeEndpoint,
-    EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, FactPayload, FlavorRegistry, GoalId,
-    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, OwnerRef, PayloadKeyBuilder,
-    PayloadReference, Relation, SchemaId, SchemaVersion, SidecarPayload, StorageError,
-    UploadedBlobPayload, UserId,
+    AccessKind, AgentDerivationV1, AuthPath, AuthzContext, DerivationIdentity, DerivedMemory,
+    EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, FactPayload, FactWrite,
+    FlavorRegistry, GoalId, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner, OwnerRef,
+    PayloadKeyBuilder, PayloadReference, Relation, SchemaId, SchemaVersion, SeriesHandle,
+    SidecarPayload, StorageError, UploadedBlobPayload, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
@@ -264,7 +263,7 @@ async fn seed_abstraction(
     draft.ingest_key = None;
     draft.receipt = None;
     draft.refs.clear();
-    draft.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, origin)];
+    draft.additional_references = vec![EdgeEndpoint::memory(EntityKind::Fact, origin)];
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     Ok(pg
         .ingest_fact_atomic(&permit, &draft, None)
@@ -285,7 +284,7 @@ async fn seed_perspective(pg: &PgStorage, owner: Owner) -> Result<MemoryId, Stor
     draft.ingest_key = None;
     draft.receipt = None;
     draft.refs.clear();
-    draft.derived_from = vec![EdgeEndpoint::memory(EntityKind::Abstraction, abstraction)];
+    draft.additional_references = vec![EdgeEndpoint::memory(EntityKind::Abstraction, abstraction)];
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     Ok(pg
         .ingest_fact_atomic(&permit, &draft, None)
@@ -414,7 +413,9 @@ async fn authorized_links_are_persisted_by_engine_uow() {
         let engine = engine(&pg, &registry);
         let uow_payload = payload("uow-one", fact_id.into_inner(), goal.into_inner());
         let mut uow = engine.unit_of_work(&authz).await?;
-        let outcome = uow.ingest_fact("test/uow", &uow_payload).await?;
+        let outcome = uow
+            .ingest_fact(FactWrite::new(owner, "test/uow", &uow_payload))
+            .await?;
         uow.commit().await?;
         assert_eq!(
             stored_refs(&pg, outcome.memory_id).await?,
@@ -466,7 +467,7 @@ async fn authorized_links_are_persisted_by_engine_uow() {
             vec![goal.into_inner()]
         );
 
-        let mut snapshot_req = QueryRequest::for_owner(owner);
+        let mut snapshot_req = QueryRequest::readable();
         snapshot_req.memory_ids = vec![pool_typed.memory_id];
         snapshot_req.goal_ids = vec![goal];
         let snapshot = engine.query(&authz, &snapshot_req).await?;
@@ -488,7 +489,7 @@ async fn authorized_links_are_persisted_by_engine_uow() {
                 )
         }));
 
-        let mut fact_only = QueryRequest::for_owner(owner);
+        let mut fact_only = QueryRequest::readable();
         fact_only.entity_kind = Some(EntityKind::Fact);
         fact_only.memory_ids = vec![pool_typed.memory_id];
         let fact_snapshot = engine.query(&authz, &fact_only).await?;
@@ -504,7 +505,6 @@ async fn authorized_links_are_persisted_by_engine_uow() {
             .read_edges(
                 &authz,
                 &EdgeReadRequest {
-                    owner,
                     filter: EdgeFilter {
                         kind: Some(EdgeKind::Reference),
                         source: Some(EntityRef::Memory(pool_typed.memory_id)),
@@ -529,7 +529,6 @@ async fn authorized_links_are_persisted_by_engine_uow() {
             .read_edges(
                 &authz,
                 &EdgeReadRequest {
-                    owner,
                     filter: EdgeFilter {
                         kind: Some(EdgeKind::Reference),
                         source: None,
@@ -659,10 +658,12 @@ async fn typed_raw_refs_cannot_disagree_with_payload_declarations() {
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = engine(&pg, &registry);
         let payload = payload("raw-disagreement", fact_a.into_inner(), goal.into_inner());
-        let mut uow = engine.unit_of_work(&authz).await?;
-        let error = uow
-            .ingest_typed(
-                TypedFactIngest::new("test/raw-disagreement", &payload).refs([fact_b.into_inner()]),
+        let error = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Editor,
+                custom_draft(&payload).with_refs(vec![fact_b.into_inner()]),
+                &[SidecarPayload::fact(payload)],
             )
             .await
             .expect_err("raw refs must not replace typed refs");
@@ -829,7 +830,7 @@ async fn malformed_fact_source_and_endpoints_are_rejected_before_write() {
 
         let payload = payload("malformed-endpoint", target.into_inner(), goal.into_inner());
         let mut malformed = custom_draft(&payload);
-        malformed.derived_from = vec![EdgeEndpoint {
+        malformed.additional_references = vec![EdgeEndpoint {
             kind: EntityKind::Goal,
             entity: EntityRef::Memory(target),
         }];
@@ -860,25 +861,12 @@ async fn uow_rejects_session_visible_target_kind_mismatch() {
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = engine(&pg, &registry);
         let mut uow = engine.unit_of_work(&authz).await?;
-        let origin = EdgeEndpoint::memory(EntityKind::Fact, anchor);
-        let origins = [origin];
         let derived = uow
-            .author_derived(AuthorDerivedRequestInput {
-                memory_id: MemoryId::new(Uuid::now_v7()),
+            .derive_memory(DerivedMemory::abstraction(
+                MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
                 owner,
-                kind: EntityKind::Abstraction,
-                text: "session-visible abstraction".to_owned(),
-                schema_id: SchemaId::new(
-                    <AgentDerivationV1 as proxima_core::AbstractionPayload>::SCHEMA_ID.to_owned(),
-                ),
-                schema_version: SchemaVersion::new(
-                    <AgentDerivationV1 as proxima_core::AbstractionPayload>::SCHEMA_VERSION,
-                ),
-                operator_kind: MemoryOperatorKind::FtoA,
-                operator_id: OperatorId::new(Uuid::now_v7()),
-                input_contract_id: InputContractId::new(Uuid::now_v7()),
-                model_id: "test",
-                sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
+                "session-visible abstraction",
+                AgentDerivationV1 {
                     title: "session-visible abstraction".to_owned(),
                     body: "session-visible abstraction".to_owned(),
                     tags: Vec::new(),
@@ -887,14 +875,13 @@ async fn uow_rejects_session_visible_target_kind_mismatch() {
                     model_id: "test".to_owned(),
                     client_name: "test".to_owned(),
                     client_version: "1".to_owned(),
-                }),
-                derived_from: &origins,
-                extra_refs: &[],
-                supersedes: None,
-                lexical_language: Some(
-                    proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT,
+                },
+                [anchor],
+                DerivationIdentity::new(
+                    OperatorId::new(Uuid::now_v7()),
+                    InputContractId::new(Uuid::now_v7()),
                 ),
-            })
+            )?)
             .await?;
         let wrong = payload(
             "session-wrong-kind",
@@ -902,7 +889,7 @@ async fn uow_rejects_session_visible_target_kind_mismatch() {
             goal.into_inner(),
         );
         let error = uow
-            .ingest_fact("test/session", &wrong)
+            .ingest_fact(FactWrite::new(owner, "test/session", &wrong))
             .await
             .expect_err("session-visible Abstraction must not authorize as a Fact target");
         assert_eq!(error.code, proxima_core::error::ErrorCode::InvalidArgument);

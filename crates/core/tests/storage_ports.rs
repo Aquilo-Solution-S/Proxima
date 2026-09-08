@@ -156,6 +156,7 @@ impl MemoryReadPort for MemoryReadFake {
 
     async fn query_memories(
         &self,
+        _read_owners: &[proxima_core::OwnerRef],
         req: &proxima_core::verbs::query::QueryRequest,
         _schemas: &[proxima_core::read_models::MemorySchemaSpec],
     ) -> Result<proxima_core::verbs::query::QueryResponse, StorageError> {

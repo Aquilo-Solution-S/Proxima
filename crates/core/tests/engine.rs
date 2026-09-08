@@ -157,7 +157,7 @@ async fn query_verb_returns_empty_for_configured_owner() {
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     let resp = engine
-        .query(&authz, &QueryRequest::for_owner(owner))
+        .query(&authz, &QueryRequest::readable())
         .await
         .expect("single-owner query must succeed");
 
@@ -174,19 +174,15 @@ async fn query_scopes_reads_to_authz_context_not_client_principal() {
     let engine = boot_engine(principal, configured);
     let authz = AuthzContext::single_owner(&configured, AuthPath::HostBearer);
     let (_, foreign) = fresh_owner();
-
-    // Group-ownership read model: reads are scoped to the authenticated
-    // context's access set (S_read), never to a client-supplied
-    // `QueryRequest::principal`. Unlike write/admin verbs — which reject a
-    // foreign owner — a foreign principal in a read request is not an access
-    // vector: it can never widen what the caller sees, so the verb returns the
-    // caller's accessible subset (empty here under RejectingStorage) rather than
-    // Forbidden. Cross-principal no-leak against real data is proven in the PG
-    // integration suite (owner_columns_pg).
+    // Removed legacy fields remain harmless on incoming serialized requests.
+    let mut legacy = serde_json::to_value(QueryRequest::readable()).unwrap();
+    legacy["owner"] = serde_json::to_value(foreign).unwrap();
+    legacy["read_owners"] = serde_json::to_value([foreign]).unwrap();
+    let request: QueryRequest = serde_json::from_value(legacy).unwrap();
     let resp = engine
-        .query(&authz, &QueryRequest::for_owner(foreign))
+        .query(&authz, &request)
         .await
-        .expect("a foreign client principal is scoped away, not rejected");
+        .expect("legacy owner fields cannot affect readable scope");
     assert!(resp.memories.is_empty() && resp.goals.is_empty() && resp.edges.is_empty());
 }
 

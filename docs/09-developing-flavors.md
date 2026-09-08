@@ -166,7 +166,7 @@ The only binding is `ReferenceBinding::Pin`.
 Rules worth internalizing before designing a flavor's graph:
 
 - **The kind follows the operation.** `origin` comes from a write's
-  `derived_from`; `reference` comes from `references()`. Nothing else writes
+  `DerivedMemory` origins; `reference` comes from `references()`. Nothing else writes
   an edge, and nothing takes a kind as an argument.
 - **Multiplicity lives in the payload.** Ten call sites from chunk A to chunk
   B are **one** index row and ten entries in A's payload. The index answers
@@ -287,7 +287,7 @@ There is no runtime registration path.
 What that buys, without a line of fencing code in your write paths:
 
 - Every admission of a scoped payload — through `Engine`, a `UnitOfWork`,
-  `author_derived`, or any sidecar/replay path that persists the row — takes
+  `Engine::derive_memory`, or any sidecar/replay path that persists the row — takes
   the scope fence **shared, in that write transaction, before its handle/`t`
   locks**, and reruns the liveness probe under it. A host writing your payload
   straight through `Engine` is fenced identically; there is no opt-in.
@@ -569,13 +569,15 @@ The SDK surface receives Engine admission witnesses and typed sidecar
 contexts. It never receives `sqlx::PgPool`; backend adapters keep the
 pool private.
 
-Stateful Fact ingest resolves the series handle from
-`FactPayload::natural_key_columns()` when `handle` is unset. A/P series
-continuity is `Engine::owned_series_handle` (one NK, owner-only) or
-the prior-`t` selector named `supersedes` on the authoring request. A file's
-chunk series are listed together
-(`CodeFlavorStore::owned_chunk_series_heads` — same family as
-file-revision heads). Flavor `src/` does not JOIN `proxima_core.memory_head`.
+Stateful Facts resolve `FactPayload::natural_key_columns()` inside the write
+transaction. Repeated keys share a handle, including concurrent admissions and
+uncommitted writes in the same `UnitOfWork`. `FactWrite::handle` overrides this
+selection. Different deliveries still receive different row IDs; receipt replay
+returns the original admitted row.
+
+Derived writes select `MemoryTarget::Series(handle)` or
+`MemoryTarget::Revision(prior_t)` (see [Deriving Abstractions](#deriving-abstractions)).
+Flavor `src/` does not JOIN `proxima_core.memory_head`.
 Goal assignment / evidence are `GoalRow` fields; filter with
 `QueryRequest::assignment` / `evidence_contains`.
 
@@ -587,7 +589,7 @@ Typed path guarantees:
 | mapping schema exists and decodes | `authorize_fact_with_citation` |
 | mapping targets the cited-object schema | `CitationMappingPayload::cited_object_schema()` |
 | cited object has a typed sidecar | engine authorization |
-| Fact row, citation rows, and sidecars commit atomically | `Engine::ingest_typed_fact_with` / `UnitOfWork::ingest_typed` |
+| Fact row, citation rows, and sidecars commit atomically | typed Fact admission / cited Fact admission |
 
 Opaque `CitationSpec` is for content-addressed cited objects with no
 typed sidecar payload and pure-link mappings. Do not copy it for
@@ -597,9 +599,9 @@ messages; use typed `InlineCitedObjectDraft` +
 
 ```rust
 engine
-    .ingest_typed_fact_with(
+    .ingest_fact(
         &authz,
-        TypedFactIngest::new("acme/importer", &payload)
+        FactWrite::new(owner, "acme/importer", &payload)
             .citation(CitationSpec::v1(
                 "acme/blob-v1",
                 content_hash,
@@ -618,7 +620,7 @@ writes the search-projection row in the same transaction.
 A flavor that must read its own sidecar rows before deciding what to append
 does that inside the write transaction, through the session:
 `UnitOfWork::advisory_xact_lock` → `UnitOfWork::owned_series_head_memory_id`
-/ `UnitOfWork::read_own_sidecar` → `UnitOfWork::ingest_typed` → `commit`.
+/ `UnitOfWork::read_own_sidecar` → `UnitOfWork::ingest_fact` → `commit`.
 Those reads are read-only by construction: the backend emits the statement
 from a declared table and bound column predicates, so no transaction,
 connection, or pool crosses the port.
@@ -689,81 +691,58 @@ impl FlavorBundle for HostApp {
 Consumers call the bundle surface. They do not manually coordinate
 `register`, `register_pg_sidecars`, and `freeze_against`.
 
-## Deriving Abstractions
-
-Declaring an `AbstractionPayload` gives a flavor a derived-memory schema;
-writing one goes through `Engine::author_derived_authorized`. The
-request names the operator that produced the memory, the text it is
-embedded from, its typed sidecar, and what it was derived from.
-
-Note what the request does *not* contain: a relation, an authorship kind, or
-an edge kind. `derived_from` names targets only; the engine writes one
-`origin` index row per entry, in this write's own transaction, because that
-is what a derivation declaration *means*.
+## Typed Fact and Goal Writes
 
 ```rust
-let derived_from = [EdgeEndpoint::memory(EntityKind::Fact, source_fact_id)];
+use proxima::flavor::{FactWrite, GoalCreateRequest, GoalEvidenceRef};
 
-ctx.engine.author_derived_authorized(&authz, AuthorDerivedRequestInput {
-    memory_id: derived_id,
-    owner,
-    kind: EntityKind::Abstraction,
-    text: rendered,                       // this is what gets embedded
-    schema_id: MySlice::schema_id(),
-    schema_version: SchemaVersion::new(MySlice::SCHEMA_VERSION),
-    operator_kind: MemoryOperatorKind::FtoA,
-    operator_id, input_contract_id,
-    model_id: "my-flavor/slicer-v1",
-    sidecar_payload: SidecarPayload::abstraction(payload),
-    derived_from: &derived_from,
-    extra_refs: &[],
-    supersedes: None,
-    // A schema declaring `LanguagePolicy::PerRow` stamps THIS value on the
-    // projection row, so the write has to name one: a configuration name,
-    // or `LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT` for the deployment's.
-    // `None` names nothing and is refused. A pinned schema reads it not at
-    // all — pass `None` there.
-    lexical_language: Some(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT),
-}).await?;
+let mut unit = engine.unit_of_work(&authz).await?;
+let fact = unit.ingest_fact(FactWrite::new(owner, "acme/importer", &observation)).await?;
+let goal = unit.create_goal(GoalCreateRequest::product(
+    owner, assignment, request_id, "Review observation", "Review the admitted evidence", goal_payload,
+).with_evidence(vec![GoalEvidenceRef::new(fact.memory_id)])).await?;
+unit.commit().await?;
 ```
 
-The outcome reports an `edge_count`, not a list of handles: pins are column
-values on the row, so re-running the write re-asserts the same values and
-there is no pin id to hand back.
+`Engine::ingest_fact(&authz, request)` and `Engine::create_goal(&authz, request)`
+use the same requests for standalone writes. Destination authorization precedes
+admission; a multi-owner context retains its readable target set. Dropping an
+uncommitted unit rolls back its Facts, derived rows, Goals, and sidecars.
 
-Contract points that are easy to get wrong:
+## Deriving Abstractions
 
-- **The sidecar is mandatory.** `AbstractionPayload::sidecar_table()`
-  returns `&'static str`, not `Option` — unlike a Fact, a derived memory
-  always has a typed sidecar, so declaring one always means owning a
-  migration for it.
-- **Derive `memory_id` deterministically** (a UUIDv5 over the operator
-  identity plus the source memory and slice index, as `flavors/code`
-  does) so re-running the operator replays onto the same row instead of
-  appending a duplicate. When a new output genuinely replaces an earlier
-  `t`, pass that prior `t` as `supersedes`; storage resolves its stable handle
-  and appends the new `t` to the same series. Neither row stores a lineage
-  pointer.
-- **Embedding runs before the write transaction begins — if the recipe
-  asks for it.** A schema declaring `EmbeddingRecipe::Never` is never
-  embedded and never queued, whatever embedding client the host has
-  configured; the rest of this bullet is about the schemas that declare
-  units. A text the provider refuses whole is rescued inline by the
-  drain's bisection and lands as one vector in the same transaction
-  (storage keeps one vec per version). A text refused at every length is
-  not a lost write either: the memory lands with no vector and a durable
-  `embedding_jobs` row enqueued in the same transaction, and the outcome's
-  `embedding_deferred` says so. Several
-  derived rows that must commit together use
-  `UnitOfWork::author_derived_all` (embed the batch, then one `BEGIN`). A
-  derived write after the transaction is already open defers the vector
-  rather than hold the pool slot across HTTP. Only a provider that is
-  genuinely unavailable fails the write.
-- **`text` is the whole semantic surface.** `render()` / authored text
-  is the only string ever embedded. The schema's `search` declaration
-  adds LEXICAL reach over sidecar columns and never affects the vector;
-  the two surfaces are declared separately (`search` vs `embedding`) and
-  a schema may have either, both, or neither.
+```rust
+use proxima::flavor::{DerivedMemory, DerivationIdentity, MemoryTarget, SeriesHandle};
+
+let written = engine.derive_memory(&authz, DerivedMemory::abstraction(
+    MemoryTarget::Series(SeriesHandle::new(deterministic_key)),
+    owner,
+    rendered,
+    payload,
+    [source_fact_id],
+    DerivationIdentity::new(operator_id, input_contract_id),
+)?).await?;
+let conclusion_id = written.memory_id; // persisted row t, not deterministic_key
+```
+
+| Intent | Constructor / target | Origins |
+|---|---|---|
+| New conclusion from Facts | `abstraction(Series(handle), ...)` | nonempty Fact IDs |
+| Further conclusion from Abstractions | `abstraction(Series(handle), ...)` | nonempty Abstraction IDs; prior conclusions remain current |
+| Replace a conclusion's current version | `abstraction(Revision(prior_t), ...)` | still required; prior rows remain in history |
+| Derived Perspective | `perspective(target, ...)` | nonempty Abstraction IDs |
+| Interpretation | `interpretation(target, ...)` | none; payload references provide grounding |
+
+- Kind/schema/version come from the typed payload. The engine resolves readable origin kinds and infers F→A, A→A, or A→P. Mixed origins, Perspective premises, and Goal premises are rejected.
+- `SeriesHandle` identifies a series; `DerivedMemoryOutcome.memory_id` identifies the admitted version. Origins, refs, reads, and `Revision` use the returned version ID.
+- Give independent conclusions distinct series keys. Reusing a key identifies the same conclusion's series.
+- An absent handle creates a series. Reusing a handle identifies the same series: matching owner/kind/schema/pins replay the head, changed origins append a version, and unchanged origins with changed refs conflict. A `Revision` appends a fresh version on the prior row's series; repeated revision requests are not request-idempotent.
+- `.refs([memory_id])` adds references; payload `references()` are admitted too. References do not substitute for Abstraction origins. Duplicate pins are removed.
+- `Engine::derive_memory` commits one write. `UnitOfWork::derive_memory` performs the same admission inside an explicit transaction. Use sequential calls for dependent results; use `derive_memories` to pre-embed an independent batch before `BEGIN`.
+- An open transaction defers embedding instead of holding a connection across HTTP. `embedding_deferred` reports the queued work. `EmbeddingRecipe::Never` creates neither vectors nor jobs. Input refusal may be rescued by bisection; provider unavailability remains an error.
+- Typed requests name the deployment's lexical configuration by default. `.lexical_language(...)` overrides it; pinned schema policies keep their declared configuration.
+- `AbstractionPayload::sidecar_table()` and `PerspectivePayload::sidecar_table()` are required by this typed schema contract. Embedding uses authored `text`; lexical search uses the schema's declared sidecar projection.
+
 - **Search is declared on the schema, not implemented by the payload.**
   There is no `search_projection()` method: a `SchemaContract` carries a
   `search: SearchProjectionDecl`, and a schema that is not a search
@@ -1018,7 +997,7 @@ Tool contract:
 |---|---|
 | Name | provider-safe `<flavor_id>_<verb>` |
 | Args | `Deserialize + JsonSchema` |
-| Output | `Serialize` |
+| Output | `Serialize + JsonSchema` |
 | Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional `ToolCaller`, optional caller Self Perspective, optional Engine, typed ToolServices |
 | Storage | tools: Engine + `FlavorServices` store. Host extra-table: `AppContext::{clone_pool_for_host, pg_tuning_for_host}`, wrap immediately. No `proxima_core.*` SQL |
 | Writes | emit typed Facts / A/P / Goals through registered schemas; no tool writes an edge |
@@ -1063,8 +1042,6 @@ through the shared rule, never by reading the caller's label:
 ```rust
 // `Tool` (transport-neutral): an inherent method on the context you are handed.
 let model_id = ctx.operator_label(args.model_id.as_deref())?;
-// `McpTool`: the same resolver, over the MCP context.
-let model_id = proxima::flavor::operator_label(&ctx, args.model_id.as_deref())?;
 ```
 
 The transport edge only ever inspects a *top-level* `model_id`, so a nested or
@@ -1109,10 +1086,7 @@ the host wired it:
 
 ```rust
 let Some(store) = ctx.service::<MyFlavorStore>() else {
-    return Err(McpToolError::new(
-        McpToolErrorKind::Internal,
-        "host did not wire MyFlavorStore",
-    ));
+    return Err(ToolError::Other("host did not wire MyFlavorStore".into()));
 };
 ```
 

@@ -156,7 +156,7 @@ async fn recall(ctx: McpToolCtx, args: RecallArgs) -> Result<RecallOutput, McpTo
         )
         .await?;
     }
-    mark_perspective_heads(engine, &ctx, space.owner, &mut packet).await?;
+    mark_perspective_heads(engine, &ctx, &mut packet).await?;
     if includes_assigned_goals(args.kind) {
         collect_assigned_goals(&ctx, engine, space.owner, limit, &mut packet).await?;
     }
@@ -318,14 +318,13 @@ async fn collect_question(
 async fn mark_perspective_heads(
     engine: &crate::Engine,
     ctx: &McpToolCtx,
-    owner: crate::OwnerRef,
     packet: &mut Packet,
 ) -> Result<(), McpToolError> {
     let candidates = packet.unverified_perspective_ids();
     if candidates.is_empty() {
         return Ok(());
     }
-    let mut req = QueryRequest::for_owner(owner);
+    let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Perspective);
     req.memory_ids.clone_from(&candidates);
     req.include_payloads = false;
@@ -349,7 +348,7 @@ async fn collect_assigned_goals(
 ) -> Result<(), McpToolError> {
     let perspectives = packet.head_perspective_ids(owner);
     for p in perspectives {
-        let mut req = QueryRequest::for_owner(owner);
+        let mut req = QueryRequest::readable();
         req.entity_kind = Some(EntityKind::Goal);
         req.goal_state = Some(GoalState::Active);
         req.assignment = Some(p);

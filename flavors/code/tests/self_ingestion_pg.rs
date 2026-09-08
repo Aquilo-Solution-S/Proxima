@@ -183,8 +183,6 @@ async fn self_ingestion_streams_proxima_main() {
             .query(
                 &authz,
                 &proxima_core::verbs::query::QueryRequest {
-                    owner,
-                    read_owners: vec![owner],
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
                     schema_id: Some(commit_schema.clone()),
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
@@ -239,8 +237,6 @@ async fn self_ingestion_streams_proxima_main() {
             .query(
                 &authz,
                 &proxima_core::verbs::query::QueryRequest {
-                    owner,
-                    read_owners: vec![owner],
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
                     schema_id: None,
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,

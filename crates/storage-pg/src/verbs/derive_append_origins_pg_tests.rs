@@ -33,7 +33,7 @@ fn draft(kind: &str) -> FactWriteCommand {
         lexical_language: None,
         receipt: None,
         citation: None,
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: kind.into(),
@@ -133,10 +133,10 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
 
         let fact = pg.ingest_fact_atomic(&permit, &draft("fact"), None).await?;
         let mut abs = draft("abstraction");
-        abs.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
+        abs.additional_references = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
         let abs = pg.ingest_fact_atomic(&permit, &abs, None).await?;
         let mut perspective = draft("perspective");
-        perspective.derived_from =
+        perspective.additional_references =
             vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
         let perspective = pg.ingest_fact_atomic(&permit, &perspective, None).await?;
 

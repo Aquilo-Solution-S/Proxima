@@ -2,21 +2,61 @@ use super::Engine;
 use crate::MAX_MEMORY_HYDRATION_BATCH;
 use crate::access::Relation;
 use crate::authz::EngineAuthority;
-use crate::edge::{EdgeEndpoint, validate_edge_layering, validate_not_self_loop};
+use crate::edge::{EdgeEndpoint, validate_edge_layering};
 use crate::error::ProtocolError;
 use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEmbedding, MemoryHydrationBatchOutcome,
     MemoryHydrationOutcome, StorageError,
 };
+#[cfg(test)]
 use crate::storage_ports::OwnerWritePermit;
 use crate::{
-    EntityId, EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner,
-    PayloadReference, SchemaId, SchemaVersion, SidecarPayload,
+    AbstractionPayload, EntityId, EntityKind, InputContractId, MemoryId, MemoryOperatorKind,
+    OperatorId, Owner, OwnerRef, PerspectivePayload, SchemaId, SchemaVersion, SidecarPayload,
 };
 use crate::{MemoryOutputInvocation, OperatorInvocationManifest, OutputEdgeManifest};
 
+/// Owned embedding so a prepared batch can outlive the client borrow
+/// used by [`DerivedEmbedding`].
+pub(super) enum PreparedEmbedding {
+    None,
+    Ready { model_id: String, vector: Vec<f32> },
+    Deferred { model_id: String },
+}
+
+impl PreparedEmbedding {
+    pub(super) fn as_derived(&self) -> DerivedEmbedding<'_> {
+        match self {
+            Self::None => DerivedEmbedding::None,
+            Self::Ready { model_id, vector } => DerivedEmbedding::Ready {
+                model_id,
+                vector: vector.clone(),
+            },
+            Self::Deferred { model_id } => DerivedEmbedding::Deferred { model_id },
+        }
+    }
+}
+
+pub(super) struct PreparedDerived {
+    pub(super) write_permit: super::pipeline::WritePermit,
+    pub(super) owner: Owner,
+    pub(super) memory_id: MemoryId,
+    pub(super) kind: EntityKind,
+    pub(super) text: String,
+    pub(super) schema_id: SchemaId,
+    pub(super) schema_version: SchemaVersion,
+    pub(super) operator_kind: MemoryOperatorKind,
+    pub(super) sidecar_payload: SidecarPayload,
+    pub(super) supersedes: Option<MemoryId>,
+    pub(super) lexical_language: Option<String>,
+    pub(super) embedding: PreparedEmbedding,
+    pub(super) origins: Vec<EdgeEndpoint>,
+    pub(super) references: Vec<EdgeEndpoint>,
+}
+
+#[cfg(test)]
 #[derive(Debug)]
-pub struct AuthorDerivedRequestInput<'a> {
+struct RawDerivedTestRequest<'a> {
     pub memory_id: MemoryId,
     pub owner: Owner,
     pub kind: EntityKind,
@@ -29,7 +69,6 @@ pub struct AuthorDerivedRequestInput<'a> {
     pub operator_id: OperatorId,
     /// Manifest input contract, same lifetime as `operator_id`.
     pub input_contract_id: InputContractId,
-    pub model_id: &'a str,
     pub sidecar_payload: SidecarPayload,
     /// What this memory was made from. Each entry becomes an `Origin`
     /// pin on this memory's own row, written in the same transaction.
@@ -50,8 +89,137 @@ pub struct AuthorDerivedRequestInput<'a> {
     pub lexical_language: Option<&'a str>,
 }
 
+#[cfg(test)]
+impl RawDerivedTestRequest<'_> {
+    pub(super) fn into_typed(self) -> Result<DerivedMemory, ProtocolError> {
+        let origins = self
+            .derived_from
+            .iter()
+            .map(|endpoint| {
+                endpoint.memory_id().ok_or_else(|| {
+                    ProtocolError::invalid_argument(
+                        "origins",
+                        "derivation origins must name memory rows; Goals are not knowledge",
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(DerivedMemory {
+            target: self.supersedes.map_or(
+                MemoryTarget::Series(SeriesHandle::new(self.memory_id.into_inner())),
+                MemoryTarget::Revision,
+            ),
+            owner: self.owner,
+            text: self.text,
+            sidecar_payload: self.sidecar_payload,
+            identity: (!origins.is_empty()).then_some(DerivationIdentity::new(
+                self.operator_id,
+                self.input_contract_id,
+            )),
+            origins,
+            extra_refs: self.extra_refs.to_vec(),
+            lexical_language: self.lexical_language.map(str::to_owned),
+        })
+    }
+}
+
+impl PreparedDerived {
+    pub(super) fn storage_request(&self) -> AuthorDerivedRequest<'_> {
+        AuthorDerivedRequest {
+            memory_id: self.memory_id,
+            owner: self.owner,
+            kind: self.kind,
+            text: self.text.clone(),
+            schema_id: self.schema_id.clone(),
+            schema_version: self.schema_version,
+            operator_kind: self.operator_kind,
+            sidecar_payload: self.sidecar_payload.clone(),
+            supersedes: self.supersedes,
+            lexical_language: self.lexical_language.as_deref(),
+            embedding: self.embedding.as_derived(),
+            origins: &self.origins,
+            references: &self.references,
+        }
+    }
+}
+
+impl From<AuthorDerivedOutcome> for DerivedMemoryOutcome {
+    fn from(outcome: AuthorDerivedOutcome) -> Self {
+        Self {
+            memory_id: outcome.memory_id,
+            idempotent_replay: outcome.idempotent_replay,
+            edge_count: outcome.edge_count,
+            embedding_deferred: outcome.embedding_deferred,
+        }
+    }
+}
+
+fn infer_derivation_phase(
+    kind: EntityKind,
+    origins: &[EdgeEndpoint],
+) -> Result<MemoryOperatorKind, ProtocolError> {
+    let first = origins.first().map(|origin| origin.kind);
+    if origins.iter().any(|origin| Some(origin.kind) != first) {
+        return Err(ProtocolError::invalid_argument(
+            "origins",
+            "origins must be all Facts or all Abstractions; mixed derivations are not supported",
+        ));
+    }
+    match (kind, first) {
+        (EntityKind::Abstraction, Some(EntityKind::Fact)) => Ok(MemoryOperatorKind::FtoA),
+        (EntityKind::Abstraction, Some(EntityKind::Abstraction)) => Ok(MemoryOperatorKind::AtoA),
+        (EntityKind::Perspective, Some(EntityKind::Abstraction) | None) => {
+            Ok(MemoryOperatorKind::AtoP)
+        }
+        _ => Err(ProtocolError::invalid_argument(
+            "origins",
+            "an Abstraction needs Fact or Abstraction origins; a derived Perspective needs Abstraction origins",
+        )),
+    }
+}
+
+fn validate_typed_invocation(
+    memory: &DerivedMemory,
+    output: MemoryId,
+    kind: EntityKind,
+    operator_kind: MemoryOperatorKind,
+    origins: &[EdgeEndpoint],
+) -> Result<(), StorageError> {
+    if origins.is_empty() {
+        return Ok(());
+    }
+    let identity = memory.identity.ok_or_else(|| {
+        StorageError::ConstraintViolation(
+            "derivation requires an operator invocation identity".into(),
+        )
+    })?;
+    let manifest = OperatorInvocationManifest::memory_output(MemoryOutputInvocation {
+        phase: operator_kind.phase(),
+        operator_id: identity.operator_id,
+        input_contract_id: identity.input_contract_id,
+        inputs: origins
+            .iter()
+            .map(|endpoint| (MemoryId::new(endpoint.entity_id()), endpoint.kind))
+            .collect(),
+        output_memory_id: output,
+        output_kind: kind,
+        schema_id: memory.sidecar_payload.schema_id.clone(),
+        schema_version: memory.sidecar_payload.schema_version,
+        output_edges: origins
+            .iter()
+            .filter_map(|origin| origin.memory_id())
+            .map(|id| OutputEdgeManifest::memory_to_memory(output, id))
+            .collect(),
+    });
+    manifest
+        .validate()
+        .map_err(|err| StorageError::ConstraintViolation(err.to_string()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthorDerivedAuthorizedOutcome {
+/// Result of a typed derived-memory write.
+pub struct DerivedMemoryOutcome {
+    /// Persisted version t. Use this ID for reads, origins, and references.
     pub memory_id: MemoryId,
     pub idempotent_replay: bool,
     /// Pins declared by this write (`origins` + `refs`). A count, not a
@@ -61,11 +229,238 @@ pub struct AuthorDerivedAuthorizedOutcome {
     /// The memory landed with no vector and a pending embedding job; it is
     /// lexically findable and semantically invisible until a drain runs.
     /// Callers that need it searchable immediately can see that here rather
-    /// than by reading logs — see [`crate::AuthorDerivedOutcome`].
+    /// than by reading logs.
     pub embedding_deferred: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Stable series key. Storage allocates a separate `MemoryId` for each admitted version.
+pub struct SeriesHandle(uuid::Uuid);
+impl SeriesHandle {
+    #[must_use]
+    /// Wrap an existing deterministic key without changing its bytes.
+    pub const fn new(inner: uuid::Uuid) -> Self {
+        Self(inner)
+    }
+    #[must_use]
+    pub const fn into_inner(self) -> uuid::Uuid {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Choose a new conclusion or a new version of an existing conclusion.
+pub enum MemoryTarget {
+    /// Create a series if absent; otherwise address that series. Matching
+    /// owner/kind/schema/origins/refs replay the head; changed origins append a
+    /// version. With unchanged origins, changed refs are a conflict.
+    Series(SeriesHandle),
+    /// Append to the prior row's series. Repeating a revision appends another version;
+    /// it has no separate persisted request key. Origins remain required for derivations.
+    Revision(MemoryId),
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Identity of the operator and its input contract in the invocation witness.
+pub struct DerivationIdentity {
+    pub operator_id: OperatorId,
+    pub input_contract_id: InputContractId,
+}
+impl DerivationIdentity {
+    #[must_use]
+    pub const fn new(operator_id: OperatorId, input_contract_id: InputContractId) -> Self {
+        Self {
+            operator_id,
+            input_contract_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+/// A typed conclusion or interpretation; the engine resolves source kinds and authority.
+/// Payload kind, schema, and provenance cannot be overwritten by consumers.
+///
+/// ```compile_fail
+/// fn tamper(request: &mut proxima_core::DerivedMemory) {
+///     request.origins.clear();
+///     let _ = &mut request.sidecar_payload;
+/// }
+/// ```
+pub struct DerivedMemory {
+    pub(crate) target: MemoryTarget,
+    pub(crate) owner: OwnerRef,
+    pub(crate) text: String,
+    pub(crate) sidecar_payload: SidecarPayload,
+    pub(crate) origins: Vec<MemoryId>,
+    pub(crate) identity: Option<DerivationIdentity>,
+    pub(crate) extra_refs: Vec<MemoryId>,
+    pub(crate) lexical_language: Option<String>,
+}
+
+impl DerivedMemory {
+    fn output_kind(&self) -> Result<EntityKind, ProtocolError> {
+        match self.sidecar_payload.kind {
+            crate::verbs::schema::PayloadKind::Abstraction => Ok(EntityKind::Abstraction),
+            crate::verbs::schema::PayloadKind::Perspective => Ok(EntityKind::Perspective),
+            _ => Err(ProtocolError::invalid_argument(
+                "payload",
+                "derived memory requires an Abstraction or Perspective payload",
+            )),
+        }
+    }
+    fn origins(
+        origins: impl IntoIterator<Item = MemoryId>,
+    ) -> Result<Vec<MemoryId>, ProtocolError> {
+        let mut out = Vec::new();
+        for id in origins {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        if out.is_empty() {
+            return Err(ProtocolError::invalid_argument(
+                "origins",
+                "derived memory requires at least one origin; revisions also need provenance",
+            ));
+        }
+        Ok(out)
+    }
+    /// Create a conclusion from Facts or prior Abstractions. Source kinds are resolved by the engine.
+    ///
+    /// # Errors
+    /// Rejects empty origins; revisions also require provenance.
+    pub fn abstraction<P: AbstractionPayload>(
+        target: MemoryTarget,
+        owner: OwnerRef,
+        text: impl Into<String>,
+        payload: P,
+        origins: impl IntoIterator<Item = MemoryId>,
+        identity: DerivationIdentity,
+    ) -> Result<Self, ProtocolError> {
+        Ok(Self {
+            target,
+            owner,
+            text: text.into(),
+            sidecar_payload: SidecarPayload::abstraction(payload),
+            origins: Self::origins(origins)?,
+            identity: Some(identity),
+            extra_refs: Vec::new(),
+            lexical_language: Some(
+                crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
+            ),
+        })
+    }
+    /// Create a Perspective derived from Abstractions.
+    ///
+    /// # Errors
+    /// Rejects empty origins. Use `interpretation` for a judgment grounded only through references.
+    pub fn perspective<P: PerspectivePayload>(
+        target: MemoryTarget,
+        owner: OwnerRef,
+        text: impl Into<String>,
+        payload: P,
+        origins: impl IntoIterator<Item = MemoryId>,
+        identity: DerivationIdentity,
+    ) -> Result<Self, ProtocolError> {
+        Ok(Self {
+            target,
+            owner,
+            text: text.into(),
+            sidecar_payload: SidecarPayload::perspective(payload),
+            origins: Self::origins(origins)?,
+            identity: Some(identity),
+            extra_refs: Vec::new(),
+            lexical_language: Some(
+                crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
+            ),
+        })
+    }
+    /// Create an origin-free Perspective grounded through its payload references.
+    #[must_use]
+    pub fn interpretation<P: PerspectivePayload>(
+        target: MemoryTarget,
+        owner: OwnerRef,
+        text: impl Into<String>,
+        payload: P,
+    ) -> Self {
+        Self {
+            target,
+            owner,
+            text: text.into(),
+            sidecar_payload: SidecarPayload::perspective(payload),
+            origins: Vec::new(),
+            identity: None,
+            extra_refs: Vec::new(),
+            lexical_language: Some(
+                crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
+            ),
+        }
+    }
+    /// Add memory reference pins, distinct from derivation origins. Duplicates are removed.
+    #[must_use]
+    pub fn refs(mut self, refs: impl IntoIterator<Item = MemoryId>) -> Self {
+        self.extra_refs.extend(refs);
+        self
+    }
+    #[must_use]
+    pub fn lexical_language(mut self, language: impl Into<String>) -> Self {
+        self.lexical_language = Some(language.into());
+        self
+    }
+}
+
 impl Engine {
+    /// Resolve actual kinds after entry-read authorization; one kind read per home owner.
+    pub(in crate::engine) async fn resolve_memory_targets<A>(
+        &self,
+        authority: &A,
+        ids: &[MemoryId],
+        session_kinds: &[(MemoryId, EntityKind)],
+    ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let mut resolved = std::collections::HashMap::new();
+        let mut groups: Vec<(Owner, Vec<MemoryId>)> = Vec::new();
+        let mut unique = Vec::new();
+        for id in ids {
+            if unique.contains(id) {
+                continue;
+            }
+            unique.push(*id);
+            // A UoW holds one immutable authority. Successful writes imply reads
+            // of their actual kind (Role enforces write ceiling <= read ceiling).
+            if let Some((_, kind)) = session_kinds.iter().find(|(seen, _)| seen == id) {
+                resolved.insert(*id, *kind);
+                continue;
+            }
+            let permit = self
+                .authorize_entry_read(authority, EntityId::Memory(*id))
+                .await?;
+            if let Some((_, group)) = groups.iter_mut().find(|(owner, _)| owner == permit.owner()) {
+                group.push(*id);
+            } else {
+                groups.push((*permit.owner(), vec![*id]));
+            }
+        }
+        for (owner, group) in groups {
+            let kinds = self.load_required_memory_kinds(&owner, &group).await?;
+            resolved.extend(group.into_iter().zip(kinds));
+        }
+        unique
+            .into_iter()
+            .map(|id| {
+                resolved
+                    .get(&id)
+                    .copied()
+                    .map(|kind| EdgeEndpoint::memory(kind, id))
+                    .ok_or_else(|| {
+                        ProtocolError::internal("authorized memory kind was not resolved")
+                    })
+            })
+            .collect()
+    }
+
     /// Cool one owned memory `t`. PUT cold first, then stub+delete hot.
     ///
     /// One-shot command-port: generic [`EngineAuthority`], including
@@ -199,84 +594,236 @@ impl Engine {
     /// source owner or read access to an edge target; `InvalidArgument` when
     /// referenced memories are absent or edge shape validation fails; and
     /// `Internal` for storage failures.
-    pub async fn author_derived_authorized<A>(
+    pub async fn derive_memory<A>(
         &self,
         authority: &A,
-        req: AuthorDerivedRequestInput<'_>,
-    ) -> Result<AuthorDerivedAuthorizedOutcome, ProtocolError>
+        memory: DerivedMemory,
+    ) -> Result<DerivedMemoryOutcome, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let item = self
+            .prepare_derived_memory(authority, memory, &[], false)
+            .await?;
+        let req = item.storage_request();
+        let outcome = self
+            .storage()
+            .memory_authoring
+            .memory_authoring
+            .author_derived(
+                &req,
+                item.write_permit.owner_write_permit(),
+                crate::storage_ports::OperatorWriteProof::new(),
+            )
+            .await
+            .map_err(map_derived_storage_error)?;
+        Ok(outcome.into())
+    }
+
+    /// Shared authorization, provenance, references, and embedding preparation.
+    pub(super) async fn prepare_derived_memory<A>(
+        &self,
+        authority: &A,
+        memory: DerivedMemory,
+        session_kinds: &[(MemoryId, EntityKind)],
+        defer_embedding: bool,
+    ) -> Result<PreparedDerived, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
         let write_permit = self
-            .authorize_write(authority, &req.owner, Relation::Editor)
+            .authorize_write(authority, &memory.owner, Relation::Editor)
             .await?;
-
-        let owner = *write_permit.owner();
-        if let Some(prior) = req.supersedes {
-            let prior_home = self
-                .storage()
-                .memory_authoring
-                .owner_access_read
-                .home_owner(EntityId::Memory(prior))
-                .await
-                .map_err(|err| ProtocolError::internal(err.to_string()))?;
-            if prior_home.as_ref() != Some(&owner) {
-                return Err(ProtocolError::forbidden(
-                    "supersedes target is not an owned entity of the same owner",
-                ));
-            }
-            let prior_kind = self.load_required_memory_kind(&owner, prior).await?;
-            if prior_kind != req.kind {
-                return Err(ProtocolError::invalid_argument(
-                    "supersedes",
-                    "must supersede a memory of the same kind",
-                ));
-            }
+        let kind = memory.output_kind()?;
+        let (memory_id, supersedes) = match memory.target {
+            MemoryTarget::Series(handle) => (MemoryId::new(handle.into_inner()), None),
+            // Storage resolves the prior row's handle. This private draft key is
+            // unused for series selection and must not pretend to be the prior t.
+            MemoryTarget::Revision(prior) => (MemoryId::new(uuid::Uuid::now_v7()), Some(prior)),
+        };
+        if let Some(prior) = supersedes {
+            self.validate_derived_revision(
+                authority,
+                *write_permit.owner(),
+                kind,
+                prior,
+                session_kinds,
+            )
+            .await?;
         }
-        // One uniform admission rule governs every index row (docs/16
-        // §The Model): the row is owned by the source owner — already
-        // established by the write permit above — and the write is
-        // admitted iff the writer can also READ every target at write
-        // time.
-        let source = EdgeEndpoint::memory(req.kind, req.memory_id);
         let origins = self
-            .authorized_index_targets(authority, source, req.derived_from, "derived_from")
+            .resolve_memory_targets(authority, &memory.origins, session_kinds)
             .await?;
-        let declared = req.sidecar_payload.references();
+        let operator_kind = infer_derivation_phase(kind, &origins)?;
+        // A new version's t is allocated by storage. The layer check needs only
+        // the output kind; neither a handle nor the prior t is its source row.
+        let source = EdgeEndpoint::memory(kind, MemoryId::new(uuid::Uuid::now_v7()));
+        for origin in &origins {
+            validate_edge_layering(source, *origin)
+                .map_err(|err| ProtocolError::invalid_argument("origins", err))?;
+        }
         let references = self
-            .authorized_payload_references(authority, source, &declared)
+            .prepare_derived_references(authority, source, &memory, session_kinds)
             .await?;
-        let outcome = self
-            .author_derived(
-                write_permit.owner_write_permit(),
-                AuthorDerivedRequestInput {
-                    memory_id: req.memory_id,
-                    owner,
-                    kind: req.kind,
-                    text: req.text,
-                    schema_id: req.schema_id,
-                    schema_version: req.schema_version,
-                    operator_kind: req.operator_kind,
-                    operator_id: req.operator_id,
-                    input_contract_id: req.input_contract_id,
-                    model_id: req.model_id,
-                    sidecar_payload: req.sidecar_payload,
-                    derived_from: &origins,
-                    extra_refs: &[],
-                    supersedes: req.supersedes,
-                    lexical_language: req.lexical_language,
-                },
-                &references,
+        validate_typed_invocation(&memory, memory_id, kind, operator_kind, &origins)
+            .map_err(map_derived_storage_error)?;
+        let embedding = self
+            .prepare_memory_embedding(
+                memory_id,
+                memory.sidecar_payload.schema_id.as_str(),
+                &memory.text,
+                defer_embedding,
             )
             .await
             .map_err(map_derived_storage_error)?;
-
-        Ok(AuthorDerivedAuthorizedOutcome {
-            memory_id: outcome.memory_id,
-            idempotent_replay: outcome.idempotent_replay,
-            edge_count: outcome.edge_count,
-            embedding_deferred: outcome.embedding_deferred,
+        Ok(PreparedDerived {
+            owner: *write_permit.owner(),
+            write_permit,
+            memory_id,
+            kind,
+            text: memory.text,
+            schema_id: memory.sidecar_payload.schema_id.clone(),
+            schema_version: memory.sidecar_payload.schema_version,
+            operator_kind,
+            sidecar_payload: memory.sidecar_payload,
+            supersedes,
+            lexical_language: memory.lexical_language,
+            embedding,
+            origins,
+            references,
         })
+    }
+
+    async fn prepare_derived_references<A: EngineAuthority + ?Sized>(
+        &self,
+        authority: &A,
+        source: EdgeEndpoint,
+        memory: &DerivedMemory,
+        session_kinds: &[(MemoryId, EntityKind)],
+    ) -> Result<Vec<EdgeEndpoint>, ProtocolError> {
+        let declared = memory.sidecar_payload.references();
+        for reference in &declared {
+            reference
+                .validate()
+                .map_err(|err| ProtocolError::invalid_argument("references", err))?;
+        }
+        let ids = declared
+            .iter()
+            .filter_map(|reference| reference.target.memory_id())
+            .chain(memory.extra_refs.iter().copied())
+            .collect::<Vec<_>>();
+        let resolved = self
+            .resolve_memory_targets(authority, &ids, session_kinds)
+            .await?;
+        let mut references = Vec::new();
+        for reference in declared {
+            let target = match reference.target.entity {
+                crate::EntityRef::Memory(id) => {
+                    let actual = resolved
+                        .iter()
+                        .find(|target| target.memory_id() == Some(id))
+                        .ok_or_else(|| {
+                            ProtocolError::internal("declared memory reference was not resolved")
+                        })?;
+                    if actual.kind != reference.target.kind {
+                        return Err(ProtocolError::invalid_argument(
+                            "references",
+                            format!(
+                                "reference {} declares {}, but the readable target is {}",
+                                reference.field,
+                                reference.target.kind.as_str(),
+                                actual.kind.as_str(),
+                            ),
+                        ));
+                    }
+                    *actual
+                }
+                crate::EntityRef::Goal(id) => {
+                    self.authorize_entry_read(authority, EntityId::Goal(id))
+                        .await?;
+                    EdgeEndpoint::goal(id)
+                }
+            };
+            if !references.contains(&target) {
+                references.push(target);
+            }
+        }
+        for target in resolved {
+            if !references.contains(&target) {
+                references.push(target);
+            }
+        }
+        for target in &references {
+            validate_edge_layering(source, *target)
+                .map_err(|err| ProtocolError::invalid_argument("refs", err))?;
+        }
+        Ok(references)
+    }
+
+    async fn validate_derived_revision<A: EngineAuthority + ?Sized>(
+        &self,
+        authority: &A,
+        owner: Owner,
+        kind: EntityKind,
+        prior: MemoryId,
+        session_kinds: &[(MemoryId, EntityKind)],
+    ) -> Result<(), ProtocolError> {
+        let prior_kind = if let Some((_, kind)) = session_kinds.iter().find(|(id, _)| *id == prior)
+        {
+            // The transaction's head check enforces same owner/schema as well.
+            *kind
+        } else {
+            let permit = self
+                .authorize_entry_read(authority, EntityId::Memory(prior))
+                .await?;
+            if permit.owner() != &owner {
+                return Err(ProtocolError::forbidden(
+                    "revision target must belong to the destination owner",
+                ));
+            }
+            self.load_required_memory_kind(permit.owner(), prior)
+                .await?
+        };
+        if prior_kind != kind {
+            return Err(ProtocolError::invalid_argument(
+                "target",
+                "revision must retain the prior memory kind and schema",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn prepare_memory_embedding(
+        &self,
+        memory_id: MemoryId,
+        schema_id: &str,
+        text: &str,
+        defer: bool,
+    ) -> Result<PreparedEmbedding, StorageError> {
+        let client = self.embed_client();
+        let Some(client) = client
+            .as_deref()
+            .filter(|_| self.registry().schema_is_embeddable(schema_id))
+        else {
+            return Ok(PreparedEmbedding::None);
+        };
+        if defer {
+            return Ok(PreparedEmbedding::Deferred {
+                model_id: client.model_id().to_owned(),
+            });
+        }
+        Ok(
+            match resolve_derived_embedding(client, memory_id, text).await? {
+                DerivedEmbedding::None => PreparedEmbedding::None,
+                DerivedEmbedding::Ready { model_id, vector } => PreparedEmbedding::Ready {
+                    model_id: model_id.to_owned(),
+                    vector,
+                },
+                DerivedEmbedding::Deferred { model_id } => PreparedEmbedding::Deferred {
+                    model_id: model_id.to_owned(),
+                },
+            },
+        )
     }
 
     /// Author one derived Memory and its already-resolved edges. When an
@@ -309,13 +856,12 @@ impl Engine {
     /// `ConstraintViolation` on embedding dimension mismatch, and storage
     /// errors from the atomic write.
     ///
-    /// Engine-internal raw write. Callers outside `author_derived_authorized`
-    /// would bypass owner write authorization; there is no public API for
-    /// this method.
-    pub(in crate::engine) async fn author_derived(
+    /// Test-only adapter for recording the raw storage/proof boundary.
+    #[cfg(test)]
+    async fn author_derived(
         &self,
         permit: &OwnerWritePermit,
-        req: AuthorDerivedRequestInput<'_>,
+        req: RawDerivedTestRequest<'_>,
         references: &[EdgeEndpoint],
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         validate_operator_memory_invocation_request(&req)?;
@@ -337,7 +883,6 @@ impl Engine {
             schema_id: req.schema_id,
             schema_version: req.schema_version,
             operator_kind: req.operator_kind,
-            model_id: req.model_id,
             sidecar_payload: req.sidecar_payload,
             // Supersession is a later `t` on the same series, not an
             // edge and not a column: storage resolves the prior row's
@@ -357,137 +902,6 @@ impl Engine {
                 crate::storage_ports::OperatorWriteProof::new(),
             )
             .await
-    }
-
-    /// Resolve and admit every declared index target.
-    ///
-    /// One rule for all of them, whatever the write is: the target must
-    /// exist, the writer must be able to READ it, and the resulting edge
-    /// must respect layering. There is no per-relation policy cell left to
-    /// consult and no owner-equality rule beyond it — a source-owned row
-    /// pointing at a foreign readable target is exactly what makes
-    /// cross-owner provenance expressible.
-    pub(in crate::engine) async fn authorized_index_targets<A>(
-        &self,
-        authority: &A,
-        source: EdgeEndpoint,
-        targets: &[EdgeEndpoint],
-        field: &str,
-    ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
-    where
-        A: EngineAuthority + ?Sized,
-    {
-        self.authorized_index_targets_visible(authority, source, targets, field, &[])
-            .await
-    }
-
-    pub(in crate::engine) async fn authorized_index_targets_visible<A>(
-        &self,
-        authority: &A,
-        source: EdgeEndpoint,
-        targets: &[EdgeEndpoint],
-        field: &str,
-        session_visible: &[MemoryId],
-    ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
-    where
-        A: EngineAuthority + ?Sized,
-    {
-        let mut out = Vec::with_capacity(targets.len());
-        for target in targets {
-            validate_not_self_loop(source, *target)
-                .map_err(|err| ProtocolError::invalid_argument(field, err))?;
-            let resolved = self
-                .authorize_index_target(authority, *target, field, session_visible)
-                .await?;
-            validate_edge_layering(source, resolved)
-                .map_err(|err| ProtocolError::invalid_argument(field, err))?;
-            if !out.contains(&resolved) {
-                out.push(resolved);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Check the schema-declared reference fields of a payload, then admit
-    /// their targets like any other index target.
-    ///
-    /// Schema-declared reference fields become index targets. Every
-    /// address is a pin.
-    pub(in crate::engine) async fn authorized_payload_references<A>(
-        &self,
-        authority: &A,
-        source: EdgeEndpoint,
-        declared: &[PayloadReference],
-    ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
-    where
-        A: EngineAuthority + ?Sized,
-    {
-        let mut targets = Vec::with_capacity(declared.len());
-        for reference in declared {
-            reference
-                .validate()
-                .map_err(|err| ProtocolError::invalid_argument("references", err))?;
-            targets.push(reference.target);
-        }
-        self.authorized_index_targets_visible(authority, source, &targets, "references", &[])
-            .await
-    }
-
-    pub(in crate::engine) async fn authorized_payload_references_visible<A>(
-        &self,
-        authority: &A,
-        source: EdgeEndpoint,
-        declared: &[PayloadReference],
-        session_visible: &[MemoryId],
-    ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
-    where
-        A: EngineAuthority + ?Sized,
-    {
-        let mut targets = Vec::with_capacity(declared.len());
-        for reference in declared {
-            reference
-                .validate()
-                .map_err(|err| ProtocolError::invalid_argument("references", err))?;
-            targets.push(reference.target);
-        }
-        self.authorized_index_targets_visible(
-            authority,
-            source,
-            &targets,
-            "references",
-            session_visible,
-        )
-        .await
-    }
-
-    /// Read-admit one index target. Stored kind is compared in-tx
-    /// against the declared pin; a second pre-tx `load_memory_kinds`
-    /// is the overlapping fanout this slice drops.
-    async fn authorize_index_target<A>(
-        &self,
-        authority: &A,
-        target: EdgeEndpoint,
-        _field: &str,
-        session_visible: &[MemoryId],
-    ) -> Result<EdgeEndpoint, ProtocolError>
-    where
-        A: EngineAuthority + ?Sized,
-    {
-        match target.entity {
-            crate::EntityRef::Memory(memory_id) if session_visible.contains(&memory_id) => {
-                Ok(target)
-            }
-            crate::EntityRef::Memory(memory_id) => {
-                self.authorize_entry_read(authority, EntityId::Memory(memory_id))
-                    .await?;
-                Ok(target)
-            }
-            crate::EntityRef::Goal(goal_id) => {
-                self.authorize_entry_read(authority, EntityId::Goal(goal_id))
-                    .await?;
-                Ok(EdgeEndpoint::goal(goal_id))
-            }
-        }
     }
 
     pub(in crate::engine) async fn load_required_memory_kind(
@@ -524,7 +938,7 @@ impl Engine {
                 by_id.get(memory_id).copied().ok_or_else(|| {
                     ProtocolError::invalid_argument(
                         "memory_id",
-                        "cross-space derive/link is not supported; choose one memory space",
+                        "authorized memory is unavailable; refresh its row ID and retry",
                     )
                 })
             })
@@ -636,8 +1050,9 @@ fn ensure_derived_embedding_dim(
     Ok(())
 }
 
-pub(in crate::engine) fn validate_operator_memory_invocation_request(
-    req: &AuthorDerivedRequestInput<'_>,
+#[cfg(test)]
+fn validate_operator_memory_invocation_request(
+    req: &RawDerivedTestRequest<'_>,
 ) -> Result<(), StorageError> {
     // The operator manifest proves a *derivation*: output kind, input
     // kinds, and one origin row per declared input. A write that declares
@@ -725,18 +1140,19 @@ mod tests {
         })
     }
 
-    fn request(owner: Owner, derived_from: &[EdgeEndpoint]) -> AuthorDerivedRequestInput<'_> {
-        AuthorDerivedRequestInput {
+    fn request(owner: Owner, derived_from: &[EdgeEndpoint]) -> RawDerivedTestRequest<'_> {
+        RawDerivedTestRequest {
             memory_id: MemoryId::new(uuid::Uuid::now_v7()),
             owner,
             kind: EntityKind::Abstraction,
             text: "body".into(),
-            schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
-            schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+            schema_id: SchemaId::new(<AgentDerivationV1 as AbstractionPayload>::SCHEMA_ID.into()),
+            schema_version: SchemaVersion::new(
+                <AgentDerivationV1 as AbstractionPayload>::SCHEMA_VERSION,
+            ),
             operator_kind: MemoryOperatorKind::FtoA,
             operator_id: OperatorId::new(uuid::Uuid::now_v7()),
             input_contract_id: InputContractId::new(uuid::Uuid::now_v7()),
-            model_id: "test-model",
             sidecar_payload: derivation_sidecar(),
             derived_from,
             extra_refs: &[],
@@ -792,11 +1208,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn author_derived_authorized_denies_denied_context() {
+    async fn derive_memory_denies_denied_context() {
         let engine = engine();
         let owner = owner();
         let err = engine
-            .author_derived_authorized(&AuthzContext::denied_for_owner(&owner), request(owner, &[]))
+            .derive_memory(
+                &AuthzContext::denied_for_owner(&owner),
+                request(owner, &[]).into_typed().expect("synthetic request"),
+            )
             .await
             .expect_err("denied context must fail before storage");
 
@@ -804,43 +1223,62 @@ mod tests {
     }
 
     #[test]
-    fn pin_admit_does_not_reload_kind_after_entry_read() {
-        let src = include_str!("memory_authoring.rs");
-        let start = src
-            .find("async fn authorize_index_target")
-            .expect("authorize_index_target");
-        let rest = &src[start..];
-        let end = rest
-            .find("pub(in crate::engine) async fn load_required_memory_kind")
-            .expect("load_required_memory_kind follows");
-        let body = &rest[..end];
-        let reload = format!("{}{}", "load_required_memory_", "kind");
+    fn kind_resolution_reuses_the_authorized_home_owner() {
+        let source = include_str!("memory_authoring.rs");
+        let start = source
+            .find("async fn resolve_memory_targets")
+            .expect("kind resolver");
+        let end = source[start..]
+            .find("/// Cool one owned memory")
+            .expect("end of resolver");
+        let body = &source[start..start + end];
+        let reload = format!("{}{}", ".home_", "owner(");
         assert!(
             !body.contains(&reload),
-            "stored kind is the in-tx TOCTOU SELECT, not a second pre-tx fanout"
+            "target kind lookup must reuse the authorized home owner, not query an unscoped owner again"
         );
         assert!(
             body.contains("authorize_entry_read"),
-            "read-admit stays; only the kind reload is dropped"
+            "committed targets pass the read gate before their kind is loaded"
+        );
+        assert!(
+            body.contains("permit.owner()"),
+            "kind lookup uses the owner returned by the read permit"
         );
     }
 
-    /// The public write surface takes targets, never kinds: there is no
-    /// argument anywhere on it that could carry an [`crate::EdgeKind`].
-    /// `Origin` is what a `derived_from` declaration means and
-    /// `Reference` is what a payload field means, so a writer has nothing
-    /// to choose and nothing to get wrong.
-    #[tokio::test]
-    async fn no_public_write_input_accepts_an_edge_kind() {
-        let owner = owner();
-        let origins = [EdgeEndpoint::memory(
-            EntityKind::Fact,
-            MemoryId::new(uuid::Uuid::now_v7()),
-        )];
-        let req = request(owner, &origins);
-        // Compiles only because the declaration is a list of endpoints.
-        let _targets: &[EdgeEndpoint] = req.derived_from;
-        assert_eq!(req.derived_from.len(), 1);
+    /// Public origin declarations carry row IDs, not caller-selected kinds.
+    #[test]
+    fn no_public_write_input_accepts_an_edge_kind() {
+        let source = MemoryId::new(uuid::Uuid::now_v7());
+        let req = DerivedMemory::abstraction(
+            MemoryTarget::Series(SeriesHandle::new(uuid::Uuid::now_v7())),
+            owner(),
+            "conclusion",
+            AgentDerivationV1 {
+                title: "conclusion".into(),
+                body: "body".into(),
+                tags: Vec::new(),
+                idempotency_key: None,
+                source_memory_ids: vec![source.into_inner()],
+                model_id: "fixture".into(),
+                client_name: "fixture".into(),
+                client_version: "1".into(),
+            },
+            [source, source],
+            DerivationIdentity::new(
+                OperatorId::new(uuid::Uuid::now_v7()),
+                InputContractId::new(uuid::Uuid::now_v7()),
+            ),
+        )
+        .expect("typed public constructor");
+        let targets: &[MemoryId] = &req.origins;
+        assert_eq!(
+            targets,
+            [source],
+            "duplicate origins do not duplicate invocation inputs"
+        );
+        assert_eq!(req.origins.len(), 1);
     }
 
     /// What storage is handed, verbatim: the `derived_from` declaration

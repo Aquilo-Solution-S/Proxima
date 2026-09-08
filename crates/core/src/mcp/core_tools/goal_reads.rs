@@ -102,7 +102,7 @@ pub async fn list_goals(
     let limit = super::resolve_page_limit(args.limit)?;
 
     let engine = ctx.require_engine()?;
-    let mut req = QueryRequest::for_owner(ctx.owner);
+    let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_state = state;
     req.limit = limit;
@@ -142,7 +142,7 @@ pub async fn get_goal(ctx: McpToolCtx, raw: &str) -> Result<GoalItem, McpToolErr
         .map(GoalId::new)
         .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
     let engine = ctx.require_engine()?;
-    let mut req = QueryRequest::for_owner(ctx.owner);
+    let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_ids = vec![goal_id];
     req.limit = 1;

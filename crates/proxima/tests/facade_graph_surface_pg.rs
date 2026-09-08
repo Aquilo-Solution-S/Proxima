@@ -4,7 +4,7 @@ use proxima::flavor::{
     AbstractionPayload, EdgeEndpoint, EdgeKind, FactPayload, FlavorBundle, FlavorRegistry,
     InputContractId, MemoryId, OperatorId, PayloadKeyBuilder, PayloadReference, PgMemoryPayload,
     PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry,
-    ReferenceBinding, SchemaId, SchemaVersion, SidecarInsertPermit, SidecarPayload,
+    ReferenceBinding, SchemaId, SidecarInsertPermit, SidecarPayload,
 };
 use proxima::{
     AppInfo, AuthPath, AuthzContext, EdgeExistsRequest, EdgeFilter, EdgeReadRequest, FlavorApp,
@@ -22,11 +22,736 @@ use proxima_core::read_models::MemorySchemaSpec;
 use proxima_core::storage::MemoryGraphIdentity;
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    AuthorDerivedRequestInput, EdgeTargetProjection, EntityKind, EntityRef, MemoryOperatorKind,
-    Role, SearchProjectionColumnKind, UserId,
+    EdgeTargetProjection, EntityKind, EntityRef, Role, SearchProjectionColumnKind, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use uuid::Uuid;
+
+fn sdk_fact() -> FacadeFact {
+    FacadeFact {
+        note_id: Uuid::now_v7(),
+        title: "Observation".into(),
+        body: "A synthetic observation".into(),
+        tags: Vec::new(),
+    }
+}
+
+fn sdk_abstraction(
+    target: proxima::MemoryTarget,
+    owner: proxima::OwnerRef,
+    fact: MemoryId,
+    origins: impl IntoIterator<Item = MemoryId>,
+) -> Result<proxima::DerivedMemory, proxima::ProtocolError> {
+    proxima::DerivedMemory::abstraction(
+        target,
+        owner,
+        "A synthetic conclusion",
+        FacadeAbstraction {
+            title: "Conclusion".into(),
+            body: "A synthetic conclusion".into(),
+            source_count: 1,
+            observed_entity: fact.into_inner(),
+        },
+        origins,
+        proxima::DerivationIdentity::new(
+            OperatorId::new(Uuid::now_v7()),
+            InputContractId::new(Uuid::now_v7()),
+        ),
+    )
+}
+
+fn sdk_new_series() -> proxima::MemoryTarget {
+    proxima::MemoryTarget::Series(proxima::SeriesHandle::new(Uuid::now_v7()))
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
+    let db_name = unique_db_name("sdk_derived_identity");
+    create_db(&db_name).await.expect("PG required");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url(&db_name))
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let authz = built.single_owner_authz().expect("one owner");
+        let engine = built.engine();
+        let fact = engine
+            .ingest_fact(
+                &authz,
+                proxima::FactWrite::new(owner, "sdk/identity", &sdk_fact()),
+            )
+            .await?;
+        let handle = proxima::SeriesHandle::new(Uuid::now_v7());
+        let request = sdk_abstraction(
+            proxima::MemoryTarget::Series(handle),
+            owner,
+            fact.memory_id,
+            [fact.memory_id],
+        )?;
+        let (first, concurrent) = tokio::join!(
+            engine.derive_memory(&authz, request.clone()),
+            engine.derive_memory(&authz, request.clone()),
+        );
+        let first = first?;
+        let concurrent = concurrent?;
+        assert_eq!(
+            first.memory_id, concurrent.memory_id,
+            "concurrent creates converge on one row"
+        );
+        assert_ne!(
+            first.idempotent_replay, concurrent.idempotent_replay,
+            "one admission and one replay"
+        );
+        assert_ne!(
+            first.memory_id.into_inner(),
+            handle.into_inner(),
+            "a series handle is not an admitted row t"
+        );
+        let replay = engine.derive_memory(&authz, request).await?;
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.memory_id, first.memory_id);
+
+        let second = engine
+            .derive_memory(
+                &authz,
+                sdk_abstraction(sdk_new_series(), owner, fact.memory_id, [first.memory_id])?,
+            )
+            .await?;
+        let revised = engine
+            .derive_memory(
+                &authz,
+                sdk_abstraction(
+                    proxima::MemoryTarget::Revision(first.memory_id),
+                    owner,
+                    fact.memory_id,
+                    [first.memory_id],
+                )?,
+            )
+            .await?;
+        assert_ne!(first.memory_id, revised.memory_id);
+        let mut all = QueryRequest::readable();
+        all.supersession = proxima::SupersessionStatus::IncludeSuperseded;
+        let history = engine.query(&authz, &all).await?;
+        let original = history
+            .memories
+            .iter()
+            .find(|row| row.id == first.memory_id)
+            .expect("original preserved");
+        let revision = history
+            .memories
+            .iter()
+            .find(|row| row.id == revised.memory_id)
+            .expect("revision persisted");
+        let conclusion = history
+            .memories
+            .iter()
+            .find(|row| row.id == second.memory_id)
+            .expect("independent conclusion preserved");
+        assert_eq!(original.handle, handle.into_inner());
+        assert_eq!(revision.handle, original.handle);
+        assert_ne!(conclusion.handle, original.handle);
+        assert_eq!(original.origins, [fact.memory_id]);
+        assert_eq!(revision.origins, [first.memory_id]);
+        assert_eq!(conclusion.origins, [first.memory_id]);
+        let heads = engine.query(&authz, &QueryRequest::readable()).await?;
+        assert!(heads.memories.iter().any(|row| row.id == second.memory_id));
+        assert!(heads.memories.iter().any(|row| row.id == revised.memory_id));
+        assert!(!heads.memories.iter().any(|row| row.id == first.memory_id));
+
+        // Revision requests append versions; they do not carry a separate replay key.
+        let next = engine
+            .derive_memory(
+                &authz,
+                sdk_abstraction(
+                    proxima::MemoryTarget::Revision(first.memory_id),
+                    owner,
+                    fact.memory_id,
+                    [first.memory_id],
+                )?,
+            )
+            .await?;
+        assert_ne!(next.memory_id, revised.memory_id);
+        assert!(!next.idempotent_replay);
+        let changed = engine
+            .derive_memory(
+                &authz,
+                sdk_abstraction(
+                    proxima::MemoryTarget::Series(handle),
+                    owner,
+                    fact.memory_id,
+                    [second.memory_id],
+                )?,
+            )
+            .await?;
+        assert_ne!(changed.memory_id, next.memory_id);
+        assert!(!changed.idempotent_replay);
+        let rows = engine.query(&authz, &all).await?.memories;
+        let row = rows
+            .iter()
+            .find(|row| row.id == changed.memory_id)
+            .expect("changed-origin series version");
+        assert_eq!(row.handle, handle.into_inner());
+        assert_eq!(row.origins, [second.memory_id]);
+        assert!(
+            rows.iter().any(|row| row.id == first.memory_id),
+            "series reingest preserves history"
+        );
+        let heads = engine
+            .query(&authz, &QueryRequest::readable())
+            .await?
+            .memories;
+        assert!(heads.iter().any(|row| row.id == changed.memory_id));
+        assert!(!heads.iter().any(|row| row.id == next.memory_id));
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("typed derivation identity");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
+    let db_name = unique_db_name("sdk_derived_session");
+    create_db(&db_name).await.expect("PG required");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url(&db_name))
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let authz = built.single_owner_authz().expect("one owner");
+        let engine = built.engine();
+        let mut uow = engine.unit_of_work(&authz).await?;
+        let fact = uow
+            .ingest_fact(proxima::FactWrite::new(owner, "sdk/session", &sdk_fact()))
+            .await?;
+        let first = uow
+            .derive_memory(sdk_abstraction(
+                sdk_new_series(),
+                owner,
+                fact.memory_id,
+                [fact.memory_id],
+            )?)
+            .await?;
+        let second = uow
+            .derive_memory(
+                sdk_abstraction(sdk_new_series(), owner, fact.memory_id, [first.memory_id])?
+                    .refs([first.memory_id, fact.memory_id, first.memory_id]),
+            )
+            .await?;
+        let forged_payload_reference =
+            sdk_abstraction(sdk_new_series(), owner, first.memory_id, [first.memory_id])?;
+        let err = uow
+            .derive_memory(forged_payload_reference)
+            .await
+            .expect_err("payload declares its Abstraction target as Fact");
+        assert_eq!(err.code, proxima::ErrorCode::InvalidArgument);
+        assert!(
+            err.message.contains("readable target is Abstraction"),
+            "kind mismatch is rejected during preparation: {err}"
+        );
+        uow.commit().await?;
+        let standalone = engine
+            .derive_memory(
+                &authz,
+                sdk_abstraction(sdk_new_series(), owner, fact.memory_id, [first.memory_id])?
+                    .refs([first.memory_id, fact.memory_id, first.memory_id]),
+            )
+            .await?;
+        let page = engine.query(&authz, &QueryRequest::readable()).await?;
+        let a = page
+            .memories
+            .iter()
+            .find(|row| row.id == second.memory_id)
+            .expect("transaction output");
+        let b = page
+            .memories
+            .iter()
+            .find(|row| row.id == standalone.memory_id)
+            .expect("standalone output");
+        assert_eq!(a.origins, [first.memory_id]);
+        assert_eq!(a.origins, b.origins);
+        assert_eq!(a.refs, b.refs);
+        assert_eq!(
+            a.refs.len(),
+            2,
+            "payload Fact ref and extra Abstraction ref, deduplicated"
+        );
+        assert!(a.refs.contains(&fact.memory_id));
+        assert!(a.refs.contains(&first.memory_id));
+
+        let rolled_back = {
+            let mut pending = engine.unit_of_work(&authz).await?;
+            let row = pending
+                .derive_memory(sdk_abstraction(
+                    sdk_new_series(),
+                    owner,
+                    fact.memory_id,
+                    [first.memory_id],
+                )?)
+                .await?;
+            let invalid = pending
+                .derive_memory(sdk_abstraction(
+                    sdk_new_series(),
+                    owner,
+                    fact.memory_id,
+                    [fact.memory_id, first.memory_id],
+                )?)
+                .await;
+            assert!(
+                invalid.is_err(),
+                "mixed origins must fail inside an open transaction"
+            );
+            row.memory_id
+        };
+        assert!(
+            engine
+                .get_memories(
+                    &authz,
+                    &GetMemoriesReadRequest {
+                        memory_ids: vec![rolled_back]
+                    }
+                )
+                .await?
+                .memories
+                .is_empty(),
+            "drop rolls back all pending rows"
+        );
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("typed derivation session visibility");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs() {
+    let db_name = unique_db_name("sdk_derived_access");
+    create_db(&db_name).await.expect("PG required");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let foreign = company_owner(Uuid::now_v7());
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url(&db_name))
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let engine = built.engine();
+        let local_authz = built.single_owner_authz().expect("one owner");
+        let foreign_authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(foreign, Role::admin())],
+            AuthPath::HostBearer,
+        )
+        .narrowed_to_owner(foreign)
+        .expect("foreign write scope");
+        let both = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin()), (foreign, Role::admin())],
+            AuthPath::HostBearer,
+        );
+        let fact = engine
+            .ingest_fact(
+                &foreign_authz,
+                proxima::FactWrite::new(foreign, "sdk/foreign", &sdk_fact()),
+            )
+            .await?;
+        let foreign_a = engine
+            .derive_memory(
+                &foreign_authz,
+                sdk_abstraction(sdk_new_series(), foreign, fact.memory_id, [fact.memory_id])?,
+            )
+            .await?;
+        let request = sdk_abstraction(
+            sdk_new_series(),
+            owner,
+            fact.memory_id,
+            [foreign_a.memory_id],
+        )?;
+        let denied = engine
+            .derive_memory(&local_authz, request.clone())
+            .await
+            .expect_err("foreign premise is unreadable");
+        assert_eq!(denied.code, proxima::ErrorCode::Forbidden);
+        let allowed = engine.derive_memory(&both, request).await?;
+        let page = engine.query(&both, &QueryRequest::readable()).await?;
+        let row = page
+            .memories
+            .iter()
+            .find(|row| row.id == allowed.memory_id)
+            .expect("foreign-derived output");
+        assert_eq!(row.owner, owner);
+        assert_eq!(row.origins, [foreign_a.memory_id]);
+        assert!(
+            sdk_abstraction(sdk_new_series(), owner, fact.memory_id, []).is_err(),
+            "empty Abstraction origins rejected at construction"
+        );
+        let mixed = sdk_abstraction(
+            sdk_new_series(),
+            owner,
+            fact.memory_id,
+            [fact.memory_id, foreign_a.memory_id],
+        )?;
+        assert!(engine.derive_memory(&both, mixed).await.is_err());
+
+        let pending_id = {
+            let mut uow = engine.unit_of_work(&both).await?;
+            let pending = uow
+                .derive_memory(sdk_abstraction(
+                    sdk_new_series(),
+                    foreign,
+                    fact.memory_id,
+                    [foreign_a.memory_id],
+                )?)
+                .await?;
+            let wrong_owner = sdk_abstraction(
+                proxima::MemoryTarget::Revision(pending.memory_id),
+                owner,
+                fact.memory_id,
+                [pending.memory_id],
+            )?;
+            assert!(
+                uow.derive_memory(wrong_owner).await.is_err(),
+                "a revision cannot transfer a pending row to another owner"
+            );
+            pending.memory_id
+        };
+        assert!(
+            engine
+                .get_memories(
+                    &both,
+                    &GetMemoriesReadRequest {
+                        memory_ids: vec![pending_id]
+                    }
+                )
+                .await?
+                .memories
+                .is_empty(),
+            "failed pending revision has no committed side effects"
+        );
+        let perspective = engine
+            .derive_memory(
+                &both,
+                proxima::DerivedMemory::perspective(
+                    sdk_new_series(),
+                    owner,
+                    "Synthetic policy",
+                    proxima_core::AgentDerivationV1 {
+                        title: "Policy".into(),
+                        body: "Synthetic policy".into(),
+                        tags: Vec::new(),
+                        idempotency_key: None,
+                        source_memory_ids: vec![allowed.memory_id.into_inner()],
+                        model_id: "fixture".into(),
+                        client_name: "fixture".into(),
+                        client_version: "1".into(),
+                    },
+                    [allowed.memory_id],
+                    proxima::DerivationIdentity::new(
+                        OperatorId::new(Uuid::now_v7()),
+                        InputContractId::new(Uuid::now_v7()),
+                    ),
+                )?,
+            )
+            .await?;
+        let invalid = sdk_abstraction(
+            sdk_new_series(),
+            owner,
+            fact.memory_id,
+            [perspective.memory_id],
+        )?;
+        assert!(
+            engine.derive_memory(&both, invalid).await.is_err(),
+            "Perspective cannot be an Abstraction premise"
+        );
+        let interpretation = engine
+            .derive_memory(
+                &both,
+                proxima::DerivedMemory::interpretation(
+                    sdk_new_series(),
+                    owner,
+                    "Synthetic interpretation",
+                    proxima_core::InterpretationV1 {
+                        claim: "Synthetic interpretation".into(),
+                        confidence: 60,
+                        subject_memory_ids: vec![perspective.memory_id.into_inner()],
+                        subject_kinds: vec![proxima_core::InterpretationSubjectKind::Perspective],
+                        model_id: "fixture".into(),
+                        client_name: "fixture".into(),
+                        client_version: "1".into(),
+                    },
+                ),
+            )
+            .await?;
+        let page = engine.query(&both, &QueryRequest::readable()).await?;
+        let row = page
+            .memories
+            .iter()
+            .find(|row| row.id == interpretation.memory_id)
+            .expect("interpretation");
+        assert!(row.origins.is_empty());
+        assert_eq!(row.refs, [perspective.memory_id]);
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("typed derivation access");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
+    use proxima::flavor::{FactWrite, SeriesHandle};
+    let db_name = unique_db_name("sdk_fact_series");
+    create_db(&db_name).await.expect("PG required");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let foreign = company_owner(Uuid::now_v7());
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url(&db_name))
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let engine = built.engine();
+        let authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin()), (foreign, Role::admin())],
+            AuthPath::HostBearer,
+        );
+        let first_payload = sdk_fact();
+        let mut later_payload = first_payload.clone();
+        later_payload.body = "Later observation".into();
+        let mut uow = engine.unit_of_work(&authz).await?;
+        let first = uow
+            .ingest_fact(FactWrite::new(owner, "sdk/versions", &first_payload))
+            .await?;
+        let later = uow
+            .ingest_fact(
+                FactWrite::new(owner, "sdk/versions", &later_payload).refs([first.memory_id]),
+            )
+            .await?;
+        assert_eq!(
+            first.handle, later.handle,
+            "one natural identity has one series inside the transaction"
+        );
+        assert_ne!(
+            first.memory_id, later.memory_id,
+            "distinct deliveries remain distinct Fact rows"
+        );
+        let replay = uow
+            .ingest_fact(FactWrite::new(owner, "sdk/versions", &first_payload))
+            .await?;
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.memory_id, first.memory_id);
+        let elsewhere = uow
+            .ingest_fact(
+                FactWrite::new(foreign, "sdk/versions", &first_payload).refs([first.memory_id]),
+            )
+            .await?;
+        assert_ne!(
+            elsewhere.handle, first.handle,
+            "natural identity is owner-scoped"
+        );
+        let explicit = SeriesHandle::new(Uuid::now_v7());
+        let explicit_row = uow
+            .ingest_fact(FactWrite::new(owner, "sdk/explicit", &sdk_fact()).handle(explicit))
+            .await?;
+        assert_eq!(explicit_row.handle, explicit.into_inner());
+        uow.commit().await?;
+        let mut query = QueryRequest::readable();
+        query.supersession = proxima::SupersessionStatus::IncludeSuperseded;
+        let rows = engine.query(&authz, &query).await?.memories;
+        assert!(
+            rows.iter().all(|row| row.origins.is_empty()),
+            "Facts never acquire derivation origins"
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.id == later.memory_id)
+                .expect("later observation")
+                .refs,
+            [first.memory_id]
+        );
+        let mut foreign_query = QueryRequest::readable();
+        foreign_query.memory_ids = vec![elsewhere.memory_id];
+        let foreign_rows = engine.query(&authz, &foreign_query).await?.memories;
+        assert_eq!(foreign_rows.len(), 1);
+        assert_eq!(foreign_rows[0].id, elsewhere.memory_id);
+        assert_eq!(foreign_rows[0].owner, foreign);
+        assert_eq!(
+            foreign_rows[0].refs,
+            [first.memory_id],
+            "explicit destination preserves the caller's foreign read access"
+        );
+        let local_only = built.single_owner_authz().expect("local context");
+        let denied = engine
+            .ingest_fact(
+                &local_only,
+                FactWrite::new(foreign, "sdk/denied", &sdk_fact()),
+            )
+            .await
+            .expect_err("destination needs write authority");
+        assert_eq!(denied.code, proxima::ErrorCode::Forbidden);
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("typed Fact series");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typed_fact_concurrent_first_observations_share_a_natural_series() {
+    use proxima::flavor::FactWrite;
+    let db_name = unique_db_name("sdk_fact_concurrent");
+    create_db(&db_name).await.expect("PG required");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url(&db_name))
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let engine = built.engine();
+        let authz = built.single_owner_authz().expect("one owner");
+        for _ in 0..8 {
+            let a = sdk_fact();
+            let mut b = a.clone();
+            b.body = "Distinct delivery".into();
+            let (a, b) = tokio::join!(
+                engine.ingest_fact(&authz, FactWrite::new(owner, "sdk/source-a", &a)),
+                engine.ingest_fact(&authz, FactWrite::new(owner, "sdk/source-b", &b)),
+            );
+            let a = a?;
+            let b = b?;
+            assert_eq!(
+                a.handle, b.handle,
+                "concurrent natural-key lookup selects one series"
+            );
+            assert_ne!(a.memory_id, b.memory_id);
+            let mut query = QueryRequest::readable();
+            query.memory_ids = vec![a.memory_id, b.memory_id];
+            let heads = engine.query(&authz, &query).await?.memories;
+            assert_eq!(heads.len(), 1);
+            query.supersession = proxima::SupersessionStatus::IncludeSuperseded;
+            let history = engine.query(&authz, &query).await?.memories;
+            assert_eq!(history.len(), 2);
+            assert!(
+                history
+                    .iter()
+                    .all(|row| row.handle == a.handle && row.origins.is_empty())
+            );
+        }
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("concurrent natural Fact series");
+}
+
+#[tokio::test]
+async fn natural_key_selection_rejects_payload_substitution_after_authorization() {
+    let db_name = unique_db_name("sdk_nk_binding");
+    create_db(&db_name).await.expect("PG required");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url(&db_name))
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let engine = built.engine();
+        let authz = built.single_owner_authz().expect("one owner");
+        let original = sdk_fact();
+        let draft = proxima::FactWriteCommand::from_payload(
+            "sdk/binding",
+            &original,
+            time::OffsetDateTime::now_utc(),
+        );
+        let sidecars = [SidecarPayload::fact(original.clone())];
+        let authorized = engine
+            .authorize_fact_ingest(&authz, proxima::Relation::Editor, draft.clone(), &sidecars)
+            .await?;
+        let mut changed = original;
+        changed.note_id = Uuid::now_v7();
+        let err = engine
+            .ingest_fact_with_typed_sidecar(&authorized, &[SidecarPayload::fact(changed)], None)
+            .await
+            .expect_err("same-schema payload cannot select a different natural identity");
+        assert_eq!(err.code, proxima::ErrorCode::InvalidArgument);
+        assert!(err.message.contains("natural-key binding differs"), "{err}");
+        let missing = engine
+            .authorize_fact_ingest(&authz, proxima::Relation::Editor, draft, &[])
+            .await?;
+        let err = engine
+            .ingest_fact_with_typed_sidecar(&missing, &sidecars, None)
+            .await
+            .expect_err("automatic NK selection requires authorization-time values");
+        assert!(
+            err.message.contains("supply the typed Fact payload"),
+            "{err}"
+        );
+        let err = engine
+            .ingest_fact_with_typed_sidecar(
+                &authorized,
+                &[sidecars[0].clone(), sidecars[0].clone()],
+                None,
+            )
+            .await
+            .expect_err("ambiguous matching payloads rejected");
+        assert!(err.message.contains("exactly one"), "{err}");
+        assert!(
+            engine
+                .query(&authz, &QueryRequest::readable())
+                .await?
+                .memories
+                .is_empty()
+        );
+        let valid = engine
+            .ingest_fact_with_typed_sidecar(&authorized, &sidecars, None)
+            .await?;
+        assert_eq!(
+            engine
+                .get_memories(
+                    &authz,
+                    &GetMemoriesReadRequest {
+                        memory_ids: vec![valid.memory_id]
+                    }
+                )
+                .await?
+                .memories
+                .len(),
+            1
+        );
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("natural-key binding");
+}
 
 #[test]
 fn facade_does_not_export_raw_edge_append_surface() {
@@ -75,6 +800,7 @@ impl FactPayload for FacadeFact {
     fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("note_id", self.note_id);
+        key.field_str("body", &self.body);
         key.finish()
     }
 
@@ -514,9 +1240,12 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         .expect("an admin on exactly this owner narrows to it");
         let fact_outcome = built
             .engine
-            .ingest_typed_fact(&write_authz, "facade-surface-test", &fact)
+            .ingest_fact(
+                &write_authz,
+                proxima::FactWrite::new(owner, "facade-surface-test", &fact),
+            )
             .await?;
-        let mut query = QueryRequest::for_owner(owner);
+        let mut query = QueryRequest::readable();
         query.include_payloads = true;
         let queried = built.engine.query(&authz, &query).await?;
         let snapshot = queried
@@ -624,7 +1353,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                 && row.body.as_deref() == Some(fact.body.as_str())
         }));
 
-        let mut identity_only = QueryRequest::for_owner(owner);
+        let mut identity_only = QueryRequest::readable();
         identity_only.include_payloads = false;
         let identity_page = built.engine.query(&authz, &identity_only).await?;
         let identity_row = identity_page
@@ -684,36 +1413,28 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         assert_eq!(graph_payloads[0].body.as_deref(), Some(fact.body.as_str()));
 
         let derived_handle = MemoryId::new(Uuid::now_v7());
-        let derived_from = [EdgeEndpoint::memory(
-            EntityKind::Fact,
-            fact_outcome.memory_id,
-        )];
         let derived_outcome = built
             .engine
-            .author_derived_authorized(
+            .derive_memory(
                 &authz,
-                AuthorDerivedRequestInput {
-                    memory_id: derived_handle,
+                proxima::DerivedMemory::abstraction(
+                    proxima::MemoryTarget::Series(proxima::SeriesHandle::new(
+                        derived_handle.into_inner(),
+                    )),
                     owner,
-                    kind: EntityKind::Abstraction,
-                    text: "Single facade dependency is enough for flavor authors.".to_string(),
-                    schema_id: SchemaId::new(FacadeAbstraction::SCHEMA_ID.to_string()),
-                    schema_version: SchemaVersion::new(FacadeAbstraction::SCHEMA_VERSION),
-                    operator_kind: MemoryOperatorKind::FtoA,
-                    operator_id: OperatorId::new(Uuid::now_v7()),
-                    input_contract_id: InputContractId::new(Uuid::now_v7()),
-                    model_id: "facade-test",
-                    sidecar_payload: SidecarPayload::abstraction(FacadeAbstraction {
-                        title: "Facade surface".to_string(),
-                        body: "Single facade dependency is enough for flavor authors.".to_string(),
+                    "Single facade dependency is enough for flavor authors.",
+                    FacadeAbstraction {
+                        title: "Facade surface".into(),
+                        body: "Single facade dependency is enough for flavor authors.".into(),
                         source_count: 1,
                         observed_entity: fact_outcome.memory_id.into_inner(),
-                    }),
-                    derived_from: &derived_from,
-                    extra_refs: &[],
-                    supersedes: None,
-                    lexical_language: None,
-                },
+                    },
+                    [fact_outcome.memory_id],
+                    proxima::DerivationIdentity::new(
+                        OperatorId::new(Uuid::now_v7()),
+                        InputContractId::new(Uuid::now_v7()),
+                    ),
+                )?,
             )
             .await?;
         let derived_t = derived_outcome.memory_id;
@@ -777,7 +1498,6 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .edge_exists(
                 &authz,
                 &EdgeExistsRequest {
-                    owner,
                     filter: head_filter.clone(),
                 },
             )
@@ -789,7 +1509,6 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .edge_exists(
                 &authz,
                 &EdgeExistsRequest {
-                    owner,
                     filter: EdgeFilter {
                         target: Some(EntityRef::Memory(MemoryId::new(Uuid::now_v7()))),
                         ..head_filter.clone()
@@ -804,7 +1523,6 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .read_edges(
                 &authz,
                 &EdgeReadRequest {
-                    owner,
                     filter: head_filter,
                     limit: 5,
                     cursor: None,
@@ -882,7 +1600,7 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
         )
         .await?;
 
-        let mut valid_query = QueryRequest::for_owner(owner);
+        let mut valid_query = QueryRequest::readable();
         valid_query.include_payloads = false;
         valid_query.memory_ids = vec![valid_with_extension];
         let valid = built.engine.query(&authz, &valid_query).await?;
@@ -909,7 +1627,7 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
             ("wrong primary stamp", wrong_stamp),
             ("missing primary row", missing_primary_row),
         ] {
-            let mut query = QueryRequest::for_owner(owner);
+            let mut query = QueryRequest::readable();
             query.include_payloads = false;
             query.memory_ids = vec![memory_id];
             let Err(err) = built.engine.query(&authz, &query).await else {
@@ -1135,3 +1853,98 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
 /// Host/example lane (`docs/09` §Migrations: timestamp versions ending
 /// `00..=19`), so this fixture cannot collide with a first-party flavor.
 const FACADE_MIGRATION_VERSION: i64 = 20_260_824_000_010;
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
+    use proxima::flavor::{FactWrite, ToolError, authorized_fact_payloads, authorized_memory_ids};
+    let db_name = unique_db_name("sdk_read_scope");
+    create_db(&db_name).await.expect("PG required");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owners = [
+            company_owner(Uuid::now_v7()),
+            company_owner(Uuid::now_v7()),
+            company_owner(Uuid::now_v7()),
+        ];
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url(&db_name))
+            .owner(owners[0])
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let engine = built.engine();
+        let mut ids = Vec::new();
+        for owner in owners {
+            let authz = AuthzContext::for_subject_with_role(
+                UserId::new(Uuid::now_v7()),
+                [(owner, Role::admin())],
+                AuthPath::HostBearer,
+            );
+            ids.push(
+                engine
+                    .ingest_fact(&authz, FactWrite::new(owner, "sdk/read", &sdk_fact()))
+                    .await?
+                    .memory_id,
+            );
+        }
+        let authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owners[0], Role::admin()), (owners[1], Role::admin())],
+            AuthPath::HostBearer,
+        );
+        let mut legacy = serde_json::to_value(QueryRequest::readable())?;
+        legacy["owner"] = serde_json::to_value(owners[2])?;
+        legacy["read_owners"] = serde_json::to_value([owners[2]])?;
+        let request: QueryRequest = serde_json::from_value(legacy)?;
+        let encoded = serde_json::to_value(&request)?;
+        assert!(encoded.get("owner").is_none() && encoded.get("read_owners").is_none());
+        let rows = engine.query(&authz, &request).await?.memories;
+        assert_eq!(
+            rows.iter().map(|row| row.id).collect::<BTreeSet<_>>(),
+            BTreeSet::from([ids[0], ids[1]])
+        );
+        let candidates = [
+            ids[2].into_inner(),
+            ids[1].into_inner(),
+            ids[0].into_inner(),
+            ids[1].into_inner(),
+        ];
+        let typed =
+            authorized_fact_payloads::<FacadeFact>(&engine, &authz, &candidates, 10).await?;
+        assert_eq!(
+            typed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [ids[1], ids[0]]
+        );
+        let visible = authorized_memory_ids(
+            &engine,
+            &authz,
+            &candidates,
+            EntityKind::Fact,
+            Some(FacadeFact::schema_id()),
+            10,
+        )
+        .await?;
+        assert_eq!(visible, [ids[1], ids[0]]);
+        for candidates in [&[][..], &candidates[..]] {
+            assert!(matches!(
+                authorized_fact_payloads::<FacadeFact>(&engine, &authz, candidates, 0).await,
+                Err(ToolError::InvalidInput(_))
+            ));
+            assert!(matches!(
+                authorized_memory_ids(&engine, &authz, candidates, EntityKind::Fact, None, 0).await,
+                Err(ToolError::InvalidInput(_))
+            ));
+        }
+        assert!(
+            authorized_fact_payloads::<FacadeFact>(&engine, &authz, &[], 1)
+                .await?
+                .is_empty()
+        );
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("authenticated readable scope");
+}

@@ -49,7 +49,6 @@ pub(super) async fn validate_goal_activated_fact(
     let visible = proxima::flavor::authorized_memory_ids(
         &engine,
         ctx.authz(),
-        ctx.owner(),
         &[memory_id.into_inner()],
         EntityKind::Fact,
         None,
@@ -65,7 +64,7 @@ pub(super) async fn validate_goal_activated_fact(
     let planner = ctx
         .caller_self_perspective()
         .ok_or_else(|| ToolError::InvalidInput("caller_self_perspective is required".into()))?;
-    let mut req = QueryRequest::for_owner(ctx.owner());
+    let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_state = Some(GoalState::Active);
     req.assignment = Some(planner);
@@ -85,7 +84,7 @@ pub(super) async fn validate_active_goal_context(
     planner_root: MemoryId,
 ) -> Result<(), ToolError> {
     let engine = engine(ctx)?;
-    let mut req = QueryRequest::for_owner(ctx.owner());
+    let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_ids = vec![GoalId::new(goal_id)];
     req.limit = 1;
@@ -115,7 +114,7 @@ async fn goal_lineage_assigned_to(
     planner_root: MemoryId,
 ) -> Result<bool, ToolError> {
     let engine = engine(ctx)?;
-    let mut req = QueryRequest::for_owner(ctx.owner());
+    let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_ids = vec![start];
     req.limit = 1;
@@ -135,7 +134,6 @@ pub(super) async fn validate_plan_source_abstraction_in_owner(
     let visible = proxima::flavor::authorized_memory_ids(
         &engine,
         ctx.authz(),
-        ctx.owner(),
         &[memory_id.into_inner()],
         EntityKind::Abstraction,
         None,
@@ -160,7 +158,6 @@ pub(super) async fn validate_evidence_in_owner(
         let visible = proxima::flavor::authorized_memory_ids(
             &engine,
             ctx.authz(),
-            ctx.owner(),
             &[memory_id.into_inner()],
             EntityKind::Fact,
             None,
