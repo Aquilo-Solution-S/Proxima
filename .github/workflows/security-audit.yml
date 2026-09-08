@@ -1,7 +1,7 @@
 # Scheduled RUSTSEC advisory scan.
 #
-# The `deny` job in ci.yml runs cargo-deny only on push/PR, so an advisory
-# published between pushes stays invisible until the next commit. This cron
+# The `deny` job in ci.yml runs cargo-deny on relevant PR changes, so an advisory
+# published between PRs needs an independent check. This cron
 # re-checks advisories daily (and on demand) against the committed Cargo.lock,
 # independent of repository activity. Licenses/bans/sources stay on the CI job
 # where a lockfile change is the trigger that can affect them.

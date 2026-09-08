@@ -74,10 +74,13 @@ kernel, **the kernel wins** until renegotiated in writing. Check it with
 
 ## Branch policy
 
-1. `main` is PR-only (required CI checks + `enforce_admins`); no direct local pushes.
+1. `main` is PR-only (required checks, up-to-date branches, `enforce_admins`);
+   no direct local pushes.
 2. Work continues on short reviewed branches targeting `main`.
-3. Tag a new `v*` from `main` only after required slices merge and
-   post-merge CI passes (release notes are git-cliff-generated on the tag).
+3. CI validates only PRs targeting `main`, using GitHub's merge ref. Trust the
+   successful required gate against up-to-date `main` once the PR merges.
+4. Tag a new `v*` from `main` after all required slices merge through that gate
+   (release notes are git-cliff-generated on the tag).
 
 ## Migration policy
 

@@ -20,7 +20,8 @@ Before tagging a release:
 1. Update `proxima_core::RELEASE_VERSION` in `crates/core/src/lib.rs` in the
    release-preparation PR. MCP initialization and REST OpenAPI report this value;
    unpublished Cargo package versions remain separate.
-2. Merge the release changes and wait for `main` CI to pass.
+2. Require the PR gate to pass against up-to-date `main`, then merge. That gate
+   validates the release changes; a second run on the `main` push is unnecessary.
 3. Preview the generated notes with `scripts/changelog.sh vX.Y.Z`; check breaking
    changes and migration guidance.
 4. Tag the verified `main` commit. The release workflow refuses a tag that differs
