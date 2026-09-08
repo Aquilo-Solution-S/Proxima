@@ -33,6 +33,10 @@ pub(crate) async fn query_memories(
         .copied()
         .map(proxima_core::OwnerRef::stored_owner_id)
         .collect();
+    // Do not advance the cursor over commits made while result rows and
+    // payloads are being read. These pool reads are not one snapshot;
+    // later events may appear both in the result and in the following poll.
+    let seq_high_water = read_seq_high_water(pool, &owner_ids).await?;
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
     if matches!(req.entity_kind, Some(EntityKind::Goal)) {
         let (goals, next_cursor) =
@@ -42,7 +46,7 @@ pub(crate) async fn query_memories(
             goals,
             edges: Vec::new(),
             next_cursor,
-            seq_high_water: read_seq_high_water(pool, &owner_ids).await?,
+            seq_high_water,
         });
     }
 
@@ -80,8 +84,6 @@ pub(crate) async fn query_memories(
     let visible_goal_ids: Vec<Uuid> = goals.iter().map(|row| row.id.into_inner()).collect();
     demote_invisible_goal_refs(&mut memories, &visible_goal_ids);
     let edges = query_edges(req, &memories, &visible_goal_ids);
-    let seq_high_water = read_seq_high_water(pool, &owner_ids).await?;
-
     Ok(QueryResponse {
         memories,
         goals,
