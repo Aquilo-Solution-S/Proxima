@@ -86,7 +86,8 @@ struct OpenIdConfig {
 
 #[derive(serde::Deserialize)]
 struct Jwk {
-    kid: String,
+    /// Optional in JWK sets; an unnamed key cannot satisfy a kid lookup.
+    kid: Option<String>,
     /// Key type. Missing or non-`RSA` entries are skipped, not errored, so one
     /// EC/OKP key in the set can't fail the whole JWKS parse.
     #[serde(default)]
@@ -254,15 +255,18 @@ impl HttpJwksResolver {
             if !is_rsa_jwk(&jwk) {
                 continue;
             }
+            let Some(kid) = jwk.kid else {
+                continue;
+            };
             let (Some(n), Some(e)) = (&jwk.n, &jwk.e) else {
                 continue;
             };
             let key = DecodingKey::from_rsa_components(n, e)
                 .map_err(|e| KeyError::Parse(e.to_string()))?;
-            next.insert(jwk.kid, Arc::new(key));
+            next.insert(kid, Arc::new(key));
         }
         if next.is_empty() {
-            return Err(KeyError::Parse("jwks contained no RSA keys".into()));
+            return Err(KeyError::Parse("jwks contained no named RSA keys".into()));
         }
         *self.cache.write().await = next;
         Ok(())
@@ -975,6 +979,63 @@ mod http_tests {
         ));
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn jwks_entries_without_kid_do_not_break_named_rsa_resolution() {
+        // Public example keys from RFC 7517 section 3 and RFC 8037 A.2.
+        // RFC 7517 section 4.5 makes kid optional; these unsupported keys
+        // must not prevent the named RSA signing key from being loaded.
+        let unnamed_keys = [
+            serde_json::json!({
+                "kty": "EC", "crv": "P-256",
+                "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+                "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"
+            }),
+            serde_json::json!({
+                "kty": "OKP", "crv": "Ed25519",
+                "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+            }),
+            serde_json::json!({ "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }),
+        ];
+        for unnamed in unnamed_keys {
+            let jwks = serde_json::json!({
+                "keys": [unnamed, {
+                    "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E
+                }]
+            })
+            .to_string();
+            let (issuer, fetches, server) = spawn_mock_idp(jwks).await;
+            let resolver = HttpJwksResolver::new(issuer, None).expect("loopback issuer");
+            let named = resolver.key_for("k1").await;
+            let absent = resolver.key_for("").await;
+            server.abort();
+
+            assert!(named.is_ok(), "named RSA key must load: {:?}", named.err());
+            assert!(matches!(absent, Err(KeyError::UnknownKid)));
+            assert_eq!(fetches.load(Ordering::SeqCst), 1);
+            assert_eq!(resolver.cache.read().await.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn jwks_without_addressable_rsa_keys_is_rejected() {
+        for keys in [
+            serde_json::json!([]),
+            serde_json::json!([{ "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }]),
+        ] {
+            let (issuer, fetches, server) =
+                spawn_mock_idp(serde_json::json!({ "keys": keys }).to_string()).await;
+            let resolver = HttpJwksResolver::new(issuer, None).expect("loopback issuer");
+            let result = resolver.key_for("k1").await;
+            let absent = resolver.key_for("").await;
+            server.abort();
+
+            assert!(matches!(result, Err(KeyError::Parse(_))));
+            assert!(matches!(absent, Err(KeyError::UnknownKid)));
+            assert!(resolver.cache.read().await.is_empty());
+            assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        }
     }
 
     #[tokio::test]
