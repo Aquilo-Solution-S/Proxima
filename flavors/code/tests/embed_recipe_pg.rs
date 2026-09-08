@@ -10,8 +10,8 @@ use proxima_code::testkit::build_engine;
 use proxima_code::{CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1};
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, EdgeEndpoint, EntityKind, InputContractId,
-    MemoryId, MemoryOperatorKind, OperatorId, SchemaId, SchemaVersion, SidecarPayload,
+    AuthPath, AuthzContext, DerivationIdentity, DerivedMemory, InputContractId, MemoryId,
+    MemoryTarget, OperatorId, SeriesHandle,
 };
 use uuid::Uuid;
 
@@ -97,33 +97,27 @@ async fn a_never_schema_enqueues_no_embedding_job() {
     common::register_fixture_repo(db.pg.pool_for_tests(), &owner, repo_id).await;
     let payload = plan_payload(repo_id, goal_activated_memory_id, request_memory_id);
     let memory_id = MemoryId::new(Uuid::now_v7());
-    let derived_from = [EdgeEndpoint::memory(
-        EntityKind::Abstraction,
-        MemoryId::new(plan_source_memory_id),
-    )];
+    let derived_from = [MemoryId::new(plan_source_memory_id)];
 
     let mut uow = engine.unit_of_work(&authz).await.expect("unit of work");
     // The lock is only a way to open the transaction before the derived
     // write, which is what selects the deferring arm.
     uow.advisory_xact_lock(0x0072_6563).await.expect("lock");
     let outcome = uow
-        .author_derived(proxima_core::AuthorDerivedRequestInput {
-            memory_id,
-            owner,
-            kind: EntityKind::Abstraction,
-            text: payload.summary.clone(),
-            schema_id: SchemaId::new(CodeExecutionPlanV1::SCHEMA_ID.into()),
-            schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
-            operator_kind: MemoryOperatorKind::AtoA,
-            operator_id: OperatorId::new(Uuid::now_v7()),
-            input_contract_id: InputContractId::new(Uuid::now_v7()),
-            model_id: "test-planner",
-            sidecar_payload: SidecarPayload::abstraction(payload),
-            derived_from: &derived_from,
-            extra_refs: &[],
-            supersedes: None,
-            lexical_language: None,
-        })
+        .derive_memory(
+            DerivedMemory::abstraction(
+                MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner())),
+                owner,
+                payload.summary.clone(),
+                payload,
+                derived_from,
+                DerivationIdentity::new(
+                    OperatorId::new(Uuid::now_v7()),
+                    InputContractId::new(Uuid::now_v7()),
+                ),
+            )
+            .expect("typed plan request"),
+        )
         .await
         .expect("plan authored");
     uow.commit().await.expect("commit");
@@ -169,30 +163,22 @@ async fn a_never_schema_stores_no_inline_vector() {
     common::register_fixture_repo(db.pg.pool_for_tests(), &owner, repo_id).await;
     let payload = plan_payload(repo_id, goal_activated_memory_id, request_memory_id);
     let memory_id = MemoryId::new(Uuid::now_v7());
-    let derived_from = [EdgeEndpoint::memory(
-        EntityKind::Abstraction,
-        MemoryId::new(plan_source_memory_id),
-    )];
+    let derived_from = [MemoryId::new(plan_source_memory_id)];
     let outcome = engine
-        .author_derived_authorized(
+        .derive_memory(
             &authz,
-            proxima_core::AuthorDerivedRequestInput {
-                memory_id,
+            DerivedMemory::abstraction(
+                MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner())),
                 owner,
-                kind: EntityKind::Abstraction,
-                text: payload.summary.clone(),
-                schema_id: SchemaId::new(CodeExecutionPlanV1::SCHEMA_ID.into()),
-                schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
-                operator_kind: MemoryOperatorKind::AtoA,
-                operator_id: OperatorId::new(Uuid::now_v7()),
-                input_contract_id: InputContractId::new(Uuid::now_v7()),
-                model_id: "test-planner",
-                sidecar_payload: SidecarPayload::abstraction(payload),
-                derived_from: &derived_from,
-                extra_refs: &[],
-                supersedes: None,
-                lexical_language: None,
-            },
+                payload.summary.clone(),
+                payload,
+                derived_from,
+                DerivationIdentity::new(
+                    OperatorId::new(Uuid::now_v7()),
+                    InputContractId::new(Uuid::now_v7()),
+                ),
+            )
+            .expect("typed plan request"),
         )
         .await
         .expect("plan authored");

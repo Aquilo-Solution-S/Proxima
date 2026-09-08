@@ -724,9 +724,7 @@ impl proxima::flavor::AbstractionPayload for TierAbstraction {
 #[test]
 fn flavor_sdk_exposes_the_derived_memory_write_lane() {
     // `AbstractionPayload` and `PerspectivePayload` let a flavor *declare*
-    // derived schemas; without these types it could never *write* one,
-    // because `Engine::author_derived_authorized` takes an
-    // `AuthorDerivedRequestInput` an out-of-tree flavor could not name.
+    // derived schemas; `DerivedMemory` is the typed write request.
     // The in-tree precedent (`flavors/code`) reaches the same lane through
     // a direct `proxima-storage-pg` dependency, which a flavor depending
     // only on `proxima` does not have.
@@ -735,42 +733,31 @@ fn flavor_sdk_exposes_the_derived_memory_write_lane() {
     // a field added, removed or retyped upstream breaks here instead of
     // silently breaking every out-of-tree flavor at its next pin bump.
     use proxima::flavor::{
-        AbstractionPayload, AuthorDerivedRequestInput, EdgeEndpoint, EntityKind, InputContractId,
-        MemoryId, MemoryOperatorKind, OperatorId, SchemaVersion, SidecarPayload,
+        DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, InputContractId, MemoryId,
+        MemoryTarget, OperatorId, SeriesHandle,
     };
 
     let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
     let derived = MemoryId::new(uuid::Uuid::nil());
     let source_fact = MemoryId::new(uuid::Uuid::nil());
 
-    // What the write was made from, as endpoints. There is no kind here to
-    // pass and no relation to resolve: the entries become `origin` rows
-    // because of which field they arrived in (docs/16 §The Model).
-    let derived_from = [EdgeEndpoint::memory(EntityKind::Fact, source_fact)];
-
-    let _req = AuthorDerivedRequestInput {
-        memory_id: derived,
+    let _req = DerivedMemory::abstraction(
+        MemoryTarget::Series(SeriesHandle::new(derived.into_inner())),
         owner,
-        kind: EntityKind::Abstraction,
-        text: "the text a derived memory is embedded from".to_owned(),
-        schema_id: <TierAbstraction as proxima::flavor::AbstractionPayload>::schema_id(),
-        schema_version: SchemaVersion::new(TierAbstraction::SCHEMA_VERSION),
-        operator_kind: MemoryOperatorKind::FtoA,
-        operator_id: OperatorId::new(uuid::Uuid::nil()),
-        input_contract_id: InputContractId::new(uuid::Uuid::nil()),
-        model_id: "tier-test",
-        sidecar_payload: SidecarPayload::abstraction(TierAbstraction {
+        "the text a derived memory is embedded from",
+        TierAbstraction {
             note: "sidecar".to_owned(),
-        }),
-        derived_from: &derived_from,
-        extra_refs: &[],
-        supersedes: None,
-        lexical_language: None,
-    };
+        },
+        [source_fact],
+        DerivationIdentity::new(
+            OperatorId::new(uuid::Uuid::nil()),
+            InputContractId::new(uuid::Uuid::nil()),
+        ),
+    )
+    .expect("typed derived request builds");
 
     // The outcome type must be nameable too — a caller has to bind what
-    // `author_derived_authorized` returns.
-    let _: Option<&proxima::flavor::AuthorDerivedAuthorizedOutcome> = None;
+    let _: Option<&DerivedMemoryOutcome> = None;
 }
 
 /// A payload that points at another node, built through the facade alone.

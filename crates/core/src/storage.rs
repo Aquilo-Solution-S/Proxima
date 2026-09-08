@@ -491,7 +491,6 @@ pub struct AuthorDerivedRequest<'a> {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub operator_kind: MemoryOperatorKind,
-    pub model_id: &'a str,
     pub sidecar_payload: SidecarPayload,
     /// Prior `t` of the series this write revises. Supersession is a
     /// later `t` on the same `handle`, not a column: storage resolves the

@@ -8,7 +8,7 @@
 //!
 //! Fact ingest goes through `Engine::ingest_typed_fact_with` (UoW of one).
 //! Opaque `CitationSpec` and stateful NK handle reuse live on that lane.
-//! Code-slice Abstractions are one `UnitOfWork::author_derived_all`
+//! Code-slice Abstractions are one `UnitOfWork::derive_memories`
 //! (embed the batch, then one transaction).
 
 pub mod blobs;

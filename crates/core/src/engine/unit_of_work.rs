@@ -1,11 +1,11 @@
 //! Backend-owned [`UnitOfWork`]: one transaction, several Engine writes.
 
 use super::Engine;
+use super::memory_authoring::PreparedDerived;
 use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
-use crate::storage::{AuthorDerivedRequest, DerivedEmbedding};
 use crate::storage_ports::{SidecarSessionRead, WriteSession};
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 use crate::verbs::goal_write::{
@@ -13,48 +13,8 @@ use crate::verbs::goal_write::{
 };
 use crate::verbs::query::SidecarAtom;
 use crate::{
-    AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, FactPayload, MemoryId,
-    MemoryOperatorKind, Owner, SchemaId, SchemaVersion, SidecarPayload,
+    DerivedMemoryOutcome, EntityKind, FactPayload, MemoryId, Owner, SchemaId, SidecarPayload,
 };
-
-/// Owned embedding so a prepared batch can outlive the client borrow
-/// used by [`DerivedEmbedding`].
-enum PreparedEmbedding {
-    None,
-    Ready { model_id: String, vector: Vec<f32> },
-    Deferred { model_id: String },
-}
-
-impl PreparedEmbedding {
-    fn as_derived(&self) -> DerivedEmbedding<'_> {
-        match self {
-            Self::None => DerivedEmbedding::None,
-            Self::Ready { model_id, vector } => DerivedEmbedding::Ready {
-                model_id,
-                vector: vector.clone(),
-            },
-            Self::Deferred { model_id } => DerivedEmbedding::Deferred { model_id },
-        }
-    }
-}
-
-struct PreparedDerived {
-    write_permit: super::pipeline::WritePermit,
-    owner: Owner,
-    memory_id: MemoryId,
-    kind: EntityKind,
-    text: String,
-    schema_id: SchemaId,
-    schema_version: SchemaVersion,
-    operator_kind: MemoryOperatorKind,
-    model_id: String,
-    sidecar_payload: SidecarPayload,
-    supersedes: Option<MemoryId>,
-    lexical_language: Option<String>,
-    embedding: PreparedEmbedding,
-    origins: Vec<EdgeEndpoint>,
-    references: Vec<EdgeEndpoint>,
-}
 
 /// One typed Fact write: payload plus optional citation and origins.
 ///
@@ -162,7 +122,7 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
 /// natural-key lookup, and embedding run against the pool (or the embed
 /// client) first; [`crate::storage_ports::WriteSessionFactory::begin`] happens on the first
 /// write, advisory lock, or forget. A multi-derived batch
-/// ([`Self::author_derived_all`]) embeds every text before that begin, so
+/// ([`Self::derive_memories`]) embeds every text before that begin, so
 /// a file of N chunks does not hold a pool slot across N provider RTTs.
 pub struct UnitOfWork<'a> {
     engine: &'a Engine,
@@ -265,6 +225,56 @@ impl UnitOfWork<'_> {
         self.session
             .as_mut()
             .ok_or_else(|| ProtocolError::internal("unit of work session missing after begin"))
+    }
+
+    /// Append a typed derived row in this transaction, inferring its phase from readable origins.
+    ///
+    /// # Errors
+    /// Returns authorization, provenance, schema, embedding, or storage errors.
+    pub async fn derive_memory(
+        &mut self,
+        memory: crate::DerivedMemory,
+    ) -> Result<crate::DerivedMemoryOutcome, ProtocolError> {
+        let item = self
+            .engine
+            .prepare_derived_memory(
+                self.authz,
+                memory,
+                &self.written_kinds,
+                self.session.is_some(),
+            )
+            .await?;
+        self.write_prepared_derived(item).await
+    }
+
+    /// Prepare a batch before opening the write transaction, then append every row.
+    /// An already-open transaction defers embedding. Drop without commit rolls back the batch.
+    /// Use sequential `derive_memory` calls when one result is an input to the next.
+    ///
+    /// # Errors
+    /// Returns authorization, provenance, schema, embedding, or storage errors.
+    pub async fn derive_memories(
+        &mut self,
+        memories: impl IntoIterator<Item = crate::DerivedMemory>,
+    ) -> Result<Vec<crate::DerivedMemoryOutcome>, ProtocolError> {
+        let mut prepared = Vec::new();
+        for memory in memories {
+            prepared.push(
+                self.engine
+                    .prepare_derived_memory(
+                        self.authz,
+                        memory,
+                        &self.written_kinds,
+                        self.session.is_some(),
+                    )
+                    .await?,
+            );
+        }
+        let mut outcomes = Vec::with_capacity(prepared.len());
+        for item in prepared {
+            outcomes.push(self.write_prepared_derived(item).await?);
+        }
+        Ok(outcomes)
     }
 
     /// Serialize this transaction against `key` (`pg_advisory_xact_lock`).
@@ -460,207 +470,11 @@ impl UnitOfWork<'_> {
         Ok(outcome)
     }
 
-    /// Authorize and persist one derived memory in this transaction.
-    ///
-    /// Embedding runs before the transaction starts when this is the first
-    /// write. If the transaction is already open, the vector is deferred
-    /// (job enqueued, no provider call) so an open pool slot is not held
-    /// across HTTP. Prefer [`Self::author_derived_all`] when several
-    /// derived rows must share one transaction *and* land with vectors.
-    ///
-    /// # Errors
-    ///
-    /// Authorization or storage faults.
-    pub async fn author_derived(
-        &mut self,
-        req: AuthorDerivedRequestInput<'_>,
-    ) -> Result<AuthorDerivedAuthorizedOutcome, ProtocolError> {
-        let mut outcomes = self.author_derived_all(std::iter::once(req)).await?;
-        outcomes.pop().ok_or_else(|| {
-            ProtocolError::internal("author_derived_all returned no outcome for one request")
-        })
-    }
-
-    /// Authorize and persist many derived memories in one transaction.
-    ///
-    /// Every text is embedded (or deferred for a refused input) **before**
-    /// [`crate::storage_ports::WriteSessionFactory::begin`]. Use this for a self-referential
-    /// group (code slices of one file) so the pool slot is held only for
-    /// the writes.
-    ///
-    /// # Errors
-    ///
-    /// Authorization or storage faults from any member. No row is
-    /// committed unless the caller [`Self::commit`]s.
-    pub async fn author_derived_all(
-        &mut self,
-        reqs: impl IntoIterator<Item = AuthorDerivedRequestInput<'_>>,
-    ) -> Result<Vec<AuthorDerivedAuthorizedOutcome>, ProtocolError> {
-        let reqs: Vec<AuthorDerivedRequestInput<'_>> = reqs.into_iter().collect();
-        if reqs.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut prepared = Vec::with_capacity(reqs.len());
-        for req in reqs {
-            prepared.push(self.prepare_derived(req).await?);
-        }
-        let mut outcomes = Vec::with_capacity(prepared.len());
-        for item in prepared {
-            outcomes.push(self.write_prepared_derived(item).await?);
-        }
-        Ok(outcomes)
-    }
-
-    async fn prepare_derived(
-        &mut self,
-        req: AuthorDerivedRequestInput<'_>,
-    ) -> Result<PreparedDerived, ProtocolError> {
-        let write_permit = self
-            .engine
-            .authorize_write(self.authz, &req.owner, Relation::Editor)
-            .await?;
-        let owner = *write_permit.owner();
-        if let Some(prior) = req.supersedes {
-            let prior_home = self
-                .engine
-                .storage()
-                .memory_authoring
-                .owner_access_read
-                .home_owner(crate::EntityId::Memory(prior))
-                .await
-                .map_err(|err| ProtocolError::internal(err.to_string()))?;
-            if prior_home.as_ref() != Some(&owner) {
-                return Err(ProtocolError::forbidden(
-                    "supersedes target is not an owned entity of the same owner",
-                ));
-            }
-            let prior_kind = self.engine.load_required_memory_kind(&owner, prior).await?;
-            if prior_kind != req.kind {
-                return Err(ProtocolError::invalid_argument(
-                    "supersedes",
-                    "must supersede a memory of the same kind",
-                ));
-            }
-        }
-        let source = EdgeEndpoint::memory(req.kind, req.memory_id);
-        let origins = self
-            .engine
-            .authorized_index_targets_visible(
-                self.authz,
-                source,
-                req.derived_from,
-                "derived_from",
-                &self.written,
-            )
-            .await?;
-        let declared = req.sidecar_payload.references();
-        let mut references = self
-            .engine
-            .authorized_payload_references_visible(self.authz, source, &declared, &self.written)
-            .await?;
-        if !req.extra_refs.is_empty() {
-            let extras: Vec<EdgeEndpoint> = req
-                .extra_refs
-                .iter()
-                .copied()
-                .map(|id| EdgeEndpoint::memory(EntityKind::Fact, id))
-                .collect();
-            let extra = self
-                .engine
-                .authorized_index_targets_visible(
-                    self.authz,
-                    source,
-                    &extras,
-                    "refs",
-                    &self.written,
-                )
-                .await?;
-            references.extend(extra);
-        }
-        super::memory_authoring::validate_operator_memory_invocation_request(&req)
-            .map_err(super::memory_authoring::map_derived_storage_error)?;
-        let embedding = self
-            .prepare_embedding(req.memory_id, req.schema_id.as_str(), &req.text)
-            .await
-            .map_err(super::memory_authoring::map_derived_storage_error)?;
-        Ok(PreparedDerived {
-            write_permit,
-            owner,
-            memory_id: req.memory_id,
-            kind: req.kind,
-            text: req.text,
-            schema_id: req.schema_id,
-            schema_version: req.schema_version,
-            operator_kind: req.operator_kind,
-            model_id: req.model_id.to_owned(),
-            sidecar_payload: req.sidecar_payload,
-            supersedes: req.supersedes,
-            lexical_language: req.lexical_language.map(ToOwned::to_owned),
-            embedding,
-            origins,
-            references,
-        })
-    }
-
-    async fn prepare_embedding(
-        &mut self,
-        memory_id: MemoryId,
-        schema_id: &str,
-        text: &str,
-    ) -> Result<PreparedEmbedding, crate::storage::StorageError> {
-        let client = self.engine.embed_client();
-        let Some(client) = client.as_deref() else {
-            return Ok(PreparedEmbedding::None);
-        };
-        // A deferral is a promise the drain can keep. It cannot for a schema
-        // whose recipe resolves to no unit: the job would be claimed, find no
-        // text and be dropped, once per memory.
-        if !self.engine.registry().schema_is_embeddable(schema_id) {
-            return Ok(PreparedEmbedding::None);
-        }
-        // Transaction already open: do not hold the pool slot across HTTP.
-        if self.session.is_some() {
-            return Ok(PreparedEmbedding::Deferred {
-                model_id: client.model_id().to_owned(),
-            });
-        }
-        Ok(
-            match super::memory_authoring::resolve_derived_embedding(client, memory_id, text)
-                .await?
-            {
-                DerivedEmbedding::None => PreparedEmbedding::None,
-                DerivedEmbedding::Ready { model_id, vector } => PreparedEmbedding::Ready {
-                    model_id: model_id.to_owned(),
-                    vector,
-                },
-                DerivedEmbedding::Deferred { model_id } => PreparedEmbedding::Deferred {
-                    model_id: model_id.to_owned(),
-                },
-            },
-        )
-    }
-
     async fn write_prepared_derived(
         &mut self,
         item: PreparedDerived,
-    ) -> Result<AuthorDerivedAuthorizedOutcome, ProtocolError> {
-        let embedding = item.embedding.as_derived();
-        let storage_req = AuthorDerivedRequest {
-            memory_id: item.memory_id,
-            owner: item.owner,
-            kind: item.kind,
-            text: item.text,
-            schema_id: item.schema_id,
-            schema_version: item.schema_version,
-            operator_kind: item.operator_kind,
-            model_id: &item.model_id,
-            sidecar_payload: item.sidecar_payload,
-            supersedes: item.supersedes,
-            lexical_language: item.lexical_language.as_deref(),
-            embedding,
-            origins: &item.origins,
-            references: &item.references,
-        };
+    ) -> Result<DerivedMemoryOutcome, ProtocolError> {
+        let storage_req = item.storage_request();
         let outcome = self
             .ensure_session()
             .await?
@@ -677,7 +491,7 @@ impl UnitOfWork<'_> {
             self.written.push(outcome.memory_id);
             self.written_kinds.push((outcome.memory_id, item.kind));
         }
-        Ok(AuthorDerivedAuthorizedOutcome {
+        Ok(DerivedMemoryOutcome {
             memory_id: outcome.memory_id,
             idempotent_replay: outcome.idempotent_replay,
             edge_count: outcome.edge_count,

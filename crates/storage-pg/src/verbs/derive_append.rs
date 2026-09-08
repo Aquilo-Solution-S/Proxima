@@ -2,8 +2,8 @@
 //!
 //! Crate-internal throughout: this is the body of the `MemoryWritePort` /
 //! `WriteSession` derive implementations in `crate::ports`. A derived write
-//! reaches it through `Engine::author_derived_authorized` or
-//! `UnitOfWork::author_derived`, which is the one path that runs origin
+//! reaches it through `Engine::derive_memory` or
+//! `UnitOfWork::derive_memory`, which is the one path that runs origin
 //! validation, reference-kind validation, the sidecar + projection insert,
 //! and the declared-index assertion as a unit.
 
@@ -107,27 +107,8 @@ async fn append_derived_timeseries(
     } else {
         draft.memory_id
     };
-    if draft.supersedes.is_none() {
-        let existing = load_derived_replay_head(tx, handle, draft, kind).await?;
-        if let Some(t) = existing {
-            let stored_origins = load_pin_ids(tx, t, PinColumn::Origins).await?;
-            let incoming_origins = pin_memory_ids(input.origins);
-            if stored_origins == incoming_origins {
-                let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
-                let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
-                let (refs, goal_refs) =
-                    super::memory_timeseries::pin_reference_ids(input.references);
-                if stored_refs != refs || stored_goal_refs != goal_refs {
-                    return Err(StorageError::Conflict(
-                        "derived replay changed declared refs".into(),
-                    ));
-                }
-                return Ok(DerivedOutcome {
-                    memory_id: MemoryId::new(t),
-                    idempotent_replay: true,
-                });
-            }
-        }
+    if let Some(replay) = try_derived_replay(tx, handle, draft, kind, input).await? {
+        return Ok(replay);
     }
     let cmd = derived_memory_command(draft, handle, kind);
     let supersedes_targets = draft
@@ -149,6 +130,13 @@ async fn append_derived_timeseries(
     )
     .await?;
     super::memory_timeseries::lock_prepared_memory_admission(tx, &prepared).await?;
+    // A concurrent writer can commit between the first replay probe and
+    // preparation. Preparation then observes its head and legitimately
+    // passes the locked head comparison. Recheck under the existing fences
+    // and handle/lifecycle locks before materializing another version.
+    if let Some(replay) = try_derived_replay(tx, handle, draft, kind, input).await? {
+        return Ok(replay);
+    }
     let prepared = super::memory_timeseries::claim_prepared_memory_admission(tx, prepared).await?;
     let content_id = resolve_derived_content_id(
         tx,
@@ -171,6 +159,38 @@ async fn append_derived_timeseries(
         settle_derived_embedding(tx, draft, outcome.memory_id).await?;
     }
     Ok(outcome)
+}
+
+async fn try_derived_replay(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: uuid::Uuid,
+    draft: &DerivedDraft<'_>,
+    kind: &str,
+    input: DerivedAdmissionInput<'_>,
+) -> Result<Option<DerivedOutcome>, StorageError> {
+    if draft.supersedes.is_none() {
+        let existing = load_derived_replay_head(tx, handle, draft, kind).await?;
+        if let Some(t) = existing {
+            let stored_origins = load_pin_ids(tx, t, PinColumn::Origins).await?;
+            let incoming_origins = pin_memory_ids(input.origins);
+            if stored_origins == incoming_origins {
+                let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
+                let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
+                let (refs, goal_refs) =
+                    super::memory_timeseries::pin_reference_ids(input.references);
+                if stored_refs != refs || stored_goal_refs != goal_refs {
+                    return Err(StorageError::Conflict(
+                        "derived replay changed declared refs".into(),
+                    ));
+                }
+                return Ok(Some(DerivedOutcome {
+                    memory_id: MemoryId::new(t),
+                    idempotent_replay: true,
+                }));
+            }
+        }
+    }
+    Ok(None)
 }
 
 async fn load_derived_replay_head(

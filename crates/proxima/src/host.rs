@@ -51,7 +51,7 @@ pub use proxima_core::engine::{
     ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse, SearchReadRequest,
     SearchReadResponse, TypedFactIngest, UnitOfWork,
 };
-pub use proxima_core::error::ProtocolError;
+pub use proxima_core::error::{ErrorCode, ProtocolError};
 pub use proxima_core::llm;
 /// [`EmbedCaps`] is the second parameter of
 /// [`OpenAiCompatEmbeddingClient::new`], so without it on the facade that
@@ -103,6 +103,10 @@ pub use proxima_core::verbs::goal_write::{
     GoalState, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError,
     GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS, MAX_GOAL_TITLE_CHARS,
     MAX_WAKE_TOOL_ID_CHARS, OperatorKind, SystemOrigin,
+};
+/// Typed derived-memory writes; handles identify series and outcomes identify rows.
+pub use proxima_core::{
+    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, MemoryTarget, SeriesHandle,
 };
 /// Typed result of the owner-authorized cold-memory hydration command. The
 /// facade exposes only ids and classifications; Postgres transactions,

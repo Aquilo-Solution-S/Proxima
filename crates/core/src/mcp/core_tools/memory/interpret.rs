@@ -7,10 +7,7 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
-use crate::{
-    AuthorDerivedRequestInput, InputContractId, InterpretationSubjectKind, InterpretationV1,
-    MemoryId, OperatorId, PerspectivePayload, SchemaId, SchemaVersion, SidecarPayload,
-};
+use crate::{DerivedMemory, InterpretationSubjectKind, InterpretationV1, MemoryId, SeriesHandle};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -19,9 +16,6 @@ pub(crate) const MAX_SUBJECTS: usize = 64;
 
 const INTERPRET_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x1b, 0x6a, 0x4c, 0x9e, 0x2d, 0x77, 0x4f, 0x0b, 0xa5, 0x31, 0x8e, 0x24, 0x6c, 0x0d, 0x91, 0xf3,
-]);
-const INTERPRET_OPERATOR_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
-    0x52, 0x18, 0xc7, 0x3f, 0x9a, 0x40, 0x4d, 0x86, 0xb1, 0x0c, 0x7f, 0x5e, 0x33, 0xa8, 0x62, 0x1d,
 ]);
 
 pub(crate) fn default_confidence() -> u8 {
@@ -144,41 +138,15 @@ impl McpTool for InterpretTool {
 
             let engine = ctx.require_engine()?;
             let outcome = engine
-                .author_derived_authorized(
+                .derive_memory(
                     &ctx.authz,
-                    AuthorDerivedRequestInput {
-                        memory_id,
-                        owner: space.owner,
-                        kind: crate::EntityKind::Perspective,
-                        text: claim,
-                        schema_id: SchemaId::new(
-                            <InterpretationV1 as PerspectivePayload>::SCHEMA_ID.into(),
-                        ),
-                        schema_version: SchemaVersion::new(
-                            <InterpretationV1 as PerspectivePayload>::SCHEMA_VERSION,
-                        ),
-                        operator_kind: crate::MemoryOperatorKind::AtoP,
-                        operator_id: interpret_operator_id(),
-                        input_contract_id: interpret_input_contract_id(),
-                        model_id: &model_id,
-                        sidecar_payload: SidecarPayload::perspective(payload),
-                        // An interpretation consumes nothing. It grounds
-                        // through the references its payload carries, so
-                        // it declares no derivation and writes no
-                        // `origin` rows.
-                        derived_from: &[],
-                        extra_refs: &[],
-                        supersedes: None,
-                        // This surface takes no `language` argument, and
-                        // the interpretation schema's language policy is
-                        // `PerRow` — the row's configuration is the
-                        // writer's. So the write says which one it means
-                        // instead of leaving the draft silent and having
-                        // storage guess.
-                        lexical_language: Some(
-                            crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT,
-                        ),
-                    },
+                    DerivedMemory::interpretation(
+                        crate::MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner())),
+                        space.owner,
+                        claim,
+                        payload,
+                    )
+                    .lexical_language(crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT),
                 )
                 .await?;
 
@@ -227,20 +195,6 @@ pub(crate) fn resolve_subject(
     // memory-resolving tool uses.
     let memory_id = ctx.resolve_memory(handle)?;
     Ok((memory_id, InterpretationSubjectKind::Fact))
-}
-
-pub(crate) fn interpret_operator_id() -> OperatorId {
-    OperatorId::new(uuid::Uuid::new_v5(
-        &INTERPRET_OPERATOR_NAMESPACE,
-        protocol_tool::CORE_INTERPRET.as_bytes(),
-    ))
-}
-
-pub(crate) fn interpret_input_contract_id() -> InputContractId {
-    InputContractId::new(uuid::Uuid::new_v5(
-        &INTERPRET_OPERATOR_NAMESPACE,
-        format!("{}:subjects-v1", protocol_tool::CORE_INTERPRET).as_bytes(),
-    ))
 }
 
 /// Deterministic id folded from owner, model, claim, confidence and

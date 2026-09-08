@@ -44,7 +44,9 @@ pub use goal_write::{
 };
 pub use ingest::EmbeddingDrainOutcome;
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
-pub use memory_authoring::{AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput};
+pub use memory_authoring::{
+    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, MemoryTarget, SeriesHandle,
+};
 pub use pipeline::{MemoryPermit, PermitMode};
 pub use read_verbs::{
     FactCitationReadRequest, FactsCitingObjectReadRequest, GetGraphReadRequest,

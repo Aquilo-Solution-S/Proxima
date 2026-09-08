@@ -7,9 +7,9 @@ use proxima_core::storage_ports::SidecarSessionRead;
 use proxima_core::verbs::persist_mcp_call::McpCallLoggedV1;
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
-    AbstractionPayload, AgentDerivationV1, AgentNoteV1, AuthorDerivedRequestInput, EntityKind,
-    FactPayload, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, SchemaId,
-    SchemaVersion, SidecarPayload, Speaker, UtteranceV1,
+    AgentDerivationV1, AgentNoteV1, DerivationIdentity, DerivedMemory, EntityKind, FactPayload,
+    InputContractId, MemoryId, MemoryTarget, OperatorId, SchemaId, SeriesHandle, Speaker,
+    UtteranceV1,
 };
 use proxima_core::{Role, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
@@ -48,44 +48,31 @@ fn note(title: &str) -> AgentNoteV1 {
     }
 }
 
-fn derived_abstraction<'a>(
+fn derived_abstraction(
     owner: proxima_core::Owner,
-    origin: &'a [proxima_core::EdgeEndpoint],
+    origin: MemoryId,
     title: &str,
-) -> AuthorDerivedRequestInput<'a> {
-    AuthorDerivedRequestInput {
-        memory_id: MemoryId::new(Uuid::now_v7()),
+) -> Result<DerivedMemory, proxima_core::ProtocolError> {
+    DerivedMemory::abstraction(
+        MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
         owner,
-        kind: EntityKind::Abstraction,
-        text: title.into(),
-        schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
-        schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-        operator_kind: MemoryOperatorKind::FtoA,
-        operator_id: OperatorId::new(Uuid::now_v7()),
-        input_contract_id: InputContractId::new(Uuid::now_v7()),
-        model_id: "test",
-        sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
+        title,
+        AgentDerivationV1 {
             title: title.into(),
             body: title.into(),
             tags: Vec::new(),
             idempotency_key: None,
-            source_memory_ids: vec![
-                origin[0]
-                    .memory_id()
-                    .map_or_else(Uuid::nil, MemoryId::into_inner),
-            ],
+            source_memory_ids: vec![origin.into_inner()],
             model_id: "test".into(),
             client_name: "test".into(),
             client_version: "1".into(),
-        }),
-        derived_from: origin,
-        extra_refs: &[],
-        supersedes: None,
-        // `agent-derivation-v1` declares `LanguagePolicy::PerRow`, so the
-        // write names a configuration. This fixture does not care which,
-        // and asks for the deployment's.
-        lexical_language: Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT),
-    }
+        },
+        [origin],
+        DerivationIdentity::new(
+            OperatorId::new(Uuid::now_v7()),
+            InputContractId::new(Uuid::now_v7()),
+        ),
+    )
 }
 
 #[tokio::test]
@@ -114,36 +101,8 @@ async fn unit_of_work_one_shot_and_rollback_and_lock() {
             let mut uow = engine.unit_of_work(&authz).await?;
             uow.ingest_fact("test/uow-a", &note("rollback-a")).await?;
             uow.ingest_fact("test/uow-b", &note("rollback-b")).await?;
-            let origin = proxima_core::EdgeEndpoint::memory(EntityKind::Fact, one.memory_id);
-            let derived = AuthorDerivedRequestInput {
-                memory_id: MemoryId::new(Uuid::now_v7()),
-                owner,
-                kind: EntityKind::Abstraction,
-                text: "derived in uow".into(),
-                schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
-                schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-                operator_kind: MemoryOperatorKind::FtoA,
-                operator_id: OperatorId::new(Uuid::now_v7()),
-                input_contract_id: InputContractId::new(Uuid::now_v7()),
-                model_id: "test",
-                sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
-                    title: "uow".into(),
-                    body: "body".into(),
-                    tags: Vec::new(),
-                    idempotency_key: None,
-                    source_memory_ids: vec![one.memory_id.into_inner()],
-                    model_id: "test".into(),
-                    client_name: "test".into(),
-                    client_version: "1".into(),
-                }),
-                derived_from: std::slice::from_ref(&origin),
-                extra_refs: &[],
-                supersedes: None,
-                lexical_language: Some(
-                    proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT,
-                ),
-            };
-            uow.author_derived(derived).await?;
+            uow.derive_memory(derived_abstraction(owner, one.memory_id, "derived in uow")?)
+                .await?;
         }
         let rolled: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t <> $1")
@@ -277,7 +236,7 @@ async fn unit_of_work_later_write_may_cite_earlier_uncommitted_fact() {
 }
 
 #[tokio::test]
-async fn unit_of_work_author_derived_all_is_atomic() {
+async fn unit_of_work_derive_memories_is_atomic() {
     let db_name = unique_db_name("proxima_uow_derived_all");
     create_db(&db_name).await.expect("PG required");
     let db_url = db_url(&db_name);
@@ -295,14 +254,12 @@ async fn unit_of_work_author_derived_all_is_atomic() {
         let source = engine
             .ingest_typed_fact(&authz, "test/uow-derived-all", &note("source"))
             .await?;
-        let origin = proxima_core::EdgeEndpoint::memory(EntityKind::Fact, source.memory_id);
-        let origins = [origin];
         {
             let mut uow = engine.unit_of_work(&authz).await?;
             let written = uow
-                .author_derived_all([
-                    derived_abstraction(owner, &origins, "batch-a"),
-                    derived_abstraction(owner, &origins, "batch-b"),
+                .derive_memories([
+                    derived_abstraction(owner, source.memory_id, "batch-a")?,
+                    derived_abstraction(owner, source.memory_id, "batch-b")?,
                 ])
                 .await?;
             assert_eq!(written.len(), 2);
@@ -316,9 +273,9 @@ async fn unit_of_work_author_derived_all_is_atomic() {
 
         let mut uow = engine.unit_of_work(&authz).await?;
         let written = uow
-            .author_derived_all([
-                derived_abstraction(owner, &origins, "commit-a"),
-                derived_abstraction(owner, &origins, "commit-b"),
+            .derive_memories([
+                derived_abstraction(owner, source.memory_id, "commit-a")?,
+                derived_abstraction(owner, source.memory_id, "commit-b")?,
             ])
             .await?;
         uow.commit().await?;
@@ -341,7 +298,7 @@ async fn unit_of_work_author_derived_all_is_atomic() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("unit of work author_derived_all pg test failed");
+    result.expect("unit of work derive_memories pg test failed");
 }
 
 /// Both owners log the SAME tool name into the same sidecar table, so the

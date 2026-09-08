@@ -49,20 +49,6 @@ const WORK_ASSIGNMENT_NAMESPACE: Uuid = Uuid::from_bytes([
     0x3c, 0x91, 0x77, 0x4a, 0xd2, 0x8e, 0x4f, 0x13, 0x9b, 0x60, 0x2a, 0xf5, 0x0d, 0x6c, 0x84, 0xe7,
 ]);
 
-fn work_assignment_operator_id() -> OperatorId {
-    OperatorId::new(Uuid::new_v5(
-        &WORK_ASSIGNMENT_NAMESPACE,
-        b"proxima-code/work-assignment-v1:operator",
-    ))
-}
-
-fn work_assignment_input_contract_id() -> InputContractId {
-    InputContractId::new(Uuid::new_v5(
-        &WORK_ASSIGNMENT_NAMESPACE,
-        b"proxima-code/work-assignment-v1:subjects",
-    ))
-}
-
 /// Deterministic id for an assignment Perspective, folded from the owner
 /// principal, the worker it names and the item it assigns. Re-asserting the
 /// same assignment lands on one memory rather than a pile of identical

@@ -15,8 +15,8 @@ use super::memory::derive::{
     map_derive_authoring_error,
 };
 use super::memory::interpret::{
-    self, MAX_CLAIM_CHARS, MAX_SUBJECTS, default_confidence, interpret_input_contract_id,
-    interpret_operator_id, interpretation_memory_id, reject_self_subject,
+    self, MAX_CLAIM_CHARS, MAX_SUBJECTS, default_confidence, interpretation_memory_id,
+    reject_self_subject,
 };
 use super::memory::util::{dedup_resolved, normalize_idempotency_key, normalize_tags};
 use crate::engine::{GoalCreatePayloadWriteRequest, TypedFactIngest};
@@ -30,9 +30,8 @@ use crate::verbs::goal_write::{
     GoalAssignmentTarget, GoalEvidenceRef, GoalTopologyWrite, IdempotencyKey,
 };
 use crate::{
-    AbstractionPayload, AgentDerivationV1, AuthorDerivedRequestInput, EntityKind,
-    InterpretationSubjectKind, InterpretationV1, MemoryId, PerspectivePayload, SchemaId,
-    SchemaVersion, SidecarPayload, UnitOfWork,
+    DerivationIdentity, DerivedMemory, EdgeEndpoint, InterpretationSubjectKind, InterpretationV1,
+    MemoryId, SeriesHandle, UnitOfWork,
 };
 
 use bind::{BindSet, parse_bind, reject_duplicate_keys};
@@ -385,35 +384,35 @@ impl EpisodeWrite<'_> {
         let kind = DerivedKind::Abstraction;
         let derive::DerivationPlan {
             memory_id,
-            operator_kind,
             derived_from,
             sidecar,
             authored,
+            ..
         } = derive::plan_derivation(ctx, &owner, kind, authored, &sources)?;
         let extra_refs = pin.then_some(act_id).into_iter().collect::<Vec<_>>();
+        let origins = derived_from
+            .iter()
+            .copied()
+            .filter_map(EdgeEndpoint::memory_id)
+            .collect::<Vec<_>>();
+        let identity = DerivationIdentity::new(
+            core_derive_operator_id(kind),
+            core_derive_input_contract_id(kind),
+        );
         let outcome = self
             .uow
-            .author_derived(AuthorDerivedRequestInput {
-                memory_id,
-                owner,
-                kind: kind.to_entity_kind(),
-                text: authored.body.clone(),
-                schema_id: SchemaId::new(
-                    <AgentDerivationV1 as AbstractionPayload>::SCHEMA_ID.into(),
-                ),
-                schema_version: SchemaVersion::new(
-                    <AgentDerivationV1 as AbstractionPayload>::SCHEMA_VERSION,
-                ),
-                operator_kind,
-                operator_id: core_derive_operator_id(kind),
-                input_contract_id: core_derive_input_contract_id(kind),
-                model_id: &authored.model_id,
-                sidecar_payload: SidecarPayload::abstraction(sidecar),
-                derived_from: &derived_from,
-                extra_refs: &extra_refs,
-                supersedes: None,
-                lexical_language: Some(lexical_language.as_str()),
-            })
+            .derive_memory(
+                DerivedMemory::abstraction(
+                    crate::MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner())),
+                    owner,
+                    authored.body.clone(),
+                    sidecar,
+                    origins,
+                    identity,
+                )?
+                .refs(extra_refs)
+                .lexical_language(lexical_language),
+            )
             .await
             .map_err(|err| map_bound_derived_error(err, "derive", pin))?;
         reject_bound_replay(pin, outcome.idempotent_replay, "derive")?;
@@ -471,6 +470,11 @@ impl EpisodeWrite<'_> {
                 &subject_memory_ids,
             ));
             reject_self_subject(memory_id, &subject_memory_ids)?;
+            let subject_refs = subject_memory_ids
+                .iter()
+                .copied()
+                .map(MemoryId::new)
+                .collect::<Vec<_>>();
             let payload = InterpretationV1 {
                 claim: claim.clone(),
                 confidence: item.confidence,
@@ -484,33 +488,16 @@ impl EpisodeWrite<'_> {
             let extra_refs = pin.then_some(act_id).into_iter().collect::<Vec<_>>();
             let outcome = self
                 .uow
-                .author_derived(AuthorDerivedRequestInput {
-                    memory_id,
-                    owner,
-                    kind: EntityKind::Perspective,
-                    text: claim,
-                    schema_id: SchemaId::new(
-                        <InterpretationV1 as PerspectivePayload>::SCHEMA_ID.into(),
-                    ),
-                    schema_version: SchemaVersion::new(
-                        <InterpretationV1 as PerspectivePayload>::SCHEMA_VERSION,
-                    ),
-                    operator_kind: crate::MemoryOperatorKind::AtoP,
-                    operator_id: interpret_operator_id(),
-                    input_contract_id: interpret_input_contract_id(),
-                    model_id: &model_id,
-                    sidecar_payload: SidecarPayload::perspective(payload),
-                    derived_from: &[],
-                    extra_refs: &extra_refs,
-                    supersedes: None,
-                    // A stance item takes no `language`, and the
-                    // interpretation schema declares `LanguagePolicy::PerRow`.
-                    // The write names the deployment configuration rather than
-                    // carrying no language at all — see `memory::interpret`.
-                    lexical_language: Some(
-                        crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT,
-                    ),
-                })
+                .derive_memory(
+                    DerivedMemory::interpretation(
+                        crate::MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner())),
+                        owner,
+                        claim,
+                        payload,
+                    )
+                    .refs(subject_refs.into_iter().chain(extra_refs))
+                    .lexical_language(crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT),
+                )
                 .await
                 .map_err(|err| map_bound_derived_error(err, "stance", pin))?;
             reject_bound_replay(pin, outcome.idempotent_replay, "stance")?;

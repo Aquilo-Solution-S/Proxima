@@ -119,7 +119,7 @@ Delegated-capable operations are closed and explicit:
 | Engine Fact split write | `authorize_fact_ingest` → `ingest_fact_with_typed_sidecar`; the returned witness rechecks runtime binding and expiry at commit |
 | Engine inline citation Fact | `authorize_fact_with_citation` → `ingest_fact_with_citation_and_typed_sidecar`; commit rechecks the witness |
 | Engine cited-object-reference Fact | `authorize_fact_with_citation_by_ref` → `ingest_fact_with_citation_ref_and_typed_sidecar`; commit rechecks the witness |
-| Engine derived memory | `author_derived_authorized` |
+| Engine derived memory | `derive_memory` |
 | Engine upload completion | `complete_upload_as_fact`, `complete_upload_as_fact_with_expectation` |
 | `CitedBlobService` | `prepare_upload`, `stage_upload`, `finish_upload`, `abort_upload`, `read_url`, `find_held_blobs` |
 | `CitedBlobReadService` | `collect_verified` |

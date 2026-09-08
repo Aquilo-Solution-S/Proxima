@@ -1,6 +1,6 @@
 use proxima_core::{
-    AbstractionPayload, AuthorDerivedRequestInput, EdgeEndpoint, EntityKind, MemoryId,
-    MemoryOperatorKind, Owner, SchemaVersion, SidecarPayload, ToolCtx, ToolError, UnitOfWork,
+    DerivationIdentity, DerivedMemory, MemoryId, MemoryTarget, Owner, SeriesHandle, ToolCtx,
+    ToolError, UnitOfWork,
 };
 use uuid::Uuid;
 
@@ -74,9 +74,6 @@ pub(super) async fn append_execution_plan(
     payload: &CodeExecutionPlanV1,
 ) -> Result<PlanAppendOutcome, ToolError> {
     let owner = ctx.owner();
-    let caller = ctx
-        .caller()
-        .ok_or_else(|| ToolError::Other("code flavor tools require caller metadata".into()))?;
     let memory_id = execution_plan_memory_id(
         &owner,
         payload.repo_id,
@@ -86,28 +83,19 @@ pub(super) async fn append_execution_plan(
     // The plan's Abstraction input is what it was made from; everything the
     // payload names — activation Fact, evidence, item requests — is what it
     // points at. Two lists, no kinds.
-    let origins = [EdgeEndpoint::memory(
-        EntityKind::Abstraction,
-        plan_source_memory_id,
-    )];
+    let origins = [plan_source_memory_id];
     let outcome = uow
-        .author_derived(AuthorDerivedRequestInput {
-            memory_id,
+        .derive_memory(DerivedMemory::abstraction(
+            MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner())),
             owner,
-            kind: EntityKind::Abstraction,
-            text: plan_summary.to_string(),
-            schema_id: <CodeExecutionPlanV1 as AbstractionPayload>::schema_id(),
-            schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
-            operator_kind: MemoryOperatorKind::AtoA,
-            operator_id: execution_plan_operator_id(),
-            input_contract_id: execution_plan_input_contract_id(),
-            model_id: caller.model_id.as_str(),
-            sidecar_payload: SidecarPayload::abstraction(payload.clone()),
-            derived_from: &origins,
-            extra_refs: &[],
-            supersedes: None,
-            lexical_language: None,
-        })
+            plan_summary.to_string(),
+            payload.clone(),
+            origins,
+            DerivationIdentity::new(
+                execution_plan_operator_id(),
+                execution_plan_input_contract_id(),
+            ),
+        )?)
         .await
         .map_err(ToolError::Protocol)?;
     Ok(PlanAppendOutcome {

@@ -24,11 +24,11 @@ use proxima_core::verbs::goal_write::{
 };
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
 use proxima_core::{
-    AccessKind, AgentDerivationV1, AuthPath, AuthorDerivedRequestInput, AuthzContext, EdgeEndpoint,
-    EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, FactPayload, FlavorRegistry, GoalId,
-    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, OwnerRef, PayloadKeyBuilder,
-    PayloadReference, Relation, SchemaId, SchemaVersion, SidecarPayload, StorageError,
-    UploadedBlobPayload, UserId,
+    AccessKind, AgentDerivationV1, AuthPath, AuthzContext, DerivationIdentity, DerivedMemory,
+    EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, FactPayload,
+    FlavorRegistry, GoalId, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner, OwnerRef,
+    PayloadKeyBuilder, PayloadReference, Relation, SchemaId, SchemaVersion, SeriesHandle,
+    SidecarPayload, StorageError, UploadedBlobPayload, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
@@ -860,25 +860,12 @@ async fn uow_rejects_session_visible_target_kind_mismatch() {
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = engine(&pg, &registry);
         let mut uow = engine.unit_of_work(&authz).await?;
-        let origin = EdgeEndpoint::memory(EntityKind::Fact, anchor);
-        let origins = [origin];
         let derived = uow
-            .author_derived(AuthorDerivedRequestInput {
-                memory_id: MemoryId::new(Uuid::now_v7()),
+            .derive_memory(DerivedMemory::abstraction(
+                MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
                 owner,
-                kind: EntityKind::Abstraction,
-                text: "session-visible abstraction".to_owned(),
-                schema_id: SchemaId::new(
-                    <AgentDerivationV1 as proxima_core::AbstractionPayload>::SCHEMA_ID.to_owned(),
-                ),
-                schema_version: SchemaVersion::new(
-                    <AgentDerivationV1 as proxima_core::AbstractionPayload>::SCHEMA_VERSION,
-                ),
-                operator_kind: MemoryOperatorKind::FtoA,
-                operator_id: OperatorId::new(Uuid::now_v7()),
-                input_contract_id: InputContractId::new(Uuid::now_v7()),
-                model_id: "test",
-                sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
+                "session-visible abstraction",
+                AgentDerivationV1 {
                     title: "session-visible abstraction".to_owned(),
                     body: "session-visible abstraction".to_owned(),
                     tags: Vec::new(),
@@ -887,14 +874,13 @@ async fn uow_rejects_session_visible_target_kind_mismatch() {
                     model_id: "test".to_owned(),
                     client_name: "test".to_owned(),
                     client_version: "1".to_owned(),
-                }),
-                derived_from: &origins,
-                extra_refs: &[],
-                supersedes: None,
-                lexical_language: Some(
-                    proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT,
+                },
+                [anchor],
+                DerivationIdentity::new(
+                    OperatorId::new(Uuid::now_v7()),
+                    InputContractId::new(Uuid::now_v7()),
                 ),
-            })
+            )?)
             .await?;
         let wrong = payload(
             "session-wrong-kind",

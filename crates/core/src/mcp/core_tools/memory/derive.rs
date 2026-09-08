@@ -2,8 +2,8 @@ use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
 use crate::{
-    AbstractionPayload, AuthorDerivedRequestInput, EdgeEndpoint, InputContractId, MemoryId,
-    OperatorId, SchemaId, SchemaVersion, SidecarPayload,
+    DerivationIdentity, DerivedMemory, EdgeEndpoint, InputContractId, MemoryId, OperatorId,
+    SeriesHandle,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -155,13 +155,6 @@ impl DerivedKind {
             Self::Perspective => "Perspective",
         }
     }
-
-    pub(crate) fn to_entity_kind(self) -> crate::EntityKind {
-        match self {
-            Self::Abstraction => crate::EntityKind::Abstraction,
-            Self::Perspective => crate::EntityKind::Perspective,
-        }
-    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -237,36 +230,43 @@ impl McpTool for DeriveTool {
             .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
             let DerivationPlan {
                 memory_id,
-                operator_kind,
                 derived_from,
                 sidecar,
                 authored,
+                ..
             } = plan_derivation(&ctx, &space.owner, args.kind, authored, &sources)?;
             let engine = ctx.require_engine()?;
+            let origins = derived_from
+                .iter()
+                .copied()
+                .filter_map(EdgeEndpoint::memory_id)
+                .collect::<Vec<_>>();
+            let identity = DerivationIdentity::new(
+                core_derive_operator_id(args.kind),
+                core_derive_input_contract_id(args.kind),
+            );
+            let target = crate::MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner()));
+            let memory = match args.kind {
+                DerivedKind::Abstraction => DerivedMemory::abstraction(
+                    target,
+                    space.owner,
+                    authored.body.clone(),
+                    sidecar,
+                    origins,
+                    identity,
+                )?,
+                DerivedKind::Perspective => DerivedMemory::perspective(
+                    target,
+                    space.owner,
+                    authored.body.clone(),
+                    sidecar,
+                    origins,
+                    identity,
+                )?,
+            }
+            .lexical_language(lexical_language);
             let outcome = engine
-                .author_derived_authorized(
-                    &ctx.authz,
-                    AuthorDerivedRequestInput {
-                        memory_id,
-                        owner: space.owner,
-                        kind: args.kind.to_entity_kind(),
-                        text: authored.body.clone(),
-                        schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
-                        schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-                        operator_kind,
-                        operator_id: core_derive_operator_id(args.kind),
-                        input_contract_id: core_derive_input_contract_id(args.kind),
-                        model_id: &authored.model_id,
-                        sidecar_payload: match args.kind {
-                            DerivedKind::Abstraction => SidecarPayload::abstraction(sidecar),
-                            DerivedKind::Perspective => SidecarPayload::perspective(sidecar),
-                        },
-                        derived_from: &derived_from,
-                        extra_refs: &[],
-                        supersedes: None,
-                        lexical_language: Some(lexical_language.as_str()),
-                    },
-                )
+                .derive_memory(&ctx.authz, memory)
                 .await
                 .map_err(map_derive_authoring_error)?;
 
@@ -342,7 +342,6 @@ pub(crate) fn authored_derivation(
 /// `core_episode_commit`.
 pub(crate) struct DerivationPlan {
     pub(crate) memory_id: MemoryId,
-    pub(crate) operator_kind: crate::MemoryOperatorKind,
     pub(crate) derived_from: Vec<EdgeEndpoint>,
     pub(crate) sidecar: AgentDerivationV1,
     pub(crate) authored: AuthoredDerivation,
@@ -368,7 +367,7 @@ pub(crate) fn plan_derivation(
         .unwrap_or_else(|| content_idempotency_key(&authored));
     let memory_id = MemoryId::new(derived_memory_id(owner, kind.as_str(), &key));
     let sidecar = derivation_sidecar(ctx, &authored, sources);
-    let (operator_kind, target_kind) = operator_shape(kind, sources)?;
+    let (_operator_kind, target_kind) = operator_shape(kind, sources)?;
     // The declaration is a list of targets. Its kind — `origin` —
     // follows from what this operation IS, so there is nothing
     // here for the caller to pick.
@@ -378,7 +377,6 @@ pub(crate) fn plan_derivation(
         .collect();
     Ok(DerivationPlan {
         memory_id,
-        operator_kind,
         derived_from,
         sidecar,
         authored,

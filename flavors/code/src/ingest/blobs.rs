@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
-    AbstractionPayload, AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, AuthzContext,
-    EdgeEndpoint, Engine, EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId,
-    Owner, SchemaVersion, SidecarPayload, TypedFactIngest,
+    AbstractionPayload, AuthzContext, DerivationIdentity, DerivedMemory, DerivedMemoryOutcome,
+    Engine, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner, SeriesHandle,
+    TypedFactIngest,
 };
 use proxima_storage_pg::query::ChunkSeriesHead;
 use uuid::Uuid;
@@ -280,7 +280,7 @@ pub async fn append_code_slices(
     payloads: &[CodeChunkV1],
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
-) -> Result<Vec<AuthorDerivedAuthorizedOutcome>, IngestError> {
+) -> Result<Vec<DerivedMemoryOutcome>, IngestError> {
     let handles = resolve_code_chunk_handles(store, owner, payloads).await?;
     append_code_slices_with_handles(
         engine,
@@ -304,7 +304,7 @@ pub async fn append_code_slices_with_handles(
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
     handles: &[uuid::Uuid],
-) -> Result<Vec<AuthorDerivedAuthorizedOutcome>, IngestError> {
+) -> Result<Vec<DerivedMemoryOutcome>, IngestError> {
     if payloads.len() != handles.len() {
         return Err(IngestError::Storage(
             "code slice handle count must match payload count".into(),
@@ -314,9 +314,9 @@ pub async fn append_code_slices_with_handles(
         return Ok(Vec::new());
     };
     let repo_id = first.repo_id;
-    let mut origins = vec![EdgeEndpoint::memory(EntityKind::Fact, source_file_revision)];
+    let mut origins = vec![source_file_revision];
     if let Some(commit) = source_commit {
-        origins.push(EdgeEndpoint::memory(EntityKind::Fact, commit));
+        origins.push(commit);
     }
     // Embed every slice before BEGIN. Intra-file calls are sidecar data,
     // not kernel pins (`CodeChunkV1::references` is empty); the one
@@ -324,28 +324,20 @@ pub async fn append_code_slices_with_handles(
     let reqs = payloads
         .iter()
         .zip(handles)
-        .map(|(payload, handle)| AuthorDerivedRequestInput {
-            memory_id: MemoryId::new(*handle),
-            owner,
-            kind: EntityKind::Abstraction,
-            text: render_code_slice(payload),
-            schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),
-            schema_version: SchemaVersion::new(CodeChunkV1::SCHEMA_VERSION),
-            operator_kind: MemoryOperatorKind::FtoA,
-            operator_id: code_slice_operator_id(),
-            input_contract_id: code_slice_input_contract_id(payload, source_file_revision),
-            model_id: CODE_SLICE_OPERATOR_MODEL,
-            sidecar_payload: SidecarPayload::abstraction(payload.clone()),
-            derived_from: &origins,
-            extra_refs: &[],
-            supersedes: None,
-            // The chunk schema's contract PINS its configuration, so the
-            // projection statement carries it as a literal and reads no
-            // language from the write. A value here would be discarded,
-            // and a discarded value is a second place to keep the pin in
-            // sync with.
-            lexical_language: None,
-        });
+        .map(|(payload, handle)| {
+            DerivedMemory::abstraction(
+                MemoryTarget::Series(SeriesHandle::new(*handle)),
+                owner,
+                render_code_slice(payload),
+                payload.clone(),
+                origins.iter().copied(),
+                DerivationIdentity::new(
+                    code_slice_operator_id(),
+                    code_slice_input_contract_id(payload, source_file_revision),
+                ),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     // One repository per group. The scope fence is a per-repository lane
     // and the group's handles are resolved per repository, so a batch that
     // spanned two of them would be reasoning about neither.
@@ -358,7 +350,7 @@ pub async fn append_code_slices_with_handles(
     // No fence here: `CodeChunkV1` declares `CODE_REPO_SCOPE`, so the first
     // derived write takes it in this transaction before the group's handles
     // and `t`s, and every later member of the group finds it already held.
-    let outcomes = uow.author_derived_all(reqs).await?;
+    let outcomes = uow.derive_memories(reqs).await?;
     uow.commit().await?;
     Ok(outcomes)
 }
@@ -372,7 +364,7 @@ pub async fn append_code_slice(
     payload: &CodeChunkV1,
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
-) -> Result<AuthorDerivedAuthorizedOutcome, IngestError> {
+) -> Result<DerivedMemoryOutcome, IngestError> {
     let handle = existing_code_chunk_handle(
         engine,
         authz,

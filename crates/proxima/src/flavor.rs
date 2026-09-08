@@ -28,6 +28,7 @@ pub use proxima_core::citations::UploadedBlobPayload;
 pub use proxima_core::engine::GoalCreatePayloadWriteRequest;
 pub use proxima_core::engine::{TypedFactIngest, UnitOfWork};
 pub use proxima_core::engine::{UploadCompleted, UploadCompletionExpectation};
+pub use proxima_core::error::{ErrorCode, ProtocolError};
 /// Build-time flavor declaration vocabulary. These are const-constructible
 /// contract values; no runtime registry or storage handle crosses the SDK.
 pub use proxima_core::flavor::{
@@ -138,36 +139,6 @@ pub use proxima_core::{
     ToolError, ToolId, ToolServices, TrustedModelIdError, UserId, is_loopback_endpoint,
     is_loopback_host, proxima_flavor, proxima_schema_id, validate_endpoint_url,
 };
-/// Derived-memory authoring: the request/outcome types of
-/// [`proxima_core::Engine::author_derived_authorized`], which is how a
-/// flavor writes the Abstractions and Perspectives its
-/// [`AbstractionPayload`] / [`PerspectivePayload`] schemas describe.
-///
-/// Without these the SDK could only *declare* derived schemas, never
-/// populate them: an out-of-tree flavor depends on `proxima` alone, and
-/// the in-tree precedent (`flavors/code`) reaches the same lane through a
-/// direct `proxima-storage-pg` dependency it cannot have.
-///
-/// Provenance is `derived_from` on the request: a slice of [`EdgeEndpoint`]s
-/// naming what the write was made from, which lands one
-/// [`EdgeKind::Origin`] row each inside the write's own transaction. A
-/// re-derivation that replaces an earlier output sets `supersedes`, which
-/// is a lineage pointer on the two rows and writes no edge at all.
-///
-/// A derived memory is embedded *synchronously*, **before** the write
-/// transaction begins. A text the provider refuses whole is rescued by
-/// the drain's bisection and stored as one vector with the row. A text
-/// refused at every length leaves the memory written with no vector and
-/// an embedding job enqueued in the same transaction, and
-/// [`AuthorDerivedAuthorizedOutcome::embedding_deferred`] says so. Only a
-/// provider that fails a liveness probe still fails the write. Several
-/// derived rows that must commit together use
-/// [`UnitOfWork::author_derived_all`] (embed the batch, then one
-/// begin). A derived write after the transaction is already open defers
-/// the vector rather than hold the pool slot across HTTP.
-pub use proxima_core::{
-    AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, MemoryOperatorKind,
-};
 /// Query / ingest types a flavor names next to [`crate::Engine`]
 /// (Host API). `Engine` itself stays off this module (`docs/14`).
 /// `AuthorizedFactWrite` is Engine-internal (UoW-first).
@@ -179,6 +150,14 @@ pub use proxima_core::{
 pub use proxima_core::{
     AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, EntityId,
     MembershipChange, OwnerResolver,
+};
+/// Typed derived-memory writes. `DerivedMemory` infers kind/schema from its payload;
+/// `Engine::derive_memory` resolves actual origin kinds and validates provenance.
+/// `MemoryTarget` distinguishes a new series from a revision. Always retain the returned row ID.
+/// `UnitOfWork::derive_memories` pre-embeds a batch before opening its transaction;
+/// an already-open transaction defers embedding, reported in `DerivedMemoryOutcome`.
+pub use proxima_core::{
+    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EntityKind, MemoryTarget, SeriesHandle,
 };
 /// The connection vocabulary a flavor is allowed to speak (docs/16-edges.md).
 ///

@@ -8,8 +8,8 @@ use proxima_code::testkit::build_engine;
 use proxima_code::{CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1};
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, EdgeEndpoint, EntityKind, InputContractId,
-    MemoryId, MemoryOperatorKind, OperatorId, SchemaId, SchemaVersion, SidecarPayload,
+    AuthPath, AuthzContext, DerivationIdentity, DerivedMemory, MemoryId, MemoryTarget, OperatorId,
+    SeriesHandle,
 };
 use uuid::Uuid;
 
@@ -62,15 +62,11 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     let request_memory_id = seed_fact(&db, owner, "work requested").await;
 
     let old_memory_id = MemoryId::new(Uuid::now_v7());
-    let new_memory_id = MemoryId::new(Uuid::now_v7());
     let plan_key = "goal:repo:plan";
 
     // A→A must originate from an Abstraction. The two Facts the payload
     // names arrive as references.
-    let derived_from = [EdgeEndpoint::memory(
-        EntityKind::Abstraction,
-        MemoryId::new(plan_source_memory_id),
-    )];
+    let derived_from = [MemoryId::new(plan_source_memory_id)];
     let old_payload = plan_payload(
         repo_id,
         goal_activated_memory_id,
@@ -80,25 +76,20 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     );
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let old_outcome = engine
-        .author_derived_authorized(
+        .derive_memory(
             &authz,
-            proxima_core::AuthorDerivedRequestInput {
-                memory_id: old_memory_id,
+            DerivedMemory::abstraction(
+                MemoryTarget::Series(SeriesHandle::new(old_memory_id.into_inner())),
                 owner,
-                kind: EntityKind::Abstraction,
-                text: old_payload.summary.clone(),
-                schema_id: SchemaId::new(CodeExecutionPlanV1::SCHEMA_ID.into()),
-                schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
-                operator_kind: MemoryOperatorKind::AtoA,
-                operator_id: OperatorId::new(Uuid::now_v7()),
-                input_contract_id: InputContractId::new(Uuid::now_v7()),
-                model_id: "test-planner",
-                sidecar_payload: SidecarPayload::abstraction(old_payload),
-                derived_from: &derived_from,
-                extra_refs: &[],
-                supersedes: None,
-                lexical_language: None,
-            },
+                old_payload.summary.clone(),
+                old_payload,
+                derived_from,
+                DerivationIdentity::new(
+                    OperatorId::new(Uuid::now_v7()),
+                    proxima_core::InputContractId::new(Uuid::now_v7()),
+                ),
+            )
+            .expect("typed old plan request"),
         )
         .await
         .expect("old plan authored");
@@ -114,25 +105,20 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
         "new plan",
     );
     let new_outcome = engine
-        .author_derived_authorized(
+        .derive_memory(
             &authz,
-            proxima_core::AuthorDerivedRequestInput {
-                memory_id: new_memory_id,
+            DerivedMemory::abstraction(
+                MemoryTarget::Revision(old_outcome.memory_id),
                 owner,
-                kind: EntityKind::Abstraction,
-                text: new_payload.summary.clone(),
-                schema_id: SchemaId::new(CodeExecutionPlanV1::SCHEMA_ID.into()),
-                schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
-                operator_kind: MemoryOperatorKind::AtoA,
-                operator_id: OperatorId::new(Uuid::now_v7()),
-                input_contract_id: InputContractId::new(Uuid::now_v7()),
-                model_id: "test-planner",
-                sidecar_payload: SidecarPayload::abstraction(new_payload),
-                derived_from: &derived_from,
-                extra_refs: &[],
-                supersedes: Some(old_outcome.memory_id),
-                lexical_language: None,
-            },
+                new_payload.summary.clone(),
+                new_payload,
+                derived_from,
+                DerivationIdentity::new(
+                    OperatorId::new(Uuid::now_v7()),
+                    proxima_core::InputContractId::new(Uuid::now_v7()),
+                ),
+            )
+            .expect("typed revised plan request"),
         )
         .await
         .expect("new plan authored");

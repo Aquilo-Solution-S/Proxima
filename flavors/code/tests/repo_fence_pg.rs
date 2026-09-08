@@ -16,9 +16,8 @@ use proxima::flavor::{lock_scope_fence_exclusive_tx, lock_scope_fence_shared_tx}
 use proxima_code::testkit::{build_engine, erase_repo, ingest_commit, register_repo};
 use proxima_code::{CODE_REPO_SCOPE, CodeFlavorStore, CommitSummaryV1, CommitV1, RepoScope};
 use proxima_core::{
-    AbstractionPayload, AuthPath, AuthorDerivedRequestInput, AuthzContext, EdgeEndpoint, Engine,
-    EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, ProtocolError,
-    SchemaVersion, SidecarPayload,
+    AuthPath, AuthzContext, DerivationIdentity, DerivedMemory, Engine, MemoryId, MemoryTarget,
+    OperatorId, Owner, ProtocolError, SeriesHandle,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -521,7 +520,7 @@ async fn two_same_repo_writers_hold_the_fence_at_once_and_the_erase_sweeps_both(
 /// `commit_summary_v1` has no writer in this flavor: nothing in
 /// `flavors/code/src` ever admits one, so under the retired flavor-side
 /// fence there was no place to put the fence call and no fence was ever
-/// taken. A host that wrote a summary through `Engine::author_derived_authorized`
+/// taken. A host that wrote a summary through `Engine::derive_memory`
 /// raced every repository erase, and could commit a row after the erase had
 /// already computed its footprint. Declaring `CODE_REPO_SCOPE` on the
 /// payload is the whole of the fix: the fence and the liveness probe are
@@ -653,33 +652,27 @@ async fn host_write_commit_summary(
         change_kind: "fix".to_string(),
     };
     let text = payload.summary.clone();
-    let origins = [EdgeEndpoint::memory(EntityKind::Fact, commit)];
+    let origins = [commit];
     let outcome = engine
-        .author_derived_authorized(
+        .derive_memory(
             authz,
-            AuthorDerivedRequestInput {
-                memory_id: MemoryId::new(Uuid::now_v7()),
+            DerivedMemory::abstraction(
+                MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
                 owner,
-                kind: EntityKind::Abstraction,
                 text,
-                schema_id: <CommitSummaryV1 as AbstractionPayload>::schema_id(),
-                schema_version: SchemaVersion::new(CommitSummaryV1::SCHEMA_VERSION),
-                operator_kind: MemoryOperatorKind::FtoA,
-                operator_id: OperatorId::new(Uuid::new_v5(
-                    &Uuid::NAMESPACE_URL,
-                    b"proxima-code/tests/repo-fence/host-summary",
-                )),
-                input_contract_id: InputContractId::new(Uuid::new_v5(
-                    &Uuid::NAMESPACE_URL,
-                    commit_sha.as_bytes(),
-                )),
-                model_id: "proxima-code/tests/repo-fence",
-                sidecar_payload: SidecarPayload::abstraction(payload),
-                derived_from: &origins,
-                extra_refs: &[],
-                supersedes: None,
-                lexical_language: None,
-            },
+                payload,
+                origins,
+                DerivationIdentity::new(
+                    OperatorId::new(Uuid::new_v5(
+                        &Uuid::NAMESPACE_URL,
+                        b"proxima-code/tests/repo-fence/host-summary",
+                    )),
+                    proxima_core::InputContractId::new(Uuid::new_v5(
+                        &Uuid::NAMESPACE_URL,
+                        commit_sha.as_bytes(),
+                    )),
+                ),
+            )?,
         )
         .await?;
     Ok(outcome.memory_id)

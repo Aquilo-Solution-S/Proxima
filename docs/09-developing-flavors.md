@@ -166,7 +166,7 @@ The only binding is `ReferenceBinding::Pin`.
 Rules worth internalizing before designing a flavor's graph:
 
 - **The kind follows the operation.** `origin` comes from a write's
-  `derived_from`; `reference` comes from `references()`. Nothing else writes
+  `DerivedMemory` origins; `reference` comes from `references()`. Nothing else writes
   an edge, and nothing takes a kind as an argument.
 - **Multiplicity lives in the payload.** Ten call sites from chunk A to chunk
   B are **one** index row and ten entries in A's payload. The index answers
@@ -287,7 +287,7 @@ There is no runtime registration path.
 What that buys, without a line of fencing code in your write paths:
 
 - Every admission of a scoped payload — through `Engine`, a `UnitOfWork`,
-  `author_derived`, or any sidecar/replay path that persists the row — takes
+  `Engine::derive_memory`, or any sidecar/replay path that persists the row — takes
   the scope fence **shared, in that write transaction, before its handle/`t`
   locks**, and reruns the liveness probe under it. A host writing your payload
   straight through `Engine` is fenced identically; there is no opt-in.
@@ -691,79 +691,38 @@ Consumers call the bundle surface. They do not manually coordinate
 
 ## Deriving Abstractions
 
-Declaring an `AbstractionPayload` gives a flavor a derived-memory schema;
-writing one goes through `Engine::author_derived_authorized`. The
-request names the operator that produced the memory, the text it is
-embedded from, its typed sidecar, and what it was derived from.
-
-Note what the request does *not* contain: a relation, an authorship kind, or
-an edge kind. `derived_from` names targets only; the engine writes one
-`origin` index row per entry, in this write's own transaction, because that
-is what a derivation declaration *means*.
-
 ```rust
-let derived_from = [EdgeEndpoint::memory(EntityKind::Fact, source_fact_id)];
+use proxima::flavor::{DerivedMemory, DerivationIdentity, MemoryTarget, SeriesHandle};
 
-ctx.engine.author_derived_authorized(&authz, AuthorDerivedRequestInput {
-    memory_id: derived_id,
+let written = engine.derive_memory(&authz, DerivedMemory::abstraction(
+    MemoryTarget::Series(SeriesHandle::new(deterministic_key)),
     owner,
-    kind: EntityKind::Abstraction,
-    text: rendered,                       // this is what gets embedded
-    schema_id: MySlice::schema_id(),
-    schema_version: SchemaVersion::new(MySlice::SCHEMA_VERSION),
-    operator_kind: MemoryOperatorKind::FtoA,
-    operator_id, input_contract_id,
-    model_id: "my-flavor/slicer-v1",
-    sidecar_payload: SidecarPayload::abstraction(payload),
-    derived_from: &derived_from,
-    extra_refs: &[],
-    supersedes: None,
-    // A schema declaring `LanguagePolicy::PerRow` stamps THIS value on the
-    // projection row, so the write has to name one: a configuration name,
-    // or `LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT` for the deployment's.
-    // `None` names nothing and is refused. A pinned schema reads it not at
-    // all — pass `None` there.
-    lexical_language: Some(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT),
-}).await?;
+    rendered,
+    payload,
+    [source_fact_id],
+    DerivationIdentity::new(operator_id, input_contract_id),
+)?).await?;
+let conclusion_id = written.memory_id; // persisted row t, not deterministic_key
 ```
 
-The outcome reports an `edge_count`, not a list of handles: pins are column
-values on the row, so re-running the write re-asserts the same values and
-there is no pin id to hand back.
+| Intent | Constructor / target | Origins |
+|---|---|---|
+| New conclusion from Facts | `abstraction(Series(handle), ...)` | nonempty Fact IDs |
+| Further conclusion from Abstractions | `abstraction(Series(handle), ...)` | nonempty Abstraction IDs; prior conclusions remain current |
+| Replace a conclusion's current version | `abstraction(Revision(prior_t), ...)` | still required; prior rows remain in history |
+| Derived Perspective | `perspective(target, ...)` | nonempty Abstraction IDs |
+| Interpretation | `interpretation(target, ...)` | none; payload references provide grounding |
 
-Contract points that are easy to get wrong:
+- Kind/schema/version come from the typed payload. The engine resolves readable origin kinds and infers F→A, A→A, or A→P. Mixed origins, Perspective premises, and Goal premises are rejected.
+- `SeriesHandle` identifies a series; `DerivedMemoryOutcome.memory_id` identifies the admitted version. Origins, refs, reads, and `Revision` use the returned version ID.
+- Give independent conclusions distinct series keys. Reusing a key identifies the same conclusion's series.
+- An absent handle creates a series. Reusing a handle identifies the same series: matching owner/kind/schema/pins replay the head, changed origins append a version, and unchanged origins with changed refs conflict. A `Revision` appends a fresh version on the prior row's series; repeated revision requests are not request-idempotent.
+- `.refs([memory_id])` adds references; payload `references()` are admitted too. References do not substitute for Abstraction origins. Duplicate pins are removed.
+- `Engine::derive_memory` commits one write. `UnitOfWork::derive_memory` performs the same admission inside an explicit transaction. Use sequential calls for dependent results; use `derive_memories` to pre-embed an independent batch before `BEGIN`.
+- An open transaction defers embedding instead of holding a connection across HTTP. `embedding_deferred` reports the queued work. `EmbeddingRecipe::Never` creates neither vectors nor jobs. Input refusal may be rescued by bisection; provider unavailability remains an error.
+- Typed requests name the deployment's lexical configuration by default. `.lexical_language(...)` overrides it; pinned schema policies keep their declared configuration.
+- `AbstractionPayload::sidecar_table()` and `PerspectivePayload::sidecar_table()` are required by this typed schema contract. Embedding uses authored `text`; lexical search uses the schema's declared sidecar projection.
 
-- **The sidecar is mandatory.** `AbstractionPayload::sidecar_table()`
-  returns `&'static str`, not `Option` — unlike a Fact, a derived memory
-  always has a typed sidecar, so declaring one always means owning a
-  migration for it.
-- **Derive `memory_id` deterministically** (a UUIDv5 over the operator
-  identity plus the source memory and slice index, as `flavors/code`
-  does) so re-running the operator replays onto the same row instead of
-  appending a duplicate. When a new output genuinely replaces an earlier
-  `t`, pass that prior `t` as `supersedes`; storage resolves its stable handle
-  and appends the new `t` to the same series. Neither row stores a lineage
-  pointer.
-- **Embedding runs before the write transaction begins — if the recipe
-  asks for it.** A schema declaring `EmbeddingRecipe::Never` is never
-  embedded and never queued, whatever embedding client the host has
-  configured; the rest of this bullet is about the schemas that declare
-  units. A text the provider refuses whole is rescued inline by the
-  drain's bisection and lands as one vector in the same transaction
-  (storage keeps one vec per version). A text refused at every length is
-  not a lost write either: the memory lands with no vector and a durable
-  `embedding_jobs` row enqueued in the same transaction, and the outcome's
-  `embedding_deferred` says so. Several
-  derived rows that must commit together use
-  `UnitOfWork::author_derived_all` (embed the batch, then one `BEGIN`). A
-  derived write after the transaction is already open defers the vector
-  rather than hold the pool slot across HTTP. Only a provider that is
-  genuinely unavailable fails the write.
-- **`text` is the whole semantic surface.** `render()` / authored text
-  is the only string ever embedded. The schema's `search` declaration
-  adds LEXICAL reach over sidecar columns and never affects the vector;
-  the two surfaces are declared separately (`search` vs `embedding`) and
-  a schema may have either, both, or neither.
 - **Search is declared on the schema, not implemented by the payload.**
   There is no `search_projection()` method: a `SchemaContract` carries a
   `search: SearchProjectionDecl`, and a schema that is not a search

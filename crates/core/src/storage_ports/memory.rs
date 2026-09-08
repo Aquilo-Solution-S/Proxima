@@ -35,13 +35,10 @@ use crate::{GoalId, MemoryId, Owner, OwnerRef};
 #[async_trait::async_trait]
 pub trait MemoryAuthoringPort: Send + Sync {
     /// Append one already-authorized derived memory together with the
-    /// index rows its declarations imply and, when it revises a prior
-    /// head, the supersession lineage pointer — one transaction.
-    ///
-    /// Index writes are idempotent by construction: the primary key is
-    /// `(source, target, kind)`, so a replayed write re-asserts the same
-    /// rows. Public callers cannot forge `OperatorWriteProof`; route
-    /// through `Engine::author_derived_authorized` instead.
+    /// source-owned origins/refs in one transaction. Revisions append to
+    /// the prior row's series; neither row stores a supersession pointer.
+    /// Public callers cannot forge `OperatorWriteProof`; use
+    /// `Engine::derive_memory`.
     async fn author_derived(
         &self,
         req: &AuthorDerivedRequest<'_>,
