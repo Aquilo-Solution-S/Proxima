@@ -541,6 +541,271 @@ async fn wait_for_s3_object(
 
 const UPLOAD_STATUS_PROBE_LOCK: i64 = 0x0055_504c_4f41_4453;
 
+struct ExpiryRaceTasks(Vec<tokio::task::AbortHandle>);
+
+impl Drop for ExpiryRaceTasks {
+    fn drop(&mut self) {
+        for task in &self.0 {
+            task.abort();
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ExpiryReplayObservation {
+    winner: UploadCompleted,
+    raced_retry: Result<UploadCompleted, ProtocolError>,
+    later_retry: UploadCompleted,
+    status: String,
+    corpus_counts: (i64, i64),
+    versions_before: Vec<(String, bool)>,
+    versions_after: Vec<(String, bool)>,
+    canonical_bytes: Vec<u8>,
+}
+
+/// A retry can initially see expired pending state while the first completion
+/// holds the row lock. Its expiry recheck must honor the completion that wins.
+#[tokio::test]
+async fn completed_upload_replays_after_a_stale_expiry_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return Ok(());
+    }
+    let (pg, database) = fresh_storage().await;
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pg.pool_for_tests().clone(), config.clone())?;
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let body: &'static [u8] = b"stale expiry must replay the actual completed upload";
+    let (upload_id, pending_key) = prepare_and_put_upload(
+        pg.pool_for_tests(),
+        &store,
+        &config,
+        &ctx,
+        owner,
+        "expiry-race.pdf",
+        "application/pdf",
+        body,
+    )
+    .await;
+    let canonical_key = format!("objects/{upload_id}");
+    let observed = tokio::time::timeout(
+        Duration::from_secs(40),
+        observe_stale_expiry_retry(&pg, &store, &config, &ctx, owner, &upload_id),
+    )
+    .await;
+    eprintln!("stale expiry replay observation: {observed:?}");
+
+    // Save the original outcome, then remove only this fixture's exact keys
+    // and database before the expected baseline assertion can fail.
+    let cold = store.cold_store();
+    let canonical_cleanup =
+        tokio::time::timeout(Duration::from_secs(30), cold.delete(&canonical_key)).await;
+    let pending_cleanup =
+        tokio::time::timeout(Duration::from_secs(30), cold.delete(&pending_key)).await;
+    pg.pool_for_tests().close().await;
+    let database_cleanup = drop_db(&database).await;
+    eprintln!(
+        "stale expiry cleanup: canonical={canonical_cleanup:?} pending={pending_cleanup:?} database={database_cleanup:?}"
+    );
+    canonical_cleanup??;
+    pending_cleanup??;
+    database_cleanup?;
+    assert_stale_expiry_replay(observed??, body);
+    Ok(())
+}
+
+fn assert_stale_expiry_replay(observed: ExpiryReplayObservation, body: &[u8]) {
+    assert_eq!(observed.status, "completed");
+    assert_eq!(observed.corpus_counts, (1, 1));
+    assert_eq!(observed.canonical_bytes, body);
+    assert_eq!(observed.versions_before, observed.versions_after);
+    assert_eq!(observed.versions_after.len(), 1);
+    assert!(!observed.versions_after[0].1);
+    assert_eq!(
+        observed.later_retry.fact.memory_id,
+        observed.winner.fact.memory_id
+    );
+    assert_eq!(
+        observed.later_retry.blob.cited_object_id,
+        observed.winner.blob.cited_object_id
+    );
+    assert!(observed.later_retry.blob.idempotent_replay);
+    let retry = observed.raced_retry.expect(
+        "the locked expiry recheck observed completed, so this retry must replay rather than report expired",
+    );
+    assert_eq!(retry.fact.memory_id, observed.winner.fact.memory_id);
+    assert_eq!(
+        retry.blob.cited_object_id,
+        observed.winner.blob.cited_object_id
+    );
+    assert_eq!(retry.blob.content_hash, observed.winner.blob.content_hash);
+    assert_eq!(retry.blob.sha256, observed.winner.blob.sha256);
+    assert_eq!(retry.blob.filename, observed.winner.blob.filename);
+    assert_eq!(retry.blob.mime, observed.winner.blob.mime);
+    assert_eq!(retry.blob.byte_len, observed.winner.blob.byte_len);
+    assert!(retry.blob.idempotent_replay);
+}
+
+async fn observe_stale_expiry_retry(
+    pg: &PgStorage,
+    store: &CitedBlobStore,
+    config: &S3RuntimeConfig,
+    ctx: &AuthzContext,
+    owner: OwnerRef,
+    upload_id: &str,
+) -> Result<ExpiryReplayObservation, Box<dyn std::error::Error>> {
+    let pool = pg.pool_for_tests();
+    install_expiry_replay_barriers(pool, Uuid::parse_str(upload_id)?).await?;
+    let mut barrier = pool.begin().await?;
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended(current_database() || ':expiry-finish', 0))",
+    )
+    .execute(&mut *barrier)
+    .await?;
+    let mut tasks = ExpiryRaceTasks(Vec::new());
+    let winner = spawn_upload_completion(pg, store, ctx, owner, upload_id);
+    tasks.0.push(winner.abort_handle());
+    wait_for_expiry_finish(pool).await?;
+    let initial: (String, bool, bool) = sqlx::query_as(
+        "SELECT status::text, expires_at < clock_timestamp(), content_hash IS NOT NULL
+           FROM proxima_core.blob_uploads WHERE upload_id = $1",
+    )
+    .bind(Uuid::parse_str(upload_id)?)
+    .fetch_one(pool)
+    .await?;
+    if initial != ("pending".into(), true, true) || corpus_counts(pool).await != (1, 1) {
+        return Err(
+            "finish must hold a staged expired pending row after the real corpus commit".into(),
+        );
+    }
+    let key = format!("objects/{upload_id}");
+    let versions_before = exact_key_version_ids(config, &key).await;
+    let retry = spawn_upload_completion(pg, store, ctx, owner, upload_id);
+    tasks.0.push(retry.abort_handle());
+    wait_for_expiry_row_recheck(pool).await?;
+    if winner.is_finished() || retry.is_finished() {
+        return Err("both completion and stale expiry recheck must still be blocked".into());
+    }
+    eprintln!(
+        "stale expiry rendezvous: initial={initial:?}; corpus=(1,1); finish holds row; retry SELECT FOR UPDATE waits"
+    );
+    // The retry has already done its plain pending/expiry read: only the
+    // expiry helper takes this SELECT FOR UPDATE before provider work.
+    barrier.commit().await?;
+    let winner = winner.await??;
+    let raced_retry = retry.await?;
+    let later_retry = complete_via_engine(pg, store, ctx, owner, upload_id).await?;
+    Ok(ExpiryReplayObservation {
+        winner,
+        raced_retry,
+        later_retry,
+        status: upload_status(pool, upload_id).await,
+        corpus_counts: corpus_counts(pool).await,
+        versions_before,
+        versions_after: exact_key_version_ids(config, &key).await,
+        canonical_bytes: store.cold_store().get(&key).await?,
+    })
+}
+
+fn spawn_upload_completion(
+    pg: &PgStorage,
+    store: &CitedBlobStore,
+    ctx: &AuthzContext,
+    owner: OwnerRef,
+    upload_id: &str,
+) -> tokio::task::JoinHandle<Result<UploadCompleted, ProtocolError>> {
+    let pg = pg.clone();
+    let store = store.clone();
+    let ctx = ctx.clone();
+    let upload_id = upload_id.to_owned();
+    tokio::spawn(async move { complete_via_engine(&pg, &store, &ctx, owner, &upload_id).await })
+}
+
+async fn install_expiry_replay_barriers(
+    pool: &sqlx::PgPool,
+    upload_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    // Advance only this fixture upload's clock after normal stage validation.
+    // No status, owner, locator, hash or corpus identity is forged by the test.
+    sqlx::raw_sql(
+        "CREATE TABLE public.expiry_replay_target (upload_id uuid PRIMARY KEY);
+         CREATE SEQUENCE public.expiry_finish_probe;
+         CREATE FUNCTION public.expire_after_stage() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             IF EXISTS (SELECT 1 FROM public.expiry_replay_target t WHERE t.upload_id = NEW.upload_id) THEN
+                 NEW.expires_at := clock_timestamp() - interval '1 second';
+             END IF;
+             RETURN NEW;
+         END $$;
+         CREATE TRIGGER expire_after_stage
+         BEFORE UPDATE OF object_key ON proxima_core.blob_uploads FOR EACH ROW
+         WHEN (NEW.status = 'pending' AND OLD.object_key IS DISTINCT FROM NEW.object_key)
+         EXECUTE FUNCTION public.expire_after_stage();
+         CREATE FUNCTION public.hold_expiry_finish() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             IF EXISTS (SELECT 1 FROM public.expiry_replay_target t WHERE t.upload_id = NEW.upload_id) THEN
+                 PERFORM nextval('public.expiry_finish_probe');
+                 PERFORM pg_advisory_xact_lock(hashtextextended(current_database() || ':expiry-finish', 0));
+             END IF;
+             RETURN NEW;
+         END $$;
+         CREATE TRIGGER hold_expiry_finish
+         BEFORE UPDATE OF status ON proxima_core.blob_uploads FOR EACH ROW
+         WHEN (NEW.status = 'completed' AND OLD.status IS DISTINCT FROM NEW.status)
+         EXECUTE FUNCTION public.hold_expiry_finish();",
+    ).execute(pool).await?;
+    sqlx::query("INSERT INTO public.expiry_replay_target (upload_id) VALUES ($1)")
+        .bind(upload_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn wait_for_expiry_finish(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let reached: bool =
+                sqlx::query_scalar("SELECT is_called FROM public.expiry_finish_probe")
+                    .fetch_one(pool)
+                    .await?;
+            if reached {
+                return Ok::<(), sqlx::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    Ok(())
+}
+
+async fn wait_for_expiry_row_recheck(
+    pool: &sqlx::PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1 FROM pg_stat_activity
+                      WHERE datname = current_database() AND pid <> pg_backend_pid()
+                        AND wait_event_type = 'Lock'
+                        AND query LIKE '%FROM proxima_core.blob_uploads%'
+                        AND query LIKE '%FOR UPDATE%'
+                 )",
+            )
+            .fetch_one(pool)
+            .await?;
+            if waiting {
+                return Ok::<(), sqlx::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    Ok(())
+}
+
 async fn run_fenced_upload_transition<T, Fut>(
     pool: &sqlx::PgPool,
     owner: OwnerRef,

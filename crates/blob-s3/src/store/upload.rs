@@ -452,9 +452,22 @@ impl CitedBlobStore {
         upload_id: Uuid,
         row: &super::rows::UploadRow,
     ) -> Result<Option<CitedBlobStaged>, BlobError> {
-        match row.status {
+        let status =
+            if row.status == UploadStatus::Pending && row.expires_at < OffsetDateTime::now_utc() {
+                // Finish or abort may have won since this snapshot. Use the
+                // status observed under the expiry helper's row lock.
+                mark_upload_expired(&self.pool, owner, upload_id).await?
+            } else {
+                row.status
+            };
+        match status {
             UploadStatus::Completed => {
-                let Some(blob_id) = row.blob_id else {
+                let blob_id = if row.status == UploadStatus::Pending && row.blob_id.is_none() {
+                    load_upload(&self.pool, owner, upload_id).await?.blob_id
+                } else {
+                    row.blob_id
+                };
+                let Some(blob_id) = blob_id else {
                     return Err(BlobError::State(
                         "completed upload is missing blob_id".into(),
                     ));
@@ -465,31 +478,22 @@ impl CitedBlobStore {
                 // on bytes a client can recreate through its presigned URL.
                 self.purge_pending_upload_best_effort(&row.bucket, upload_id)
                     .await;
-                return load_staged_payload(&self.pool, owner, upload_id, blob_id)
+                load_staged_payload(&self.pool, owner, upload_id, blob_id)
                     .await
-                    .map(Some);
+                    .map(Some)
             }
             UploadStatus::Aborted => {
                 self.purge_pending_upload_best_effort(&row.bucket, upload_id)
                     .await;
-                return Err(BlobError::State(
+                Err(BlobError::State(
                     terminal_status_message(UploadStatus::Aborted).into(),
-                ));
+                ))
             }
-            UploadStatus::Expired => {
-                return Err(BlobError::State(
-                    terminal_status_message(UploadStatus::Expired).into(),
-                ));
-            }
-            UploadStatus::Pending => {}
-        }
-        if row.expires_at < OffsetDateTime::now_utc() {
-            mark_upload_expired(&self.pool, owner, upload_id).await?;
-            return Err(BlobError::State(
+            UploadStatus::Expired => Err(BlobError::State(
                 terminal_status_message(UploadStatus::Expired).into(),
-            ));
+            )),
+            UploadStatus::Pending => Ok(None),
         }
-        Ok(None)
     }
 
     /// Record the canonical locator against the still-pending row, then decide
