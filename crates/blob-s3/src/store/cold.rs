@@ -57,7 +57,16 @@ impl ColdObjectStore for S3ColdStore {
             .key(key)
             .send()
             .await
-            .map_err(|err| StorageError::Unavailable(format!("cold get {key}: {err}")))?;
+            .map_err(|err| {
+                if err
+                    .as_service_error()
+                    .is_some_and(aws_sdk_s3::operation::get_object::GetObjectError::is_no_such_key)
+                {
+                    StorageError::NotFound
+                } else {
+                    StorageError::Unavailable(format!("cold get {key}: {err}"))
+                }
+            })?;
         object
             .body
             .collect()

@@ -352,3 +352,193 @@ async fn object_versions(config: &S3RuntimeConfig, key: &str) -> TestResult<usiz
     );
     Ok(exact.len())
 }
+
+#[derive(Debug)]
+struct MissingColdObservation {
+    missing_id: MemoryId,
+    adapter: Result<Vec<u8>, proxima_core::StorageError>,
+    hydration: Result<MemoryHydrationOutcome, ProtocolError>,
+    missing_bucket: Result<Vec<u8>, proxima_core::StorageError>,
+    missing_rows: (i64, i64),
+    healthy_status: proxima_core::MemoryHydrationStatus,
+    healthy_payload_equal: bool,
+}
+
+#[tokio::test]
+async fn missing_s3_cold_object_has_a_typed_hydration_outcome() -> TestResult<()> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return Ok(());
+    }
+    let database = unique_db_name("proxima_missing_cold");
+    create_db(&database).await?;
+    let result = observe_missing_cold(&database).await;
+    let cleanup = drop_db(&database).await;
+    eprintln!("cold hydration observation: {result:?}; database cleanup: {cleanup:?}");
+    cleanup?;
+    let observed = result?;
+    assert_eq!(
+        observed.healthy_status,
+        proxima_core::MemoryHydrationStatus::Hydrated
+    );
+    assert!(observed.healthy_payload_equal);
+    assert_eq!(observed.missing_rows, (0, 1));
+    assert!(matches!(
+        observed.missing_bucket,
+        Err(proxima_core::StorageError::Unavailable(_))
+    ));
+    assert!(
+        matches!(observed.adapter, Err(proxima_core::StorageError::NotFound)),
+        "an absent key in the live configured bucket is NotFound: {observed:?}"
+    );
+    assert_eq!(
+        observed.hydration?,
+        MemoryHydrationOutcome::simple(
+            observed.missing_id,
+            proxima_core::MemoryHydrationStatus::MissingColdObject
+        )
+    );
+    Ok(())
+}
+
+async fn observe_missing_cold(database: &str) -> TestResult<MissingColdObservation> {
+    let config = S3RuntimeConfig {
+        force_path_style: true,
+        ..S3RuntimeConfig::from_env()?
+    };
+    let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let host = boot(database, owner, Some(config.clone())).await?;
+    let cold = host
+        .blobs
+        .as_ref()
+        .ok_or("configured S3 store")?
+        .cold_store();
+    let mut owned_keys = Vec::new();
+    let result = run_missing_cold(&host, owner, &config, &mut owned_keys).await;
+    // Hydration currently retains its old object. Clean exactly these fresh
+    // admissions, even if the observation failed, without relying on erasure.
+    let mut cleanup: TestResult<()> = Ok(());
+    for key in &owned_keys {
+        let deleted = tokio::time::timeout(std::time::Duration::from_secs(30), cold.delete(key))
+            .await
+            .map_err(Into::into)
+            .and_then(|result| result.map_err(Into::into));
+        if deleted.is_err() {
+            cleanup = deleted;
+        }
+    }
+    eprintln!("cold hydration exact-key cleanup: {cleanup:?}");
+    stop(host).await;
+    cleanup?;
+    result
+}
+
+async fn run_missing_cold(
+    host: &EmbeddedProxima,
+    owner: OwnerRef,
+    config: &S3RuntimeConfig,
+    owned_keys: &mut Vec<String>,
+) -> TestResult<MissingColdObservation> {
+    let authz = host_context(owner, AuthPath::HostBearer);
+    let cold = host
+        .blobs
+        .as_ref()
+        .ok_or("configured S3 store")?
+        .cold_store();
+    let (healthy_id, healthy_note) =
+        admit_cold_note(host, &authz, owner, "healthy", owned_keys).await?;
+    let (missing_id, _) = admit_cold_note(host, &authz, owner, "missing", owned_keys).await?;
+    let missing_key = format!("cold/{}", missing_id.into_inner());
+    let healthy = host
+        .engine
+        .hydrate_memory(&authz, owner, healthy_id)
+        .await?;
+    let read = host
+        .engine
+        .get_memory(
+            &authz,
+            &proxima_core::GetMemoryReadRequest {
+                memory_id: healthy_id,
+                include_neighbor_edges: false,
+            },
+        )
+        .await?;
+    let healthy_payload_equal = read
+        .memory
+        .as_ref()
+        .and_then(|memory| memory.payload.as_ref())
+        .and_then(|payload| payload.downcast_ref::<AgentNoteV1>())
+        == Some(&healthy_note);
+    cold.delete(&missing_key).await?;
+    if object_versions(config, &missing_key).await? != 0 {
+        return Err("the missing fixture must have no remaining versions or markers".into());
+    }
+    let adapter = cold.get(&missing_key).await;
+    let hydration = host.engine.hydrate_memory(&authz, owner, missing_id).await;
+    let missing_rows = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM proxima_core.memory WHERE t = $1),
+                (SELECT count(*) FROM proxima_core.cooled WHERE t = $1 AND object_key = $2)",
+    )
+    .bind(missing_id.into_inner())
+    .bind(&missing_key)
+    .fetch_one(host.pool_for_tests())
+    .await?;
+    // A missing bucket is a backend/configuration fault, even though its HTTP
+    // status is also 404. No bucket is created or deleted for this control.
+    let absent_bucket = proxima_blob_s3::CitedBlobStore::new(
+        host.pool_for_tests().clone(),
+        S3RuntimeConfig {
+            bucket: format!("pg-missing-bucket-{}", Uuid::now_v7().simple()),
+            ..config.clone()
+        },
+    )?;
+    let missing_bucket = absent_bucket.cold_store().get(&missing_key).await;
+    Ok(MissingColdObservation {
+        missing_id,
+        adapter,
+        hydration,
+        missing_bucket,
+        missing_rows,
+        healthy_status: healthy.status,
+        healthy_payload_equal,
+    })
+}
+
+async fn admit_cold_note(
+    host: &EmbeddedProxima,
+    authz: &AuthzContext,
+    owner: OwnerRef,
+    label: &str,
+    owned_keys: &mut Vec<String>,
+) -> TestResult<(MemoryId, AgentNoteV1)> {
+    let note = AgentNoteV1 {
+        note_id: Uuid::now_v7(),
+        title: format!("cold S3 hydration {label}"),
+        body: format!("typed payload for the {label} object control"),
+        tags: Vec::new(),
+        idempotency_key: None,
+    };
+    let fact = host
+        .engine
+        .ingest_typed_fact(authz, "test/missing-cold-object", &note)
+        .await?;
+    let key = format!("cold/{}", fact.memory_id.into_inner());
+    owned_keys.push(key.clone());
+    host.engine
+        .forget_memory(authz, owner, fact.memory_id)
+        .await?;
+    let bytes = host
+        .blobs
+        .as_ref()
+        .ok_or("configured S3 store")?
+        .cold_store()
+        .get(&key)
+        .await?;
+    if !bytes
+        .windows(note.body.len())
+        .any(|part| part == note.body.as_bytes())
+    {
+        return Err("actual cold bytes must contain the admitted typed body".into());
+    }
+    Ok((fact.memory_id, note))
+}
