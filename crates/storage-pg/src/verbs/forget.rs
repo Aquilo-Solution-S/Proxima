@@ -44,6 +44,13 @@ impl std::fmt::Debug for MemoryColdStore {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for MemoryColdStore {
+    fn backend(&self) -> &'static str {
+        // This cannot be an S3 bucket name. A host that boots without its
+        // S3 configuration must not acknowledge that bucket's durable debts
+        // by deleting from an unrelated, empty in-process map.
+        "memory://"
+    }
+
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
         self.inner
             .lock()

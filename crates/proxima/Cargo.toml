@@ -46,6 +46,8 @@ testkit = ["dep:proxima-pg-testkit"]
 
 [dev-dependencies]
 async-trait = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
 futures = { workspace = true }
 proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../pg-testkit" }

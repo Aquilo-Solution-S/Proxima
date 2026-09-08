@@ -83,19 +83,46 @@
 )]
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
 use proxima_core::verbs::persist_mcp_call::McpCallLoggedV1;
 use proxima_core::{
-    AccessKind, AgentNoteV1, OwnerRef, SchemaId, SchemaVersion, SidecarPayload, UserId,
+    AccessKind, AgentNoteV1, ColdObjectStore, OwnerRef, SchemaId, SchemaVersion, SidecarPayload,
+    StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::verbs::forget::MemoryColdStore;
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
+
+/// The pinned corpus names every cited upload's synthetic backend `bucket`.
+/// Model that store explicitly while retaining its in-memory test transport.
+#[derive(Default)]
+struct CorpusColdStore(MemoryColdStore);
+
+#[async_trait::async_trait]
+impl ColdObjectStore for CorpusColdStore {
+    fn backend(&self) -> &'static str {
+        "bucket"
+    }
+
+    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        self.0.put(key, bytes).await
+    }
+
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        self.0.get(key).await
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+        self.0.delete(key).await
+    }
+}
 
 #[derive(Debug)]
 pub struct Corpus {
@@ -764,7 +791,9 @@ pub async fn fresh_db(prefix: &str) -> (String, String) {
 }
 
 pub async fn boot(url: &str) -> Result<PgStorage, Box<dyn std::error::Error>> {
-    let pg = PgStorage::connect(url).await?;
+    let pg = PgStorage::connect(url)
+        .await?
+        .with_cold(Arc::new(CorpusColdStore::default()));
     pg.run_migrations().await?;
     // The corpus writes its sidecar rows through the port, which routes each
     // payload by its own `(kind, schema_id, version)` through this registry.

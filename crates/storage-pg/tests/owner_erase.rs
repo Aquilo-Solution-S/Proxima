@@ -1443,7 +1443,8 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let cold = Arc::new(MemoryColdStore::default());
+        // The cited-upload fixtures below explicitly name this bucket.
+        let cold = Arc::new(BucketNamedCold::new("bucket"));
         let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
         pg.run_migrations().await?;
         let pool = pg.pool_for_tests();
