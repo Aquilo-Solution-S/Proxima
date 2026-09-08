@@ -59,7 +59,7 @@ fn draft(language: Option<&str>) -> FactWriteCommand {
         ),
         receipt: None,
         citation: None,
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),

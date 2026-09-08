@@ -81,7 +81,10 @@ async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
         let authz = built.single_owner_authz().expect("one owner");
         let engine = built.engine();
         let fact = engine
-            .ingest_typed_fact(&authz, "sdk/identity", &sdk_fact())
+            .ingest_fact(
+                &authz,
+                proxima::FactWrite::new(owner, "sdk/identity", &sdk_fact()),
+            )
             .await?;
         let handle = proxima::SeriesHandle::new(Uuid::now_v7());
         let request = sdk_abstraction(
@@ -231,7 +234,9 @@ async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
         let authz = built.single_owner_authz().expect("one owner");
         let engine = built.engine();
         let mut uow = engine.unit_of_work(&authz).await?;
-        let fact = uow.ingest_fact("sdk/session", &sdk_fact()).await?;
+        let fact = uow
+            .ingest_fact(proxima::FactWrite::new(owner, "sdk/session", &sdk_fact()))
+            .await?;
         let first = uow
             .derive_memory(sdk_abstraction(
                 sdk_new_series(),
@@ -364,7 +369,10 @@ async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs(
             AuthPath::HostBearer,
         );
         let fact = engine
-            .ingest_typed_fact(&foreign_authz, "sdk/foreign", &sdk_fact())
+            .ingest_fact(
+                &foreign_authz,
+                proxima::FactWrite::new(foreign, "sdk/foreign", &sdk_fact()),
+            )
             .await?;
         let foreign_a = engine
             .derive_memory(
@@ -509,6 +517,246 @@ async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs(
     result.expect("typed derivation access");
 }
 
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
+    use proxima::flavor::{FactWrite, SeriesHandle};
+    let db_name = unique_db_name("sdk_fact_series");
+    create_db(&db_name).await.expect("PG required");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let foreign = company_owner(Uuid::now_v7());
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url(&db_name))
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let engine = built.engine();
+        let authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin()), (foreign, Role::admin())],
+            AuthPath::HostBearer,
+        );
+        let first_payload = sdk_fact();
+        let mut later_payload = first_payload.clone();
+        later_payload.body = "Later observation".into();
+        let mut uow = engine.unit_of_work(&authz).await?;
+        let first = uow
+            .ingest_fact(FactWrite::new(owner, "sdk/versions", &first_payload))
+            .await?;
+        let later = uow
+            .ingest_fact(
+                FactWrite::new(owner, "sdk/versions", &later_payload).refs([first.memory_id]),
+            )
+            .await?;
+        assert_eq!(
+            first.handle, later.handle,
+            "one natural identity has one series inside the transaction"
+        );
+        assert_ne!(
+            first.memory_id, later.memory_id,
+            "distinct deliveries remain distinct Fact rows"
+        );
+        let replay = uow
+            .ingest_fact(FactWrite::new(owner, "sdk/versions", &first_payload))
+            .await?;
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.memory_id, first.memory_id);
+        let elsewhere = uow
+            .ingest_fact(
+                FactWrite::new(foreign, "sdk/versions", &first_payload).refs([first.memory_id]),
+            )
+            .await?;
+        assert_ne!(
+            elsewhere.handle, first.handle,
+            "natural identity is owner-scoped"
+        );
+        let explicit = SeriesHandle::new(Uuid::now_v7());
+        let explicit_row = uow
+            .ingest_fact(FactWrite::new(owner, "sdk/explicit", &sdk_fact()).handle(explicit))
+            .await?;
+        assert_eq!(explicit_row.handle, explicit.into_inner());
+        uow.commit().await?;
+        let mut query = QueryRequest::for_owner(owner);
+        query.supersession = proxima::SupersessionStatus::IncludeSuperseded;
+        let rows = engine.query(&authz, &query).await?.memories;
+        assert!(
+            rows.iter().all(|row| row.origins.is_empty()),
+            "Facts never acquire derivation origins"
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.id == later.memory_id)
+                .expect("later observation")
+                .refs,
+            [first.memory_id]
+        );
+        let mut foreign_query = QueryRequest::for_owner(foreign);
+        foreign_query.memory_ids = vec![elsewhere.memory_id];
+        let foreign_rows = engine.query(&authz, &foreign_query).await?.memories;
+        assert_eq!(foreign_rows.len(), 1);
+        assert_eq!(foreign_rows[0].id, elsewhere.memory_id);
+        assert_eq!(foreign_rows[0].owner, foreign);
+        assert_eq!(
+            foreign_rows[0].refs,
+            [first.memory_id],
+            "explicit destination preserves the caller's foreign read access"
+        );
+        let local_only = built.single_owner_authz().expect("local context");
+        let denied = engine
+            .ingest_fact(
+                &local_only,
+                FactWrite::new(foreign, "sdk/denied", &sdk_fact()),
+            )
+            .await
+            .expect_err("destination needs write authority");
+        assert_eq!(denied.code, proxima::ErrorCode::Forbidden);
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("typed Fact series");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typed_fact_concurrent_first_observations_share_a_natural_series() {
+    use proxima::flavor::FactWrite;
+    let db_name = unique_db_name("sdk_fact_concurrent");
+    create_db(&db_name).await.expect("PG required");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url(&db_name))
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let engine = built.engine();
+        let authz = built.single_owner_authz().expect("one owner");
+        for _ in 0..8 {
+            let a = sdk_fact();
+            let mut b = a.clone();
+            b.body = "Distinct delivery".into();
+            let (a, b) = tokio::join!(
+                engine.ingest_fact(&authz, FactWrite::new(owner, "sdk/source-a", &a)),
+                engine.ingest_fact(&authz, FactWrite::new(owner, "sdk/source-b", &b)),
+            );
+            let a = a?;
+            let b = b?;
+            assert_eq!(
+                a.handle, b.handle,
+                "concurrent natural-key lookup selects one series"
+            );
+            assert_ne!(a.memory_id, b.memory_id);
+            let mut query = QueryRequest::for_owner(owner);
+            query.memory_ids = vec![a.memory_id, b.memory_id];
+            let heads = engine.query(&authz, &query).await?.memories;
+            assert_eq!(heads.len(), 1);
+            query.supersession = proxima::SupersessionStatus::IncludeSuperseded;
+            let history = engine.query(&authz, &query).await?.memories;
+            assert_eq!(history.len(), 2);
+            assert!(
+                history
+                    .iter()
+                    .all(|row| row.handle == a.handle && row.origins.is_empty())
+            );
+        }
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("concurrent natural Fact series");
+}
+
+#[tokio::test]
+async fn natural_key_selection_rejects_payload_substitution_after_authorization() {
+    let db_name = unique_db_name("sdk_nk_binding");
+    create_db(&db_name).await.expect("PG required");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url(&db_name))
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let engine = built.engine();
+        let authz = built.single_owner_authz().expect("one owner");
+        let original = sdk_fact();
+        let draft = proxima::FactWriteCommand::from_payload(
+            "sdk/binding",
+            &original,
+            time::OffsetDateTime::now_utc(),
+        );
+        let sidecars = [SidecarPayload::fact(original.clone())];
+        let authorized = engine
+            .authorize_fact_ingest(&authz, proxima::Relation::Editor, draft.clone(), &sidecars)
+            .await?;
+        let mut changed = original;
+        changed.note_id = Uuid::now_v7();
+        let err = engine
+            .ingest_fact_with_typed_sidecar(&authorized, &[SidecarPayload::fact(changed)], None)
+            .await
+            .expect_err("same-schema payload cannot select a different natural identity");
+        assert_eq!(err.code, proxima::ErrorCode::InvalidArgument);
+        assert!(err.message.contains("natural-key binding differs"), "{err}");
+        let missing = engine
+            .authorize_fact_ingest(&authz, proxima::Relation::Editor, draft, &[])
+            .await?;
+        let err = engine
+            .ingest_fact_with_typed_sidecar(&missing, &sidecars, None)
+            .await
+            .expect_err("automatic NK selection requires authorization-time values");
+        assert!(
+            err.message.contains("supply the typed Fact payload"),
+            "{err}"
+        );
+        let err = engine
+            .ingest_fact_with_typed_sidecar(
+                &authorized,
+                &[sidecars[0].clone(), sidecars[0].clone()],
+                None,
+            )
+            .await
+            .expect_err("ambiguous matching payloads rejected");
+        assert!(err.message.contains("exactly one"), "{err}");
+        assert!(
+            engine
+                .query(&authz, &QueryRequest::for_owner(owner))
+                .await?
+                .memories
+                .is_empty()
+        );
+        let valid = engine
+            .ingest_fact_with_typed_sidecar(&authorized, &sidecars, None)
+            .await?;
+        assert_eq!(
+            engine
+                .get_memories(
+                    &authz,
+                    &GetMemoriesReadRequest {
+                        memory_ids: vec![valid.memory_id]
+                    }
+                )
+                .await?
+                .memories
+                .len(),
+            1
+        );
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("natural-key binding");
+}
+
 #[test]
 fn facade_does_not_export_raw_edge_append_surface() {
     let facade = include_str!("../src/lib.rs");
@@ -556,6 +804,7 @@ impl FactPayload for FacadeFact {
     fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
         key.field_uuid("note_id", self.note_id);
+        key.field_str("body", &self.body);
         key.finish()
     }
 
@@ -995,7 +1244,10 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         .expect("an admin on exactly this owner narrows to it");
         let fact_outcome = built
             .engine
-            .ingest_typed_fact(&write_authz, "facade-surface-test", &fact)
+            .ingest_fact(
+                &write_authz,
+                proxima::FactWrite::new(owner, "facade-surface-test", &fact),
+            )
             .await?;
         let mut query = QueryRequest::for_owner(owner);
         query.include_payloads = true;

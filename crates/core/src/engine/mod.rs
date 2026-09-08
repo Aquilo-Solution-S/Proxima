@@ -55,7 +55,7 @@ pub use read_verbs::{
     ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse, MAX_WAKE_CANDIDATE_LIMIT,
     SearchReadRequest, SearchReadResponse,
 };
-pub use unit_of_work::{TypedFactIngest, UnitOfWork};
+pub use unit_of_work::{FactWrite, UnitOfWork};
 pub use upload::{UploadCompleted, UploadCompletionExpectation};
 
 #[cfg(test)]

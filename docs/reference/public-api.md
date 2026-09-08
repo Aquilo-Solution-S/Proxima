@@ -5,9 +5,36 @@
 Workspace packages currently set `publish = false`; consume from git tags or
 repo checkouts unless release notes say crates.io publishing is available.
 
+## Typed Consumer Operations
+
+Import requests from `proxima::flavor` and `Engine` / `AuthzContext` from `proxima`.
+
+| Intent | Request | Standalone / transaction |
+|---|---|---|
+| Observe a Fact | `FactWrite::new(owner, source_id, &payload)` | `Engine::ingest_fact(&authz, request)` / `UnitOfWork::ingest_fact(request)` |
+| Derive an Abstraction | `DerivedMemory::abstraction(target, owner, text, payload, origins, identity)?` | `derive_memory` on either receiver |
+| Derive a Perspective | `DerivedMemory::perspective(target, owner, text, payload, origins, identity)?` | `derive_memory` on either receiver |
+| Interpret referenced knowledge | `DerivedMemory::interpretation(target, owner, text, payload)` | `derive_memory` on either receiver |
+| Create a typed Goal | `GoalCreateRequest::product(owner, assignment, request_id, title, text, payload)` | `Engine::create_goal(&authz, request)` / `UnitOfWork::create_goal(request)` |
+
+Standalone operations commit before returning. `engine.unit_of_work(&authz).await?`
+groups writes; `commit().await?` persists them, dropping the unit rolls them back.
+Goal `.with_evidence(...)` accepts admitted Fact/Abstraction row IDs, including
+writes earlier in the same transaction. Assignment requires a Perspective
+in the Goal's owner space.
+
+Fact `.refs(...)` adds reference pins, never origins. Automatic natural-key
+series selection is transactional; an explicit `.handle(SeriesHandle)` wins.
+Keep returned `memory_id` / `goal_id` values for reads and references. A series
+handle identifies the version stream, not an admitted row.
+
+Advanced host protocol adapters (`fact_ingest`, split authorization/citation
+writes, dynamic Goal payload writes) retain their protocol-specific contracts.
+Ordinary typed flavor code uses the operations above.
+
 ## Supported Tiers
 
-Post-PR9 supported Rust tiers:
+Supported Rust tiers:
 
 | Tier | Import | Use |
 |---|---|---|
@@ -25,7 +52,7 @@ Flavor contract declarations are const-constructible and imported from
 `proxima::flavor`. The same module owns `SchemaRef`, `KeyShape`, the erase /
 transfer / export / forget / counter rules, projection and embedding
 declarations, and tool/resource contracts. Goal write DTOs, including
-`GoalCreatePayloadWriteRequest` and `GoalTopologyWrite`, use the same facade.
+`GoalCreateRequest<P>` and `GoalTopologyWrite`, use the same facade.
 `SidecarSessionRead` remains a bounded, owner-stamped request for an existing
 authorized write session; it does not expose a connection or pool.
 
@@ -80,7 +107,7 @@ there is no id-less owner — so `OwnerRef::columns()` returns
 | `AuthPath::System` | cannot mint by public `AuthzContext` shape alone; requires host-held `SystemAuthority` via `Engine::authorize_owner_write_with_system_authority` |
 | host witness | `BuiltProxima::system_authority()` / `RunningProxima::system_authority()` expose a borrowed witness to embedding hosts |
 | wire/flavor boundary | MCP tools and flavor `ToolCtx` do not receive `SystemAuthority`; normal membership/HostBearer paths need no witness |
-| target-owner Fact ingest | supported host path: narrow a server-resolved context to one authorized owner with `AuthzContext::narrowed_to_owner(owner)`, then call `Engine::fact_ingest(&owner_authz, draft)`. The engine stamps the write owner from resolved access; `FactWriteCommand` carries no owner field. |
+| typed Fact destination | `Engine::ingest_fact(&authz, FactWrite::new(owner, source_id, &payload))`; the engine authorizes the explicit destination. Keep the full authenticated context so readable foreign references remain available. |
 | sidecar-less Fact ingest | supported host path is `Engine::fact_ingest`. `proxima-storage-pg`'s write verbs are `pub(crate)` implementation detail of its port impls — there is no second entry point to reach past the engine with. |
 | guardrail | `scripts/check-architecture-guardrails.py` fails if listed storage write traits or `storage-pg` write verbs lose `OwnerWritePermit` |
 
@@ -379,7 +406,7 @@ execution or activity log projector):
 | Rule | Contract |
 |---|---|
 | owner | write under the tenant's `OwnerRef::Group(GroupId)`, not `OwnerRef::Personal(UserId)`. Tenant-shared evidence belongs to the group the tenant's members can read/manage together, not to one operator's personal owner. |
-| target-owner ingest | resolve the worker subject to roles, narrow that `AuthzContext` to the tenant `OwnerRef::Group(GroupId)` with `AuthzContext::narrowed_to_owner`, then call `Engine::fact_ingest`. A context that still resolves more than one writable owner is rejected before storage. |
+| target-owner ingest | resolve the worker subject to roles; call `Engine::ingest_fact(&authz, FactWrite::new(owner, source_id, &payload))`. The explicit destination is authorized without narrowing the caller's read access. |
 | idempotency keys | Proxima honors a caller-supplied idempotency key verbatim — it never invents a different projector-side key. `core_remember`'s `idempotency_key` deterministically becomes the note id via UUIDv5 over the caller's own bytes (`crates/core/src/mcp/core_tools/memory/remember.rs`); other Fact payload schemas declare their own `natural_key_columns()` from caller-supplied payload fields. Re-ingesting the same key with the same content is a no-op; re-ingesting the same key with changed content writes a new version and advances the head pointer — the identity a projector chooses is the identity Proxima keeps. |
 | source cursor bytes | `Cursor` is opaque byte state keyed by `(owner, source)`. A projector may encode `last_event_seq` into it; `store_source_cursor` persists the supplied bytes verbatim, and `load_source_cursor` returns the exact bytes last stored for that owner/source. No Centauri-side `piy_projection_cursor` table is required for that state. |
 | projection lag | `Engine::source_cursor_age(authz, owner, source)` returns the age of the owner/source cursor for EVD-012-style lag SLO evidence. It is owner-scoped and read-authorized (`Viewer`); `load_source_cursor` / `store_source_cursor` still require cursor mutation authority (`Ingest`) and do not expose cursor bytes to viewers. |

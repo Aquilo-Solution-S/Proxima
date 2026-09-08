@@ -43,7 +43,7 @@ fn fact(schema: &str, refs: Vec<Uuid>, origins: Vec<Uuid>, kind: &str) -> FactWr
         lexical_language: None,
         receipt: None,
         citation: None,
-        derived_from: origins
+        additional_references: origins
             .into_iter()
             .map(|t| {
                 proxima_core::EdgeEndpoint::memory(EntityKind::Fact, proxima_core::MemoryId::new(t))

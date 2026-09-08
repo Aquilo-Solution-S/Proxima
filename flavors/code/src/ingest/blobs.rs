@@ -4,8 +4,7 @@ use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
     AbstractionPayload, AuthzContext, DerivationIdentity, DerivedMemory, DerivedMemoryOutcome,
-    Engine, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner, SeriesHandle,
-    TypedFactIngest,
+    Engine, FactWrite, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner, SeriesHandle,
 };
 use proxima_storage_pg::query::ChunkSeriesHead;
 use uuid::Uuid;
@@ -99,9 +98,9 @@ where
     P: proxima_core::FactPayload + Clone,
 {
     Ok(engine
-        .ingest_typed_fact_with(
+        .ingest_fact(
             authz,
-            TypedFactIngest::new(LOCAL_GIT_SOURCE_ID, payload)
+            FactWrite::new(authz.principal(), LOCAL_GIT_SOURCE_ID, payload)
                 .observed_at(observed_at)
                 .citation(citation),
         )

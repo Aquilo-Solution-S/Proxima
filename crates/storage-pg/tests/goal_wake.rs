@@ -33,7 +33,7 @@ fn fact_draft(schema: &str) -> FactWriteCommand {
         lexical_language: None,
         receipt: None,
         citation: None,
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
@@ -43,14 +43,14 @@ fn fact_draft(schema: &str) -> FactWriteCommand {
 fn abstraction_draft(origin: MemoryId) -> FactWriteCommand {
     let mut draft = fact_draft("core/test-fact-v1");
     draft.kind = "abstraction".into();
-    draft.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, origin)];
+    draft.additional_references = vec![EdgeEndpoint::memory(EntityKind::Fact, origin)];
     draft
 }
 
 fn perspective_draft(origin: MemoryId) -> FactWriteCommand {
     let mut draft = fact_draft("core/test-fact-v1");
     draft.kind = "perspective".into();
-    draft.derived_from = vec![EdgeEndpoint::memory(EntityKind::Abstraction, origin)];
+    draft.additional_references = vec![EdgeEndpoint::memory(EntityKind::Abstraction, origin)];
     draft
 }
 

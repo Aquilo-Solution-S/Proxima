@@ -119,6 +119,7 @@ async fn append_derived_timeseries(
     let prepared = super::memory_timeseries::prepare_memory_admission_with_extra_targets(
         tx,
         super::memory_timeseries::MemoryAdmissionDraft {
+            natural_key: None,
             owner: &draft.owner,
             draft: &cmd,
             origins: input.origins,
@@ -232,7 +233,7 @@ fn derived_memory_command(
         // The authorized endpoint slices below are the sole pin source. Keep
         // compatibility fields empty so this backend cannot accidentally
         // persist an unverified draft projection.
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: kind.into(),

@@ -13,15 +13,15 @@ use proxima_core::storage_ports::{GoalWritePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef,
-    GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalWakeConfigWrite, GoalWakeToolId,
-    GoalWakeTrigger, GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest, OperatorKind,
-    SystemOrigin, TransitionGoalAtomicRequest,
+    GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalCreateRequest, GoalDraft,
+    GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalWakeConfigWrite,
+    GoalWakeToolId, GoalWakeTrigger, GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest,
+    OperatorKind, SystemOrigin, TransitionGoalAtomicRequest,
 };
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, EdgeEndpoint, Engine, EntityKind, FlavorRegistry,
-    GoalCreatePayloadWriteRequest, GoalPayload, InputContractId, ModelId, OperatorId, OwnerRef,
-    PromptVersion, SchemaId, SchemaVersion, SimpleTextGoalV1, StorageError, ToolId, UserId,
+    GoalPayload, InputContractId, ModelId, OperatorId, OwnerRef, PromptVersion, SchemaId,
+    SchemaVersion, SimpleTextGoalV1, StorageError, ToolId, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -41,7 +41,7 @@ fn memory_draft(kind: &str) -> FactWriteCommand {
         lexical_language: None,
         receipt: None,
         citation: None,
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: kind.into(),
@@ -56,10 +56,11 @@ async fn ingest_grounded_perspective(
         .ingest_fact_atomic(permit, &memory_draft("fact"), None)
         .await?;
     let mut abs = memory_draft("abstraction");
-    abs.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
+    abs.additional_references = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
     let abs = pg.ingest_fact_atomic(permit, &abs, None).await?;
     let mut perspective = memory_draft("perspective");
-    perspective.derived_from = vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
+    perspective.additional_references =
+        vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
     pg.ingest_fact_atomic(permit, &perspective, None).await
 }
 
@@ -1055,7 +1056,8 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
             .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
             .await?;
         let mut abstraction = memory_draft("abstraction");
-        abstraction.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
+        abstraction.additional_references =
+            vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
         let abstraction = pg.ingest_fact_atomic(&permit, &abstraction, None).await?;
 
         let mut first_draft = active_draft(
@@ -1155,14 +1157,25 @@ async fn unit_of_work_resolves_goal_replay_before_live_target_admission() {
         let first = pg
             .create_goal_atomic(
                 &CreateGoalAtomicRequest {
-                    draft: active_draft(
-                        owner,
-                        assignment.memory_id,
-                        "unit-of-work-goal-replay",
-                        "unit of work replay",
-                        vec![GoalEvidenceRef::new(evidence.memory_id)],
-                        None,
-                    )?,
+                    draft: {
+                        let mut draft = active_draft(
+                            owner,
+                            assignment.memory_id,
+                            "unit-of-work-goal-replay",
+                            "unit of work replay",
+                            vec![GoalEvidenceRef::new(evidence.memory_id)],
+                            None,
+                        )?;
+                        // The replay now uses the typed SDK. Admit the same
+                        // canonical body initially instead of empty raw bytes.
+                        draft.payload = GoalPayloadWrite::from_payload(
+                            "unit of work replay",
+                            "unit of work replay",
+                            SimpleTextGoalV1 {},
+                        )?
+                        .payload;
+                        draft
+                    },
                     context: context(&registry),
                     write_act_t: None,
                 },
@@ -1177,22 +1190,21 @@ async fn unit_of_work_resolves_goal_replay_before_live_target_admission() {
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let mut unit = engine.unit_of_work(&authz).await?;
         let replay = unit
-            .create_goal(
-                GoalCreatePayloadWriteRequest {
-                    owner,
-                    topology: GoalTopologyWrite::new(
-                        GoalAssignmentTarget::perspective(assignment.memory_id),
-                        Vec::new(),
-                        vec![GoalEvidenceRef::new(evidence.memory_id)],
-                    )?,
-                    wake: None,
-                    payload: simple_payload("unit of work replay"),
-                    request_id: IdempotencyKey::new("unit-of-work-goal-replay")?,
-                    authorship: GoalAuthorship::User,
-                    author_self_perspective_id: None,
-                },
-                None,
-            )
+            .create_goal(GoalCreateRequest {
+                owner,
+                topology: GoalTopologyWrite::new(
+                    GoalAssignmentTarget::perspective(assignment.memory_id),
+                    Vec::new(),
+                    vec![GoalEvidenceRef::new(evidence.memory_id)],
+                )?,
+                wake: None,
+                title: "unit of work replay".to_owned(),
+                text: "unit of work replay".to_owned(),
+                payload: SimpleTextGoalV1 {},
+                request_id: IdempotencyKey::new("unit-of-work-goal-replay")?,
+                authorship: GoalAuthorship::User,
+                author_self_perspective_id: None,
+            })
             .await?;
         assert_exact_replay(&first, &replay);
         unit.commit().await?;

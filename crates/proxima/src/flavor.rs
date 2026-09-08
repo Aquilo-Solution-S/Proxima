@@ -24,9 +24,11 @@ pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
 /// verb: without it the result of a completion cannot be bound to a
 /// named local or returned from a flavor's own function.
 pub use proxima_core::citations::UploadedBlobPayload;
+pub use proxima_core::engine::{FactWrite, UnitOfWork};
 /// Goal write DTOs, including the nested topology and wake declarations.
-pub use proxima_core::engine::GoalCreatePayloadWriteRequest;
-pub use proxima_core::engine::{TypedFactIngest, UnitOfWork};
+pub use proxima_core::engine::{
+    GoalDecomposeRequest, GoalMarkAchievedRequest, GoalModifyRequest, GoalTransitionRequest,
+};
 pub use proxima_core::engine::{UploadCompleted, UploadCompletionExpectation};
 pub use proxima_core::error::{ErrorCode, ProtocolError};
 /// Build-time flavor declaration vocabulary. These are const-constructible
@@ -108,9 +110,10 @@ pub use proxima_core::verbs::fact_ingest::{
     InlineCitedObjectDraft,
 };
 pub use proxima_core::verbs::goal_write::{
-    GoalAssignmentTarget, GoalAuthorship, GoalDependencyRef, GoalEvidenceRef, GoalPayloadWrite,
-    GoalState, GoalTopologyWrite, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger,
-    GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey, OperatorKind, SystemOrigin,
+    ChildGoalDraft, DecomposeGoalOutcome, GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest,
+    GoalDependencyRef, GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite,
+    GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError, GoalWriteOutcome,
+    IdempotencyKey, OperatorKind, SystemOrigin,
 };
 pub use proxima_core::verbs::query::{
     GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, SupersessionStatus,

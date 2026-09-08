@@ -525,7 +525,7 @@ mod lifecycle_lock_tests {
             lexical_language: None,
             receipt: None,
             citation: None,
-            derived_from: Vec::new(),
+            additional_references: Vec::new(),
             refs: Vec::new(),
             blob_id: None,
             kind: "fact".into(),
@@ -539,11 +539,12 @@ mod lifecycle_lock_tests {
         let fact_out = pg.ingest_fact_atomic(permit, &fact(), None).await?;
         let mut abstraction = fact();
         abstraction.kind = "abstraction".into();
-        abstraction.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, fact_out.memory_id)];
+        abstraction.additional_references =
+            vec![EdgeEndpoint::memory(EntityKind::Fact, fact_out.memory_id)];
         let abstraction = pg.ingest_fact_atomic(permit, &abstraction, None).await?;
         let mut perspective = fact();
         perspective.kind = "perspective".into();
-        perspective.derived_from = vec![EdgeEndpoint::memory(
+        perspective.additional_references = vec![EdgeEndpoint::memory(
             EntityKind::Abstraction,
             abstraction.memory_id,
         )];

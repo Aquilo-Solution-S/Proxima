@@ -5,7 +5,6 @@
 //! same engine, write-session, and Postgres paths used by a composed host.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::engine::TypedFactIngest;
 use proxima_core::flavor::{
     CounterRule, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule,
     KeyShape, ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, Surface,
@@ -25,7 +24,7 @@ use proxima_core::verbs::goal_write::{
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
 use proxima_core::{
     AccessKind, AgentDerivationV1, AuthPath, AuthzContext, DerivationIdentity, DerivedMemory,
-    EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, FactPayload,
+    EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, FactPayload, FactWrite,
     FlavorRegistry, GoalId, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner, OwnerRef,
     PayloadKeyBuilder, PayloadReference, Relation, SchemaId, SchemaVersion, SeriesHandle,
     SidecarPayload, StorageError, UploadedBlobPayload, UserId,
@@ -264,7 +263,7 @@ async fn seed_abstraction(
     draft.ingest_key = None;
     draft.receipt = None;
     draft.refs.clear();
-    draft.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, origin)];
+    draft.additional_references = vec![EdgeEndpoint::memory(EntityKind::Fact, origin)];
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     Ok(pg
         .ingest_fact_atomic(&permit, &draft, None)
@@ -285,7 +284,7 @@ async fn seed_perspective(pg: &PgStorage, owner: Owner) -> Result<MemoryId, Stor
     draft.ingest_key = None;
     draft.receipt = None;
     draft.refs.clear();
-    draft.derived_from = vec![EdgeEndpoint::memory(EntityKind::Abstraction, abstraction)];
+    draft.additional_references = vec![EdgeEndpoint::memory(EntityKind::Abstraction, abstraction)];
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     Ok(pg
         .ingest_fact_atomic(&permit, &draft, None)
@@ -414,7 +413,9 @@ async fn authorized_links_are_persisted_by_engine_uow() {
         let engine = engine(&pg, &registry);
         let uow_payload = payload("uow-one", fact_id.into_inner(), goal.into_inner());
         let mut uow = engine.unit_of_work(&authz).await?;
-        let outcome = uow.ingest_fact("test/uow", &uow_payload).await?;
+        let outcome = uow
+            .ingest_fact(FactWrite::new(owner, "test/uow", &uow_payload))
+            .await?;
         uow.commit().await?;
         assert_eq!(
             stored_refs(&pg, outcome.memory_id).await?,
@@ -659,10 +660,12 @@ async fn typed_raw_refs_cannot_disagree_with_payload_declarations() {
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = engine(&pg, &registry);
         let payload = payload("raw-disagreement", fact_a.into_inner(), goal.into_inner());
-        let mut uow = engine.unit_of_work(&authz).await?;
-        let error = uow
-            .ingest_typed(
-                TypedFactIngest::new("test/raw-disagreement", &payload).refs([fact_b.into_inner()]),
+        let error = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Editor,
+                custom_draft(&payload).with_refs(vec![fact_b.into_inner()]),
+                &[SidecarPayload::fact(payload)],
             )
             .await
             .expect_err("raw refs must not replace typed refs");
@@ -829,7 +832,7 @@ async fn malformed_fact_source_and_endpoints_are_rejected_before_write() {
 
         let payload = payload("malformed-endpoint", target.into_inner(), goal.into_inner());
         let mut malformed = custom_draft(&payload);
-        malformed.derived_from = vec![EdgeEndpoint {
+        malformed.additional_references = vec![EdgeEndpoint {
             kind: EntityKind::Goal,
             entity: EntityRef::Memory(target),
         }];
@@ -888,7 +891,7 @@ async fn uow_rejects_session_visible_target_kind_mismatch() {
             goal.into_inner(),
         );
         let error = uow
-            .ingest_fact("test/session", &wrong)
+            .ingest_fact(FactWrite::new(owner, "test/session", &wrong))
             .await
             .expect_err("session-visible Abstraction must not authorize as a Fact target");
         assert_eq!(error.code, proxima_core::error::ErrorCode::InvalidArgument);

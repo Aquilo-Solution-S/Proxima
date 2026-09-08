@@ -105,7 +105,7 @@ fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand 
                 schema_version: SchemaVersion::new(1),
             },
         }),
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),

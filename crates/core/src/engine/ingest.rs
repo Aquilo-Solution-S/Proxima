@@ -23,6 +23,40 @@ use crate::verbs::persist_mcp_call::{
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
 use crate::{EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload};
 
+/// Capture only the values which can select a natural series; body replay semantics are unchanged.
+fn bind_fact_natural_key(
+    draft: &FactWriteCommand,
+    columns: &[String],
+    sidecars: &[SidecarPayload],
+) -> Result<Option<Vec<(String, crate::verbs::query::SidecarAtom)>>, ProtocolError> {
+    if columns.is_empty() || draft.handle.is_some() {
+        return Ok(None);
+    }
+    let mut matches = sidecars.iter().filter(|payload| {
+        payload.kind == PayloadKind::Fact
+            && payload.schema_id == draft.schema_id
+            && payload.schema_version == draft.schema_version
+    });
+    let Some(payload) = matches.next() else {
+        // An ownerless raw command can be authorized without a typed payload;
+        // automatic NK selection later refuses a missing binding.
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Err(ProtocolError::invalid_argument(
+            "sidecars",
+            "natural-key binding requires exactly one matching typed Fact payload",
+        ));
+    }
+    let json = payload
+        .to_protocol_json()
+        .map_err(|err| ProtocolError::invalid_argument("sidecars", err))?;
+    let columns = columns.iter().map(String::as_str).collect::<Vec<_>>();
+    crate::verbs::query::SidecarAtom::bind_columns(&json, &columns)
+        .map(Some)
+        .map_err(|err| ProtocolError::invalid_argument("natural_key", err))
+}
+
 /// Liveness probe after a provider refuses a batch.
 ///
 /// Trivial and constant: a failed probe means the provider is down; a
@@ -160,7 +194,7 @@ impl Engine {
         &self,
         authority: &A,
         relation: Relation,
-        mut draft: FactWriteCommand,
+        draft: FactWriteCommand,
         sidecars: &[SidecarPayload],
         session_visible: &[MemoryId],
         session_visible_kinds: &[(MemoryId, EntityKind)],
@@ -170,6 +204,29 @@ impl Engine {
     {
         let owner = self.single_write_owner_for(authority, relation)?;
         let permit = self.authorize_write(authority, &owner, relation).await?;
+        self.authorize_fact_ingest_permitted_visible(
+            authority,
+            permit,
+            draft,
+            sidecars,
+            session_visible,
+            session_visible_kinds,
+        )
+        .await
+    }
+
+    /// Shared normalization for the ownerless protocol and owner-explicit typed API.
+    pub(in crate::engine) async fn authorize_fact_ingest_permitted_visible<
+        A: EngineAuthority + ?Sized,
+    >(
+        &self,
+        authority: &A,
+        permit: super::pipeline::WritePermit,
+        mut draft: FactWriteCommand,
+        sidecars: &[SidecarPayload],
+        session_visible: &[MemoryId],
+        session_visible_kinds: &[(MemoryId, EntityKind)],
+    ) -> Result<AuthorizedFactWrite, ProtocolError> {
         normalize_fact_source_kind(&mut draft)?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
@@ -193,13 +250,18 @@ impl Engine {
                 session_visible_kinds,
             )
             .await?;
-        Ok(AuthorizedFactWrite::new(AuthorizedFactCore::new(
-            permit.into(),
-            draft,
-            fact_sidecar_table,
-            fact_natural_key_columns,
-            links,
-        )))
+        let natural_key_values =
+            bind_fact_natural_key(&draft, &fact_natural_key_columns, sidecars)?;
+        Ok(AuthorizedFactWrite::new(
+            AuthorizedFactCore::new(
+                permit.into(),
+                draft,
+                fact_sidecar_table,
+                fact_natural_key_columns,
+                links,
+            )
+            .with_natural_key_values(natural_key_values),
+        ))
     }
 
     /// Authorize + schema-validate + owner-stamp a Fact with typed
@@ -241,6 +303,8 @@ impl Engine {
             .authorize_fact_node_links(authority, &draft, sidecars, &[], &[])
             .await?;
 
+        let natural_key_values =
+            bind_fact_natural_key(&draft, &fact_natural_key_columns, sidecars)?;
         Ok(AuthorizedFactWithCitation::new(
             AuthorizedFactCore::new(
                 permit.into(),
@@ -248,7 +312,8 @@ impl Engine {
                 fact_sidecar_table,
                 fact_natural_key_columns,
                 links,
-            ),
+            )
+            .with_natural_key_values(natural_key_values),
             cited_object,
             mapping,
         ))
@@ -291,6 +356,8 @@ impl Engine {
             .authorize_fact_node_links(authority, &draft, sidecars, &[], &[])
             .await?;
 
+        let natural_key_values =
+            bind_fact_natural_key(&draft, &fact_natural_key_columns, sidecars)?;
         Ok(AuthorizedFactWithCitationRef::new(
             AuthorizedFactCore::new(
                 permit.into(),
@@ -298,7 +365,8 @@ impl Engine {
                 fact_sidecar_table,
                 fact_natural_key_columns,
                 links,
-            ),
+            )
+            .with_natural_key_values(natural_key_values),
             cited_object_id,
             expected_object_schema,
             mapping,
@@ -380,16 +448,16 @@ impl Engine {
         } else {
             typed_references
         };
-        let origins = self
+        let additional = self
             .authorize_fact_link_targets(
                 authority,
-                &draft.derived_from,
-                "derived_from",
+                &draft.additional_references,
+                "additional_references",
                 session_visible,
                 session_visible_kinds,
             )
             .await?;
-        let references = self
+        let mut references = self
             .authorize_fact_link_targets(
                 authority,
                 &references,
@@ -398,8 +466,13 @@ impl Engine {
                 session_visible_kinds,
             )
             .await?;
+        for target in additional {
+            if !references.contains(&target) {
+                references.push(target);
+            }
+        }
         Ok(AuthorizedNodeLinks::new(
-            origins,
+            Vec::new(),
             references,
             payload_references,
         ))
@@ -1708,17 +1781,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_origins_are_admitted_once_and_batch_their_kind_load() {
+    async fn duplicate_additional_refs_are_admitted_once_and_batch_their_kind_load() {
         let owner = test_owner();
         let first = MemoryId::new(uuid::Uuid::now_v7());
         let second = MemoryId::new(uuid::Uuid::now_v7());
         let third = MemoryId::new(uuid::Uuid::now_v7());
-        // `derived_from` reaches the admission loop exactly as the caller
+        // `additional_references` reaches the admission loop exactly as the caller
         // wrote it — unlike payload references, which `authorize_fact_node_links`
         // folds before it delegates — so this is the path a duplicate can
         // actually reach.
         let payload = ReferencedTestFact {
-            fact_id: "duplicate-origins".to_owned(),
+            fact_id: "duplicate-refs".to_owned(),
             targets: Vec::new(),
         };
         let sidecars = [SidecarPayload::fact(payload.clone())];
@@ -1735,7 +1808,7 @@ mod tests {
             .authorize_fact_ingest(
                 &authz,
                 Relation::Ingest,
-                referenced_draft(&payload).with_derived_from(vec![
+                referenced_draft(&payload).with_additional_references(vec![
                     EdgeEndpoint::memory(EntityKind::Fact, first),
                     EdgeEndpoint::memory(EntityKind::Fact, second),
                     EdgeEndpoint::memory(EntityKind::Fact, first),
@@ -1744,10 +1817,11 @@ mod tests {
                 &sidecars,
             )
             .await
-            .expect("readable origins of the declared kind should authorize");
+            .expect("readable references of the declared kind should authorize");
 
+        assert!(authorized.links().origins().is_empty());
         assert_eq!(
-            authorized.links().origins(),
+            authorized.links().references(),
             &[
                 EdgeEndpoint::memory(EntityKind::Fact, first),
                 EdgeEndpoint::memory(EntityKind::Fact, second),
@@ -1973,7 +2047,7 @@ mod tests {
         let error = engine
             .fact_ingest(
                 &authz,
-                referenced_draft(&payload).with_derived_from(vec![malformed]),
+                referenced_draft(&payload).with_additional_references(vec![malformed]),
             )
             .await
             .expect_err("a malformed Goal endpoint must fail before persistence");

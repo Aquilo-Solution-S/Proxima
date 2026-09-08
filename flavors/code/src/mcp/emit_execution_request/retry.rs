@@ -114,6 +114,7 @@ impl Tool for CodeRetryExecutionRequestTool {
                 .map_err(ToolError::Protocol)?;
             let outcome = ingest_execution_request(
                 &mut uow,
+                ctx.owner(),
                 &payload,
                 FactProvenance {
                     derived_from: &origins,

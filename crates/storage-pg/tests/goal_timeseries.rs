@@ -28,7 +28,7 @@ fn fact_draft() -> FactWriteCommand {
         lexical_language: None,
         receipt: None,
         citation: None,
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
@@ -192,11 +192,12 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         let base = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
         let mut abstraction = fact_draft();
         abstraction.kind = "abstraction".into();
-        abstraction.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, base.memory_id)];
+        abstraction.additional_references =
+            vec![EdgeEndpoint::memory(EntityKind::Fact, base.memory_id)];
         let abstraction = pg.ingest_fact_atomic(&permit, &abstraction, None).await?;
         let mut perspective = fact_draft();
         perspective.kind = "perspective".into();
-        perspective.derived_from = vec![EdgeEndpoint::memory(
+        perspective.additional_references = vec![EdgeEndpoint::memory(
             EntityKind::Abstraction,
             abstraction.memory_id,
         )];

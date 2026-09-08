@@ -250,7 +250,7 @@ mod pg_tests {
                 occurred_at: now,
             }),
             citation: None,
-            derived_from: Vec::new(),
+            additional_references: Vec::new(),
             refs: Vec::new(),
             blob_id: None,
             kind: "fact".into(),
@@ -304,6 +304,7 @@ mod pg_tests {
             &authorized,
             embedding_model_id,
             crate::verbs::fact_ingest::FactAdmissionInput {
+                natural_key: None,
                 sidecar_tables: &[AGENT_NOTE.to_owned()],
                 scopes: &[],
                 content: crate::verbs::fact_ingest::ContentResolution {

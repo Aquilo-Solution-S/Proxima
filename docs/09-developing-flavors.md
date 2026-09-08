@@ -569,13 +569,15 @@ The SDK surface receives Engine admission witnesses and typed sidecar
 contexts. It never receives `sqlx::PgPool`; backend adapters keep the
 pool private.
 
-Stateful Fact ingest resolves the series handle from
-`FactPayload::natural_key_columns()` when `handle` is unset. A/P series
-continuity is `Engine::owned_series_handle` (one NK, owner-only) or
-the prior-`t` selector named `supersedes` on the authoring request. A file's
-chunk series are listed together
-(`CodeFlavorStore::owned_chunk_series_heads` — same family as
-file-revision heads). Flavor `src/` does not JOIN `proxima_core.memory_head`.
+Stateful Facts resolve `FactPayload::natural_key_columns()` inside the write
+transaction. Repeated keys share a handle, including concurrent admissions and
+uncommitted writes in the same `UnitOfWork`. `FactWrite::handle` overrides this
+selection. Different deliveries still receive different row IDs; receipt replay
+returns the original admitted row.
+
+Derived writes select `MemoryTarget::Series(handle)` or
+`MemoryTarget::Revision(prior_t)` (see [Deriving Abstractions](#deriving-abstractions)).
+Flavor `src/` does not JOIN `proxima_core.memory_head`.
 Goal assignment / evidence are `GoalRow` fields; filter with
 `QueryRequest::assignment` / `evidence_contains`.
 
@@ -587,7 +589,7 @@ Typed path guarantees:
 | mapping schema exists and decodes | `authorize_fact_with_citation` |
 | mapping targets the cited-object schema | `CitationMappingPayload::cited_object_schema()` |
 | cited object has a typed sidecar | engine authorization |
-| Fact row, citation rows, and sidecars commit atomically | `Engine::ingest_typed_fact_with` / `UnitOfWork::ingest_typed` |
+| Fact row, citation rows, and sidecars commit atomically | typed Fact admission / cited Fact admission |
 
 Opaque `CitationSpec` is for content-addressed cited objects with no
 typed sidecar payload and pure-link mappings. Do not copy it for
@@ -597,9 +599,9 @@ messages; use typed `InlineCitedObjectDraft` +
 
 ```rust
 engine
-    .ingest_typed_fact_with(
+    .ingest_fact(
         &authz,
-        TypedFactIngest::new("acme/importer", &payload)
+        FactWrite::new(owner, "acme/importer", &payload)
             .citation(CitationSpec::v1(
                 "acme/blob-v1",
                 content_hash,
@@ -618,7 +620,7 @@ writes the search-projection row in the same transaction.
 A flavor that must read its own sidecar rows before deciding what to append
 does that inside the write transaction, through the session:
 `UnitOfWork::advisory_xact_lock` → `UnitOfWork::owned_series_head_memory_id`
-/ `UnitOfWork::read_own_sidecar` → `UnitOfWork::ingest_typed` → `commit`.
+/ `UnitOfWork::read_own_sidecar` → `UnitOfWork::ingest_fact` → `commit`.
 Those reads are read-only by construction: the backend emits the statement
 from a declared table and bound column predicates, so no transaction,
 connection, or pool crosses the port.
@@ -688,6 +690,24 @@ impl FlavorBundle for HostApp {
 
 Consumers call the bundle surface. They do not manually coordinate
 `register`, `register_pg_sidecars`, and `freeze_against`.
+
+## Typed Fact and Goal Writes
+
+```rust
+use proxima::flavor::{FactWrite, GoalCreateRequest, GoalEvidenceRef};
+
+let mut unit = engine.unit_of_work(&authz).await?;
+let fact = unit.ingest_fact(FactWrite::new(owner, "acme/importer", &observation)).await?;
+let goal = unit.create_goal(GoalCreateRequest::product(
+    owner, assignment, request_id, "Review observation", "Review the admitted evidence", goal_payload,
+).with_evidence(vec![GoalEvidenceRef::new(fact.memory_id)])).await?;
+unit.commit().await?;
+```
+
+`Engine::ingest_fact(&authz, request)` and `Engine::create_goal(&authz, request)`
+use the same requests for standalone writes. Destination authorization precedes
+admission; a multi-owner context retains its readable target set. Dropping an
+uncommitted unit rolls back its Facts, derived rows, Goals, and sidecars.
 
 ## Deriving Abstractions
 

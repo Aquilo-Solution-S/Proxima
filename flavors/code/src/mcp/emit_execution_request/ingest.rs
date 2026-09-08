@@ -1,5 +1,5 @@
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
-use proxima_core::{EdgeEndpoint, FactPayload, ToolError, TypedFactIngest, UnitOfWork};
+use proxima_core::{EdgeEndpoint, FactPayload, FactWrite, Owner, ToolError, UnitOfWork};
 
 use crate::ingest::{
     ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
@@ -19,6 +19,7 @@ pub(super) struct FactProvenance<'a> {
 
 async fn ingest_mcp_fact<P>(
     uow: &mut UnitOfWork<'_>,
+    owner: Owner,
     source_id: &'static str,
     cited_object_schema: &'static str,
     mapping_schema: &'static str,
@@ -29,10 +30,16 @@ where
     P: FactPayload + Clone,
 {
     let citation = CitationSpec::v1_for_payload(cited_object_schema, payload, mapping_schema);
-    uow.ingest_typed(
-        TypedFactIngest::new(source_id, payload)
+    uow.ingest_fact(
+        FactWrite::new(owner, source_id, payload)
             .citation(citation)
-            .derived_from(provenance.derived_from.iter().copied()),
+            .refs(
+                provenance
+                    .derived_from
+                    .iter()
+                    .copied()
+                    .filter_map(EdgeEndpoint::memory_id),
+            ),
     )
     .await
     .map_err(ToolError::Protocol)
@@ -40,11 +47,13 @@ where
 
 pub(super) async fn ingest_execution_request(
     uow: &mut UnitOfWork<'_>,
+    owner: Owner,
     payload: &ExecutionRequestV1,
     provenance: FactProvenance<'_>,
 ) -> Result<FactIngestOutcome, ToolError> {
     ingest_mcp_fact(
         uow,
+        owner,
         EXECUTION_REQUEST_SOURCE_ID,
         EXECUTION_REQUEST_OBJECT_SCHEMA,
         EXECUTION_REQUEST_WHOLE_SCHEMA,
@@ -56,11 +65,13 @@ pub(super) async fn ingest_execution_request(
 
 pub(super) async fn ingest_acceptance_criteria(
     uow: &mut UnitOfWork<'_>,
+    owner: Owner,
     payload: &AcceptanceCriteriaV1,
     provenance: FactProvenance<'_>,
 ) -> Result<FactIngestOutcome, ToolError> {
     ingest_mcp_fact(
         uow,
+        owner,
         ACCEPTANCE_CRITERIA_SOURCE_ID,
         ACCEPTANCE_CRITERIA_OBJECT_SCHEMA,
         ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
@@ -72,11 +83,13 @@ pub(super) async fn ingest_acceptance_criteria(
 
 pub(super) async fn ingest_test_request(
     uow: &mut UnitOfWork<'_>,
+    owner: Owner,
     payload: &TestRequestV1,
     provenance: FactProvenance<'_>,
 ) -> Result<FactIngestOutcome, ToolError> {
     ingest_mcp_fact(
         uow,
+        owner,
         TEST_REQUEST_SOURCE_ID,
         TEST_REQUEST_OBJECT_SCHEMA,
         TEST_REQUEST_WHOLE_SCHEMA,

@@ -6,7 +6,7 @@
 )]
 //! Typed atomic Fact + sidecar writes for the proxima-code flavor.
 //!
-//! Fact ingest goes through `Engine::ingest_typed_fact_with` (UoW of one).
+//! Fact ingest goes through `Engine::ingest_fact` (UoW of one).
 //! Opaque `CitationSpec` and stateful NK handle reuse live on that lane.
 //! Code-slice Abstractions are one `UnitOfWork::derive_memories`
 //! (embed the batch, then one transaction).

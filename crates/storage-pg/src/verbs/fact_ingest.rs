@@ -17,9 +17,11 @@ use std::pin::Pin;
 use proxima_core::verbs::fact_ingest::{
     AuthorizedInlineCitedObject, AuthorizedNodeLinks, FactIngestOutcome, FactWriteCommand,
 };
+use proxima_core::verbs::query::SidecarAtom;
+use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, FactPayload,
-    MemoryId, Owner, SchemaId, StorageError,
+    MemoryId, Owner, SchemaId, SidecarPayload, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -65,6 +67,7 @@ struct IngestCoreOptions<'a> {
 /// scopes would admit a row a concurrent scope erase cannot see.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FactAdmissionInput<'a> {
+    pub(crate) natural_key: Option<&'a super::memory_timeseries::MemoryNaturalKey>,
     pub(crate) sidecar_tables: &'a [String],
     /// The declared scopes to fence, already sorted and deduplicated. Empty
     /// for a payload-less write; a write whose payload declares a scope and
@@ -73,6 +76,68 @@ pub(crate) struct FactAdmissionInput<'a> {
     /// unspellable at the call site.
     pub(crate) scopes: &'a [ScopeFenceTarget],
     pub(crate) content: ContentResolution<'a>,
+}
+
+pub(crate) fn fact_natural_key(
+    draft: &FactWriteCommand,
+    sidecar_table: Option<&str>,
+    columns: &[String],
+    authorized_values: Option<&[(String, SidecarAtom)]>,
+    payloads: &[SidecarPayload],
+    registry: &PgSidecarRegistryFrozen,
+) -> Result<Option<super::memory_timeseries::MemoryNaturalKey>, StorageError> {
+    if draft.handle.is_some() || columns.is_empty() {
+        return Ok(None);
+    }
+    let table = sidecar_table.ok_or_else(|| {
+        StorageError::ConstraintViolation(
+            "natural-key columns require a declared sidecar table".into(),
+        )
+    })?;
+    let key_column = registry.memory_key_column(table).ok_or_else(|| {
+        StorageError::ConstraintViolation(format!(
+            "natural-key sidecar table {table} is not registered"
+        ))
+    })?;
+    let mut matches = payloads.iter().filter(|payload| {
+        payload.kind == PayloadKind::Fact
+            && payload.schema_id == draft.schema_id
+            && payload.schema_version == draft.schema_version
+    });
+    let payload = matches.next().ok_or_else(|| {
+        StorageError::ConstraintViolation(
+            "natural-key selection requires the typed Fact payload supplied during authorization"
+                .into(),
+        )
+    })?;
+    if matches.next().is_some() {
+        return Err(StorageError::ConstraintViolation(
+            "natural-key selection requires exactly one matching typed Fact payload".into(),
+        ));
+    }
+    let names = columns.iter().map(String::as_str).collect::<Vec<_>>();
+    let json = payload
+        .to_protocol_json()
+        .map_err(StorageError::ConstraintViolation)?;
+    let values =
+        SidecarAtom::bind_columns(&json, &names).map_err(StorageError::ConstraintViolation)?;
+    if let Some(expected) = authorized_values {
+        if expected != values.as_slice() {
+            return Err(StorageError::ConstraintViolation(
+                "natural-key binding differs from the authorized Fact sidecar".into(),
+            ));
+        }
+    } else {
+        return Err(StorageError::ConstraintViolation(
+            "natural-key binding is missing; supply the typed Fact payload during authorization"
+                .into(),
+        ));
+    }
+    Ok(Some(super::memory_timeseries::MemoryNaturalKey {
+        sidecar_table: table.to_owned(),
+        memory_key_column: key_column.to_owned(),
+        columns: values,
+    }))
 }
 
 /// Authorization-bearing inputs shared by every Fact persistence route.
@@ -159,6 +224,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
         ),
         options,
         FactAdmissionInput {
+            natural_key: None,
             sidecar_tables: &[],
             // The untyped Fact write: this route carries no `SidecarPayload`
             // at all (`FactIngestPort::ingest_authorized_fact_atomic` refuses
@@ -479,6 +545,7 @@ where
     let prepared = super::memory_timeseries::prepare_memory_admission(
         tx,
         super::memory_timeseries::MemoryAdmissionDraft {
+            natural_key: input.natural_key,
             owner,
             draft,
             origins: links.origins(),

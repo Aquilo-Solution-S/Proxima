@@ -323,10 +323,10 @@ fn flavor_sdk_constructs_contract_goal_and_session_values() {
     use proxima::flavor::{
         CounterRule, DbConstraint, EmbedUnit, EmbeddingRecipe, EraseRule, ExportRule,
         FlavorContract, FlavorDescriptor, FlavorProvenance, ForgetRule, GoalAssignmentTarget,
-        GoalAuthorship, GoalCreatePayloadWriteRequest, GoalDependencyRef, GoalEvidenceRef,
-        GoalPayloadWrite, GoalTopologyWrite, IdempotencyKey, KeyShape, LanguagePolicy, PayloadKind,
-        ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, SidecarAtom,
-        SidecarSessionRead, Surface, TransferRule,
+        GoalAuthorship, GoalCreateRequest, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite,
+        IdempotencyKey, KeyShape, LanguagePolicy, PayloadKind, ProjectionDecl, Provenance,
+        SchemaContract, SchemaRef, SearchProjectionDecl, SidecarAtom, SidecarSessionRead, Surface,
+        TransferRule,
     };
 
     const SURFACE: Surface = Surface {
@@ -398,23 +398,20 @@ fn flavor_sdk_constructs_contract_goal_and_session_values() {
         vec![GoalEvidenceRef::new(memory)],
     )
     .expect("nested goal topology builds");
-    let request = GoalCreatePayloadWriteRequest {
+    let request = GoalCreateRequest {
         owner,
         topology,
         wake: None,
-        payload: GoalPayloadWrite::from_payload(
-            "title",
-            "text",
-            SdkGoalPayload {
-                key: "sdk-goal".to_owned(),
-            },
-        )
-        .expect("typed Goal payload builds through the facade"),
+        title: "title".into(),
+        text: "text".into(),
+        payload: SdkGoalPayload {
+            key: "sdk-goal".to_owned(),
+        },
         request_id: IdempotencyKey::new("sdk-test").expect("key builds"),
         authorship: GoalAuthorship::User,
         author_self_perspective_id: None,
     };
-    assert_eq!(request.payload.text, "text");
+    assert_eq!(request.text, "text");
     let outcome: Option<proxima::flavor::GoalWriteOutcome> = None;
     let authorship = GoalAuthorship::System(proxima::flavor::SystemOrigin::Tool {
         tool_id: proxima::flavor::ToolId::new("sdk_test/tool"),
@@ -1197,9 +1194,16 @@ fn flavor_sdk_names_query_and_ingest_types() {
         slot: "a".into(),
         state: "Present".into(),
     };
-    let _cite = proxima::flavor::TypedFactIngest::new("test/src", &fact).citation(
-        proxima::flavor::CitationSpec::v1("core/upload-v1", [0; 32], "core/upload-whole-v1"),
-    );
+    let _cite = proxima::flavor::FactWrite::new(
+        proxima::flavor::OwnerRef::Personal(proxima::flavor::UserId::new(uuid::Uuid::nil())),
+        "test/src",
+        &fact,
+    )
+    .citation(proxima::flavor::CitationSpec::v1(
+        "core/upload-v1",
+        [0; 32],
+        "core/upload-whole-v1",
+    ));
     let _: Option<proxima::flavor::UnitOfWork<'_>> = None;
     assert!(proxima::flavor::hybrid_degraded_to_lexical(
         proxima::flavor::SearchMode::Hybrid,

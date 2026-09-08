@@ -130,7 +130,7 @@ async fn ingest_stamped(
         &mut tx,
         permit.owner(),
         draft,
-        &draft.derived_from,
+        &draft.additional_references,
         &references,
         tables,
         None,
@@ -420,7 +420,7 @@ fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
         lexical_language: None,
         receipt: None,
         citation: None,
-        derived_from: Vec::new(),
+        additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
@@ -1964,7 +1964,7 @@ async fn forget_dumps_every_stamped_extra() {
 fn derived_abstraction(origin_kind: EntityKind, origin: Uuid) -> FactWriteCommand {
     let mut cmd = draft(None);
     cmd.kind = "abstraction".into();
-    cmd.derived_from = vec![EdgeEndpoint::memory(
+    cmd.additional_references = vec![EdgeEndpoint::memory(
         origin_kind,
         proxima_core::MemoryId::new(origin),
     )];
@@ -1974,7 +1974,7 @@ fn derived_abstraction(origin_kind: EntityKind, origin: Uuid) -> FactWriteComman
 fn derived_perspective(origin: Uuid) -> FactWriteCommand {
     let mut cmd = draft(None);
     cmd.kind = "perspective".into();
-    cmd.derived_from = vec![EdgeEndpoint::memory(
+    cmd.additional_references = vec![EdgeEndpoint::memory(
         EntityKind::Abstraction,
         proxima_core::MemoryId::new(origin),
     )];
@@ -3484,7 +3484,7 @@ async fn forget_and_admit_preserve_grounding_support() {
 
         let mut mixed = draft(None);
         mixed.kind = "abstraction".into();
-        mixed.derived_from = vec![
+        mixed.additional_references = vec![
             EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id),
             EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id),
         ];
@@ -3972,7 +3972,7 @@ async fn concurrent_forget_keeps_one_grounding_support() {
             .await?;
         let mut both = draft(None);
         both.kind = "abstraction".into();
-        both.derived_from = vec![
+        both.additional_references = vec![
             EdgeEndpoint::memory(EntityKind::Abstraction, a1.memory_id),
             EdgeEndpoint::memory(EntityKind::Abstraction, a2.memory_id),
         ];
@@ -4221,7 +4221,7 @@ async fn admission_locks_pins_before_series_head() {
         let target_t = target.memory_id.into_inner();
         let mut append = derived_abstraction(EntityKind::Fact, target_t);
         append.handle = Some(target.handle);
-        append.derived_from = vec![EdgeEndpoint::memory(
+        append.additional_references = vec![EdgeEndpoint::memory(
             EntityKind::Fact,
             proxima_core::MemoryId::new(origin.memory_id.into_inner()),
         )];

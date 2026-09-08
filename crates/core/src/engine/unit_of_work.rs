@@ -4,48 +4,46 @@ use super::Engine;
 use super::memory_authoring::PreparedDerived;
 use crate::access::Relation;
 use crate::authz::AuthzContext;
-use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
 use crate::storage_ports::{SidecarSessionRead, WriteSession};
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 use crate::verbs::goal_write::{
-    CreateGoalAtomicRequest, GoalDraft, GoalReplayRequest, GoalWriteOutcome,
+    CreateGoalAtomicRequest, GoalCreateRequest, GoalDraft, GoalReplayRequest, GoalWriteOutcome,
 };
 use crate::verbs::query::SidecarAtom;
 use crate::{
-    DerivedMemoryOutcome, EntityKind, FactPayload, MemoryId, Owner, SchemaId, SidecarPayload,
+    DerivedMemoryOutcome, EntityKind, FactPayload, GoalPayload, MemoryId, Owner, SchemaId,
+    SidecarPayload,
 };
 
-/// One typed Fact write: payload plus optional citation and origins.
-///
-/// Natural-key handle reuse is automatic when `handle` is unset and the
-/// schema declared `natural_key_columns`. That lookup reads committed
-/// heads only — two versions of the same key in one [`UnitOfWork`] must
-/// pass `handle` explicitly.
+/// One typed observation addressed to an explicit destination owner.
+/// Natural-key handle reuse includes earlier writes in the same transaction.
+/// Facts declare reference pins, never derivation origins.
 #[derive(Clone)]
-pub struct TypedFactIngest<'a, P: FactPayload> {
+pub struct FactWrite<'a, P: FactPayload> {
+    owner: Owner,
     source_id: &'a str,
     payload: &'a P,
     observed_at: Option<time::OffsetDateTime>,
     citation: Option<CitationSpec>,
-    derived_from: Vec<EdgeEndpoint>,
-    handle: Option<uuid::Uuid>,
+    handle: Option<crate::SeriesHandle>,
     lexical_language: Option<String>,
-    refs: Vec<uuid::Uuid>,
+    refs: Vec<MemoryId>,
 }
 
-impl<P: FactPayload> std::fmt::Debug for TypedFactIngest<'_, P> {
+impl<P: FactPayload> std::fmt::Debug for FactWrite<'_, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TypedFactIngest")
+        f.debug_struct("FactWrite")
             .field("source_id", &self.source_id)
             .field("schema_id", &P::SCHEMA_ID)
             .field("has_citation", &self.citation.is_some())
-            .field("derived_from", &self.derived_from.len())
+            .field("owner", &self.owner)
+            .field("refs", &self.refs.len())
             .finish_non_exhaustive()
     }
 }
 
-impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
+impl<'a, P: FactPayload> FactWrite<'a, P> {
     /// Typed sidecar Fact from `source_id`. Observe now unless the
     /// caller overrides.
     ///
@@ -57,13 +55,13 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
     /// the first and refuses the second, so this builder cannot produce
     /// the refusable state — [`Self::lexical_language`] overrides it.
     #[must_use]
-    pub fn new(source_id: &'a str, payload: &'a P) -> Self {
+    pub fn new(owner: Owner, source_id: &'a str, payload: &'a P) -> Self {
         Self {
+            owner,
             source_id,
             payload,
             observed_at: None,
             citation: None,
-            derived_from: Vec::new(),
             handle: None,
             lexical_language: Some(
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
@@ -86,16 +84,9 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
         self
     }
 
-    /// What this Fact was made from (`origin` rows in the same write).
-    #[must_use]
-    pub fn derived_from(mut self, origins: impl IntoIterator<Item = EdgeEndpoint>) -> Self {
-        self.derived_from = origins.into_iter().collect();
-        self
-    }
-
     /// Reuse this series handle. Unset ⇒ NK lookup, then mint.
     #[must_use]
-    pub const fn handle(mut self, handle: uuid::Uuid) -> Self {
+    pub const fn handle(mut self, handle: crate::SeriesHandle) -> Self {
         self.handle = Some(handle);
         self
     }
@@ -109,8 +100,8 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
 
     /// Observation-neutral reference pins (write-act, visit).
     #[must_use]
-    pub fn refs(mut self, refs: impl IntoIterator<Item = uuid::Uuid>) -> Self {
-        self.refs = refs.into_iter().collect();
+    pub fn refs(mut self, refs: impl IntoIterator<Item = MemoryId>) -> Self {
+        self.refs.extend(refs);
         self
     }
 }
@@ -118,9 +109,10 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
 /// One transaction the Engine can attach several authorized writes to.
 /// Drop without [`Self::commit`] rolls the transaction back.
 ///
-/// The transaction is not opened by [`Engine::unit_of_work`]. Authorization,
-/// natural-key lookup, and embedding run against the pool (or the embed
-/// client) first; [`crate::storage_ports::WriteSessionFactory::begin`] happens on the first
+/// The transaction is not opened by [`Engine::unit_of_work`]. Authorization
+/// and embedding run before persistence; automatic natural-key selection
+/// runs inside the storage transaction.
+/// [`crate::storage_ports::WriteSessionFactory::begin`] happens on the first
 /// write, advisory lock, or forget. A multi-derived batch
 /// ([`Self::derive_memories`]) embeds every text before that begin, so
 /// a file of N chunks does not hold a pool slot across N provider RTTs.
@@ -135,6 +127,8 @@ pub struct UnitOfWork<'a> {
     /// Session-visible `(t, kind)` pairs. A declaration must still agree
     /// with the kind of a row written earlier in this transaction.
     written_kinds: Vec<(MemoryId, EntityKind)>,
+    /// Resolved destinations, for owner-constrained pending Goal assignments.
+    written_owners: Vec<(MemoryId, Owner)>,
 }
 
 impl std::fmt::Debug for UnitOfWork<'_> {
@@ -166,42 +160,21 @@ impl Engine {
             committed: false,
             written: Vec::new(),
             written_kinds: Vec::new(),
+            written_owners: Vec::new(),
         })
     }
 
-    /// One-shot Fact + typed sidecar: [`UnitOfWork`] of one, then commit.
+    /// Persist one typed observation and commit it atomically.
     ///
     /// # Errors
-    ///
-    /// Authorization, schema, or storage faults from the ingest.
-    pub async fn ingest_typed_fact<P>(
+    /// Returns authorization, schema, citation, reference, or storage errors.
+    pub async fn ingest_fact<P: FactPayload + Clone>(
         &self,
         authz: &AuthzContext,
-        source_id: &str,
-        payload: &P,
-    ) -> Result<FactIngestOutcome, ProtocolError>
-    where
-        P: FactPayload + Clone,
-    {
-        self.ingest_typed_fact_with(authz, TypedFactIngest::new(source_id, payload))
-            .await
-    }
-
-    /// One-shot Fact + typed sidecar with citation / origins.
-    ///
-    /// # Errors
-    ///
-    /// Authorization, schema, or storage faults from the ingest.
-    pub async fn ingest_typed_fact_with<P>(
-        &self,
-        authz: &AuthzContext,
-        spec: TypedFactIngest<'_, P>,
-    ) -> Result<FactIngestOutcome, ProtocolError>
-    where
-        P: FactPayload + Clone,
-    {
+        spec: FactWrite<'_, P>,
+    ) -> Result<FactIngestOutcome, ProtocolError> {
         let mut uow = self.unit_of_work(authz).await?;
-        let outcome = uow.ingest_typed(spec).await?;
+        let outcome = uow.ingest_fact(spec).await?;
         uow.commit().await?;
         Ok(outcome)
     }
@@ -382,61 +355,41 @@ impl UnitOfWork<'_> {
             .map_err(|err| ProtocolError::internal(err.to_string()))
     }
 
-    /// Authorize and persist one typed Fact + sidecar in this transaction.
+    /// Persist one typed observation in this transaction.
+    /// The destination is authorized before any natural-key lookup.
     ///
     /// # Errors
-    ///
-    /// Authorization, schema, or storage faults.
-    pub async fn ingest_fact<P>(
+    /// Returns authorization, schema, citation, reference, or storage errors.
+    pub async fn ingest_fact<P: FactPayload + Clone>(
         &mut self,
-        source_id: &str,
-        payload: &P,
-    ) -> Result<FactIngestOutcome, ProtocolError>
-    where
-        P: FactPayload + Clone,
-    {
-        self.ingest_typed(TypedFactIngest::new(source_id, payload))
-            .await
-    }
-
-    /// Authorize and persist one typed Fact with citation / origins.
-    ///
-    /// # Errors
-    ///
-    /// Authorization, schema, or storage faults.
-    pub async fn ingest_typed<P>(
-        &mut self,
-        spec: TypedFactIngest<'_, P>,
-    ) -> Result<FactIngestOutcome, ProtocolError>
-    where
-        P: FactPayload + Clone,
-    {
+        spec: FactWrite<'_, P>,
+    ) -> Result<FactIngestOutcome, ProtocolError> {
+        let permit = self
+            .engine
+            .authorize_write(self.authz, &spec.owner, Relation::Editor)
+            .await?;
         let observed_at = spec
             .observed_at
             .unwrap_or_else(time::OffsetDateTime::now_utc);
+        let references = self
+            .engine
+            .resolve_memory_targets(self.authz, &spec.refs, &self.written_kinds)
+            .await?;
         let mut draft = FactWriteCommand::from_payload(spec.source_id, spec.payload, observed_at)
-            .with_derived_from(spec.derived_from)
-            .with_handle(spec.handle);
+            .with_additional_references(references)
+            .with_handle(spec.handle.map(crate::SeriesHandle::into_inner));
         if let Some(citation) = spec.citation {
             draft = draft.with_citation(citation);
         }
-        if let Some(lexical_language) = spec.lexical_language {
-            draft = draft.with_lexical_language(Some(lexical_language));
-        }
-        if !spec.refs.is_empty() {
-            draft = draft.with_refs(spec.refs);
-        }
-        if draft.handle.is_none() {
-            let engine = self.engine;
-            let authz = self.authz;
-            draft.handle = owned_fact_series_handle(engine, authz, spec.payload).await?;
+        if let Some(language) = spec.lexical_language {
+            draft = draft.with_lexical_language(Some(language));
         }
         let sidecars = [SidecarPayload::fact(spec.payload.clone())];
         let authorized = self
             .engine
-            .authorize_fact_ingest_visible(
+            .authorize_fact_ingest_permitted_visible(
                 self.authz,
-                Relation::Editor,
+                permit,
                 draft,
                 &sidecars,
                 &self.written,
@@ -466,6 +419,8 @@ impl UnitOfWork<'_> {
             self.written.push(outcome.memory_id);
             self.written_kinds
                 .push((outcome.memory_id, EntityKind::Fact));
+            self.written_owners
+                .push((outcome.memory_id, *authorized.permit().owner()));
         }
         Ok(outcome)
     }
@@ -490,6 +445,8 @@ impl UnitOfWork<'_> {
         if !outcome.idempotent_replay {
             self.written.push(outcome.memory_id);
             self.written_kinds.push((outcome.memory_id, item.kind));
+            self.written_owners
+                .push((outcome.memory_id, *item.write_permit.owner()));
         }
         Ok(DerivedMemoryOutcome {
             memory_id: outcome.memory_id,
@@ -501,13 +458,30 @@ impl UnitOfWork<'_> {
 
     /// Authorize and persist one Goal create in this transaction.
     ///
-    /// `write_act_t` attaches this episode's write-act (`Goal.write_act_t`).
-    /// Replay of a bound Goal is rejected by the episode protocol, not here.
+    /// Uses the same typed request as [`Engine::create_goal`]. Earlier Memory
+    /// writes in this transaction can supply assignment and evidence targets.
     ///
     /// # Errors
     ///
     /// Authorization or storage faults.
-    pub async fn create_goal(
+    pub async fn create_goal<P>(
+        &mut self,
+        request: GoalCreateRequest<P>,
+    ) -> Result<GoalWriteOutcome, ProtocolError>
+    where
+        P: GoalPayload,
+    {
+        let permit = self
+            .engine
+            .authorize_write(self.authz, &request.owner, Relation::Editor)
+            .await?;
+        let request = self.engine.normalize_goal_request(request)?;
+        self.create_goal_payload_authorized(request, None, &permit)
+            .await
+    }
+
+    /// Internal episode/protocol adapter with an optional write-act fact.
+    pub(crate) async fn create_goal_from_payload_write(
         &mut self,
         req: super::GoalCreatePayloadWriteRequest,
         write_act_t: Option<MemoryId>,
@@ -516,10 +490,23 @@ impl UnitOfWork<'_> {
             .engine
             .authorize_write(self.authz, &req.owner, Relation::Editor)
             .await?;
-        let payload = self.engine.normalize_payload_write(req.payload.clone())?;
+        let req = super::GoalCreatePayloadWriteRequest {
+            payload: self.engine.normalize_payload_write(req.payload)?,
+            ..req
+        };
+        self.create_goal_payload_authorized(req, write_act_t, &permit)
+            .await
+    }
+
+    async fn create_goal_payload_authorized(
+        &mut self,
+        req: super::GoalCreatePayloadWriteRequest,
+        write_act_t: Option<MemoryId>,
+        permit: &super::pipeline::WritePermit,
+    ) -> Result<GoalWriteOutcome, ProtocolError> {
         let draft = GoalDraft::active_from_payload_write(
             *permit.owner(),
-            payload,
+            req.payload.clone(),
             req.topology.clone(),
             req.wake.clone(),
             req.authorship.clone(),
@@ -560,9 +547,15 @@ impl UnitOfWork<'_> {
                 &self.written,
             )
             .await?;
-        self.engine
-            .author_self_perspective_authorized(self.authz, req.author_self_perspective_id)
-            .await?;
+        self.validate_pending_goal_targets(&req, permit.owner())?;
+        if req
+            .author_self_perspective_id
+            .is_none_or(|id| !self.written.contains(&id))
+        {
+            self.engine
+                .author_self_perspective_authorized(self.authz, req.author_self_perspective_id)
+                .await?;
+        }
         self.engine
             .validate_wake_config_for_write(self.authz, req.wake.as_ref())
             .await?;
@@ -579,6 +572,55 @@ impl UnitOfWork<'_> {
                 )
             })?;
         Ok(outcome)
+    }
+
+    fn validate_pending_goal_targets(
+        &self,
+        req: &super::GoalCreatePayloadWriteRequest,
+        goal_owner: &Owner,
+    ) -> Result<(), ProtocolError> {
+        let assignment = req.topology.assignment().perspective_id();
+        if let Some((_, owner)) = self.written_owners.iter().find(|(id, _)| *id == assignment)
+            && owner != goal_owner
+        {
+            return Err(ProtocolError::forbidden(
+                super::pipeline::ENTRY_NOT_FOUND_MESSAGE,
+            ));
+        }
+        if let Some((_, kind)) = self.written_kinds.iter().find(|(id, _)| *id == assignment)
+            && *kind != EntityKind::Perspective
+        {
+            return Err(ProtocolError::invalid_argument(
+                "assignment",
+                "Goal assignment must reference a Perspective",
+            ));
+        }
+        for evidence in req.topology.evidence() {
+            if let Some((_, kind)) = self
+                .written_kinds
+                .iter()
+                .find(|(id, _)| *id == evidence.memory_id())
+                && !matches!(kind, EntityKind::Fact | EntityKind::Abstraction)
+            {
+                return Err(ProtocolError::invalid_argument(
+                    "evidence",
+                    "Goal evidence must reference a Fact or Abstraction",
+                ));
+            }
+        }
+        if let Some(id) = req.author_self_perspective_id
+            && let Some((_, kind)) = self
+                .written_kinds
+                .iter()
+                .find(|(written, _)| *written == id)
+            && *kind != EntityKind::Perspective
+        {
+            return Err(ProtocolError::invalid_argument(
+                "author_self_perspective_id",
+                "author self must reference a Perspective",
+            ));
+        }
+        Ok(())
     }
 
     /// Cool one owned memory `t` in this transaction.
@@ -627,28 +669,4 @@ impl Drop for UnitOfWork<'_> {
     fn drop(&mut self) {
         self.session.take();
     }
-}
-
-async fn owned_fact_series_handle<P: FactPayload>(
-    engine: &Engine,
-    authz: &AuthzContext,
-    payload: &P,
-) -> Result<Option<uuid::Uuid>, ProtocolError> {
-    let Some(table) = P::sidecar_table() else {
-        return Ok(None);
-    };
-    let columns = P::natural_key_columns();
-    if columns.is_empty() {
-        return Ok(None);
-    }
-    let owner = engine.single_write_owner_for(authz, Relation::Editor)?;
-    let atoms = SidecarAtom::bind_columns(payload, columns)
-        .map_err(|err| ProtocolError::invalid_argument("natural_key", err))?;
-    let binds = atoms
-        .iter()
-        .map(|(column, value)| (column.as_str(), value.clone()))
-        .collect::<Vec<_>>();
-    engine
-        .owned_series_handle(authz, owner, &P::schema_id(), table, &binds)
-        .await
 }

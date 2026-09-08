@@ -19,7 +19,7 @@ use super::memory::interpret::{
     reject_self_subject,
 };
 use super::memory::util::{dedup_resolved, normalize_idempotency_key, normalize_tags};
-use crate::engine::{GoalCreatePayloadWriteRequest, TypedFactIngest};
+use crate::engine::GoalCreatePayloadWriteRequest;
 use crate::error::ErrorCode;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
 use crate::memory::payloads::AgentNoteV1;
@@ -30,8 +30,8 @@ use crate::verbs::goal_write::{
     GoalAssignmentTarget, GoalEvidenceRef, GoalTopologyWrite, IdempotencyKey,
 };
 use crate::{
-    DerivationIdentity, DerivedMemory, EdgeEndpoint, InterpretationSubjectKind, InterpretationV1,
-    MemoryId, SeriesHandle, UnitOfWork,
+    DerivationIdentity, DerivedMemory, EdgeEndpoint, FactWrite, InterpretationSubjectKind,
+    InterpretationV1, MemoryId, SeriesHandle, UnitOfWork,
 };
 
 use bind::{BindSet, parse_bind, reject_duplicate_keys};
@@ -218,12 +218,13 @@ async fn episode_commit(
     let engine = ctx.require_engine()?;
     let mut uow = engine.unit_of_work(&authz).await?;
     let write_act = uow
-        .ingest_fact(
+        .ingest_fact(FactWrite::new(
+            space.owner,
             "core/episode-commit",
             &WriteActV1 {
                 episode_id: uuid::Uuid::now_v7(),
             },
-        )
+        ))
         .await?;
     let act_id = write_act.memory_id;
     let mut write = EpisodeWrite {
@@ -326,13 +327,13 @@ impl EpisodeWrite<'_> {
             // builder's default: an explicit request for the deployment
             // configuration, which is what an omitted `language` resolves to
             // on the standalone `core_remember` too.
-            let mut spec = TypedFactIngest::new("core/episode-remember", &payload);
+            let mut spec = FactWrite::new(self.owner, "core/episode-remember", &payload);
             if pin {
-                spec = spec.refs([act_id.into_inner()]);
+                spec = spec.refs([act_id]);
             }
             let outcome = self
                 .uow
-                .ingest_typed(spec)
+                .ingest_fact(spec)
                 .await
                 .map_err(|err| map_bound_fact_error(err, "remember", pin))?;
             reject_bound_replay(pin, outcome.idempotent_replay, "remember")?;
@@ -547,7 +548,7 @@ impl EpisodeWrite<'_> {
             let pin = bind.goal.contains(&idx);
             let outcome = self
                 .uow
-                .create_goal(
+                .create_goal_from_payload_write(
                     GoalCreatePayloadWriteRequest {
                         owner,
                         topology,
