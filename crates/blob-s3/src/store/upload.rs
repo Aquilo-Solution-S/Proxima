@@ -106,13 +106,24 @@ async fn read_hashed_object(
         .send()
         .await
         .map_err(|error| {
-            let status = error
-                .raw_response()
-                .map(|response| response.status().as_u16());
-            if status == Some(404)
-                || error
-                    .as_service_error()
-                    .is_some_and(aws_sdk_s3::operation::get_object::GetObjectError::is_no_such_key)
+            let response = error.raw_response();
+            let status = response.map(|response| response.status().as_u16());
+            let service = error.as_service_error();
+            let code = service.and_then(|service| service.meta().code());
+            // The SDK synthesizes NotFound for an empty HTTP 404 body.
+            // An explicit XML NotFound code must not use that exception.
+            let code_less = code.is_none()
+                || (code == Some("NotFound")
+                    && response
+                        .and_then(|response| response.body().bytes())
+                        .is_some_and(<[u8]>::is_empty));
+            // An explicit S3 code takes precedence: NoSuchBucket also uses
+            // HTTP 404, but is a provider fault. Keep the existing fallback
+            // for code-less 404 responses as limited compatibility behavior,
+            // not a claim that supported providers require it.
+            if service
+                .is_some_and(aws_sdk_s3::operation::get_object::GetObjectError::is_no_such_key)
+                || (status == Some(404) && code_less)
             {
                 ObjectReadError::Missing
             } else {
@@ -1118,6 +1129,10 @@ async fn complete_terminal_upload(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "upload_read_tests.rs"]
+mod read_classification_tests;
 
 #[cfg(test)]
 mod conditional_publication_tests {
