@@ -167,17 +167,28 @@ impl OpenAiEmbeddingResponse {
         }
 
         let expected = caps.dim as usize;
+        // Preserve shape-error precedence across the entire batch before
+        // examining components. Valid JSON numbers can overflow f32 while
+        // deserializing, even though NaN/Infinity are not JSON number tokens.
+        for datum in &data {
+            if datum.embedding.len() != expected {
+                return Err(LlmError::Embed(format!(
+                    "expected dim {} (matryoshka={}), got {}",
+                    expected,
+                    caps.matryoshka,
+                    datum.embedding.len()
+                )));
+            }
+        }
         data.into_iter()
-            .map(|datum| {
-                if datum.embedding.len() == expected {
-                    Ok(datum.embedding)
-                } else {
+            .enumerate()
+            .map(|(embedding_index, datum)| {
+                if let Some(component_index) = datum.embedding.iter().position(|value| !value.is_finite()) {
                     Err(LlmError::Embed(format!(
-                        "expected dim {} (matryoshka={}), got {}",
-                        expected,
-                        caps.matryoshka,
-                        datum.embedding.len()
+                        "embedding {embedding_index} has non-finite component at position {component_index}"
                     )))
+                } else {
+                    Ok(datum.embedding)
                 }
             })
             .collect()
@@ -421,6 +432,112 @@ mod tests {
             ]),
         ] {
             assert!(matches!(decode_vectors(data, 2), Err(LlmError::Embed(_))));
+        }
+    }
+
+    fn decode_raw_vectors(body: &str, expected_count: usize) -> Result<Vec<Vec<f32>>, LlmError> {
+        let response: super::OpenAiEmbeddingResponse = serde_json::from_str(body)
+            .map_err(|err| LlmError::Embed(format!("decode response: {err}")))?;
+        response.into_embeddings(expected_count, EmbedCaps::new(2, false))
+    }
+
+    #[test]
+    fn response_rejects_float32_overflow() {
+        // Use wire JSON, not json!: finite f64 values can overflow when
+        // deserialized into the response's f32 components.
+        for (body, expected) in [
+            (
+                r#"{"data":[{"index":0,"embedding":[1.0,-0.5]}]}"#,
+                [1.0_f32, -0.5],
+            ),
+            (r#"{"data":[{"embedding":[0.0,0.0]}]}"#, [0.0, 0.0]),
+            (
+                r#"{"data":[{"embedding":[3.4028234e38,-3.4028234e38]}]}"#,
+                [f32::MAX, -f32::MAX],
+            ),
+            (
+                r#"{"data":[{"embedding":[-0.0,1e-45]}]}"#,
+                [-0.0, f32::from_bits(1)],
+            ),
+        ] {
+            let vectors = decode_raw_vectors(body, 1).expect("finite response remains valid");
+            assert_eq!(vectors.len(), 1);
+            assert_eq!(vectors[0].len(), 2);
+            assert!(vectors[0].iter().all(|value| value.is_finite()));
+            assert_eq!(
+                vectors[0]
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                expected.map(f32::to_bits),
+                "accepted values are not normalized, clamped or rewritten",
+            );
+        }
+        for (body, count) in [
+            (r#"{"data":[{"embedding":[1.0]}]}"#, 1),
+            (r#"{"data":[{"embedding":[1.0,0.0]}]}"#, 2),
+        ] {
+            assert!(matches!(
+                decode_raw_vectors(body, count),
+                Err(LlmError::Embed(_))
+            ));
+        }
+        let observed: Vec<_> = ["1e39", "-1e39", "1e100", "-1e100"]
+            .into_iter()
+            .map(|number| {
+                let body = format!(r#"{{"data":[{{"index":0,"embedding":[{number},0.0]}}]}}"#);
+                (number, decode_raw_vectors(&body, 1))
+            })
+            .collect();
+        for (number, result) in observed {
+            assert!(
+                matches!(result, Err(LlmError::Embed(_))),
+                "out-of-range component {number} must be a retryable malformed response: {result:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn response_checks_later_vectors_and_components() {
+        // The invalid component is last in the second logical vector, even
+        // when the provider returns the indexed batch in reverse order.
+        for body in [
+            r#"{"data":[{"embedding":[1.0,0.0]},{"embedding":[0.0,1e39]}]}"#,
+            r#"{"data":[{"index":1,"embedding":[0.0,-1e39]},{"index":0,"embedding":[1.0,0.0]}]}"#,
+        ] {
+            let result = decode_raw_vectors(body, 2);
+            assert!(
+                matches!(result, Err(LlmError::Embed(ref message))
+                    if message == "embedding 1 has non-finite component at position 1"),
+                "later invalid values must reject the whole batch with bounded context: {result:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn response_shape_errors_precede_non_finite_components() {
+        for (body, count, expected_error) in [
+            (
+                r#"{"data":[{"index":7,"embedding":[1e39,0.0]}]}"#,
+                2,
+                "requested 2 embeddings, response carried 1",
+            ),
+            (
+                r#"{"data":[{"index":0,"embedding":[1e39,0.0]},{"index":0,"embedding":[1.0]}]}"#,
+                2,
+                "invalid embedding response index",
+            ),
+            (
+                r#"{"data":[{"index":0,"embedding":[1e39,0.0]},{"index":1,"embedding":[1.0]}]}"#,
+                2,
+                "expected dim 2 (matryoshka=false), got 1",
+            ),
+        ] {
+            let result = decode_raw_vectors(body, count);
+            assert!(
+                matches!(result, Err(LlmError::Embed(ref message)) if message.starts_with(expected_error)),
+                "existing shape error takes precedence over overflow: {result:?}",
+            );
         }
     }
 
@@ -909,6 +1026,50 @@ mod redirect_tests {
                 format!("POST {expected_target} HTTP/1.1"),
             );
         }
+    }
+
+    #[tokio::test]
+    async fn successful_http_response_with_overflow_is_retryable() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
+        let addr = listener.local_addr().expect("server address");
+        let request_task = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(5), async move {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let request = read_request(&mut stream).await;
+                let body = r#"{"data":[{"index":0,"embedding":[0.0,1e39]}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("respond");
+                request
+            })
+            .await
+            .expect("local response completes")
+        });
+        let mut client = OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            EmbedCaps::new(2, false),
+            OpenAiCompatConfig::new(format!("http://{addr}/v1"), None),
+        )
+        .expect("loopback embedding endpoint");
+        client.client = crate::build_http_client(
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .no_proxy(),
+        )
+        .expect("test client with production response handling");
+        let result = client.embed("test text").await;
+        let request = request_task.await.expect("request captured");
+        assert!(request.starts_with("POST /v1/embeddings HTTP/1.1\r\n"));
+        assert!(
+            matches!(result, Err(LlmError::Embed(ref message))
+                if message == "embedding 0 has non-finite component at position 1"),
+            "HTTP success must not accept an invalid vector: {result:?}",
+        );
     }
 
     #[tokio::test]
