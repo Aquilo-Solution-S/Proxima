@@ -18,6 +18,9 @@ use uuid::Uuid;
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+#[path = "change_event_watermark_pg/lifecycle.rs"]
+mod lifecycle;
+
 struct Fixture {
     db_name: String,
     pg: PgStorage,
