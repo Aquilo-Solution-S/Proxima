@@ -104,7 +104,15 @@ pub async fn list_facts_missing_embedding(
     let owner_id = owner.stored_owner_id();
     let limit = i64::try_from(limit)
         .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
-    missing_embedding_ids(pool, owner_id, model_id, limit, non_embeddable_schemas).await
+    missing_embedding_ids(
+        pool,
+        owner_id,
+        model_id,
+        limit,
+        non_embeddable_schemas,
+        false,
+    )
+    .await
 }
 
 async fn missing_embedding_ids(
@@ -113,6 +121,7 @@ async fn missing_embedding_ids(
     model_id: &str,
     limit: i64,
     non_embeddable_schemas: &[String],
+    exclude_existing_jobs: bool,
 ) -> Result<Vec<MemoryId>, StorageError> {
     // Chunks are memory rows. A second arm against code_chunk_v1 is a subset of
     // this anti-join and duplicates t.
@@ -126,6 +135,12 @@ async fn missing_embedding_ids(
                 SELECT 1 FROM proxima_core.embedding_heads eh
                  WHERE eh.entity_id = m.t AND eh.model_id = $2
             )
+            AND (NOT $5::boolean OR NOT EXISTS (
+                SELECT 1 FROM proxima_core.embedding_jobs j
+                 WHERE j.owner_id = m.owner_id
+                   AND j.entity_id = m.t
+                   AND j.model_id = $2
+            ))
           ORDER BY m.t ASC
           LIMIT $3",
     )
@@ -133,6 +148,7 @@ async fn missing_embedding_ids(
     .bind(model_id)
     .bind(limit)
     .bind(non_embeddable_schemas)
+    .bind(exclude_existing_jobs)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
@@ -454,8 +470,17 @@ pub async fn enqueue_missing_embedding_jobs(
         return Ok(0);
     }
     let owner_id = permit.owner().stored_owner_id();
-    let ids =
-        missing_embedding_ids(pool, owner_id, model_id, limit, non_embeddable_schemas).await?;
+    // Existing jobs are already accounted for, regardless of their status.
+    // Exclude them before limiting so they cannot hide later missing work.
+    let ids = missing_embedding_ids(
+        pool,
+        owner_id,
+        model_id,
+        limit,
+        non_embeddable_schemas,
+        true,
+    )
+    .await?;
     if ids.is_empty() {
         return Ok(0);
     }
