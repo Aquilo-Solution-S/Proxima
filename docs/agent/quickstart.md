@@ -5,7 +5,8 @@
 1. Recall: search before architectural/debugging work.
 2. Act: use normal coding tools.
 3. Remember: store durable observations with `core_remember`.
-4. Abstract: use `core_derive` for lessons/patterns over Facts.
+4. Abstract: use `core_derive` over a nonempty set of Facts or prior
+   Abstractions; keep one input layer per call.
 5. Interpret: use `core_interpret` when the claim is a judgment about memories
    that already exist.
 6. Reflect: update Perspective only when stance changes.

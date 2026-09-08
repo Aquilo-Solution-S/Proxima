@@ -41,8 +41,11 @@ removed in v0.0.8, and `source_batch_id` after v0.0.9. The gate on
 
 - one memory layer per operator invocation — every `source_handles`
   entry resolves to the same layer, else `InvalidArgument`;
-- no Perspective from Facts and no derivation from Perspectives, else
+- no derived Perspective from Fact origins and no derivation from Perspectives, else
   `LayeringViolation`.
+
+`core_interpret` instead authors an origin-free Perspective with references to
+Fact, Abstraction, or Perspective subjects (see 02 §The Layering Principle).
 
 Domain metadata belongs on `CitedObject` / `CitationMapping` sidecars.
 

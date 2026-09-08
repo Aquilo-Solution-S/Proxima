@@ -36,6 +36,7 @@ nav:
       - Operate (Day-2): how-to/operate.md
       - Troubleshooting: how-to/troubleshoot.md
       - Migration Policy: how-to/migrations.md
+      - Rust SDK Upgrade: how-to/migrate-flavor-sdk.md
   - Reference:
       - Architecture: reference/architecture.md
       - Public API: reference/public-api.md

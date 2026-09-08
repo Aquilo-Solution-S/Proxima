@@ -30,6 +30,14 @@ jobs:
         with:
           # git-cliff needs full history + tags to compute the current release.
           fetch-depth: 0
+      - name: verify release version
+        shell: bash
+        run: |
+          expected_tag="$(sed -n 's/^pub const RELEASE_VERSION: &str = "\([^"]*\)";$/v\1/p' crates/core/src/lib.rs)"
+          if [[ -z "$expected_tag" || "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+            printf '::error::Tag %s does not match RELEASE_VERSION (%s)\n' "$GITHUB_REF_NAME" "$expected_tag"
+            exit 1
+          fi
       - name: install git-cliff
         # taiki-e/install-action@v2
         uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419

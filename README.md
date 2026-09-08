@@ -14,8 +14,9 @@ model loop.
 
 Identity is timeseries: `(handle, t)`. `handle` is the series. `t` is this
 version (uuidv7, the row id). There is no Edge table — pins live on the
-node (`origins[]` / `refs[]`). Schema is hard-cut
-`crates/storage-pg/migrations/0001_v008.sql`.
+node (`origins[]` / `refs[]`). The frozen schema baseline is
+`crates/storage-pg/migrations/0001_v008.sql`; later additive migrations upgrade
+existing databases in place (see [migration policy](docs/how-to/migrations.md)).
 
 ## Use Proxima When
 
@@ -120,9 +121,9 @@ Agent setup and prompts: [docs/getting-started/connect-agent.md](docs/getting-st
 
 | Kind | What | Produced by |
 |---|---|---|
-| Fact | Admitted observation. Never revised. | FactIngest |
-| Abstraction | Re-derivable interpretation over Facts. | F→A |
-| Perspective | Re-derivable integration over Abstractions. | A→P |
+| Fact | Immutable admitted observation. | FactIngest |
+| Abstraction | Derived conclusion over Facts or prior Abstractions. | F→A / A→A |
+| Perspective | Derived stance or interpretation of referenced memories. | A→P / Interpretation |
 | Goal | Desired end-state. Lifecycle is supersession. | GoalWrite |
 
 Self is a query, not a row. Citation is Fact ∪ Abstraction only.

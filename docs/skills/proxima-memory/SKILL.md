@@ -67,15 +67,15 @@ core_interpret(claim="the outage followed the deploy", confidence=80,
 
 It returns a `P:` handle. A reason and a confidence are a judgment, and a
 judgment is a Perspective; its subjects become that Perspective's own
-references. A Fact never interprets — layering refuses a Fact as an
-interpretation source.
+references. Subjects may be Facts, Abstractions, or Perspectives. The
+interpretation is the new Perspective; it declares references, not origins.
 
 ## What to capture → which tool
 
 | You want to… | Use |
 |---|---|
 | Record an observation / something that happened / a fact you learned | `core_remember` → Fact |
-| Capture a recurring pattern, generalization, or lesson across ≥2 Facts | `core_derive` kind=**Abstraction**, `source_handles`=those Facts |
+| Derive a conclusion from Facts or prior Abstractions | `core_derive` kind=**Abstraction**, `source_handles`=a nonempty set from one input layer |
 | Record or update a stance or self-model ("how I see X", "who I am") | `core_derive` kind=**Perspective** |
 | **Relate / connect memories** | derive an Abstraction/Perspective over them — there is **no** connect verb |
 | Claim what existing memories mean, with a confidence | `core_interpret` → interpretation Perspective |
