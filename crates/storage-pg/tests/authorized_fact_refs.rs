@@ -467,7 +467,7 @@ async fn authorized_links_are_persisted_by_engine_uow() {
             vec![goal.into_inner()]
         );
 
-        let mut snapshot_req = QueryRequest::for_owner(owner);
+        let mut snapshot_req = QueryRequest::readable();
         snapshot_req.memory_ids = vec![pool_typed.memory_id];
         snapshot_req.goal_ids = vec![goal];
         let snapshot = engine.query(&authz, &snapshot_req).await?;
@@ -489,7 +489,7 @@ async fn authorized_links_are_persisted_by_engine_uow() {
                 )
         }));
 
-        let mut fact_only = QueryRequest::for_owner(owner);
+        let mut fact_only = QueryRequest::readable();
         fact_only.entity_kind = Some(EntityKind::Fact);
         fact_only.memory_ids = vec![pool_typed.memory_id];
         let fact_snapshot = engine.query(&authz, &fact_only).await?;
@@ -505,7 +505,6 @@ async fn authorized_links_are_persisted_by_engine_uow() {
             .read_edges(
                 &authz,
                 &EdgeReadRequest {
-                    owner,
                     filter: EdgeFilter {
                         kind: Some(EdgeKind::Reference),
                         source: Some(EntityRef::Memory(pool_typed.memory_id)),
@@ -530,7 +529,6 @@ async fn authorized_links_are_persisted_by_engine_uow() {
             .read_edges(
                 &authz,
                 &EdgeReadRequest {
-                    owner,
                     filter: EdgeFilter {
                         kind: Some(EdgeKind::Reference),
                         source: None,

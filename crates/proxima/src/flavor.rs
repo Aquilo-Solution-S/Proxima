@@ -44,44 +44,14 @@ pub use proxima_core::flavor::{
     TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, TSVECTOR_WEIGHT_CLASSES, ToolContract,
     TransferLeg, TransferRule, WEIGHT_UNIFORM, WeightedField,
 };
-/// MCP tool-authoring surface: implement [`McpTool`] with typed
-/// [`McpToolCtx`] / [`McpToolError`] instead of reaching into
-/// `proxima_core::mcp`. Mirrors what `docs/tutorials/add-first-mcp-tool.md`
-/// imports.
-///
-/// [`FlavorServices`] is the seam for dependencies core cannot name. Each
-/// linked [`FlavorApp`](crate::FlavorApp) contributes a typed set once; the
-/// runtime rejects duplicate concrete types and shares the result with MCP,
-/// REST, and flavor workers. Generic tools resolve one with
-/// `ctx.service::<MyService>()`.
-///
-/// [`McpPresentationExt`] is how a flavor implementing the transport-neutral
-/// [`Tool`] trait mints and parses MCP wire references (`F:`/`A:`/`P:`/`G:`
-/// prefixed uuids — there is no edge prefix, because an edge has no id).
-/// [`McpToolCtx`] carries those as inherent methods,
-/// but [`Tool`] is handed a [`ToolCtx`], which deliberately knows nothing
-/// about the wire; importing this trait is the sanctioned bridge. Without
-/// it a flavor would reimplement the same forwarding over
-/// [`McpToolPresentation`].
+/// Tool metadata and the MCP reference presentation bridge.
+/// Implement [`Tool`] with [`ToolCtx`] / [`ToolError`]; MCP and REST adapt it.
+/// Import [`McpPresentationExt`] to format and parse MCP references on `ToolCtx`.
+/// Resolve dependencies with `ctx.service::<T>()` and model labels with
+/// [`ToolCtx::operator_label`]. The authenticated model identity takes precedence.
 pub use proxima_core::mcp::{
-    McpActionArgSpec, McpAuthorContext, McpPresentationExt, McpTool, McpToolAnnotations,
-    McpToolCtx, McpToolError, McpToolErrorKind, McpToolPresentation,
+    McpActionArgSpec, McpAuthorContext, McpPresentationExt, McpToolAnnotations,
 };
-/// Resolves the operator label a write is recorded under, for a tool
-/// written against [`McpTool`] — the [`ToolCtx`] spelling, and the one a
-/// transport-neutral [`Tool`] must use, is
-/// [`ToolCtx::operator_label`](proxima_core::ToolCtx::operator_label).
-/// Both call the same resolver.
-///
-/// A flavor tool that accepts its own `model_id` argument has to go
-/// through one of them. Reading the caller's label directly would silently
-/// let a caller-supplied value outrank a model identity the authenticated
-/// token binds: the transport edges only ever inspect a *top-level*
-/// `model_id`, so a nested or per-item one — and every argument arriving
-/// through the embedded host API, which passes no edge at all — reaches the
-/// tool untouched. This is where the bound identity wins, a differing claim
-/// becomes [`McpToolError::InvalidInput`], and the length bound is applied.
-pub use proxima_core::operator_label;
 /// Host-wired cited-blob lane, resolved by tools and workers from
 /// [`FlavorServices`]. Present only when the host configured S3; the concrete
 /// backend (`proxima-blob-s3`) is never named across this seam.

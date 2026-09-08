@@ -2170,7 +2170,6 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
         let group = GroupId::new(Uuid::now_v7());
         let group_owner = OwnerRef::Group(group);
         let member = UserId::new(Uuid::now_v7());
-        let member_owner = OwnerRef::Personal(member);
         let built = Proxima::<EmptyApp>::app()
             .database_url(db_url)
             .owner(owner)
@@ -2246,7 +2245,6 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
         let visible = proxima::flavor::authorized_memory_ids(
             &built.engine,
             &member_authz,
-            member_owner,
             &[memory_id],
             proxima_core::verbs::query::EntityKind::Fact,
             None,
@@ -2266,7 +2264,6 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
         let hidden = proxima::flavor::authorized_memory_ids(
             &built.engine,
             &stranger_authz,
-            OwnerRef::Personal(stranger),
             &[memory_id],
             proxima_core::verbs::query::EntityKind::Fact,
             None,

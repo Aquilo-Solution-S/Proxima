@@ -231,8 +231,6 @@ async fn heads_only_returns_latest_per_natural_key() {
         // every revision of one path on one handle at ingest, so the head
         // scan needs no per-schema filter.
         let req = QueryRequest {
-            owner,
-            read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -277,8 +275,6 @@ async fn heads_only_returns_latest_per_natural_key() {
 
         // IncludeSuperseded — all 4 rows visible.
         let req_all = QueryRequest {
-            owner,
-            read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
@@ -342,8 +338,6 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
         }
 
         let req = QueryRequest {
-            owner,
-            read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(StatelessFactV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -413,8 +407,6 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
         .await?;
 
         let req = QueryRequest {
-            owner: OwnerRef::Personal(user),
-            read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -490,7 +482,7 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
             Some(a_v1.handle),
         )
         .await?;
-        let mut req = QueryRequest::for_owner(owner);
+        let mut req = QueryRequest::readable();
         req.limit = 100;
         let resp = engine
             .query(
@@ -550,7 +542,7 @@ async fn later_t_is_head_even_when_sidecar_state_is_tombstone() {
         )
         .await?;
 
-        let mut req = QueryRequest::for_owner(owner);
+        let mut req = QueryRequest::readable();
         req.schema_id = Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into()));
         req.limit = 100;
         let resp = engine.query(&authz, &req).await?;

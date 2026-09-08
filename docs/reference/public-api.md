@@ -5,6 +5,8 @@
 Workspace packages currently set `publish = false`; consume from git tags or
 repo checkouts unless release notes say crates.io publishing is available.
 
+Rust upgrade mapping: [Migrate the Flavor SDK](../how-to/migrate-flavor-sdk.md).
+
 ## Typed Consumer Operations
 
 Import requests from `proxima::flavor` and `Engine` / `AuthzContext` from `proxima`.
@@ -43,8 +45,7 @@ Supported Rust tiers:
 | Host API (REST OpenAPI) | `use proxima::host::build_openapi_document;` | build the complete registry document with the same generator as `/v1/openapi.json` without depending on `proxima-mcp-server` internals; requires feature `rest` |
 | Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorContract, SchemaContract, Surface, FactPayload, pg_sidecar, InlineCitedObjectDraft, InlineCitationMappingDraft, CitationAttachmentRequest};` | build-time schemas, complete contract declarations, payload references, tools, sidecars. Typed citation drafts and the citation-attachment request + `AuthorizedFactWithCitation{,Ref}` are nameable here; `Engine` stays Host API |
 | Flavor SDK (services) | `use proxima::flavor::{FlavorServices, FlavorServiceError};` | return typed services from `FlavorApp::services`; tuple composition rejects duplicate concrete types and shares one set with MCP, REST, and workers |
-| Flavor SDK (generic tools) | `use proxima::flavor::{Tool, ToolCtx, ToolCaller, ToolError};` | author transport-neutral tools; MCP and REST populate optional caller provenance directly on `ToolCtx` |
-| Flavor SDK (MCP tools) | `use proxima::flavor::{McpTool, McpToolCtx, McpToolError, McpToolErrorKind, McpToolAnnotations, McpActionArgSpec, McpAuthorContext};` | author flavor MCP tools without reaching into `proxima_core::mcp` — see [add-first-mcp-tool](../tutorials/add-first-mcp-tool.md) |
+| Flavor SDK (tools) | `use proxima::flavor::{Tool, ToolCtx, ToolCaller, ToolError};` | author transport-neutral tools; MCP and REST populate optional caller provenance directly on `ToolCtx` |
 | Flavor SDK (authorized reads) | `use proxima::flavor::{authorized_memory_ids, authorized_fact_payloads, authorized_abstraction_payloads, SidecarAtom, QueryRequest, hybrid_degraded_to_lexical};` | typed, authz-filtered candidate/payload reads — see [Authorized Flavor-Read Facade](#authorized-flavor-read-facade) below. `Engine` is Host API (`use proxima::Engine`). Code-series `&PgPool` helpers live in `flavors/code`, not this SDK. |
 | Flavor SDK (outbound endpoints) | `use proxima::flavor::{validate_endpoint_url, EndpointUrlPolicy};` | enforce HTTPS with the shared, exact loopback-only plaintext exception; never reproduce it with string prefixes |
 
@@ -190,6 +191,13 @@ Consumer lockstep check:
 
 `cargo test -p proxima --test registry_conformance` proves the hosted-app and
 embedded-consumer registration paths produce the same deterministic dump.
+
+## Read Selection
+
+`QueryRequest::readable()` searches the caller's complete authorized owner set.
+It accepts kind/schema/history/cursor/ID filters and has no owner selector.
+For known IDs, use `Engine::get_memory` / `get_memories`; absent and unreadable
+rows have the same response. `Engine::search` retains its explicit corpus owner.
 
 ## Authorized Flavor-Read Facade
 

@@ -21,6 +21,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 
     async fn query_memories(
         &self,
+        _read_owners: &[OwnerRef],
         _req: &crate::verbs::query::QueryRequest,
         _schemas: &[crate::read_models::MemorySchemaSpec],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError> {
@@ -194,7 +195,7 @@ async fn query_helper_accepts_only_query_read_handles() {
         memory_read: read,
     };
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
-    let req = crate::verbs::query::QueryRequest::for_owner(owner);
+    let req = crate::verbs::query::QueryRequest::readable();
 
     let response = super::query::query_authorized(&ports, &[], &[owner], &req)
         .await

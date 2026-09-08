@@ -128,6 +128,7 @@ pub trait MemoryReadPort: Send + Sync {
 
     async fn query_memories(
         &self,
+        read_owners: &[OwnerRef],
         req: &crate::verbs::query::QueryRequest,
         schemas: &[MemorySchemaSpec],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;

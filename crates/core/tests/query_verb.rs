@@ -1,11 +1,10 @@
+use proxima_core::MemoryId;
 use proxima_core::verbs::query::{QueryCursor, QueryPage, QueryRequest, SupersessionStatus};
-use proxima_core::{MemoryId, Owner, UserId};
 use uuid::Uuid;
 
 #[test]
 fn query_request_defaults_to_heads_only_without_dead_tombstone_axis() {
-    let owner = Owner::Personal(UserId::new(Uuid::now_v7()));
-    let req = QueryRequest::for_owner(owner);
+    let req = QueryRequest::readable();
     assert_eq!(req.supersession, SupersessionStatus::HeadsOnly);
     assert!(
         !serde_json::to_value(&req)
@@ -21,8 +20,7 @@ fn query_request_defaults_to_heads_only_without_dead_tombstone_axis() {
 
 #[test]
 fn query_request_deserializes_missing_page_as_default() {
-    let owner = Owner::Personal(UserId::new(Uuid::now_v7()));
-    let req = QueryRequest::for_owner(owner);
+    let req = QueryRequest::readable();
     let mut value = serde_json::to_value(&req).expect("QueryRequest serializes");
     value
         .as_object_mut()

@@ -71,7 +71,7 @@ fn host_and_flavor_sdk_imports_are_separate_and_compile() {
 // `docs/tutorials/add-first-mcp-tool.md`.
 mod mcp_tool_authoring {
     use futures::future::BoxFuture;
-    use proxima::flavor::{McpTool, McpToolCtx, McpToolError};
+    use proxima::flavor::{Tool, ToolCtx, ToolError};
 
     #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
     struct ExampleLookupArgs {
@@ -85,7 +85,7 @@ mod mcp_tool_authoring {
 
     struct ExampleLookupTool;
 
-    impl McpTool for ExampleLookupTool {
+    impl Tool for ExampleLookupTool {
         const NAME: &'static str = "conformance_lookup";
         const DESCRIPTION: &'static str = "Look up a conformance example row.";
 
@@ -93,11 +93,11 @@ mod mcp_tool_authoring {
         type Output = ExampleLookupOutput;
 
         fn call(
-            ctx: McpToolCtx,
+            ctx: ToolCtx,
             args: Self::Args,
-        ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
+        ) -> BoxFuture<'static, Result<Self::Output, ToolError>> {
             Box::pin(async move {
-                let _ = (ctx.owner, args.external_id);
+                let _ = (ctx.owner(), args.external_id);
                 Ok(ExampleLookupOutput { found: false })
             })
         }
@@ -105,7 +105,7 @@ mod mcp_tool_authoring {
 
     #[test]
     fn flavor_module_exposes_mcp_tool_authoring_surface() {
-        fn assert_mcp_tool<T: McpTool>() {}
+        fn assert_mcp_tool<T: Tool>() {}
         assert_mcp_tool::<ExampleLookupTool>();
         assert_eq!(ExampleLookupTool::NAME, "conformance_lookup");
     }
@@ -115,7 +115,8 @@ mod mcp_tool_authoring {
 /// into `McpToolError` via `From`.
 #[test]
 fn the_zero_page_bound_rule_is_reachable_from_the_sdk() {
-    use proxima::flavor::{McpToolError, ToolError, reject_zero_limit};
+    use proxima::flavor::{ToolError, reject_zero_limit};
+    use proxima::host::McpToolError;
 
     fn flavor_tool_body(limit: Option<u32>) -> Result<u32, ToolError> {
         reject_zero_limit(limit)?;
@@ -152,10 +153,8 @@ fn the_zero_page_bound_rule_is_reachable_from_the_sdk() {
 /// [`Tool`]: proxima::flavor::Tool
 #[test]
 fn wire_references_round_trip_through_a_transport_neutral_tool_ctx() {
-    use proxima::flavor::{
-        McpPresentationExt, McpToolPresentation, ToolCaller, ToolCtx, ToolServices,
-    };
-    use proxima::host::{AuthPath, AuthzContext, MemoryId, Owner, UserId};
+    use proxima::flavor::{McpPresentationExt, ToolCaller, ToolCtx, ToolServices};
+    use proxima::host::{AuthPath, AuthzContext, McpToolPresentation, MemoryId, Owner, UserId};
 
     let registry = std::sync::Arc::new(FlavorRegistry::new().try_freeze().unwrap());
     let owner = Owner::Personal(UserId::new(Uuid::now_v7()));

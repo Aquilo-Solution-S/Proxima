@@ -29,10 +29,9 @@ impl Engine {
     /// docs/14 §"Query" — scoped to the authorization context's read access
     /// set (`S_read`). Caller passes the transport-extracted authorization
     /// context; the engine resolves the readable owners from it and filters
-    /// results to `row owner ∈ S_read`. A client-supplied
-    /// [`QueryRequest::owner`] is NOT an access vector — it can never widen
-    /// what the caller sees (writes/admin reject a foreign owner; reads simply
-    /// return the caller's accessible subset).
+    /// results to `row owner ∈ S_read`.
+    /// The request carries filters only; the engine supplies the complete
+    /// readable owner set resolved from `authz` to storage.
     ///
     /// Heads-only requests need no per-schema natural-key filter: a head
     /// is the latest `t` on a `handle`, and `FactPayload`
@@ -99,8 +98,7 @@ impl Engine {
 
     /// Edge existence probe scoped to the context's read set (`S_read`), same
     /// source-owned visibility as `read_edges`: existence is disclosed only for
-    /// edges whose source is readable (a client `req.owner` is not an access
-    /// vector).
+    /// edges whose source is readable.
     ///
     /// # Errors
     ///
@@ -115,7 +113,7 @@ impl Engine {
         edge_exists_authorized(&self.storage.query, &read_owners, req).await
     }
 
-    /// Owner-scoped Provenance/Supersession lineage walk from one memory.
+    /// Provenance/Supersession lineage walk from one memory.
     /// Same auth shape as `Query`.
     ///
     /// # Errors
@@ -217,11 +215,9 @@ pub(in crate::engine) async fn query_authorized(
         return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
     }
     validate_query_cursor(req)?;
-    let mut effective = req.clone();
-    effective.read_owners = read_owners.to_vec();
     ports
         .memory_read
-        .query_memories(&effective, schemas)
+        .query_memories(read_owners, req, schemas)
         .await
         .map_err(|e| ProtocolError::internal(e.to_string()))
 }

@@ -957,7 +957,7 @@ mod tests {
             .expect_err("raw delegated context must not mint a permit");
         assert_eq!(write_err.code, ErrorCode::Forbidden);
         let query_err = engine
-            .query(&raw, &QueryRequest::for_owner(owner))
+            .query(&raw, &QueryRequest::readable())
             .await
             .expect_err("unconverted query must reject raw delegated context");
         assert_eq!(query_err.code, ErrorCode::Forbidden);

@@ -567,7 +567,7 @@ async fn hot_path_plans_use_expected_indexes() {
             "admit HeadsOnly must join through a memory index; plan:\n{plan}"
         );
 
-        let mut page = QueryRequest::for_owner(owner);
+        let mut page = QueryRequest::readable();
         page.schema_id = Some(SchemaId::new("core/agent-note-v1".into()));
         page.entity_kind = Some(EntityKind::Fact);
         page.limit = 20;

@@ -168,7 +168,6 @@ async fn load_commit_matches(
     let mut commit_payloads = proxima::flavor::authorized_fact_payloads::<CommitV1>(
         engine,
         ctx.authz(),
-        ctx.owner(),
         &commit_ids,
         scan.page_len.saturating_add(1),
     )
@@ -227,7 +226,6 @@ async fn load_summary_matches(
     let mut summary_payloads = proxima::flavor::authorized_abstraction_payloads::<CommitSummaryV1>(
         engine,
         ctx.authz(),
-        ctx.owner(),
         &summary_ids,
         scan.page_len.saturating_add(1),
     )

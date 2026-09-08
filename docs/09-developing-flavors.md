@@ -997,7 +997,7 @@ Tool contract:
 |---|---|
 | Name | provider-safe `<flavor_id>_<verb>` |
 | Args | `Deserialize + JsonSchema` |
-| Output | `Serialize` |
+| Output | `Serialize + JsonSchema` |
 | Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional `ToolCaller`, optional caller Self Perspective, optional Engine, typed ToolServices |
 | Storage | tools: Engine + `FlavorServices` store. Host extra-table: `AppContext::{clone_pool_for_host, pg_tuning_for_host}`, wrap immediately. No `proxima_core.*` SQL |
 | Writes | emit typed Facts / A/P / Goals through registered schemas; no tool writes an edge |
@@ -1042,8 +1042,6 @@ through the shared rule, never by reading the caller's label:
 ```rust
 // `Tool` (transport-neutral): an inherent method on the context you are handed.
 let model_id = ctx.operator_label(args.model_id.as_deref())?;
-// `McpTool`: the same resolver, over the MCP context.
-let model_id = proxima::flavor::operator_label(&ctx, args.model_id.as_deref())?;
 ```
 
 The transport edge only ever inspects a *top-level* `model_id`, so a nested or
@@ -1088,10 +1086,7 @@ the host wired it:
 
 ```rust
 let Some(store) = ctx.service::<MyFlavorStore>() else {
-    return Err(McpToolError::new(
-        McpToolErrorKind::Internal,
-        "host did not wire MyFlavorStore",
-    ));
+    return Err(ToolError::Other("host did not wire MyFlavorStore".into()));
 };
 ```
 

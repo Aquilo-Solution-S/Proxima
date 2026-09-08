@@ -275,6 +275,7 @@ pub(crate) mod tests {
 
         async fn query_memories(
             &self,
+            _read_owners: &[OwnerRef],
             _req: &verbs::query::QueryRequest,
             _schemas: &[crate::read_models::MemorySchemaSpec],
         ) -> Result<verbs::query::QueryResponse, StorageError> {

@@ -134,7 +134,7 @@ async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
             )
             .await?;
         assert_ne!(first.memory_id, revised.memory_id);
-        let mut all = QueryRequest::for_owner(owner);
+        let mut all = QueryRequest::readable();
         all.supersession = proxima::SupersessionStatus::IncludeSuperseded;
         let history = engine.query(&authz, &all).await?;
         let original = history
@@ -158,9 +158,7 @@ async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
         assert_eq!(original.origins, [fact.memory_id]);
         assert_eq!(revision.origins, [first.memory_id]);
         assert_eq!(conclusion.origins, [first.memory_id]);
-        let heads = engine
-            .query(&authz, &QueryRequest::for_owner(owner))
-            .await?;
+        let heads = engine.query(&authz, &QueryRequest::readable()).await?;
         assert!(heads.memories.iter().any(|row| row.id == second.memory_id));
         assert!(heads.memories.iter().any(|row| row.id == revised.memory_id));
         assert!(!heads.memories.iter().any(|row| row.id == first.memory_id));
@@ -204,7 +202,7 @@ async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
             "series reingest preserves history"
         );
         let heads = engine
-            .query(&authz, &QueryRequest::for_owner(owner))
+            .query(&authz, &QueryRequest::readable())
             .await?
             .memories;
         assert!(heads.iter().any(|row| row.id == changed.memory_id));
@@ -270,9 +268,7 @@ async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
                     .refs([first.memory_id, fact.memory_id, first.memory_id]),
             )
             .await?;
-        let page = engine
-            .query(&authz, &QueryRequest::for_owner(owner))
-            .await?;
+        let page = engine.query(&authz, &QueryRequest::readable()).await?;
         let a = page
             .memories
             .iter()
@@ -392,7 +388,7 @@ async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs(
             .expect_err("foreign premise is unreadable");
         assert_eq!(denied.code, proxima::ErrorCode::Forbidden);
         let allowed = engine.derive_memory(&both, request).await?;
-        let page = engine.query(&both, &QueryRequest::for_owner(owner)).await?;
+        let page = engine.query(&both, &QueryRequest::readable()).await?;
         let row = page
             .memories
             .iter()
@@ -501,7 +497,7 @@ async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs(
                 ),
             )
             .await?;
-        let page = engine.query(&both, &QueryRequest::for_owner(owner)).await?;
+        let page = engine.query(&both, &QueryRequest::readable()).await?;
         let row = page
             .memories
             .iter()
@@ -579,7 +575,7 @@ async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
             .await?;
         assert_eq!(explicit_row.handle, explicit.into_inner());
         uow.commit().await?;
-        let mut query = QueryRequest::for_owner(owner);
+        let mut query = QueryRequest::readable();
         query.supersession = proxima::SupersessionStatus::IncludeSuperseded;
         let rows = engine.query(&authz, &query).await?.memories;
         assert!(
@@ -593,7 +589,7 @@ async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
                 .refs,
             [first.memory_id]
         );
-        let mut foreign_query = QueryRequest::for_owner(foreign);
+        let mut foreign_query = QueryRequest::readable();
         foreign_query.memory_ids = vec![elsewhere.memory_id];
         let foreign_rows = engine.query(&authz, &foreign_query).await?.memories;
         assert_eq!(foreign_rows.len(), 1);
@@ -652,7 +648,7 @@ async fn typed_fact_concurrent_first_observations_share_a_natural_series() {
                 "concurrent natural-key lookup selects one series"
             );
             assert_ne!(a.memory_id, b.memory_id);
-            let mut query = QueryRequest::for_owner(owner);
+            let mut query = QueryRequest::readable();
             query.memory_ids = vec![a.memory_id, b.memory_id];
             let heads = engine.query(&authz, &query).await?.memories;
             assert_eq!(heads.len(), 1);
@@ -728,7 +724,7 @@ async fn natural_key_selection_rejects_payload_substitution_after_authorization(
         assert!(err.message.contains("exactly one"), "{err}");
         assert!(
             engine
-                .query(&authz, &QueryRequest::for_owner(owner))
+                .query(&authz, &QueryRequest::readable())
                 .await?
                 .memories
                 .is_empty()
@@ -1249,7 +1245,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                 proxima::FactWrite::new(owner, "facade-surface-test", &fact),
             )
             .await?;
-        let mut query = QueryRequest::for_owner(owner);
+        let mut query = QueryRequest::readable();
         query.include_payloads = true;
         let queried = built.engine.query(&authz, &query).await?;
         let snapshot = queried
@@ -1357,7 +1353,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                 && row.body.as_deref() == Some(fact.body.as_str())
         }));
 
-        let mut identity_only = QueryRequest::for_owner(owner);
+        let mut identity_only = QueryRequest::readable();
         identity_only.include_payloads = false;
         let identity_page = built.engine.query(&authz, &identity_only).await?;
         let identity_row = identity_page
@@ -1502,7 +1498,6 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .edge_exists(
                 &authz,
                 &EdgeExistsRequest {
-                    owner,
                     filter: head_filter.clone(),
                 },
             )
@@ -1514,7 +1509,6 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .edge_exists(
                 &authz,
                 &EdgeExistsRequest {
-                    owner,
                     filter: EdgeFilter {
                         target: Some(EntityRef::Memory(MemoryId::new(Uuid::now_v7()))),
                         ..head_filter.clone()
@@ -1529,7 +1523,6 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .read_edges(
                 &authz,
                 &EdgeReadRequest {
-                    owner,
                     filter: head_filter,
                     limit: 5,
                     cursor: None,
@@ -1607,7 +1600,7 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
         )
         .await?;
 
-        let mut valid_query = QueryRequest::for_owner(owner);
+        let mut valid_query = QueryRequest::readable();
         valid_query.include_payloads = false;
         valid_query.memory_ids = vec![valid_with_extension];
         let valid = built.engine.query(&authz, &valid_query).await?;
@@ -1634,7 +1627,7 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
             ("wrong primary stamp", wrong_stamp),
             ("missing primary row", missing_primary_row),
         ] {
-            let mut query = QueryRequest::for_owner(owner);
+            let mut query = QueryRequest::readable();
             query.include_payloads = false;
             query.memory_ids = vec![memory_id];
             let Err(err) = built.engine.query(&authz, &query).await else {
@@ -1860,3 +1853,98 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
 /// Host/example lane (`docs/09` §Migrations: timestamp versions ending
 /// `00..=19`), so this fixture cannot collide with a first-party flavor.
 const FACADE_MIGRATION_VERSION: i64 = 20_260_824_000_010;
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
+    use proxima::flavor::{FactWrite, ToolError, authorized_fact_payloads, authorized_memory_ids};
+    let db_name = unique_db_name("sdk_read_scope");
+    create_db(&db_name).await.expect("PG required");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owners = [
+            company_owner(Uuid::now_v7()),
+            company_owner(Uuid::now_v7()),
+            company_owner(Uuid::now_v7()),
+        ];
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url(&db_name))
+            .owner(owners[0])
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let engine = built.engine();
+        let mut ids = Vec::new();
+        for owner in owners {
+            let authz = AuthzContext::for_subject_with_role(
+                UserId::new(Uuid::now_v7()),
+                [(owner, Role::admin())],
+                AuthPath::HostBearer,
+            );
+            ids.push(
+                engine
+                    .ingest_fact(&authz, FactWrite::new(owner, "sdk/read", &sdk_fact()))
+                    .await?
+                    .memory_id,
+            );
+        }
+        let authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owners[0], Role::admin()), (owners[1], Role::admin())],
+            AuthPath::HostBearer,
+        );
+        let mut legacy = serde_json::to_value(QueryRequest::readable())?;
+        legacy["owner"] = serde_json::to_value(owners[2])?;
+        legacy["read_owners"] = serde_json::to_value([owners[2]])?;
+        let request: QueryRequest = serde_json::from_value(legacy)?;
+        let encoded = serde_json::to_value(&request)?;
+        assert!(encoded.get("owner").is_none() && encoded.get("read_owners").is_none());
+        let rows = engine.query(&authz, &request).await?.memories;
+        assert_eq!(
+            rows.iter().map(|row| row.id).collect::<BTreeSet<_>>(),
+            BTreeSet::from([ids[0], ids[1]])
+        );
+        let candidates = [
+            ids[2].into_inner(),
+            ids[1].into_inner(),
+            ids[0].into_inner(),
+            ids[1].into_inner(),
+        ];
+        let typed =
+            authorized_fact_payloads::<FacadeFact>(&engine, &authz, &candidates, 10).await?;
+        assert_eq!(
+            typed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [ids[1], ids[0]]
+        );
+        let visible = authorized_memory_ids(
+            &engine,
+            &authz,
+            &candidates,
+            EntityKind::Fact,
+            Some(FacadeFact::schema_id()),
+            10,
+        )
+        .await?;
+        assert_eq!(visible, [ids[1], ids[0]]);
+        for candidates in [&[][..], &candidates[..]] {
+            assert!(matches!(
+                authorized_fact_payloads::<FacadeFact>(&engine, &authz, candidates, 0).await,
+                Err(ToolError::InvalidInput(_))
+            ));
+            assert!(matches!(
+                authorized_memory_ids(&engine, &authz, candidates, EntityKind::Fact, None, 0).await,
+                Err(ToolError::InvalidInput(_))
+            ));
+        }
+        assert!(
+            authorized_fact_payloads::<FacadeFact>(&engine, &authz, &[], 1)
+                .await?
+                .is_empty()
+        );
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("authenticated readable scope");
+}

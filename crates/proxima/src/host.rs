@@ -1,5 +1,11 @@
 //! Host-facing facade exports.
 
+/// Transport adapters for hosts; flavor implementations use `flavor::Tool`.
+pub use proxima_core::mcp::{
+    McpTool, McpToolCtx, McpToolError, McpToolErrorKind, McpToolPresentation,
+};
+pub use proxima_core::operator_label;
+
 pub use crate::app::{AppContext, AppInfo, Authz, FlavorApp};
 pub use crate::config::EmbedConfig;
 pub use crate::core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};

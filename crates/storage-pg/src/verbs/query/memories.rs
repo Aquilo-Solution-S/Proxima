@@ -10,7 +10,7 @@ use proxima_core::verbs::query::{
     EntityKind, MemoryRow, QueryCursor, QueryRequest, QueryResponse, SupersessionStatus,
 };
 use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{MemoryId, SchemaId, SidecarPayload, StorageError};
+use proxima_core::{MemoryId, OwnerRef, SchemaId, SidecarPayload, StorageError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -24,11 +24,11 @@ use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water};
 pub(crate) async fn query_memories(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
+    read_owners: &[OwnerRef],
     req: &QueryRequest,
     schemas: &[MemorySchemaSpec],
 ) -> Result<QueryResponse, StorageError> {
-    let owner_ids: Vec<Uuid> = req
-        .read_owners
+    let owner_ids: Vec<Uuid> = read_owners
         .iter()
         .copied()
         .map(proxima_core::OwnerRef::stored_owner_id)

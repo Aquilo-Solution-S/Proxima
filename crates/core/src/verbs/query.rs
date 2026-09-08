@@ -368,9 +368,6 @@ pub struct QueryPage {
 /// registers a sidecar (M3+).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryRequest {
-    pub owner: OwnerRef,
-    #[serde(skip)]
-    pub read_owners: Vec<OwnerRef>,
     pub entity_kind: Option<EntityKind>,
     pub schema_id: Option<SchemaId>,
     pub supersession: SupersessionStatus,
@@ -404,10 +401,8 @@ impl QueryRequest {
     /// Builder for the common case: heads-only, no kind/schema
     /// filter.
     #[must_use]
-    pub fn for_owner(owner: OwnerRef) -> Self {
+    pub fn readable() -> Self {
         Self {
-            owner,
-            read_owners: vec![owner],
             entity_kind: None,
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
@@ -573,7 +568,6 @@ pub struct EdgeReadCursor {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeReadRequest {
-    pub owner: OwnerRef,
     #[serde(default)]
     pub filter: EdgeFilter,
     pub limit: u32,
@@ -592,7 +586,6 @@ pub struct EdgeReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeExistsRequest {
-    pub owner: OwnerRef,
     #[serde(default)]
     pub filter: EdgeFilter,
 }

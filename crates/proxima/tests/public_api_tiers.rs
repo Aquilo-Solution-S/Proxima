@@ -440,23 +440,14 @@ fn flavor_sdk_constructs_contract_goal_and_session_values() {
 }
 
 #[test]
-fn flavor_sdk_exposes_mcp_tool_authoring_surface() {
-    // The MCP tool family is reachable from `proxima::flavor` so flavor
-    // authors never import `proxima_core::mcp` directly.
+fn flavor_sdk_exposes_tool_authoring_and_metadata() {
     use proxima::flavor::{
-        McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
-        McpToolErrorKind,
+        McpActionArgSpec, McpAuthorContext, McpToolAnnotations, Tool, ToolCtx, ToolError,
     };
-    fn _needs_mcp_tool<T: McpTool>() {}
-    let _ = McpToolErrorKind::Internal;
-    // Name the remaining re-exports as types so an accidental removal fails.
+    fn needs_tool<T: Tool>() {}
+    needs_tool::<TierLabelledTool>();
     let _: &[McpActionArgSpec] = &[];
-    let _: Option<(
-        &McpToolCtx,
-        &McpToolError,
-        &McpAuthorContext,
-        &McpToolAnnotations,
-    )> = None;
+    let _: Option<(&ToolCtx, &ToolError, &McpAuthorContext, &McpToolAnnotations)> = None;
 }
 
 /// A flavor tool that accepts its own `model_id`, written against the
@@ -494,15 +485,16 @@ impl proxima::flavor::Tool for TierLabelledTool {
 /// reimplementation is how a nested label got past the edge in the first
 /// place.
 #[test]
-fn flavor_sdk_exposes_the_operator_label_rule_to_both_tool_traits() {
-    use proxima::flavor::{McpToolCtx, McpToolError, ToolCtx, ToolError, TrustedModelIdError};
+fn flavor_sdk_exposes_the_operator_label_rule_and_host_adapter() {
+    use proxima::flavor::{ToolCtx, ToolError, TrustedModelIdError};
+    use proxima::host::{McpToolCtx, McpToolError};
 
     fn needs_tool<T: proxima::flavor::Tool>() {}
     needs_tool::<TierLabelledTool>();
 
     // The `McpTool` spelling: a free function over the MCP context.
     let _: fn(&McpToolCtx, Option<&str>) -> Result<String, McpToolError> =
-        proxima::flavor::operator_label;
+        proxima::host::operator_label;
     // The `Tool` spelling: an inherent method on the neutral context.
     let _: fn(&ToolCtx, Option<&str>) -> Result<String, ToolError> = ToolCtx::operator_label;
     // Binding provenance onto the caller copy is fallible for the same
@@ -1216,8 +1208,7 @@ fn flavor_sdk_names_query_and_ingest_types() {
         false,
     ));
 
-    let owner = proxima::OwnerRef::Personal(proxima::UserId::new(uuid::Uuid::nil()));
-    let _: proxima::flavor::QueryRequest = proxima::flavor::QueryRequest::for_owner(owner);
+    let _: proxima::flavor::QueryRequest = proxima::flavor::QueryRequest::readable();
     let _: Option<(
         proxima::flavor::QueryResponse,
         proxima::flavor::GoalRow,

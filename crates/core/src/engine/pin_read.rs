@@ -258,7 +258,6 @@ pub(in crate::engine) async fn edge_exists_from_nodes(
     req: &EdgeExistsRequest,
 ) -> Result<EdgeExistsResponse, ProtocolError> {
     let read = EdgeReadRequest {
-        owner: req.owner,
         filter: req.filter.clone(),
         limit: 1,
         cursor: None,
@@ -623,6 +622,7 @@ mod tests {
 
         async fn query_memories(
             &self,
+            _read_owners: &[OwnerRef],
             _req: &crate::verbs::query::QueryRequest,
             _schemas: &[crate::read_models::MemorySchemaSpec],
         ) -> Result<crate::verbs::query::QueryResponse, StorageError> {
@@ -691,7 +691,6 @@ mod tests {
                 &handle,
                 &[owner],
                 &EdgeReadRequest {
-                    owner,
                     filter: EdgeFilter {
                         kind: Some(EdgeKind::Origin),
                         source: None,
@@ -824,7 +823,6 @@ mod tests {
         let probes = Arc::clone(&memory_only.goal_probes);
         let handle: crate::storage_ports::MemoryReadHandle = memory_only;
         let request = EdgeReadRequest {
-            owner,
             filter: EdgeFilter {
                 kind: Some(EdgeKind::Reference),
                 source: Some(EntityRef::Memory(source)),
@@ -875,7 +873,6 @@ mod tests {
             &handle,
             &[owner],
             &EdgeReadRequest {
-                owner,
                 filter: EdgeFilter {
                     kind: Some(EdgeKind::Reference),
                     source: Some(EntityRef::Memory(source)),
@@ -896,7 +893,6 @@ mod tests {
             &handle,
             &[owner],
             &EdgeReadRequest {
-                owner,
                 filter: EdgeFilter {
                     kind: Some(EdgeKind::Reference),
                     source: Some(EntityRef::Memory(source)),
@@ -920,7 +916,6 @@ mod tests {
             &handle,
             &[owner],
             &EdgeReadRequest {
-                owner,
                 filter: EdgeFilter {
                     kind: Some(EdgeKind::Reference),
                     source: None,
@@ -939,7 +934,6 @@ mod tests {
             &handle,
             &[owner],
             &crate::verbs::query::EdgeExistsRequest {
-                owner,
                 filter: EdgeFilter {
                     kind: Some(EdgeKind::Reference),
                     source: None,

@@ -1,7 +1,7 @@
 #![cfg(feature = "rest")]
 
 use futures::future::BoxFuture;
-use proxima::flavor::{FlavorRegistry, McpTool, McpToolAnnotations, McpToolCtx, McpToolError};
+use proxima::flavor::{FlavorRegistry, McpToolAnnotations, Tool, ToolCtx, ToolError};
 
 #[derive(schemars::JsonSchema, serde::Deserialize)]
 struct OfflineArgs {
@@ -15,7 +15,7 @@ struct OfflineOutput {
 
 struct OfflineLookup;
 
-impl McpTool for OfflineLookup {
+impl Tool for OfflineLookup {
     const NAME: &'static str = "offline_lookup";
     const DESCRIPTION: &'static str = "Lookup used to prove the facade projects tools.";
     const ANNOTATIONS: Option<McpToolAnnotations> =
@@ -25,9 +25,9 @@ impl McpTool for OfflineLookup {
     type Output = OfflineOutput;
 
     fn call(
-        _ctx: McpToolCtx,
+        _ctx: ToolCtx,
         args: Self::Args,
-    ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
+    ) -> BoxFuture<'static, Result<Self::Output, ToolError>> {
         Box::pin(async move {
             Ok(OfflineOutput {
                 found: !args.query.is_empty(),

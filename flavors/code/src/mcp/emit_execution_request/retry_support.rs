@@ -50,7 +50,6 @@ pub(super) async fn load_execution_request(
     let Some((_, row)) = proxima::flavor::authorized_fact_payloads::<ExecutionRequestV1>(
         &engine,
         ctx.authz(),
-        ctx.owner(),
         &[memory_id.into_inner()],
         1,
     )
@@ -92,7 +91,6 @@ pub(super) async fn find_execution_request_by_key(
         proxima::flavor::authorized_fact_payloads::<ExecutionRequestV1>(
             &engine,
             ctx.authz(),
-            ctx.owner(),
             &candidates,
             1,
         )
@@ -111,7 +109,6 @@ pub(super) async fn validate_target_perspective(
     let visible = proxima::flavor::authorized_memory_ids(
         &engine,
         ctx.authz(),
-        ctx.owner(),
         &[target_perspective.into_inner()],
         EntityKind::Perspective,
         None,
@@ -139,7 +136,6 @@ pub(super) async fn load_prior_origins(
         .read_edges(
             ctx.authz(),
             &EdgeReadRequest {
-                owner: ctx.owner(),
                 filter: EdgeFilter {
                     kind: Some(EdgeKind::Origin),
                     source: Some(EntityRef::Memory(prior_memory_id)),

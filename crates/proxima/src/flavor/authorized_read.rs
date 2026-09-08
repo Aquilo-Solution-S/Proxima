@@ -16,37 +16,37 @@ use std::collections::{HashMap, HashSet};
 
 use proxima_core::verbs::query::{EntityKind, QueryRequest, SupersessionStatus};
 use proxima_core::{
-    AbstractionPayload, AuthzContext, Engine, FactPayload, MemoryId, Owner, SchemaId,
-    SidecarPayload, ToolError,
+    AbstractionPayload, AuthzContext, Engine, FactPayload, MemoryId, SchemaId, SidecarPayload,
+    ToolError,
 };
 
 /// Candidate id lists are bounded before they ever reach a query so a
 /// pathological caller cannot force an unbounded `IN (...)`/`ANY($1)` scan.
 const MAX_AUTHZ_CANDIDATES: usize = 2_000;
 
-/// Narrow `candidates` to the ids visible to `authz` for `owner`, optionally
+/// Narrow `candidates` to the ids visible to `authz`, optionally
 /// restricted to one `entity_kind`/`schema_id`. Heads-only,
 /// same ordering-agnostic contract as the other helpers in this module.
 ///
 /// # Errors
 ///
-/// Returns whatever [`Engine::query`] returns for an unauthorized owner or
-/// storage failure.
+/// Rejects a zero limit. Otherwise returns [`Engine::query`] authorization
+/// or storage errors.
 pub async fn authorized_memory_ids(
     engine: &Engine,
     authz: &AuthzContext,
-    owner: Owner,
     candidates: &[uuid::Uuid],
     entity_kind: EntityKind,
     schema_id: Option<SchemaId>,
     limit: usize,
 ) -> Result<Vec<MemoryId>, ToolError> {
+    proxima_core::reject_zero_limit(Some(u32::try_from(limit).unwrap_or(u32::MAX)))?;
     let candidates = bounded_candidates(candidates);
-    if candidates.is_empty() || limit == 0 {
+    if candidates.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut req = QueryRequest::for_owner(owner);
+    let mut req = QueryRequest::readable();
     req.entity_kind = Some(entity_kind);
     req.schema_id = schema_id;
     req.supersession = SupersessionStatus::HeadsOnly;
@@ -76,12 +76,11 @@ pub async fn authorized_memory_ids(
 ///
 /// # Errors
 ///
-/// Returns whatever [`Engine::query`] returns for an unauthorized owner or
-/// storage failure.
+/// Rejects a zero limit. Otherwise returns [`Engine::query`] authorization
+/// or storage errors.
 pub async fn authorized_fact_payloads<P>(
     engine: &Engine,
     authz: &AuthzContext,
-    owner: Owner,
     candidates: &[uuid::Uuid],
     limit: usize,
 ) -> Result<Vec<(MemoryId, P)>, ToolError>
@@ -91,7 +90,6 @@ where
     let payloads = authorized_payloads(
         engine,
         authz,
-        owner,
         candidates,
         EntityKind::Fact,
         P::schema_id(),
@@ -112,12 +110,11 @@ where
 ///
 /// # Errors
 ///
-/// Returns whatever [`Engine::query`] returns for an unauthorized owner or
-/// storage failure.
+/// Rejects a zero limit. Otherwise returns [`Engine::query`] authorization
+/// or storage errors.
 pub async fn authorized_abstraction_payloads<P>(
     engine: &Engine,
     authz: &AuthzContext,
-    owner: Owner,
     candidates: &[uuid::Uuid],
     limit: usize,
 ) -> Result<Vec<(MemoryId, P)>, ToolError>
@@ -127,7 +124,6 @@ where
     let payloads = authorized_payloads(
         engine,
         authz,
-        owner,
         candidates,
         EntityKind::Abstraction,
         P::schema_id(),
@@ -168,18 +164,18 @@ pub async fn read_owner_ids(
 async fn authorized_payloads(
     engine: &Engine,
     authz: &AuthzContext,
-    owner: Owner,
     candidates: &[uuid::Uuid],
     entity_kind: EntityKind,
     schema_id: SchemaId,
     limit: usize,
 ) -> Result<Vec<(MemoryId, SidecarPayload)>, ToolError> {
     let candidates = bounded_candidates(candidates);
-    if candidates.is_empty() || limit == 0 {
+    proxima_core::reject_zero_limit(Some(u32::try_from(limit).unwrap_or(u32::MAX)))?;
+    if candidates.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut req = QueryRequest::for_owner(owner);
+    let mut req = QueryRequest::readable();
     req.entity_kind = Some(entity_kind);
     req.schema_id = Some(schema_id);
     req.supersession = SupersessionStatus::HeadsOnly;

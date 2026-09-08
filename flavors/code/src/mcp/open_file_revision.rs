@@ -184,7 +184,6 @@ async fn load_head_revision(
     proxima::flavor::authorized_fact_payloads::<FileRevisionV1>(
         engine,
         ctx.authz(),
-        ctx.owner(),
         &revision_ids,
         1,
     )
@@ -234,7 +233,6 @@ async fn load_head_chunks(
     let mut chunks = proxima::flavor::authorized_abstraction_payloads::<CodeChunkV1>(
         engine,
         ctx.authz(),
-        ctx.owner(),
         &chunk_ids,
         2_000,
     )
