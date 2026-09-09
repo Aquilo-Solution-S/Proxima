@@ -404,7 +404,8 @@ async fn fresh_pg() -> (String, PgStorage) {
     (db_name, pg)
 }
 
-/// A cold store that records every destruction it is asked for.
+/// The `bucket` backend seeded by cited-blob fixtures, with in-memory bytes
+/// and a record of every destruction it is asked for.
 ///
 /// The count is the only witness that separates "both owners withheld" from
 /// "one owner destroyed": `cold_purge_pending` reads empty in both cases,
@@ -428,6 +429,10 @@ impl CountingColdStore {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for CountingColdStore {
+    fn backend(&self) -> &'static str {
+        "bucket"
+    }
+
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
         self.inner.put(key, bytes).await
     }
@@ -4366,7 +4371,7 @@ async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
 /// wrong reason in one of them.
 #[tokio::test]
 async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
-    let (db_name, pg, cold) = fresh_pg_with_cold().await;
+    let (db_name, pg, cold) = fresh_pg_with_counting_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -4608,7 +4613,7 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
 /// is the thing that must stop the object going.
 #[tokio::test]
 async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes() {
-    let (db_name, pg, cold) = fresh_pg_with_cold().await;
+    let (db_name, pg, cold) = fresh_pg_with_counting_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let user_id = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user_id);

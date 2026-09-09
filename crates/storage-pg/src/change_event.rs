@@ -21,6 +21,8 @@ struct AnnounceRow {
     schema_id: Option<String>,
 }
 
+// Recover the immutable memory kind from retained lifecycle witnesses without
+// changing the recorded event owner. Only the kind uses these witnesses.
 const ANNOUNCE_BY_SEQ_SQL: &str = "
 SELECT a.seq,
        a.owner_id,
@@ -29,11 +31,13 @@ SELECT a.seq,
        a.entity::text AS entity,
        a.handle,
        a.t,
-       m.kind::text AS memory_kind,
+       COALESCE(m.kind::text, c.kind::text, e.kind::text) AS memory_kind,
        COALESCE(m.schema_id, gh.schema_id) AS schema_id
   FROM proxima_core.announce a
   JOIN proxima_core.owners o ON o.owner_id = a.owner_id
   LEFT JOIN proxima_core.memory m ON m.t = a.t
+  LEFT JOIN proxima_core.cooled c ON c.t = a.t
+  LEFT JOIN proxima_core.erased_pin_target e ON e.t = a.t
   LEFT JOIN proxima_core.goal_head gh ON gh.handle = a.handle AND a.entity = 'goal'
  WHERE a.seq = $1 AND a.owner_id = ANY($2::uuid[])
 ";
@@ -46,11 +50,13 @@ SELECT a.seq,
        a.entity::text AS entity,
        a.handle,
        a.t,
-       m.kind::text AS memory_kind,
+       COALESCE(m.kind::text, c.kind::text, e.kind::text) AS memory_kind,
        COALESCE(m.schema_id, gh.schema_id) AS schema_id
   FROM proxima_core.announce a
   JOIN proxima_core.owners o ON o.owner_id = a.owner_id
   LEFT JOIN proxima_core.memory m ON m.t = a.t
+  LEFT JOIN proxima_core.cooled c ON c.t = a.t
+  LEFT JOIN proxima_core.erased_pin_target e ON e.t = a.t
   LEFT JOIN proxima_core.goal_head gh ON gh.handle = a.handle AND a.entity = 'goal'
  WHERE a.seq = ANY($1::uuid[]) AND a.owner_id = ANY($2::uuid[])
  ORDER BY a.seq DESC

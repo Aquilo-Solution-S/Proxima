@@ -15,7 +15,8 @@ use crate::{Edge, EdgeKind, EntityKind, EntityRef, GoalId, MemoryId, OwnerRef};
 use super::errors::internal_storage_error;
 
 /// Floor on incoming `read_edges` source pages so a small hop `limit`
-/// still amortizes GIN. `exists` (`limit == 1`, no cursor) uses SQL 1.
+/// still amortizes GIN. Single-edge probes need only two source rows to
+/// establish whether the returned edge has a continuation.
 const INBOUND_SOURCE_PAGE_MIN: u32 = 256;
 
 type HopKey = (time::OffsetDateTime, uuid::Uuid, uuid::Uuid, &'static str);
@@ -270,9 +271,9 @@ pub(in crate::engine) async fn edge_exists_from_nodes(
 
 fn inbound_source_page_limit(req: &EdgeReadRequest) -> u32 {
     if req.limit == 1 && req.cursor.is_none() {
-        1
+        2
     } else {
-        req.limit.max(INBOUND_SOURCE_PAGE_MIN)
+        req.limit.saturating_add(1).max(INBOUND_SOURCE_PAGE_MIN)
     }
 }
 
@@ -346,7 +347,9 @@ async fn load_incoming_sources(
         }
         sources.extend(page);
         let hops = matching_hops(&sources, None, Some(target_filter), req.filter.kind);
-        if hops_after_cursor(&hops, req.cursor) >= hop_limit || short {
+        // `page_hops` needs an extra matching hop to emit a continuation.
+        // A full page alone cannot distinguish exhaustion from more sources.
+        if hops_after_cursor(&hops, req.cursor) > hop_limit || short {
             break;
         }
     }
@@ -428,7 +431,8 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
 #[cfg(test)]
 mod tests {
     use super::{
-        PinHop, PinTarget, empty_read, neighbor_edges_from_nodes, page_hops, read_edges_from_nodes,
+        INBOUND_SOURCE_PAGE_MIN, PinHop, PinTarget, empty_read, neighbor_edges_from_nodes,
+        page_hops, read_edges_from_nodes,
     };
     use crate::edge::{EdgeEndpoint, PinNode};
     use crate::storage_ports::{InboundPinQuery, MemoryReadPort};
@@ -711,6 +715,108 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 300);
+    }
+
+    #[tokio::test]
+    async fn incoming_read_edges_retains_cursor_at_source_page_boundaries() {
+        for limit in [1, INBOUND_SOURCE_PAGE_MIN, INBOUND_SOURCE_PAGE_MIN + 1] {
+            let source_count = usize::try_from(limit).expect("test limit") + 1;
+            let (owner, hub, fake) = hub_fixture(source_count);
+            let handle: crate::storage_ports::MemoryReadHandle = fake;
+            let mut req = EdgeReadRequest {
+                filter: EdgeFilter {
+                    kind: Some(EdgeKind::Origin),
+                    source: None,
+                    target: Some(EntityRef::Memory(hub)),
+                },
+                limit,
+                cursor: None,
+            };
+            let first = read_edges_from_nodes(&handle, &[owner], &req)
+                .await
+                .expect("first page");
+            assert_eq!(first.edges.len(), source_count - 1);
+            req.cursor = Some(first.next_cursor.unwrap_or_else(|| {
+                panic!("limit={limit}: one further incoming edge requires a cursor")
+            }));
+            let second = read_edges_from_nodes(&handle, &[owner], &req)
+                .await
+                .expect("second page");
+            assert_eq!(second.edges.len(), 1);
+            assert!(second.next_cursor.is_none());
+            assert!(
+                first
+                    .edges
+                    .iter()
+                    .all(|edge| edge.source != second.edges[0].source)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn incoming_read_edges_exact_page_has_no_cursor() {
+        for limit in [1, INBOUND_SOURCE_PAGE_MIN, INBOUND_SOURCE_PAGE_MIN + 1] {
+            let source_count = usize::try_from(limit).expect("test limit");
+            let (owner, hub, fake) = hub_fixture(source_count);
+            let handle: crate::storage_ports::MemoryReadHandle = fake;
+            let page = read_edges_from_nodes(
+                &handle,
+                &[owner],
+                &EdgeReadRequest {
+                    filter: EdgeFilter {
+                        kind: Some(EdgeKind::Origin),
+                        source: None,
+                        target: Some(EntityRef::Memory(hub)),
+                    },
+                    limit,
+                    cursor: None,
+                },
+            )
+            .await
+            .expect("exact page");
+            assert_eq!(page.edges.len(), source_count);
+            assert!(page.next_cursor.is_none(), "limit={limit}: all edges fit");
+        }
+    }
+
+    #[tokio::test]
+    async fn incoming_read_edges_resumes_between_pin_kinds_and_redacts_targets() {
+        for target_visible in [true, false] {
+            let (owner, hub, mut fake) = hub_fixture(2);
+            let nodes = &mut Arc::get_mut(&mut fake).expect("unique fixture").nodes;
+            for node in nodes.iter_mut().filter(|node| node.id != hub) {
+                node.refs.push(hub);
+            }
+            if !target_visible {
+                nodes.retain(|node| node.id != hub);
+            }
+            let handle: crate::storage_ports::MemoryReadHandle = fake;
+            let mut req = EdgeReadRequest {
+                filter: EdgeFilter {
+                    kind: None,
+                    source: None,
+                    target: Some(EntityRef::Memory(hub)),
+                },
+                limit: 1,
+                cursor: None,
+            };
+            let mut seen = std::collections::HashSet::new();
+            for index in 0..4 {
+                let page = read_edges_from_nodes(&handle, &[owner], &req)
+                    .await
+                    .expect("mixed pin page");
+                assert_eq!(page.edges.len(), 1);
+                let edge = &page.edges[0];
+                assert!(seen.insert((edge.source, edge.kind)));
+                assert_eq!(
+                    matches!(edge.target, EdgeTargetProjection::Redacted),
+                    !target_visible
+                );
+                assert_eq!(page.next_cursor.is_some(), index < 3);
+                req.cursor = page.next_cursor;
+            }
+            assert_eq!(seen.len(), 4);
+        }
     }
 
     #[tokio::test]

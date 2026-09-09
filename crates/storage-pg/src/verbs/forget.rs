@@ -44,6 +44,13 @@ impl std::fmt::Debug for MemoryColdStore {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for MemoryColdStore {
+    fn backend(&self) -> &'static str {
+        // This cannot be an S3 bucket name. A host that boots without its
+        // S3 configuration must not acknowledge that bucket's durable debts
+        // by deleting from an unrelated, empty in-process map.
+        "memory://"
+    }
+
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
         self.inner
             .lock()
@@ -892,8 +899,8 @@ pub struct ColdPurgeOutcome {
 /// object store cannot undo it. A key whose destruction (or whose mark clear)
 /// fails keeps its `cold_purge_pending` row, which is the durable record an
 /// operator retry reads — the same over-report-pending-rather-than-lose-it rule
-/// the cited-object purge follows. Returns the number of objects destroyed and
-/// cleared.
+/// the cited-object purge follows. Counts reconciled plan entries, including
+/// debts already retired by another drain before provider I/O begins.
 pub async fn purge_cold_objects_after_commit(
     pool: &PgPool,
     cold: &dyn ColdObjectStore,
@@ -919,19 +926,8 @@ pub async fn purge_cold_objects_after_commit(
             );
             continue;
         }
-        match cold.delete(key).await {
-            Ok(()) | Err(StorageError::NotFound) => match clear_cold_purge_pending(pool, key).await
-            {
-                Ok(()) => outcome.purged = outcome.purged.saturating_add(1),
-                Err(error) => {
-                    outcome.failed = outcome.failed.saturating_add(1);
-                    tracing::warn!(
-                        %error,
-                        key,
-                        "destroyed a cold object but failed to clear its purge-pending mark"
-                    );
-                }
-            },
+        match purge_current_cold_debt(pool, cold, key).await {
+            Ok(()) => outcome.purged = outcome.purged.saturating_add(1),
             Err(error) => {
                 outcome.failed = outcome.failed.saturating_add(1);
                 tracing::warn!(
@@ -946,18 +942,81 @@ pub async fn purge_cold_objects_after_commit(
     outcome
 }
 
-/// The object is gone, so its debt is gone: one statement, no second write.
+/// A queue row's version, used only for the duration of one provider call.
+/// These PostgreSQL stamps are not persistent object or transaction IDs.
+/// Chosen over a schema `version` column so the guard needs no migration
+/// (AGENTS.md migration policy); a row moved by VACUUM FULL or a HOT update
+/// simply fails the compare, which leaves the debt queued for retry.
+#[derive(sqlx::FromRow)]
+struct ColdPurgeVersion {
+    backend: String,
+    row_xmin: String,
+    row_ctid: String,
+}
+
+async fn purge_current_cold_debt(
+    pool: &PgPool,
+    cold: &dyn ColdObjectStore,
+    object_key: &str,
+) -> Result<(), StorageError> {
+    let Some(version) = sqlx::query_as::<_, ColdPurgeVersion>(
+        "SELECT backend, xmin::text AS row_xmin, ctid::text AS row_ctid
+           FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+    )
+    .bind(object_key)
+    .fetch_optional(pool)
+    .await
+    .map_err(map_err)?
+    else {
+        // Another drain already retired this entry. A stale plan no longer
+        // authorizes deleting whatever may now occupy the same object key.
+        return Ok(());
+    };
+    if !proxima_core::cold_backend_matches(cold.backend(), &version.backend) {
+        return Err(StorageError::Unavailable(format!(
+            "cold purge debt for {object_key} now names backend {:?}, not {:?}",
+            version.backend,
+            cold.backend()
+        )));
+    }
+    // No database transaction or connection remains held during provider I/O.
+    // A producer may publish bytes and renew this debt while delete is in
+    // flight; its new row version must survive our earlier acknowledgement.
+    match cold.delete(object_key).await {
+        Ok(()) | Err(StorageError::NotFound) => {}
+        Err(error) => return Err(error),
+    }
+    if !clear_cold_purge_pending(pool, object_key, &version).await? {
+        return Err(StorageError::Unavailable(format!(
+            "cold purge debt for {object_key} changed during deletion; leaving it for retry"
+        )));
+    }
+    Ok(())
+}
+
+/// A completed provider deletion retires only the queue version it observed.
 ///
 /// The queue IS the debt. `pending_cold_purge_count` answers "is anything
 /// owed" by counting rows, not by trusting a flag that a crash between two
 /// writes could leave set forever.
-async fn clear_cold_purge_pending(pool: &PgPool, object_key: &str) -> Result<(), StorageError> {
-    sqlx::query("DELETE FROM proxima_core.cold_purge_pending WHERE object_key = $1")
-        .bind(object_key)
-        .execute(pool)
-        .await
-        .map_err(map_err)?;
-    Ok(())
+async fn clear_cold_purge_pending(
+    pool: &PgPool,
+    object_key: &str,
+    version: &ColdPurgeVersion,
+) -> Result<bool, StorageError> {
+    let deleted = sqlx::query(
+        "DELETE FROM proxima_core.cold_purge_pending
+          WHERE object_key = $1 AND backend = $2
+            AND xmin::text = $3 AND ctid::text = $4",
+    )
+    .bind(object_key)
+    .bind(&version.backend)
+    .bind(&version.row_xmin)
+    .bind(&version.row_ctid)
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(deleted.rows_affected() == 1)
 }
 
 pub(crate) async fn delete_cold_object(cold: &dyn ColdObjectStore, object_key: &str) {
@@ -1087,7 +1146,14 @@ async fn lock_forget_footprint_tx(
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
-    if grounded.iter().any(|(_, handle)| !handles.contains(handle)) {
+    // The SQL result is sorted; prepending the source made `handles` unsorted.
+    // Search its ordered tail to avoid a linear scan for every depender.
+    let handle_was_locked =
+        |handle: &Uuid| *handle == source_handle || dependent_handles.binary_search(handle).is_ok();
+    if grounded
+        .iter()
+        .any(|(_, handle)| !handle_was_locked(handle))
+    {
         return Err(StorageError::Retryable(
             "forget depender handle set grew before lifecycle lock acquisition".into(),
         ));
@@ -1117,7 +1183,7 @@ async fn lock_forget_footprint_tx(
     // Both queries `ORDER BY t` and exclude `source_t`, so target membership is
     // a binary search over `dependents` rather than a scan of `targets`.
     if after.iter().all(|(target, handle)| {
-        dependents.binary_search(target).is_ok() && handles.contains(handle)
+        dependents.binary_search(target).is_ok() && handle_was_locked(handle)
     }) {
         return Ok(());
     }

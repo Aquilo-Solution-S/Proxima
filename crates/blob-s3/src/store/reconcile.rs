@@ -18,12 +18,10 @@ use super::port::blob_error_to_storage;
 
 /// Rows read per round trip.
 ///
-/// Paged on `cited_object_id` because it is the PRIMARY KEY and therefore
-/// the only indexed column on this table. Paging on `object_key` — the
-/// column this verb actually cares about — would sort the whole table on
-/// every batch, turning a linear sweep into a quadratic one. The comparison
-/// below is set-based and order-free, so the key it pages by is free to be
-/// whichever one is indexed.
+/// Page on the indexed `upload_id` primary key. Multiple completed uploads
+/// can share a `blob_id`, so advancing past that non-unique value would skip
+/// locators when a page ends inside their shared group. The comparison below
+/// is set-based and order-free; `blob_id` remains the reported citation id.
 const ROW_PAGE: i64 = 1000;
 
 #[async_trait::async_trait]
@@ -104,8 +102,8 @@ impl CitedBlobStore {
                    FROM proxima_core.blob_uploads \
                   WHERE status = 'completed' \
                     AND blob_id IS NOT NULL \
-                    AND blob_id > $1 \
-                  ORDER BY blob_id \
+                    AND upload_id > $1 \
+                  ORDER BY upload_id \
                   LIMIT $2",
             )
             .bind(after)
@@ -124,7 +122,7 @@ impl CitedBlobStore {
                 let mounted_from_upload_id: Option<uuid::Uuid> = row
                     .try_get("mounted_from_upload_id")
                     .map_err(|e| map_row(&e))?;
-                after = row.try_get("cited_object_id").map_err(|e| map_row(&e))?;
+                after = upload_id;
 
                 // Counted apart from the sweep, because the cause and the
                 // repair are both different — see the field's own doc. The
@@ -155,8 +153,10 @@ impl CitedBlobStore {
                 // the second chance would be reported as a missing object
                 // -- an alarm raised by the dedupe working correctly.
                 let named = objects.remove(&object_key) || claimed.contains(&object_key);
-                claimed.insert(object_key.clone());
                 if named {
+                    // Only remember keys proven present. Every row mounting
+                    // an absent object is itself a missing citation.
+                    claimed.insert(object_key);
                     continue;
                 }
                 outcome.missing_objects = outcome.missing_objects.saturating_add(1);
@@ -216,8 +216,8 @@ impl CitedBlobStore {
                   WHERE u.owner_id = $1 \
                     AND u.status = 'completed' \
                     AND u.blob_id IS NOT NULL \
-                    AND u.blob_id > $2 \
-                  ORDER BY u.blob_id \
+                    AND u.upload_id > $2 \
+                  ORDER BY u.upload_id \
                   LIMIT $3",
             )
             .bind(owner.stored_owner_id())
@@ -240,7 +240,7 @@ impl CitedBlobStore {
                 let mounted_from_upload_id: Option<uuid::Uuid> = row
                     .try_get("mounted_from_upload_id")
                     .map_err(|e| map_row(&e))?;
-                after = cited_object_id;
+                after = upload_id;
 
                 // The same provenance rule the read gate applies: a locator
                 // this store did not mint is a foreign locator, not a

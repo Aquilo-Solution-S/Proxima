@@ -7,11 +7,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::PgStorage;
 use crate::core_pg_sidecars;
 use crate::verbs::forget::{
-    COLD_FORMAT_VERSION, ColdRecord, ColdRejection, MemoryColdStore, cold_object_key,
-    commit_forget, decode_record, encode_record, erase_memory, erase_memory_series,
-    erase_memory_series_after_snapshot, forget_memory, forget_memory_oneshot, hydrate_one_in_tx,
-    lock_admissions_for_erase, lock_lifecycle_targets_tx, lock_memory_handles_tx,
-    purge_cold_objects_after_commit, snapshot_hot, snapshot_series_for_erase_tx,
+    COLD_FORMAT_VERSION, ColdPurgeEntry, ColdPurgePlan, ColdRecord, ColdRejection, MemoryColdStore,
+    cold_object_key, commit_forget, decode_record, encode_record, erase_memory,
+    erase_memory_series, erase_memory_series_after_snapshot, forget_memory, forget_memory_oneshot,
+    hydrate_one_in_tx, lock_admissions_for_erase, lock_lifecycle_targets_tx,
+    lock_memory_handles_tx, purge_cold_objects_after_commit, snapshot_hot,
+    snapshot_series_for_erase_tx,
 };
 use crate::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use crate::verbs::memory_timeseries::ingest_fact_timeseries;
@@ -4777,6 +4778,133 @@ async fn a_rolled_back_erase_keeps_the_cold_object_and_its_locator() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("rolled-back erase consistency test failed");
+}
+
+#[derive(Default)]
+struct PurgeRecordingCold {
+    inner: MemoryColdStore,
+    deletes: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl ColdObjectStore for PurgeRecordingCold {
+    fn backend(&self) -> &str {
+        self.inner.backend()
+    }
+
+    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        self.inner.put(key, bytes).await
+    }
+
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        self.inner.get(key).await
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+        self.deletes
+            .lock()
+            .expect("cold delete calls")
+            .push(key.to_owned());
+        self.inner.delete(key).await
+    }
+}
+
+/// A captured plan must recheck durable authority before touching the provider.
+/// Retired and reassigned debts leave bytes alone; the unchanged debt still
+/// performs its actual deletion in the same pass.
+#[tokio::test]
+async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let cold = PurgeRecordingCold::default();
+        let retired_key = "objects/retired-debt";
+        let reassigned_key = "objects/reassigned-debt";
+        let current_key = "objects/current-debt";
+        let bytes = b"bytes require a current matching purge obligation";
+        let mut entries = Vec::new();
+        for key in [retired_key, reassigned_key, current_key] {
+            cold.put(key, bytes).await?;
+            let (object_key, backend): (String, String) = sqlx::query_as(
+                "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
+                 VALUES ($1, NULL, $2)
+                 RETURNING object_key, backend",
+            )
+            .bind(key)
+            .bind(cold.backend())
+            .fetch_one(pool)
+            .await?;
+            entries.push(ColdPurgeEntry {
+                object_key,
+                backend,
+            });
+        }
+        let plan = ColdPurgePlan::from_entries(entries);
+
+        // Model a committed retirement and reassignment after plan capture,
+        // before any provider I/O. The plan itself still names this store.
+        assert_eq!(
+            sqlx::query("DELETE FROM proxima_core.cold_purge_pending WHERE object_key = $1")
+                .bind(retired_key)
+                .execute(pool)
+                .await?
+                .rows_affected(),
+            1
+        );
+        assert_eq!(
+            sqlx::query(
+                "UPDATE proxima_core.cold_purge_pending SET backend = 'other-bucket'
+                 WHERE object_key = $1",
+            )
+            .bind(reassigned_key)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+            1
+        );
+
+        let outcome = purge_cold_objects_after_commit(pool, &cold, &plan).await;
+        assert_eq!(
+            (
+                outcome.attempted,
+                outcome.purged,
+                outcome.failed,
+                outcome.pending
+            ),
+            (3, 2, 1, true)
+        );
+        assert_eq!(
+            *cold.deletes.lock().expect("cold delete calls"),
+            vec![current_key.to_owned()],
+            "only the unchanged durable debt may reach the provider"
+        );
+        assert_eq!(cold.get(retired_key).await?, bytes);
+        assert_eq!(cold.get(reassigned_key).await?, bytes);
+        assert!(matches!(
+            cold.get(current_key).await,
+            Err(StorageError::NotFound)
+        ));
+        let remaining: Vec<(String, String)> = sqlx::query_as(
+            "SELECT object_key, backend FROM proxima_core.cold_purge_pending ORDER BY object_key",
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            remaining,
+            vec![(reassigned_key.to_owned(), "other-bucket".to_owned())],
+            "the reassigned obligation survives with its actual backend"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("stale purge plan provider boundary test failed");
 }
 
 /// The erase is already committed by the time the object store is asked, so a

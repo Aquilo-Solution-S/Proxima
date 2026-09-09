@@ -11,7 +11,8 @@
 //! [`extract_blob_callgraph`] parses a blob once and runs both queries
 //! against the same `Tree`. The single-fn `extract_definitions` and
 //! `extract_calls` wrappers exist for tests and any caller that only
-//! needs one side; the indexer uses the combined entry point.
+//! needs one side. Ingestion uses `analyze_blob` to share the chunker's
+//! tree with both queries as well.
 
 use std::sync::OnceLock;
 
@@ -48,6 +49,31 @@ pub fn extract_blob_callgraph(
     language: Option<&'static str>,
     blob: &[u8],
 ) -> (Vec<ExtractedDefinition>, Vec<ExtractedCall>) {
+    extract_blob_callgraph_with_tree(language, blob, None)
+}
+
+/// Chunk and extract the callgraph with one parse on the supported AST path.
+/// If the chunker rejected the blob, retain the standalone callgraph's
+/// behavior rather than widening its binary/size rejection policy.
+pub(crate) fn analyze_blob(
+    file_path: &str,
+    blob: &[u8],
+) -> (
+    Vec<crate::chunker::Chunk>,
+    Vec<ExtractedDefinition>,
+    Vec<ExtractedCall>,
+) {
+    let (chunks, tree) = crate::chunker::chunk_blob_with_tree(file_path, blob);
+    let (definitions, calls) =
+        extract_blob_callgraph_with_tree(crate::chunker::detect_language(file_path), blob, tree);
+    (chunks, definitions, calls)
+}
+
+fn extract_blob_callgraph_with_tree(
+    language: Option<&'static str>,
+    blob: &[u8],
+    tree: Option<Tree>,
+) -> (Vec<ExtractedDefinition>, Vec<ExtractedCall>) {
     let Ok(text) = std::str::from_utf8(blob) else {
         return (Vec::new(), Vec::new());
     };
@@ -55,12 +81,17 @@ pub fn extract_blob_callgraph(
         return (Vec::new(), Vec::new());
     };
 
-    let mut parser = Parser::new();
-    if parser.set_language(kind.language()).is_err() {
-        return (Vec::new(), Vec::new());
-    }
-    let Some(tree) = parser.parse(text, None) else {
-        return (Vec::new(), Vec::new());
+    let tree = if let Some(tree) = tree {
+        tree
+    } else {
+        let mut parser = Parser::new();
+        if parser.set_language(kind.language()).is_err() {
+            return (Vec::new(), Vec::new());
+        }
+        let Some(tree) = parser.parse(text, None) else {
+            return (Vec::new(), Vec::new());
+        };
+        tree
     };
 
     let defs = run_defs(&tree, kind, text);
@@ -305,6 +336,82 @@ fn run_calls(tree: &Tree, kind: LangKind, src: &str) -> Vec<ExtractedCall> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_same_analysis(path: &str, blob: &[u8]) {
+        let expected_chunks = crate::chunker::chunk_blob(path, blob);
+        let (expected_definitions, expected_calls) =
+            extract_blob_callgraph(crate::chunker::detect_language(path), blob);
+        assert_eq!(
+            analyze_blob(path, blob),
+            (expected_chunks, expected_definitions, expected_calls),
+            "shared parse changed analysis for {path}",
+        );
+    }
+
+    #[test]
+    fn shared_tree_matches_independent_analyses_for_supported_languages() {
+        for (path, item) in [
+            (
+                "sample.rs",
+                "/// Validates Grüße before dispatch.\npub fn run(value: usize) { validate(value); worker.dispatch(value); crate::finish(value); }\n",
+            ),
+            (
+                "sample.ts",
+                "export function run(value: number): number { validate(value); worker.dispatch(value); return finish(value); }\n",
+            ),
+            (
+                "sample.tsx",
+                "export function Item({ value }: { value: number }) { const title = format(value); return <button onClick={() => select(value)}>{title}</button>; }\n",
+            ),
+        ] {
+            let source = item.repeat(160);
+            let (chunks, definitions, calls) = analyze_blob(path, source.as_bytes());
+            assert!(chunks.len() > 1, "fixture must exercise chunk splitting");
+            assert!(!definitions.is_empty());
+            assert!(!calls.is_empty());
+            assert_same_analysis(path, source.as_bytes());
+            // Error recovery remains the grammar's behavior on both paths.
+            assert_same_analysis(path, format!("{source}\nfn function( {{{{").as_bytes());
+        }
+        assert_same_analysis("source.rs", include_bytes!("local_git_source.rs"));
+    }
+
+    #[test]
+    fn shared_tree_preserves_fallback_and_empty_analysis() {
+        let markdown = "Grüße 世界\r\n".repeat(crate::chunker::FALLBACK_LINE_WINDOW + 1);
+        assert_same_analysis("notes.md", markdown.as_bytes());
+        for (path, source) in [
+            ("empty.rs", ""),
+            ("whitespace.rs", " \t\r\n"),
+            ("fragment.rs", "}"),
+            ("config.toml", "[server]\r\nport = 31415\r\n"),
+        ] {
+            assert_same_analysis(path, source.as_bytes());
+        }
+        assert_eq!(
+            analyze_blob("notes.md", markdown.as_bytes()).0[0].chunk_type,
+            "file"
+        );
+    }
+
+    #[test]
+    fn shared_tree_preserves_the_callgraph_for_chunker_rejected_blobs() {
+        assert_same_analysis("invalid.rs", b"fn valid() {}\xff");
+        let oversized = format!(
+            "fn caller() {{ callee(); }}\n//{}",
+            "x".repeat(crate::chunker::MAX_BLOB_BYTES)
+        );
+        for blob in [
+            b"fn caller() { callee(); }\n\0".as_slice(),
+            oversized.as_bytes(),
+        ] {
+            let (chunks, definitions, calls) = analyze_blob("rejected.rs", blob);
+            assert!(chunks.is_empty());
+            assert!(!definitions.is_empty(), "standalone extractor admits UTF-8");
+            assert!(!calls.is_empty());
+            assert_same_analysis("rejected.rs", blob);
+        }
+    }
 
     #[test]
     fn extract_rust_free_function() {

@@ -520,15 +520,45 @@ async fn compose_pg_sidecars(
     Ok(pg_sidecars)
 }
 
-/// Wire the cited-blob store's cold object store into storage, asserting
-/// that it and the cited uploads name one backend.
+/// Missing durable storage must not fall back to the low-level in-memory
+/// test store: a successful forget would lose its payload on restart, and
+/// a successful delete would acknowledge bytes the host cannot reach.
+struct UnconfiguredColdStore;
+
+impl UnconfiguredColdStore {
+    fn unavailable() -> StorageError {
+        StorageError::Unavailable("durable cold object storage is not configured".into())
+    }
+}
+
+#[async_trait::async_trait]
+impl ColdObjectStore for UnconfiguredColdStore {
+    fn backend(&self) -> &'static str {
+        "unconfigured://"
+    }
+
+    async fn put(&self, _key: &str, _bytes: &[u8]) -> Result<(), StorageError> {
+        Err(Self::unavailable())
+    }
+
+    async fn get(&self, _key: &str) -> Result<Vec<u8>, StorageError> {
+        Err(Self::unavailable())
+    }
+
+    async fn delete(&self, _key: &str) -> Result<(), StorageError> {
+        Err(Self::unavailable())
+    }
+}
+
+/// Wire durable cold storage, or an unavailable adapter for database-only
+/// hosts. Cited uploads and cold storage must name the same backend.
 fn wire_cold_store(
     pg: PgStorage,
     blobs: Option<&CitedBlobStore>,
     configured_bucket: Option<&str>,
 ) -> Result<PgStorage, EmbedError> {
     let Some(store) = blobs else {
-        return Ok(pg);
+        return Ok(pg.with_cold(Arc::new(UnconfiguredColdStore)));
     };
     let cold = store.cold_store();
     // Assert the composition the purge queue's `backend` column

@@ -416,17 +416,20 @@ configuration. Resolved by `EmbedConfig`/`S3RuntimeConfig` from env:
 | `PROXIMA_S3_MAX_BLOB_BYTES` | no | `104857600` |
 
 Credentials use the standard AWS SDK provider chain. Missing S3 config
-does not fail boot; cited-blob commands fail typed at call time. Commands
-return presigned URLs only, never `bucket` or `object_key`.
+does not fail boot; database-only operations remain available. The facade uses
+the same S3 store for cited objects and cold Memory payloads. Without it,
+cited-blob commands, forget, and hydration requiring cold bytes fail typed at
+call time. A refused forget preserves the hot row and its payload; an erase
+retains unfinished object-purge debts and reports them pending. Cited-blob
+commands return presigned URLs only, never `bucket` or `object_key`.
 
-`PROXIMA_S3_BUCKET` is also the identity the durable object-purge queue
-records its debts against. Boot asserts that the cold object store it wires
-into storage reports exactly the configured bucket, and a purge drain refuses
-to run while the queue holds a debt against some other store. Repointing a
-deployment at a different bucket without draining the queue first is
-therefore a loud startup or maintenance failure rather than a silent one:
-objects an erase promised to destroy would otherwise survive with the debt
-cleared against the wrong store.
+`PROXIMA_S3_BUCKET` is also the identity recorded for cited-upload purge debts.
+Boot checks that the wired cold adapter reports the configured bucket. A purge
+retry refuses debts naming another bucket; post-commit erasure leaves them
+queued and reports pending work. Restore the original bucket to drain them.
+Cold Memory rows do not record their bucket; keep the same bucket across
+restarts. Their unrecorded debts cannot detect a switch between two configured
+buckets.
 
 In-process consumers resolve `CitedBlobReadService` from `FlavorServices`.
 `collect_verified` requires a non-zero per-call byte ceiling in addition to

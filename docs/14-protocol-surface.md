@@ -200,8 +200,9 @@ returns at most `limit`, and emits `next_cursor` from the last returned
 row only when another row exists. Edge hydration is bounded to the
 returned node window.
 
-Returns rows plus `seq_high_water`. Clients persist the watermark as the
-seq cursor for a subsequent forward poll of `announce`.
+Returns rows plus an owner-scoped `seq_high_water` captured before selecting
+the results. Clients retain this watermark as the starting cursor for a
+subsequent forward poll of `announce`.
 
 ### ChangeHistory
 
@@ -214,7 +215,7 @@ Bounded read of `announce`, newest-first, scoped to the server-resolved authoriz
 | `before` | optional UUIDv7 cursor; returns `seq < before` |
 | filters | authorized-owner set only in current implementation |
 | return order | newest-first |
-| `seq_high_water` | latest visible event seq at read time |
+| `seq_high_water` | latest visible event seq before event selection |
 
 No `after` cursor — this verb is backward-only. Forward replay (events
 with `seq > cursor`) is served by the `proxima://change-events{?since,limit}`
@@ -343,14 +344,24 @@ Cold-start stitching — seed from a snapshot, then poll forward:
 4. hydrate identities with Query
 ```
 
-Events committed after `hwm` are read by the poll; events at or before
-`hwm` are already represented in the snapshot. A history-rail variant
-seeds recent context with `ChangeHistory(owner, limit = N)` before the
-first forward poll. Ownership transfers stitch the same way: an
-`EntityTransfer` read on the destination owner's lane after `hwm` is an
-arrival to hydrate with `Query`; one read on the prior owner's lane is a
-departure from that owned view. A transfer at or before `hwm` is already
-reflected in the snapshot's owner column.
+`hwm` is sampled **before** result selection, so the poll is at-least-once:
+
+| Rule | Consequence |
+|---|---|
+| watermark precedes selection | an event committed during result loading is `> hwm` and reaches the next poll, even if its row missed the selection |
+| events may appear in both reads | apply idempotently by `seq` + entity identity |
+| `hwm` absent | poll from the beginning |
+| paged baseline | keep the first page's `hwm`; never advance to a later page's |
+| no shared snapshot | projections and pages are separate reads |
+| no commit order | UUIDv7 `seq` is allocated at INSERT; an older in-flight event can commit after a larger visible cursor. `PROXIMA_CHANGE_EVENT_COMMIT_GRACE_MS` (default off) only protects forward polls for commits within the grace; the Query/ChangeHistory starting `hwm` is unfiltered |
+
+Neither mechanism yields an atomic baseline or lossless polling for
+arbitrarily late commits; the retention limit above still applies.
+
+History-rail variant: seed with `ChangeHistory(owner, limit = N)` (bounded,
+not a full history) before polling from the initial `hwm`. `EntityTransfer`
+on the destination owner's lane is an arrival to hydrate with `Query`; on the
+prior owner's lane it is a departure. Same cursor and idempotency rules.
 
 ## Consistency — Strong Write -> Log
 
@@ -362,7 +373,7 @@ Graph writes commit Memory/Goal rows and corresponding
 | atomic write/event | no committed graph row without its `announce` row |
 | atomic transfer/event | `transfer_to_owner` commits the owner UPDATE and its paired `transfer` rows (prior owner's lane + destination owner's lane) in one transaction |
 | write return | `GoalWrite` / `FactIngest` success means the graph change is committed and durably readable |
-| read | a committed event is visible to any subsequent forward poll / `ChangeHistory` read |
+| read | committed, unpruned events are readable within the authorized owner, cursor and configured grace bounds |
 | replay | `ChangeHistory` and the forward poll read the same `announce` log |
 | broker | none; `announce` is a pull log — no tailing broker or push delivery |
 

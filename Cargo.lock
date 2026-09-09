@@ -2138,6 +2138,8 @@ name = "proxima"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
  "axum",
  "futures",
  "http 1.5.0",
@@ -2354,6 +2356,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 

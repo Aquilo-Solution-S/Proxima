@@ -48,9 +48,11 @@ pub trait ColdObjectStore: Send + Sync {
     /// matching store to queue by boot convention alone means a deployment
     /// that changed buckets deletes against the wrong store, or silently
     /// stops reclaiming. Returning [`UNRECORDED_BACKEND`] declares no
-    /// identity and therefore adopts every row — correct only for a store
-    /// that has no bucket to be wrong about, i.e. the in-memory dev/test
-    /// store.
+    /// identity and therefore adopts every row. This legacy wildcard is
+    /// appropriate only for an adapter that can actually delete objects
+    /// from every backend it adopts. The built-in in-memory dev/test store
+    /// names its own backend so it cannot acknowledge an external store's
+    /// debts when a host boots without that store's configuration.
     fn backend(&self) -> &str {
         UNRECORDED_BACKEND
     }

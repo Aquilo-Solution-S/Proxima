@@ -29,8 +29,7 @@ use super::rows::{
 };
 use super::transitions::{
     AbortTransitionDecision, FinishTransitionDecision, StageLocatorDecision,
-    TerminalLocatorRepairDecision, abort_transition_decision, finish_transition_decision,
-    stage_locator_decision, terminal_locator_repair_decision,
+    abort_transition_decision, finish_transition_decision, stage_locator_decision,
 };
 use crate::error::BlobError;
 
@@ -107,13 +106,24 @@ async fn read_hashed_object(
         .send()
         .await
         .map_err(|error| {
-            let status = error
-                .raw_response()
-                .map(|response| response.status().as_u16());
-            if status == Some(404)
-                || error
-                    .as_service_error()
-                    .is_some_and(aws_sdk_s3::operation::get_object::GetObjectError::is_no_such_key)
+            let response = error.raw_response();
+            let status = response.map(|response| response.status().as_u16());
+            let service = error.as_service_error();
+            let code = service.and_then(|service| service.meta().code());
+            // The SDK synthesizes NotFound for an empty HTTP 404 body.
+            // An explicit XML NotFound code must not use that exception.
+            let code_less = code.is_none()
+                || (code == Some("NotFound")
+                    && response
+                        .and_then(|response| response.body().bytes())
+                        .is_some_and(<[u8]>::is_empty));
+            // An explicit S3 code takes precedence: NoSuchBucket also uses
+            // HTTP 404, but is a provider fault. Keep the existing fallback
+            // for code-less 404 responses as limited compatibility behavior,
+            // not a claim that supported providers require it.
+            if service
+                .is_some_and(aws_sdk_s3::operation::get_object::GetObjectError::is_no_such_key)
+                || (status == Some(404) && code_less)
             {
                 ObjectReadError::Missing
             } else {
@@ -453,9 +463,22 @@ impl CitedBlobStore {
         upload_id: Uuid,
         row: &super::rows::UploadRow,
     ) -> Result<Option<CitedBlobStaged>, BlobError> {
-        match row.status {
+        let status =
+            if row.status == UploadStatus::Pending && row.expires_at < OffsetDateTime::now_utc() {
+                // Finish or abort may have won since this snapshot. Use the
+                // status observed under the expiry helper's row lock.
+                mark_upload_expired(&self.pool, owner, upload_id).await?
+            } else {
+                row.status
+            };
+        match status {
             UploadStatus::Completed => {
-                let Some(blob_id) = row.blob_id else {
+                let blob_id = if row.status == UploadStatus::Pending && row.blob_id.is_none() {
+                    load_upload(&self.pool, owner, upload_id).await?.blob_id
+                } else {
+                    row.blob_id
+                };
+                let Some(blob_id) = blob_id else {
                     return Err(BlobError::State(
                         "completed upload is missing blob_id".into(),
                     ));
@@ -466,36 +489,28 @@ impl CitedBlobStore {
                 // on bytes a client can recreate through its presigned URL.
                 self.purge_pending_upload_best_effort(&row.bucket, upload_id)
                     .await;
-                return load_staged_payload(&self.pool, owner, upload_id, blob_id)
+                load_staged_payload(&self.pool, owner, upload_id, blob_id)
                     .await
-                    .map(Some);
+                    .map(Some)
             }
             UploadStatus::Aborted => {
                 self.purge_pending_upload_best_effort(&row.bucket, upload_id)
                     .await;
-                return Err(BlobError::State(
+                Err(BlobError::State(
                     terminal_status_message(UploadStatus::Aborted).into(),
-                ));
+                ))
             }
-            UploadStatus::Expired => {
-                return Err(BlobError::State(
-                    terminal_status_message(UploadStatus::Expired).into(),
-                ));
-            }
-            UploadStatus::Pending => {}
-        }
-        if row.expires_at < OffsetDateTime::now_utc() {
-            mark_upload_expired(&self.pool, owner, upload_id).await?;
-            return Err(BlobError::State(
+            UploadStatus::Expired => Err(BlobError::State(
                 terminal_status_message(UploadStatus::Expired).into(),
-            ));
+            )),
+            UploadStatus::Pending => Ok(None),
         }
-        Ok(None)
     }
 
     /// Record the canonical locator against the still-pending row, then decide
     /// what a zero-row update meant. A stage that lost its guard while the
-    /// provider write was in flight is repaired, not reported as a failure.
+    /// provider write was in flight retains a reachable canonical locator
+    /// before reporting its terminal status.
     async fn record_stage_locator(
         &self,
         owner: &OwnerRef,
@@ -509,27 +524,19 @@ impl CitedBlobStore {
             payload: UploadedBlobPayload {
                 content_hash: streamed.blake3,
                 bucket: row.bucket.clone(),
-                object_key: canonical_key.clone(),
+                object_key: canonical_key,
                 sha256: streamed.sha256,
                 byte_len: streamed.byte_len,
                 mime: row.mime.clone(),
                 filename: row.filename.clone(),
-                etag: etag.clone(),
+                etag,
                 uploaded_at: OffsetDateTime::now_utc(),
             },
             already_completed: None,
         };
-        let decision = with_retried_tx(|| {
-            self.commit_stage_locator(
-                owner,
-                upload_id,
-                row,
-                &canonical_key,
-                etag.as_deref(),
-                streamed,
-            )
-        })
-        .await?;
+        let decision =
+            with_retried_tx(|| self.commit_stage_locator(owner, upload_id, row, &staged.payload))
+                .await?;
         match decision {
             StageLocatorDecision::Staged => {
                 self.purge_pending_upload_best_effort(&row.bucket, upload_id)
@@ -540,14 +547,15 @@ impl CitedBlobStore {
                 load_staged_payload(&self.pool, owner, upload_id, blob_id).await
             }
             StageLocatorDecision::RepairTerminal(status) => {
-                self.repair_terminal_stage(owner, upload_id, row, status, &staged, &canonical_key)
-                    .await
+                self.purge_pending_upload_best_effort(&row.bucket, upload_id)
+                    .await;
+                Err(BlobError::State(terminal_status_message(status).into()))
             }
         }
     }
 
     /// The database half of a stage, in ONE transaction so the locator write
-    /// and the answer to "what did a zero-row update mean" share a snapshot.
+    /// and any terminal repair retain the same fences and locked row.
     ///
     /// The S3 copy is intentionally outside this critical section. Re-enter it
     /// under the owner fence and the canonical key's object fence, then lock
@@ -561,10 +569,9 @@ impl CitedBlobStore {
         owner: &OwnerRef,
         upload_id: Uuid,
         row: &super::rows::UploadRow,
-        canonical_key: &str,
-        etag: Option<&str>,
-        streamed: &super::digest::StreamedObject,
+        staged: &UploadedBlobPayload,
     ) -> Result<StageLocatorDecision, BlobError> {
+        let canonical_key = &staged.object_key;
         let mut tx = self.pool.begin().await.map_err(BlobError::Db)?;
         proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
             .await
@@ -575,7 +582,7 @@ impl CitedBlobStore {
         // answers from being taken against different snapshots.
         proxima_storage_pg::access::owner_columns::lock_object_keys_tx(
             &mut tx,
-            std::slice::from_ref(&canonical_key.to_owned()),
+            std::slice::from_ref(canonical_key),
         )
         .await
         .map_err(|err| BlobError::State(format!("lock upload object key: {err}")))?;
@@ -585,9 +592,9 @@ impl CitedBlobStore {
               WHERE owner_id = $5 AND upload_id = $6 AND status = 'pending'",
         )
         .bind(canonical_key)
-        .bind(&streamed.blake3[..])
-        .bind(&streamed.sha256[..])
-        .bind(etag)
+        .bind(&staged.content_hash[..])
+        .bind(&staged.sha256[..])
+        .bind(staged.etag.as_deref())
         .bind(owner.stored_owner_id())
         .bind(upload_id)
         .execute(&mut *tx)
@@ -609,6 +616,13 @@ impl CitedBlobStore {
             }
         } else {
             stage_locator_decision(row.status, None, rows_affected)?
+        };
+        let decision = match decision {
+            StageLocatorDecision::RepairTerminal(terminal) => {
+                self.repair_terminal_stage(&mut tx, owner, upload_id, terminal, staged)
+                    .await?
+            }
+            other => other,
         };
         tx.commit().await.map_err(BlobError::Db)?;
         Ok(decision)
@@ -729,64 +743,44 @@ impl CitedBlobStore {
     }
 
     /// A stage can lose its pending-row guard after writing the canonical
-    /// bytes. Keep that locator on a still-terminal row so erase/reconcile can
-    /// find the retained canonical object, then reclaim only the expendable
-    /// pending transfer copy. A completion that overtook the terminal write
-    /// is replayed from its exact upload row instead.
+    /// bytes. Keep that locator on the locked terminal row before releasing
+    /// the owner/key fences, so an erase cannot snapshot its old pending key
+    /// and delete the row without owing the retained canonical object.
+    /// A completion or erase that won earlier was already classified by the
+    /// caller's locked reload. Pending S3 cleanup happens after commit.
     async fn repair_terminal_stage(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         owner: &OwnerRef,
         upload_id: Uuid,
-        row: &super::rows::UploadRow,
         terminal: UploadStatus,
-        staged: &CitedBlobStaged,
-        canonical_key: &str,
-    ) -> Result<CitedBlobStaged, BlobError> {
+        staged: &UploadedBlobPayload,
+    ) -> Result<StageLocatorDecision, BlobError> {
         let owner_id = owner.stored_owner_id();
         let rows_affected = sqlx::query(
             "UPDATE proxima_core.blob_uploads \
                 SET object_key = $1, sha256 = $2, etag = $3 \
               WHERE owner_id = $4 AND upload_id = $5 AND status = $6",
         )
-        .bind(canonical_key)
-        .bind(&staged.payload.sha256[..])
-        .bind(&staged.payload.etag)
+        .bind(&staged.object_key)
+        .bind(&staged.sha256[..])
+        .bind(&staged.etag)
         .bind(owner_id)
         .bind(upload_id)
         .bind(terminal)
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await
         .map_err(BlobError::Db)?
         .rows_affected();
 
-        let decision = if rows_affected == 0 {
-            let Some(observed) =
-                super::rows::load_upload_optional(&self.pool, owner, upload_id).await?
-            else {
-                self.purge_pending_upload_best_effort(&row.bucket, upload_id)
-                    .await;
-                return Err(BlobError::State("upload not found for Owner".into()));
-            };
-            terminal_locator_repair_decision(
-                terminal,
-                observed.status,
-                observed.blob_id,
-                rows_affected,
-            )?
-        } else {
-            terminal_locator_repair_decision(terminal, terminal, None, rows_affected)?
-        };
-
-        match decision {
-            TerminalLocatorRepairDecision::Replay(blob_id) => {
-                load_staged_payload(&self.pool, owner, upload_id, blob_id).await
-            }
-            TerminalLocatorRepairDecision::Terminal(status) => {
-                self.purge_pending_upload_best_effort(&row.bucket, upload_id)
-                    .await;
-                Err(BlobError::State(terminal_status_message(status).into()))
-            }
+        // The caller retains the row lock from its terminal observation, so
+        // exactly one row can match; anything else is a contradiction.
+        if rows_affected != 1 {
+            return Err(BlobError::State(format!(
+                "terminal upload locator repair affected {rows_affected} rows under the row lock"
+            )));
         }
+        Ok(StageLocatorDecision::RepairTerminal(terminal))
     }
 
     /// Reclaim the expendable transfer key without ever deciding an outcome.
@@ -1135,6 +1129,10 @@ async fn complete_terminal_upload(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "upload_read_tests.rs"]
+mod read_classification_tests;
 
 #[cfg(test)]
 mod conditional_publication_tests {

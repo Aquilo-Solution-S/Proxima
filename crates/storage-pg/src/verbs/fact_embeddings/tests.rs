@@ -1200,6 +1200,167 @@ mod pg_tests {
         result
     }
 
+    #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+    struct BackfillJobSnapshot {
+        job_id: Uuid,
+        status: String,
+        last_error: Option<String>,
+        claim_token: Option<Uuid>,
+        unclaimed: bool,
+    }
+
+    #[derive(Debug)]
+    struct BackfillProgress {
+        enqueued: Vec<usize>,
+        permanent_before: BackfillJobSnapshot,
+        permanent_after: BackfillJobSnapshot,
+        other_model_before: BackfillJobSnapshot,
+        other_model_after: BackfillJobSnapshot,
+        later_target_jobs: i64,
+        foreign_owner_jobs: i64,
+    }
+
+    /// A permanent rejection must not consume every bounded owner backfill
+    /// pass while a later, still-unqueued Fact needs the active model.
+    #[tokio::test]
+    async fn owner_backfill_skips_permanently_failed_jobs_before_its_limit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let observed = observe_owner_backfill_progress(&pg).await;
+        eprintln!("owner backfill progress: {observed:?}");
+        drop(pg);
+        let cleanup = drop_db(&db_name).await;
+        eprintln!("owner backfill database cleanup: {cleanup:?}");
+        cleanup?;
+        let observed = observed?;
+        assert_eq!(observed.permanent_before, observed.permanent_after);
+        assert_eq!(observed.permanent_after.status, "failed_permanent");
+        assert_eq!(observed.other_model_before, observed.other_model_after);
+        assert_eq!(observed.other_model_after.status, "pending");
+        assert_eq!(observed.foreign_owner_jobs, 0);
+        assert_eq!(
+            observed.enqueued,
+            [1, 0, 0],
+            "an existing permanent failure must not hide the later missing job"
+        );
+        assert_eq!(observed.later_target_jobs, 1);
+        Ok(())
+    }
+
+    async fn observe_owner_backfill_progress(
+        pg: &crate::PgStorage,
+    ) -> Result<BackfillProgress, Box<dyn std::error::Error>> {
+        let owner = owner_fixture();
+        let foreign_owner = Owner::Personal(proxima_core::UserId::new(Uuid::now_v7()));
+        let foreign = backfill_note(pg, &foreign_owner, "foreign earlier Fact", None).await?;
+        let earlier = backfill_note(
+            pg,
+            &owner,
+            "permanent earlier Fact",
+            Some("stub-fact-embed"),
+        )
+        .await?;
+        let later = backfill_note(
+            pg,
+            &owner,
+            "later missing target model",
+            Some("other-model"),
+        )
+        .await?;
+        if foreign.into_inner() >= earlier.into_inner()
+            || earlier.into_inner() >= later.into_inner()
+        {
+            return Err(
+                "backfill fixture Facts must be ordered by their real admission IDs".into(),
+            );
+        }
+        let pool = pg.pool_for_tests();
+        let claims = claim_pending_embedding_jobs(pool, "stub-fact-embed", 1).await?;
+        if claims.len() != 1 || claims[0].entity_id != earlier {
+            return Err("the real claim must target only the earlier Fact".into());
+        }
+        fail_embedding_job_permanently(pool, &claims[0], "provider rejects this input forever")
+            .await?;
+        let permanent_before = backfill_job_snapshot(pool, earlier, "stub-fact-embed").await?;
+        let other_model_before = backfill_job_snapshot(pool, later, "other-model").await?;
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let configured_pg = pg.clone().with_flavors(&registry);
+        let engine = Engine::new(registry)
+            .with_storage_ports(Arc::new(configured_pg).storage_ports())
+            .with_embed(Arc::new(RecordingBatchEmbedding {
+                batch_widths: Arc::default(),
+            }));
+        let Owner::Personal(user_id) = owner else {
+            return Err("backfill fixture owner must be personal".into());
+        };
+        let authz = AuthzContext::for_subject(user_id, AuthPath::HostBearer);
+        let mut enqueued = Vec::new();
+        for _ in 0..3 {
+            enqueued.push(
+                engine
+                    .backfill_missing_embeddings(&authz, &owner, 1)
+                    .await?,
+            );
+        }
+        Ok(BackfillProgress {
+            enqueued,
+            permanent_before,
+            permanent_after: backfill_job_snapshot(pool, earlier, "stub-fact-embed").await?,
+            other_model_before,
+            other_model_after: backfill_job_snapshot(pool, later, "other-model").await?,
+            later_target_jobs: sqlx::query_scalar(
+                "SELECT count(*) FROM proxima_core.embedding_jobs
+                  WHERE owner_id = $1 AND entity_id = $2 AND model_id = 'stub-fact-embed'",
+            )
+            .bind(owner.stored_owner_id())
+            .bind(later.into_inner())
+            .fetch_one(pool)
+            .await?,
+            foreign_owner_jobs: count_jobs(pool, foreign.into_inner()).await?,
+        })
+    }
+
+    async fn backfill_note(
+        pg: &crate::PgStorage,
+        owner: &Owner,
+        text: &str,
+        model: Option<&str>,
+    ) -> Result<MemoryId, StorageError> {
+        let mut draft = fact_draft(text);
+        draft.schema_id = SchemaId::new("core/agent-note-v1".into());
+        let written = ingest_note_fact(pg, owner, &draft, model, text, text).await?;
+        let loaded = load_embedding_text(
+            pg.pool_for_tests(),
+            owner,
+            EntityKind::Fact,
+            written.memory_id,
+            &[],
+            &core_embed_units(),
+        )
+        .await?;
+        if loaded.is_none_or(|text| text.is_empty()) {
+            return Err(StorageError::Internal(
+                "backfill fixture must have real embedding text".into(),
+            ));
+        }
+        Ok(written.memory_id)
+    }
+
+    async fn backfill_job_snapshot(
+        pool: &sqlx::PgPool,
+        memory_id: MemoryId,
+        model: &str,
+    ) -> Result<BackfillJobSnapshot, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT job_id, status::text, last_error, claim_token, claimed_at IS NULL AS unclaimed
+               FROM proxima_core.embedding_jobs WHERE entity_id = $1 AND model_id = $2",
+        )
+        .bind(memory_id.into_inner())
+        .bind(model)
+        .fetch_one(pool)
+        .await
+    }
+
     #[tokio::test]
     async fn reconcile_cannot_recreate_job_after_concurrent_forget()
     -> Result<(), Box<dyn std::error::Error>> {
