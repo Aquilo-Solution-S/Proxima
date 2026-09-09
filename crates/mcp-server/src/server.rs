@@ -147,6 +147,9 @@ impl McpToolHost {
             .find(|d| tool_name_matches(d.name, name))
         {
             let ctx = self.ctx_for(author, &auth)?;
+            // Validate once for every transport before a behavior can log
+            // arguments or a tool can pass them to storage.
+            reject_nul_in_args(&args)?;
             let call_fn = descriptor.call;
             let terminal: TerminalDispatch<'_> = Box::new(move |call| {
                 let ToolCall { args, ctx, .. } = call;
@@ -200,6 +203,42 @@ impl McpToolHost {
             .await
             .map_err(Into::into)
     }
+}
+
+/// Reject NUL in the entire argument tree before behaviors or tool code.
+/// `PostgreSQL` text cannot store U+0000, though JSON can encode it. Treat it
+/// as the existing caller-input error instead of a later database fault.
+/// Rejection preserves the request; silently stripping the character would
+/// execute a different query. The same rule applies to object keys.
+pub(crate) fn reject_nul_in_args(args: &serde_json::Value) -> Result<(), McpToolError> {
+    // An explicit worklist keeps the validator stack-safe independently of
+    // serde_json's parser depth limit, including direct host callers.
+    let mut stack = vec![args];
+    while let Some(value) = stack.pop() {
+        match value {
+            serde_json::Value::String(text) => {
+                if text.contains('\0') {
+                    return Err(McpToolError::InvalidInput(
+                        "arguments must not contain NUL (U+0000)".to_string(),
+                    ));
+                }
+            }
+            serde_json::Value::Array(items) => stack.extend(items.iter()),
+            serde_json::Value::Object(map) => {
+                for (key, item) in map {
+                    if key.contains('\0') {
+                        return Err(McpToolError::InvalidInput(
+                            "argument names must not contain NUL (U+0000)".to_string(),
+                        ));
+                    }
+                    stack.push(item);
+                }
+            }
+            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn dispatch_resource(
@@ -536,6 +575,46 @@ mod tests {
             services: FlavorServices::default(),
             engine: None,
         }
+    }
+
+    #[tokio::test]
+    async fn nul_validation_preserves_host_auth_and_unknown_tool_priority() {
+        let server = make_server();
+        let owner = fake_owner();
+        let auth = McpAuthContext {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        };
+        let author = McpAuthorContext {
+            model_id: "test".into(),
+            trusted_model_id: None,
+            client_name: "test".into(),
+            client_version: "0".into(),
+            caller_self_perspective: None,
+        };
+        let args = serde_json::json!({"value": "bad\0input"});
+        assert!(matches!(
+            server
+                .call_tool("core_memory_spaces", args.clone(), author.clone(), None)
+                .await,
+            Err(ToolInvocationError::NotAuthorized(_))
+        ));
+        assert!(matches!(
+            server
+                .call_tool(
+                    "unknown_tool",
+                    args.clone(),
+                    author.clone(),
+                    Some(auth.clone())
+                )
+                .await,
+            Err(ToolInvocationError::ToolNotFound(_))
+        ));
+        assert!(matches!(
+            server.call_tool("core_memory_spaces", args, author, Some(auth)).await,
+            Err(ToolInvocationError::Tool(McpToolError::InvalidInput(message)))
+                if message == "arguments must not contain NUL (U+0000)"
+        ));
     }
 
     /// The author context is a per-call struct an out-of-tree host builds
