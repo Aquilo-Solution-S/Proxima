@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path, RawPathParams, State};
+use axum::extract::{Path, State};
 use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
@@ -316,15 +316,14 @@ async fn dispatch(
 async fn read_resource(
     State(state): State<RestState>,
     uri: Uri,
-    raw_params: RawPathParams,
     headers: axum::http::HeaderMap,
     RestAuth(auth): RestAuth,
 ) -> Response {
-    // The percent-encoded value, not `Path`'s decoded one: "verbatim" means
-    // the seam sees the bytes the client sent.
-    let path = raw_params
-        .iter()
-        .find_map(|(name, value)| (name == "path").then_some(value))
+    // Both Path and RawPathParams percent-decode captures. Read the URI
+    // instead so encoded '?' or '/' cannot become resource structure here.
+    let path = uri
+        .path()
+        .strip_prefix("/v1/resources/")
         .unwrap_or_default();
     let instance = format!("{PREFIX}/resources/{path}");
     let mut target = format!("{RESOURCE_SCHEME}{path}");
