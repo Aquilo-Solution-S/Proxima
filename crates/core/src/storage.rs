@@ -484,6 +484,10 @@ impl DerivedEmbedding<'_> {
 
 #[derive(Debug)]
 pub struct AuthorDerivedRequest<'a> {
+    /// `PostgreSQL` uses this UUID as the series handle when `supersedes` is
+    /// absent; with `supersedes`, it retains the prior version's handle.
+    /// It allocates the actual admission `t` separately. Use the returned
+    /// [`AuthorDerivedOutcome::memory_id`] to address the memory.
     pub memory_id: MemoryId,
     pub owner: Owner,
     pub kind: EntityKind,
