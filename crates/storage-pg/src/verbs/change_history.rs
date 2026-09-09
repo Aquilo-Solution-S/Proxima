@@ -29,6 +29,10 @@ pub(crate) async fn change_history(
         .map(OwnerRef::stored_owner_id)
         .collect();
     let limit = i64::from(req.limit.min(MAX_CHANGE_HISTORY_LIMIT));
+    // Do not advance the cursor over commits made between event selection
+    // and hydration. The separate reads may include later events too;
+    // consumers deduplicate when polling after this early watermark.
+    let high_water = crate::verbs::query::read_seq_high_water(pool, &owner_ids).await?;
     let seqs: Vec<Uuid> = sqlx::query_scalar(
         "SELECT seq FROM proxima_core.announce
           WHERE owner_id = ANY($1::uuid[])
@@ -44,13 +48,6 @@ pub(crate) async fn change_history(
     .map_err(map_err)?;
 
     let events: Vec<ChangeEvent> = hydrate_change_events_batch(pool, read_owners, &seqs).await?;
-
-    let owner_ids: Vec<Uuid> = read_owners
-        .iter()
-        .copied()
-        .map(proxima_core::OwnerRef::stored_owner_id)
-        .collect();
-    let high_water = crate::verbs::query::read_seq_high_water(pool, &owner_ids).await?;
 
     Ok(ChangeHistoryResponse {
         events,

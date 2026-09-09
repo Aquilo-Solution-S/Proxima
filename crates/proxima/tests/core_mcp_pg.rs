@@ -21,6 +21,276 @@ use proxima_storage_pg::sidecars::{
 };
 use uuid::Uuid;
 
+#[cfg(feature = "openai-compat-embed")]
+mod embedding_failure_regressions {
+    use super::*;
+    use proxima::host::{EmbedCaps, OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
+    use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
+    const DEADLINE: Duration = Duration::from_secs(10);
+
+    struct OverflowEndpoint {
+        client: Arc<OpenAiCompatEmbeddingClient>,
+        calls: Arc<AtomicUsize>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for OverflowEndpoint {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn read_request(stream: &mut TcpStream) -> TestResult<()> {
+        let mut request = Vec::new();
+        loop {
+            let mut buffer = [0; 4096];
+            let count = stream.read(&mut buffer).await?;
+            if count == 0 || request.len() > 65_536 {
+                return Err("incomplete or oversized test request".into());
+            }
+            request.extend_from_slice(&buffer[..count]);
+            let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = std::str::from_utf8(&request[..end])?;
+            if !headers.starts_with("POST /v1/embeddings HTTP/1.1\r\n") {
+                return Err("unexpected embedding request path".into());
+            }
+            let length = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .ok_or("missing test content length")?
+                .1
+                .trim()
+                .parse::<usize>()?;
+            if request.len() >= end + 4 + length {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn overflow_endpoint() -> TestResult<OverflowEndpoint> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let mut components = vec!["0.0"; EMBEDDING_DIM];
+        components[EMBEDDING_DIM - 1] = "1e39";
+        let body = format!(
+            r#"{{"data":[{{"index":0,"embedding":[{}]}}]}}"#,
+            components.join(",")
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept test request");
+                tokio::time::timeout(DEADLINE, read_request(&mut stream))
+                    .await
+                    .expect("bounded request")
+                    .expect("complete request");
+                count.fetch_add(1, Ordering::SeqCst);
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("respond");
+            }
+        });
+        let client = Arc::new(OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            EmbedCaps::new(u32::try_from(EMBEDDING_DIM)?, false),
+            OpenAiCompatConfig::new(format!("http://{addr}/v1"), None)
+                .with_timeout(Duration::from_secs(5)),
+        )?);
+        Ok(OverflowEndpoint {
+            client,
+            calls,
+            task,
+        })
+    }
+
+    struct Observed {
+        memory: String,
+        adapter: Result<Vec<f32>, LlmError>,
+        lexical: serde_json::Value,
+        hybrid: serde_json::Value,
+        semantic: Result<serde_json::Value, CoreMcpError>,
+        recall: serde_json::Value,
+        subject_recall: serde_json::Value,
+        calls: [usize; 6],
+        healthy_semantic: serde_json::Value,
+    }
+
+    async fn prepare_fact(built: &proxima::BuiltProxima, owner: Owner) -> TestResult<String> {
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+        let remembered = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_remember",
+            serde_json::json!({
+                "title": "Overflow fallback fact",
+                "body": "provider overflow sentinel needle",
+                "idempotency_key": "provider-overflow-fallback"
+            }),
+        )
+        .await?;
+        let memory = remembered["handle"]
+            .as_str()
+            .ok_or("memory handle")?
+            .to_owned();
+        built.engine.set_embed_client(Some(test_embedding())).await;
+        ensure_fact_embedding_for_handle(&built.engine, &owner, &memory).await?;
+        Ok(memory)
+    }
+
+    fn search_args(mode: &str) -> serde_json::Value {
+        let mut args = serde_json::json!({
+            "query": "sentinel needle", "kind": "Fact", "limit": 5, "mode": mode
+        });
+        if mode == "hybrid" {
+            args["semantic_weight"] = serde_json::json!(0.7);
+        }
+        args
+    }
+
+    async fn exercise(built: &proxima::BuiltProxima, owner: Owner) -> TestResult<Observed> {
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+        let memory = prepare_fact(built, owner).await?;
+        let endpoint = overflow_endpoint().await?;
+        let adapter = endpoint.client.embed("response control").await;
+        built
+            .engine
+            .set_embed_client(Some(endpoint.client.clone()))
+            .await;
+        let mut calls = [0; 6];
+        calls[0] = endpoint.calls.load(Ordering::SeqCst);
+
+        let call = |name: &'static str, args| {
+            tokio::time::timeout(
+                DEADLINE,
+                call_test_model_tool(&tools, authz.clone(), owner, name, args),
+            )
+        };
+        let lexical = call("core_search_memories", search_args("lexical")).await??;
+        calls[1] = endpoint.calls.load(Ordering::SeqCst);
+        let hybrid = call("core_search_memories", search_args("hybrid")).await??;
+        calls[2] = endpoint.calls.load(Ordering::SeqCst);
+        let semantic = call("core_search_memories", search_args("semantic")).await?;
+        calls[3] = endpoint.calls.load(Ordering::SeqCst);
+        let recall = call(
+            "core_recall",
+            serde_json::json!({"question": "sentinel needle", "kind": "Fact"}),
+        )
+        .await??;
+        calls[4] = endpoint.calls.load(Ordering::SeqCst);
+        let subject_recall = call(
+            "core_recall",
+            serde_json::json!({"subjects": [&memory], "kind": "Fact"}),
+        )
+        .await??;
+        calls[5] = endpoint.calls.load(Ordering::SeqCst);
+
+        built.engine.set_embed_client(Some(test_embedding())).await;
+        let healthy = call("core_search_memories", search_args("semantic")).await??;
+        Ok(Observed {
+            memory,
+            adapter,
+            lexical,
+            hybrid,
+            semantic,
+            recall,
+            subject_recall,
+            calls,
+            healthy_semantic: healthy,
+        })
+    }
+
+    #[tokio::test]
+    async fn core_search_and_recall_degrade_after_actual_provider_response_overflow() {
+        let name = unique_db_name("proxima_query_provider_overflow");
+        create_db(&name).await.expect("PG fixture");
+        let result: TestResult<Observed> = async {
+            let owner = company_owner(Uuid::now_v7());
+            let built = Proxima::<AgentMemoryApp>::app()
+                .database_url(db_url(&name))
+                .owner(owner)
+                .tool_scope(ToolScope::All)
+                .build()
+                .await?;
+            let result = exercise(&built, owner).await;
+            built.shutdown();
+            result
+        }
+        .await;
+        drop_db(&name)
+            .await
+            .expect("drop isolated fixture before assertions");
+        let observed = result.expect("bounded handler exercise");
+        eprintln!(
+            "core overflow handlers: calls={:?}; fixture removed",
+            observed.calls,
+        );
+        assert!(matches!(observed.adapter, Err(LlmError::Embed(ref message))
+            if message == "embedding 0 has non-finite component at position 1023"));
+        assert_eq!(observed.calls, [1, 1, 2, 3, 4, 4]);
+        for (page, mode, degraded) in [
+            (&observed.lexical, "lexical", false),
+            (&observed.hybrid, "hybrid", true),
+        ] {
+            assert_eq!(page["mode"], mode);
+            assert_eq!(page["degraded_to_lexical"], degraded);
+            assert_eq!(page["memories"][0]["memory"], observed.memory);
+            assert!(
+                page["memories"][0]["lexical_score"]
+                    .as_f64()
+                    .unwrap_or_default()
+                    > 0.0
+            );
+            assert_eq!(page["memories"][0]["similarity_score"], 0.0);
+        }
+        assert_eq!(
+            observed.hybrid["memories"][0]["score"],
+            observed.lexical["memories"][0]["score"]
+        );
+        assert!(matches!(observed.semantic, Err(CoreMcpError::Tool {
+            kind: proxima_core::McpToolErrorKind::InvalidRequest, ref message,
+        }) if message == "semantic search unavailable: embedding provider error"));
+        for (packet, reason) in [
+            (&observed.recall, "question"),
+            (&observed.subject_recall, "subject"),
+        ] {
+            assert!(packet["sketches"].as_array().expect("sketches").iter().any(
+                |row| row["handle"] == observed.memory
+                    && row["kind"] == "Fact"
+                    && row["reason"] == reason
+                    && row["sketch"] == "Overflow fallback fact"
+            ));
+        }
+        assert_eq!(
+            observed.healthy_semantic["memories"][0]["memory"],
+            observed.memory
+        );
+        assert!(
+            observed.healthy_semantic["memories"][0]["similarity_score"]
+                .as_f64()
+                .unwrap_or_default()
+                > 0.99
+        );
+    }
+}
+
 type ResolvedAuthz = AuthzContext;
 
 struct EmptyApp;

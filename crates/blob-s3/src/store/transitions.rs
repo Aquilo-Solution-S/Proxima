@@ -57,44 +57,6 @@ pub(super) fn stage_locator_decision(
     }
 }
 
-/// Decide what a conditional terminal-row locator repair observed after its
-/// first guarded write means.  The completed branch is an exact replay; a
-/// still-terminal row is safe to clean up and report. Any other interleaving
-/// fails closed rather than returning a stale terminal result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TerminalLocatorRepairDecision {
-    Terminal(UploadStatus),
-    Replay(Uuid),
-}
-
-pub(super) fn terminal_locator_repair_decision(
-    expected_terminal: UploadStatus,
-    observed_status: UploadStatus,
-    observed_blob_id: Option<Uuid>,
-    rows_affected: u64,
-) -> Result<TerminalLocatorRepairDecision, BlobError> {
-    match rows_affected {
-        1 if observed_status == expected_terminal => {
-            Ok(TerminalLocatorRepairDecision::Terminal(expected_terminal))
-        }
-        1 => Err(BlobError::State(
-            "terminal upload locator repair affected an unexpected row".into(),
-        )),
-        0 if observed_status == UploadStatus::Completed => observed_blob_id
-            .map(TerminalLocatorRepairDecision::Replay)
-            .ok_or_else(|| BlobError::State("completed upload is missing blob_id".into())),
-        0 if observed_status == expected_terminal => {
-            Ok(TerminalLocatorRepairDecision::Terminal(expected_terminal))
-        }
-        0 => Err(BlobError::State(
-            "terminal upload locator repair observed an unexpected state".into(),
-        )),
-        other => Err(BlobError::State(format!(
-            "terminal upload locator repair affected {other} rows"
-        ))),
-    }
-}
-
 /// What a `finish_upload` that changed no row should do, given the status
 /// the upload actually holds now.
 ///
@@ -267,54 +229,5 @@ mod tests {
         assert!(stage_locator_decision(UploadStatus::Pending, None, 0).is_err());
         assert!(stage_locator_decision(UploadStatus::Completed, None, 0).is_err());
         assert!(stage_locator_decision(UploadStatus::Pending, None, 2).is_err());
-    }
-
-    #[test]
-    fn terminal_locator_repair_decision_handles_interleavings() {
-        let blob = Uuid::now_v7();
-        assert_eq!(
-            terminal_locator_repair_decision(
-                UploadStatus::Aborted,
-                UploadStatus::Aborted,
-                None,
-                1,
-            )
-            .expect("terminal locator repair wins"),
-            TerminalLocatorRepairDecision::Terminal(UploadStatus::Aborted)
-        );
-        assert_eq!(
-            terminal_locator_repair_decision(
-                UploadStatus::Aborted,
-                UploadStatus::Completed,
-                Some(blob),
-                0,
-            )
-            .expect("finish promotion replays"),
-            TerminalLocatorRepairDecision::Replay(blob)
-        );
-        assert_eq!(
-            terminal_locator_repair_decision(
-                UploadStatus::Expired,
-                UploadStatus::Expired,
-                None,
-                0,
-            )
-            .expect("still expired row is cleanable"),
-            TerminalLocatorRepairDecision::Terminal(UploadStatus::Expired)
-        );
-        assert!(terminal_locator_repair_decision(
-            UploadStatus::Aborted,
-            UploadStatus::Expired,
-            None,
-            0,
-        )
-        .is_err());
-        assert!(terminal_locator_repair_decision(
-            UploadStatus::Aborted,
-            UploadStatus::Aborted,
-            None,
-            2,
-        )
-        .is_err());
     }
 }

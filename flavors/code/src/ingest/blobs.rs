@@ -33,7 +33,7 @@ const CODE_SLICE_OPERATOR_MODEL: &str = "proxima-code/local-git-source";
 /// position. A HEAD snapshot still skips unchanged blobs; re-derive
 /// after a chunker change is `proxima-code_erase_repo` plus a fresh
 /// register.
-const CODE_SLICE_IDENTITY: &[u8] = b"proxima-code/code-slice:local-git-file-facts-v3";
+const CODE_SLICE_IDENTITY: &[u8] = b"proxima-code/code-slice:local-git-file-facts-v4";
 const CODE_SLICE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x8d, 0xb6, 0x89, 0x67, 0x17, 0x34, 0x44, 0x11, 0xaa, 0xe6, 0x68, 0xef, 0x6c, 0x2a, 0x31, 0x8d,
 ]);
