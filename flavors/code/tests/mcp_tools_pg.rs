@@ -26,6 +26,221 @@ use serde_json::json;
 use sqlx::PgPool;
 use tempfile::TempDir;
 use uuid::Uuid;
+mod embedding_failure_regressions {
+    use super::*;
+    use proxima::host::{EmbedCaps, OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
+    use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
+    const DEADLINE: Duration = Duration::from_secs(10);
+
+    struct OverflowEndpoint {
+        client: Arc<OpenAiCompatEmbeddingClient>,
+        calls: Arc<AtomicUsize>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for OverflowEndpoint {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn read_request(stream: &mut TcpStream) -> TestResult<()> {
+        let mut request = Vec::new();
+        loop {
+            let mut buffer = [0; 4096];
+            let count = stream.read(&mut buffer).await?;
+            if count == 0 || request.len() > 65_536 {
+                return Err("incomplete or oversized test request".into());
+            }
+            request.extend_from_slice(&buffer[..count]);
+            let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = std::str::from_utf8(&request[..end])?;
+            if !headers.starts_with("POST /v1/embeddings HTTP/1.1\r\n") {
+                return Err("unexpected embedding request path".into());
+            }
+            let length = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .ok_or("missing test content length")?
+                .1
+                .trim()
+                .parse::<usize>()?;
+            if request.len() >= end + 4 + length {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn overflow_endpoint() -> TestResult<OverflowEndpoint> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let mut components = vec!["0.0"; EMBEDDING_DIM];
+        components[EMBEDDING_DIM - 1] = "1e39";
+        let body = format!(
+            r#"{{"data":[{{"index":0,"embedding":[{}]}}]}}"#,
+            components.join(",")
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept test request");
+                tokio::time::timeout(DEADLINE, read_request(&mut stream))
+                    .await
+                    .expect("bounded request")
+                    .expect("complete request");
+                count.fetch_add(1, Ordering::SeqCst);
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("respond");
+            }
+        });
+        let client = Arc::new(OpenAiCompatEmbeddingClient::new(
+            "test-topic-embed",
+            EmbedCaps::new(u32::try_from(EMBEDDING_DIM)?, false),
+            OpenAiCompatConfig::new(format!("http://{addr}/v1"), None)
+                .with_timeout(Duration::from_secs(5)),
+        )?);
+        Ok(OverflowEndpoint {
+            client,
+            calls,
+            task,
+        })
+    }
+
+    struct Observed {
+        adapter: Result<Vec<f32>, LlmError>,
+        lexical: serde_json::Value,
+        hybrid: serde_json::Value,
+        semantic: Result<<CodeSearchChunksTool as McpTool>::Output, McpToolError>,
+        calls: [usize; 4],
+        healthy_semantic: serde_json::Value,
+    }
+
+    fn args(mode: &str) -> serde_json::Value {
+        json!({"query": "halt_iteration", "mode": mode, "include_calls": false})
+    }
+
+    async fn exercise(fixture: &TestDb) -> TestResult<Observed> {
+        let owner = owner_fixture();
+        let registry = registry_for_mcp();
+        let temp = TempDir::new()?;
+        ingest_topic_repo(fixture, owner, &registry, &temp).await?;
+        let context = ctx(fixture.pg.clone(), owner, registry);
+        let engine = context.engine.as_ref().ok_or("engine")?.clone();
+        let endpoint = overflow_endpoint().await?;
+        let adapter = endpoint.client.embed("response control").await;
+        engine.set_embed_client(Some(endpoint.client.clone())).await;
+        let mut calls = [0; 4];
+        calls[0] = endpoint.calls.load(Ordering::SeqCst);
+
+        let lexical = tokio::time::timeout(
+            DEADLINE,
+            run_tool::<CodeSearchChunksTool>(context.clone(), args("lexical")),
+        )
+        .await??;
+        calls[1] = endpoint.calls.load(Ordering::SeqCst);
+        let hybrid = tokio::time::timeout(
+            DEADLINE,
+            run_tool::<CodeSearchChunksTool>(context.clone(), args("hybrid")),
+        )
+        .await??;
+        calls[2] = endpoint.calls.load(Ordering::SeqCst);
+        // Keep the typed handler error instead of boxing it in run_tool.
+        let semantic = tokio::time::timeout(
+            DEADLINE,
+            CodeSearchChunksTool::call(context.clone(), serde_json::from_value(args("semantic"))?),
+        )
+        .await?;
+        calls[3] = endpoint.calls.load(Ordering::SeqCst);
+
+        engine
+            .set_embed_client(Some(Arc::new(TopicEmbedding)))
+            .await;
+        let healthy = tokio::time::timeout(
+            DEADLINE,
+            run_tool::<CodeSearchChunksTool>(context, args("semantic")),
+        )
+        .await??;
+        Ok(Observed {
+            adapter,
+            lexical,
+            hybrid,
+            semantic,
+            calls,
+            healthy_semantic: healthy,
+        })
+    }
+
+    #[tokio::test]
+    async fn code_search_degrades_after_actual_provider_response_overflow() {
+        let fixture = TestDb::fresh().await;
+        let result = exercise(&fixture).await;
+        proxima_pg_testkit::drop_db(&fixture.name)
+            .await
+            .expect("drop isolated fixture before assertions");
+        drop(fixture);
+        let observed = result.expect("bounded handler exercise");
+        eprintln!(
+            "code overflow handlers: calls={:?}; fixture removed",
+            observed.calls,
+        );
+        assert!(matches!(observed.adapter, Err(LlmError::Embed(ref message))
+            if message == "embedding 0 has non-finite component at position 1023"));
+        assert_eq!(observed.calls, [1, 1, 2, 3]);
+        for (page, mode, degraded) in [
+            (&observed.lexical, "lexical", false),
+            (&observed.hybrid, "hybrid", true),
+        ] {
+            assert_eq!(page["mode"], mode);
+            assert_eq!(page["degraded_to_lexical"], degraded);
+            assert_eq!(page["matches"][0]["file_path"], "src/control.rs");
+            assert!(
+                page["matches"][0]["lexical_score"]
+                    .as_f64()
+                    .unwrap_or_default()
+                    > 0.0
+            );
+            assert_eq!(page["matches"][0]["similarity_score"], 0.0);
+        }
+        assert_eq!(
+            observed.hybrid["matches"][0]["handle"],
+            observed.lexical["matches"][0]["handle"]
+        );
+        assert_eq!(
+            observed.hybrid["matches"][0]["score"],
+            observed.lexical["matches"][0]["score"]
+        );
+        assert!(
+            matches!(observed.semantic, Err(McpToolError::Unavailable(ref message))
+            if message == "semantic chunk search unavailable: embedding provider error")
+        );
+        assert_eq!(
+            observed.healthy_semantic["matches"][0]["file_path"],
+            "src/control.rs"
+        );
+        assert!(
+            observed.healthy_semantic["matches"][0]["similarity_score"]
+                .as_f64()
+                .unwrap_or_default()
+                > 0.99
+        );
+    }
+}
 
 #[tokio::test]
 async fn register_repo_tool_registers_local_git_repo_idempotently()
