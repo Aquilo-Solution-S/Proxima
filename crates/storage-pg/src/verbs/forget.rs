@@ -1087,7 +1087,14 @@ async fn lock_forget_footprint_tx(
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
-    if grounded.iter().any(|(_, handle)| !handles.contains(handle)) {
+    // The SQL result is sorted; prepending the source made `handles` unsorted.
+    // Search its ordered tail to avoid a linear scan for every depender.
+    let handle_was_locked =
+        |handle: &Uuid| *handle == source_handle || dependent_handles.binary_search(handle).is_ok();
+    if grounded
+        .iter()
+        .any(|(_, handle)| !handle_was_locked(handle))
+    {
         return Err(StorageError::Retryable(
             "forget depender handle set grew before lifecycle lock acquisition".into(),
         ));
@@ -1117,7 +1124,7 @@ async fn lock_forget_footprint_tx(
     // Both queries `ORDER BY t` and exclude `source_t`, so target membership is
     // a binary search over `dependents` rather than a scan of `targets`.
     if after.iter().all(|(target, handle)| {
-        dependents.binary_search(target).is_ok() && handles.contains(handle)
+        dependents.binary_search(target).is_ok() && handle_was_locked(handle)
     }) {
         return Ok(());
     }

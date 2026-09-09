@@ -19,6 +19,9 @@ use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
+#[path = "search_sidecar/candidate_windows.rs"]
+mod candidate_windows;
+
 /// The out-of-tree fixture flavor's bands: core's, referenced. Referencing
 /// them IS the band-comparability claim, which is what makes
 /// `BandComparability::CoreBands` below an assertion rather than a label.

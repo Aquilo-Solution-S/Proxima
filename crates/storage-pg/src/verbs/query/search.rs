@@ -178,14 +178,27 @@ pub(crate) async fn search_memories(
         SearchMode::Semantic => {
             merge_hits(
                 &mut hits,
-                scan_embeddings(pool, req, &flavors, tuning, semantic_overfetch(limit)).await?,
+                scan_embeddings(
+                    pool,
+                    req,
+                    &flavors,
+                    tuning,
+                    semantic_overfetch(limit, req.after),
+                )
+                .await?,
             );
         }
         SearchMode::Hybrid => {
             if req.query_embedding.is_some() && req.embedding_model_id.is_some() {
                 let (lexical, semantic) = tokio::try_join!(
                     scan_flavors(pool, req, &flavors, limit, false),
-                    scan_embeddings(pool, req, &flavors, tuning, semantic_overfetch(limit)),
+                    scan_embeddings(
+                        pool,
+                        req,
+                        &flavors,
+                        tuning,
+                        semantic_overfetch(limit, req.after)
+                    ),
                 )?;
                 merge_hits(&mut hits, lexical);
                 merge_hits(&mut hits, semantic);
@@ -231,18 +244,24 @@ pub(crate) async fn search_memories(
 /// The page CAN still move for `Hybrid` — a row with weak lexical rank but
 /// strong similarity — and for very deep cursor pages. Both are accepted
 /// movement; the `Lexical` + `Relevance` page is not.
-fn overfetch(limit: u32, overfetch_k: u32) -> u32 {
-    limit
-        .saturating_mul(REQUEST_OVERFETCH_FACTOR)
-        .max(limit)
-        .min(overfetch_k)
+fn overfetch(limit: u32, overfetch_k: u32, after: Option<SearchCursor>) -> u32 {
+    let base = limit.saturating_mul(REQUEST_OVERFETCH_FACTOR).max(limit);
+    // Relevance candidates are ranked from the beginning before the cursor
+    // is applied. Retain room for the prior rows, this page, and a has_more
+    // witness even when the caller shrinks its page size. Recency keysets
+    // already filter the lexical SQL and keep their existing scan budget.
+    let needed = match after {
+        Some(SearchCursor::Relevance { seen, .. }) => seen.saturating_add(limit).saturating_add(1),
+        _ => base,
+    };
+    base.max(needed).min(overfetch_k)
 }
 
 /// The embedding scan is not per-flavor — `proxima_core.embeddings` is one
 /// table for every owner — so its cap is spelled where its one reader lives.
-fn semantic_overfetch(limit: u32) -> u32 {
+fn semantic_overfetch(limit: u32, after: Option<SearchCursor>) -> u32 {
     const SEMANTIC_OVERFETCH_CAP: u32 = 1_000;
-    overfetch(limit, SEMANTIC_OVERFETCH_CAP)
+    overfetch(limit, SEMANTIC_OVERFETCH_CAP, after)
 }
 
 /// One flavor's participating schemas, grouped for the ONE statement that
@@ -391,7 +410,7 @@ async fn scan_one_flavor(
         .iter()
         .map(|projection| projection.schema_id.as_str())
         .collect();
-    let overfetch = i64::from(overfetch(limit, flavor.head().overfetch_k));
+    let overfetch = i64::from(overfetch(limit, flavor.head().overfetch_k, req.after));
     let tags = (!req.tags.is_empty()).then_some(req.tags.as_slice());
     let sql = ranked_projection_sql(flavor, req, rescue)?;
 
@@ -1070,10 +1089,14 @@ fn semantic_search_sql(
     } else {
         probes.join("\n                 OR ")
     };
+    // Shared schemas can contain more than one memory kind, and an embedding
+    // head need not be a current memory head. Exclude those ineligible rows
+    // before they consume the limited similarity candidate window.
+    let admit_restriction = admit_side_restriction(req, "emb.entity_id");
     // SQL-POLICY: PgIdent
     Ok(format!(
         "{scan}
-            AND ({projection_pred}){SEMANTIC_SEARCH_TAIL}"
+            AND ({projection_pred}){admit_restriction}{SEMANTIC_SEARCH_TAIL}"
     ))
 }
 
@@ -1346,6 +1369,36 @@ mod tests {
         EntityKind, MemorySearchRequest, OwnerRef, SearchMode, SearchOrder, SupersessionStatus,
         TagMatch,
     };
+
+    #[test]
+    fn relevance_candidate_depth_preserves_caps_and_saturates() {
+        let relevance = |seen| {
+            Some(super::SearchCursor::Relevance {
+                score_bits: 1.0_f32.to_bits(),
+                memory_id: proxima_core::MemoryId::new(uuid::Uuid::nil()),
+                seen,
+            })
+        };
+        assert_eq!(super::overfetch(1, 1_000, None), 20);
+        assert_eq!(super::overfetch(1, 1_000, relevance(21)), 23);
+        assert_eq!(super::overfetch(1, 22, relevance(21)), 22);
+        assert_eq!(super::overfetch(1, 0, relevance(u32::MAX)), 0);
+        assert_eq!(super::overfetch(1, 1_000, relevance(u32::MAX)), 1_000);
+        assert_eq!(super::overfetch(u32::MAX, 1_000, relevance(1)), 1_000);
+        assert_eq!(
+            super::overfetch(
+                1,
+                1_000,
+                Some(super::SearchCursor::Recency {
+                    created_at: time::OffsetDateTime::UNIX_EPOCH,
+                    memory_id: proxima_core::MemoryId::new(uuid::Uuid::nil()),
+                    seen: u32::MAX,
+                })
+            ),
+            20,
+            "recency cursors retain the original budget"
+        );
+    }
 
     #[test]
     fn admit_reads_schema_from_memory() {
