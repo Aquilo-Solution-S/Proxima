@@ -42,7 +42,7 @@ pub use presentation::{McpPresentationExt, McpToolPresentation};
 pub use schema::schema_bound_mismatches;
 pub use tool::{
     McpActionArgSpec, McpArgvActionSpec, McpCallFn, McpTool, McpToolAudience, McpToolDescriptor,
-    McpToolOrigin,
+    McpToolOrigin, McpUnknownFieldPolicy,
 };
 pub(crate) use tool::{prepare_flat_tool_args, resolve_argv_action, validate_action_args};
 pub use types::{

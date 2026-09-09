@@ -67,12 +67,12 @@ pub use llm::*;
 pub use mcp::{
     CoreActionMeta, MAX_OPERATOR_LABEL_CHARS, McpAuthorContext, McpCallFn, McpTool,
     McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolDescriptor, McpToolError,
-    McpToolErrorKind, McpToolOrigin, MemoryHandleClass, Next, OperatorLabelConflict,
-    PrefixedUuidClass, PrefixedUuidError, RequestBehavior, ScopeGateBehavior, TerminalDispatch,
-    UNKNOWN_OPERATOR_LABEL, all_core_actions, all_core_resources, canonical_scope_keys,
-    canonical_scope_keys_excluding, core_action_meta, core_tool_annotations, format_prefixed_uuid,
-    operator_label, parse_prefixed_uuid, provider_safe_tool_name, resolve_operator_label,
-    tool_name_matches,
+    McpToolErrorKind, McpToolOrigin, McpUnknownFieldPolicy, MemoryHandleClass, Next,
+    OperatorLabelConflict, PrefixedUuidClass, PrefixedUuidError, RequestBehavior,
+    ScopeGateBehavior, TerminalDispatch, UNKNOWN_OPERATOR_LABEL, all_core_actions,
+    all_core_resources, canonical_scope_keys, canonical_scope_keys_excluding, core_action_meta,
+    core_tool_annotations, format_prefixed_uuid, operator_label, parse_prefixed_uuid,
+    provider_safe_tool_name, resolve_operator_label, tool_name_matches,
 };
 pub use memory::*;
 pub use models::*;
