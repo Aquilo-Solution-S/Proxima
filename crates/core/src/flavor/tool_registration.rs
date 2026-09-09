@@ -36,6 +36,27 @@ fn serialize_tool_output<T: serde::Serialize>(
         .map_err(|err| McpToolError::Other(format!("serialize tool output: {err}")))
 }
 
+/// Name the argument keys an
+/// [`IgnoreAndReport`](crate::mcp::McpUnknownFieldPolicy::IgnoreAndReport)
+/// tool dropped back to the caller, on the tool's own result, so tolerating
+/// them stays observable rather than silent.
+///
+/// Nothing is added when nothing was dropped — the key would otherwise read
+/// as a permanent part of the reply — nor when the result is not a JSON
+/// object, which has no place to say it and must not be reshaped into one.
+fn report_ignored_fields(result: &mut serde_json::Value, ignored: Vec<String>) {
+    if ignored.is_empty() {
+        return;
+    }
+    let Some(object) = result.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "ignored_fields".to_string(),
+        ignored.into_iter().map(serde_json::Value::String).collect(),
+    );
+}
+
 impl FlavorRegistry {
     /// Register a flavor-shipped [`Tool`] under `expected_prefix`.
     /// Same path as [`Self::try_add_mcp_tool`] (blanket `impl<T: Tool> McpTool
@@ -91,17 +112,28 @@ impl FlavorRegistry {
                 // validation to their own dispatch; flat McpTools run the flat
                 // unknown-field + space-alias guard instead of silently
                 // accepting unknown fields.
+                let mut ignored = Vec::new();
                 if !T::ACTION_ARG_SPECS.is_empty() {
                     validate_action_args(T::NAME, T::ACTION_ARG_SPECS, &args)?;
                 } else if !T::ARGV_ACTION_SPECS.is_empty() {
                     crate::mcp::resolve_argv_action(T::NAME, T::ARGV_ACTION_SPECS, &args)?;
                 } else {
-                    prepare_flat_tool_args(T::NAME, &properties, &mut args)?;
+                    ignored = prepare_flat_tool_args(
+                        T::NAME,
+                        &properties,
+                        &mut args,
+                        <T as McpTool>::UNKNOWN_FIELD_POLICY,
+                    )?;
                 }
                 let typed: T::Args = serde_json::from_value(args)
                     .map_err(|e| McpToolError::InvalidInput(e.to_string()))?;
                 let output = T::call(ctx, typed).await?;
-                serialize_tool_output(output)
+                let mut result = serialize_tool_output(output)?;
+                // Only a flat IgnoreAndReport tool can have dropped anything;
+                // every other path leaves the list empty and the result
+                // untouched.
+                report_ignored_fields(&mut result, ignored);
+                Ok(result)
             })
         }));
         self.mcp_tools.push(McpToolDescriptor {
@@ -377,7 +409,7 @@ mod action_vocabulary_tests {
         assert_eq!(membership.audience, McpToolAudience::Owner);
     }
 
-    fn test_ctx() -> McpToolCtx {
+    pub(super) fn test_ctx() -> McpToolCtx {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         McpToolCtx {
             owner,
@@ -421,5 +453,148 @@ mod action_vocabulary_tests {
             .await
             .expect_err("unmatched argv is refused before the tool runs");
         assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
+    }
+}
+
+#[cfg(test)]
+mod unknown_field_policy_tests {
+    use futures::future::BoxFuture;
+
+    use super::action_vocabulary_tests::test_ctx;
+    use crate::mcp::{McpToolAnnotations, McpToolError, McpToolErrorKind, McpUnknownFieldPolicy};
+    use crate::{FlavorRegistry, Tool, ToolCtx, ToolError};
+
+    const READ_ONLY: Option<McpToolAnnotations> =
+        Some(McpToolAnnotations::new().read_only(true).open_world(false));
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct EchoArgs {
+        #[schemars(description = "text the tool echoes back")]
+        text: String,
+    }
+
+    #[derive(serde::Serialize, schemars::JsonSchema)]
+    struct EchoOutput {
+        #[schemars(description = "the text the caller sent")]
+        text: String,
+    }
+
+    /// A read-only flat tool that tolerates the fields a model copies out of
+    /// a previous result into the next call.
+    struct TolerantEcho;
+
+    impl Tool for TolerantEcho {
+        const NAME: &'static str = "proxima-stub_tolerant";
+        const DESCRIPTION: &'static str = "A flat fixture tolerating unknown argument fields.";
+        const ANNOTATIONS: Option<McpToolAnnotations> = READ_ONLY;
+        const UNKNOWN_FIELD_POLICY: McpUnknownFieldPolicy = McpUnknownFieldPolicy::IgnoreAndReport;
+        type Args = EchoArgs;
+        type Output = EchoOutput;
+        fn call(_: ToolCtx, args: Self::Args) -> BoxFuture<'static, Result<EchoOutput, ToolError>> {
+            Box::pin(async move { Ok(EchoOutput { text: args.text }) })
+        }
+    }
+
+    /// The same tool answering with a bare scalar: there is no object to
+    /// carry the report.
+    struct TolerantScalar;
+
+    impl Tool for TolerantScalar {
+        const NAME: &'static str = "proxima-stub_tolerant_scalar";
+        const DESCRIPTION: &'static str = "A tolerating flat fixture answering with a scalar.";
+        const ANNOTATIONS: Option<McpToolAnnotations> = READ_ONLY;
+        const UNKNOWN_FIELD_POLICY: McpUnknownFieldPolicy = McpUnknownFieldPolicy::IgnoreAndReport;
+        type Args = EchoArgs;
+        type Output = String;
+        fn call(_: ToolCtx, args: Self::Args) -> BoxFuture<'static, Result<String, ToolError>> {
+            Box::pin(async move { Ok(args.text) })
+        }
+    }
+
+    /// Positive control: the same shape declaring nothing.
+    struct StrictEcho;
+
+    impl Tool for StrictEcho {
+        const NAME: &'static str = "proxima-stub_strict";
+        const DESCRIPTION: &'static str = "A flat fixture keeping the default guard.";
+        const ANNOTATIONS: Option<McpToolAnnotations> = READ_ONLY;
+        type Args = EchoArgs;
+        type Output = EchoOutput;
+        fn call(_: ToolCtx, args: Self::Args) -> BoxFuture<'static, Result<EchoOutput, ToolError>> {
+            Box::pin(async move { Ok(EchoOutput { text: args.text }) })
+        }
+    }
+
+    fn registry() -> crate::FlavorRegistryFrozen {
+        let mut registry = FlavorRegistry::new();
+        registry.add_tool_or_panic_for_tests::<TolerantEcho>("proxima-stub");
+        registry.add_tool_or_panic_for_tests::<TolerantScalar>("proxima-stub");
+        registry.add_tool_or_panic_for_tests::<StrictEcho>("proxima-stub");
+        registry.freeze_or_panic_for_tests()
+    }
+
+    async fn call(
+        tool: &'static str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, McpToolError> {
+        let frozen = registry();
+        let descriptor = frozen.mcp_tool(tool).expect("fixture registered");
+        (descriptor.call)(test_ctx(), args).await
+    }
+
+    /// The whole point of the opt-in: the echoed-back keys neither reach the
+    /// tool nor cost the caller a round trip, and the drop is named.
+    #[tokio::test]
+    async fn tolerated_fields_are_dropped_and_named_in_the_result() {
+        let output = call(
+            TolerantEcho::NAME,
+            serde_json::json!({ "text": "x", "has_more": true, "provenance": { "id": 1 } }),
+        )
+        .await
+        .expect("undeclared fields do not fail the call");
+        assert_eq!(
+            output,
+            serde_json::json!({ "text": "x", "ignored_fields": ["has_more", "provenance"] }),
+        );
+    }
+
+    /// A clean call is not annotated: `ignored_fields` must read as an event,
+    /// not as a permanent part of the reply.
+    #[tokio::test]
+    async fn nothing_is_reported_when_nothing_was_dropped() {
+        let output = call(TolerantEcho::NAME, serde_json::json!({ "text": "x" }))
+            .await
+            .expect("declared fields dispatch");
+        assert_eq!(output, serde_json::json!({ "text": "x" }));
+    }
+
+    /// A non-object answer is left exactly as the tool wrote it rather than
+    /// reshaped into an object to carry the report.
+    #[tokio::test]
+    async fn a_non_object_result_is_left_alone() {
+        let output = call(
+            TolerantScalar::NAME,
+            serde_json::json!({ "text": "x", "has_more": true }),
+        )
+        .await
+        .expect("undeclared fields do not fail the call");
+        assert_eq!(output, serde_json::json!("x"));
+    }
+
+    /// Silence still refuses, at the dispatch path a real call takes.
+    #[tokio::test]
+    async fn a_tool_declaring_nothing_still_refuses() {
+        let err = call(
+            StrictEcho::NAME,
+            serde_json::json!({ "text": "x", "has_more": true }),
+        )
+        .await
+        .expect_err("the default guard refuses an undeclared field");
+        assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
+        assert!(
+            matches!(err, McpToolError::InvalidInput(ref message)
+                if message.contains("does not accept field(s): has_more")),
+            "got {err:?}",
+        );
     }
 }

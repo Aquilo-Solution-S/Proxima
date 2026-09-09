@@ -687,6 +687,22 @@ pub trait Tool: Send + Sync + 'static {
     /// gating does not read it. See
     /// [`crate::mcp::McpToolDescriptor::audience`].
     const AUDIENCE: crate::mcp::McpToolAudience = crate::mcp::McpToolAudience::Shared;
+    /// What this tool does with a top-level argument key its `Args` schema
+    /// does not declare. Default
+    /// [`McpUnknownFieldPolicy::Refuse`](crate::mcp::McpUnknownFieldPolicy::Refuse):
+    /// declaring nothing keeps the strict guard, and the call is refused
+    /// naming the offending keys.
+    ///
+    /// Declare
+    /// [`IgnoreAndReport`](crate::mcp::McpUnknownFieldPolicy::IgnoreAndReport)
+    /// only on a read-only tool whose callers are models — the undeclared
+    /// keys are dropped before decode and named back in the result's
+    /// `ignored_fields` array. Never on a tool that writes, and never where a
+    /// silently dropped key could change what the call targets: the report is
+    /// after the fact. Dispatchers ([`Self::ACTION_ARG_SPECS`],
+    /// [`Self::ARGV_ACTION_SPECS`]) validate per action and ignore this.
+    const UNKNOWN_FIELD_POLICY: crate::mcp::McpUnknownFieldPolicy =
+        crate::mcp::McpUnknownFieldPolicy::Refuse;
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
     /// What the tool answers with. `JsonSchema` is required for the same

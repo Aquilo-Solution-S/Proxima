@@ -29,6 +29,35 @@ pub enum McpToolAudience {
     Owner,
 }
 
+/// What a *flat* tool does with a top-level argument key its schema does not
+/// declare.
+///
+/// The default, [`Self::Refuse`], is the strict answer and stays the answer
+/// for writes and for anything where a mistyped key changes what the call
+/// targets — an owner, a space, a filter. The opt-in exists for read-only
+/// tools whose callers are models: a small model routinely copies fields out
+/// of one result into the next call (a paging flag, a provenance block, a
+/// list it was just handed), and refusing that call spends a round trip to
+/// teach it nothing it acts on.
+///
+/// Never declare [`Self::IgnoreAndReport`] on a tool that writes, or on any
+/// tool where a silently dropped key could change what the call targets: the
+/// report reaches the caller only after the tool has run, so it documents the
+/// drop rather than preventing it. An enum rather than a bool so the
+/// declaration site names its meaning and a future policy is a new variant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum McpUnknownFieldPolicy {
+    /// Refuse the call, naming every undeclared key. The default: declaring
+    /// nothing keeps the strict guard.
+    #[default]
+    Refuse,
+    /// Drop the undeclared keys before decode and name them back in the
+    /// result's top-level `ignored_fields` array, so the drop is observable
+    /// instead of silent. Nothing is added when the tool's result is not a
+    /// JSON object, or when nothing was dropped.
+    IgnoreAndReport,
+}
+
 #[derive(Clone)]
 pub struct McpToolDescriptor {
     pub name: &'static str,
@@ -404,17 +433,28 @@ pub(crate) fn validate_action_args(
 }
 
 /// Validate a *flat* (non-dispatcher) MCP tool's arguments: coerce the
-/// `space`/`spaces` arity aliases against the tool's schema, then reject any
-/// top-level key not declared as a schema property. Dispatcher tools run
-/// [`validate_action_args`] instead. A mistyped `space` on
-/// `core_search_memories` would otherwise search the wrong owner.
+/// `space`/`spaces` arity aliases against the tool's schema, then apply the
+/// tool's [`McpUnknownFieldPolicy`] to every top-level key not declared as a
+/// schema property. Dispatcher tools run [`validate_action_args`] instead.
+///
+/// Under the default [`McpUnknownFieldPolicy::Refuse`] an undeclared key is a
+/// validation error: a mistyped `space` on `core_search_memories` would
+/// otherwise search the wrong owner. Under
+/// [`McpUnknownFieldPolicy::IgnoreAndReport`] the undeclared keys are removed
+/// from `args` before decode and returned, sorted, for the caller to report.
+/// The alias coercion runs first either way, so an alias is never counted as
+/// unknown.
+///
+/// Returns the names of the keys that were dropped — always empty under
+/// `Refuse`, and empty under either policy when every key was declared.
 pub(crate) fn prepare_flat_tool_args(
     tool_name: &str,
     properties: &[String],
     args: &mut serde_json::Value,
-) -> Result<(), McpToolError> {
+    policy: McpUnknownFieldPolicy,
+) -> Result<Vec<String>, McpToolError> {
     coerce_space_aliases(tool_name, args, properties)?;
-    let object = args.as_object().ok_or_else(|| {
+    let object = args.as_object_mut().ok_or_else(|| {
         McpToolError::InvalidInput(format!("{tool_name} arguments must be a JSON object"))
     })?;
     let mut unexpected = object
@@ -422,14 +462,22 @@ pub(crate) fn prepare_flat_tool_args(
         .filter(|field| !properties.iter().any(|property| property == field.as_str()))
         .cloned()
         .collect::<Vec<_>>();
-    if !unexpected.is_empty() {
-        unexpected.sort();
-        return Err(McpToolError::InvalidInput(format!(
+    if unexpected.is_empty() {
+        return Ok(Vec::new());
+    }
+    unexpected.sort();
+    match policy {
+        McpUnknownFieldPolicy::Refuse => Err(McpToolError::InvalidInput(format!(
             "{tool_name} does not accept field(s): {}",
             unexpected.join(", ")
-        )));
+        ))),
+        McpUnknownFieldPolicy::IgnoreAndReport => {
+            for field in &unexpected {
+                object.remove(field);
+            }
+            Ok(unexpected)
+        }
     }
-    Ok(())
 }
 
 /// Reconcile the `space` (scalar) vs `spaces` (array) argument names so a
@@ -509,6 +557,11 @@ pub trait McpTool: Send + Sync + 'static {
     /// Tool-level audience. See [`McpToolDescriptor::audience`]; forwarded
     /// from `Tool` by the blanket impl below.
     const AUDIENCE: McpToolAudience = McpToolAudience::Shared;
+    /// What this *flat* tool does with an undeclared top-level argument key.
+    /// See [`crate::Tool::UNKNOWN_FIELD_POLICY`]; forwarded from `Tool` by
+    /// the blanket impl below. Dispatchers validate per action and never
+    /// read it.
+    const UNKNOWN_FIELD_POLICY: McpUnknownFieldPolicy = McpUnknownFieldPolicy::Refuse;
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
     /// See [`crate::Tool::Output`] — the manifest derives an output schema
@@ -532,6 +585,7 @@ where
     const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = <T as crate::Tool>::ARGV_ACTION_SPECS;
     const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = <T as crate::Tool>::ANNOTATIONS;
     const AUDIENCE: McpToolAudience = <T as crate::Tool>::AUDIENCE;
+    const UNKNOWN_FIELD_POLICY: McpUnknownFieldPolicy = <T as crate::Tool>::UNKNOWN_FIELD_POLICY;
 
     type Args = T::Args;
     type Output = T::Output;
@@ -656,7 +710,7 @@ mod flat_tool_tests {
 
     use futures::future::BoxFuture;
 
-    use super::{McpTool, prepare_flat_tool_args};
+    use super::{McpTool, McpUnknownFieldPolicy, prepare_flat_tool_args};
     use crate::mcp::{McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind};
     use crate::{
         AuthPath, AuthzContext, FlavorRegistry, FlavorServices, MemoryId, OwnerRef, Tool, ToolCtx,
@@ -739,12 +793,13 @@ mod flat_tool_tests {
     }
 
     #[test]
-    fn flat_tool_rejects_unknown_field() {
+    fn flat_tool_refuses_unknown_field_by_default() {
         let mut args = serde_json::json!({ "query": "x", "spaces": [], "bogus": 1 });
         let err = prepare_flat_tool_args(
             "core_search_memories",
             &["query".to_string(), "spaces".to_string()],
             &mut args,
+            McpUnknownFieldPolicy::Refuse,
         )
         .expect_err("unknown field rejected");
         assert!(
@@ -760,6 +815,7 @@ mod flat_tool_tests {
             "core_search_memories",
             &["query".to_string(), "spaces".to_string()],
             &mut args,
+            McpUnknownFieldPolicy::Refuse,
         )
         .expect("space alias accepted");
         assert_eq!(args["spaces"], serde_json::json!(["team"]));
@@ -773,6 +829,7 @@ mod flat_tool_tests {
             "core_remember",
             &["body".to_string(), "space".to_string()],
             &mut args,
+            McpUnknownFieldPolicy::Refuse,
         )
         .expect_err("multiple spaces rejected for a scalar-space tool");
         assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
@@ -790,6 +847,7 @@ mod flat_tool_tests {
             "core_remember",
             &["body".to_string(), "space".to_string()],
             &mut args,
+            McpUnknownFieldPolicy::Refuse,
         )
         .expect("single spaces alias accepted");
         assert_eq!(args["space"], serde_json::json!("team"));
@@ -803,6 +861,7 @@ mod flat_tool_tests {
             "core_remember",
             &["body".to_string(), "space".to_string()],
             &mut args,
+            McpUnknownFieldPolicy::Refuse,
         )
         .expect("scalar spaces alias accepted");
         assert_eq!(args["space"], serde_json::json!("team"));
@@ -811,11 +870,97 @@ mod flat_tool_tests {
     #[test]
     fn known_fields_pass() {
         let mut args = serde_json::json!({ "query": "x", "spaces": ["a"] });
-        prepare_flat_tool_args(
+        let ignored = prepare_flat_tool_args(
             "core_search_memories",
             &["query".to_string(), "spaces".to_string()],
             &mut args,
+            McpUnknownFieldPolicy::Refuse,
         )
         .expect("known fields accepted");
+        assert!(ignored.is_empty(), "nothing was dropped: {ignored:?}");
+    }
+
+    /// The opt-in drops the undeclared keys and names them, sorted, instead
+    /// of spending a round trip on a refusal the caller cannot act on.
+    #[test]
+    fn tolerated_unknown_fields_are_stripped_and_reported() {
+        let mut args =
+            serde_json::json!({ "query": "x", "provenance": {}, "has_more": true, "units": [1] });
+        let ignored = prepare_flat_tool_args(
+            "core_search_memories",
+            &["query".to_string(), "spaces".to_string()],
+            &mut args,
+            McpUnknownFieldPolicy::IgnoreAndReport,
+        )
+        .expect("undeclared fields tolerated");
+        assert_eq!(ignored, vec!["has_more", "provenance", "units"]);
+        assert_eq!(
+            args,
+            serde_json::json!({ "query": "x" }),
+            "only the undeclared keys are removed",
+        );
+    }
+
+    /// Tolerating unknown fields never touches a declared one, and the
+    /// report stays empty when there is nothing to report.
+    #[test]
+    fn tolerating_never_strips_a_declared_field() {
+        let mut args = serde_json::json!({ "query": "x", "spaces": ["a"] });
+        let ignored = prepare_flat_tool_args(
+            "core_search_memories",
+            &["query".to_string(), "spaces".to_string()],
+            &mut args,
+            McpUnknownFieldPolicy::IgnoreAndReport,
+        )
+        .expect("declared fields accepted");
+        assert!(ignored.is_empty(), "nothing to report: {ignored:?}");
+        assert_eq!(args, serde_json::json!({ "query": "x", "spaces": ["a"] }));
+    }
+
+    /// The alias coercion runs before the strip under either policy, so a
+    /// scalar `space` is still coerced rather than counted as unknown and
+    /// thrown away.
+    #[test]
+    fn tolerating_still_coerces_the_space_alias() {
+        let mut args = serde_json::json!({ "query": "x", "space": "team", "has_more": true });
+        let ignored = prepare_flat_tool_args(
+            "core_search_memories",
+            &["query".to_string(), "spaces".to_string()],
+            &mut args,
+            McpUnknownFieldPolicy::IgnoreAndReport,
+        )
+        .expect("alias coerced, unknown field tolerated");
+        assert_eq!(ignored, vec!["has_more"]);
+        assert_eq!(args["spaces"], serde_json::json!(["team"]));
+    }
+
+    /// The alias arity check reports a contradiction inside the declared
+    /// vocabulary, not an undeclared key, so the opt-in does not relax it.
+    #[test]
+    fn tolerating_does_not_relax_the_alias_arity_check() {
+        let mut args = serde_json::json!({ "body": "b", "spaces": ["team", "other"] });
+        let err = prepare_flat_tool_args(
+            "core_remember",
+            &["body".to_string(), "space".to_string()],
+            &mut args,
+            McpUnknownFieldPolicy::IgnoreAndReport,
+        )
+        .expect_err("an ambiguous space alias is still refused");
+        assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
+    }
+
+    /// Refusing is what a tool gets for free: the enum default and the
+    /// declaration a tool that says nothing carries.
+    #[test]
+    fn refuse_is_the_default_policy() {
+        assert_eq!(
+            McpUnknownFieldPolicy::default(),
+            McpUnknownFieldPolicy::Refuse
+        );
+        assert_eq!(
+            <CallerTool as McpTool>::UNKNOWN_FIELD_POLICY,
+            McpUnknownFieldPolicy::Refuse,
+            "a tool that declares nothing keeps the strict guard",
+        );
     }
 }
