@@ -50,8 +50,8 @@ use self::git::{CommitInfo, WalkPlan};
 /// ceiling. This only bounds how many are resident together.
 const BLOB_BATCH_BYTES: u64 = 8 * 1024 * 1024;
 
-use crate::calls::{ExtractedCall, ExtractedDefinition, extract_blob_callgraph};
-use crate::chunker::{Chunk, chunk_blob};
+use crate::calls::{ExtractedCall, ExtractedDefinition, analyze_blob};
+use crate::chunker::Chunk;
 use crate::ingest::{
     ChunkInfo, FileRevisionHead, IngestError, append_code_slices_with_handles, ingest_commit,
     ingest_file_revision, plan_file_chunks, resolve_intra_file_calls, tombstone_chunk,
@@ -798,9 +798,7 @@ impl LocalGitSource {
             pass.report.chunks_reused += cached.chunks.len();
             cached.clone()
         } else {
-            let lang_static = crate::chunker::detect_language(path);
-            let chunks = chunk_blob(path, blob);
-            let (definitions, calls) = extract_blob_callgraph(lang_static, blob);
+            let (chunks, definitions, calls) = analyze_blob(path, blob);
             let analysis = BlobAnalysis {
                 chunks,
                 definitions,

@@ -8,6 +8,9 @@
 //! did.
 #![cfg(feature = "rest")]
 
+#[path = "rest_surface/nul_arguments.rs"]
+mod nul_arguments;
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -1384,6 +1387,52 @@ async fn resource_reads_match_the_mcp_error_class() {
                     .unwrap_or_default()
             ) || detail == format!("tool {resource_uri} not found"),
             "detail {detail} does not describe {mcp_error:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn encoded_resource_paths_reach_the_mcp_parser_verbatim() {
+    let host = host();
+    let router = app(host.clone());
+    let ctx = auth(ToolScope::All);
+    let mut observations = Vec::new();
+    for suffix in [
+        "schemas%3Fkind=fact",
+        "%73chemas?kind=fact",
+        "memory%2FF:018f0000-0000-7000-8000-000000000001%2Flineage?direction=sideways",
+        "%FF",
+    ] {
+        let resource_uri = format!("proxima://{suffix}");
+        let rest_uri = format!("/v1/resources/{suffix}");
+        let mcp_error = host
+            .read_resource(&resource_uri, author(), Some(ctx.clone()))
+            .await
+            .expect_err("the literal encoded resource path is unknown to the shared parser");
+        assert!(matches!(
+            mcp_error,
+            proxima_mcp_server::ToolInvocationError::ToolNotFound(_)
+        ));
+        let answer = get(&router, &rest_uri, &ctx).await;
+        observations.push((rest_uri, resource_uri, answer));
+    }
+    for (rest_uri, resource_uri, answer) in observations {
+        eprintln!(
+            "verbatim resource path {rest_uri}: status={} body={}",
+            answer.status,
+            String::from_utf8_lossy(&answer.body)
+        );
+        assert_eq!(answer.status, StatusCode::NOT_FOUND, "{rest_uri}");
+        assert_eq!(
+            answer.header(header::CONTENT_TYPE),
+            Some("application/problem+json")
+        );
+        let problem = answer.json();
+        assert_eq!(problem["detail"], format!("tool {resource_uri} not found"));
+        assert_eq!(problem["instance"], rest_uri.split('?').next().unwrap());
+        assert_eq!(
+            answer.header(header::CACHE_CONTROL),
+            Some("private, no-store")
         );
     }
 }

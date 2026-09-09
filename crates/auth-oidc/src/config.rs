@@ -31,6 +31,7 @@ pub enum OidcConfigError {
 #[derive(Clone, Debug)]
 pub struct OidcAuthConfig {
     /// Exact `iss` claim required (e.g. `https://zitadel.example.com`).
+    /// Path components are allowed; query and fragment components are not.
     pub issuer: String,
     /// Explicit JWKS endpoint. `None` => discover via
     /// `{issuer}/.well-known/openid-configuration`.
@@ -48,14 +49,28 @@ impl OidcAuthConfig {
     /// # Errors
     ///
     /// Returns an error when the issuer or explicit JWKS endpoint is not a
-    /// valid HTTPS URL, or a plaintext HTTP URL on a non-loopback host.
+    /// valid HTTPS URL, or a plaintext HTTP URL on a non-loopback host, or
+    /// when the issuer contains a query or fragment component.
     pub fn validate(&self) -> Result<(), OidcConfigError> {
-        validate_https_url("issuer", &self.issuer)?;
+        validate_issuer_url(&self.issuer)?;
         if let Some(jwks_uri) = &self.jwks_uri {
             validate_jwks_url("jwks_uri", jwks_uri, &self.issuer)?;
         }
         Ok(())
     }
+}
+
+pub(crate) fn validate_issuer_url(raw: &str) -> Result<(), OidcConfigError> {
+    validate_https_url("issuer", raw)?;
+    // OIDC Discovery 1.0 §3 excludes query/fragment components from issuers.
+    // Inspect raw delimiters because the transport parser drops fragments.
+    if raw.contains(['?', '#']) {
+        return Err(OidcConfigError::InvalidUrl {
+            field: "issuer",
+            parse_error: "issuer must not contain query or fragment components".into(),
+        });
+    }
+    Ok(())
 }
 
 /// Validate a JWKS endpoint against the issuer that vouches for it.
@@ -168,6 +183,46 @@ mod tests {
         config("http://[::1]:4180", None)
             .validate()
             .expect("ipv6 loopback issuer");
+    }
+
+    #[test]
+    fn rejects_issuer_query_or_fragment_components() {
+        for base in [
+            "https://issuer.example/tenant",
+            "http://127.0.0.1:4180/tenant",
+        ] {
+            for suffix in ["?region=eu", "?", "#anchor", "#"] {
+                let issuer = format!("{base}{suffix}");
+                for jwks_uri in [None, Some("https://issuer.example/keys?version=1")] {
+                    assert!(
+                        matches!(
+                            config(&issuer, jwks_uri).validate(),
+                            Err(OidcConfigError::InvalidUrl {
+                                field: "issuer",
+                                ..
+                            })
+                        ),
+                        "issuer component must be rejected: {issuer}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn path_issuers_and_jwks_queries_remain_valid() {
+        for issuer in [
+            "https://issuer.example/tenant/",
+            "https://issuer.example/tenant%3Fblue%23anchor",
+            "http://127.0.0.1:4180/tenant",
+        ] {
+            let config = config(issuer, Some("https://issuer.example/keys?version=1"));
+
+            config
+                .validate()
+                .expect("path issuer and JWKS query allowed");
+            assert_eq!(config.issuer, issuer, "issuer identity is not normalized");
+        }
     }
 
     /// A loopback issuer may name its own loopback JWKS — that is the whole
