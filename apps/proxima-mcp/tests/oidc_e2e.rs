@@ -22,12 +22,12 @@ use aws_lc_rs::rsa::KeySize;
 use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
-use proxima::{Proxima, ResourceServerMetadata};
+use proxima::{Proxima, ResourceServerMetadata, S3RuntimeConfig};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
 use proxima_core::storage_ports::OwnerMembershipAdminPort;
 use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, GroupId, Owner, OwnerAccessPort,
-    OwnerRef, Relation, Role, ToolScope, UserId,
+    AccessKind, AuthPath, AuthzContext, ColdObjectStore, Engine, FlavorRegistry, GroupId, Owner,
+    OwnerAccessPort, OwnerRef, Relation, Role, ToolScope, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
 use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
@@ -77,6 +77,14 @@ fn mint(signing: &RsaKeyPair, sub: &str) -> String {
 #[allow(clippy::too_many_lines)] // linear e2e: boot + 4 assertion phases read best in one flow
 async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
 -> Result<(), Box<dyn std::error::Error>> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return Ok(());
+    }
+    let s3 = S3RuntimeConfig {
+        force_path_style: true,
+        ..S3RuntimeConfig::from_env()?
+    };
     let (database_url, created_db) = live_database_url().await?;
 
     let subject = UserId::new(Uuid::now_v7());
@@ -103,6 +111,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     let running = Proxima::<ProximaMcpApp>::app()
         .tool_scope(ToolScope::All)
         .database_url(database_url)
+        .s3(s3)
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.e2e.test".to_string(),
@@ -354,6 +363,25 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         forgotten.get("result").is_some(),
         "core_forget must run on the live listener: {forgotten:?}"
     );
+    assert_ne!(
+        forgotten["result"]["isError"],
+        json!(true),
+        "a JSON-RPC result must not conceal a tool failure: {forgotten:?}"
+    );
+    let forgotten_output: serde_json::Value = serde_json::from_str(&mcp_text(&forgotten))?;
+    assert_eq!(forgotten_output["ok"], json!(true));
+    let memory_t = handle
+        .strip_prefix("F:")
+        .ok_or("remember must return a Fact handle")?
+        .parse::<Uuid>()?;
+    let cold = running
+        .blobs
+        .as_ref()
+        .expect("configured S3 fixture")
+        .cold_store();
+    let cold_key = proxima_core::cold_object_key(memory_t);
+    assert!(!cold.get(&cold_key).await?.is_empty());
+    cold.delete(&cold_key).await?;
 
     running.shutdown().await;
     if let Some(name) = created_db {

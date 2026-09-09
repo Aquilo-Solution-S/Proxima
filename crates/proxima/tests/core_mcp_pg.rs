@@ -5,13 +5,14 @@ use std::sync::Arc;
 use proxima::flavor::{FlavorBundle, NamedMigrator, PgSidecarRegistry};
 use proxima::{
     AppInfo, AuthzContext, CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo, FlavorApp,
-    FlavorServiceError, FlavorServices, Proxima, StorageError, ToolScope, company_owner,
+    FlavorServiceError, FlavorServices, Proxima, S3RuntimeConfig, StorageError, ToolScope,
+    company_owner,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
-    AuthPath, CitationMappingPayload, CitedObjectPayload, FlavorRegistry, FlavorRegistryFrozen,
-    GroupId, MemoryId, Owner, OwnerRef, Relation, Role, SchemaId, UserId, all_core_resources,
-    provider_safe_tool_name,
+    AuthPath, CitationMappingPayload, CitedObjectPayload, ColdObjectStore, FlavorRegistry,
+    FlavorRegistryFrozen, GroupId, MemoryId, Owner, OwnerRef, Relation, Role, SchemaId, UserId,
+    all_core_resources, provider_safe_tool_name,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
@@ -2556,6 +2557,10 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
 
 #[tokio::test]
 async fn core_forget_cools_a_remembered_fact() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
     let db_name = unique_db_name("proxima_core_forget");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
@@ -2564,6 +2569,10 @@ async fn core_forget_cools_a_remembered_fact() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
+            .s3(S3RuntimeConfig {
+                force_path_style: true,
+                ..S3RuntimeConfig::from_env()?
+            })
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
@@ -2627,6 +2636,15 @@ async fn core_forget_cools_a_remembered_fact() {
         .fetch_one(built.pool_for_tests())
         .await?;
         assert_eq!(announce, "forget");
+
+        let cold = built
+            .blobs
+            .as_ref()
+            .expect("configured S3 fixture")
+            .cold_store();
+        let cold_key = proxima_core::cold_object_key(t);
+        assert!(!cold.get(&cold_key).await?.is_empty());
+        cold.delete(&cold_key).await?;
 
         built.shutdown();
         Ok(())

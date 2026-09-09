@@ -8,10 +8,13 @@
 //! it logged invisible to the read that exists for it.
 
 use proxima::flavor::{FlavorBundle, NamedMigrator};
-use proxima::{AppInfo, AuthPath, AuthzContext, FlavorApp, Proxima, ToolScope, company_owner};
+use proxima::{
+    AppInfo, AuthPath, AuthzContext, FlavorApp, Proxima, S3RuntimeConfig, ToolScope, company_owner,
+};
 use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallRecord};
 use proxima_core::{
-    Engine, McpCallLogInput, MemoryHydrationStatus, Owner, ProtocolError, Role, UserId,
+    ColdObjectStore, Engine, McpCallLogInput, MemoryHydrationStatus, Owner, ProtocolError, Role,
+    UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::core_pg_sidecars;
@@ -90,11 +93,26 @@ async fn history(
     Ok(response.calls)
 }
 
+async fn sidecar_stamp(
+    pool: &sqlx::PgPool,
+    memory_id: proxima_core::MemoryId,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT sidecar_tables FROM proxima_core.memory WHERE t = $1")
+        .bind(memory_id.into_inner())
+        .fetch_one(pool)
+        .await
+}
+
 /// Three claims. The call is readable through the history read; the same
 /// call replays as a no-op while the same call at a later time is a new
 /// row; and the rows it left pass the declaration integrity check.
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // linear flow: S3 gate + boot + call + history assertions
 async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
     let db_name = unique_db_name("proxima_mcp_call_log");
     create_db(&db_name).await.expect("PG required");
     let db_url = db_url(&db_name);
@@ -102,6 +120,10 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(db_url)
+            .s3(S3RuntimeConfig {
+                force_path_style: true,
+                ..S3RuntimeConfig::from_env()?
+            })
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
@@ -127,11 +149,7 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
 
         // Because the admission row declares the sidecar it carries: this
         // stamp was `{}` on the path this replaced.
-        let stamp: Vec<String> =
-            sqlx::query_scalar("SELECT sidecar_tables FROM proxima_core.memory WHERE t = $1")
-                .bind(first.fact_memory_id.into_inner())
-                .fetch_one(built.pool_for_tests())
-                .await?;
+        let stamp = sidecar_stamp(built.pool_for_tests(), first.fact_memory_id).await?;
         assert!(
             stamp.iter().any(|table| table == LOGGED_TABLE),
             "the admission row declares the logged-call sidecar: {stamp:?}"
@@ -166,15 +184,18 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
         engine
             .forget_memory(&authz, owner, first.fact_memory_id)
             .await?;
+        let cold = built
+            .blobs
+            .as_ref()
+            .expect("configured S3 fixture")
+            .cold_store();
+        let cold_key = proxima_core::cold_object_key(first.fact_memory_id.into_inner());
+        assert!(!cold.get(&cold_key).await?.is_empty());
         let hydrated = engine
             .hydrate_memory(&authz, owner, first.fact_memory_id)
             .await?;
         assert_eq!(hydrated.status, MemoryHydrationStatus::Hydrated);
-        let hydrated_stamp: Vec<String> =
-            sqlx::query_scalar("SELECT sidecar_tables FROM proxima_core.memory WHERE t = $1")
-                .bind(first.fact_memory_id.into_inner())
-                .fetch_one(built.pool_for_tests())
-                .await?;
+        let hydrated_stamp = sidecar_stamp(built.pool_for_tests(), first.fact_memory_id).await?;
         assert!(hydrated_stamp.iter().any(|table| table == LOGGED_TABLE));
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
@@ -204,6 +225,7 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
             .await
             .map_err(|err| format!("logging left declaration drift: {err}"))?;
 
+        cold.delete(&cold_key).await?;
         built.shutdown();
         Ok(())
     }
