@@ -5,7 +5,7 @@ use proxima_core::llm::{EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS};
 use proxima_core::models::EmbedCaps;
 use serde::{Deserialize, Serialize};
 
-use crate::{build_client, ensure_secure_base_url, join_endpoint};
+use crate::{build_client, embedding_endpoint};
 
 // =====================================================================
 // OpenAI-compatible embedding client — /embeddings
@@ -20,6 +20,8 @@ pub const DEFAULT_EMBED_TIMEOUT: Duration = proxima_core::llm::DEFAULT_EMBED_REQ
 
 #[derive(Clone)]
 pub struct OpenAiCompatConfig {
+    /// Provider base URL. `/embeddings` is appended to its path; query
+    /// parameters are preserved. Fragments are rejected at construction.
     pub base_url: String,
     pub timeout: Duration,
     pub bearer_token: Option<String>,
@@ -73,6 +75,7 @@ struct EmbedRequest<'a> {
 pub struct OpenAiCompatEmbeddingClient {
     config: OpenAiCompatConfig,
     client: reqwest::Client,
+    endpoint: reqwest::Url,
     model_id: String,
     caps: EmbedCaps,
 }
@@ -85,8 +88,9 @@ impl OpenAiCompatEmbeddingClient {
     ///
     /// # Errors
     /// Returns `LlmError::Internal` if the HTTP client cannot be built, if
-    /// `config.base_url` is a non-loopback plaintext `http://` endpoint (which
-    /// would leak the bearer token in transit), or if
+    /// `config.base_url` is invalid, contains a fragment, or is a non-loopback
+    /// plaintext `http://` endpoint (which would leak the bearer token in
+    /// transit), or if
     /// [`EmbedCaps::max_input_chars`] is set below
     /// [`proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS`].
     pub fn new(
@@ -94,7 +98,7 @@ impl OpenAiCompatEmbeddingClient {
         caps: EmbedCaps,
         config: OpenAiCompatConfig,
     ) -> Result<Self, LlmError> {
-        ensure_secure_base_url(&config.base_url)?;
+        let endpoint = embedding_endpoint(&config.base_url)?;
         // Rejected at construction rather than tolerated at call time: a cap
         // under the floor makes over-long input terminal instead of chunked,
         // and it does so invisibly — every component behaves as documented
@@ -113,6 +117,7 @@ impl OpenAiCompatEmbeddingClient {
         Ok(Self {
             config,
             client,
+            endpoint,
             model_id: model_id.into(),
             caps,
         })
@@ -129,6 +134,65 @@ struct OpenAiEmbeddingDatum {
     #[serde(default)]
     index: Option<usize>,
     embedding: Vec<f32>,
+}
+
+impl OpenAiEmbeddingResponse {
+    fn into_embeddings(
+        self,
+        expected_count: usize,
+        caps: EmbedCaps,
+    ) -> Result<Vec<Vec<f32>>, LlmError> {
+        if self.data.len() != expected_count {
+            return Err(LlmError::Embed(format!(
+                "requested {} embeddings, response carried {}",
+                expected_count,
+                self.data.len()
+            )));
+        }
+        let mut data = self.data;
+        // Index-free compatible providers retain array order. Once any
+        // index is supplied, require a complete permutation of the inputs:
+        // sorting alone would silently accept duplicates or missing indices.
+        if data.iter().any(|d| d.index.is_some()) {
+            data.sort_by_key(|d| d.index);
+            for (expected_index, datum) in data.iter().enumerate() {
+                if datum.index != Some(expected_index) {
+                    return Err(LlmError::Embed(format!(
+                        "invalid embedding response index {:?}; expected {expected_index} after \
+                         sorting a complete set of {expected_count} input indices",
+                        datum.index,
+                    )));
+                }
+            }
+        }
+
+        let expected = caps.dim as usize;
+        // Preserve shape-error precedence across the entire batch before
+        // examining components. Valid JSON numbers can overflow f32 while
+        // deserializing, even though NaN/Infinity are not JSON number tokens.
+        for datum in &data {
+            if datum.embedding.len() != expected {
+                return Err(LlmError::Embed(format!(
+                    "expected dim {} (matryoshka={}), got {}",
+                    expected,
+                    caps.matryoshka,
+                    datum.embedding.len()
+                )));
+            }
+        }
+        data.into_iter()
+            .enumerate()
+            .map(|(embedding_index, datum)| {
+                if let Some(component_index) = datum.embedding.iter().position(|value| !value.is_finite()) {
+                    Err(LlmError::Embed(format!(
+                        "embedding {embedding_index} has non-finite component at position {component_index}"
+                    )))
+                } else {
+                    Ok(datum.embedding)
+                }
+            })
+            .collect()
+    }
 }
 
 /// Whether a non-success `/embeddings` status is evidence of a request that
@@ -209,14 +273,13 @@ impl OpenAiCompatEmbeddingClient {
 
     async fn embed_call(&self, inputs: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
         self.refuse_over_cap(inputs)?;
-        let url = join_endpoint(&self.config.base_url, "embeddings");
         let body = EmbedRequest {
             model: &self.model_id,
             input: inputs,
             dimensions: self.caps.matryoshka.then_some(self.caps.dim),
         };
 
-        let mut req = self.client.post(&url).json(&body);
+        let mut req = self.client.post(self.endpoint.clone()).json(&body);
         if let Some(token) = &self.config.bearer_token {
             req = req.bearer_auth(token);
         }
@@ -240,35 +303,7 @@ impl OpenAiCompatEmbeddingClient {
                 "decode OpenAI-compatible envelope: {e}; body: {text_body}"
             ))
         })?;
-        if parsed.data.len() != inputs.len() {
-            return Err(LlmError::Embed(format!(
-                "requested {} embeddings, response carried {}",
-                inputs.len(),
-                parsed.data.len()
-            )));
-        }
-        // The OpenAI shape orders `data` by `index`; sort defensively when
-        // the field is present so batch outputs align with batch inputs.
-        let mut data = parsed.data;
-        if data.iter().all(|d| d.index.is_some()) {
-            data.sort_by_key(|d| d.index.unwrap_or(usize::MAX));
-        }
-
-        let expected = self.dim();
-        data.into_iter()
-            .map(|datum| {
-                if datum.embedding.len() == expected {
-                    Ok(datum.embedding)
-                } else {
-                    Err(LlmError::Embed(format!(
-                        "expected dim {} (matryoshka={}), got {}",
-                        expected,
-                        self.caps.matryoshka,
-                        datum.embedding.len()
-                    )))
-                }
-            })
-            .collect()
+        parsed.into_embeddings(inputs.len(), self.caps)
     }
 }
 
@@ -304,6 +339,207 @@ mod tests {
 
     use proxima_core::llm::{EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS};
     use proxima_core::models::EmbedCaps;
+
+    fn decode_vectors(
+        data: serde_json::Value,
+        expected_count: usize,
+    ) -> Result<Vec<Vec<f32>>, LlmError> {
+        let response = super::OpenAiEmbeddingResponse {
+            data: serde_json::from_value(data).expect("valid response data"),
+        };
+        response.into_embeddings(expected_count, EmbedCaps::new(2, false))
+    }
+
+    #[test]
+    fn response_indices_restore_input_order() {
+        let vectors = decode_vectors(
+            serde_json::json!([
+                { "index": 1, "embedding": [0.0, 1.0] },
+                { "index": 0, "embedding": [1.0, 0.0] }
+            ]),
+            2,
+        )
+        .expect("a complete permutation is valid");
+        assert_eq!(vectors, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+    }
+
+    #[test]
+    fn response_without_indices_preserves_provider_order() {
+        let vectors = decode_vectors(
+            serde_json::json!([
+                { "embedding": [0.0, 1.0] },
+                { "embedding": [1.0, 0.0] }
+            ]),
+            2,
+        )
+        .expect("compatible providers may omit all indices");
+        assert_eq!(vectors, vec![vec![0.0, 1.0], vec![1.0, 0.0]]);
+    }
+
+    #[test]
+    fn response_rejects_duplicate_or_out_of_range_indices() {
+        for indices in [[0, 0], [1, 1], [0, 2], [1, 2]] {
+            let result = decode_vectors(
+                serde_json::json!([
+                    { "index": indices[0], "embedding": [1.0, 0.0] },
+                    { "index": indices[1], "embedding": [0.0, 1.0] }
+                ]),
+                2,
+            );
+            assert!(
+                matches!(result, Err(LlmError::Embed(_))),
+                "invalid indices {indices:?} must not assign vectors to inputs: {result:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn response_rejects_partially_indexed_batches() {
+        for indices in [[Some(0), None], [None, Some(1)]] {
+            let result = decode_vectors(
+                serde_json::json!([
+                    { "index": indices[0], "embedding": [1.0, 0.0] },
+                    { "index": indices[1], "embedding": [0.0, 1.0] }
+                ]),
+                2,
+            );
+            assert!(
+                matches!(result, Err(LlmError::Embed(_))),
+                "partial indices must not silently fall back to array order: {result:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn response_rejects_nonzero_index_for_single_input() {
+        assert!(matches!(
+            decode_vectors(
+                serde_json::json!([{ "index": 1, "embedding": [1.0, 0.0] }]),
+                1,
+            ),
+            Err(LlmError::Embed(_))
+        ));
+    }
+
+    #[test]
+    fn response_rejects_wrong_count_or_dimensions() {
+        for data in [
+            serde_json::json!([]),
+            serde_json::json!([{ "index": 0, "embedding": [1.0, 0.0] }]),
+            serde_json::json!([
+                { "index": 0, "embedding": [1.0, 0.0] },
+                { "index": 1, "embedding": [1.0] }
+            ]),
+        ] {
+            assert!(matches!(decode_vectors(data, 2), Err(LlmError::Embed(_))));
+        }
+    }
+
+    fn decode_raw_vectors(body: &str, expected_count: usize) -> Result<Vec<Vec<f32>>, LlmError> {
+        let response: super::OpenAiEmbeddingResponse = serde_json::from_str(body)
+            .map_err(|err| LlmError::Embed(format!("decode response: {err}")))?;
+        response.into_embeddings(expected_count, EmbedCaps::new(2, false))
+    }
+
+    #[test]
+    fn response_rejects_float32_overflow() {
+        // Use wire JSON, not json!: finite f64 values can overflow when
+        // deserialized into the response's f32 components.
+        for (body, expected) in [
+            (
+                r#"{"data":[{"index":0,"embedding":[1.0,-0.5]}]}"#,
+                [1.0_f32, -0.5],
+            ),
+            (r#"{"data":[{"embedding":[0.0,0.0]}]}"#, [0.0, 0.0]),
+            (
+                r#"{"data":[{"embedding":[3.4028234e38,-3.4028234e38]}]}"#,
+                [f32::MAX, -f32::MAX],
+            ),
+            (
+                r#"{"data":[{"embedding":[-0.0,1e-45]}]}"#,
+                [-0.0, f32::from_bits(1)],
+            ),
+        ] {
+            let vectors = decode_raw_vectors(body, 1).expect("finite response remains valid");
+            assert_eq!(vectors.len(), 1);
+            assert_eq!(vectors[0].len(), 2);
+            assert!(vectors[0].iter().all(|value| value.is_finite()));
+            assert_eq!(
+                vectors[0]
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                expected.map(f32::to_bits),
+                "accepted values are not normalized, clamped or rewritten",
+            );
+        }
+        for (body, count) in [
+            (r#"{"data":[{"embedding":[1.0]}]}"#, 1),
+            (r#"{"data":[{"embedding":[1.0,0.0]}]}"#, 2),
+        ] {
+            assert!(matches!(
+                decode_raw_vectors(body, count),
+                Err(LlmError::Embed(_))
+            ));
+        }
+        let observed: Vec<_> = ["1e39", "-1e39", "1e100", "-1e100"]
+            .into_iter()
+            .map(|number| {
+                let body = format!(r#"{{"data":[{{"index":0,"embedding":[{number},0.0]}}]}}"#);
+                (number, decode_raw_vectors(&body, 1))
+            })
+            .collect();
+        for (number, result) in observed {
+            assert!(
+                matches!(result, Err(LlmError::Embed(_))),
+                "out-of-range component {number} must be a retryable malformed response: {result:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn response_checks_later_vectors_and_components() {
+        // The invalid component is last in the second logical vector, even
+        // when the provider returns the indexed batch in reverse order.
+        for body in [
+            r#"{"data":[{"embedding":[1.0,0.0]},{"embedding":[0.0,1e39]}]}"#,
+            r#"{"data":[{"index":1,"embedding":[0.0,-1e39]},{"index":0,"embedding":[1.0,0.0]}]}"#,
+        ] {
+            let result = decode_raw_vectors(body, 2);
+            assert!(
+                matches!(result, Err(LlmError::Embed(ref message))
+                    if message == "embedding 1 has non-finite component at position 1"),
+                "later invalid values must reject the whole batch with bounded context: {result:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn response_shape_errors_precede_non_finite_components() {
+        for (body, count, expected_error) in [
+            (
+                r#"{"data":[{"index":7,"embedding":[1e39,0.0]}]}"#,
+                2,
+                "requested 2 embeddings, response carried 1",
+            ),
+            (
+                r#"{"data":[{"index":0,"embedding":[1e39,0.0]},{"index":0,"embedding":[1.0]}]}"#,
+                2,
+                "invalid embedding response index",
+            ),
+            (
+                r#"{"data":[{"index":0,"embedding":[1e39,0.0]},{"index":1,"embedding":[1.0]}]}"#,
+                2,
+                "expected dim 2 (matryoshka=false), got 1",
+            ),
+        ] {
+            let result = decode_raw_vectors(body, count);
+            assert!(
+                matches!(result, Err(LlmError::Embed(ref message)) if message.starts_with(expected_error)),
+                "existing shape error takes precedence over overflow: {result:?}",
+            );
+        }
+    }
 
     fn probe_caps() -> EmbedCaps {
         EmbedCaps::new(8, false)
@@ -521,6 +757,21 @@ mod tests {
     }
 
     #[test]
+    fn client_rejects_base_url_fragments_at_construction() {
+        for base in ["http://127.0.0.1:9/v1#anchor", "https://api.example/v1#"] {
+            let result = super::OpenAiCompatEmbeddingClient::new(
+                "test-embed",
+                probe_caps(),
+                super::OpenAiCompatConfig::new(base, None),
+            );
+            assert!(
+                matches!(result, Err(LlmError::Internal(_))),
+                "fragment-bearing base must fail at construction: {base}",
+            );
+        }
+    }
+
+    #[test]
     fn status_policy_is_independent_of_error_body() {
         use reqwest::StatusCode;
         let bodies = [
@@ -603,5 +854,254 @@ mod tests {
                 "input": ["first text", "second text"],
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod redirect_tests {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use proxima_core::llm::{EmbeddingClient, LlmError};
+    use proxima_core::models::EmbedCaps;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    use super::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
+
+    enum Target {
+        Loopback,
+        RemoteHttp,
+        Loop,
+    }
+
+    struct RedirectServer {
+        addr: SocketAddr,
+        requests: Arc<AtomicUsize>,
+        target_requests: Arc<AtomicUsize>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for RedirectServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn read_request(stream: &mut TcpStream) -> String {
+        let mut request = Vec::new();
+        loop {
+            let mut buffer = [0; 4096];
+            let count = stream.read(&mut buffer).await.expect("read request");
+            assert!(count > 0, "connection ended before a complete request");
+            request.extend_from_slice(&buffer[..count]);
+            let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = std::str::from_utf8(&request[..end]).expect("UTF-8 headers");
+            let content_length: usize = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .map_or(0, |(_, value)| {
+                    value.trim().parse().expect("content length")
+                });
+            if request.len() >= end + 4 + content_length {
+                return String::from_utf8(request).expect("UTF-8 test request");
+            }
+        }
+    }
+
+    async fn spawn_redirect_server(status: u16, target: Target) -> RedirectServer {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
+        let addr = listener.local_addr().expect("server address");
+        let requests = Arc::new(AtomicUsize::new(0));
+        let target_requests = Arc::new(AtomicUsize::new(0));
+        let all_count = requests.clone();
+        let target_count = target_requests.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let request = read_request(&mut stream).await;
+                all_count.fetch_add(1, Ordering::SeqCst);
+                let response = if request.starts_with("POST /target ") {
+                    target_count.fetch_add(1, Ordering::SeqCst);
+                    let (_, body) = request.split_once("\r\n\r\n").expect("request body");
+                    let body: serde_json::Value = serde_json::from_str(body).expect("JSON input");
+                    assert_eq!(body["input"], serde_json::json!(["private memory text"]));
+                    let body = r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else {
+                    let destination = if request.starts_with("POST /v1/embeddings ") {
+                        "/intermediate".to_string()
+                    } else {
+                        match target {
+                            Target::Loopback => format!("http://{addr}/target"),
+                            Target::RemoteHttp => {
+                                format!("http://redirect.example:{}/target", addr.port())
+                            }
+                            Target::Loop => "/intermediate".to_string(),
+                        }
+                    };
+                    format!(
+                        "HTTP/1.1 {status} Redirect\r\nLocation: {destination}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                };
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("respond");
+            }
+        });
+        RedirectServer {
+            addr,
+            requests,
+            target_requests,
+            task,
+        }
+    }
+
+    fn client_for(server: &RedirectServer) -> OpenAiCompatEmbeddingClient {
+        let mut client = OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            EmbedCaps::new(2, false),
+            OpenAiCompatConfig::new(format!("http://{}/v1", server.addr), None),
+        )
+        .expect("loopback embedding endpoint");
+        client.client = crate::build_http_client(
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .no_proxy()
+                .resolve("redirect.example", server.addr),
+        )
+        .expect("build test client with production redirect policy");
+        client
+    }
+
+    #[tokio::test]
+    async fn embedding_base_query_preserves_request_path_and_parameters() {
+        for (base_path, expected_target) in [
+            (
+                "/v1?api-version=2026-09&tenant=a%2Fb&route=/",
+                "/v1/embeddings?api-version=2026-09&tenant=a%2Fb&route=/",
+            ),
+            ("/v1/?mode=x&mode=y", "/v1/embeddings?mode=x&mode=y"),
+            ("/v1%2Ftenant?mode=x", "/v1%2Ftenant/embeddings?mode=x"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
+            let addr = listener.local_addr().expect("server address");
+            let request_task = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let request = read_request(&mut stream).await;
+                let body = r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("respond");
+                request
+            });
+            let client = OpenAiCompatEmbeddingClient::new(
+                "test-embed",
+                EmbedCaps::new(2, false),
+                OpenAiCompatConfig::new(format!("http://{addr}{base_path}"), None)
+                    .with_timeout(Duration::from_secs(5)),
+            )
+            .expect("query-bearing base is valid");
+            assert_eq!(
+                client.embed("test text").await.expect("embed"),
+                vec![1.0, 0.0]
+            );
+            let request = request_task.await.expect("request captured");
+            assert_eq!(
+                request.lines().next().expect("request line"),
+                format!("POST {expected_target} HTTP/1.1"),
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_http_response_with_overflow_is_retryable() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
+        let addr = listener.local_addr().expect("server address");
+        let request_task = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(5), async move {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let request = read_request(&mut stream).await;
+                let body = r#"{"data":[{"index":0,"embedding":[0.0,1e39]}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("respond");
+                request
+            })
+            .await
+            .expect("local response completes")
+        });
+        let mut client = OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            EmbedCaps::new(2, false),
+            OpenAiCompatConfig::new(format!("http://{addr}/v1"), None),
+        )
+        .expect("loopback embedding endpoint");
+        client.client = crate::build_http_client(
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .no_proxy(),
+        )
+        .expect("test client with production response handling");
+        let result = client.embed("test text").await;
+        let request = request_task.await.expect("request captured");
+        assert!(request.starts_with("POST /v1/embeddings HTTP/1.1\r\n"));
+        assert!(
+            matches!(result, Err(LlmError::Embed(ref message))
+                if message == "embedding 0 has non-finite component at position 1"),
+            "HTTP success must not accept an invalid vector: {result:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn nonloopback_plaintext_redirect_cannot_receive_embedding_input() {
+        for status in [307, 308] {
+            let server = spawn_redirect_server(status, Target::RemoteHttp).await;
+            let result = client_for(&server).embed("private memory text").await;
+            assert_eq!(server.target_requests.load(Ordering::SeqCst), 0);
+            assert_eq!(server.requests.load(Ordering::SeqCst), 2);
+            assert!(matches!(result, Err(LlmError::Embed(_))), "{result:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn valid_loopback_redirects_preserve_embedding_input() {
+        for status in [307, 308] {
+            let server = spawn_redirect_server(status, Target::Loopback).await;
+            let vector = client_for(&server)
+                .embed("private memory text")
+                .await
+                .expect("valid relative and absolute loopback redirects");
+            assert_eq!(vector, vec![1.0, 0.0]);
+            assert_eq!(server.target_requests.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn redirect_loops_keep_the_default_ten_hop_limit() {
+        let server = spawn_redirect_server(307, Target::Loop).await;
+        let result = client_for(&server).embed("private memory text").await;
+        assert!(matches!(result, Err(LlmError::Embed(_))), "{result:?}");
+        assert_eq!(server.requests.load(Ordering::SeqCst), 11);
+        assert_eq!(server.target_requests.load(Ordering::SeqCst), 0);
     }
 }

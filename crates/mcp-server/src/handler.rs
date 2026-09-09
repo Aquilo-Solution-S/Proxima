@@ -284,7 +284,6 @@ impl ServerHandler for DynamicHandler {
                 .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
             let author = author_from_args(&args, auth.as_ref(), &client_name, &client_version)?;
             strip_call_context_args(&mut args);
-            reject_nul_in_args(&args)?;
             let error_auth = auth.clone();
             let output = server
                 .call_tool(&canonical_name, args, author, auth)
@@ -298,60 +297,6 @@ impl ServerHandler for DynamicHandler {
             Ok(result.into())
         }
     }
-}
-
-/// Reject `NUL` anywhere in a tool's arguments before dispatch.
-///
-/// A Postgres `text` value cannot contain `U+0000` — the server answers
-/// `invalid byte sequence for encoding "UTF8": 0x00` and aborts the
-/// statement. JSON strings can carry it (a `\u0000` escape is well-formed), so a
-/// caller could send one through any string argument of any tool, and it
-/// arrived as `-32603 internal server error` plus an `ERROR`-level log
-/// line: a client-driven input mistake reported, and alerted on, as a
-/// server fault. That is the exact failure
-/// [`tool_invocation_error_to_error_data`] exists to prevent, one layer
-/// further out.
-///
-/// Rejected rather than stripped. Silently removing the byte would answer
-/// a different query than the one asked, and the caller would have no way
-/// to know.
-///
-/// Checked over the whole argument tree rather than per tool, because the
-/// constraint is Postgres', not any one tool's: every string that reaches
-/// storage has it, including arguments of tools not yet written.
-fn reject_nul_in_args(args: &serde_json::Value) -> Result<(), ErrorData> {
-    // An explicit worklist rather than recursion. `serde_json` already caps
-    // parse depth at 127, so nothing that arrives here could exhaust the
-    // stack — but that bound belongs to the parser, and this walk should
-    // not depend on it.
-    let mut stack = vec![args];
-    while let Some(value) = stack.pop() {
-        match value {
-            serde_json::Value::String(text) => {
-                if text.contains('\0') {
-                    return Err(ErrorData::invalid_params(
-                        "arguments must not contain NUL (U+0000)".to_string(),
-                        None,
-                    ));
-                }
-            }
-            serde_json::Value::Array(items) => stack.extend(items.iter()),
-            serde_json::Value::Object(map) => {
-                for (key, item) in map {
-                    if key.contains('\0') {
-                        return Err(ErrorData::invalid_params(
-                            "argument names must not contain NUL (U+0000)".to_string(),
-                            None,
-                        ));
-                    }
-                    stack.push(item);
-                }
-            }
-            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Map a tool-invocation failure to a typed JSON-RPC error so external
@@ -860,6 +805,13 @@ mod tests {
     // directly. These tests assert the manifest's own contents.
     use proxima_core::mcp::core_tool_annotations;
     use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
+
+    // Retain the existing guard and JSON-RPC error assertions through the
+    // shared host validator and the production transport error mapper.
+    fn reject_nul_in_args(args: &serde_json::Value) -> Result<(), ErrorData> {
+        crate::server::reject_nul_in_args(args)
+            .map_err(|error| mcp_tool_error_to_error_data(&error))
+    }
 
     fn flavor_descriptor(
         name: &'static str,
