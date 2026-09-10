@@ -30,10 +30,16 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 async-trait = "0.1"
 # NATS JetStream client for the optional Fact-outbox publisher
-# (crates/outbox-nats, docs/18). `default-features = false` drops nkeys/ring/
-# websockets/object-store/kv: the publisher needs JetStream and nothing else,
-# and `aws-lc-rs` keeps the crate on the same TLS backend as sqlx, jsonwebtoken
-# and aws-sdk-s3 rather than pulling a second provider into the binary.
+# (crates/outbox-nats, docs/18). `default-features = false` drops ring, crypto,
+# service, nuid, object-store, kv, websockets and the server_2_12/2_14 gates:
+# the publisher needs JetStream and nothing else, and `aws-lc-rs` keeps the
+# crate on the same TLS backend as sqlx, jsonwebtoken and aws-sdk-s3 rather
+# than pulling a second provider into the binary. `crates/outbox-nats` adds
+# `nkeys` back on top of this set — `ConnectOptions::credentials_file` is
+# `#[cfg(feature = "nkeys")]` and PROXIMA_NATS_CREDS_FILE is a documented auth
+# form — which is what puts ed25519-dalek/curve25519-dalek/signatory in the
+# graph. Dropping `websockets` is what keeps tokio-websockets and its
+# webpki-roots 0.26 out of the build (see deny.toml [bans]).
 async-nats = { version = "0.50.0", default-features = false, features = ["jetstream", "aws-lc-rs", "server_2_10", "server_2_11"] }
 bytes = "1"
 blake3 = "1"

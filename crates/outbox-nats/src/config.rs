@@ -49,6 +49,14 @@ pub const DEFAULT_LEASE: Duration = Duration::from_secs(30);
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 pub const DEFAULT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_ACK_WAIT: Duration = Duration::from_secs(30);
+/// How long the consumer waits for a connection and for one `JetStream`
+/// API round trip.
+///
+/// Deliberately NOT `ack_wait`. `ack_wait` is how long a SINK may take to
+/// make an outcome durable — minutes, in a deployment that wants patient
+/// redelivery — and reusing it as the connect timeout would make an
+/// unreachable broker hang for that long before anyone is told.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_DUPLICATE_WINDOW: Duration = Duration::from_mins(2);
 pub const DEFAULT_MAX_ACK_PENDING: i64 = 1000;
 /// 1 GiB of stream capacity by default. Explicit, never `-1`: an unlimited
@@ -65,7 +73,7 @@ pub const MESSAGE_SIZE_HEADROOM_BYTES: usize = 16 * 1024;
 /// [`ConfigError::ConflictingAuth`] rather than a silent precedence rule,
 /// because "which credential did production actually use" is the question
 /// an operator cannot afford to guess.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub enum NatsAuth {
     #[default]
     None,
@@ -75,6 +83,45 @@ pub enum NatsAuth {
         password: String,
     },
     Token(String),
+}
+
+/// Hand-written so a `tracing::info!(?config)` cannot write the broker
+/// credential to a log file. The user name survives because it names an
+/// account rather than proving one; the creds-file PATH does not, because
+/// it is the credential's address and printing it tells a reader of the
+/// log where to go looking.
+impl std::fmt::Debug for NatsAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("None"),
+            Self::CredsFile(_) => f.write_str("CredsFile(<redacted>)"),
+            Self::UserPassword { user, .. } => f
+                .debug_struct("UserPassword")
+                .field("user", user)
+                .field("password", &REDACTED)
+                .finish(),
+            Self::Token(_) => f.write_str("Token(<redacted>)"),
+        }
+    }
+}
+
+/// What every redacted field prints instead of its value.
+const REDACTED: &str = "<redacted>";
+
+/// A broker URL with any `user:password@` userinfo removed.
+///
+/// `nats://user:secret@host:4222` is a documented NATS form, so the URL is
+/// as much a credential as [`NatsAuth`] is.
+fn redacted_url(url: &str) -> String {
+    url.split(',')
+        .map(|server| match (server.find("//"), server.rfind('@')) {
+            (Some(scheme), Some(at)) if at > scheme => {
+                format!("{}//{REDACTED}@{}", &server[..scheme], &server[at + 1..])
+            }
+            _ => server.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// The shipped `JetStream` profile.
@@ -122,7 +169,7 @@ impl std::fmt::Display for DeliveryProfile {
 }
 
 /// Everything the publisher needs to reach one broker and hold one stream.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NatsPublisherConfig {
     /// `nats://…`; a comma-separated list names several servers of one
     /// cluster.
@@ -148,6 +195,30 @@ pub struct NatsPublisherConfig {
     pub duplicate_window: Duration,
 }
 
+/// Hand-written, and NOT `finish_non_exhaustive`: every field is printed
+/// except the two that carry credentials. The derive would have printed
+/// the URL's userinfo verbatim, and this type is re-exported from the
+/// facade for hosts to log.
+impl std::fmt::Debug for NatsPublisherConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NatsPublisherConfig")
+            .field("url", &redacted_url(&self.url))
+            .field("auth", &self.auth)
+            .field("profile", &self.profile)
+            .field("stream", &self.stream)
+            .field("subject_prefix", &self.subject_prefix)
+            .field("publisher_id", &self.publisher_id)
+            .field("batch", &self.batch)
+            .field("lease", &self.lease)
+            .field("poll_interval", &self.poll_interval)
+            .field("publish_timeout", &self.publish_timeout)
+            .field("max_stream_bytes", &self.max_stream_bytes)
+            .field("max_message_bytes", &self.max_message_bytes)
+            .field("duplicate_window", &self.duplicate_window)
+            .finish()
+    }
+}
+
 impl NatsPublisherConfig {
     /// Build the default configuration for one broker URL.
     ///
@@ -166,7 +237,7 @@ impl NatsPublisherConfig {
             profile: DeliveryProfile::LocalFile,
             stream: DEFAULT_STREAM.to_owned(),
             subject_prefix: DEFAULT_SUBJECT_PREFIX.to_owned(),
-            publisher_id: default_publisher_id()?,
+            publisher_id: default_publisher_id(&proxima_core::process_env)?,
             batch: NonZeroU32::new(DEFAULT_BATCH).expect("64 is not zero"),
             lease: DEFAULT_LEASE,
             poll_interval: DEFAULT_POLL_INTERVAL,
@@ -203,10 +274,15 @@ impl NatsPublisherConfig {
         if let Some(raw) = lookup(ENV_SUBJECT_PREFIX) {
             config.subject_prefix = validated_subject_prefix(&raw)?;
         }
-        if let Some(raw) = lookup(ENV_PUBLISHER_ID) {
-            config.publisher_id =
-                PublisherId::new(raw).map_err(|error| ConfigError::PublisherId { error })?;
-        }
+        // Both the explicit key and the default's `HOSTNAME` come out of the
+        // INJECTED lookup: a host that hands us an environment must not get
+        // a publisher label assembled from the process's own.
+        config.publisher_id = match lookup(ENV_PUBLISHER_ID) {
+            Some(raw) => {
+                PublisherId::new(raw).map_err(|error| ConfigError::PublisherId { error })?
+            }
+            None => default_publisher_id(&lookup)?,
+        };
         config.auth = auth_from_lookup(&lookup)?;
         if let Some(raw) = lookup(ENV_BATCH) {
             config.batch = parse_non_zero_u32(ENV_BATCH, &raw)?;
@@ -299,7 +375,7 @@ impl NatsPublisherConfig {
 
 /// Everything the reference consumer needs to bind one durable pull
 /// consumer.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NatsConsumerConfig {
     pub url: String,
     pub auth: NatsAuth,
@@ -308,8 +384,32 @@ pub struct NatsConsumerConfig {
     /// Durable name. Two processes sharing it share the work; two
     /// deployments sharing it by accident share the acknowledgements.
     pub durable_name: String,
+    /// How long the BROKER waits for this consumer's ACK. Set it to what
+    /// the slowest durable sink needs.
     pub ack_wait: Duration,
+    /// How long THIS process waits for the broker: connect, and one
+    /// `JetStream` API round trip. Bounded independently of
+    /// [`Self::ack_wait`] and not read from the environment — an
+    /// unreachable broker must be reported in seconds however patient the
+    /// sink is.
+    pub request_timeout: Duration,
     pub max_ack_pending: i64,
+}
+
+/// Hand-written for the same reason as [`NatsPublisherConfig`]'s.
+impl std::fmt::Debug for NatsConsumerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NatsConsumerConfig")
+            .field("url", &redacted_url(&self.url))
+            .field("auth", &self.auth)
+            .field("stream", &self.stream)
+            .field("subject_prefix", &self.subject_prefix)
+            .field("durable_name", &self.durable_name)
+            .field("ack_wait", &self.ack_wait)
+            .field("request_timeout", &self.request_timeout)
+            .field("max_ack_pending", &self.max_ack_pending)
+            .finish()
+    }
 }
 
 impl NatsConsumerConfig {
@@ -322,6 +422,7 @@ impl NatsConsumerConfig {
             subject_prefix: DEFAULT_SUBJECT_PREFIX.to_owned(),
             durable_name: DEFAULT_CONSUMER_NAME.to_owned(),
             ack_wait: DEFAULT_ACK_WAIT,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
             max_ack_pending: DEFAULT_MAX_ACK_PENDING,
         }
     }
@@ -423,26 +524,34 @@ pub enum ConfigError {
     PublisherId { error: PublisherIdError },
 }
 
-/// The default publisher label: `<hostname>:<pid>`.
+/// The default publisher label: `<hostname>:<pid>`, read through `lookup`.
 ///
 /// `HOSTNAME` rather than a syscall: reading it needs no new dependency and
 /// no `unsafe`, and this value is an operator label rather than an
 /// identity — the fencing token is the claim token. A host that wants a
 /// stable label sets [`ENV_PUBLISHER_ID`].
-fn default_publisher_id() -> Result<PublisherId, ConfigError> {
-    let host = proxima_core::env_value(&proxima_core::process_env, "HOSTNAME")
-        .unwrap_or_else(|| "proxima".to_owned());
-    let host: String = host
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(96)
-        .collect::<String>();
-    let host = if host.trim().is_empty() {
-        "proxima".to_owned()
-    } else {
-        host
-    };
-    PublisherId::new(format!("{host}:{}", std::process::id()))
+///
+/// It takes the lookup rather than reading the process environment so that
+/// an injected environment produces the same answer everywhere in this
+/// module. Sanitisation is by BYTES, not characters, so that no value of
+/// `HOSTNAME` can push the label past [`PublisherId`]'s 128-byte bound and
+/// turn a hostile environment variable into a boot failure.
+fn default_publisher_id(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<PublisherId, ConfigError> {
+    let host = proxima_core::env_value(lookup, "HOSTNAME").unwrap_or_default();
+    let mut label = String::with_capacity(96);
+    for c in host.chars().filter(|c| !c.is_control()) {
+        if label.len() + c.len_utf8() > 96 {
+            break;
+        }
+        label.push(c);
+    }
+    if label.trim().is_empty() {
+        label.clear();
+        label.push_str("proxima");
+    }
+    PublisherId::new(format!("{label}:{}", std::process::id()))
         .map_err(|error| ConfigError::PublisherId { error })
 }
 
@@ -557,11 +666,10 @@ fn parse_stream_bytes(raw: &str) -> Result<i64, ConfigError> {
 
 /// The subject one captured event is published on.
 ///
-/// `<prefix>.<owner_kind>.<owner_uuid>.<type_token>`, where `type_token`
-/// replaces every character outside `[A-Za-z0-9_-]` with `_`. Owner routing
-/// lives in the subject so a NATS account can restrict a consumer to one
-/// owner's events with a subject permission, without the broker parsing
-/// the payload.
+/// `<prefix>.<owner_kind>.<owner_uuid>.<type_token>`. Owner routing lives
+/// in the subject so a NATS account can restrict a consumer to one owner's
+/// events with a subject permission, without the broker parsing the
+/// payload.
 #[must_use]
 pub fn subject_for(
     prefix: &str,
@@ -575,20 +683,36 @@ pub fn subject_for(
     )
 }
 
-/// The subject token for one event type.
+/// The subject token for one event type: `_xx` percent-style escaping.
+///
+/// Every byte outside `[A-Za-z0-9-]` — including `_` itself — becomes `_`
+/// followed by two lowercase hex digits, so `probe/listenable-v1` is
+/// `probe_2flistenable-v1` and `probe_listenable-v1` is
+/// `probe_5flistenable-v1`.
+///
+/// The escape of `_` is what makes the mapping INJECTIVE, and injective is
+/// a security property here rather than a nicety: docs/18 documents subject
+/// permissions as the way a NATS account is restricted to a set of event
+/// types, and two schema ids sharing a token would silently widen such a
+/// grant to a type the operator never named.
 #[must_use]
 pub fn type_token(event_type: &str) -> String {
-    let token: String = event_type
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut token = String::with_capacity(event_type.len());
+    for byte in event_type.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' {
+            token.push(char::from(byte));
+        } else {
+            token.push('_');
+            token.push(char::from(HEX[usize::from(byte >> 4)]));
+            token.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
     if token.is_empty() {
+        // Unreachable through a registered schema id, and still not `""`:
+        // an empty NATS subject token is not a subject. A bare `_` is
+        // never the image of a non-empty input, since every escape carries
+        // its two hex digits.
         "_".to_owned()
     } else {
         token
@@ -792,13 +916,132 @@ mod tests {
     }
 
     #[test]
-    fn the_subject_carries_the_owner_and_a_sanitized_type() {
+    fn the_subject_carries_the_owner_and_an_escaped_type() {
         let owner = uuid::Uuid::nil();
         assert_eq!(
             subject_for("proxima.fact", "personal", owner, "acme/build.finished-v1"),
-            format!("proxima.fact.personal.{owner}.acme_build_finished-v1")
+            format!("proxima.fact.personal.{owner}.acme_2fbuild_2efinished-v1")
         );
         assert_eq!(type_token(""), "_");
-        assert_eq!(type_token("a.b*c>d e"), "a_b_c_d_e");
+        assert_eq!(type_token("a.b*c>d e"), "a_2eb_2ac_3ed_20e");
+        // No wildcard and no separator survives into the subject.
+        for token in [
+            type_token("a.b*c>d e"),
+            type_token("acme/build.finished-v1"),
+        ] {
+            assert!(
+                !token.contains(['.', '*', '>', ' ']),
+                "{token} would not be one subject token"
+            );
+        }
+    }
+
+    #[test]
+    fn two_distinct_schema_ids_never_share_a_subject_token() {
+        // The pair the old collapse-to-underscore mapping conflated, plus
+        // every neighbouring shape a flavor could register.
+        let ids = [
+            "probe/listenable-v1",
+            "probe_listenable-v1",
+            "probe.listenable-v1",
+            "probe listenable-v1",
+            "probe/listenable_v1",
+            "probe//listenable-v1",
+            "probe_2flistenable-v1",
+            "PROBE/listenable-v1",
+            "",
+            "_",
+        ];
+        let mut tokens: Vec<String> = ids.iter().map(|id| type_token(id)).collect();
+        tokens.sort();
+        let before = tokens.len();
+        tokens.dedup();
+        assert_eq!(
+            tokens.len(),
+            before,
+            "the type token must be injective: a collision widens a subject-scoped \
+             NATS permission to a schema the operator never granted"
+        );
+    }
+
+    #[test]
+    fn the_debug_of_a_config_carries_no_credential() {
+        let mut config = NatsPublisherConfig::from_lookup(env(&[
+            (ENV_URL, "nats://someone:hunter2@broker.internal:4222"),
+            (ENV_TOKEN, "s3cr3t-token"),
+        ]))
+        .expect("parses")
+        .expect("url set");
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("s3cr3t-token"), "{rendered}");
+        assert!(!rendered.contains("hunter2"), "{rendered}");
+        assert!(
+            rendered.contains("broker.internal:4222"),
+            "the host is not the secret: {rendered}"
+        );
+
+        config.auth = NatsAuth::UserPassword {
+            user: "someone".to_owned(),
+            password: "hunter2".to_owned(),
+        };
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("hunter2"), "{rendered}");
+        assert!(rendered.contains("someone"), "the user name is a label");
+
+        config.auth = NatsAuth::CredsFile(PathBuf::from("/run/secrets/nats.creds"));
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("nats.creds"), "{rendered}");
+
+        let consumer = NatsConsumerConfig::from_lookup(env(&[
+            (ENV_URL, "nats://someone:hunter2@broker.internal:4222"),
+            (ENV_PASSWORD, "hunter2"),
+            (ENV_USER, "someone"),
+        ]))
+        .expect("parses")
+        .expect("url set");
+        let rendered = format!("{consumer:?}");
+        assert!(!rendered.contains("hunter2"), "{rendered}");
+        assert_eq!(consumer.request_timeout, DEFAULT_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn the_default_publisher_id_comes_from_the_injected_environment() {
+        let config = NatsPublisherConfig::from_lookup(env(&[
+            (ENV_URL, "nats://x:4222"),
+            ("HOSTNAME", "injected-host"),
+        ]))
+        .expect("parses")
+        .expect("url set");
+        assert!(
+            config.publisher_id.as_str().starts_with("injected-host:"),
+            "the injected environment must be the one that names the publisher, got {}",
+            config.publisher_id
+        );
+
+        // An explicit id still wins, and an environment naming no host at
+        // all is not a boot failure.
+        let config = NatsPublisherConfig::from_lookup(env(&[
+            (ENV_URL, "nats://x:4222"),
+            ("HOSTNAME", "injected-host"),
+            (ENV_PUBLISHER_ID, "chosen"),
+        ]))
+        .expect("parses")
+        .expect("url set");
+        assert_eq!(config.publisher_id.as_str(), "chosen");
+
+        let config = NatsPublisherConfig::from_lookup(env(&[(ENV_URL, "nats://x:4222")]))
+            .expect("parses")
+            .expect("url set");
+        assert!(config.publisher_id.as_str().starts_with("proxima:"));
+    }
+
+    #[test]
+    fn a_hostile_hostname_cannot_break_the_publisher_label() {
+        let long = "h".repeat(300);
+        let id = default_publisher_id(&env(&[("HOSTNAME", long.as_str())])).expect("bounded");
+        assert!(id.as_str().len() <= 128, "{}", id.as_str());
+        let wide = "ü".repeat(200);
+        let id = default_publisher_id(&env(&[("HOSTNAME", wide.as_str())])).expect("bounded");
+        assert!(id.as_str().len() <= 128, "{}", id.as_str());
     }
 }

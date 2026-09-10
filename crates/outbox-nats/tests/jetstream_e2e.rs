@@ -23,9 +23,10 @@ use proxima_core::storage_ports::publication::{
     AckOutcome, BrokerReceipt, ClaimToken, PublisherId,
 };
 use proxima_outbox_nats::{
-    ConfigError, DeliveryProfile, HookAction, JetStreamPublisher, NatsPublisherConfig, PublishHook,
-    PublisherError, ReferenceConsumer,
+    ConfigError, ConsumerError, DeliveryProfile, HookAction, JetStreamPublisher,
+    NatsPublisherConfig, PublishHook, PublisherError, ReferenceConsumer,
 };
+use tokio_util::sync::CancellationToken;
 
 /// A publish hook that drops the first `n` `PubAck`s and then behaves.
 #[derive(Debug)]
@@ -53,6 +54,22 @@ impl PublishHook for DropFirstAcksHook {
             *remaining -= 1;
             self.action
         }
+    }
+}
+
+/// A publish hook that cancels a token once the broker has acknowledged
+/// one record — a shutdown arriving in the middle of a batch, at the one
+/// moment a test can place it deterministically.
+#[derive(Debug)]
+struct CancelAfterFirstAck {
+    cancel: CancellationToken,
+}
+
+#[async_trait::async_trait]
+impl PublishHook for CancelAfterFirstAck {
+    async fn after_publish_ack(&self, _event_id: &str, _receipt: &BrokerReceipt) -> HookAction {
+        self.cancel.cancel();
+        HookAction::Continue
     }
 }
 
@@ -264,12 +281,16 @@ async fn crash_after_puback_before_ack_republishes() {
                 .await
                 .expect("the consumer binds");
             consume_until(&consumer, &intake, 2).await;
+            // `seen()`, not `distinct_ids()`: the deduplicated view cannot
+            // observe a duplicate, so asserting on it would hold whatever
+            // the broker did. This is the raw delivery count.
             assert_eq!(
-                intake.distinct_ids().len(),
+                intake.seen().len(),
                 2,
                 "a crash before the marker must not duplicate the event: {:?}",
                 intake.seen()
             );
+            assert_eq!(intake.distinct_ids().len(), 2);
         })
         .await;
 }
@@ -317,11 +338,11 @@ async fn concurrent_publishers_and_stale_workers_lose_nothing() {
                 .await
                 .expect("captured");
             let held = outbox
-                .claim(&ghost, batch(1), Duration::from_millis(300))
+                .claim(&ghost, batch(1), Duration::from_secs(1))
                 .await
                 .expect("the ghost claims");
             assert_eq!(held.len(), 1);
-            tokio::time::sleep(Duration::from_millis(800)).await;
+            tokio::time::sleep(Duration::from_millis(1_500)).await;
             let taken = outbox
                 .claim(&live, batch(1), Duration::from_secs(30))
                 .await
@@ -359,12 +380,12 @@ async fn concurrent_publishers_and_stale_workers_lose_nothing() {
                 .await
                 .expect("captured");
             let held = outbox
-                .claim(&ghost, batch(1), Duration::from_millis(300))
+                .claim(&ghost, batch(1), Duration::from_secs(1))
                 .await
                 .expect("the ghost claims");
             assert_eq!(held.len(), 1);
             let ghost_claim: ClaimToken = held[0].claim;
-            tokio::time::sleep(Duration::from_millis(800)).await;
+            tokio::time::sleep(Duration::from_millis(1_500)).await;
             assert_eq!(drain_until_idle(&a, 4).await, 1, "the live worker delivers");
             assert_eq!(
                 outbox
@@ -401,8 +422,13 @@ async fn consumer_durable_intake_then_lost_ack_redelivers_idempotently() {
     else {
         return;
     };
+    // A one-second dedup window and a two-second `ack_wait`, so the
+    // redelivery provably lands OUTSIDE the window the broker deduplicates
+    // in: idempotency at the sink is what carries this case, not the
+    // broker's `Nats-Msg-Id` memory.
     Fixture::new("nats_lost_ack", url)
         .await
+        .tweak(|config| config.duplicate_window = Duration::from_secs(1))
         .run(async |fixture| {
             fixture.capture("lost-ack", None).await.expect("captured");
             let publisher = JetStreamPublisher::connect(fixture.config.clone(), fixture.outbox())
@@ -427,6 +453,7 @@ async fn consumer_durable_intake_then_lost_ack_redelivers_idempotently() {
 
             // `ack_wait` elapses and the broker redelivers. The sink sees the same
             // `CloudEvents` id a second time and deduplicates on it.
+            let first_delivery = std::time::Instant::now();
             let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
             while intake.seen().len() < 2 && tokio::time::Instant::now() < deadline {
                 consumer
@@ -434,8 +461,15 @@ async fn consumer_durable_intake_then_lost_ack_redelivers_idempotently() {
                     .await
                     .expect("a consume pass");
             }
+            let elapsed = first_delivery.elapsed();
             let seen = intake.seen();
             assert_eq!(seen.len(), 2, "the broker must redeliver: {seen:?}");
+            assert!(
+                elapsed > fixture.config.duplicate_window,
+                "the redelivery must land beyond the broker's {:?} dedup window to prove \
+                 the sink's own idempotency carries it, took {elapsed:?}",
+                fixture.config.duplicate_window
+            );
             assert_eq!(seen[0].id, seen[1].id, "the same event, twice");
             assert_eq!(seen[0].raw, seen[1].raw, "byte-identical");
             assert!(
@@ -558,6 +592,204 @@ async fn broker_capacity_backpressure_is_explicit() {
                 fixture.state(t).await,
                 "pending",
                 "a refused record returns to the queue; nothing is dropped"
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn one_unpublishable_record_does_not_stall_the_ones_behind_it() {
+    let Some(url) = nats_url_or_skip("one_unpublishable_record_does_not_stall_the_ones_behind_it")
+    else {
+        return;
+    };
+    // A stream with room for many envelopes but a per-message ceiling one
+    // record is over. That record can NEVER be delivered under this
+    // configuration — the case that used to abort the pass, hand back the
+    // whole batch, and be re-claimed at the head of the next one forever.
+    Fixture::new("nats_poison", url)
+        .await
+        .tweak(|config| {
+            config.max_stream_bytes = 8 * 1024 * 1024;
+            config.max_message_bytes = 2048;
+        })
+        .run(async |fixture| {
+            let poison = fixture
+                .capture(&"p".repeat(8 * 1024), None)
+                .await
+                .expect("capture is unaffected by the broker's ceiling");
+            let poison_t = poison.memory_id.into_inner();
+            for n in 0..3 {
+                fixture
+                    .capture(&format!("behind-{n}"), None)
+                    .await
+                    .expect("captured");
+            }
+
+            let publisher = JetStreamPublisher::connect(fixture.config.clone(), fixture.outbox())
+                .await
+                .expect("the publisher connects");
+            let report = publisher
+                .drain_once()
+                .await
+                .expect("a pass that delivered three of four records is not a failed pass");
+            assert_eq!(
+                report.published, 3,
+                "the three records behind the refusal must still ship: {report:?}"
+            );
+            assert_eq!(report.failed, 1, "{report:?}");
+            assert_eq!(
+                fixture.state(poison_t).await,
+                "pending",
+                "the refused record returns to the queue rather than holding its lease"
+            );
+
+            // And again on the next pass, with fresh work behind it: the
+            // refusal costs its own slot, not the queue.
+            for n in 3..5 {
+                fixture
+                    .capture(&format!("behind-{n}"), None)
+                    .await
+                    .expect("captured");
+            }
+            let report = publisher.drain_once().await.expect("a second pass");
+            assert_eq!(report.published, 2, "{report:?}");
+            assert_eq!(report.failed, 1, "{report:?}");
+            assert_eq!(fixture.state(poison_t).await, "pending");
+
+            // With nothing but the refusal left, the pass IS a failure —
+            // which is what makes the run loop back off instead of spinning.
+            let error = publisher
+                .drain_once()
+                .await
+                .expect_err("a pass that delivered nothing must report why");
+            assert!(
+                matches!(error, PublisherError::BrokerCapacity(_)),
+                "expected explicit backpressure, got {error}"
+            );
+
+            let intake = RecordingIntake::new();
+            let consumer = ReferenceConsumer::connect(fixture.consumer_config(), intake.clone())
+                .await
+                .expect("the consumer binds");
+            consume_until(&consumer, &intake, 5).await;
+            assert_eq!(
+                intake.distinct_ids().len(),
+                5,
+                "every deliverable record reached the sink: {:?}",
+                intake.seen()
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn cancellation_inside_a_batch_hands_the_rest_of_the_claims_back() {
+    let Some(url) =
+        nats_url_or_skip("cancellation_inside_a_batch_hands_the_rest_of_the_claims_back")
+    else {
+        return;
+    };
+    Fixture::new("nats_cancel_mid_batch", url)
+        .await
+        .run(async |fixture| {
+            for n in 0..6 {
+                fixture
+                    .capture(&format!("shutdown-{n}"), None)
+                    .await
+                    .expect("captured");
+            }
+
+            // The shutdown lands after the first record's PubAck. Without
+            // cancellation inside the batch the loop would publish all six
+            // first, and a broker that had stopped answering would hold the
+            // shutdown for `batch × publish_timeout`.
+            let cancel = CancellationToken::new();
+            let publisher = JetStreamPublisher::connect_with_hook(
+                fixture.config.clone(),
+                fixture.outbox(),
+                Arc::new(CancelAfterFirstAck {
+                    cancel: cancel.clone(),
+                }),
+            )
+            .await
+            .expect("the publisher connects");
+
+            let summary = tokio::time::timeout(Duration::from_secs(10), publisher.run(cancel))
+                .await
+                .expect("a cancelled publisher must stop promptly");
+            assert_eq!(summary.published, 1, "{summary:?}");
+
+            // Nothing is left leased: a claim nobody holds any more would
+            // cost the next process a full lease before it could try.
+            let claimed: i64 = sqlx::query_scalar(
+                "SELECT count(*)::bigint FROM proxima_core.publication_outbox \
+                 WHERE state = 'claimed'",
+            )
+            .fetch_one(fixture.pg.pool_for_tests())
+            .await
+            .expect("the count answers");
+            assert_eq!(claimed, 0, "a cancelled pass must release what it holds");
+            assert_eq!(
+                fixture.outbox().pending_count().await.expect("count"),
+                5,
+                "and the five it did not publish are deliverable again at once"
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn a_durable_consumer_with_a_delivery_ceiling_is_refused_not_adopted() {
+    let Some(url) =
+        nats_url_or_skip("a_durable_consumer_with_a_delivery_ceiling_is_refused_not_adopted")
+    else {
+        return;
+    };
+    Fixture::new("nats_consumer_mismatch", url)
+        .await
+        .run(async |fixture| {
+            // The publisher provisions the stream.
+            let _publisher = JetStreamPublisher::connect(fixture.config.clone(), fixture.outbox())
+                .await
+                .expect("the publisher connects");
+            let wanted = fixture.consumer_config();
+
+            // Another deployment got here first and left a durable of the
+            // same name that gives up after three attempts.
+            let client = async_nats::connect(&fixture.url)
+                .await
+                .expect("the broker is up");
+            let stream = async_nats::jetstream::new(client)
+                .get_stream(&fixture.config.stream)
+                .await
+                .expect("the publisher created it");
+            stream
+                .create_consumer(async_nats::jetstream::consumer::pull::Config {
+                    durable_name: Some(wanted.durable_name.clone()),
+                    ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
+                    ack_wait: wanted.ack_wait,
+                    max_deliver: 3,
+                    deliver_policy: async_nats::jetstream::consumer::DeliverPolicy::All,
+                    max_ack_pending: wanted.max_ack_pending,
+                    filter_subject: wanted.subject_filter(),
+                    ..async_nats::jetstream::consumer::pull::Config::default()
+                })
+                .await
+                .expect("the foreign durable is created");
+
+            let error = ReferenceConsumer::connect(wanted, RecordingIntake::new())
+                .await
+                .expect_err("adopting a durable that drops events must be refused");
+            assert!(
+                matches!(
+                    error,
+                    ConsumerError::ConsumerMismatch {
+                        field: "max_deliver",
+                        ..
+                    }
+                ),
+                "expected a consumer mismatch, got {error}"
             );
         })
         .await;

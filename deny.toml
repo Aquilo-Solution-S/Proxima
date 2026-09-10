@@ -82,6 +82,15 @@ wildcards = "deny"
 allow-wildcard-paths = true
 allow = []
 deny = []
+# Lockfile-only skew, NOT a build-graph duplicate: `Cargo.lock` carries
+# webpki-roots 0.26.11 beside the 1.0.8 sqlx uses, reachable only through
+# `tokio-websockets` — an optional async-nats dependency behind that crate's
+# `websockets` feature, which the workspace does not enable (Cargo.toml
+# [workspace.dependencies] async-nats). `cargo tree -d -e normal` reports one
+# webpki-roots, so nothing compiles twice; the lock entry exists because cargo
+# resolves optional dependencies whether or not they are selected. Flipping
+# multiple-versions to "deny" would still not need a skip for it.
+#
 # When you dedup the crypto/runtime stack, flip multiple-versions to "deny" and
 # uncomment + pin the surviving skews (refresh the list with `cargo tree -d`):
 # skip = [

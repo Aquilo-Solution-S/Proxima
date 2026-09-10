@@ -42,8 +42,13 @@ pub struct DrainReport {
     pub published: usize,
     /// Claims handed back to `pending` without a delivery.
     pub released: usize,
-    /// Records this pass left claimed without an acknowledgement: their
-    /// lease expiry is what makes them deliverable again.
+    /// Records this pass could not deliver.
+    ///
+    /// A failed publish hands its own claim straight back (so it is counted
+    /// in [`Self::released`] as well) and the pass continues with the rest:
+    /// one envelope the broker refuses costs its own slot, not the queue.
+    /// The two hook-driven fault paths leave the record leased instead, and
+    /// there its lease expiry is what makes it deliverable again.
     pub failed: usize,
     /// Acknowledgements refused because the claim had already moved on.
     /// Never an error — a stale worker lost a race it could not see.
@@ -163,6 +168,7 @@ impl JetStreamPublisher {
         let client = crate::connect_client(&config.url, &config.auth, config.publish_timeout)
             .await
             .map_err(|error| PublisherError::Connect(error.to_string()))?;
+        verify_payload_ceiling(&config, client.max_payload())?;
         let context = jetstream::new(client);
         ensure_stream(&context, &config).await?;
         Ok(Self {
@@ -186,8 +192,23 @@ impl JetStreamPublisher {
     /// [`PublisherError::Storage`] from the outbox,
     /// [`PublisherError::BrokerCapacity`] when the stream is full (records
     /// stay `pending`), and [`PublisherError::Publish`] for other broker
-    /// failures. Every error path returns the records it did not deliver.
+    /// failures. An error is returned only when NO record got through, so
+    /// an error means the broker — not one envelope — is the problem.
     pub async fn drain_once(&self) -> Result<DrainReport, PublisherError> {
+        self.drain_batch(&CancellationToken::new()).await
+    }
+
+    /// [`Self::drain_once`], abandoning the batch when `cancel` fires.
+    ///
+    /// Per-record failures are ISOLATED. One envelope the broker will never
+    /// accept — over `max_msg_size`, or over the server's `max_payload` —
+    /// used to abort the pass and be re-claimed at the head of the next
+    /// one, so every later Fact stalled behind it until the outbox filled
+    /// and listenable writes started failing. Now its claim goes straight
+    /// back and the pass continues; the storage port's `attempts ASC`
+    /// ordering demotes it behind fresher work on the next claim, so it
+    /// costs one slot per pass.
+    async fn drain_batch(&self, cancel: &CancellationToken) -> Result<DrainReport, PublisherError> {
         let claimed = self
             .outbox
             .claim(
@@ -201,25 +222,37 @@ impl JetStreamPublisher {
             claimed: claimed.len(),
             ..DrainReport::default()
         };
+        let mut first_error: Option<PublisherError> = None;
         let mut pending = claimed.into_iter();
         while let Some(record) = pending.next() {
-            match self.deliver(&record, &mut report).await {
+            match self.deliver(&record, &mut report, cancel).await {
                 Ok(Flow::Continue) => {}
                 Ok(Flow::Abort) => return Ok(report),
-                Err(error) => {
-                    // Nothing this pass claimed may stay leased on an
-                    // error we are about to report: the caller backs off,
-                    // and a leased record is invisible to every other
-                    // publisher until its lease expires.
+                Ok(Flow::Cancelled) => {
+                    // Shutdown, not failure: hand back everything this pass
+                    // still holds so the next process does not wait out a
+                    // lease for work nobody is doing.
                     self.release(&record, &mut report).await;
                     for rest in pending {
                         self.release(&rest, &mut report).await;
                     }
-                    return Err(error);
+                    return Ok(report);
+                }
+                Err(error) => {
+                    report.failed += 1;
+                    self.release(&record, &mut report).await;
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
                 }
             }
         }
-        Ok(report)
+        match first_error {
+            // Nothing got through at all: report it, so `run` backs off
+            // rather than spinning on a dead connection or a full stream.
+            Some(error) if report.published == 0 => Err(error),
+            _ => Ok(report),
+        }
     }
 
     /// Drain until cancelled, backing off while the broker is unhappy.
@@ -235,7 +268,7 @@ impl JetStreamPublisher {
                 return summary;
             }
             summary.passes += 1;
-            let idle = match self.drain_once().await {
+            let idle = match self.drain_batch(&cancel).await {
                 Ok(report) => {
                     backoff = self.config.poll_interval;
                     summary.published += report.published as u64;
@@ -269,11 +302,19 @@ impl JetStreamPublisher {
     }
 
     /// Publish one claimed record and record what the broker said.
+    ///
+    /// Cancellation is observed BETWEEN records and inside the publish
+    /// itself, so a shutdown costs one storage round trip rather than
+    /// `batch × publish_timeout`.
     async fn deliver(
         &self,
         record: &ClaimedPublication,
         report: &mut DrainReport,
+        cancel: &CancellationToken,
     ) -> Result<Flow, PublisherError> {
+        if cancel.is_cancelled() {
+            return Ok(Flow::Cancelled);
+        }
         let subject = subject_for(
             &self.config.subject_prefix,
             record.owner_kind.as_str(),
@@ -292,17 +333,21 @@ impl JetStreamPublisher {
         // identity: the digest beside them in the outbox is the witness
         // that this is what was committed.
         let payload = Bytes::copy_from_slice(&record.envelope);
-        let ack = self
-            .context
-            .publish_with_headers(subject, headers, payload)
-            .await;
+        let ack = tokio::select! {
+            () = cancel.cancelled() => return Ok(Flow::Cancelled),
+            ack = self.context.publish_with_headers(subject, headers, payload) => ack,
+        };
         let ack = match ack {
             Ok(ack) => ack,
-            Err(error) => return Err(classify_publish_error(&error)),
+            Err(error) => return Err(refuse(record, &error)),
         };
-        let ack = match tokio::time::timeout(self.config.publish_timeout, ack).await {
+        let ack = tokio::select! {
+            () = cancel.cancelled() => return Ok(Flow::Cancelled),
+            ack = tokio::time::timeout(self.config.publish_timeout, ack) => ack,
+        };
+        let ack = match ack {
             Ok(Ok(ack)) => ack,
-            Ok(Err(error)) => return Err(classify_publish_error(&error)),
+            Ok(Err(error)) => return Err(refuse(record, &error)),
             Err(_) => {
                 return Err(PublisherError::Publish(format!(
                     "no PubAck for {} within {:?}",
@@ -378,7 +423,70 @@ impl JetStreamPublisher {
 
 enum Flow {
     Continue,
+    /// Stop the pass, leaving this record and every unattempted claim
+    /// leased — the injected "the process died here".
     Abort,
+    /// Stop the pass and hand every claim back — shutdown.
+    Cancelled,
+}
+
+/// Classify one publish failure, and say so at `error` level when the
+/// broker refused the envelope for its SIZE.
+///
+/// A size refusal is the one publish failure no retry can fix: not a
+/// backoff, not a reconnection, not draining the stream. It is an operator
+/// action item — raise `max_msg_size`, or lower the capture ceiling — so it
+/// is logged with the id of the record that will otherwise sit in the
+/// outbox forever.
+fn refuse(record: &ClaimedPublication, error: &jetstream::context::PublishError) -> PublisherError {
+    let classified = classify_publish_error(error);
+    if is_size_refusal(error) {
+        tracing::error!(
+            event_id = %record.event_id,
+            schema = %record.schema_id,
+            envelope_bytes = record.envelope.len(),
+            error = %classified,
+            "the broker refused this envelope for its size; no retry can deliver it \
+             and it stays pending until the stream's max_msg_size or the capture \
+             ceiling changes"
+        );
+    }
+    classified
+}
+
+/// Whether the broker refused these bytes for being too large, as opposed
+/// to refusing them for having nowhere to put them.
+fn is_size_refusal(error: &jetstream::context::PublishError) -> bool {
+    matches!(error.kind(), PublishErrorKind::MaxPayloadExceeded)
+        || error.source_error_code() == Some(jetstream::ErrorCode::STREAM_MESSAGE_EXCEEDS_MAXIMUM)
+        || error.to_string().contains("message size exceeds maximum")
+}
+
+/// Refuse a configuration in which the outbox would hold records the SERVER
+/// can never accept.
+///
+/// `max_payload` is a server-wide ceiling no stream configuration raises,
+/// so a per-message ceiling above it describes a stream that would refuse
+/// its own largest legal message. The other half of the chain — capture
+/// ceiling + envelope headroom ≤ this per-message ceiling — is settled
+/// before the config is built, by `with_capture_limits` and the facade's
+/// `PROXIMA_NATS_MAX_MESSAGE_BYTES` reconciliation; and an EXISTING stream
+/// with a smaller `max_msg_size` than this one is refused by
+/// [`verify_compatible`]. Together those make "a record the broker can
+/// never take" a configuration error rather than a delivery mystery.
+fn verify_payload_ceiling(
+    config: &NatsPublisherConfig,
+    server_max_payload: usize,
+) -> Result<(), PublisherError> {
+    let configured = usize::try_from(config.max_message_bytes).unwrap_or(usize::MAX);
+    if configured > server_max_payload {
+        return Err(PublisherError::PayloadCeiling {
+            stream: config.stream.clone(),
+            configured,
+            server_max: server_max_payload,
+        });
+    }
+    Ok(())
 }
 
 /// Create the stream, or prove the one already there still honours the
@@ -434,57 +542,148 @@ fn stream_config(config: &NatsPublisherConfig) -> jetstream::stream::Config {
     }
 }
 
+/// One field on which an existing stream contradicts the profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamFieldMismatch {
+    pub field: &'static str,
+    pub found: String,
+    pub expected: String,
+}
+
+impl StreamFieldMismatch {
+    fn new(field: &'static str, found: impl Into<String>, expected: impl Into<String>) -> Self {
+        Self {
+            field,
+            found: found.into(),
+            expected: expected.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for StreamFieldMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} = {}, requires {}",
+            self.field, self.found, self.expected
+        )
+    }
+}
+
 /// Refuse an existing stream whose durability contract is weaker than the
-/// profile's.
+/// profile's, naming EVERY contradiction.
 ///
-/// Storage, retention and discard are the three that change what a `PubAck`
-/// means. Sizes and windows are operator tuning and are left alone.
+/// Each of these changes what a `PubAck` means to the outbox, which commits
+/// `state = 'published'` on the strength of one:
+///
+/// - `storage`, `retention`, `discard`: the three that decide whether an
+///   accepted message survives a restart, an ACK, or a full stream.
+/// - `max_age`: with `Limits` retention, a non-zero age silently expires
+///   messages the outbox already marked published — a consumer that was
+///   down over the window never sees them, and nothing anywhere records
+///   that they were lost.
+/// - `num_replicas`: fewer replicas than the profile promises is a
+///   different durability claim under node loss.
+/// - `max_msg_size` and `duplicate_window`: SMALLER than desired is not
+///   operator tuning. Under-sized refuses records this deployment's capture
+///   ceiling admits, and a short dedup window turns the republication that
+///   follows a lost `PubAck` into a duplicate on the stream.
+///
+/// Larger values of the last two, and every other stream setting, are
+/// operator tuning and are left alone. All mismatches are reported together
+/// because the operator's next action is one stream re-creation, not one
+/// per redeploy.
 fn verify_compatible(
     name: &str,
     existing: &jetstream::stream::Config,
     desired: &jetstream::stream::Config,
 ) -> Result<(), PublisherError> {
-    let mismatch = |field: &'static str, found: String, expected: String| {
-        Err(PublisherError::StreamMismatch {
-            stream: name.to_owned(),
-            field,
-            found,
-            expected,
-        })
-    };
+    let mut mismatches = Vec::new();
     if existing.storage != desired.storage {
-        return mismatch(
+        mismatches.push(StreamFieldMismatch::new(
             "storage",
             format!("{:?}", existing.storage),
             format!("{:?}", desired.storage),
-        );
+        ));
     }
     if existing.retention != desired.retention {
-        return mismatch(
+        mismatches.push(StreamFieldMismatch::new(
             "retention",
             format!("{:?}", existing.retention),
             format!("{:?}", desired.retention),
-        );
+        ));
     }
     if existing.discard != desired.discard {
-        return mismatch(
+        mismatches.push(StreamFieldMismatch::new(
             "discard",
             format!("{:?}", existing.discard),
             format!("{:?}", desired.discard),
-        );
+        ));
+    }
+    if existing.max_age != desired.max_age {
+        mismatches.push(StreamFieldMismatch::new(
+            "max_age",
+            format!("{:?}", existing.max_age),
+            "no age limit, so unacknowledged work never expires on a clock",
+        ));
+    }
+    if existing.num_replicas != desired.num_replicas {
+        mismatches.push(StreamFieldMismatch::new(
+            "num_replicas",
+            existing.num_replicas.to_string(),
+            desired.num_replicas.to_string(),
+        ));
+    }
+    if !message_size_admits(existing.max_message_size, desired.max_message_size) {
+        mismatches.push(StreamFieldMismatch::new(
+            "max_msg_size",
+            existing.max_message_size.to_string(),
+            format!("at least {}", desired.max_message_size),
+        ));
+    }
+    if existing.duplicate_window < desired.duplicate_window {
+        mismatches.push(StreamFieldMismatch::new(
+            "duplicate_window",
+            format!("{:?}", existing.duplicate_window),
+            format!("at least {:?}", desired.duplicate_window),
+        ));
     }
     if !existing
         .subjects
         .iter()
         .any(|subject| desired.subjects.contains(subject))
     {
-        return mismatch(
+        mismatches.push(StreamFieldMismatch::new(
             "subjects",
             existing.subjects.join(","),
             desired.subjects.join(","),
-        );
+        ));
     }
-    Ok(())
+    let Some(first) = mismatches.first().cloned() else {
+        return Ok(());
+    };
+    Err(PublisherError::StreamMismatch {
+        stream: name.to_owned(),
+        field: first.field,
+        found: first.found,
+        expected: first.expected,
+        mismatches,
+    })
+}
+
+/// Whether an existing `max_msg_size` accepts everything the desired one
+/// does. `-1` is `JetStream`'s "no limit" and therefore accepts anything.
+const fn message_size_admits(existing: i32, desired: i32) -> bool {
+    existing < 0 || existing >= desired
+}
+
+/// Every contradiction on one line, in the order the profile checks them.
+fn render_mismatches(mismatches: &[StreamFieldMismatch]) -> String {
+    mismatches
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn is_stream_not_found(error: &jetstream::context::GetStreamError) -> bool {
@@ -559,10 +758,18 @@ impl SourceErrorCode for jetstream::context::PublishError {
 
 /// Doubling backoff, capped so a long outage still polls often enough to
 /// notice recovery within a few seconds.
+///
+/// `min` then `max`, never `clamp`: `Ord::clamp` PANICS when `min > max`,
+/// and a poll interval above the ceiling is a legal configuration
+/// (`PROXIMA_NATS_POLL_MS=60000`). Under `clamp` the first broker error
+/// would have killed the publisher task and left the outbox undrained for
+/// the life of the process — the one failure mode [`JetStreamPublisher::run`]
+/// exists to rule out. A floor above the ceiling wins: an operator who asked
+/// to poll every minute gets a minute.
 fn next_backoff(current: Duration, floor: Duration) -> Duration {
     const CEILING: Duration = Duration::from_secs(30);
     let doubled = current.saturating_mul(2);
-    doubled.clamp(floor, CEILING)
+    doubled.min(CEILING).max(floor)
 }
 
 /// Why a publish pass stopped.
@@ -575,15 +782,28 @@ pub enum PublisherError {
     #[error("JetStream refused the request: {0}")]
     Broker(String),
     #[error(
-        "stream {stream} already exists with {field} = {found}, but this deployment's \
-         delivery profile requires {expected}; refusing to rewrite a stream that may hold \
-         undelivered messages"
+        "stream {stream} already exists in a shape this deployment's delivery profile \
+         refuses ({}); refusing to rewrite a stream that may hold undelivered messages",
+        render_mismatches(.mismatches)
     )]
     StreamMismatch {
         stream: String,
+        /// The first contradiction, so a caller can match on one field name.
         field: &'static str,
         found: String,
         expected: String,
+        /// Every contradiction, that first one included.
+        mismatches: Vec<StreamFieldMismatch>,
+    },
+    #[error(
+        "the per-message ceiling for stream {stream} is {configured} bytes, over the \
+         broker's {server_max}-byte max_payload; a record captured at that size could \
+         never be published, so the configuration is refused before anything is captured"
+    )]
+    PayloadCeiling {
+        stream: String,
+        configured: usize,
+        server_max: usize,
     },
     #[error(
         "the stream is at capacity and refused the publish ({0}); the record stays pending \
@@ -661,6 +881,94 @@ mod tests {
         assert!(verify_compatible("S", &existing, &desired).is_ok());
     }
 
+    /// The mismatch on this list nobody would notice: the stream still says
+    /// `File`/`Limits`/`New`, and quietly drops committed events on a clock.
+    #[test]
+    fn an_existing_stream_with_a_max_age_expires_events_the_outbox_committed() {
+        let desired = stream_config(&config());
+        let mut existing = desired.clone();
+        existing.max_age = Duration::from_hours(24);
+        let err = verify_compatible("S", &existing, &desired).expect_err("an age limit");
+        assert!(
+            matches!(
+                err,
+                PublisherError::StreamMismatch {
+                    field: "max_age",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains("max_age"),
+            "the operator must be told which field: {err}"
+        );
+    }
+
+    #[test]
+    fn a_weaker_replica_count_size_or_dedup_window_is_refused() {
+        let desired = stream_config(&config());
+        let refused_field = |existing: &jetstream::stream::Config| -> &'static str {
+            match verify_compatible("S", existing, &desired) {
+                Err(PublisherError::StreamMismatch { field, .. }) => field,
+                other => panic!("a weaker stream must be refused, got {other:?}"),
+            }
+        };
+
+        let mut existing = desired.clone();
+        existing.num_replicas = 0;
+        assert_eq!(refused_field(&existing), "num_replicas");
+
+        let mut existing = desired.clone();
+        existing.max_message_size = 128;
+        assert_eq!(refused_field(&existing), "max_msg_size");
+
+        let mut existing = desired.clone();
+        existing.duplicate_window = Duration::from_secs(1);
+        assert_eq!(refused_field(&existing), "duplicate_window");
+
+        // Bigger than asked for is operator tuning, and `-1` is
+        // JetStream's "no limit" — neither weakens the contract.
+        let mut existing = desired.clone();
+        existing.max_message_size = -1;
+        existing.duplicate_window = desired.duplicate_window * 2;
+        assert!(verify_compatible("S", &existing, &desired).is_ok());
+    }
+
+    #[test]
+    fn every_contradiction_is_reported_at_once() {
+        let desired = stream_config(&config());
+        let mut existing = desired.clone();
+        existing.max_age = Duration::from_mins(1);
+        existing.storage = jetstream::stream::StorageType::Memory;
+        existing.duplicate_window = Duration::ZERO;
+        let err = verify_compatible("S", &existing, &desired).expect_err("three contradictions");
+        let PublisherError::StreamMismatch { mismatches, .. } = &err else {
+            panic!("expected a stream mismatch, got {err}");
+        };
+        let fields: Vec<&str> = mismatches.iter().map(|m| m.field).collect();
+        assert_eq!(fields, ["storage", "max_age", "duplicate_window"], "{err}");
+        let rendered = err.to_string();
+        for field in fields {
+            assert!(
+                rendered.contains(field),
+                "one refusal must name every field an operator has to fix: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stream_ceiling_over_the_servers_max_payload_is_refused_at_connect() {
+        let mut config = config();
+        config.max_message_bytes = 2 * 1024 * 1024;
+        let err = verify_payload_ceiling(&config, 1024 * 1024).expect_err("over the server");
+        assert!(
+            matches!(err, PublisherError::PayloadCeiling { .. }),
+            "{err}"
+        );
+        assert!(verify_payload_ceiling(&config, 4 * 1024 * 1024).is_ok());
+    }
+
     #[test]
     fn the_backoff_doubles_and_stops_growing() {
         let floor = Duration::from_millis(500);
@@ -670,6 +978,30 @@ mod tests {
         }
         assert_eq!(current, Duration::from_secs(30));
         assert_eq!(next_backoff(floor, floor), Duration::from_secs(1));
+    }
+
+    /// `PROXIMA_NATS_POLL_MS=60000` is a legal configuration, and under
+    /// `Ord::clamp(floor, CEILING)` the first broker error panicked the
+    /// publisher task out of existence.
+    #[test]
+    fn a_poll_interval_above_the_ceiling_backs_off_instead_of_panicking() {
+        let floor = Duration::from_mins(1);
+        let mut current = floor;
+        for _ in 0..8 {
+            current = next_backoff(current, floor);
+            assert_eq!(current, floor);
+        }
+        let config = NatsPublisherConfig::from_lookup(|key: &str| match key {
+            "PROXIMA_NATS_URL" => Some("nats://127.0.0.1:4222".to_owned()),
+            "PROXIMA_NATS_POLL_MS" => Some("60000".to_owned()),
+            _ => None,
+        })
+        .expect("a minute is a legal poll interval")
+        .expect("the presence key is set");
+        assert_eq!(
+            next_backoff(config.poll_interval, config.poll_interval),
+            Duration::from_mins(1)
+        );
     }
 
     #[test]
@@ -684,5 +1016,19 @@ mod tests {
             classify_publish_error(&broken),
             PublisherError::Publish(_)
         ));
+
+        // And within backpressure, the size refusal is the one no retry
+        // fixes — the distinction that decides whether the record is
+        // logged at `error` with its event id.
+        assert!(is_size_refusal(&full));
+        assert!(!is_size_refusal(&broken));
+        let live_broker_text = "message size exceeds maximum allowed (code 400, error code 10054)";
+        assert!(
+            is_size_refusal(&jetstream::context::PublishError::with_source(
+                PublishErrorKind::Other,
+                live_broker_text
+            )),
+            "the JetStream refusal a stream max_msg_size produces must be recognised"
+        );
     }
 }

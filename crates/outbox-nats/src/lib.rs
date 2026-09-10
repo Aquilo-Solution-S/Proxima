@@ -48,6 +48,7 @@ pub use consumer::{
 pub use publisher::{
     CONTENT_TYPE_CLOUDEVENTS, ContinueHook, DrainReport, DrainSummary, HEADER_CONTENT_TYPE,
     HEADER_MSG_ID, HEADER_SCHEMA, HookAction, JetStreamPublisher, PublishHook, PublisherError,
+    StreamFieldMismatch,
 };
 
 /// Open one client connection under the configured credentials.
