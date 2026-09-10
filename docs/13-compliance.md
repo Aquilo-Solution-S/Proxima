@@ -124,6 +124,15 @@ is generated from the declarations:
 | `Cascade { via }` | no statement at all; the named constraint is the proof, and a test asks the `pg_constraint` catalog whether it exists |
 | `Never { why }` | never deleted, with the reason in the declaration — `owners` because seventeen FKs point at it, `cold_purge_pending` because it is the erase's own outbox |
 
+`proxima_core.publication_outbox` (the Fact outbox, [18](18-fact-outbox.md))
+registers here like any other surface: `ByKey` on the Fact's `t`, so an owner
+erase reaches it through the same selection set that destroys the Fact, backed
+by an `ON DELETE CASCADE` to `memory`. Counted on the receipt, excluded from
+the export bundle (delivery state is publisher state, not owner content), kept
+by forget. A captured event never outlives the Fact it captured. What a broker
+already accepted is outside the database's reach — the stream's own retention
+is the host's obligation, not this verb's.
+
 Legs whose statement is not the generic shape — those that enqueue before
 deleting, span two selection sets, carry a refcount guard, or rewind a head —
 are named in one sorted exemption list beside the code, and a test asserts

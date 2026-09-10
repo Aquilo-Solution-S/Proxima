@@ -36,6 +36,7 @@ explicit request.
 | `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / ChangeHistory / GoalWrite / FactIngest / Schema), owner-scoped, transport-agnostic |
 | `docs/15-deployment.md` | Deploying the Code-flavor MCP server: Docker, OIDC bearer auth, network exposure, tool-surface profiles |
 | `docs/17-rest-surface.md` | Current build/runtime-opt-in REST projection of the tool manifest: derived routes, HTTP status map, OpenAPI |
+| `docs/18-fact-outbox.md` | Transactional Fact publication outbox + NATS JetStream publisher: listen declaration, capture, CloudEvents contract, delivery state machine, host-only port |
 
 ## Workspace layout
 
@@ -49,6 +50,7 @@ proxima/
 │   ├── core/                Rust lib crate `proxima-core`
 │   ├── llm-openai-compat/   Rust OpenAI-compatible embedding client crate
 │   ├── mcp-server/          Rust MCP HTTP listener crate (`proxima_mcp_server`)
+│   ├── outbox-nats/         Rust NATS JetStream Fact-outbox publisher crate (optional)
 │   ├── pg-testkit/          Rust Postgres test helper crate
 │   ├── proxima/             Rust framework facade crate
 │   └── storage-pg/          Rust Postgres storage crate

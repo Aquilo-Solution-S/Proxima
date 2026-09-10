@@ -61,6 +61,20 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_PG_HNSW_ITERATIVE_SCAN` | Postgres search | `relaxed_order` | tuning filtered ANN scans | `off` \| `strict_order` \| `relaxed_order`; pgvector `hnsw.iterative_scan` |
 | `PROXIMA_PG_HNSW_MAX_SCAN_TUPLES` | Postgres search | `20000` | bounding iterative scans | sent on every iterative-scan session (`SET LOCAL`); range `1..=2147483647` (the GUC's own bounds); out-of-range refuses at boot. This, not the SQL `LIMIT`, bounds the semantic branch's index scan |
 | `PROXIMA_CHANGE_EVENT_COMMIT_GRACE_MS` | change events | unset (`0`, disabled) | concurrent writers with slow commits | delays forward polling by withholding events newer than `now - grace`; its poll cursor protects only commits within that grace, not an unfiltered Query/ChangeHistory starting watermark |
+| `PROXIMA_PUBLICATION_SOURCE` | Fact outbox | unset | ≥1 listenable Fact type is registered | producer identity URI stamped into every CloudEvent `source`; boot fails without it ([18](../18-fact-outbox.md)) |
+| `PROXIMA_OUTBOX_MAX_PENDING` | Fact outbox | `100000` | tuning capture backpressure | unpublished-record ceiling; at the ceiling a listenable write fails `CapacityExhausted` |
+| `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Fact outbox | `524288` | tuning export size | largest captured export; over-cap writes fail `PayloadTooLarge` |
+| `PROXIMA_NATS_URL` | Fact outbox | unset (publisher off) | enabling the JetStream publisher | needs the `nats` cargo feature; unset keeps capture running with records `pending` |
+| `PROXIMA_NATS_PROFILE` | Fact outbox | `local-file` | never (only shipped value) | any other value is a boot error |
+| `PROXIMA_NATS_STREAM` | Fact outbox | `PROXIMA_FACTS` | non-default stream name | created on first start if absent |
+| `PROXIMA_NATS_SUBJECT_PREFIX` | Fact outbox | `proxima.fact` | non-default routing | full subject `<prefix>.<owner_kind>.<owner_uuid>.<type_token>` |
+| `PROXIMA_NATS_CREDS_FILE` | Fact outbox | unset | credentials-file auth | mutually exclusive with user/password and token |
+| `PROXIMA_NATS_USER` / `PROXIMA_NATS_PASSWORD` | Fact outbox | unset | user/password auth | both required together |
+| `PROXIMA_NATS_TOKEN` | Fact outbox | unset | token auth | |
+| `PROXIMA_NATS_BATCH` | Fact outbox | `64` | tuning drain size | records claimed per publisher pass |
+| `PROXIMA_NATS_LEASE_SECS` | Fact outbox | `30` | tuning claim recovery | expiry returns a record to `pending`; never deletes |
+| `PROXIMA_NATS_POLL_MS` | Fact outbox | `500` | tuning idle latency | idle poll interval |
+| `PROXIMA_NATS_PUBLISH_TIMEOUT_MS` | Fact outbox | `5000` | tuning PubAck wait | timeout releases the claim and republishes the same bytes |
 | `PROXIMA_S3_MAX_BLOB_BYTES` | cited blobs | `104857600` | bounding cited-blob size | non-negative integer |
 | `PROXIMA_S3_BUCKET` | cited blobs | unset | enable S3 cited-blob storage | credentials use AWS SDK provider chain |
 | `PROXIMA_S3_REGION` | cited blobs | unset | S3 bucket configured | S3 region |
@@ -128,6 +142,7 @@ remain fixed at `5432` (Postgres) and `9000` (RustFS).
 |---|---|---|
 | `PROXIMA_TEST_PG_URL` | tests | pg-testkit integration test source DB |
 | `PROXIMA_TEST_DATABASE_URL` | tests | HTTP/OIDC e2e dedicated DB |
+| `PROXIMA_TEST_NATS_URL` | tests | real JetStream broker for the outbox delivery tests; unset ⇒ those tests skip with a message. CI sets it |
 | `PROXIMA_S3_` | source prefix | configuration prefix constant used to resolve the S3 variables listed above |
 
 ## Source Inventory Reconciliation
@@ -138,6 +153,6 @@ Inventory sources checked: `docs/10-configuration.md`, `docs/15-deployment.md`,
 `crates/proxima/src/config.rs`, `crates/storage-pg/src/lib.rs`,
 `crates/storage-pg/src/pool_config.rs`, `crates/storage-pg/src/tuning.rs`,
 `crates/storage-pg/src/verbs/consolidate/events.rs`,
-`crates/blob-s3/src/config.rs`, and `.github/workflows/ci.yml`. Runtime variables from that inventory are listed in
+`crates/blob-s3/src/config.rs`, `crates/outbox-nats/src/config.rs`, and `.github/workflows/ci.yml`. Runtime variables from that inventory are listed in
 the runtime table. Test-only and source-constant names are listed under
 Build/Test/Internal Variables.

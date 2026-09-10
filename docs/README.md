@@ -13,6 +13,7 @@
 | Add a first Fact schema | [tutorials/add-first-fact-schema.md](tutorials/add-first-fact-schema.md) |
 | Add a first MCP tool | [tutorials/add-first-mcp-tool.md](tutorials/add-first-mcp-tool.md) |
 | Understand architecture | [reference/architecture.md](reference/architecture.md) |
+| Publish declared Facts to a broker | [how-to/fact-outbox.md](how-to/fact-outbox.md) |
 | Check invariants | [lean/README.md](lean/README.md) |
 
 ## Documentation Lanes

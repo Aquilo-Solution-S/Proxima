@@ -39,6 +39,7 @@ minimization discipline) — a failing build is drift.
 | `Causa/Compliance.lean` | abandonment-gated erasure, source cascade, target projection redaction (doc 13) |
 | `Causa/Principles.lean` | named principle rollups over lower-level theorems |
 | `Causa/Flavor.lean` | core independence, optional Memory/Goal sidecars and receipts, payload opacity (docs 03, 08) |
+| `Causa/Publication.lean` | Fact outbox: listenable series, immutable captured event, closed delivery state machine, erasure-only removal (doc 18) |
 
 ## Coverage
 

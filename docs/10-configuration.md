@@ -27,6 +27,7 @@ host injects for vector retrieval.
 | MCP authentication | per request | host `Authenticator` only; owner roles resolved server-side |
 | Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
 | Large artefact S3 storage | binary-wide | process env + AWS SDK credential chain |
+| Fact outbox publisher | binary-wide | `nats` cargo feature + `PROXIMA_NATS_URL`; capture itself is not configurable (see [18](18-fact-outbox.md)) |
 | source credentials | per source instance | source-owned, not engine-owned |
 
 Not runtime configurable: schema ids, payload types, edge kinds, prompts,
@@ -69,6 +70,21 @@ Proxima::<App>::app()
 | `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `memory` (default, fail-closed) or `full` (opt-in). |
 | `PROXIMA_TOOL_ALLOW` | Optional comma-separated canonical scope keys unioned into the resolved profile. |
 | `PROXIMA_TOOL_DENY` | Optional comma-separated canonical scope keys subtracted from the resolved profile. |
+| `PROXIMA_PUBLICATION_SOURCE` | Producer identity URI stamped into every published CloudEvent `source` (see [18](18-fact-outbox.md)). **Required** once ≥1 listenable Fact type is registered; boot fails otherwise. Never caller-supplied. |
+| `PROXIMA_OUTBOX_MAX_PENDING` | Unpublished-record ceiling. Default `100000`. At the ceiling a listenable write fails `CapacityExhausted` — explicit backpressure, never silent eviction. |
+| `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Largest serialized typed export accepted for capture. Default `524288`. Over-cap writes fail `PayloadTooLarge`. |
+| `PROXIMA_NATS_URL` | JetStream server URL. **Unset ⇒ publisher off**; capture still runs and records stay `pending` (the rollback path). Requires the `nats` cargo feature. |
+| `PROXIMA_NATS_PROFILE` | Delivery profile. Default and only shipped value `local-file`; any other value is a boot error. |
+| `PROXIMA_NATS_STREAM` | JetStream stream name. Default `PROXIMA_FACTS`. |
+| `PROXIMA_NATS_SUBJECT_PREFIX` | Subject prefix; full subject is `<prefix>.<owner_kind>.<owner_uuid>.<type_token>`. Default `proxima.fact`. |
+| `PROXIMA_NATS_CREDS_FILE` | NATS credentials file. Mutually exclusive with the user/password and token forms. |
+| `PROXIMA_NATS_USER` / `PROXIMA_NATS_PASSWORD` | NATS user credentials. |
+| `PROXIMA_NATS_TOKEN` | NATS auth token. |
+| `PROXIMA_NATS_BATCH` | Records claimed per publisher pass. Default `64`. |
+| `PROXIMA_NATS_LEASE_SECS` | Claim lease. Default `30`. Expiry returns the record to `pending`; it never deletes it. |
+| `PROXIMA_NATS_POLL_MS` | Idle poll interval. Default `500`. |
+| `PROXIMA_NATS_PUBLISH_TIMEOUT_MS` | PubAck wait. Default `5000`. A timeout releases the claim and republishes the same bytes. |
+| `PROXIMA_TEST_NATS_URL` | Test-only. Unset ⇒ broker-backed tests skip with a message; CI sets it. |
 | `PROXIMA_S3_BUCKET` | Enables cited-blob S3 storage. |
 | `PROXIMA_S3_REGION` | S3 region for cited-blob storage. |
 | `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. |

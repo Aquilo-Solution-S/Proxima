@@ -3,7 +3,8 @@ Causa — the Proxima kernel (umbrella re-export).
 
 Load order is a DAG: Prelude < Owner < Identity < Memory < Knowledge
 < Goals < Edges (pins; no Edge table) < Authorization < EdgeAuthorization
-< Operators < Provenance < Wake < Citations < Compliance < Principles < Flavor.
+< Operators < Provenance < Wake < Citations < Compliance < Principles < Flavor
+< Publication (the Fact outbox — imports Flavor).
 
 v0.0.8: Memory/Goal are (handle, t); origins/refs pin t; no FactEntity.
 Content is an owner-scoped payload sort; Self is a cue-indexed query.
@@ -25,3 +26,4 @@ import Causa.Citations
 import Causa.Compliance
 import Causa.Principles
 import Causa.Flavor
+import Causa.Publication
