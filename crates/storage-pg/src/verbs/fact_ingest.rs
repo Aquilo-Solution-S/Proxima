@@ -65,30 +65,6 @@ struct IngestCoreOptions<'a> {
 /// its owner-scoped `Content` resolves. One value, because the three are read
 /// off the same payload set and a route that carried the tables without the
 /// scopes would admit a row a concurrent scope erase cannot see.
-/// The publication half of one Fact admission: the draft core resolved
-/// from the frozen registry and the bounds this deployment enforces.
-///
-/// Borrowed and `Copy`, like the rest of [`FactAdmissionInput`], so the
-/// bounded write retry can re-run the transaction body against the same
-/// declaration instead of re-deriving it.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PublicationCapture<'a> {
-    pub(crate) draft: &'a proxima_core::publication::PublicationDraft,
-    pub(crate) limits: proxima_core::publication::PublicationLimits,
-}
-
-/// Pair a resolved draft with the deployment's limits, or `None` for a
-/// non-listenable write.
-pub(crate) const fn publication_capture(
-    draft: Option<&proxima_core::publication::PublicationDraft>,
-    limits: proxima_core::publication::PublicationLimits,
-) -> Option<PublicationCapture<'_>> {
-    match draft {
-        Some(draft) => Some(PublicationCapture { draft, limits }),
-        None => None,
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FactAdmissionInput<'a> {
     pub(crate) natural_key: Option<&'a super::memory_timeseries::MemoryNaturalKey>,
@@ -100,10 +76,17 @@ pub(crate) struct FactAdmissionInput<'a> {
     /// unspellable at the call site.
     pub(crate) scopes: &'a [ScopeFenceTarget],
     pub(crate) content: ContentResolution<'a>,
-    /// The `CloudEvents` record this admission captures, when its schema is
-    /// registered listenable. `None` is the overwhelmingly common case and
-    /// costs the write path nothing.
-    pub(crate) publication: Option<PublicationCapture<'a>>,
+    /// The `CloudEvents` record this admission captures — draft AND the
+    /// limits it is sealed under — when its schema is registered
+    /// listenable. `None` is the overwhelmingly common case and costs the
+    /// write path nothing.
+    ///
+    /// Borrowed straight off the authorization witness. This backend adds
+    /// nothing to it and, in particular, holds no limits of its own: the
+    /// engine's [`PublicationConfig`] is the single authority.
+    ///
+    /// [`PublicationConfig`]: proxima_core::publication::PublicationConfig
+    pub(crate) publication: Option<&'a proxima_core::publication::PublicationPlan>,
 }
 
 pub(crate) fn fact_natural_key(
@@ -637,13 +620,12 @@ where
         // receipt replay reuses `(handle, t)`, so re-capturing would trip
         // the outbox primary key — and, if it somehow did not, would put a
         // second copy of one Fact on the wire.
-        if let Some(capture) = input.publication {
+        if let Some(plan) = input.publication {
             crate::verbs::publication_outbox::capture_publication_in_tx(
                 tx,
                 owner.stored_owner_id(),
                 outcome.memory_id.into_inner(),
-                capture.draft,
-                &capture.limits,
+                plan,
             )
             .await?;
         }

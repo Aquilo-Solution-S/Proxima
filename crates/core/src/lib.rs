@@ -92,7 +92,7 @@ pub use payload_contract::assert_no_serde_json_value_fields;
 pub use publication::{
     CLOUDEVENTS_DATA_CONTENT_TYPE, CLOUDEVENTS_SPEC_VERSION, DEFAULT_MAX_PAYLOAD_BYTES,
     DEFAULT_MAX_PENDING, PublicationConfig, PublicationDraft, PublicationError, PublicationLimits,
-    PublicationSource, PublicationSourceError, SealedPublication, data_schema_uri,
+    PublicationPlan, PublicationSource, PublicationSourceError, SealedPublication, data_schema_uri,
 };
 pub use read_models::*;
 pub use scope::{ScopeDecl, ScopeKind, ScopeRef, scope_set};

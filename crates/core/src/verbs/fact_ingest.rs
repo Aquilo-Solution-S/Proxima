@@ -207,7 +207,7 @@ pub(crate) struct AuthorizedFactCore {
     /// engine at authorization time from the frozen `SchemaInfo.listenable`
     /// and the typed payload. `None` for every non-listenable schema, which
     /// is every schema unless one declared otherwise.
-    publication: Option<crate::publication::PublicationDraft>,
+    publication: Option<crate::publication::PublicationPlan>,
 }
 
 impl AuthorizedFactCore {
@@ -229,18 +229,21 @@ impl AuthorizedFactCore {
         }
     }
 
-    /// Bind the resolved publication draft. Called only by the engine's
-    /// authorization path, which is the one place that has both the frozen
-    /// schema declaration and the trusted model identity.
+    /// Bind the resolved publication plan (draft + the engine's configured
+    /// limits). Called only by the engine's authorization path, which is
+    /// the one place that has both the frozen schema declaration, the
+    /// trusted model identity AND the deployment's [`PublicationConfig`].
+    ///
+    /// [`PublicationConfig`]: crate::publication::PublicationConfig
     pub(crate) fn with_publication(
         mut self,
-        publication: Option<crate::publication::PublicationDraft>,
+        publication: Option<crate::publication::PublicationPlan>,
     ) -> Self {
         self.publication = publication;
         self
     }
 
-    pub(crate) const fn publication(&self) -> Option<&crate::publication::PublicationDraft> {
+    pub(crate) const fn publication(&self) -> Option<&crate::publication::PublicationPlan> {
         self.publication.as_ref()
     }
 
@@ -425,17 +428,20 @@ impl AuthorizedFactWrite {
         ))
     }
 
-    /// Test-only: attach the publication draft core would have resolved.
+    /// Test-only: attach the publication plan core would have resolved.
     ///
     /// Storage backend tests exercise the WRITE PORT, and the port reads
-    /// the draft off the witness. Without this they could only reach the
+    /// the plan off the witness. Without this they could only reach the
     /// capture by calling a backend verb directly, which is the layering
-    /// the port exists to prevent.
+    /// the port exists to prevent. It takes the whole plan — draft AND
+    /// limits — because that is what production hands storage; a fixture
+    /// that could supply limits separately would be testing a shape the
+    /// engine cannot produce.
     #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
     pub fn with_publication_for_tests(
         mut self,
-        publication: crate::publication::PublicationDraft,
+        publication: crate::publication::PublicationPlan,
     ) -> Self {
         self.core = self.core.with_publication(Some(publication));
         self
@@ -481,7 +487,7 @@ impl AuthorizedFactWrite {
     /// DATA, not a callback, so the bounded retry around
     /// begin→body→commit re-runs cleanly.
     #[must_use]
-    pub const fn publication(&self) -> Option<&crate::publication::PublicationDraft> {
+    pub const fn publication(&self) -> Option<&crate::publication::PublicationPlan> {
         self.core.publication()
     }
 
@@ -723,7 +729,7 @@ impl AuthorizedFactWithCitation {
     /// DATA, not a callback, so the bounded retry around
     /// begin→body→commit re-runs cleanly.
     #[must_use]
-    pub const fn publication(&self) -> Option<&crate::publication::PublicationDraft> {
+    pub const fn publication(&self) -> Option<&crate::publication::PublicationPlan> {
         self.core.publication()
     }
 
@@ -824,7 +830,7 @@ impl AuthorizedFactWithCitationRef {
     /// DATA, not a callback, so the bounded retry around
     /// begin→body→commit re-runs cleanly.
     #[must_use]
-    pub const fn publication(&self) -> Option<&crate::publication::PublicationDraft> {
+    pub const fn publication(&self) -> Option<&crate::publication::PublicationPlan> {
         self.core.publication()
     }
 

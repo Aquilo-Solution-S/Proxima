@@ -258,6 +258,29 @@ impl PublicationDraft {
     }
 }
 
+/// One listenable admission's whole capture instruction: what to seal, and
+/// the bounds this deployment seals it under.
+///
+/// The two travel together because they are enforced together and there is
+/// exactly ONE authority for the limits — the engine's
+/// [`PublicationConfig`]. An earlier shape let the storage backend hold its
+/// own copy, which meant a deployment could raise
+/// `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` in one place and enforce the old
+/// number in the other, with no way to notice. Storage now reads the limits
+/// off the witness it is already given and cannot have a second opinion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicationPlan {
+    pub draft: PublicationDraft,
+    pub limits: PublicationLimits,
+}
+
+impl PublicationPlan {
+    #[must_use]
+    pub const fn new(draft: PublicationDraft, limits: PublicationLimits) -> Self {
+        Self { draft, limits }
+    }
+}
+
 /// The local `dataschema` target for a registered schema.
 #[must_use]
 pub fn data_schema_uri(schema_id: &SchemaId, schema_version: SchemaVersion) -> String {
@@ -311,19 +334,21 @@ pub struct SealedPublication {
 }
 
 impl SealedPublication {
-    /// Seal `draft` against the `t` the admission minted.
+    /// Seal `plan.draft` against the `t` the admission minted, under
+    /// `plan.limits`.
+    ///
+    /// The limits arrive WITH the draft rather than beside it so that no
+    /// caller can seal against a different ceiling than the engine
+    /// configured — see [`PublicationPlan`].
     ///
     /// # Errors
     ///
     /// - [`PublicationError::ExportFailed`] when `t` carries no `UUIDv7`
     ///   timestamp or the envelope cannot be serialized.
     /// - [`PublicationError::PayloadTooLarge`] when the sealed bytes exceed
-    ///   `limits.max_payload_bytes`.
-    pub fn seal(
-        draft: &PublicationDraft,
-        t: Uuid,
-        limits: &PublicationLimits,
-    ) -> Result<Self, PublicationError> {
+    ///   `plan.limits.max_payload_bytes`.
+    pub fn seal(plan: &PublicationPlan, t: Uuid) -> Result<Self, PublicationError> {
+        let PublicationPlan { draft, limits } = plan;
         let event_id = format_prefixed_uuid(t, PrefixedUuidClass::Fact);
         let time = uuid_v7_rfc3339_millis(t)?;
         let owner = draft.owner.external_key();
@@ -454,8 +479,11 @@ mod tests {
     #[test]
     fn the_envelope_key_order_is_fixed_and_the_time_comes_from_the_v7_id() {
         let t = Uuid::parse_str("01930000-0000-7000-8000-000000000001").expect("v7 id");
-        let sealed =
-            SealedPublication::seal(&draft(), t, &PublicationLimits::default()).expect("seal");
+        let sealed = SealedPublication::seal(
+            &PublicationPlan::new(draft(), PublicationLimits::default()),
+            t,
+        )
+        .expect("seal");
         let text = String::from_utf8(sealed.bytes.clone()).expect("utf8");
         // The ORDER assertion reads the serialized text: a parsed `Map` is a
         // container whose iteration order is a build-feature detail, and the
@@ -500,8 +528,11 @@ mod tests {
         let mut draft = draft();
         draft.model_id = None;
         let t = Uuid::now_v7();
-        let sealed =
-            SealedPublication::seal(&draft, t, &PublicationLimits::default()).expect("seal");
+        let sealed = SealedPublication::seal(
+            &PublicationPlan::new(draft, PublicationLimits::default()),
+            t,
+        )
+        .expect("seal");
         let text = String::from_utf8(sealed.bytes).expect("utf8");
         assert!(!text.contains("proximamodel"), "{text}");
     }
@@ -512,7 +543,8 @@ mod tests {
             max_payload_bytes: 16,
             ..PublicationLimits::default()
         };
-        let err = SealedPublication::seal(&draft(), Uuid::now_v7(), &limits).expect_err("too big");
+        let err = SealedPublication::seal(&PublicationPlan::new(draft(), limits), Uuid::now_v7())
+            .expect_err("too big");
         assert!(matches!(
             err,
             PublicationError::PayloadTooLarge { max: 16, .. }

@@ -913,7 +913,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Resolve the publication draft a Fact admission must capture, or
+    /// Resolve the publication plan a Fact admission must capture, or
     /// `None` when its schema is not listenable.
     ///
     /// Everything the envelope needs that is NOT the `t` storage mints is
@@ -927,13 +927,21 @@ impl Engine {
     /// A listenable schema written through a route that carries no typed
     /// payload is REFUSED here, before any write: the export snapshot IS
     /// the payload's serde JSON, and a receipt-only admission has none.
+    ///
+    /// The deployment's [`PublicationLimits`] ride along in the returned
+    /// plan. They are read from THIS engine's [`PublicationConfig`] and
+    /// travel with the draft all the way to the seal, so the ceiling a
+    /// host configured is necessarily the ceiling capture enforces.
+    ///
+    /// [`PublicationLimits`]: crate::publication::PublicationLimits
+    /// [`PublicationConfig`]: crate::publication::PublicationConfig
     fn resolve_publication<A>(
         &self,
         authority: &A,
         fact_info: &SchemaInfo,
         owner: Owner,
         sidecars: &[SidecarPayload],
-    ) -> Result<Option<crate::publication::PublicationDraft>, ProtocolError>
+    ) -> Result<Option<crate::publication::PublicationPlan>, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
@@ -978,13 +986,16 @@ impl Engine {
             .authz()
             .trusted_model_id()
             .map(ToOwned::to_owned);
-        Ok(Some(crate::publication::PublicationDraft::new(
-            schema_id,
-            fact_info.schema_version,
-            source,
-            owner,
-            model_id,
-            data,
+        Ok(Some(crate::publication::PublicationPlan::new(
+            crate::publication::PublicationDraft::new(
+                schema_id,
+                fact_info.schema_version,
+                source,
+                owner,
+                model_id,
+                data,
+            ),
+            self.publication.limits,
         )))
     }
 

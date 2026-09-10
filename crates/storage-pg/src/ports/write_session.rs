@@ -26,10 +26,6 @@ struct PgWriteSession {
     /// payload's `ScopeRef` into the fence key and liveness probe without
     /// reaching back through the storage handle mid-transaction.
     scopes: crate::access::scope_surfaces::ScopeSurfaces,
-    /// The deployment's publication bounds, copied at `begin()` so a
-    /// mid-transaction capture never reaches back through the storage
-    /// handle for them.
-    publication_limits: proxima_core::publication::PublicationLimits,
     cold: Arc<dyn ColdObjectStore>,
 }
 
@@ -42,7 +38,6 @@ impl WriteSessionFactory for PgStorage {
             sidecars: self.sidecars.clone(),
             surfaces: self.surfaces.clone(),
             scopes: self.scopes.clone(),
-            publication_limits: self.publication_limits(),
             cold: Arc::clone(&self.cold),
         }))
     }
@@ -150,10 +145,7 @@ impl WriteSession for PgWriteSession {
                     content_id: None,
                     payloads: Some(&content_payloads),
                 },
-                publication: verbs::fact_ingest::publication_capture(
-                    authorized.publication(),
-                    self.publication_limits,
-                ),
+                publication: authorized.publication(),
             },
             move |tx, outcome| {
                 Box::pin(async move {

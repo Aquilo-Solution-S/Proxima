@@ -1438,15 +1438,6 @@ pub struct PgStorage {
     non_embeddable_schemas: Vec<String>,
     tuning: PgTuning,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
-    /// Deployment bounds on publication capture: the pending-queue ceiling
-    /// the capture probes before it inserts, and the byte ceiling one
-    /// sealed envelope may reach.
-    ///
-    /// Defaults rather than `Option`, because a deployment that registers
-    /// no listenable schema never reaches either check and one that does
-    /// must have a bound: an unbounded outbox is a disk-exhaustion path
-    /// with a Fact write on the other end of it.
-    publication_limits: proxima_core::publication::PublicationLimits,
     cold: Arc<dyn proxima_core::ColdObjectStore>,
 }
 
@@ -1605,7 +1596,6 @@ impl PgStorage {
             non_embeddable_schemas: Vec::new(),
             tuning,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
-            publication_limits: proxima_core::publication::PublicationLimits::default(),
             cold: Arc::new(verbs::forget::MemoryColdStore::default()),
         })
     }
@@ -1688,27 +1678,6 @@ impl PgStorage {
 
     /// Apply the host's validated embedding runtime policy to every storage
     /// reclaim and stale-observability path.
-    /// Apply the deployment's publication bounds.
-    ///
-    /// The limits are storage-side because both are refusals a
-    /// TRANSACTION has to make: the size check happens after the envelope
-    /// is sealed against the `t` storage minted, and the capacity check
-    /// reads the outbox itself.
-    #[must_use]
-    pub const fn with_publication_limits(
-        mut self,
-        limits: proxima_core::publication::PublicationLimits,
-    ) -> Self {
-        self.publication_limits = limits;
-        self
-    }
-
-    /// The publication bounds this storage enforces.
-    #[must_use]
-    pub const fn publication_limits(&self) -> proxima_core::publication::PublicationLimits {
-        self.publication_limits
-    }
-
     #[must_use]
     pub fn with_embedding_runtime_policy(
         mut self,

@@ -12,7 +12,7 @@
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use proxima_core::publication::{PublicationDraft, PublicationError, PublicationLimits};
+use proxima_core::publication::{PublicationError, PublicationLimits, PublicationPlan};
 use proxima_core::storage_ports::publication::{
     AckOutcome, BrokerReceipt, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
     ReleaseOutcome,
@@ -39,15 +39,20 @@ use crate::error::{internal, map_err};
 /// [`StorageError::PublicationRefused`] for an exhausted outbox, an
 /// unexportable payload or an oversized envelope; storage errors from the
 /// probe and the insert.
+///
+/// Both bounds come off `plan.limits`, which the engine put there from its
+/// own [`PublicationConfig`]. This backend holds no limits of its own: a
+/// second copy could only ever disagree with the configured one.
+///
+/// [`PublicationConfig`]: proxima_core::publication::PublicationConfig
 pub(crate) async fn capture_publication_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner_id: Uuid,
     t: Uuid,
-    draft: &PublicationDraft,
-    limits: &PublicationLimits,
+    plan: &PublicationPlan,
 ) -> Result<(), StorageError> {
-    refuse_when_full(tx, limits).await?;
-    let sealed = SealedPublication::seal(draft, t, limits).map_err(StorageError::from)?;
+    refuse_when_full(tx, &plan.limits).await?;
+    let sealed = SealedPublication::seal(plan, t).map_err(StorageError::from)?;
     let schema_version = i32::try_from(sealed.schema_version.into_inner()).map_err(|_| {
         StorageError::ConstraintViolation("schema version does not fit an integer column".into())
     })?;

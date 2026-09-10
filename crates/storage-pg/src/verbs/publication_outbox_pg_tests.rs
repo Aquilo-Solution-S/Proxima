@@ -9,7 +9,7 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use proxima_core::publication::{
-    PublicationDraft, PublicationLimits, PublicationSource, SealedPublication,
+    PublicationDraft, PublicationLimits, PublicationPlan, PublicationSource, SealedPublication,
 };
 use proxima_core::storage_ports::publication::{
     AckOutcome, BrokerReceipt, ClaimToken, PublicationOutboxPort, PublisherId, ReleaseOutcome,
@@ -70,6 +70,20 @@ fn draft_for(owner: Owner, payload: &ListenableProbeV1) -> PublicationDraft {
     )
 }
 
+/// The capture instruction core would hand storage: the draft plus the
+/// limits the ENGINE was configured with.
+///
+/// Storage has no limits of its own to override, which is the point — a
+/// test that wants a small ceiling has to say so where a deployment says
+/// so, on the plan travelling with the write.
+fn plan_for(
+    owner: Owner,
+    payload: &ListenableProbeV1,
+    limits: PublicationLimits,
+) -> PublicationPlan {
+    PublicationPlan::new(draft_for(owner, payload), limits)
+}
+
 /// A Fact write command for one probe. `ingest_key` makes the receipt
 /// replayable, which is what test (c) needs.
 fn fact_command(schema_id: &str, ingest_key: Option<&str>) -> FactWriteCommand {
@@ -113,8 +127,20 @@ async fn ingest_listenable(
     payload: &ListenableProbeV1,
     ingest_key: Option<&str>,
 ) -> Result<FactIngestOutcome, StorageError> {
+    ingest_listenable_under(pg, owner, payload, ingest_key, PublicationLimits::default()).await
+}
+
+/// The same route under an explicit deployment bound.
+async fn ingest_listenable_under(
+    pg: &PgStorage,
+    owner: &Owner,
+    payload: &ListenableProbeV1,
+    ingest_key: Option<&str>,
+    limits: PublicationLimits,
+) -> Result<FactIngestOutcome, StorageError> {
     let command = fact_command(ListenableProbeV1::SCHEMA_ID, ingest_key);
-    let authorized = witness(owner, command).with_publication_for_tests(draft_for(*owner, payload));
+    let authorized =
+        witness(owner, command).with_publication_for_tests(plan_for(*owner, payload, limits));
     pg.ingest_fact_with_typed_sidecar(&authorized, &[], None)
         .await
 }
@@ -295,8 +321,11 @@ async fn a_failing_sidecar_rolls_back_the_fact_and_its_capture() {
 
     let payload = probe("doomed");
     let command = fact_command(ListenableProbeV1::SCHEMA_ID, Some("doomed-1"));
-    let authorized =
-        witness(&owner, command).with_publication_for_tests(draft_for(owner, &payload));
+    let authorized = witness(&owner, command).with_publication_for_tests(plan_for(
+        owner,
+        &payload,
+        PublicationLimits::default(),
+    ));
     let mut tx = pool.begin().await.expect("begin");
     let err = crate::verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
         &mut tx,
@@ -310,10 +339,7 @@ async fn a_failing_sidecar_rolls_back_the_fact_and_its_capture() {
                 content_id: None,
                 payloads: Some(&[]),
             },
-            publication: crate::verbs::fact_ingest::publication_capture(
-                authorized.publication(),
-                PublicationLimits::default(),
-            ),
+            publication: authorized.publication(),
         },
         |_tx, _outcome| {
             Box::pin(async { Err(StorageError::ConstraintViolation("sidecar said no".into())) })
@@ -339,16 +365,16 @@ async fn a_failing_sidecar_rolls_back_the_fact_and_its_capture() {
 #[tokio::test]
 async fn an_oversized_export_refuses_the_whole_fact_write() {
     let (pg, db) = fresh_pg("pub_capture_oversized").await;
-    let pg = pg.with_publication_limits(PublicationLimits {
+    let limits = PublicationLimits {
         max_pending: 100,
         max_payload_bytes: 16,
-    });
+    };
     let pool = pg.pool_for_tests().clone();
     let owner = owner_fixture();
     register_owner(&pool, &owner).await;
 
     let payload = probe("far more than sixteen bytes of note");
-    let err = ingest_listenable(&pg, &owner, &payload, Some("oversized-1"))
+    let err = ingest_listenable_under(&pg, &owner, &payload, Some("oversized-1"), limits)
         .await
         .expect_err("an oversized envelope must refuse the write");
     assert!(
@@ -381,20 +407,20 @@ async fn an_oversized_export_refuses_the_whole_fact_write() {
 #[tokio::test]
 async fn an_exhausted_outbox_refuses_the_next_listenable_write() {
     let (pg, db) = fresh_pg("pub_capture_capacity").await;
-    let pg = pg.with_publication_limits(PublicationLimits {
+    let limits = PublicationLimits {
         max_pending: 2,
         max_payload_bytes: proxima_core::publication::DEFAULT_MAX_PAYLOAD_BYTES,
-    });
+    };
     let pool = pg.pool_for_tests().clone();
     let owner = owner_fixture();
     register_owner(&pool, &owner).await;
 
     for n in 0..2 {
-        ingest_listenable(&pg, &owner, &probe(&format!("kept-{n}")), None)
+        ingest_listenable_under(&pg, &owner, &probe(&format!("kept-{n}")), None, limits)
             .await
             .expect("under the bound");
     }
-    let err = ingest_listenable(&pg, &owner, &probe("refused"), None)
+    let err = ingest_listenable_under(&pg, &owner, &probe("refused"), None, limits)
         .await
         .expect_err("the third write is over the bound");
     assert!(
@@ -426,8 +452,11 @@ async fn the_receipt_only_route_refuses_a_listenable_schema() {
 
     let payload = probe("no typed payload here");
     let command = fact_command(ListenableProbeV1::SCHEMA_ID, None);
-    let authorized =
-        witness(&owner, command).with_publication_for_tests(draft_for(owner, &payload));
+    let authorized = witness(&owner, command).with_publication_for_tests(plan_for(
+        owner,
+        &payload,
+        PublicationLimits::default(),
+    ));
     let err = pg
         .ingest_authorized_fact_atomic(&authorized, None)
         .await
@@ -457,8 +486,11 @@ async fn an_uncommitted_write_session_leaves_no_visible_record() {
 
     let payload = probe("dropped");
     let command = fact_command(ListenableProbeV1::SCHEMA_ID, None);
-    let authorized =
-        witness(&owner, command).with_publication_for_tests(draft_for(owner, &payload));
+    let authorized = witness(&owner, command).with_publication_for_tests(plan_for(
+        owner,
+        &payload,
+        PublicationLimits::default(),
+    ));
     {
         let mut session = pg.begin().await.expect("session begins");
         session
@@ -489,8 +521,11 @@ async fn a_late_commit_is_claimed_on_the_next_pass_not_stepped_over() {
     // than B's.
     let slow = probe("slow");
     let slow_command = fact_command(ListenableProbeV1::SCHEMA_ID, None);
-    let slow_witness =
-        witness(&owner, slow_command).with_publication_for_tests(draft_for(owner, &slow));
+    let slow_witness = witness(&owner, slow_command).with_publication_for_tests(plan_for(
+        owner,
+        &slow,
+        PublicationLimits::default(),
+    ));
     let mut session_a = pg.begin().await.expect("session A begins");
     let a_outcome = session_a
         .ingest_fact_with_typed_sidecar(&slow_witness, &[], None)
@@ -1063,8 +1098,9 @@ fn sealing_is_a_function_of_the_draft_and_the_t() {
     let draft = draft_for(owner, &payload);
     let t = Uuid::now_v7();
     let limits = PublicationLimits::default();
-    let first = SealedPublication::seal(&draft, t, &limits).expect("seals");
-    let second = SealedPublication::seal(&draft, t, &limits).expect("seals");
+    let plan = PublicationPlan::new(draft, limits);
+    let first = SealedPublication::seal(&plan, t).expect("seals");
+    let second = SealedPublication::seal(&plan, t).expect("seals");
     assert_eq!(first, second);
     assert_eq!(first.digest, *blake3::hash(&first.bytes).as_bytes());
 }
