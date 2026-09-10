@@ -9,6 +9,8 @@ use axum::extract::Request;
 use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::authz::SystemAuthority;
+#[cfg(feature = "outbox-nats")]
+use proxima_core::storage_ports::publication::PublicationOutboxPort;
 use proxima_core::storage_ports::{
     CitedBlobOwnerReconcileService, CitedBlobReadService, CitedBlobService,
     DelegatedAuthorityService,
@@ -209,6 +211,27 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// Bind the deployment's publication source and capture bounds
+    /// (docs/18). Env equivalent: `PROXIMA_PUBLICATION_SOURCE`,
+    /// `PROXIMA_OUTBOX_MAX_PENDING`, `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES`.
+    #[must_use]
+    pub fn publication(
+        mut self,
+        publication: proxima_core::publication::PublicationConfig,
+    ) -> Self {
+        self.overlay = self.overlay.publication(publication);
+        self
+    }
+
+    /// Configure the `JetStream` publisher. Env equivalent: the
+    /// `PROXIMA_NATS_*` block.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn nats(mut self, nats: proxima_outbox_nats::NatsPublisherConfig) -> Self {
+        self.overlay = self.overlay.nats(nats);
+        self
+    }
+
     /// Resolve, validate, boot, and return an in-process service.
     ///
     /// # Errors
@@ -238,6 +261,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             None
         };
 
+        #[cfg(feature = "outbox-nats")]
+        let outbox = booted.outbox().clone();
         Ok(BuiltProxima {
             service,
             engine: booted.engine,
@@ -251,6 +276,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             cancel,
             insecure_single_owner: config.insecure_single_owner,
             services,
+            #[cfg(feature = "outbox-nats")]
+            outbox,
+            #[cfg(feature = "outbox-nats")]
+            nats: config.nats,
         })
     }
 
@@ -320,6 +349,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             services: services.clone(),
         };
         let workers = A::spawn_workers(&worker_ctx);
+        #[cfg(feature = "outbox-nats")]
+        let outbox = booted.outbox().clone();
 
         Ok(RunningProxima {
             engine: booted.engine,
@@ -336,6 +367,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             insecure_single_owner: config.insecure_single_owner,
             services,
             workers,
+            #[cfg(feature = "outbox-nats")]
+            outbox,
+            #[cfg(feature = "outbox-nats")]
+            nats: config.nats,
         })
     }
 
@@ -413,6 +448,18 @@ pub struct BuiltProxima {
     pub cancel: CancellationToken,
     pub insecure_single_owner: bool,
     services: FlavorServices,
+    /// The host-only drain over captured publication records. Private for
+    /// the same reason it is absent from `StoragePorts`: only a publisher
+    /// process may move a captured event through its delivery lifecycle —
+    /// a flavor able to claim a record could delay or suppress an export.
+    ///
+    /// Carried only when an adapter is compiled in. Without one there is
+    /// nothing that could drain it, and holding a handle no code can use
+    /// would just widen the surface.
+    #[cfg(feature = "outbox-nats")]
+    outbox: Arc<dyn PublicationOutboxPort>,
+    #[cfg(feature = "outbox-nats")]
+    nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
 }
 
 impl BuiltProxima {
@@ -424,6 +471,28 @@ impl BuiltProxima {
     #[must_use]
     pub fn spawn_embedding_worker(&self, cancel: CancellationToken) -> JoinHandle<()> {
         spawn_embedding_worker(self.engine.clone(), cancel)
+    }
+
+    /// Spawn the `JetStream` publisher that drains the captured outbox.
+    ///
+    /// `None` when no broker is configured (`PROXIMA_NATS_URL` unset). That
+    /// is a safe steady state, not a degraded one: capture keeps working,
+    /// the backlog stays bounded by `PROXIMA_OUTBOX_MAX_PENDING`, and a
+    /// publisher started later drains exactly the same records.
+    ///
+    /// The task NEVER fails the boot. A broker that is down at start-up is
+    /// an outage, not a misconfiguration, and refusing to serve reads and
+    /// writes because a downstream consumer's transport is unavailable
+    /// would turn a delivery delay into a total outage. Connect failures
+    /// are retried with a bounded backoff and logged.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn spawn_publication_publisher(&self, cancel: CancellationToken) -> Option<JoinHandle<()>> {
+        Some(spawn_publication_publisher(
+            self.outbox.clone(),
+            self.nats.clone()?,
+            cancel,
+        ))
     }
 
     #[must_use]
@@ -515,6 +584,12 @@ pub struct RunningProxima {
     /// Flavor-contributed background workers spawned by [`Proxima::run`]
     /// via `FlavorBundle::spawn_workers`; joined by [`Self::shutdown`].
     workers: Vec<FlavorWorker>,
+    /// The host-only drain over captured publication records. See
+    /// `BuiltProxima`'s field of the same name.
+    #[cfg(feature = "outbox-nats")]
+    outbox: Arc<dyn PublicationOutboxPort>,
+    #[cfg(feature = "outbox-nats")]
+    nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
 }
 
 impl RunningProxima {
@@ -536,6 +611,28 @@ impl RunningProxima {
     #[must_use]
     pub fn spawn_embedding_worker(&self, cancel: CancellationToken) -> JoinHandle<()> {
         spawn_embedding_worker(self.engine.clone(), cancel)
+    }
+
+    /// Spawn the `JetStream` publisher that drains the captured outbox.
+    ///
+    /// `None` when no broker is configured (`PROXIMA_NATS_URL` unset). That
+    /// is a safe steady state, not a degraded one: capture keeps working,
+    /// the backlog stays bounded by `PROXIMA_OUTBOX_MAX_PENDING`, and a
+    /// publisher started later drains exactly the same records.
+    ///
+    /// The task NEVER fails the boot. A broker that is down at start-up is
+    /// an outage, not a misconfiguration, and refusing to serve reads and
+    /// writes because a downstream consumer's transport is unavailable
+    /// would turn a delivery delay into a total outage. Connect failures
+    /// are retried with a bounded backoff and logged.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn spawn_publication_publisher(&self, cancel: CancellationToken) -> Option<JoinHandle<()>> {
+        Some(spawn_publication_publisher(
+            self.outbox.clone(),
+            self.nats.clone()?,
+            cancel,
+        ))
     }
 
     #[must_use]
@@ -633,6 +730,48 @@ impl std::fmt::Debug for RunningProxima {
             )
             .finish_non_exhaustive()
     }
+}
+
+/// The publisher's boot-time connect retry.
+///
+/// Doubling from one second, capped, and cancellable. Bounded rather than
+/// infinite-with-no-signal: every attempt logs, so an operator sees the
+/// broker being unreachable rather than a silent stall.
+#[cfg(feature = "outbox-nats")]
+const PUBLISHER_CONNECT_BACKOFF_CEILING: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[cfg(feature = "outbox-nats")]
+fn spawn_publication_publisher(
+    outbox: Arc<dyn PublicationOutboxPort>,
+    config: proxima_outbox_nats::NatsPublisherConfig,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut backoff = std::time::Duration::from_secs(1);
+        let publisher = loop {
+            if cancel.is_cancelled() {
+                return;
+            }
+            match proxima_outbox_nats::JetStreamPublisher::connect(config.clone(), outbox.clone())
+                .await
+            {
+                Ok(publisher) => break publisher,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        retry_in_ms = backoff.as_millis(),
+                        "publication publisher could not reach the broker; capture continues"
+                    );
+                    tokio::select! {
+                        () = cancel.cancelled() => return,
+                        () = tokio::time::sleep(backoff) => {}
+                    }
+                    backoff = (backoff * 2).min(PUBLISHER_CONNECT_BACKOFF_CEILING);
+                }
+            }
+        };
+        publisher.run(cancel).await;
+    })
 }
 
 fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> JoinHandle<()> {
@@ -857,7 +996,8 @@ async fn boot_app<A: FlavorApp + 'static>(
     .deployment_tool_scope(config.tool_scope.clone())
     .pg_pool_config(config.pg_pool_config)
     .pg_tuning(config.pg_tuning)
-    .embedding_runtime_policy(config.embedding_runtime_policy);
+    .embedding_runtime_policy(config.embedding_runtime_policy)
+    .publication(config.publication.clone());
     if config.skip_migrations {
         builder = builder.skip_migrations();
     }

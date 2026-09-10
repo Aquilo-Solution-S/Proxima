@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_blob_s3::S3RuntimeConfig;
+use proxima_core::publication::PublicationConfig;
 use proxima_core::{
     Authenticator, EmbeddingClient, EmbeddingRuntimePolicy, FlavorServiceError, Owner,
     RevalidationConfig, ToolScope, is_loopback_host,
@@ -12,7 +13,8 @@ use proxima_storage_pg::{PgPoolConfig, PgTuning};
 
 use crate::EmbedError;
 use crate::config::{
-    parse_bool_value, pg_pool_config_from_lookup, pg_tuning_from_lookup, s3_from_lookup,
+    parse_bool_value, pg_pool_config_from_lookup, pg_tuning_from_lookup,
+    publication_config_from_lookup, s3_from_lookup,
 };
 
 const DEFAULT_MCP_BIND: &str = "127.0.0.1:31415";
@@ -40,6 +42,9 @@ pub struct RuntimeBuilder {
     resource_metadata: Option<ResourceServerMetadata>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     embedding_runtime_policy: Option<EmbeddingRuntimePolicy>,
+    publication: Option<PublicationConfig>,
+    #[cfg(feature = "outbox-nats")]
+    nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
 }
 
 impl std::fmt::Debug for RuntimeBuilder {
@@ -65,7 +70,8 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("has_resource_metadata", &self.resource_metadata.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
-            .finish()
+            .field("publication", &self.publication)
+            .finish_non_exhaustive()
     }
 }
 
@@ -95,6 +101,9 @@ impl RuntimeBuilder {
             embedding_runtime_policy: self
                 .embedding_runtime_policy
                 .or(base.embedding_runtime_policy),
+            publication: self.publication.or(base.publication),
+            #[cfg(feature = "outbox-nats")]
+            nats: self.nats.or(base.nats),
         }
     }
 
@@ -116,6 +125,27 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn owner(mut self, owner: Owner) -> Self {
         self.owner = Some(owner);
+        self
+    }
+
+    /// Bind the deployment's publication source and capture bounds.
+    /// Env equivalent: `PROXIMA_PUBLICATION_SOURCE`,
+    /// `PROXIMA_OUTBOX_MAX_PENDING`, `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES`.
+    ///
+    /// Setting this suppresses the environment read for the whole block —
+    /// one parser, as with the S3 and Postgres blocks.
+    #[must_use]
+    pub fn publication(mut self, publication: PublicationConfig) -> Self {
+        self.publication = Some(publication);
+        self
+    }
+
+    /// Configure the `JetStream` publisher. Env equivalent: the
+    /// `PROXIMA_NATS_*` block.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn nats(mut self, nats: proxima_outbox_nats::NatsPublisherConfig) -> Self {
+        self.nats = Some(nats);
         self
     }
 
@@ -350,6 +380,16 @@ impl RuntimeBuilder {
         if self.embedding_runtime_policy.is_none() && embedding_runtime_policy_env_is_set(&lookup) {
             self.embedding_runtime_policy = Some(embedding_runtime_policy_from_lookup(&lookup)?);
         }
+        // Unconditional: the block is read (and validated) on every boot,
+        // independent of any cargo feature. A malformed bound is a boot
+        // error whether or not this binary can talk to a broker.
+        if self.publication.is_none() {
+            self.publication = Some(publication_config_from_lookup(&lookup)?);
+        }
+        #[cfg(feature = "outbox-nats")]
+        if self.nats.is_none() {
+            self.nats = crate::config::nats_from_lookup(&lookup)?;
+        }
         Ok(self)
     }
 
@@ -394,6 +434,7 @@ impl RuntimeBuilder {
             embed_client: self.embed_client,
         };
         let pg_pool_config = self.pg_pool_config.unwrap_or_default();
+        let publication = self.publication.unwrap_or_default();
         let config = RuntimeConfig {
             database_url,
             s3: self.s3,
@@ -414,6 +455,16 @@ impl RuntimeBuilder {
             },
             resource_metadata: self.resource_metadata,
             embedding_runtime_policy: self.embedding_runtime_policy.unwrap_or_default(),
+            publication: publication.clone(),
+            // The stream's per-message ceiling is DERIVED from the capture
+            // ceiling, in the one place that holds both. A broker that
+            // refuses a message the outbox was willing to capture would
+            // strand that record forever; deriving it here makes the two
+            // impossible to set inconsistently.
+            #[cfg(feature = "outbox-nats")]
+            nats: self
+                .nats
+                .map(|nats| nats.with_capture_limits(&publication.limits)),
         };
         config.validate()?;
         Ok((config, parts))
@@ -462,6 +513,20 @@ pub struct RuntimeConfig {
     pub auth: RuntimeAuthState,
     pub resource_metadata: Option<ResourceServerMetadata>,
     pub embedding_runtime_policy: EmbeddingRuntimePolicy,
+    /// The deployment's `CloudEvents` producer identity and capture bounds
+    /// (`PROXIMA_PUBLICATION_SOURCE`, `PROXIMA_OUTBOX_*`; docs/18).
+    ///
+    /// Always present, never optional: it is handed to the engine builder
+    /// on every boot, and its `limits` are the ones enforced at capture —
+    /// no backend holds a second copy.
+    pub publication: PublicationConfig,
+    /// The broker the captured outbox drains to (`PROXIMA_NATS_*`).
+    ///
+    /// `None` — the default — leaves the outbox captured and undrained,
+    /// which is a safe state: nothing is lost, the backlog is bounded, and
+    /// the publisher can be started later against the same records.
+    #[cfg(feature = "outbox-nats")]
+    pub nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -489,7 +554,8 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("auth", &self.auth)
             .field("resource_metadata", &self.resource_metadata)
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
-            .finish()
+            .field("publication", &self.publication)
+            .finish_non_exhaustive()
     }
 }
 
@@ -785,6 +851,9 @@ mod tests {
 
     fn base_config(mcp: Option<SocketAddr>) -> RuntimeConfig {
         RuntimeConfig {
+            publication: PublicationConfig::default(),
+            #[cfg(feature = "outbox-nats")]
+            nats: None,
             database_url: "postgres://localhost/proxima".to_string(),
             s3: None,
             owner: Some(company_owner(uuid::Uuid::now_v7())),

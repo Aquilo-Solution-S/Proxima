@@ -140,6 +140,27 @@ pub use proxima_storage_pg::{HnswIterativeScan, PgPoolConfig, PgTuning};
 // them cannot bind the payload without being able to name its type. An
 // unnameable type in a public signature is the usual shape of an
 // out-of-tree blocker, so it is re-exported beside the error itself.
+/// The publication half of the engine configuration (docs/18).
+///
+/// A host that registers a listenable schema must bind a
+/// [`PublicationSource`]; the engine refuses the boot otherwise, naming the
+/// schemas. [`PublicationLimits`] are the bounds ACTUALLY enforced at
+/// capture — they travel with the draft, so there is no second copy to
+/// configure and no way for the two to disagree.
+pub use proxima_core::publication::{
+    PublicationConfig, PublicationError, PublicationLimits, PublicationSource,
+    PublicationSourceError,
+};
+/// The host-only outbox drain contract.
+///
+/// Exported so a host can implement its own publisher against a broker this
+/// workspace ships no adapter for. It is deliberately absent from
+/// `StoragePorts`, `Engine` and `ToolCtx`: a flavor that could claim an
+/// outbox record could delay or suppress an export.
+pub use proxima_core::storage_ports::publication::{
+    AckOutcome, BrokerReceipt, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
+    PublisherIdError, ReleaseOutcome,
+};
 pub use proxima_core::text_bounds::{TrimmedLenViolation, check_trimmed_len};
 pub use proxima_core::verbs::mcp_call_history::{
     MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse, McpCallRecord,
@@ -182,6 +203,18 @@ pub use proxima_core::{
 pub use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
 pub use proxima_mcp_server::selfdoc::{build_instructions, how_to_markdown};
 pub use proxima_mcp_server::{HostAllowlist, McpAuthContext, ResourceServerMetadata};
+/// The shipped NATS `JetStream` publisher and its reference consumer
+/// (docs/18, `crates/outbox-nats`).
+///
+/// Behind the `outbox-nats` feature: a deployment that registers no
+/// listenable schema should not link a broker client. The boot guarantee
+/// (listenable schema ⇒ bound source) holds without this feature.
+#[cfg(feature = "outbox-nats")]
+pub use proxima_outbox_nats::{
+    ConfigError as NatsConfigError, ConsumerError, DeliveryProfile, DrainReport, DrainSummary,
+    DurableIntake, Intake, IntakeError, JetStreamPublisher, NatsAuth, NatsConsumerConfig,
+    NatsPublisherConfig, PublisherError, ReceivedEvent, ReferenceConsumer,
+};
 #[cfg(feature = "testkit")]
 pub use proxima_pg_testkit as testkit;
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts

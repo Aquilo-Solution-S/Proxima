@@ -8,6 +8,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY . .
+# Default features only. Add `--features nats` to link the Fact-outbox
+# JetStream publisher (docs/18); it still needs `PROXIMA_NATS_URL` to start,
+# so building it in changes nothing for a deployment that names no broker.
 RUN cargo build --release -p proxima-mcp \
     && cp target/release/proxima-mcp /proxima-mcp
 
