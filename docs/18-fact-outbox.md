@@ -64,13 +64,30 @@ beside the registered sidecar writes.
 Capture is **mandatory** while a listenable type is registered. There is no
 "publish best-effort" mode: a write path that cannot capture is refused.
 
-| Error | Raised when |
-|---|---|
-| `PayloadTooLarge` | serialized export exceeds `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` |
-| `CapacityExhausted` | unpublished record count is at `PROXIMA_OUTBOX_MAX_PENDING` — explicit backpressure, never silent eviction |
-| `UntypedListenableWrite` | a listenable series reached the chokepoint without its registered typed export |
-| `SourceUnbound` | a listenable schema reached the chokepoint with no configured publication source |
-| `ExportFailed` | the envelope would not serialize, or `t` carries no UUIDv7 timestamp |
+| Error | Raised when | MCP tool class | JSON-RPC | REST |
+|---|---|---|---|---|
+| `PayloadTooLarge` | serialized export exceeds `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | `InvalidArgument` | `-32602` | 400 `invalid-argument` |
+| `CapacityExhausted` | unpublished record count is at `PROXIMA_OUTBOX_MAX_PENDING` — explicit backpressure, never silent eviction | `CapacityExhausted` | `-32000`, `data.code = "capacity_exhausted"` | **503** `capacity-exhausted` |
+| `UntypedListenableWrite` | a listenable series reached the chokepoint without its registered typed export | `InvalidArgument` | `-32602` | 400 `invalid-argument` |
+| `SourceUnbound` | a listenable schema reached the chokepoint with no configured publication source | `Internal` | `-32603` | 500 `internal` |
+| `ExportFailed` | the envelope would not serialize, or `t` carries no UUIDv7 timestamp | `Internal` | `-32603` | 500 `internal` |
+
+`CapacityExhausted` is its own class on every surface, and deliberately not the
+class of a permanent precondition failure. It says *retry later*: the write was
+refused because a **transient** backlog is at its ceiling, and a caller that
+sees 503 knows to back off where a 400 would have told it to change its
+request and a 500 would have told it to open an incident. See
+[17 §Error surface](17-rest-surface.md).
+
+**The pending ceiling is a SOFT bound.** The capacity check counts unpublished
+records inside the write's own transaction under `READ COMMITTED`, so N
+concurrent writers can each observe `pending_count < max_pending` and each
+commit: the backlog can overshoot the ceiling by at most the number of
+concurrent listenable writers. That is deliberate. Making it hard would need a
+table lock on the hot path of every listenable write, which costs more than the
+overshoot is worth — the ceiling exists to bound unbounded growth, not to be a
+quota. The count is also bounded work: it stops at `max_pending` rows rather
+than counting the whole backlog.
 
 ## Publication Contract
 
@@ -97,19 +114,49 @@ binding, never a self-asserted header.
 
 ## Outbox Row and State Machine
 
-Table `proxima_core.publication_outbox`, one row per published Fact `t`.
+Table `proxima_core.publication_outbox` (migration `0011`), one row per
+captured Fact `t`.
 
 | Column | Note |
 |---|---|
-| `id` | uuid PK = the Fact's memory `t`; FK to `memory` `ON DELETE CASCADE` |
-| `owner_ref` | the Fact's owner, same column shape as `memory` (see [07 §Owner Columns](07-storage.md#owner-columns)) |
-| `event_type`, `source`, `recorded_at` | routing keys duplicated out of the envelope; `recorded_at` is the UUIDv7 time of `id` |
-| `envelope` | `bytea`, the verbatim CloudEvent |
-| `envelope_digest` | blake3 integrity witness |
-| `state` | SQL enum `publication_state` |
-| `claim_token`, `lease_expires_at`, `attempts` | claim bookkeeping |
-| `published_at`, `published_seq` | JetStream stream sequence from the PubAck |
-| `captured_at` | insert time |
+| `t` | `uuid` **PRIMARY KEY** — the Fact's memory `t`. There is **no FK to `memory`** (below) |
+| `owner_id` | `uuid NOT NULL REFERENCES owners(owner_id)`. A single id column, not the `(owner_kind, owner_id)` pair `memory` carries: the kind is read back through the `owners` join at claim time, so the record cannot disagree with the owner table |
+| `schema_id`, `schema_version` | the registered typed export's identity |
+| `event_type` | the `CloudEvents` `type`, duplicated out of the envelope so a routing decision needs no JSON parse |
+| `event_id` | the `CloudEvents` `id` (`F:<uuid>`), `UNIQUE` — also the broker dedup key |
+| `envelope` | `bytea`, the verbatim `CloudEvent` |
+| `envelope_digest` | `bytea`, blake3 over those exact bytes; `CHECK (octet_length = 32)` |
+| `state` | SQL enum `publication_state` (`pending`/`claimed`/`published`) |
+| `claim_token`, `claimed_by`, `lease_expires_at`, `attempts` | claim bookkeeping; `claimed_by` is the operator-facing `PublisherId`, `claim_token` is the fencing token |
+| `published_at`, `published_stream`, `published_seq` | the PubAck: when, which stream, which sequence |
+| `captured_at` | insert time, `DEFAULT now()` |
+
+There is **no `source` column and no `recorded_at` column**. Both live in the
+envelope and nowhere else: `source` is one configured value per installation
+(a column would be the same string on every row and could drift from the
+envelope's), and the recording time is decoded from the UUIDv7 inside `t`
+rather than stamped a second time.
+
+Two CHECK constraints make the state machine's shape unfakeable rather than
+merely conventional:
+
+| Constraint | Says |
+|---|---|
+| `publication_outbox_claim_chk` | `state = 'claimed'` **iff** `claim_token`, `lease_expires_at` and `claimed_by` are all present |
+| `publication_outbox_published_chk` | `state = 'published'` **iff** `published_at`, `published_stream` and `published_seq` are all present |
+
+`publication_outbox_capture_immutable` (a `BEFORE UPDATE` trigger) rejects any
+UPDATE that changes `t`, `event_id`, `event_type`, `envelope`,
+`envelope_digest`, `owner_id`, `schema_id`, `schema_version` or `captured_at`,
+with `SQLSTATE 25006`. The lifecycle columns are the only writable ones: the
+captured event is immutable **by constraint**, so no later re-rendering,
+re-owning or re-keying can rewrite what a consumer will be told happened.
+
+**Why no FK to `memory`.** `forget` DELETEs the hot `memory` row — it moves the
+payload to cold storage — so a cascading reference would destroy a captured
+event that no publisher had delivered yet: a committed event lost to an
+unrelated lifecycle operation. Completeness rests on `owner_id -> owners`
+instead, exactly as `mcp_call_logged_v1` does for the same reason.
 
 | From | Event | To |
 |---|---|---|
@@ -117,40 +164,82 @@ Table `proxima_core.publication_outbox`, one row per published Fact `t`.
 | `claimed` | PubAck recorded | `published` |
 | `claimed` | release | `pending` |
 | `claimed` | lease expiry | `pending` |
-| `published` | — | terminal |
+| `published` | retention horizon (below) | row deleted |
+| `published` | otherwise | terminal |
 
-**No transition deletes a row.** Expiry permits retry, never loss. Discovery is
-`state <> 'published'` ordered by `(recorded_at, id)` under
-`FOR UPDATE SKIP LOCKED` — a set scan, not a high-water cursor, so a delayed
-commit cannot disappear behind an advanced position.
+**No delivery transition deletes a row.** Expiry permits retry, never loss.
+Discovery is `state = 'pending' OR (state = 'claimed' AND lease_expires_at <
+now())` under `FOR UPDATE SKIP LOCKED` — a set scan, not a high-water cursor,
+so a delayed commit cannot disappear behind an advanced position.
+
+**Claim order is `ORDER BY attempts ASC, t ASC`,** not `t` alone. A record the
+broker keeps refusing would otherwise hold the front of every batch window and
+starve every Fact behind it; ordering on the attempt count first demotes it
+after its first failure, so a poison record costs one slot per pass instead of
+the whole pass. The partial index `publication_outbox_pending_idx`
+(`(t) WHERE state <> 'published'`) still serves the predicate; it no longer
+serves the sort, which is bounded by the backlog rather than by history.
+
+**Retention.** `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` (unset or `0` = keep
+forever; floor 60 s) lets a host reclaim storage from records that are already
+delivered. It deletes only rows that are `state = 'published'` **and** whose
+`published_at` is older than the horizon, in bounded batches, and it can never
+reach a `pending` or `claimed` row whatever its age — an undelivered record is
+a promise this deployment has not kept, and no retention policy may quietly
+cancel it. Kernel carrier: `prune_never_removes_undelivered` (OB-9).
 
 Surface declaration (see [13 §What an erase destroys](13-compliance.md#what-an-erase-destroys)):
 
 | Field | Value | Why |
 |---|---|---|
-| `key` | `KeyShape::MemoryT { column: "id" }` | the record IS the Fact |
-| `transfer` | `TransferRule::RetainAtSource` | a captured event records what an owner published, not what the memory currently is |
-| `erase` | `EraseRule::ByKey` | reached through the Fact's selection set; the FK cascade is the second proof |
-| `export` | `ExportRule::Excluded` | delivery state is publisher state, not owner content |
-| `forget` | `ForgetRule::Keep` | forget cools a memory; it does not un-publish |
-| `counter` | `CounterRule::Counted` | destroyed records appear on the erase receipt |
+| `key` | `KeyShape::MemoryT { column: "t" }` | the record IS the Fact |
+| `transfer` | `TransferRule::RetainAtSource` | a captured event is a delivery obligation of the owner it was captured for; the Fact moves, the event that already described it does not |
+| `erase` | `EraseRule::ByOwner` | owner-pinned, **not** keyed: `forget` deletes the hot `memory` row while the record stays, so an erase that selected on the memory set would walk past exactly the records a forgotten Fact left behind |
+| `export` | `ExportRule::Excluded` | a derived delivery copy of a typed Fact the export already carries; exporting it would hand the subject the same content twice, once inside a transport envelope naming this installation |
+| `forget` | `ForgetRule::Keep` | cooling a Fact does not un-commit the event captured with it |
+| `counter` | `CounterRule::Counted("publications")` | destroyed records appear on the erase receipt |
+| `completeness` | `publication_outbox_owner_id_fkey` | the FK that stands in for the absent one to `memory` |
 
-## Host-Only Port
+Single-memory erase does not go through the owner sweep, so it deletes the
+record **explicitly**, on `t` alone. The owner predicate an earlier version
+carried was a leak: `TransferRule::RetainAtSource` means a transferred Fact's
+record keeps the ORIGINAL owner's `owner_id`, so `WHERE t = $1 AND owner_id =
+$2` would have walked past exactly the records a transferred-then-erased Fact
+left behind.
+
+## Host-Only Ports
 
 ```rust
-trait PublicationOutbox {
-    async fn claim(&self, publisher: PublisherId, limit: NonZeroU32, lease: Duration)
+trait PublicationOutboxPort {
+    async fn claim(&self, publisher: &PublisherId, limit: NonZeroU32, lease: Duration)
         -> Result<Vec<ClaimedPublication>>;
-    async fn mark_published(&self, id: MemoryId, token: ClaimToken, receipt: BrokerReceipt)
+    async fn mark_published(&self, id: Uuid, claim: ClaimToken, receipt: &BrokerReceipt)
         -> Result<AckOutcome>;               // StaleClaim | Published | AlreadyPublished
-    async fn release(&self, id: MemoryId, token: ClaimToken) -> Result<ReleaseOutcome>;
+    async fn release(&self, id: Uuid, claim: ClaimToken) -> Result<ReleaseOutcome>;
     async fn pending_count(&self) -> Result<u64>;
+}
+
+trait PublicationRetentionPort {
+    async fn prune_published(&self, older_than: Duration, limit: NonZeroU32) -> Result<u64>;
 }
 ```
 
-Broker-neutral, and **host-only**: not reachable from a flavor, a `ToolCtx`, or
-a `WriteSession`. There is no delete method. A stale claim token cannot
-acknowledge or discard another publisher's record.
+Broker-neutral, and **host-only**: neither is reachable from a flavor, a
+`ToolCtx`, or a `WriteSession`, and neither is part of `StoragePorts`. A stale
+claim token cannot acknowledge or discard another publisher's record.
+
+They are **two traits on purpose**. `PublicationOutboxPort` has no delete
+method and never should — an expiring lease can only make a record deliverable
+again, never destroy it — so the handle a drain loop carries cannot remove a
+record at all. The only DELETE lives on the second trait, which a publisher
+does not need to hold. "A publisher may drain" and "an operator may reclaim
+delivered storage" stay two capabilities rather than one.
+
+`claim` refuses a lease shorter than **one second**. A sub-second lease expires
+before the first publish can finish, so every record claimed under it would be
+re-claimed while it was still in flight; the floor is a refusal rather than a
+silent clamp, because a caller that asked for 0 s asked for something that
+cannot work.
 
 ## Two Acknowledgements
 
@@ -173,18 +262,84 @@ boot error.
 | Setting | Value |
 |---|---|
 | stream | `PROXIMA_FACTS`, subjects `proxima.fact.>` |
-| subject | `proxima.fact.<owner_kind>.<owner_uuid>.<type_token>` (`type_token` = event type, chars outside `[A-Za-z0-9_-]` → `_`) |
+| subject | `proxima.fact.<owner_kind>.<owner_uuid>.<type_token>` — see the token rule below |
 | storage | File, `replicas: 1` |
 | retention | Limits, `discard: New` — a full stream returns a PubAck error, so the record stays `pending` (backpressure, not eviction) |
-| `max_age` | none: unacknowledged work never silently expires |
+| `max_age` | **none** (`0`): unacknowledged work never silently expires |
 | `max_bytes` / `max_msgs` | configurable; defaults 1 GiB / unlimited |
 | duplicate window | 2 min, keyed on header `Nats-Msg-Id` = the CloudEvent `id` |
 | `max_message_size` | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` + envelope headroom |
 | consumer | durable **pull**, `ack_policy: Explicit`, `ack_wait: 30s`, `max_deliver: unlimited`, `deliver_policy: All`, `max_ack_pending: 1000` |
+| consumer request timeout | 5 s — a bounded wait for connect and for one JetStream API round trip, deliberately **separate from `ack_wait`**: how long a consumer may take to process a message says nothing about how long the broker may take to answer a control call. Struct field on `NatsConsumerConfig`, no env key |
+
+### The `type_token` rule
+
+The last subject element encodes the event type — the registered schema id —
+and the encoding is **injective**, because subject permissions are how doc 18
+tells an operator to scope a NATS account to a set of event types. Two schema
+ids sharing a token would silently widen such a grant.
+
+The rule, over the schema id's BYTES:
+
+| Input byte | Output |
+|---|---|
+| `A-Z`, `a-z`, `0-9`, `-` | itself |
+| **everything else, including `_`** | `_` followed by two lowercase hex digits of the byte (`_%02x`) |
+
+Escaping `_` itself is what makes the map injective; without it `a/b` and `a_b`
+would collide. Non-ASCII is escaped byte by byte, so one multi-byte character
+becomes several `_xx` groups. The empty type maps to a bare `_`, because `""`
+is not a legal subject token — and a bare `_` is never the image of a non-empty
+input, since every escape carries its two hex digits.
+
+| Schema id | Token |
+|---|---|
+| `probe/listenable-v1` | `probe_2flistenable-v1` |
+| `probe_listenable-v1` | `probe_5flistenable-v1` |
+| `acme/build.finished-v1` | `acme_2fbuild_2efinished-v1` |
 
 Owner routing lives in the subject, so NATS account permissions restrict a
 consumer by subject prefix. File storage plus PubAck is durability against
 process death, **not** a claim of surviving arbitrary disk loss.
+
+An existing durable consumer is verified the same way: `ack_policy`,
+`ack_wait`, `max_deliver`, `deliver_policy`, `filter_subject` and
+`max_ack_pending` must match the desired configuration, and a mismatch is a
+refusal naming the field, its existing value and the desired one — not a silent
+adoption of somebody else's delivery semantics.
+
+An **existing** stream of the same name is verified, never adopted blind:
+storage, retention, `discard`, subjects, `max_age`, `num_replicas`,
+`max_message_size` and `duplicate_window` must all match what the profile
+claims, and a boot against a mismatching stream fails with **every**
+difference named rather than the first. A `PROXIMA_FACTS` someone created with
+`max_age: 24h` would silently expire captured events that no consumer had
+taken, which is precisely the loss this profile exists to make impossible.
+
+### Stream space never frees itself
+
+With `retention: Limits` and `discard: New`, **an ACK does not free space** —
+by design. `Limits` retains a message until an age, size or count bound
+evicts it, and consumer acknowledgement is not one of those bounds. So a full
+stream stays full until an operator acts:
+
+| Signal | What it means | Operator action |
+|---|---|---|
+| PubAck refused, `BrokerCapacity` in the publisher log | the stream is at `max_bytes` | raise `PROXIMA_NATS_MAX_STREAM_BYTES`, or purge already-consumed sequences |
+| records stay `pending`, `attempts` climbing | the same, seen from the database | as above; **nothing is lost** — the records are still there with their original bytes |
+| `CapacityExhausted` on writes | the DATABASE backlog hit `PROXIMA_OUTBOX_MAX_PENDING` | the broker side is the cause; fix that first |
+
+Purging is `nats stream purge PROXIMA_FACTS --seq <n>`, and `<n>` is safe only
+when **every** consumer's `ack_floor` is at or beyond it — that is the operator
+judgement the substrate refuses to make for you.
+
+`WorkQueue` and `Interest` retention are **not offered**, and the reason is not
+conservatism: both delete a message once its bound consumers have acknowledged
+it, and a stream with ZERO bound consumers therefore drops what it accepts. A
+deployment whose consumer has not been created yet, or was deleted during an
+incident, would lose committed events and receive a PubAck for each one. A full
+stream that refuses new work is a failure an operator can see and undo; a
+stream that accepts work and discards it is not.
 
 Pins: nats-server **2.14.6**, `async-nats` **0.50.0**. The optional adapter is
 `crates/outbox-nats/`; the NATS dependency never enters `proxima-core`.
@@ -196,6 +351,7 @@ Pins: nats-server **2.14.6**, `async-nats` **0.50.0**. The optional adapter is
 | unset `PROXIMA_NATS_URL` | publisher off; **capture continues**; pending records are retained for repair and replay under their original identities |
 | broker outage | capture continues while local capacity lasts; delivery resumes from `pending` |
 | disable capture | not available while a listenable type is registered — refuse the write path instead |
+| unset `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | retention off; delivered records are kept forever. Never affects an undelivered one either way |
 
 No destructive schema rollback, no hosted reroute.
 
@@ -212,9 +368,11 @@ a generic broker-plugin framework.
 domainless half: `capture_iff_listenable`, `replay_no_second_record`,
 `step_preserves_capture`, `no_step_deletes`, `expiry_preserves_record`,
 `erasure_is_the_only_removal`, `owner_follows_fact`,
-`duplicates_share_identity`. All-or-none transactionality and delivery
-liveness are **explicitly excluded** there, with tests as their carrier — rows
-OB-1..OB-8 in [lean/COVERAGE.md](lean/COVERAGE.md).
+`duplicates_share_identity`, and — for retention —
+`prune_never_removes_undelivered` and `prune_keeps_recent_deliveries`.
+All-or-none transactionality and delivery liveness are **explicitly excluded**
+there, with tests as their carrier — rows OB-1..OB-9 in
+[lean/COVERAGE.md](lean/COVERAGE.md).
 
 Operating recipe: [how-to/fact-outbox.md](how-to/fact-outbox.md). Env rows:
 [10 §Framework facade (host-app boot)](10-configuration.md#framework-facade-host-app-boot).

@@ -213,7 +213,7 @@ pub use proxima_mcp_server::{HostAllowlist, McpAuthContext, ResourceServerMetada
 pub use proxima_outbox_nats::{
     ConfigError as NatsConfigError, ConsumerError, DeliveryProfile, DrainReport, DrainSummary,
     DurableIntake, Intake, IntakeError, JetStreamPublisher, NatsAuth, NatsConsumerConfig,
-    NatsPublisherConfig, PublisherError, ReceivedEvent, ReferenceConsumer,
+    NatsPublisherConfig, PublisherError, ReceivedEvent, ReferenceConsumer, StreamFieldMismatch,
 };
 #[cfg(feature = "testkit")]
 pub use proxima_pg_testkit as testkit;

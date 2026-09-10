@@ -204,6 +204,13 @@ pub struct EmbeddedProxima {
     /// nothing that could drain the outbox.
     #[cfg(feature = "outbox-nats")]
     outbox: Arc<dyn proxima_core::storage_ports::publication::PublicationOutboxPort>,
+    /// Operator-only reclaim of records that were already DELIVERED, held
+    /// under the same rule and for the same reason as `outbox`. A second
+    /// handle rather than a method on the first: a drain loop must not be
+    /// able to delete anything, and separate traits are how that is
+    /// enforced rather than promised.
+    #[cfg(feature = "outbox-nats")]
+    outbox_retention: Arc<dyn proxima_core::storage_ports::publication::PublicationRetentionPort>,
 }
 
 impl EmbeddedProxima {
@@ -226,6 +233,15 @@ impl EmbeddedProxima {
         &self,
     ) -> &Arc<dyn proxima_core::storage_ports::publication::PublicationOutboxPort> {
         &self.outbox
+    }
+
+    /// The host-only reclaim of delivered publication records.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub(crate) fn outbox_retention(
+        &self,
+    ) -> &Arc<dyn proxima_core::storage_ports::publication::PublicationRetentionPort> {
+        &self.outbox_retention
     }
 }
 
@@ -451,6 +467,10 @@ impl ProximaBuilder {
         let outbox: Arc<
             dyn proxima_core::storage_ports::publication::PublicationOutboxPort,
         > = Arc::new(pg.clone());
+        #[cfg(feature = "outbox-nats")]
+        let outbox_retention: Arc<
+            dyn proxima_core::storage_ports::publication::PublicationRetentionPort,
+        > = Arc::new(pg.clone());
 
         let (engine, system_authority, delegation_runtime_authority) =
             engine.into_runtime_authorities();
@@ -478,6 +498,8 @@ impl ProximaBuilder {
             owner,
             #[cfg(feature = "outbox-nats")]
             outbox,
+            #[cfg(feature = "outbox-nats")]
+            outbox_retention,
         })
     }
 }

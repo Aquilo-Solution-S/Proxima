@@ -41,6 +41,12 @@ pub enum CoreMcpErrorKind {
     InvalidInput,
     #[error("invalid request")]
     InvalidRequest,
+    /// Declared backpressure — a legal call the deployment cannot accept
+    /// right now (an exhausted Fact outbox, docs/18). Its own kind so an
+    /// embedding host's retry policy can back off instead of paging on what
+    /// looks like a substrate fault.
+    #[error("capacity exhausted")]
+    CapacityExhausted,
     #[error("internal")]
     Internal,
 }
@@ -68,6 +74,7 @@ impl CoreMcpError {
                 McpToolErrorKind::InvalidInput => CoreMcpErrorKind::InvalidInput,
                 McpToolErrorKind::NotFound => CoreMcpErrorKind::NotFound,
                 McpToolErrorKind::InvalidRequest => CoreMcpErrorKind::InvalidRequest,
+                McpToolErrorKind::CapacityExhausted => CoreMcpErrorKind::CapacityExhausted,
                 McpToolErrorKind::Internal => CoreMcpErrorKind::Internal,
             },
         }

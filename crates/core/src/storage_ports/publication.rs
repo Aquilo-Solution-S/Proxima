@@ -7,10 +7,12 @@
 //! shape in which "claim other owners' rows and ship them to a broker" is a
 //! legitimate operation: a publisher is infrastructure, not a caller.
 //!
-//! There is no delete or purge method, and there never should be. A record
-//! leaves this table exactly one way — compliance erasure of the Fact's
-//! owner — so an expiring lease can only make a record deliverable again,
-//! never destroy it.
+//! [`PublicationOutboxPort`] has no delete or purge method, and never
+//! should: an expiring lease can only make a record deliverable again, never
+//! destroy it. Housekeeping of records that ARE delivered lives on a second,
+//! separate host-only trait, [`PublicationRetentionPort`], so that "a
+//! publisher may drain" and "an operator may reclaim delivered storage" stay
+//! two capabilities rather than one.
 
 use std::num::NonZeroU32;
 use std::time::Duration;
@@ -195,6 +197,39 @@ pub trait PublicationOutboxPort: Send + Sync {
     ///
     /// Returns storage errors from the count query.
     async fn pending_count(&self) -> Result<u64, StorageError>;
+}
+
+/// Operator-only housekeeping of records that were already delivered.
+///
+/// Separate from [`PublicationOutboxPort`] on purpose. A publisher needs
+/// claim/ack/release and nothing else; retention needs a DELETE and nothing
+/// else. Holding them apart means the handle a drain loop carries cannot
+/// remove a record at all, which is the property the outbox rests on: an
+/// undelivered event leaves this table only through compliance erasure.
+///
+/// The implementation is bound by the same rule the trait states — only
+/// `published` rows, only ones whose publication is older than the horizon,
+/// never a `pending` or `claimed` row whatever its age. A record still
+/// waiting for a broker is a promise this deployment has not kept yet, and
+/// no retention policy may quietly cancel it.
+#[async_trait::async_trait]
+pub trait PublicationRetentionPort: Send + Sync {
+    /// Delete up to `limit` records that were published longer than
+    /// `older_than` ago, and return how many were removed.
+    ///
+    /// Bounded by `limit` because this runs beside a live write path: an
+    /// unbounded DELETE over a large backlog would hold row locks for as
+    /// long as it takes, against a table every listenable write inserts
+    /// into. A caller that wants more calls again.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the delete statement.
+    async fn prune_published(
+        &self,
+        older_than: Duration,
+        limit: NonZeroU32,
+    ) -> Result<u64, StorageError>;
 }
 
 #[cfg(test)]

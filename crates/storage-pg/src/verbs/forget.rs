@@ -3062,9 +3062,19 @@ pub async fn erase_memory(
     // admission destroys its captured payload — an undelivered event is
     // still this owner's content, and compliance erasure is the one and
     // only way a record leaves this table.
-    sqlx::query("DELETE FROM proxima_core.publication_outbox WHERE t = $1 AND owner_id = $2")
+    //
+    // On `t` ALONE, deliberately, and this is the one delete in this
+    // function without an `owner_id` predicate. `t` is the outbox's primary
+    // key, so the predicate selects exactly this admission's record. Adding
+    // `AND owner_id = $2` would look safer and would leak: the surface
+    // declares `TransferRule::RetainAtSource`, so a transferred series
+    // leaves its already-captured record under the SOURCE owner while the
+    // memory row moves to the destination — and the destination erasing the
+    // memory would then walk past a record still holding the full typed
+    // payload. The caller has already authorized the erase of this `t`; the
+    // record is that `t`'s content whichever owner it was captured for.
+    sqlx::query("DELETE FROM proxima_core.publication_outbox WHERE t = $1")
         .bind(t)
-        .bind(owner.stored_owner_id())
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;

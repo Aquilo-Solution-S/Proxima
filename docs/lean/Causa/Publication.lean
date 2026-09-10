@@ -2,8 +2,10 @@
 Causa — Publication (the Fact outbox, doc 18)
 
 A listenable Fact's admission yields ONE publication record keyed by the Fact's
-own `t`. The CAPTURED half never changes; only DELIVERY moves. No step removes
-a record — removal is owner erasure (doc 13).
+own `t`. The CAPTURED half never changes; only DELIVERY moves. No delivery step
+removes a record. Exactly two things remove one: owner erasure (doc 13), which
+reaches a record whatever its delivery state, and retention, which provably
+cannot reach a record that has not been delivered.
 
 What this module carries:
 
@@ -16,6 +18,8 @@ What this module carries:
   G4  a record carries the Fact's owner and no second read path:
       `owner_follows_fact`.
   G5  at-least-once SAFETY only: `duplicates_share_identity`.
+  G6  retention reclaims DELIVERED records only: `prunePublished`, with
+      `prune_never_removes_undelivered` and `prune_keeps_recent_deliveries`.
 
 DELIBERATELY EXCLUDED — do not read an absence here as a claim:
 
@@ -66,7 +70,7 @@ instance : Immutable Captured := ⟨⟩
 inductive Delivery where
   | pending
   | claimed (lease : Instant)
-  | published
+  | published (publishedAt : Instant)
   deriving Repr
 
 structure Record where
@@ -97,7 +101,7 @@ def capture (f : Fact) (schema : SchemaRef) (producer : User) (content : Content
     moves: "no transition deletes" holds by construction. -/
 inductive Step : Delivery → Delivery → Prop where
   | claim   (lease : Instant) : Step .pending (.claimed lease)
-  | ack     (lease : Instant) : Step (.claimed lease) .published
+  | ack     (lease publishedAt : Instant) : Step (.claimed lease) (.published publishedAt)
   | release (lease : Instant) : Step (.claimed lease) .pending
   | expire  (lease : Instant) : Step (.claimed lease) .pending
 
@@ -106,11 +110,25 @@ def advance (r : Record) (d : Delivery) : Record := { r with delivery := d }
 def outboxStep (rs : Set Record) (r : Record) (d : Delivery) : Set Record :=
   fun x => (x ∈ rs ∧ record_t x ≠ record_t r) ∨ x = advance r d
 
-/-- The ONLY removal: compliance erasure of an abandoned owner (doc 13). Not
-    `wipeable` — a publication record has no cooled/unreferenced analogue, so
-    that disjunct has nothing to bind. -/
+/-- Removal that reaches a record in ANY delivery state: compliance erasure of
+    an abandoned owner (doc 13). Not `wipeable` — a publication record has no
+    cooled/unreferenced analogue, so that disjunct has nothing to bind.
+
+    The only other removal is `prunePublished`, and G6 proves it cannot reach an
+    undelivered record. So an unkept promise leaves this table through erasure
+    and nothing else. -/
 def outboxErase (rs : Set Record) (o : Owner) : Set Record :=
   fun r => r ∈ rs ∧ ¬ (record_owner r = o ∧ abandoned o)
+
+/-- G6 — retention. Reclaims storage from records whose delivery is DONE and
+    older than `horizon`; everything else stays, whatever its age.
+
+    Written as a KEEP predicate rather than a delete set, because that is the
+    obligation: the operator knob names what may go, and the definition has to
+    make "may go" impossible to widen. A record is removed only when it is
+    `.published` AND its publication tick is at least `horizon` behind `now`. -/
+def prunePublished (rs : Set Record) (horizon now : Instant) : Set Record :=
+  fun r => r ∈ rs ∧ ¬ (∃ p : Instant, record_delivery r = .published p ∧ p + horizon ≤ now)
 
 /-- G1 — ASSERTED table validity, in the style of `MemoryGraphValid` /
     `ContentAligned`. The kernel cannot observe a write, so capture totality,
@@ -189,6 +207,28 @@ theorem erasure_is_the_only_removal
     (hkeep : ¬ (record_owner r = o ∧ abandoned o)) : r ∈ outboxErase rs o :=
   ⟨hr, hkeep⟩
 
+/-- G6 — no horizon cancels an unkept promise. A record that is not
+    `.published` survives every retention pass, at every horizon, at every
+    `now`: `pending` and `claimed` are simply outside the predicate. -/
+theorem prune_never_removes_undelivered
+    (rs : Set Record) (horizon now : Instant) (r : Record) (hr : r ∈ rs)
+    (hundelivered : ∀ p : Instant, record_delivery r ≠ .published p) :
+    r ∈ prunePublished rs horizon now :=
+  ⟨hr, fun ⟨p, hp, _⟩ => hundelivered p hp⟩
+
+/-- G6 — the horizon is a horizon: a delivery inside it survives too, so
+    retention is bounded on both sides of its predicate. -/
+theorem prune_keeps_recent_deliveries
+    (rs : Set Record) (horizon now p : Instant) (r : Record) (hr : r ∈ rs)
+    (hp : record_delivery r = .published p) (hfresh : now < p + horizon) :
+    r ∈ prunePublished rs horizon now := by
+  refine ⟨hr, ?_⟩
+  rintro ⟨p', hp', hold⟩
+  rw [hp] at hp'
+  injection hp' with heq
+  subst heq
+  exact Nat.lt_irrefl now (Nat.lt_of_lt_of_le hfresh hold)
+
 #print axioms record_id_is_fact_t
 #print axioms owner_follows_fact
 #print axioms step_preserves_capture
@@ -198,5 +238,7 @@ theorem erasure_is_the_only_removal
 #print axioms replay_no_second_record
 #print axioms duplicates_share_identity
 #print axioms erasure_is_the_only_removal
+#print axioms prune_never_removes_undelivered
+#print axioms prune_keeps_recent_deliveries
 
 end Causa.Publication

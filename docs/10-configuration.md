@@ -76,7 +76,7 @@ Proxima::<App>::app()
 | `PROXIMA_NATS_URL` | JetStream server URL. **Unset ⇒ publisher off**; capture still runs and records stay `pending` (the rollback path). Requires the `nats` cargo feature. |
 | `PROXIMA_NATS_PROFILE` | Delivery profile. Default and only shipped value `local-file`; any other value is a boot error. |
 | `PROXIMA_NATS_STREAM` | JetStream stream name. Default `PROXIMA_FACTS`. |
-| `PROXIMA_NATS_SUBJECT_PREFIX` | Subject prefix; full subject is `<prefix>.<owner_kind>.<owner_uuid>.<type_token>`. Default `proxima.fact`. |
+| `PROXIMA_NATS_SUBJECT_PREFIX` | Subject prefix; full subject is `<prefix>.<owner_kind>.<owner_uuid>.<type_token>`. Default `proxima.fact`. The token encoding is injective — see [18 §The `type_token` rule](18-fact-outbox.md#the-type_token-rule). |
 | `PROXIMA_NATS_CREDS_FILE` | NATS credentials file. Mutually exclusive with the user/password and token forms. |
 | `PROXIMA_NATS_USER` / `PROXIMA_NATS_PASSWORD` | NATS user credentials. |
 | `PROXIMA_NATS_TOKEN` | NATS auth token. |
@@ -84,7 +84,17 @@ Proxima::<App>::app()
 | `PROXIMA_NATS_LEASE_SECS` | Claim lease. Default `30`. Expiry returns the record to `pending`; it never deletes it. |
 | `PROXIMA_NATS_POLL_MS` | Idle poll interval. Default `500`. |
 | `PROXIMA_NATS_PUBLISH_TIMEOUT_MS` | PubAck wait. Default `5000`. A timeout releases the claim and republishes the same bytes. |
+| `PROXIMA_NATS_PUBLISHER_ID` | Operator-facing identity recorded on every claim (`claimed_by`). Default: `HOSTNAME` (read through the same injected lookup, not the process environment) plus the pid. Not a credential — the fencing token is the claim token. |
+| `PROXIMA_NATS_MAX_STREAM_BYTES` | Stream `max_bytes`. Default `1073741824` (1 GiB). Explicit, never `-1`: an unlimited stream turns broker backpressure into disk exhaustion on the host. |
+| `PROXIMA_NATS_MAX_MESSAGE_BYTES` | Stream `max_message_size`. Default: `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` + 16 KiB of envelope headroom, so a payload the outbox accepted is never one the stream refuses. Set it BELOW that derived value and boot fails — a record the broker can never take must be impossible by configuration. |
+| `PROXIMA_NATS_DUPLICATE_WINDOW_SECS` | Stream `duplicate_window`, keyed on `Nats-Msg-Id` = the CloudEvent `id`. Default `120`. Redelivery beyond this window is visible to the consumer, which is why consumers deduplicate on the durable event identity rather than on the broker. |
+| `PROXIMA_NATS_CONSUMER_NAME` | Durable pull-consumer name for the reference consumer. Default `proxima-reference`. |
+| `PROXIMA_NATS_ACK_WAIT_SECS` | Consumer `ack_wait`. Default `30`. |
+| `PROXIMA_NATS_MAX_ACK_PENDING` | Consumer `max_ack_pending`. Default `1000`. |
+| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Delete already-`published` outbox records older than this many seconds, in bounded batches. Unset or `0` ⇒ keep forever. Minimum `60`; a smaller value is a boot error. Never removes a `pending` or `claimed` record whatever its age. |
 | `PROXIMA_TEST_NATS_URL` | Test-only. Unset ⇒ broker-backed tests skip with a message; CI sets it. |
+| `PROXIMA_DEV_NATS_PORT` | Local-dev only (`docker-compose.dev.yml`): host port mapped to the dev JetStream container's `4222`. Default `4224`, so it cannot collide with a system NATS. |
+| `PROXIMA_DEV_NATS_MONITOR_PORT` | Local-dev only: host port mapped to that container's monitoring endpoint (`8222`). Default `8224`. |
 | `PROXIMA_S3_BUCKET` | Enables cited-blob S3 storage. |
 | `PROXIMA_S3_REGION` | S3 region for cited-blob storage. |
 | `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. |

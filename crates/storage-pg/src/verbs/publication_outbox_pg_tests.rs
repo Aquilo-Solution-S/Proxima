@@ -12,7 +12,8 @@ use proxima_core::publication::{
     PublicationDraft, PublicationLimits, PublicationPlan, PublicationSource, SealedPublication,
 };
 use proxima_core::storage_ports::publication::{
-    AckOutcome, BrokerReceipt, ClaimToken, PublicationOutboxPort, PublisherId, ReleaseOutcome,
+    AckOutcome, BrokerReceipt, ClaimToken, PublicationOutboxPort, PublicationRetentionPort,
+    PublisherId, ReleaseOutcome,
 };
 use proxima_core::storage_ports::{OwnerWritePermit, WriteSessionFactory};
 use proxima_core::test_fixtures::{ListenableProbeV1, UnlistenableProbeV1};
@@ -357,6 +358,93 @@ async fn a_failing_sidecar_rolls_back_the_fact_and_its_capture() {
         .await
         .expect("count reads");
     assert_eq!(receipts, 0);
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// The capture is not the last thing the write does.
+///
+/// The sidecar test above fails BEFORE the capture, so it proves only that
+/// a capture never happened. This one lets the capture happen, observes the
+/// record inside the transaction, and then fails a later leg — the
+/// embedding job the write path enqueues after the capture. The record must
+/// go with the Fact, or the outbox would hold an event for a Fact that does
+/// not exist.
+#[tokio::test]
+async fn a_failure_after_the_capture_takes_the_captured_record_with_it() {
+    let (pg, db) = fresh_pg("pub_capture_post_failure").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+
+    let payload = probe("captured, then undone");
+    let command = fact_command(ListenableProbeV1::SCHEMA_ID, Some("post-capture-1"));
+    let authorized = witness(&owner, command).with_publication_for_tests(plan_for(
+        owner,
+        &payload,
+        PublicationLimits::default(),
+    ));
+
+    let mut tx = pool.begin().await.expect("begin");
+    let outcome = crate::verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
+        &mut tx,
+        &authorized,
+        None,
+        crate::verbs::fact_ingest::FactAdmissionInput {
+            natural_key: None,
+            sidecar_tables: &[],
+            scopes: &[],
+            content: crate::verbs::fact_ingest::ContentResolution {
+                content_id: None,
+                payloads: Some(&[]),
+            },
+            publication: authorized.publication(),
+        },
+        |_tx, _outcome| Box::pin(async { Ok(()) }),
+    )
+    .await
+    .expect("the Fact write and its capture succeed");
+    let t = outcome.memory_id.into_inner();
+
+    // Inside the transaction the record is really there. Without this the
+    // assertions after the rollback would also pass for a write that never
+    // captured anything.
+    let captured: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxima_core.publication_outbox WHERE t = $1")
+            .bind(t)
+            .fetch_one(tx.as_mut())
+            .await
+            .expect("count reads");
+    assert_eq!(captured, 1, "the capture is visible inside the transaction");
+
+    // The one leg the write path runs AFTER the capture. Pointed at an
+    // owner nobody registered, its foreign key to `owners` fails — the
+    // shape a late failure takes in production.
+    let stranger = Uuid::now_v7();
+    let err = crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
+        &mut tx,
+        proxima_core::OwnerRefKind::Personal,
+        Some(stranger),
+        proxima_core::EntityKind::Fact,
+        t,
+        "probe/model",
+    )
+    .await
+    .expect_err("an unregistered owner cannot own an embedding job");
+    assert!(
+        matches!(err, StorageError::Conflict(ref message) if message.contains("foreign key")),
+        "{err}"
+    );
+    drop(tx);
+
+    assert_eq!(memory_rows(&pool).await, 0, "the Fact rolled back");
+    assert_eq!(outbox_rows(&pool).await, 0, "and took its capture with it");
+    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.ingest_keys")
+        .fetch_one(&pool)
+        .await
+        .expect("count reads");
+    assert_eq!(receipts, 0, "and the receipt that would replay it");
 
     drop(pg);
     let _ = drop_db(&db).await;
@@ -766,19 +854,21 @@ async fn an_expired_lease_is_reclaimed_and_fences_out_the_first_holder() {
         .await
         .expect("capture");
 
+    // The shortest lease `claim` accepts, so the wait below is the real
+    // expiry of a real lease rather than a clock the test moved.
     let first_publisher = PublisherId::new("publisher-one").expect("valid");
     let first = pg
         .claim(
             &first_publisher,
             NonZeroU32::new(1).expect("nonzero"),
-            Duration::from_millis(100),
+            Duration::from_secs(1),
         )
         .await
         .expect("claim");
     let first = first.into_iter().next().expect("one record");
     assert_eq!(first.attempts, 1);
 
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    tokio::time::sleep(Duration::from_millis(1_250)).await;
 
     let second_publisher = PublisherId::new("publisher-two").expect("valid");
     let second = pg
@@ -1084,6 +1174,283 @@ async fn an_owner_erase_removes_that_owners_records_and_no_others() {
         "the erase must reach pending AND published records, and only this owner's"
     );
     assert!(!surviving.contains(&pending.memory_id.into_inner()));
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+// ── retention of delivered records (review R7) ──────────────────────────
+
+/// Mark a record published and backdate the publication by `secs`, which
+/// is the only thing a test cannot get by waiting.
+///
+/// `published_at` is a LIFECYCLE column, so the append-only trigger permits
+/// this while still refusing any edit to the captured event.
+async fn publish_and_backdate(pg: &PgStorage, pool: &sqlx::PgPool, t: Uuid, secs: f64) {
+    let publisher = PublisherId::new(PUBLISHER).expect("valid publisher id");
+    let claimed = pg
+        .claim(
+            &publisher,
+            NonZeroU32::new(16).expect("nonzero"),
+            Duration::from_mins(1),
+        )
+        .await
+        .expect("claim");
+    let record = claimed
+        .iter()
+        .find(|record| record.id == t)
+        .expect("the record is claimable");
+    pg.mark_published(
+        record.id,
+        record.claim,
+        &BrokerReceipt {
+            stream: "probe".into(),
+            sequence: 1,
+        },
+    )
+    .await
+    .expect("ack");
+    // Release every other record this claim swept up, so a later claim in
+    // the same test still sees them.
+    for other in claimed.iter().filter(|record| record.id != t) {
+        pg.release(other.id, other.claim).await.expect("release");
+    }
+    sqlx::query(
+        "UPDATE proxima_core.publication_outbox
+            SET published_at = now() - make_interval(secs => $2)
+          WHERE t = $1",
+    )
+    .bind(t)
+    .bind(secs)
+    .execute(pool)
+    .await
+    .expect("backdate");
+}
+
+async fn states(pool: &sqlx::PgPool) -> Vec<(Uuid, String)> {
+    sqlx::query_as("SELECT t, state::text FROM proxima_core.publication_outbox ORDER BY t")
+        .fetch_all(pool)
+        .await
+        .expect("states read")
+}
+
+/// Retention reclaims DELIVERED records and nothing else. A record still
+/// waiting for a broker is an unkept promise, and no horizon may cancel it
+/// however old it is.
+#[tokio::test]
+async fn retention_prunes_only_published_records_past_the_horizon() {
+    let (pg, db) = fresh_pg("pub_retention_scope").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+
+    let old_published = ingest_listenable(&pg, &owner, &probe("delivered long ago"), None)
+        .await
+        .expect("write")
+        .memory_id
+        .into_inner();
+    let fresh_published = ingest_listenable(&pg, &owner, &probe("delivered just now"), None)
+        .await
+        .expect("write")
+        .memory_id
+        .into_inner();
+    let still_pending = ingest_listenable(&pg, &owner, &probe("never delivered"), None)
+        .await
+        .expect("write")
+        .memory_id
+        .into_inner();
+
+    publish_and_backdate(&pg, &pool, old_published, 7_200.0).await;
+    publish_and_backdate(&pg, &pool, fresh_published, 0.0).await;
+
+    // And one record held under a live lease, which is the state a prune
+    // would be most tempting to treat as stale.
+    let publisher = PublisherId::new(PUBLISHER).expect("valid publisher id");
+    let claimed = pg
+        .claim(
+            &publisher,
+            NonZeroU32::new(16).expect("nonzero"),
+            Duration::from_mins(30),
+        )
+        .await
+        .expect("claim");
+    assert_eq!(
+        claimed.iter().map(|record| record.id).collect::<Vec<_>>(),
+        vec![still_pending],
+        "only the undelivered record is claimable"
+    );
+
+    let pruned = pg
+        .prune_published(
+            Duration::from_hours(1),
+            NonZeroU32::new(100).expect("nonzero"),
+        )
+        .await
+        .expect("prune");
+    assert_eq!(pruned, 1, "exactly the record published before the horizon");
+
+    let surviving = states(&pool).await;
+    assert_eq!(surviving.len(), 2);
+    assert!(
+        surviving
+            .iter()
+            .any(|(t, state)| *t == fresh_published && state == "published"),
+        "a recently delivered record is inside the horizon: {surviving:?}"
+    );
+    assert!(
+        surviving
+            .iter()
+            .any(|(t, state)| *t == still_pending && state == "claimed"),
+        "a leased, undelivered record is never retention's business: {surviving:?}"
+    );
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// The bound is a real bound: one pass removes at most `limit` records and
+/// leaves the rest for the next one.
+#[tokio::test]
+async fn retention_removes_at_most_the_requested_limit() {
+    let (pg, db) = fresh_pg("pub_retention_limit").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+
+    for n in 0..3 {
+        let t = ingest_listenable(&pg, &owner, &probe(&format!("old-{n}")), None)
+            .await
+            .expect("write")
+            .memory_id
+            .into_inner();
+        publish_and_backdate(&pg, &pool, t, 7_200.0).await;
+    }
+    assert_eq!(outbox_rows(&pool).await, 3);
+
+    let first = pg
+        .prune_published(
+            Duration::from_hours(1),
+            NonZeroU32::new(2).expect("nonzero"),
+        )
+        .await
+        .expect("prune");
+    assert_eq!(first, 2);
+    assert_eq!(outbox_rows(&pool).await, 1);
+
+    let second = pg
+        .prune_published(
+            Duration::from_hours(1),
+            NonZeroU32::new(2).expect("nonzero"),
+        )
+        .await
+        .expect("prune");
+    assert_eq!(second, 1);
+    assert_eq!(outbox_rows(&pool).await, 0);
+
+    let third = pg
+        .prune_published(
+            Duration::from_hours(1),
+            NonZeroU32::new(2).expect("nonzero"),
+        )
+        .await
+        .expect("prune");
+    assert_eq!(
+        third, 0,
+        "an empty table prunes nothing rather than erroring"
+    );
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+// ── claim guards (review R15, addendum A2b) ─────────────────────────────
+
+/// A lease under one second expires before the first publish can finish, so
+/// every record claimed under it would be re-claimed while it was still in
+/// flight. Refused rather than clamped: the caller asked for something that
+/// cannot work.
+#[tokio::test]
+async fn a_lease_under_the_floor_is_refused() {
+    let (pg, db) = fresh_pg("pub_claim_lease_floor").await;
+    let publisher = PublisherId::new(PUBLISHER).expect("valid publisher id");
+
+    for lease in [Duration::ZERO, Duration::from_millis(999)] {
+        let err = pg
+            .claim(&publisher, NonZeroU32::new(1).expect("nonzero"), lease)
+            .await
+            .expect_err("a sub-second lease must be refused");
+        assert!(
+            matches!(err, StorageError::ConstraintViolation(ref message) if message.contains("floor")),
+            "{err}"
+        );
+    }
+    pg.claim(
+        &publisher,
+        NonZeroU32::new(1).expect("nonzero"),
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("the floor itself is acceptable");
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// A record the broker keeps refusing must not hold the front of the queue.
+/// Ordering by attempt count before `t` demotes it behind every fresher
+/// record after its first failure, so a poison record costs one slot per
+/// pass rather than the whole batch window.
+#[tokio::test]
+async fn a_repeatedly_failing_record_is_demoted_behind_fresher_ones() {
+    let (pg, db) = fresh_pg("pub_claim_order_attempts").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    let publisher = PublisherId::new(PUBLISHER).expect("valid publisher id");
+
+    // The oldest record, claimed and released twice: two failed attempts.
+    let poison = ingest_listenable(&pg, &owner, &probe("poison"), None)
+        .await
+        .expect("write")
+        .memory_id
+        .into_inner();
+    for _ in 0..2 {
+        let claimed = pg
+            .claim(
+                &publisher,
+                NonZeroU32::new(1).expect("nonzero"),
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("claim");
+        assert_eq!(claimed[0].id, poison);
+        pg.release(claimed[0].id, claimed[0].claim)
+            .await
+            .expect("release");
+    }
+
+    // A record written afterwards, so its `t` is strictly later.
+    let fresh = ingest_listenable(&pg, &owner, &probe("fresh"), None)
+        .await
+        .expect("write")
+        .memory_id
+        .into_inner();
+
+    let claimed = pg
+        .claim(
+            &publisher,
+            NonZeroU32::new(2).expect("nonzero"),
+            Duration::from_mins(1),
+        )
+        .await
+        .expect("claim");
+    assert_eq!(
+        claimed.iter().map(|record| record.id).collect::<Vec<_>>(),
+        vec![fresh, poison],
+        "the twice-failed record must come after the untried one despite its older t"
+    );
+    assert_eq!(claimed[0].attempts, 1);
+    assert_eq!(claimed[1].attempts, 3);
 
     drop(pg);
     let _ = drop_db(&db).await;

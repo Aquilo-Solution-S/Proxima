@@ -93,7 +93,8 @@
 {"kind":"personal","owner_id":"<id012>"}
 {"kind":"personal","owner_id":"<id031>"}
 ## proxima_core.projection (0)
-## proxima_core.publication_outbox (0)
+## proxima_core.publication_outbox (1)
+{"attempts":0,"captured_at":"<ts039>","claim_token":null,"claimed_by":null,"event_id":"F:<id029>","event_type":"core/test-fact-v1","lease_expires_at":null,"owner_id":"<id031>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id029>"}
 ## proxima_core.sketch (2)
 {"kind":"fact","owner_id":"<id031>","t":"<id029>","text":"fact"}
 {"kind":"goal","owner_id":"<id031>","t":"<id037>","text":"goal sketch"}

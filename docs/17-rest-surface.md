@@ -332,8 +332,9 @@ extension 14 anticipates.
 `detail` is `McpToolError::client_message()`, never `Display`. That
 single rule preserves the existing redaction: internal-kind errors
 collapse to a generic string before the adapter ever sees them, and
-`Unavailable` passes through verbatim because it is a caller-actionable
-precondition.
+`Unavailable` and `CapacityExhausted` pass through verbatim because both
+are caller-actionable — the first a precondition the caller can satisfy,
+the second a backlog depth the caller can back off from.
 
 ### Status mapping
 
@@ -352,6 +353,9 @@ map therefore matches on **variants**, not kinds.
 | `McpToolError::NotAuthorized` | 403 |
 | `McpToolError::LayeringViolation` | 422 |
 | `McpToolError::Unavailable` | 503 |
+| `Storage(PublicationRefused(CapacityExhausted))` | 503, `type` slug `capacity-exhausted` |
+| `Storage(PublicationRefused(PayloadTooLarge \| ExportFailed \| UntypedListenableWrite))` | 400 |
+| `Storage(PublicationRefused(SourceUnbound))` | 500 — a deployment fault, not a caller's ([18](18-fact-outbox.md#capture)) |
 | `Protocol(AuthRequired)` | 401 |
 | `Protocol(Forbidden)` | 403 |
 | `Protocol(UnknownSchema)` | 400 |

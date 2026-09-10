@@ -67,7 +67,7 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_NATS_URL` | Fact outbox | unset (publisher off) | enabling the JetStream publisher | needs the `nats` cargo feature; unset keeps capture running with records `pending` |
 | `PROXIMA_NATS_PROFILE` | Fact outbox | `local-file` | never (only shipped value) | any other value is a boot error |
 | `PROXIMA_NATS_STREAM` | Fact outbox | `PROXIMA_FACTS` | non-default stream name | created on first start if absent |
-| `PROXIMA_NATS_SUBJECT_PREFIX` | Fact outbox | `proxima.fact` | non-default routing | full subject `<prefix>.<owner_kind>.<owner_uuid>.<type_token>` |
+| `PROXIMA_NATS_SUBJECT_PREFIX` | Fact outbox | `proxima.fact` | non-default routing | full subject `<prefix>.<owner_kind>.<owner_uuid>.<type_token>`; the token encoding is injective ([18](../18-fact-outbox.md#the-type_token-rule)) |
 | `PROXIMA_NATS_CREDS_FILE` | Fact outbox | unset | credentials-file auth | mutually exclusive with user/password and token |
 | `PROXIMA_NATS_USER` / `PROXIMA_NATS_PASSWORD` | Fact outbox | unset | user/password auth | both required together |
 | `PROXIMA_NATS_TOKEN` | Fact outbox | unset | token auth | |
@@ -75,6 +75,14 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_NATS_LEASE_SECS` | Fact outbox | `30` | tuning claim recovery | expiry returns a record to `pending`; never deletes |
 | `PROXIMA_NATS_POLL_MS` | Fact outbox | `500` | tuning idle latency | idle poll interval |
 | `PROXIMA_NATS_PUBLISH_TIMEOUT_MS` | Fact outbox | `5000` | tuning PubAck wait | timeout releases the claim and republishes the same bytes |
+| `PROXIMA_NATS_PUBLISHER_ID` | Fact outbox | `<HOSTNAME>-<pid>` | naming a publisher in incident logs | recorded as `claimed_by` on every claim; operator-facing, not a credential. `HOSTNAME` is read through the injected lookup, never the process environment |
+| `PROXIMA_NATS_MAX_STREAM_BYTES` | Fact outbox | `1073741824` (1 GiB) | sizing stream capacity | stream `max_bytes`; explicit rather than `-1`, so backpressure stays backpressure instead of disk exhaustion |
+| `PROXIMA_NATS_MAX_MESSAGE_BYTES` | Fact outbox | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` + 16 KiB | pinning the stream's own ceiling | stream `max_message_size`; a value BELOW the derived one is a boot error, because a record the broker can never take must be impossible by configuration |
+| `PROXIMA_NATS_DUPLICATE_WINDOW_SECS` | Fact outbox | `120` | tuning broker-side dedup | stream `duplicate_window`, keyed on `Nats-Msg-Id` = the CloudEvent `id` |
+| `PROXIMA_NATS_CONSUMER_NAME` | Fact outbox | `proxima-reference` | running more than one durable consumer | durable pull-consumer name |
+| `PROXIMA_NATS_ACK_WAIT_SECS` | Fact outbox | `30` | tuning redelivery latency | consumer `ack_wait` |
+| `PROXIMA_NATS_MAX_ACK_PENDING` | Fact outbox | `1000` | tuning consumer flow control | consumer `max_ack_pending` |
+| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Fact outbox | unset (keep forever) | reclaiming storage from delivered records | deletes only `published` records older than the horizon, in bounded batches; minimum `60` and a smaller value is a boot error; never touches a `pending` or `claimed` record |
 | `PROXIMA_S3_MAX_BLOB_BYTES` | cited blobs | `104857600` | bounding cited-blob size | non-negative integer |
 | `PROXIMA_S3_BUCKET` | cited blobs | unset | enable S3 cited-blob storage | credentials use AWS SDK provider chain |
 | `PROXIMA_S3_REGION` | cited blobs | unset | S3 bucket configured | S3 region |
@@ -135,6 +143,8 @@ remain fixed at `5432` (Postgres) and `9000` (RustFS).
 |---|---|---|---|---|
 | `PROXIMA_DEV_POSTGRES_PORT` | dev Compose | `5434` | the default host port is occupied | published host port for pgvector Postgres; use the same value in `DATABASE_URL` |
 | `PROXIMA_DEV_S3_PORT` | dev Compose | `9100` | the default host port is occupied | published host port for RustFS; use `http://127.0.0.1:<port>` as `PROXIMA_S3_ENDPOINT_URL` |
+| `PROXIMA_DEV_NATS_PORT` | dev Compose | `4224` | the default host port is occupied | published host port mapped to the dev JetStream container's `4222`; use `nats://127.0.0.1:<port>` as `PROXIMA_NATS_URL` / `PROXIMA_TEST_NATS_URL` |
+| `PROXIMA_DEV_NATS_MONITOR_PORT` | dev Compose | `8224` | the default host port is occupied | published host port mapped to that container's monitoring endpoint (`8222`); `curl http://127.0.0.1:<port>/healthz` |
 
 ## Build/Test/Internal Variables
 
@@ -143,7 +153,14 @@ remain fixed at `5432` (Postgres) and `9000` (RustFS).
 | `PROXIMA_TEST_PG_URL` | tests | pg-testkit integration test source DB |
 | `PROXIMA_TEST_DATABASE_URL` | tests | HTTP/OIDC e2e dedicated DB |
 | `PROXIMA_TEST_NATS_URL` | tests | real JetStream broker for the outbox delivery tests; unset ⇒ those tests skip with a message. CI sets it |
-| `PROXIMA_S3_` | source prefix | configuration prefix constant used to resolve the S3 variables listed above |
+| `PROXIMA_DIFFERENTIAL_DIR` | tests | regeneration escape hatch for the owner erase/transfer golden differentials: set it and the test WRITES its dump there instead of comparing. Never set in CI |
+| `PROXIMA_INTAKE_PATH` | example | durable intake file for `crates/outbox-nats/examples/durable_intake.rs`, the reference consumer. Not read by any shipped binary |
+| `PROXIMA_ENV_RS_PROCESS_ENV_UNSET` | tests | a name `crates/core/src/env.rs` asserts is absent, to prove the process-env lookup returns `None` rather than an empty string |
+| `PROXIMA_RECONCILE_SHARED_KEYS_CHILD` | tests | marks the re-executed child process in the blob-s3 shared-key reconciliation test |
+| `PROXIMA_S1B_TEST_PRESENT`, `PROXIMA_S1B_TEST_ABSENT`, `PROXIMA_S1B_TEST_REG` | tests | fixture names for the env-lookup unit tests |
+| `PROXIMA_SCHEMA_PG_URL` | `scripts/regen-schema-sql.sh` | admin URL used to create and drop the scratch database the schema dump is taken from. Falls back to `PROXIMA_TEST_PG_URL` |
+| `PROXIMA_PG_DUMP` | `scripts/regen-schema-sql.sh` | `pg_dump` command to run; its major version must be at least the server's. Default `pg_dump` |
+| `PROXIMA_EMBED_`, `PROXIMA_NATS_`, `PROXIMA_PG_`, `PROXIMA_S3_` | prefix forms | the wildcard spellings the tables above and [15](../15-deployment.md) use to name a family of keys. Not variables themselves — every member is listed individually in this file |
 
 ## Source Inventory Reconciliation
 

@@ -126,6 +126,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_NATS_*` | no | see [10](10-configuration.md#framework-facade-host-app-boot) | Profile, stream, subject prefix, auth, batch/lease/poll/timeout. Defaults are the shipped path. |
 | `PROXIMA_OUTBOX_MAX_PENDING` | no | `100000` | Unpublished-record ceiling; at the ceiling listenable writes fail `CapacityExhausted`. |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | no | `524288` | Largest captured export; over-cap writes fail `PayloadTooLarge`. |
+| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | no | `604800` | Delete already-`published` records older than this. Unset or `0` ⇒ keep forever. Minimum `60`; below that, boot fails. Never touches a `pending` or `claimed` record. |
 | `PROXIMA_S3_BUCKET` | no | `proxima-cited-blobs` | Cited-blob bucket. |
 | `PROXIMA_S3_REGION` | no | `us-east-1` | S3 region. |
 | `PROXIMA_S3_ENDPOINT_URL` | no | `https://s3.example.com` | S3-compatible endpoint. |
@@ -451,9 +452,12 @@ Optional. Contract: [18](18-fact-outbox.md). Recipe:
 |---|---|
 | NATS | optional — a deployment with no listenable Fact type needs no broker at all. `PROXIMA_NATS_URL` unset ⇒ publisher off, capture unaffected, records retained |
 | JetStream storage | the `local-file` profile stores to disk; **the JetStream store directory must be a persistent volume**. An ephemeral store loses the stream on restart, and `discard: New` then silently frees space that acknowledged consumers still needed |
-| capacity | `discard: New` + no `max_age`: a full stream rejects the PubAck and the record stays `pending`. `PROXIMA_OUTBOX_MAX_PENDING` bounds the database side and fails listenable writes with `CapacityExhausted`. Both are **explicit backpressure** — nothing is evicted unacknowledged |
+| capacity | `discard: New` + no `max_age`: a full stream rejects the PubAck and the record stays `pending`. `PROXIMA_OUTBOX_MAX_PENDING` bounds the database side and fails listenable writes with `CapacityExhausted` (HTTP **503**). Both are **explicit backpressure** — nothing is evicted unacknowledged |
+| freeing stream space | an ACK does **not** free it: `Limits` retention evicts on age/size/count, and acknowledgement is none of those. A full stream needs `PROXIMA_NATS_MAX_STREAM_BYTES` raised or an explicit `nats stream purge PROXIMA_FACTS --seq <n>`, with `<n>` at or below every consumer's `ack_floor` ([18 §Stream space never frees itself](18-fact-outbox.md#stream-space-never-frees-itself)) |
+| existing stream | a stream of the same name is verified, not adopted: storage, retention, discard, subjects, `max_age`, replicas, `max_message_size` and `duplicate_window` must match the profile, and boot fails naming every mismatch |
 | durability claim | file storage plus PubAck survives process death, not arbitrary disk loss. Back up the JetStream volume alongside Postgres (see [how-to/operate.md](how-to/operate.md)) |
-| erasure | `publication_outbox` is owner-scoped and cascades with its Fact under an owner erase ([13](13-compliance.md#what-an-erase-destroys)). Rows already delivered to the broker are outside that reach — set the stream's retention to match the host's obligation |
+| erasure | `publication_outbox` is owner-scoped (`EraseRule::ByOwner`) and an owner erase destroys the owner's records; a single-memory erase deletes the record explicitly on `t`. There is no FK cascade from `memory` — `forget` would have destroyed undelivered events ([13](13-compliance.md#what-an-erase-destroys)). Rows already delivered to the broker are outside that reach — set the stream's retention to match the host's obligation |
+| delivered-record retention | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` reclaims database storage from records that are already published. Off by default; floor 60 s; it can never remove a `pending` or `claimed` record whatever its age |
 
 ## SSE stream revocation
 

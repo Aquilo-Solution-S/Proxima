@@ -35,6 +35,17 @@ pub enum McpToolErrorKind {
     /// Well-formed reference to a missing (or invisible) entity.
     NotFound,
     InvalidRequest,
+    /// Declared backpressure: the request was well-formed and legal, the
+    /// deployment is momentarily unable to accept it, and the caller should
+    /// slow down and retry. Its own kind so a client's retry and alerting
+    /// policy can tell "the outbox is full" from "the substrate is broken";
+    /// [`Self::Internal`] would page an operator for a queue depth.
+    ///
+    /// NOT the class of [`McpToolError::Unavailable`], which is a
+    /// PERMANENT missing-capability precondition (no embedding client is
+    /// configured) that retrying will never resolve — that stays
+    /// [`Self::InvalidRequest`].
+    CapacityExhausted,
     Internal,
 }
 
@@ -82,9 +93,14 @@ impl McpToolError {
                     | crate::publication::PublicationError::UntypedListenableWrite { .. } => {
                         McpToolErrorKind::InvalidInput
                     }
-                    crate::publication::PublicationError::SourceUnbound { .. }
-                    | crate::publication::PublicationError::CapacityExhausted { .. } => {
+                    crate::publication::PublicationError::SourceUnbound { .. } => {
                         McpToolErrorKind::Internal
+                    }
+                    // Backpressure, not a fault: the write was legal and the
+                    // publisher is behind. A caller told "internal server
+                    // error" learns nothing and retries immediately.
+                    crate::publication::PublicationError::CapacityExhausted { .. } => {
+                        McpToolErrorKind::CapacityExhausted
                     }
                 },
                 crate::StorageError::Retryable(_)
@@ -104,7 +120,11 @@ impl McpToolError {
         match self.kind() {
             McpToolErrorKind::InvalidInput
             | McpToolErrorKind::NotFound
-            | McpToolErrorKind::InvalidRequest => self.to_string(),
+            | McpToolErrorKind::InvalidRequest
+            // Verbatim: the message carries the backlog depth and the
+            // configured bound, which is exactly what a caller needs to
+            // decide how long to wait.
+            | McpToolErrorKind::CapacityExhausted => self.to_string(),
             McpToolErrorKind::Internal => "internal server error".to_string(),
         }
     }
@@ -163,6 +183,59 @@ mod tests {
             "semantic search unavailable: no embedding client is configured for this host"
         );
         assert_ne!(err.client_message(), "internal server error");
+    }
+
+    /// Declared backpressure must not be indistinguishable from a
+    /// substrate bug on the wire: an exhausted outbox is the deployment
+    /// asking the caller to slow down, and its message names the backlog.
+    #[test]
+    fn an_exhausted_outbox_is_backpressure_not_an_internal_fault() {
+        let err = McpToolError::Storage(crate::StorageError::PublicationRefused(
+            crate::publication::PublicationError::CapacityExhausted {
+                pending: 100_000,
+                max: 100_000,
+            },
+        ));
+        assert_eq!(err.kind(), McpToolErrorKind::CapacityExhausted);
+        assert_ne!(err.client_message(), "internal server error");
+        assert!(
+            err.client_message().contains("100000"),
+            "the backlog and the bound must reach the caller: {}",
+            err.client_message()
+        );
+    }
+
+    /// The other four refusals keep the classes they already had, so the
+    /// new kind is one condition rather than a bucket.
+    #[test]
+    fn the_other_publication_refusals_keep_their_classes() {
+        use crate::publication::PublicationError;
+
+        for (refusal, expected) in [
+            (
+                PublicationError::PayloadTooLarge { bytes: 9, max: 8 },
+                McpToolErrorKind::InvalidInput,
+            ),
+            (
+                PublicationError::ExportFailed("nope".into()),
+                McpToolErrorKind::InvalidInput,
+            ),
+            (
+                PublicationError::UntypedListenableWrite {
+                    schema_id: "x/y-v1".into(),
+                },
+                McpToolErrorKind::InvalidInput,
+            ),
+            (
+                PublicationError::SourceUnbound {
+                    schema_id: "x/y-v1".into(),
+                },
+                McpToolErrorKind::Internal,
+            ),
+        ] {
+            let err = McpToolError::Storage(crate::StorageError::PublicationRefused(refusal));
+            assert_eq!(err.kind(), expected, "for {err}");
+        }
     }
 
     #[test]

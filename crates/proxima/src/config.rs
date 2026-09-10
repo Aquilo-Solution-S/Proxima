@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::publication::{PublicationConfig, PublicationLimits, PublicationSource};
 use proxima_storage_pg::{PgPoolConfig, PgTuning};
@@ -61,6 +63,66 @@ pub(crate) const ENV_PUBLICATION_SOURCE: &str = "PROXIMA_PUBLICATION_SOURCE";
 pub(crate) const ENV_OUTBOX_MAX_PENDING: &str = "PROXIMA_OUTBOX_MAX_PENDING";
 /// Environment key bounding one sealed envelope.
 pub(crate) const ENV_OUTBOX_MAX_PAYLOAD_BYTES: &str = "PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES";
+/// Environment key naming the stream's per-message ceiling.
+///
+/// Parsed by the adapter (`crates/outbox-nats/src/config.rs`); named here
+/// only so [`crate::RuntimeBuilder::resolve`] can tell an operator's chosen
+/// value from the adapter's default before deriving one from the capture
+/// ceiling.
+#[cfg(feature = "outbox-nats")]
+pub(crate) const ENV_NATS_MAX_MESSAGE_BYTES: &str = "PROXIMA_NATS_MAX_MESSAGE_BYTES";
+
+/// Environment key retiring records that were already DELIVERED.
+pub(crate) const ENV_OUTBOX_PUBLISHED_RETENTION_SECS: &str =
+    "PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS";
+
+/// Shortest retention horizon an operator may configure.
+///
+/// A horizon under a minute is indistinguishable from "delete on delivery",
+/// and delivery is not the same event as consumption: a consumer that is
+/// behind, or an operator reconciling what was sent, has nothing left to
+/// read from. One minute is not a safe replay window either — it is the
+/// point below which the setting is certainly a mistake, so it is refused
+/// rather than honoured.
+pub(crate) const MIN_PUBLISHED_RETENTION: Duration = Duration::from_mins(1);
+
+/// Read how long a DELIVERED record is kept before the publisher task
+/// reclaims it (docs/18 §Retention).
+///
+/// `None` — the default, and what `0` spells explicitly — keeps published
+/// records forever, which is the behaviour every deployment had before this
+/// knob existed. Only `published` rows are ever in scope; see
+/// [`proxima_core::storage_ports::publication::PublicationRetentionPort`].
+///
+/// # Errors
+///
+/// [`EmbedError::Config`] for a non-numeric value or a non-zero horizon
+/// under [`MIN_PUBLISHED_RETENTION`].
+pub(crate) fn published_retention_from_lookup(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<Duration>, EmbedError> {
+    let Some(raw) = lookup(ENV_OUTBOX_PUBLISHED_RETENTION_SECS) else {
+        return Ok(None);
+    };
+    let seconds: u64 = raw.parse().map_err(|_| {
+        EmbedError::Config(format!(
+            "{ENV_OUTBOX_PUBLISHED_RETENTION_SECS} must be a whole number of seconds, \
+             got {raw:?}"
+        ))
+    })?;
+    if seconds == 0 {
+        return Ok(None);
+    }
+    let horizon = Duration::from_secs(seconds);
+    if horizon < MIN_PUBLISHED_RETENTION {
+        return Err(EmbedError::Config(format!(
+            "{ENV_OUTBOX_PUBLISHED_RETENTION_SECS} is {seconds}s, under the \
+             {}s floor; set 0 to keep published records forever",
+            MIN_PUBLISHED_RETENTION.as_secs()
+        )));
+    }
+    Ok(Some(horizon))
+}
 
 /// Read the publication block (docs/18 §Configuration) into the ONE value
 /// the engine is built with.
@@ -164,6 +226,43 @@ mod tests {
                 .find(|(k, _)| *k == key)
                 .map(|(_, v)| (*v).to_string())
         }
+    }
+
+    /// The retention knob is off by default, spells "off" as `0`, and
+    /// refuses a horizon so short that delivery and deletion would be the
+    /// same event.
+    #[test]
+    fn the_published_retention_horizon_is_off_by_default_and_floored() {
+        assert_eq!(published_retention_from_lookup(&env(&[])).unwrap(), None);
+        assert_eq!(
+            published_retention_from_lookup(&env(&[(ENV_OUTBOX_PUBLISHED_RETENTION_SECS, "0")]))
+                .unwrap(),
+            None,
+            "0 is the explicit spelling of keep-forever, not a zero-second horizon"
+        );
+        assert_eq!(
+            published_retention_from_lookup(&env(&[(
+                ENV_OUTBOX_PUBLISHED_RETENTION_SECS,
+                "604800"
+            )]))
+            .unwrap(),
+            Some(Duration::from_hours(24 * 7))
+        );
+        let too_short =
+            published_retention_from_lookup(&env(&[(ENV_OUTBOX_PUBLISHED_RETENTION_SECS, "59")]))
+                .expect_err("under the floor");
+        assert!(
+            too_short
+                .to_string()
+                .contains(ENV_OUTBOX_PUBLISHED_RETENTION_SECS),
+            "{too_short}"
+        );
+        let malformed = published_retention_from_lookup(&env(&[(
+            ENV_OUTBOX_PUBLISHED_RETENTION_SECS,
+            "a week",
+        )]))
+        .expect_err("not a number");
+        assert!(malformed.to_string().contains("a week"), "{malformed}");
     }
 
     #[test]

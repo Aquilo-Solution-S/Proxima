@@ -2301,4 +2301,194 @@ mod tests {
 
         assert!(!embedded);
     }
+
+    // ── publication resolution (review R6) ──────────────────────────────
+
+    /// An engine over the probe registry with a bound deployment source —
+    /// the only shape in which a listenable schema can be admitted at all.
+    fn listenable_engine() -> Engine {
+        let source = crate::publication::PublicationSource::new("urn:proxima:r6-tests")
+            .expect("a URN is an absolute source");
+        Engine::new(crate::test_fixtures::probe_registry())
+            .try_with_publication_config(crate::publication::PublicationConfig::new(source))
+            .expect("a bound source boots")
+    }
+
+    fn listenable_probe(note: &str) -> crate::test_fixtures::ListenableProbeV1 {
+        crate::test_fixtures::ListenableProbeV1 {
+            probe_id: uuid::Uuid::now_v7(),
+            note: note.to_owned(),
+        }
+    }
+
+    fn listenable_draft(payload: &crate::test_fixtures::ListenableProbeV1) -> FactWriteCommand {
+        FactWriteCommand::from_payload("probe/source", payload, time::OffsetDateTime::now_utc())
+    }
+
+    /// The capture is assembled from the DEPLOYMENT and the PERMIT, never
+    /// from the draft: the source is the configured installation identity,
+    /// the owner is the one authorization resolved, and the model label is
+    /// the one the authenticated edge certified.
+    #[tokio::test]
+    async fn a_listenable_admission_captures_the_deployment_source_permit_owner_and_trusted_model()
+    {
+        let owner = test_owner();
+        let engine = listenable_engine();
+        let payload = listenable_probe("the quay is sound");
+        let sidecars = [SidecarPayload::fact(payload.clone())];
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .with_trusted_model_id("runner/pinned")
+            .expect("a valid operator label");
+
+        let authorized = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                listenable_draft(&payload),
+                &sidecars,
+            )
+            .await
+            .expect("a typed listenable write authorizes");
+
+        let plan = authorized
+            .publication()
+            .expect("a listenable schema carries a capture plan");
+        assert_eq!(plan.draft.source.as_str(), "urn:proxima:r6-tests");
+        assert_eq!(
+            plan.draft.owner, owner,
+            "the permit's owner, not the draft's"
+        );
+        assert_eq!(plan.draft.model_id.as_deref(), Some("runner/pinned"));
+        assert_eq!(plan.draft.schema_id.as_str(), "probe/listenable-v1");
+        assert_eq!(
+            plan.draft.data,
+            serde_json::to_value(&payload).expect("the probe serializes"),
+            "the export snapshot is the typed payload's own serde form"
+        );
+        assert_eq!(plan.limits, engine.publication_config().limits);
+    }
+
+    /// No certified model identity means no model identity on the wire.
+    ///
+    /// The only value `resolve_publication` reads is
+    /// `AuthzContext::trusted_model_id`. The caller-supplied `model_id`
+    /// label lives on [`crate::tool::ToolCaller`] and is never consulted
+    /// here, so an unauthenticated deployment publishes `None` rather than
+    /// whatever a caller wrote in its arguments.
+    #[tokio::test]
+    async fn an_uncertified_edge_captures_no_model_identity() {
+        let owner = test_owner();
+        let engine = listenable_engine();
+        let payload = listenable_probe("no certified runner");
+        let sidecars = [SidecarPayload::fact(payload.clone())];
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        assert_eq!(authz.trusted_model_id(), None);
+
+        let authorized = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                listenable_draft(&payload),
+                &sidecars,
+            )
+            .await
+            .expect("a typed listenable write authorizes");
+
+        assert_eq!(
+            authorized
+                .publication()
+                .expect("still captured")
+                .draft
+                .model_id,
+            None
+        );
+    }
+
+    /// A listenable Fact written through the untyped receipt-only route has
+    /// no typed payload to export, so there is nothing to publish. Refused
+    /// rather than published empty: a consumer that received an event with
+    /// no data could not tell it from a bug.
+    #[tokio::test]
+    async fn an_untyped_listenable_write_is_refused() {
+        let owner = test_owner();
+        let engine = listenable_engine();
+        let payload = listenable_probe("no sidecar");
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let err = engine
+            .authorize_fact_ingest(&authz, Relation::Ingest, listenable_draft(&payload), &[])
+            .await
+            .expect_err("a listenable schema without its typed payload must refuse");
+
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert!(
+            err.message.contains("probe/listenable-v1"),
+            "the refusal names the schema: {}",
+            err.message
+        );
+    }
+
+    /// One admission, one event. Two typed payloads of the same listenable
+    /// schema give the capture no way to choose, and choosing the first
+    /// would silently drop the second.
+    #[tokio::test]
+    async fn the_same_listenable_schema_supplied_twice_is_refused() {
+        let owner = test_owner();
+        let engine = listenable_engine();
+        let payload = listenable_probe("twice");
+        let sidecars = [
+            SidecarPayload::fact(payload.clone()),
+            SidecarPayload::fact(listenable_probe("and again")),
+        ];
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let err = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                listenable_draft(&payload),
+                &sidecars,
+            )
+            .await
+            .expect_err("two payloads of one listenable schema must refuse");
+
+        assert!(
+            err.message.contains("supplied twice"),
+            "unexpected message: {}",
+            err.message
+        );
+    }
+
+    /// The declaration is the whole difference. The non-listenable twin
+    /// takes the identical route with the identical shape and captures
+    /// nothing.
+    #[tokio::test]
+    async fn a_non_listenable_admission_captures_nothing() {
+        let owner = test_owner();
+        let engine = listenable_engine();
+        let payload = crate::test_fixtures::UnlistenableProbeV1 {
+            probe_id: uuid::Uuid::now_v7(),
+            note: "silent".to_owned(),
+        };
+        let sidecars = [SidecarPayload::fact(payload.clone())];
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .with_trusted_model_id("runner/pinned")
+            .expect("a valid operator label");
+
+        let authorized = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                FactWriteCommand::from_payload(
+                    "probe/source",
+                    &payload,
+                    time::OffsetDateTime::now_utc(),
+                ),
+                &sidecars,
+            )
+            .await
+            .expect("an unlistenable write authorizes");
+
+        assert!(authorized.publication().is_none());
+    }
 }

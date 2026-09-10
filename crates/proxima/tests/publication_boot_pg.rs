@@ -316,6 +316,86 @@ async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
     result.expect("publication env block");
 }
 
+/// Capture is downstream of authorization, so a refused write leaves
+/// nothing to publish.
+///
+/// The broker's only input is `proxima_core.publication_outbox`: the
+/// publisher claims from it and ships the `envelope` column verbatim
+/// (`crates/outbox-nats/tests/jetstream_e2e.rs` proves that half against a
+/// real `JetStream`). An empty table after a denial is therefore the whole
+/// claim — there is no second path from a Fact write to the stream.
+#[tokio::test]
+async fn an_unauthorized_listenable_write_captures_nothing() {
+    let db_name = unique_db_name("proxima_pub_authz");
+    create_db(&db_name).await.expect("PG required");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<ListenableApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .publication(PublicationConfig::new(source()))
+            .build()
+            .await?;
+        let authz = built.single_owner_authz().ok_or("single owner")?;
+        let engine = built.engine();
+
+        // An owner this caller holds no grant on. The listenable schema,
+        // the source and the ceiling are all exactly the ones the
+        // authorized write below succeeds under, so the ONLY difference is
+        // the authorization.
+        let stranger = company_owner(Uuid::now_v7());
+        let refused = engine
+            .ingest_fact(
+                &authz,
+                proxima::FactWrite::new(stranger, PubProbeV1::SCHEMA_ID, &probe("not mine")),
+            )
+            .await
+            .err()
+            .ok_or("a write for an owner the caller has no grant on must be refused")?;
+        assert_eq!(
+            refused.code,
+            proxima_core::ErrorCode::Forbidden,
+            "the refusal must be an authorization one, got {refused}"
+        );
+
+        let captured: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.publication_outbox")
+                .fetch_one(built.pool_for_tests())
+                .await?;
+        assert_eq!(captured, 0, "a denied write must capture no event");
+        let memories: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
+            .fetch_one(built.pool_for_tests())
+            .await?;
+        assert_eq!(memories, 0, "and admit no Fact");
+
+        // The control: the same write, for the owner the caller DOES hold,
+        // captures. Without it the assertions above would also hold for a
+        // fixture that captures nothing at all.
+        engine
+            .ingest_fact(
+                &authz,
+                proxima::FactWrite::new(owner, PubProbeV1::SCHEMA_ID, &probe("mine")),
+            )
+            .await?;
+        let captured: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.publication_outbox")
+                .fetch_one(built.pool_for_tests())
+                .await?;
+        assert_eq!(captured, 1, "the authorized write is captured");
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("authorized capture only");
+}
+
 #[tokio::test]
 async fn the_configured_payload_ceiling_is_the_one_capture_enforces() {
     let db_name = unique_db_name("proxima_pub_limit");

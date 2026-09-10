@@ -2,6 +2,8 @@ use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::sync::Arc;
+#[cfg(feature = "outbox-nats")]
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -10,7 +12,7 @@ use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::authz::SystemAuthority;
 #[cfg(feature = "outbox-nats")]
-use proxima_core::storage_ports::publication::PublicationOutboxPort;
+use proxima_core::storage_ports::publication::{PublicationOutboxPort, PublicationRetentionPort};
 use proxima_core::storage_ports::{
     CitedBlobOwnerReconcileService, CitedBlobReadService, CitedBlobService,
     DelegatedAuthorityService,
@@ -263,6 +265,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
 
         #[cfg(feature = "outbox-nats")]
         let outbox = booted.outbox().clone();
+        #[cfg(feature = "outbox-nats")]
+        let outbox_retention = booted.outbox_retention().clone();
         Ok(BuiltProxima {
             service,
             engine: booted.engine,
@@ -278,6 +282,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             services,
             #[cfg(feature = "outbox-nats")]
             outbox,
+            #[cfg(feature = "outbox-nats")]
+            outbox_retention,
+            #[cfg(feature = "outbox-nats")]
+            published_retention: config.published_retention,
             #[cfg(feature = "outbox-nats")]
             nats: config.nats,
         })
@@ -351,6 +359,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         let workers = A::spawn_workers(&worker_ctx);
         #[cfg(feature = "outbox-nats")]
         let outbox = booted.outbox().clone();
+        #[cfg(feature = "outbox-nats")]
+        let outbox_retention = booted.outbox_retention().clone();
 
         Ok(RunningProxima {
             engine: booted.engine,
@@ -369,6 +379,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             workers,
             #[cfg(feature = "outbox-nats")]
             outbox,
+            #[cfg(feature = "outbox-nats")]
+            outbox_retention,
+            #[cfg(feature = "outbox-nats")]
+            published_retention: config.published_retention,
             #[cfg(feature = "outbox-nats")]
             nats: config.nats,
         })
@@ -458,6 +472,14 @@ pub struct BuiltProxima {
     /// would just widen the surface.
     #[cfg(feature = "outbox-nats")]
     outbox: Arc<dyn PublicationOutboxPort>,
+    /// Reclaim of DELIVERED records, held apart from the drain handle so
+    /// that the loop able to publish is not the loop able to delete.
+    #[cfg(feature = "outbox-nats")]
+    outbox_retention: Arc<dyn PublicationRetentionPort>,
+    /// `None` keeps published records forever
+    /// (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`).
+    #[cfg(feature = "outbox-nats")]
+    published_retention: Option<Duration>,
     #[cfg(feature = "outbox-nats")]
     nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
 }
@@ -491,6 +513,11 @@ impl BuiltProxima {
         Some(spawn_publication_publisher(
             self.outbox.clone(),
             self.nats.clone()?,
+            self.published_retention
+                .map(|older_than| PublicationRetention {
+                    port: self.outbox_retention.clone(),
+                    older_than,
+                }),
             cancel,
         ))
     }
@@ -588,6 +615,14 @@ pub struct RunningProxima {
     /// `BuiltProxima`'s field of the same name.
     #[cfg(feature = "outbox-nats")]
     outbox: Arc<dyn PublicationOutboxPort>,
+    /// Reclaim of DELIVERED records, held apart from the drain handle so
+    /// that the loop able to publish is not the loop able to delete.
+    #[cfg(feature = "outbox-nats")]
+    outbox_retention: Arc<dyn PublicationRetentionPort>,
+    /// `None` keeps published records forever
+    /// (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`).
+    #[cfg(feature = "outbox-nats")]
+    published_retention: Option<Duration>,
     #[cfg(feature = "outbox-nats")]
     nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
 }
@@ -631,6 +666,11 @@ impl RunningProxima {
         Some(spawn_publication_publisher(
             self.outbox.clone(),
             self.nats.clone()?,
+            self.published_retention
+                .map(|older_than| PublicationRetention {
+                    port: self.outbox_retention.clone(),
+                    older_than,
+                }),
             cancel,
         ))
     }
@@ -740,10 +780,48 @@ impl std::fmt::Debug for RunningProxima {
 #[cfg(feature = "outbox-nats")]
 const PUBLISHER_CONNECT_BACKOFF_CEILING: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The configured reclaim of DELIVERED records, and the handle that can
+/// perform it. Absent when the deployment keeps published records forever.
+#[cfg(feature = "outbox-nats")]
+struct PublicationRetention {
+    port: Arc<dyn PublicationRetentionPort>,
+    older_than: Duration,
+}
+
+#[cfg(feature = "outbox-nats")]
+impl std::fmt::Debug for PublicationRetention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublicationRetention")
+            .field("older_than", &self.older_than)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Records one prune pass may remove.
+///
+/// Bounded because the statement runs beside the live write path: the
+/// table has no index on `published_at` (adding one is a migration this
+/// slice does not ship), so each pass is a sequential scan and must not
+/// also hold row locks over an unbounded delete. A backlog larger than this
+/// is reclaimed over several passes.
+#[cfg(feature = "outbox-nats")]
+const RETENTION_PRUNE_BATCH: u32 = 1_000;
+
+/// How often the prune runs.
+///
+/// DELIBERATELY not once per drain pass. The drain polls every
+/// `PROXIMA_NATS_POLL_MS` (500 ms by default), and a sequential scan at
+/// that rate would cost more than the storage it reclaims — while the
+/// horizon it enforces is at least a minute, so nothing becomes prunable
+/// faster than this either.
+#[cfg(feature = "outbox-nats")]
+const RETENTION_PRUNE_INTERVAL: Duration = Duration::from_mins(1);
+
 #[cfg(feature = "outbox-nats")]
 fn spawn_publication_publisher(
     outbox: Arc<dyn PublicationOutboxPort>,
     config: proxima_outbox_nats::NatsPublisherConfig,
+    retention: Option<PublicationRetention>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -770,8 +848,54 @@ fn spawn_publication_publisher(
                 }
             }
         };
-        publisher.run(cancel).await;
+        // Retention rides in the publisher's task rather than a task of its
+        // own: it is housekeeping over what this loop delivered, it stops
+        // when the loop stops, and a deployment with no broker configured
+        // never reaches here — which is correct, because nothing has been
+        // delivered for it to reclaim.
+        let housekeeping = prune_published_records(retention, cancel.clone());
+        tokio::join!(publisher.run(cancel), housekeeping);
     })
+}
+
+/// Reclaim delivered records older than the configured horizon, until
+/// cancellation. A no-op future when no horizon is configured.
+#[cfg(feature = "outbox-nats")]
+async fn prune_published_records(
+    retention: Option<PublicationRetention>,
+    cancel: CancellationToken,
+) {
+    let Some(retention) = retention else {
+        return;
+    };
+    let Some(limit) = std::num::NonZeroU32::new(RETENTION_PRUNE_BATCH) else {
+        return;
+    };
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => return,
+            () = tokio::time::sleep(RETENTION_PRUNE_INTERVAL) => {}
+        }
+        match retention
+            .port
+            .prune_published(retention.older_than, limit)
+            .await
+        {
+            Ok(0) => {}
+            Ok(pruned) => tracing::debug!(
+                pruned,
+                horizon_secs = retention.older_than.as_secs(),
+                "reclaimed delivered publication records"
+            ),
+            // Never fatal. Housekeeping that cannot run is a growing table,
+            // which is an operator's problem to see; stopping the publisher
+            // over it would turn it into an undelivered backlog.
+            Err(error) => tracing::warn!(
+                error = %error,
+                "publication retention prune failed; delivered records are retained"
+            ),
+        }
+    }
 }
 
 fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> JoinHandle<()> {

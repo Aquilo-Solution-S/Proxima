@@ -38,6 +38,29 @@
 //! used to equal their memory's `t` are now distinct, and every
 //! order-of-first-appearance token after them shifts.
 //!
+//! ## The second regeneration (issue #305)
+//!
+//! The corpus produced no `publication_outbox` rows, so the section compared
+//! equal at `(0)` whatever an erase did to it — the outbox was inside the
+//! harness's blind spot described below. Two admissions now carry the
+//! publication plan core resolves for a listenable schema: the target's and
+//! the neighbour's. The owner-scope golden therefore witnesses
+//! `EraseRule::ByOwner` destroying one record and leaving the other, and the
+//! source-scope golden witnesses that a source-scope erase leaves both.
+//!
+//! Checked, not assumed: strip the new `publication_outbox` rows from the new
+//! files, re-canonicalise the order-of-first-appearance tokens, and the result
+//! is byte-identical to the previous goldens. Nothing else moved; the new rows
+//! shifted the token numbering after them and that is the whole of the diff.
+//!
+//! `envelope` and `envelope_digest` are dropped from the dump. The sealed
+//! `CloudEvents` document renders as a hex `bytea` carrying a wall-clock
+//! `time` INSIDE the blob, where the uuid/timestamp tokenizer cannot reach it,
+//! so two runs of the same corpus would differ in those bytes. What the bytes
+//! say is pinned by `publication_outbox_pg_tests`; what this file asks is
+//! whether the ROW survives, which `t`, `owner_id`, `event_id` and `state`
+//! answer.
+//!
 //! The goldens were regenerated for that and nothing else, and the claim was
 //! checked rather than assumed. Against the pre-trigger baseline: the
 //! section list and every per-section row count are identical (no row
@@ -85,6 +108,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use proxima_core::publication::{
+    PublicationDraft, PublicationLimits, PublicationPlan, PublicationSource,
+};
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
@@ -181,6 +207,29 @@ fn authorized(owner: OwnerRef, mut draft: FactWriteCommand) -> AuthorizedFactWri
         None,
         Vec::new(),
     )
+}
+
+/// Attach the capture instruction core resolves for a LISTENABLE schema.
+///
+/// The corpus's own `core/test-fact-v1` stands in for one. Storage never
+/// consults a registry — listenability reaches it as the plan travelling on
+/// the witness, exactly as in production — so a corpus that carries the plan
+/// carries the real thing. Two admissions get one: the target's, which an
+/// owner erase must destroy, and the neighbour's, which it must not touch.
+fn published(owner: OwnerRef, note: &str, write: AuthorizedFactWrite) -> AuthorizedFactWrite {
+    let source = PublicationSource::new("urn:proxima:owner-differential")
+        .expect("a URN is an absolute source");
+    write.with_publication_for_tests(PublicationPlan::new(
+        PublicationDraft::new(
+            SchemaId::new("core/test-fact-v1".to_owned()),
+            SchemaVersion::new(1),
+            source,
+            owner,
+            Some("trusted/runner".to_owned()),
+            serde_json::json!({ "note": note }),
+        ),
+        PublicationLimits::default(),
+    ))
 }
 
 /// The memory-keyed sidecar row: one per admission that carries a note.
@@ -326,7 +375,11 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     // stamp and the rows are one statement of one fact rather than two.
     let first = pg
         .ingest_fact_with_typed_sidecar(
-            &authorized(owner, draft(Some(("src-a", "k1")), None, None)),
+            &published(
+                owner,
+                "one",
+                authorized(owner, draft(Some(("src-a", "k1")), None, None)),
+            ),
             &[note("one"), call(TARGET_UPN)],
             None,
         )
@@ -351,7 +404,11 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .await?;
     let neighbour_memory = pg
         .ingest_fact_with_typed_sidecar(
-            &authorized(other, draft(Some(("src-a", "n1")), None, None)),
+            &published(
+                other,
+                "neighbour",
+                authorized(other, draft(Some(("src-a", "n1")), None, None)),
+            ),
             &[note("neighbour"), call(NEIGHBOUR_UPN)],
             None,
         )
@@ -693,6 +750,20 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
                 // column in the normalized shape expected by its golden,
                 // while the migration suite checks its real value.
                 object.insert("goal_refs".to_owned(), Value::Null);
+            }
+            if table == "publication_outbox"
+                && let Some(object) = row.as_object_mut()
+            {
+                // The captured `CloudEvents` document renders as a hex
+                // bytea and carries a wall-clock `time` INSIDE the blob,
+                // where the uuid/timestamp tokenizer cannot reach it — two
+                // runs of the same corpus would differ inside those bytes.
+                // What the bytes say is pinned by the capture tests
+                // (`publication_outbox_pg_tests`); what THIS file asks is
+                // whether the row survives an erase, and `t`, `owner_id`,
+                // `event_id` and `state` answer that.
+                object.remove("envelope");
+                object.remove("envelope_digest");
             }
             out.push_str(&canonical(&row));
             out.push('\n');
