@@ -3055,6 +3055,19 @@ pub async fn erase_memory(
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
+    // The captured publication, if this Fact had one. Hand-written for the
+    // same reason as the receipt above: the row carries no foreign key into
+    // `memory` (it must outlive `forget`'s delete of the hot row), so the
+    // generated memory-dependent legs do not reach it. Erasing a single
+    // admission destroys its captured payload — an undelivered event is
+    // still this owner's content, and compliance erasure is the one and
+    // only way a record leaves this table.
+    sqlx::query("DELETE FROM proxima_core.publication_outbox WHERE t = $1 AND owner_id = $2")
+        .bind(t)
+        .bind(owner.stored_owner_id())
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
     sqlx::query(
         "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
          SELECT $1, 'erase', 'memory', $2, $3",

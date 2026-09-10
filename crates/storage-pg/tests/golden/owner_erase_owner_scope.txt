@@ -93,6 +93,7 @@
 {"kind":"personal","owner_id":"<id012>"}
 {"kind":"personal","owner_id":"<id031>"}
 ## proxima_core.projection (0)
+## proxima_core.publication_outbox (0)
 ## proxima_core.sketch (2)
 {"kind":"fact","owner_id":"<id031>","t":"<id029>","text":"fact"}
 {"kind":"goal","owner_id":"<id031>","t":"<id037>","text":"goal sketch"}

@@ -141,6 +141,7 @@
 {"lexical_language":"english","memory_id":"<id008>","owner_id":"<id039>","schema_id":"core/agent-note-v1","tag":["survey"]}
 {"lexical_language":"english","memory_id":"<id010>","owner_id":"<id039>","schema_id":"core/agent-note-v1","tag":["survey"]}
 {"lexical_language":"english","memory_id":"<id012>","owner_id":"<id039>","schema_id":"core/agent-note-v1","tag":["survey"]}
+## proxima_core.publication_outbox (0)
 ## proxima_core.sketch (12)
 {"kind":"fact","owner_id":"<id018>","t":"<id014>","text":"fact"}
 {"kind":"fact","owner_id":"<id036>","t":"<id016>","text":"fact"}

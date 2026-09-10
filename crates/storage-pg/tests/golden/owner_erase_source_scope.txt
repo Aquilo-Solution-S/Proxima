@@ -113,6 +113,7 @@
 {"kind":"personal","owner_id":"<id012>"}
 {"kind":"personal","owner_id":"<id032>"}
 ## proxima_core.projection (0)
+## proxima_core.publication_outbox (0)
 ## proxima_core.sketch (6)
 {"kind":"fact","owner_id":"<id012>","t":"<id006>","text":"fact"}
 {"kind":"fact","owner_id":"<id032>","t":"<id029>","text":"fact"}

@@ -72,6 +72,10 @@ impl FactIngestPort for PgStorage {
                             content_id: None,
                             payloads: Some(&content_payloads),
                         },
+                        publication: verbs::fact_ingest::publication_capture(
+                            authorized.publication(),
+                            self.publication_limits,
+                        ),
                     },
                     move |tx, outcome| {
                         Box::pin(async move {
@@ -137,6 +141,10 @@ impl FactIngestPort for PgStorage {
                             content_id: None,
                             payloads: None,
                         },
+                        publication: verbs::fact_ingest::publication_capture(
+                            authorized.publication(),
+                            self.publication_limits,
+                        ),
                     },
                     move |tx, outcome| {
                         Box::pin(async move {
@@ -203,6 +211,10 @@ impl FactIngestPort for PgStorage {
                             content_id: None,
                             payloads: None,
                         },
+                        publication: verbs::fact_ingest::publication_capture(
+                            authorized.publication(),
+                            self.publication_limits,
+                        ),
                     },
                     move |tx, outcome| {
                         Box::pin(async move {

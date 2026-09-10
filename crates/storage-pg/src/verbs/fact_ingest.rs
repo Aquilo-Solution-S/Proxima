@@ -65,6 +65,30 @@ struct IngestCoreOptions<'a> {
 /// its owner-scoped `Content` resolves. One value, because the three are read
 /// off the same payload set and a route that carried the tables without the
 /// scopes would admit a row a concurrent scope erase cannot see.
+/// The publication half of one Fact admission: the draft core resolved
+/// from the frozen registry and the bounds this deployment enforces.
+///
+/// Borrowed and `Copy`, like the rest of [`FactAdmissionInput`], so the
+/// bounded write retry can re-run the transaction body against the same
+/// declaration instead of re-deriving it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PublicationCapture<'a> {
+    pub(crate) draft: &'a proxima_core::publication::PublicationDraft,
+    pub(crate) limits: proxima_core::publication::PublicationLimits,
+}
+
+/// Pair a resolved draft with the deployment's limits, or `None` for a
+/// non-listenable write.
+pub(crate) const fn publication_capture(
+    draft: Option<&proxima_core::publication::PublicationDraft>,
+    limits: proxima_core::publication::PublicationLimits,
+) -> Option<PublicationCapture<'_>> {
+    match draft {
+        Some(draft) => Some(PublicationCapture { draft, limits }),
+        None => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FactAdmissionInput<'a> {
     pub(crate) natural_key: Option<&'a super::memory_timeseries::MemoryNaturalKey>,
@@ -76,6 +100,10 @@ pub(crate) struct FactAdmissionInput<'a> {
     /// unspellable at the call site.
     pub(crate) scopes: &'a [ScopeFenceTarget],
     pub(crate) content: ContentResolution<'a>,
+    /// The `CloudEvents` record this admission captures, when its schema is
+    /// registered listenable. `None` is the overwhelmingly common case and
+    /// costs the write path nothing.
+    pub(crate) publication: Option<PublicationCapture<'a>>,
 }
 
 pub(crate) fn fact_natural_key(
@@ -211,6 +239,17 @@ pub(crate) async fn ingest_fact_command_in_tx(
     authorized: &AuthorizedFactWrite,
     embedding_model_id: Option<&str>,
 ) -> Result<FactIngestOutcome, StorageError> {
+    // The receipt-only route carries no typed payload, so there is nothing
+    // to export. Core refuses a listenable schema here before it mints the
+    // witness; this is the storage backstop for a caller that reached the
+    // port directly.
+    if authorized.publication().is_some() {
+        return Err(StorageError::from(
+            proxima_core::publication::PublicationError::UntypedListenableWrite {
+                schema_id: authorized.draft().schema_id.as_str().to_owned(),
+            },
+        ));
+    }
     let options = IngestCoreOptions {
         embedding_model_id,
         citation_plan: CitationPlan::DraftHint,
@@ -235,6 +274,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
                 content_id: None,
                 payloads: None,
             },
+            publication: None,
         },
         |_tx, _outcome| Box::pin(async { Ok(()) }),
     )
@@ -592,6 +632,21 @@ where
     // there; inserting again trips `<table>_pkey` on `t`.
     if !outcome.idempotent_replay {
         sidecar(tx, &outcome).await?;
+        // The capture. Same transaction as the `memory` row and the typed
+        // sidecars, and guarded by the same `!idempotent_replay` test: a
+        // receipt replay reuses `(handle, t)`, so re-capturing would trip
+        // the outbox primary key — and, if it somehow did not, would put a
+        // second copy of one Fact on the wire.
+        if let Some(capture) = input.publication {
+            crate::verbs::publication_outbox::capture_publication_in_tx(
+                tx,
+                owner.stored_owner_id(),
+                outcome.memory_id.into_inner(),
+                capture.draft,
+                &capture.limits,
+            )
+            .await?;
+        }
     }
     if outcome.idempotent_replay {
         outcome.cited_object_id =

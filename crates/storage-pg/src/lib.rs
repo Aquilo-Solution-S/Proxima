@@ -529,6 +529,8 @@ const SUPPORT_RELATION_MARKERS: &str = r"SELECT CASE
            THEN 'missing relation proxima_core.group_memberships'
          WHEN to_regclass('proxima_core.cold_purge_pending') IS NULL
            THEN 'missing relation proxima_core.cold_purge_pending'
+         WHEN to_regclass('proxima_core.publication_outbox') IS NULL
+           THEN 'missing relation proxima_core.publication_outbox'
          ELSE NULL
        END";
 
@@ -1436,6 +1438,15 @@ pub struct PgStorage {
     non_embeddable_schemas: Vec<String>,
     tuning: PgTuning,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
+    /// Deployment bounds on publication capture: the pending-queue ceiling
+    /// the capture probes before it inserts, and the byte ceiling one
+    /// sealed envelope may reach.
+    ///
+    /// Defaults rather than `Option`, because a deployment that registers
+    /// no listenable schema never reaches either check and one that does
+    /// must have a bound: an unbounded outbox is a disk-exhaustion path
+    /// with a Fact write on the other end of it.
+    publication_limits: proxima_core::publication::PublicationLimits,
     cold: Arc<dyn proxima_core::ColdObjectStore>,
 }
 
@@ -1594,6 +1605,7 @@ impl PgStorage {
             non_embeddable_schemas: Vec::new(),
             tuning,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
+            publication_limits: proxima_core::publication::PublicationLimits::default(),
             cold: Arc::new(verbs::forget::MemoryColdStore::default()),
         })
     }
@@ -1676,6 +1688,27 @@ impl PgStorage {
 
     /// Apply the host's validated embedding runtime policy to every storage
     /// reclaim and stale-observability path.
+    /// Apply the deployment's publication bounds.
+    ///
+    /// The limits are storage-side because both are refusals a
+    /// TRANSACTION has to make: the size check happens after the envelope
+    /// is sealed against the `t` storage minted, and the capacity check
+    /// reads the outbox itself.
+    #[must_use]
+    pub const fn with_publication_limits(
+        mut self,
+        limits: proxima_core::publication::PublicationLimits,
+    ) -> Self {
+        self.publication_limits = limits;
+        self
+    }
+
+    /// The publication bounds this storage enforces.
+    #[must_use]
+    pub const fn publication_limits(&self) -> proxima_core::publication::PublicationLimits {
+        self.publication_limits
+    }
+
     #[must_use]
     pub fn with_embedding_runtime_policy(
         mut self,
@@ -1945,15 +1978,15 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
              0003_v010_reference_integrity.sql, 0004_v011_goal_refs.sql, \
              the hard-erase witness is 0005_erased_pin_targets.sql, \
              0006_v013_goal_replay_declaration.sql, \
              0007_upload_content_identity.sql, 0008_cold_integrity_digest.sql, \
-             0009_declared_sidecar_presence.sql \
-             and 0010_purge_queue_backend.sql"
+             0009_declared_sidecar_presence.sql, 0010_purge_queue_backend.sql \
+             and 0011_v012_fact_outbox.sql"
         );
     }
 
@@ -2042,10 +2075,15 @@ mod tests {
             &["cold_purge_pending", "ADD COLUMN backend"],
             "give the durable purge queue its backend identity",
         );
-        // The legacy range shrinks as the head advances: versions 7 through 10
-        // are current additive migrations, so only 11..=21 remain retired by
+        carries(
+            11,
+            &["publication_outbox", "publication_state"],
+            "capture a listenable Fact's event in the Fact's own transaction",
+        );
+        // The legacy range shrinks as the head advances: versions 7 through 11
+        // are current additive migrations, so only 12..=21 remain retired by
         // the v0.0.8 squash.
-        for dead in 11..=21 {
+        for dead in 12..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"
