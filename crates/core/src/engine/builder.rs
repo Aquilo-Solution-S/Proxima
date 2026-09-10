@@ -26,6 +26,7 @@ impl Engine {
             embed: Arc::new(RwLock::new(None)),
             embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy::default(),
             embedding_reloader: None,
+            publication: crate::publication::PublicationConfig::default(),
             mcp_listen_addr: DEFAULT_MCP_LISTEN_ADDR,
             mcp_listener: None,
             mcp_url: Arc::new(RwLock::new(None)),
@@ -144,6 +145,35 @@ impl Engine {
         self
     }
 
+    /// Bind the deployment's publication source and capture bounds
+    /// (docs/18 §Configuration).
+    ///
+    /// Fallible on purpose. A registry that freezes a listenable schema and
+    /// a configuration that binds no source is a deployment which would
+    /// refuse every write of that schema at runtime; the host learns that
+    /// at boot, naming the schemas that made a source required, instead of
+    /// on the first admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::publication::PublicationError::SourceUnbound`] when
+    /// the frozen registry carries a listenable schema and `config.source`
+    /// is `None`.
+    pub fn try_with_publication_config(
+        mut self,
+        config: crate::publication::PublicationConfig,
+    ) -> Result<Self, crate::publication::PublicationError> {
+        config.validate_against(self.registry.listenable_schema_ids())?;
+        self.publication = config;
+        Ok(self)
+    }
+
+    /// The bound publication configuration.
+    #[must_use]
+    pub const fn publication_config(&self) -> &crate::publication::PublicationConfig {
+        &self.publication
+    }
+
     #[must_use]
     pub fn with_embedding_reloader(mut self, reloader: Arc<dyn EmbeddingClientReloader>) -> Self {
         self.embedding_reloader = Some(reloader);
@@ -229,5 +259,45 @@ mod tests {
             matches!(result, Err(LlmError::Embed(ref message)) if message.contains("timed out")),
             "engine timeout must remain retryable: {result:?}"
         );
+    }
+
+    /// A deployment that freezes a listenable schema and binds no source
+    /// would refuse every write of that schema. The host learns it at boot,
+    /// and the message names the schema that made a source required.
+    #[test]
+    fn a_listenable_registry_refuses_to_boot_without_a_source() {
+        let engine = Engine::new(crate::test_fixtures::probe_registry());
+        let err = engine
+            .try_with_publication_config(crate::publication::PublicationConfig::default())
+            .expect_err("an unbound source must fail the build");
+        assert!(
+            matches!(
+                err,
+                crate::publication::PublicationError::SourceUnbound { ref schema_id }
+                    if schema_id == "probe/listenable-v1"
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// The same registry boots once a source is bound, and the bound value
+    /// is what the engine carries.
+    #[test]
+    fn a_bound_source_boots_and_is_readable() {
+        let source = crate::publication::PublicationSource::new("urn:proxima:test-install")
+            .expect("a URN is an absolute source");
+        let engine = Engine::new(crate::test_fixtures::probe_registry())
+            .try_with_publication_config(crate::publication::PublicationConfig::new(source.clone()))
+            .expect("a bound source boots");
+        assert_eq!(engine.publication_config().source.as_ref(), Some(&source));
+    }
+
+    /// A registry with no listenable schema needs no source at all: the
+    /// boot rule must not tax deployments the feature does not touch.
+    #[test]
+    fn a_registry_with_no_listenable_schema_needs_no_source() {
+        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .try_with_publication_config(crate::publication::PublicationConfig::default())
+            .expect("no listenable schema, no obligation");
     }
 }

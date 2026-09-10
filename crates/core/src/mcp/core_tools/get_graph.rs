@@ -74,6 +74,7 @@ pub async fn get_graph(
             schema_id: info.schema_id.as_str().to_string(),
             schema_version: info.schema_version.into_inner(),
             kind: kind_str(info.kind).to_string(),
+            listenable: info.listenable,
         })
         .collect();
 

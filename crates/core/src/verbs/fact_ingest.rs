@@ -203,6 +203,11 @@ pub(crate) struct AuthorizedFactCore {
     fact_natural_key_columns: Vec<String>,
     fact_natural_key_values: Option<Vec<(String, SidecarAtom)>>,
     links: AuthorizedNodeLinks,
+    /// The publication record this admission captures, resolved by the
+    /// engine at authorization time from the frozen `SchemaInfo.listenable`
+    /// and the typed payload. `None` for every non-listenable schema, which
+    /// is every schema unless one declared otherwise.
+    publication: Option<crate::publication::PublicationDraft>,
 }
 
 impl AuthorizedFactCore {
@@ -220,7 +225,23 @@ impl AuthorizedFactCore {
             fact_natural_key_columns,
             fact_natural_key_values: None,
             links,
+            publication: None,
         }
+    }
+
+    /// Bind the resolved publication draft. Called only by the engine's
+    /// authorization path, which is the one place that has both the frozen
+    /// schema declaration and the trusted model identity.
+    pub(crate) fn with_publication(
+        mut self,
+        publication: Option<crate::publication::PublicationDraft>,
+    ) -> Self {
+        self.publication = publication;
+        self
+    }
+
+    pub(crate) const fn publication(&self) -> Option<&crate::publication::PublicationDraft> {
+        self.publication.as_ref()
     }
 
     pub(crate) fn with_natural_key_values(
@@ -404,6 +425,22 @@ impl AuthorizedFactWrite {
         ))
     }
 
+    /// Test-only: attach the publication draft core would have resolved.
+    ///
+    /// Storage backend tests exercise the WRITE PORT, and the port reads
+    /// the draft off the witness. Without this they could only reach the
+    /// capture by calling a backend verb directly, which is the layering
+    /// the port exists to prevent.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn with_publication_for_tests(
+        mut self,
+        publication: crate::publication::PublicationDraft,
+    ) -> Self {
+        self.core = self.core.with_publication(Some(publication));
+        self
+    }
+
     pub(crate) const fn new(core: AuthorizedFactCore) -> Self {
         Self { core }
     }
@@ -435,6 +472,17 @@ impl AuthorizedFactWrite {
     #[must_use]
     pub const fn draft(&self) -> &FactWriteCommand {
         self.core.draft()
+    }
+
+    /// The publication record this admission must capture, or `None` when
+    /// the Fact's schema is not listenable.
+    ///
+    /// Read by the storage backend inside the write transaction. It is
+    /// DATA, not a callback, so the bounded retry around
+    /// begin→body→commit re-runs cleanly.
+    #[must_use]
+    pub const fn publication(&self) -> Option<&crate::publication::PublicationDraft> {
+        self.core.publication()
     }
 
     #[must_use]
@@ -668,6 +716,17 @@ impl AuthorizedFactWithCitation {
         self.core.draft()
     }
 
+    /// The publication record this admission must capture, or `None` when
+    /// the Fact's schema is not listenable.
+    ///
+    /// Read by the storage backend inside the write transaction. It is
+    /// DATA, not a callback, so the bounded retry around
+    /// begin→body→commit re-runs cleanly.
+    #[must_use]
+    pub const fn publication(&self) -> Option<&crate::publication::PublicationDraft> {
+        self.core.publication()
+    }
+
     #[must_use]
     pub const fn cited_object(&self) -> &AuthorizedInlineCitedObject {
         &self.cited_object
@@ -756,6 +815,17 @@ impl AuthorizedFactWithCitationRef {
     #[must_use]
     pub const fn draft(&self) -> &FactWriteCommand {
         self.core.draft()
+    }
+
+    /// The publication record this admission must capture, or `None` when
+    /// the Fact's schema is not listenable.
+    ///
+    /// Read by the storage backend inside the write transaction. It is
+    /// DATA, not a callback, so the bounded retry around
+    /// begin→body→commit re-runs cleanly.
+    #[must_use]
+    pub const fn publication(&self) -> Option<&crate::publication::PublicationDraft> {
+        self.core.publication()
     }
 
     #[must_use]

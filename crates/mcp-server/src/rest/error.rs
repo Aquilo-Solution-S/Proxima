@@ -263,6 +263,23 @@ const fn storage_status(err: &StorageError) -> (StatusCode, &'static str, &'stat
             "Idempotency conflict",
         ),
         StorageError::Suppressed(_) => (StatusCode::CONFLICT, "suppressed", "Suppressed"),
+        // A refused publication capture keeps the write path's own split:
+        // an unexportable or oversized payload and a listenable write on
+        // the receipt-only route are the caller's to fix; an unbound
+        // source and an exhausted outbox are the deployment's.
+        StorageError::PublicationRefused(publication) => match publication {
+            proxima_core::publication::PublicationError::PayloadTooLarge { .. }
+            | proxima_core::publication::PublicationError::ExportFailed(_)
+            | proxima_core::publication::PublicationError::UntypedListenableWrite { .. } => {
+                (StatusCode::BAD_REQUEST, "invalid-input", "Invalid input")
+            }
+            proxima_core::publication::PublicationError::SourceUnbound { .. }
+            | proxima_core::publication::PublicationError::CapacityExhausted { .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "Internal error",
+            ),
+        },
         StorageError::Retryable(_)
         | StorageError::Unavailable(_)
         | StorageError::Internal(_)

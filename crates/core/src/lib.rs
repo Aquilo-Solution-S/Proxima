@@ -36,12 +36,16 @@ pub mod owner_inverse;
 pub mod payload;
 pub mod payload_contract;
 pub mod protocol;
+pub mod publication;
 pub mod read_models;
 pub mod scope;
 pub mod secrets;
 pub mod storage;
 pub mod storage_ports;
-#[cfg(feature = "test-fixtures")]
+// Also under plain `cfg(test)`: the in-crate suites use the same probe
+// payloads and probe flavor the storage backend's tests do, and a fixture
+// that existed only under a feature flag would be a second copy.
+#[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
 pub mod text_bounds;
 pub mod tool;
@@ -85,6 +89,11 @@ pub use owner_inverse::{
 };
 pub use payload::*;
 pub use payload_contract::assert_no_serde_json_value_fields;
+pub use publication::{
+    CLOUDEVENTS_DATA_CONTENT_TYPE, CLOUDEVENTS_SPEC_VERSION, DEFAULT_MAX_PAYLOAD_BYTES,
+    DEFAULT_MAX_PENDING, PublicationConfig, PublicationDraft, PublicationError, PublicationLimits,
+    PublicationSource, PublicationSourceError, SealedPublication, data_schema_uri,
+};
 pub use read_models::*;
 pub use scope::{ScopeDecl, ScopeKind, ScopeRef, scope_set};
 pub use secrets::*;

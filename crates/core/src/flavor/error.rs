@@ -185,6 +185,19 @@ pub enum FlavorRegistryError {
         flavor_id: &'static str,
         table: &'static str,
     },
+    /// A schema declared itself listenable and published no JSON schema.
+    ///
+    /// A captured event names its `dataschema`
+    /// (`proxima://schema/{id}/{version}`), and a consumer that follows it
+    /// has to find something there. A listenable schema with no
+    /// `json_schema()` would emit events pointing at a catalog entry that
+    /// resolves to nothing, for the lifetime of every one of those events.
+    #[error(
+        "schema {schema_id} declares LISTENABLE = true but returns no json_schema(); a \
+         captured event's dataschema names the local catalog, so a listenable schema \
+         must publish one"
+    )]
+    ListenableWithoutSchema { schema_id: SchemaId },
     /// A surface declares an erase no leg can perform: keyed on something
     /// the erase builds no selection set for, and claimed by no bespoke
     /// leg. The erase would skip it in silence and report `Completed` over
@@ -529,7 +542,7 @@ mod display_tests {
     use std::collections::HashSet;
 
     /// The number of variants the enum carries today.
-    const VARIANT_COUNT: usize = 46;
+    const VARIANT_COUNT: usize = 47;
 
     fn sid(id: &str) -> SchemaId {
         SchemaId::new(id.to_owned())
@@ -623,6 +636,9 @@ mod display_tests {
             FlavorRegistryError::ContractSchemaPrefix {
                 flavor_id: "alpha",
                 schema_id: sid("beta.thing"),
+            },
+            FlavorRegistryError::ListenableWithoutSchema {
+                schema_id: sid("alpha.listenable"),
             },
             FlavorRegistryError::UnreachableExportSurface {
                 flavor_id: "alpha",
@@ -837,6 +853,11 @@ mod display_tests {
             }
             FlavorRegistryError::ContractSchemaPrefix { .. } => {
                 "flavor alpha declares schema beta.thing, which does not carry its prefix"
+            }
+            FlavorRegistryError::ListenableWithoutSchema { .. } => {
+                "schema alpha.listenable declares LISTENABLE = true but returns no \
+                 json_schema(); a captured event's dataschema names the local catalog, so a \
+                 listenable schema must publish one"
             }
             FlavorRegistryError::UnreachableExportSurface { .. } => {
                 "flavor alpha declares alpha.rows exportable, but it carries no owner column and \

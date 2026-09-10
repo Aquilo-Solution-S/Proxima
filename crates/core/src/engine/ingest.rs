@@ -252,6 +252,8 @@ impl Engine {
             .await?;
         let natural_key_values =
             bind_fact_natural_key(&draft, &fact_natural_key_columns, sidecars)?;
+        let publication =
+            self.resolve_publication(authority, fact_info, *permit.owner(), sidecars)?;
         Ok(AuthorizedFactWrite::new(
             AuthorizedFactCore::new(
                 permit.into(),
@@ -260,7 +262,8 @@ impl Engine {
                 fact_natural_key_columns,
                 links,
             )
-            .with_natural_key_values(natural_key_values),
+            .with_natural_key_values(natural_key_values)
+            .with_publication(publication),
         ))
     }
 
@@ -305,6 +308,8 @@ impl Engine {
 
         let natural_key_values =
             bind_fact_natural_key(&draft, &fact_natural_key_columns, sidecars)?;
+        let publication =
+            self.resolve_publication(authority, fact_info, *permit.owner(), sidecars)?;
         Ok(AuthorizedFactWithCitation::new(
             AuthorizedFactCore::new(
                 permit.into(),
@@ -313,7 +318,8 @@ impl Engine {
                 fact_natural_key_columns,
                 links,
             )
-            .with_natural_key_values(natural_key_values),
+            .with_natural_key_values(natural_key_values)
+            .with_publication(publication),
             cited_object,
             mapping,
         ))
@@ -358,6 +364,8 @@ impl Engine {
 
         let natural_key_values =
             bind_fact_natural_key(&draft, &fact_natural_key_columns, sidecars)?;
+        let publication =
+            self.resolve_publication(authority, fact_info, *permit.owner(), sidecars)?;
         Ok(AuthorizedFactWithCitationRef::new(
             AuthorizedFactCore::new(
                 permit.into(),
@@ -366,7 +374,8 @@ impl Engine {
                 fact_natural_key_columns,
                 links,
             )
-            .with_natural_key_values(natural_key_values),
+            .with_natural_key_values(natural_key_values)
+            .with_publication(publication),
             cited_object_id,
             expected_object_schema,
             mapping,
@@ -902,6 +911,81 @@ impl Engine {
             ));
         }
         Ok(())
+    }
+
+    /// Resolve the publication draft a Fact admission must capture, or
+    /// `None` when its schema is not listenable.
+    ///
+    /// Everything the envelope needs that is NOT the `t` storage mints is
+    /// bound here, at authorization time, in the one place that holds all
+    /// three inputs: the frozen schema declaration, the deployment's
+    /// configured source, and the authenticated edge's trusted model
+    /// identity. In particular the model label is
+    /// [`crate::AuthzContext::trusted_model_id`] and never the caller's
+    /// own `model_id` argument, which is a claim rather than a credential.
+    ///
+    /// A listenable schema written through a route that carries no typed
+    /// payload is REFUSED here, before any write: the export snapshot IS
+    /// the payload's serde JSON, and a receipt-only admission has none.
+    fn resolve_publication<A>(
+        &self,
+        authority: &A,
+        fact_info: &SchemaInfo,
+        owner: Owner,
+        sidecars: &[SidecarPayload],
+    ) -> Result<Option<crate::publication::PublicationDraft>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        if !fact_info.listenable {
+            return Ok(None);
+        }
+        let schema_id = fact_info.schema_id.clone();
+        let Some(source) = self.publication.source.clone() else {
+            return Err(super::errors::map_publication_error(
+                &crate::publication::PublicationError::SourceUnbound {
+                    schema_id: schema_id.as_str().to_owned(),
+                },
+            ));
+        };
+        let mut matches = sidecars.iter().filter(|payload| {
+            payload.kind == PayloadKind::Fact
+                && payload.schema_id == schema_id
+                && payload.schema_version == fact_info.schema_version
+        });
+        let Some(payload) = matches.next() else {
+            return Err(super::errors::map_publication_error(
+                &crate::publication::PublicationError::UntypedListenableWrite {
+                    schema_id: schema_id.as_str().to_owned(),
+                },
+            ));
+        };
+        if matches.next().is_some() {
+            return Err(super::errors::map_publication_error(
+                &crate::publication::PublicationError::ExportFailed(format!(
+                    "listenable schema {} was supplied twice in one admission",
+                    schema_id.as_str()
+                )),
+            ));
+        }
+        let data = payload.to_protocol_json().map_err(|err| {
+            super::errors::map_publication_error(
+                &crate::publication::PublicationError::ExportFailed(err),
+            )
+        })?;
+        let model_id = self
+            .operation_authority(authority)?
+            .authz()
+            .trusted_model_id()
+            .map(ToOwned::to_owned);
+        Ok(Some(crate::publication::PublicationDraft::new(
+            schema_id,
+            fact_info.schema_version,
+            source,
+            owner,
+            model_id,
+            data,
+        )))
     }
 
     fn fact_schema_info(

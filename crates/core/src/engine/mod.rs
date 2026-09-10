@@ -71,6 +71,11 @@ pub struct Engine {
     embed: Arc<RwLock<Option<Arc<dyn EmbeddingClient>>>>,
     embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy,
     embedding_reloader: Option<Arc<dyn EmbeddingClientReloader>>,
+    /// Producer identity and capture bounds for listenable Fact schemas
+    /// (docs/18). Default-constructed means "no source bound", which is
+    /// correct for the overwhelming majority of deployments: nothing is
+    /// listenable, so nothing needs one.
+    publication: crate::publication::PublicationConfig,
     pub(crate) mcp_listen_addr: SocketAddr,
     pub(crate) mcp_listener: Option<Arc<dyn EngineMcpListener>>,
     pub(crate) mcp_url: Arc<RwLock<Option<String>>>,

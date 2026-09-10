@@ -55,6 +55,7 @@ pub mod resource {
     pub const CHANGE_EVENTS: &str = "resource:change-events";
     pub const WAKE_CANDIDATES: &str = "resource:wake-candidates";
     pub const SCHEMAS: &str = "resource:schemas";
+    pub const SCHEMA: &str = "resource:schema";
     pub const GOALS: &str = "resource:goals";
     pub const GOAL: &str = "resource:goal";
 }
