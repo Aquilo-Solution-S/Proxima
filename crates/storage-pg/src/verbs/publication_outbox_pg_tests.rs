@@ -981,13 +981,19 @@ async fn the_captured_envelope_cannot_be_rewritten() {
         .expect("capture");
     let t = outcome.memory_id.into_inner();
 
-    for statement in [
-        "UPDATE proxima_core.publication_outbox SET envelope = '\\x00'::bytea WHERE t = $1",
-        "UPDATE proxima_core.publication_outbox SET event_id = 'F:forged' WHERE t = $1",
-        "UPDATE proxima_core.publication_outbox SET envelope_digest = \
-         decode(repeat('00', 32), 'hex') WHERE t = $1",
+    for rewrite in [
+        sqlx::query(
+            "UPDATE proxima_core.publication_outbox SET envelope = '\\x00'::bytea WHERE t = $1",
+        ),
+        sqlx::query(
+            "UPDATE proxima_core.publication_outbox SET event_id = 'F:forged' WHERE t = $1",
+        ),
+        sqlx::query(
+            "UPDATE proxima_core.publication_outbox SET envelope_digest = \
+             decode(repeat('00', 32), 'hex') WHERE t = $1",
+        ),
     ] {
-        let err = sqlx::query(statement)
+        let err = rewrite
             .bind(t)
             .execute(&pool)
             .await
