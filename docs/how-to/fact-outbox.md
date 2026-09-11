@@ -1,6 +1,7 @@
 # Publish Facts over the outbox
 
-Recipe for turning on the Fact outbox and its NATS JetStream publisher.
+Recipe for turning on the Fact outbox and its NATS JetStream publisher. NATS
+stream and consumer topology is provisioned by DevOps, outside the process.
 Contract: [18-fact-outbox.md](../18-fact-outbox.md). Env reference:
 [10-configuration.md](../10-configuration.md), [reference/env-vars.md](../reference/env-vars.md).
 
@@ -36,16 +37,14 @@ directory is a named volume — see the persistence note in
 ```sh
 export PROXIMA_PUBLICATION_SOURCE="urn:proxima:dev-host"   # required once a type is listenable
 export PROXIMA_NATS_URL="nats://127.0.0.1:4224"            # unset ⇒ publisher off, capture still runs
-export PROXIMA_NATS_PROFILE="local-file"                   # the only shipped profile
 cargo run -p proxima-mcp --features nats
 ```
 
-The stream `PROXIMA_FACTS` is created on first start if absent. If a stream of
-that name already exists it is **verified, not adopted**: storage, retention,
-`discard`, subjects, `max_age`, replicas, `max_message_size` and
-`duplicate_window` must all match the profile, and boot fails naming every
-mismatch. Omitting `PROXIMA_NATS_URL` is the rollback path: writes still
-capture, records stay `pending`.
+The stream and durable consumer must already exist with the deployment's
+chosen subjects, transforms, partitions, retention, capacity and consumer
+binding. The publisher only needs publish permission on the source subject and
+reply-inbox permission. Omitting `PROXIMA_NATS_URL` is the rollback path:
+writes still capture, records stay `pending`.
 
 ## 4. Run the reference consumer
 
@@ -82,11 +81,11 @@ than passing vacuously.
 |---|---|---|
 | `pending` count climbing | publisher off, broker unreachable, or stream full | check `PROXIMA_NATS_URL`, then `nats stream info` for `discard: New` rejections |
 | `CapacityExhausted` on write (HTTP 503) | unpublished backlog hit `PROXIMA_OUTBOX_MAX_PENDING` | find out why delivery stopped and fix THAT; raising the cap hides real backpressure |
-| stream at `max_bytes`, `BrokerCapacity` in the publisher log | the stream is full — and an ACK does **not** free space (below) | raise `PROXIMA_NATS_MAX_STREAM_BYTES`, or purge already-consumed sequences |
-| `PayloadTooLarge` on write | export exceeds `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | shrink the payload, or raise the cap **and** `PROXIMA_NATS_MAX_MESSAGE_BYTES` — raising only the first is a boot error, by design |
+| stream at its capacity, `BrokerCapacity` in the publisher log | the deployment's stream is full — and an ACK may not free space | raise the deployment's stream capacity, or purge already-consumed sequences |
+| `PayloadTooLarge` on write | export exceeds `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | shrink the payload or raise the Proxima capture cap; configure the broker's message ceiling separately |
 | one record's `attempts` climbing while others publish | a single record the broker keeps refusing; the claim order demoted it so it no longer blocks the queue | read the `error`-level line naming its event id, then fix the record or the stream limit it violates |
 | boot fails `SourceUnbound` | a listenable type is registered with no `PROXIMA_PUBLICATION_SOURCE` | set the producer identity URI |
-| boot fails naming stream mismatches | an existing `PROXIMA_FACTS` disagrees with the profile | fix the stream, or point at a different name; do NOT ignore a `max_age` mismatch — it silently expires captured events |
+| no consumer delivery | the deployment's source → transform → partition → consumer binding is wrong or absent | inspect the provisioned stream and durable consumer; `PubAck` only proves broker storage |
 | duplicate deliveries | expected: at-least-once | deduplicate on the CloudEvent `id` (`F:<uuid>`) |
 
 ### A full stream does not drain itself
@@ -107,13 +106,12 @@ nats stream purge PROXIMA_FACTS --seq <n>      # n <= EVERY consumer's ack_floor
 at or beyond it. That judgement is yours: the substrate will not guess how many
 consumers you run.
 
-`WorkQueue` and `Interest` retention would free space on ACK, and are **not
-offered**. Both delete a message once its bound consumers acknowledge it, so a
-stream with zero bound consumers drops what it accepts — a deployment whose
-consumer has not been created yet, or was deleted during an incident, would
-lose committed events and get a PubAck for each one. A stream that refuses new
-work is a failure you can see and undo; a stream that accepts work and discards
-it is not.
+The local fixture uses `Limits` and `discard: New` because that makes broker
+capacity visible as backpressure. If production chooses `WorkQueue`, `Interest`
+or another policy, DevOps must test the exact zero-consumer, retention and
+acknowledgement semantics before enabling the publisher. A stream that refuses
+new work is a failure you can see and undo; a stream that accepts work and
+discards it is not.
 
 ### Reclaiming database storage
 

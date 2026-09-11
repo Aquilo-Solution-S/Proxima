@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_nats::jetstream;
-use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
 use bytes::Bytes;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -179,7 +178,8 @@ pub struct ReferenceConsumer {
 }
 
 impl ReferenceConsumer {
-    /// Connect and bind the durable consumer, creating it if absent.
+    /// Connect and bind an existing durable consumer provisioned by the
+    /// deployment. This path never creates or updates broker topology.
     ///
     /// # Errors
     ///
@@ -197,8 +197,7 @@ impl ReferenceConsumer {
     ///
     /// # Errors
     ///
-    /// As [`Self::connect`], plus [`ConsumerError::ConsumerMismatch`] when a
-    /// durable of this name already exists under a weaker configuration.
+    /// As [`Self::connect`].
     pub async fn connect_with_hook(
         config: NatsConsumerConfig,
         intake: Arc<dyn DurableIntake>,
@@ -208,41 +207,10 @@ impl ReferenceConsumer {
             .await
             .map_err(|error| ConsumerError::Connect(error.to_string()))?;
         let context = jetstream::new(client);
-        let stream = context
-            .get_stream(&config.stream)
+        let consumer: jetstream::consumer::Consumer<jetstream::consumer::pull::Config> = context
+            .get_consumer_from_stream(&config.durable_name, &config.stream)
             .await
             .map_err(|error| ConsumerError::Broker(error.to_string()))?;
-        let desired = jetstream::consumer::pull::Config {
-            durable_name: Some(config.durable_name.clone()),
-            // Explicit: the ACK is the durability handshake this
-            // consumer exists to demonstrate.
-            ack_policy: AckPolicy::Explicit,
-            ack_wait: config.ack_wait,
-            // Unlimited redelivery. A ceiling would silently drop
-            // an event whose sink was down longer than N attempts,
-            // which is precisely the loss the outbox prevents
-            // upstream.
-            max_deliver: -1,
-            deliver_policy: DeliverPolicy::All,
-            max_ack_pending: config.max_ack_pending,
-            filter_subject: config.subject_filter(),
-            ..jetstream::consumer::pull::Config::default()
-        };
-        let consumer = stream
-            .get_or_create_consumer(&config.durable_name, desired.clone())
-            .await
-            .map_err(|error| ConsumerError::Broker(error.to_string()))?;
-        // `get_or_create_consumer` returns an EXISTING durable's own
-        // configuration unverified, so without this the comment above is a
-        // wish: a `proxima-reference` left behind by another deployment
-        // with `max_deliver: 3` would be adopted silently and start
-        // dropping events on the fourth attempt. The stream half of this
-        // adapter refuses a weaker stream; the consumer half owes the same.
-        verify_consumer_compatible(
-            &config.durable_name,
-            &consumer.cached_info().config,
-            &desired,
-        )?;
         Ok(Self {
             consumer,
             intake,
@@ -392,72 +360,6 @@ fn malformed_envelope(subject: &str, raw: &Bytes, error: &serde_json::Error) -> 
     }
 }
 
-/// Refuse an existing durable whose delivery contract is not this one.
-///
-/// Six fields, each of which changes what an ACK means or which messages
-/// arrive at all: the acknowledgement policy, how long the broker waits for
-/// one, how many times it will try, where the durable starts, which
-/// subjects it filters, and how many deliveries may be outstanding. A
-/// mismatch is refused rather than patched — updating another deployment's
-/// consumer would move ITS ack floor.
-fn verify_consumer_compatible(
-    name: &str,
-    existing: &jetstream::consumer::Config,
-    desired: &jetstream::consumer::pull::Config,
-) -> Result<(), ConsumerError> {
-    let mismatch = |field: &'static str, found: String, expected: String| {
-        Err(ConsumerError::ConsumerMismatch {
-            consumer: name.to_owned(),
-            field,
-            existing: found,
-            desired: expected,
-        })
-    };
-    if existing.ack_policy != desired.ack_policy {
-        return mismatch(
-            "ack_policy",
-            format!("{:?}", existing.ack_policy),
-            format!("{:?}", desired.ack_policy),
-        );
-    }
-    if existing.max_deliver != desired.max_deliver {
-        return mismatch(
-            "max_deliver",
-            existing.max_deliver.to_string(),
-            desired.max_deliver.to_string(),
-        );
-    }
-    if existing.deliver_policy != desired.deliver_policy {
-        return mismatch(
-            "deliver_policy",
-            format!("{:?}", existing.deliver_policy),
-            format!("{:?}", desired.deliver_policy),
-        );
-    }
-    if existing.filter_subject != desired.filter_subject {
-        return mismatch(
-            "filter_subject",
-            existing.filter_subject.clone(),
-            desired.filter_subject.clone(),
-        );
-    }
-    if existing.ack_wait != desired.ack_wait {
-        return mismatch(
-            "ack_wait",
-            format!("{:?}", existing.ack_wait),
-            format!("{:?}", desired.ack_wait),
-        );
-    }
-    if existing.max_ack_pending != desired.max_ack_pending {
-        return mismatch(
-            "max_ack_pending",
-            existing.max_ack_pending.to_string(),
-            desired.max_ack_pending.to_string(),
-        );
-    }
-    Ok(())
-}
-
 /// Why a consume pass stopped.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConsumerError {
@@ -465,17 +367,6 @@ pub enum ConsumerError {
     Connect(String),
     #[error("JetStream refused the request: {0}")]
     Broker(String),
-    #[error(
-        "durable consumer {consumer} already exists with {field} = {existing}, but this \
-         deployment requires {desired}; refusing to adopt a consumer whose delivery \
-         contract is not the one this sink was written against"
-    )]
-    ConsumerMismatch {
-        consumer: String,
-        field: &'static str,
-        existing: String,
-        desired: String,
-    },
     #[error("acknowledging a message failed: {0}")]
     Ack(String),
 }
@@ -504,109 +395,6 @@ mod tests {
         let envelope: CloudEventEnvelope = serde_json::from_slice(bytes).expect("parses");
         assert_eq!(envelope.proximamodel, None);
         assert_eq!(envelope.proximaowner, None);
-    }
-
-    /// The desired durable, as `connect_with_hook` asks for it.
-    fn desired() -> jetstream::consumer::pull::Config {
-        jetstream::consumer::pull::Config {
-            durable_name: Some("proxima-reference".to_owned()),
-            ack_policy: AckPolicy::Explicit,
-            ack_wait: Duration::from_secs(30),
-            max_deliver: -1,
-            deliver_policy: DeliverPolicy::All,
-            max_ack_pending: 1000,
-            filter_subject: "proxima.fact.>".to_owned(),
-            ..jetstream::consumer::pull::Config::default()
-        }
-    }
-
-    /// The same durable as the broker would report it back.
-    fn as_existing(config: &jetstream::consumer::pull::Config) -> jetstream::consumer::Config {
-        jetstream::consumer::Config {
-            durable_name: config.durable_name.clone(),
-            ack_policy: config.ack_policy,
-            ack_wait: config.ack_wait,
-            max_deliver: config.max_deliver,
-            deliver_policy: config.deliver_policy,
-            max_ack_pending: config.max_ack_pending,
-            filter_subject: config.filter_subject.clone(),
-            ..jetstream::consumer::Config::default()
-        }
-    }
-
-    #[test]
-    fn a_durable_left_behind_with_a_delivery_ceiling_is_refused_not_adopted() {
-        let desired = desired();
-        let mut existing = as_existing(&desired);
-        existing.max_deliver = 3;
-        let err = verify_consumer_compatible("proxima-reference", &existing, &desired)
-            .expect_err("a delivery ceiling drops events the outbox guaranteed");
-        assert!(
-            matches!(
-                err,
-                ConsumerError::ConsumerMismatch {
-                    field: "max_deliver",
-                    ..
-                }
-            ),
-            "{err}"
-        );
-
-        let mut existing = as_existing(&desired);
-        existing.ack_policy = AckPolicy::None;
-        assert!(matches!(
-            verify_consumer_compatible("proxima-reference", &existing, &desired),
-            Err(ConsumerError::ConsumerMismatch {
-                field: "ack_policy",
-                ..
-            })
-        ));
-
-        let mut existing = as_existing(&desired);
-        existing.filter_subject = "other.>".to_owned();
-        assert!(matches!(
-            verify_consumer_compatible("proxima-reference", &existing, &desired),
-            Err(ConsumerError::ConsumerMismatch {
-                field: "filter_subject",
-                ..
-            })
-        ));
-
-        let mut existing = as_existing(&desired);
-        existing.deliver_policy = DeliverPolicy::New;
-        assert!(matches!(
-            verify_consumer_compatible("proxima-reference", &existing, &desired),
-            Err(ConsumerError::ConsumerMismatch {
-                field: "deliver_policy",
-                ..
-            })
-        ));
-
-        let mut existing = as_existing(&desired);
-        existing.ack_wait = Duration::from_secs(5);
-        assert!(matches!(
-            verify_consumer_compatible("proxima-reference", &existing, &desired),
-            Err(ConsumerError::ConsumerMismatch {
-                field: "ack_wait",
-                ..
-            })
-        ));
-
-        let mut existing = as_existing(&desired);
-        existing.max_ack_pending = 1;
-        assert!(matches!(
-            verify_consumer_compatible("proxima-reference", &existing, &desired),
-            Err(ConsumerError::ConsumerMismatch {
-                field: "max_ack_pending",
-                ..
-            })
-        ));
-
-        // The durable this deployment itself created is adopted.
-        assert!(
-            verify_consumer_compatible("proxima-reference", &as_existing(&desired), &desired)
-                .is_ok()
-        );
     }
 
     #[test]

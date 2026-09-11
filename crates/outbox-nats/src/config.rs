@@ -14,13 +14,10 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use proxima_core::publication::PublicationLimits;
 use proxima_core::storage_ports::publication::{PublisherId, PublisherIdError};
 
 /// Presence key for the whole block.
 pub const ENV_URL: &str = "PROXIMA_NATS_URL";
-pub const ENV_PROFILE: &str = "PROXIMA_NATS_PROFILE";
-pub const ENV_STREAM: &str = "PROXIMA_NATS_STREAM";
 pub const ENV_SUBJECT_PREFIX: &str = "PROXIMA_NATS_SUBJECT_PREFIX";
 pub const ENV_CREDS_FILE: &str = "PROXIMA_NATS_CREDS_FILE";
 pub const ENV_USER: &str = "PROXIMA_NATS_USER";
@@ -31,24 +28,16 @@ pub const ENV_LEASE_SECS: &str = "PROXIMA_NATS_LEASE_SECS";
 pub const ENV_POLL_MS: &str = "PROXIMA_NATS_POLL_MS";
 pub const ENV_PUBLISH_TIMEOUT_MS: &str = "PROXIMA_NATS_PUBLISH_TIMEOUT_MS";
 pub const ENV_PUBLISHER_ID: &str = "PROXIMA_NATS_PUBLISHER_ID";
-pub const ENV_MAX_STREAM_BYTES: &str = "PROXIMA_NATS_MAX_STREAM_BYTES";
-pub const ENV_MAX_MESSAGE_BYTES: &str = "PROXIMA_NATS_MAX_MESSAGE_BYTES";
-pub const ENV_DUPLICATE_WINDOW_SECS: &str = "PROXIMA_NATS_DUPLICATE_WINDOW_SECS";
+pub const ENV_CONSUMER_STREAM: &str = "PROXIMA_NATS_CONSUMER_STREAM";
 pub const ENV_CONSUMER_NAME: &str = "PROXIMA_NATS_CONSUMER_NAME";
-pub const ENV_ACK_WAIT_SECS: &str = "PROXIMA_NATS_ACK_WAIT_SECS";
-pub const ENV_MAX_ACK_PENDING: &str = "PROXIMA_NATS_MAX_ACK_PENDING";
 
-/// The only shipped profile's name on the wire.
-pub const PROFILE_LOCAL_FILE: &str = "local-file";
-
-pub const DEFAULT_STREAM: &str = "PROXIMA_FACTS";
 pub const DEFAULT_SUBJECT_PREFIX: &str = "proxima.fact";
+pub const DEFAULT_CONSUMER_STREAM: &str = "PROXIMA_FACTS";
 pub const DEFAULT_CONSUMER_NAME: &str = "proxima-reference";
 pub const DEFAULT_BATCH: u32 = 64;
 pub const DEFAULT_LEASE: Duration = Duration::from_secs(30);
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 pub const DEFAULT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(5);
-pub const DEFAULT_ACK_WAIT: Duration = Duration::from_secs(30);
 /// How long the consumer waits for a connection and for one `JetStream`
 /// API round trip.
 ///
@@ -57,15 +46,6 @@ pub const DEFAULT_ACK_WAIT: Duration = Duration::from_secs(30);
 /// redelivery — and reusing it as the connect timeout would make an
 /// unreachable broker hang for that long before anyone is told.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-pub const DEFAULT_DUPLICATE_WINDOW: Duration = Duration::from_mins(2);
-pub const DEFAULT_MAX_ACK_PENDING: i64 = 1000;
-/// 1 GiB of stream capacity by default. Explicit, never `-1`: an unlimited
-/// stream turns broker backpressure into disk exhaustion on the host.
-pub const DEFAULT_MAX_STREAM_BYTES: i64 = 1024 * 1024 * 1024;
-/// Headroom above the capture cap for the `CloudEvents` envelope and the
-/// three headers, so a payload the outbox accepted is never one the stream
-/// refuses.
-pub const MESSAGE_SIZE_HEADROOM_BYTES: usize = 16 * 1024;
 
 /// How the publisher authenticates to the broker.
 ///
@@ -124,75 +104,23 @@ fn redacted_url(url: &str) -> String {
         .join(",")
 }
 
-/// The shipped `JetStream` profile.
-///
-/// One variant on purpose. A cluster profile is a different durability
-/// claim (replicas, placement, leader election) and shipping it as a
-/// string a deployment can set without the code that honours it would be a
-/// silent downgrade; any other value is [`ConfigError::UnsupportedProfile`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DeliveryProfile {
-    /// File storage, `replicas: 1`, retention `Limits`, discard `New`,
-    /// `max_age: 0`, subjects `<prefix>.>`.
-    #[default]
-    LocalFile,
-}
-
-impl DeliveryProfile {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::LocalFile => PROFILE_LOCAL_FILE,
-        }
-    }
-
-    /// Parse a configured profile name.
-    ///
-    /// # Errors
-    ///
-    /// [`ConfigError::UnsupportedProfile`] for any value other than
-    /// `local-file`.
-    pub fn parse(raw: &str) -> Result<Self, ConfigError> {
-        if raw == PROFILE_LOCAL_FILE {
-            return Ok(Self::LocalFile);
-        }
-        Err(ConfigError::UnsupportedProfile {
-            value: raw.to_owned(),
-        })
-    }
-}
-
-impl std::fmt::Display for DeliveryProfile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Everything the publisher needs to reach one broker and hold one stream.
+/// Everything the publisher needs to reach one broker and publish one source
+/// subject. Stream topology is provisioned and owned by the deployment.
 #[derive(Clone)]
 pub struct NatsPublisherConfig {
     /// `nats://…`; a comma-separated list names several servers of one
     /// cluster.
     pub url: String,
     pub auth: NatsAuth,
-    pub profile: DeliveryProfile,
-    pub stream: String,
-    /// Validated: dot-separated tokens of `[A-Za-z0-9_-]`, no wildcards. A
-    /// prefix carrying `*` or `>` would make the stream subscribe to
-    /// subjects it does not own.
+    /// Validated: dot-separated tokens of `[A-Za-z0-9_-]`, no wildcards. This
+    /// is the source subject prefix; stream transforms and partitions are
+    /// deployment-owned and may rewrite it after publication.
     pub subject_prefix: String,
     pub publisher_id: PublisherId,
     pub batch: NonZeroU32,
     pub lease: Duration,
     pub poll_interval: Duration,
     pub publish_timeout: Duration,
-    /// Stream `max_bytes`. `-1` (unlimited) is refused: capacity has to be
-    /// a number someone chose.
-    pub max_stream_bytes: i64,
-    /// Stream `max_msg_size`.
-    pub max_message_bytes: i32,
-    /// Broker-side dedup window, keyed on `Nats-Msg-Id`.
-    pub duplicate_window: Duration,
 }
 
 /// Hand-written, and NOT `finish_non_exhaustive`: every field is printed
@@ -204,17 +132,12 @@ impl std::fmt::Debug for NatsPublisherConfig {
         f.debug_struct("NatsPublisherConfig")
             .field("url", &redacted_url(&self.url))
             .field("auth", &self.auth)
-            .field("profile", &self.profile)
-            .field("stream", &self.stream)
             .field("subject_prefix", &self.subject_prefix)
             .field("publisher_id", &self.publisher_id)
             .field("batch", &self.batch)
             .field("lease", &self.lease)
             .field("poll_interval", &self.poll_interval)
             .field("publish_timeout", &self.publish_timeout)
-            .field("max_stream_bytes", &self.max_stream_bytes)
-            .field("max_message_bytes", &self.max_message_bytes)
-            .field("duplicate_window", &self.duplicate_window)
             .finish()
     }
 }
@@ -234,17 +157,12 @@ impl NatsPublisherConfig {
         Ok(Self {
             url: url.into(),
             auth: NatsAuth::None,
-            profile: DeliveryProfile::LocalFile,
-            stream: DEFAULT_STREAM.to_owned(),
             subject_prefix: DEFAULT_SUBJECT_PREFIX.to_owned(),
             publisher_id: default_publisher_id(&proxima_core::process_env)?,
             batch: NonZeroU32::new(DEFAULT_BATCH).expect("64 is not zero"),
             lease: DEFAULT_LEASE,
             poll_interval: DEFAULT_POLL_INTERVAL,
             publish_timeout: DEFAULT_PUBLISH_TIMEOUT,
-            max_stream_bytes: DEFAULT_MAX_STREAM_BYTES,
-            max_message_bytes: default_max_message_bytes(&PublicationLimits::default()),
-            duplicate_window: DEFAULT_DUPLICATE_WINDOW,
         })
     }
 
@@ -255,8 +173,8 @@ impl NatsPublisherConfig {
     ///
     /// # Errors
     ///
-    /// [`ConfigError`] for an unsupported profile, an invalid subject
-    /// prefix, conflicting or incomplete auth, or a malformed number.
+    /// [`ConfigError`] for an invalid subject prefix, conflicting or
+    /// incomplete auth, or a malformed number.
     pub fn from_lookup(
         lookup: impl Fn(&str) -> Option<String>,
     ) -> Result<Option<Self>, ConfigError> {
@@ -265,12 +183,6 @@ impl NatsPublisherConfig {
             return Ok(None);
         };
         let mut config = Self::new(url)?;
-        if let Some(raw) = lookup(ENV_PROFILE) {
-            config.profile = DeliveryProfile::parse(&raw)?;
-        }
-        if let Some(raw) = lookup(ENV_STREAM) {
-            config.stream = validated_stream_name(&raw)?;
-        }
         if let Some(raw) = lookup(ENV_SUBJECT_PREFIX) {
             config.subject_prefix = validated_subject_prefix(&raw)?;
         }
@@ -296,20 +208,6 @@ impl NatsPublisherConfig {
         if let Some(raw) = lookup(ENV_PUBLISH_TIMEOUT_MS) {
             config.publish_timeout =
                 Duration::from_millis(parse_positive_u64(ENV_PUBLISH_TIMEOUT_MS, &raw)?);
-        }
-        if let Some(raw) = lookup(ENV_MAX_STREAM_BYTES) {
-            config.max_stream_bytes = parse_stream_bytes(&raw)?;
-        }
-        if let Some(raw) = lookup(ENV_MAX_MESSAGE_BYTES) {
-            let bytes = parse_positive_u64(ENV_MAX_MESSAGE_BYTES, &raw)?;
-            config.max_message_bytes = i32::try_from(bytes).map_err(|_| ConfigError::Number {
-                key: ENV_MAX_MESSAGE_BYTES,
-                value: raw.clone(),
-            })?;
-        }
-        if let Some(raw) = lookup(ENV_DUPLICATE_WINDOW_SECS) {
-            config.duplicate_window =
-                Duration::from_secs(parse_positive_u64(ENV_DUPLICATE_WINDOW_SECS, &raw)?);
         }
         config.validate()?;
         Ok(Some(config))
@@ -353,24 +251,6 @@ impl NatsPublisherConfig {
         }
         Ok(())
     }
-
-    /// Raise the stream's `max_msg_size` to the deployment's capture cap
-    /// plus [`MESSAGE_SIZE_HEADROOM_BYTES`].
-    ///
-    /// The two ceilings have to agree or a Fact the outbox accepted is one
-    /// the stream refuses forever; the host calls this with the same
-    /// [`PublicationLimits`] the engine enforces, so there is one number.
-    #[must_use]
-    pub fn with_capture_limits(mut self, limits: &PublicationLimits) -> Self {
-        self.max_message_bytes = default_max_message_bytes(limits);
-        self
-    }
-
-    /// Every subject this stream owns.
-    #[must_use]
-    pub fn subject_filter(&self) -> String {
-        format!("{}.>", self.subject_prefix)
-    }
 }
 
 /// Everything the reference consumer needs to bind one durable pull
@@ -380,20 +260,15 @@ pub struct NatsConsumerConfig {
     pub url: String,
     pub auth: NatsAuth,
     pub stream: String,
-    pub subject_prefix: String,
     /// Durable name. Two processes sharing it share the work; two
     /// deployments sharing it by accident share the acknowledgements.
     pub durable_name: String,
-    /// How long the BROKER waits for this consumer's ACK. Set it to what
-    /// the slowest durable sink needs.
-    pub ack_wait: Duration,
     /// How long THIS process waits for the broker: connect, and one
-    /// `JetStream` API round trip. Bounded independently of
-    /// [`Self::ack_wait`] and not read from the environment — an
-    /// unreachable broker must be reported in seconds however patient the
+    /// `JetStream` API round trip. This is bounded independently of the
+    /// broker's consumer ACK policy and is not read from the environment —
+    /// an unreachable broker must be reported in seconds however patient the
     /// sink is.
     pub request_timeout: Duration,
-    pub max_ack_pending: i64,
 }
 
 /// Hand-written for the same reason as [`NatsPublisherConfig`]'s.
@@ -403,11 +278,8 @@ impl std::fmt::Debug for NatsConsumerConfig {
             .field("url", &redacted_url(&self.url))
             .field("auth", &self.auth)
             .field("stream", &self.stream)
-            .field("subject_prefix", &self.subject_prefix)
             .field("durable_name", &self.durable_name)
-            .field("ack_wait", &self.ack_wait)
             .field("request_timeout", &self.request_timeout)
-            .field("max_ack_pending", &self.max_ack_pending)
             .finish()
     }
 }
@@ -418,12 +290,9 @@ impl NatsConsumerConfig {
         Self {
             url: url.into(),
             auth: NatsAuth::None,
-            stream: DEFAULT_STREAM.to_owned(),
-            subject_prefix: DEFAULT_SUBJECT_PREFIX.to_owned(),
+            stream: DEFAULT_CONSUMER_STREAM.to_owned(),
             durable_name: DEFAULT_CONSUMER_NAME.to_owned(),
-            ack_wait: DEFAULT_ACK_WAIT,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
-            max_ack_pending: DEFAULT_MAX_ACK_PENDING,
         }
     }
 
@@ -433,8 +302,7 @@ impl NatsConsumerConfig {
     ///
     /// # Errors
     ///
-    /// [`ConfigError`] for an invalid subject prefix, conflicting auth, or
-    /// a malformed number.
+    /// [`ConfigError`] for an invalid binding name or conflicting auth.
     pub fn from_lookup(
         lookup: impl Fn(&str) -> Option<String>,
     ) -> Result<Option<Self>, ConfigError> {
@@ -443,26 +311,13 @@ impl NatsConsumerConfig {
             return Ok(None);
         };
         let mut config = Self::new(url);
-        if let Some(raw) = lookup(ENV_STREAM) {
-            config.stream = validated_stream_name(&raw)?;
-        }
-        if let Some(raw) = lookup(ENV_SUBJECT_PREFIX) {
-            config.subject_prefix = validated_subject_prefix(&raw)?;
+        if let Some(raw) = lookup(ENV_CONSUMER_STREAM) {
+            config.stream = validated_name(ENV_CONSUMER_STREAM, &raw)?;
         }
         if let Some(raw) = lookup(ENV_CONSUMER_NAME) {
-            config.durable_name = validated_stream_name(&raw)?;
+            config.durable_name = validated_name(ENV_CONSUMER_NAME, &raw)?;
         }
         config.auth = auth_from_lookup(&lookup)?;
-        if let Some(raw) = lookup(ENV_ACK_WAIT_SECS) {
-            config.ack_wait = Duration::from_secs(parse_positive_u64(ENV_ACK_WAIT_SECS, &raw)?);
-        }
-        if let Some(raw) = lookup(ENV_MAX_ACK_PENDING) {
-            let pending = parse_positive_u64(ENV_MAX_ACK_PENDING, &raw)?;
-            config.max_ack_pending = i64::try_from(pending).map_err(|_| ConfigError::Number {
-                key: ENV_MAX_ACK_PENDING,
-                value: raw.clone(),
-            })?;
-        }
         Ok(Some(config))
     }
 
@@ -474,22 +329,11 @@ impl NatsConsumerConfig {
     pub fn from_env() -> Result<Option<Self>, ConfigError> {
         Self::from_lookup(proxima_core::process_env)
     }
-
-    /// Every subject this consumer filters on.
-    #[must_use]
-    pub fn subject_filter(&self) -> String {
-        format!("{}.>", self.subject_prefix)
-    }
 }
 
 /// Why a `PROXIMA_NATS_*` block was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
-    #[error(
-        "PROXIMA_NATS_PROFILE must be `local-file`, the only shipped delivery profile, \
-         got {value:?}"
-    )]
-    UnsupportedProfile { value: String },
     #[error(
         "PROXIMA_NATS_SUBJECT_PREFIX must be dot-separated tokens of [A-Za-z0-9_-] \
          and must not carry the `*` or `>` wildcards, got {value:?}"
@@ -499,11 +343,6 @@ pub enum ConfigError {
     InvalidName { key: &'static str, value: String },
     #[error("{key} must be a positive integer, got {value:?}")]
     Number { key: &'static str, value: String },
-    #[error(
-        "PROXIMA_NATS_MAX_STREAM_BYTES must be a positive byte count; unlimited (-1) is \
-         refused because stream capacity has to be an explicit choice, got {value:?}"
-    )]
-    UnboundedStream { value: String },
     #[error("the NATS auth forms are mutually exclusive: {first} and {second} are both set")]
     ConflictingAuth {
         first: &'static str,
@@ -555,14 +394,6 @@ fn default_publisher_id(
         .map_err(|error| ConfigError::PublisherId { error })
 }
 
-/// The stream's `max_msg_size` for a deployment enforcing `limits`.
-fn default_max_message_bytes(limits: &PublicationLimits) -> i32 {
-    let bytes = limits
-        .max_payload_bytes
-        .saturating_add(MESSAGE_SIZE_HEADROOM_BYTES);
-    i32::try_from(bytes).unwrap_or(i32::MAX)
-}
-
 fn auth_from_lookup(lookup: &impl Fn(&str) -> Option<String>) -> Result<NatsAuth, ConfigError> {
     let creds = lookup(ENV_CREDS_FILE);
     let user = lookup(ENV_USER);
@@ -604,14 +435,14 @@ fn auth_from_lookup(lookup: &impl Fn(&str) -> Option<String>) -> Result<NatsAuth
 
 /// A stream or durable-consumer name: no whitespace and none of the three
 /// subject metacharacters, which is exactly what the broker enforces.
-fn validated_stream_name(raw: &str) -> Result<String, ConfigError> {
+fn validated_name(key: &'static str, raw: &str) -> Result<String, ConfigError> {
     if raw.is_empty()
         || raw
             .chars()
             .any(|c| c.is_whitespace() || matches!(c, '.' | '*' | '>'))
     {
         return Err(ConfigError::InvalidName {
-            key: ENV_STREAM,
+            key,
             value: raw.to_owned(),
         });
     }
@@ -650,15 +481,6 @@ fn parse_positive_u64(key: &'static str, raw: &str) -> Result<u64, ConfigError> 
         Ok(value) if value > 0 => Ok(value),
         _ => Err(ConfigError::Number {
             key,
-            value: raw.to_owned(),
-        }),
-    }
-}
-
-fn parse_stream_bytes(raw: &str) -> Result<i64, ConfigError> {
-    match raw.parse::<i64>() {
-        Ok(value) if value > 0 => Ok(value),
-        _ => Err(ConfigError::UnboundedStream {
             value: raw.to_owned(),
         }),
     }
@@ -735,7 +557,7 @@ mod tests {
     #[test]
     fn an_unset_url_is_a_publisher_that_is_off_not_a_broken_host() {
         assert!(
-            NatsPublisherConfig::from_lookup(env(&[("PROXIMA_NATS_STREAM", "OTHER")]))
+            NatsPublisherConfig::from_lookup(env(&[(ENV_CONSUMER_STREAM, "OTHER")]))
                 .expect("parses")
                 .is_none()
         );
@@ -743,25 +565,6 @@ mod tests {
             NatsConsumerConfig::from_lookup(env(&[]))
                 .expect("parses")
                 .is_none()
-        );
-    }
-
-    #[test]
-    fn any_profile_but_local_file_is_refused_by_name() {
-        let err = NatsPublisherConfig::from_lookup(env(&[
-            (ENV_URL, "nats://127.0.0.1:4222"),
-            (ENV_PROFILE, "cluster"),
-        ]))
-        .expect_err("cluster is not shipped");
-        assert_eq!(
-            err,
-            ConfigError::UnsupportedProfile {
-                value: "cluster".to_owned()
-            }
-        );
-        assert_eq!(
-            DeliveryProfile::parse(PROFILE_LOCAL_FILE).expect("shipped"),
-            DeliveryProfile::LocalFile
         );
     }
 
@@ -822,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unlimited_stream_is_refused_and_the_numbers_must_be_positive() {
+    fn the_numbers_must_be_positive() {
         for (key, value) in [
             (ENV_BATCH, "0"),
             (ENV_LEASE_SECS, "0"),
@@ -834,12 +637,6 @@ mod tests {
                     .expect_err("{key} must refuse {value}");
             assert!(matches!(err, ConfigError::Number { .. }), "{err}");
         }
-        let err = NatsPublisherConfig::from_lookup(env(&[
-            (ENV_URL, "nats://x:4222"),
-            (ENV_MAX_STREAM_BYTES, "-1"),
-        ]))
-        .expect_err("unlimited is refused");
-        assert!(matches!(err, ConfigError::UnboundedStream { .. }));
     }
 
     #[test]
@@ -847,24 +644,18 @@ mod tests {
         let config = NatsPublisherConfig::from_lookup(env(&[(ENV_URL, "nats://127.0.0.1:4222")]))
             .expect("parses")
             .expect("url set");
-        assert_eq!(config.stream, DEFAULT_STREAM);
         assert_eq!(config.subject_prefix, DEFAULT_SUBJECT_PREFIX);
         assert_eq!(config.batch.get(), DEFAULT_BATCH);
         assert_eq!(config.lease, DEFAULT_LEASE);
         assert_eq!(config.poll_interval, DEFAULT_POLL_INTERVAL);
         assert_eq!(config.publish_timeout, DEFAULT_PUBLISH_TIMEOUT);
-        assert_eq!(config.duplicate_window, DEFAULT_DUPLICATE_WINDOW);
-        assert_eq!(config.max_stream_bytes, DEFAULT_MAX_STREAM_BYTES);
-        assert_eq!(config.profile, DeliveryProfile::LocalFile);
         assert_eq!(config.auth, NatsAuth::None);
-        assert_eq!(config.subject_filter(), "proxima.fact.>");
 
         let consumer = NatsConsumerConfig::from_lookup(env(&[(ENV_URL, "nats://127.0.0.1:4222")]))
             .expect("parses")
             .expect("url set");
         assert_eq!(consumer.durable_name, DEFAULT_CONSUMER_NAME);
-        assert_eq!(consumer.ack_wait, DEFAULT_ACK_WAIT);
-        assert_eq!(consumer.max_ack_pending, DEFAULT_MAX_ACK_PENDING);
+        assert_eq!(consumer.stream, DEFAULT_CONSUMER_STREAM);
     }
 
     #[test]
@@ -897,21 +688,6 @@ mod tests {
                 .expect("publisher id")
                 .validate()
                 .is_ok()
-        );
-    }
-
-    #[test]
-    fn the_message_ceiling_follows_the_capture_ceiling() {
-        let limits = PublicationLimits {
-            max_pending: 10,
-            max_payload_bytes: 1_000,
-        };
-        let config = NatsPublisherConfig::new("nats://x:4222")
-            .expect("publisher id")
-            .with_capture_limits(&limits);
-        assert_eq!(
-            config.max_message_bytes,
-            1_000 + i32::try_from(MESSAGE_SIZE_HEADROOM_BYTES).expect("16 KiB fits")
         );
     }
 

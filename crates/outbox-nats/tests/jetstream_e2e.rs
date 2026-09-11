@@ -18,13 +18,16 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{DropFirstAcks, Fixture, RecordingIntake, SeenOutcome, batch, nats_url_or_skip};
+use common::{
+    DropFirstAcks, Fixture, RecordingIntake, SeenOutcome, batch, nats_url_or_skip,
+    publisher_url_or_skip,
+};
 use proxima_core::storage_ports::publication::{
     AckOutcome, BrokerReceipt, ClaimToken, PublisherId,
 };
 use proxima_outbox_nats::{
-    ConfigError, ConsumerError, DeliveryProfile, HookAction, JetStreamPublisher,
-    NatsPublisherConfig, PublishHook, PublisherError, ReferenceConsumer,
+    HookAction, JetStreamPublisher, NatsPublisherConfig, PublishHook, PublisherError,
+    ReferenceConsumer,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -84,6 +87,78 @@ async fn drain_until_idle(publisher: &JetStreamPublisher, passes: u32) -> u64 {
         }
     }
     total
+}
+
+#[tokio::test]
+async fn publisher_works_without_stream_management_rights() {
+    let Some(admin_url) = nats_url_or_skip("publisher_works_without_stream_management_rights")
+    else {
+        return;
+    };
+    let Some(_publisher_url) =
+        publisher_url_or_skip("publisher_works_without_stream_management_rights")
+    else {
+        return;
+    };
+    Fixture::new("nats_publisher_permissions", admin_url)
+        .await
+        .run(async |fixture| {
+            fixture
+                .capture("publisher has no topology rights", None)
+                .await
+                .expect("capture succeeds before publication");
+            let publisher = JetStreamPublisher::connect(fixture.config.clone(), fixture.outbox())
+                .await
+                .expect("publish-only credentials connect without stream management");
+            assert_eq!(drain_until_idle(&publisher, 2).await, 1);
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn deployment_transform_can_route_to_a_partition_consumer() {
+    let Some(admin_url) =
+        nats_url_or_skip("deployment_transform_can_route_to_a_partition_consumer")
+    else {
+        return;
+    };
+    Fixture::new("nats_partition_transform", admin_url)
+        .await
+        .run(async |fixture| {
+            let durable = format!("partition_{}", fixture.stream.to_lowercase());
+            fixture
+                .update_stream(|config| {
+                    config.subject_transform =
+                        Some(async_nats::jetstream::stream::SubjectTransform {
+                            source: format!("{}.>", fixture.config.subject_prefix),
+                            destination: "partition.>".to_owned(),
+                        });
+                })
+                .await;
+            fixture.provision_consumer(&durable, "partition.>").await;
+
+            fixture
+                .capture("deployment transform partition", None)
+                .await
+                .expect("capture succeeds before publication");
+            let publisher = JetStreamPublisher::connect(fixture.config.clone(), fixture.outbox())
+                .await
+                .expect("publisher does not inspect or reject the transform");
+            assert_eq!(drain_until_idle(&publisher, 2).await, 1);
+
+            let intake = RecordingIntake::new();
+            let consumer =
+                ReferenceConsumer::connect(fixture.consumer_config_named(durable), intake.clone())
+                    .await
+                    .expect("consumer binds the deployment-provided partition durable");
+            consume_until(&consumer, &intake, 1).await;
+            assert_eq!(intake.distinct_ids().len(), 1);
+            assert_eq!(
+                intake.seen()[0].subject.split('.').next(),
+                Some("partition")
+            );
+        })
+        .await;
 }
 
 /// Consume until `want` distinct ids have been durably recorded, or the
@@ -350,7 +425,7 @@ async fn concurrent_publishers_and_stale_workers_lose_nothing() {
             assert_eq!(taken.len(), 1);
             assert_eq!(taken[0].id, held[0].id, "the same record changed hands");
             let receipt = BrokerReceipt {
-                stream: fixture.config.stream.clone(),
+                stream: fixture.stream.clone(),
                 sequence: 9_999,
             };
             assert_eq!(
@@ -422,14 +497,18 @@ async fn consumer_durable_intake_then_lost_ack_redelivers_idempotently() {
     else {
         return;
     };
-    // A one-second dedup window and a two-second `ack_wait`, so the
+    // A one-second deployment-configured dedup window and a two-second
+    // deployment-configured `ack_wait`, so the
     // redelivery provably lands OUTSIDE the window the broker deduplicates
     // in: idempotency at the sink is what carries this case, not the
     // broker's `Nats-Msg-Id` memory.
     Fixture::new("nats_lost_ack", url)
         .await
-        .tweak(|config| config.duplicate_window = Duration::from_secs(1))
         .run(async |fixture| {
+            let duplicate_window = Duration::from_secs(1);
+            fixture
+                .update_stream(|config| config.duplicate_window = duplicate_window)
+                .await;
             fixture.capture("lost-ack", None).await.expect("captured");
             let publisher = JetStreamPublisher::connect(fixture.config.clone(), fixture.outbox())
                 .await
@@ -465,10 +544,9 @@ async fn consumer_durable_intake_then_lost_ack_redelivers_idempotently() {
             let seen = intake.seen();
             assert_eq!(seen.len(), 2, "the broker must redeliver: {seen:?}");
             assert!(
-                elapsed > fixture.config.duplicate_window,
-                "the redelivery must land beyond the broker's {:?} dedup window to prove \
-                 the sink's own idempotency carries it, took {elapsed:?}",
-                fixture.config.duplicate_window
+                elapsed > duplicate_window,
+                "the redelivery must land beyond the broker's {duplicate_window:?} dedup window \
+                 to prove the sink's own idempotency carries it, took {elapsed:?}"
             );
             assert_eq!(seen[0].id, seen[1].id, "the same event, twice");
             assert_eq!(seen[0].raw, seen[1].raw, "byte-identical");
@@ -566,11 +644,13 @@ async fn broker_capacity_backpressure_is_explicit() {
     // outbox that lost records to make room would be a delivery hole.
     Fixture::new("nats_capacity", url)
         .await
-        .tweak(|config| {
-            config.max_stream_bytes = 1024;
-            config.max_message_bytes = 256;
-        })
         .run(async |fixture| {
+            fixture
+                .update_stream(|config| {
+                    config.max_bytes = 1024;
+                    config.max_message_size = 256;
+                })
+                .await;
             let outcome = fixture
                 .capture(&"x".repeat(2048), None)
                 .await
@@ -609,11 +689,13 @@ async fn one_unpublishable_record_does_not_stall_the_ones_behind_it() {
     // whole batch, and be re-claimed at the head of the next one forever.
     Fixture::new("nats_poison", url)
         .await
-        .tweak(|config| {
-            config.max_stream_bytes = 8 * 1024 * 1024;
-            config.max_message_bytes = 2048;
-        })
         .run(async |fixture| {
+            fixture
+                .update_stream(|config| {
+                    config.max_bytes = 8 * 1024 * 1024;
+                    config.max_message_size = 2048;
+                })
+                .await;
             let poison = fixture
                 .capture(&"p".repeat(8 * 1024), None)
                 .await
@@ -740,70 +822,9 @@ async fn cancellation_inside_a_batch_hands_the_rest_of_the_claims_back() {
 }
 
 #[tokio::test]
-async fn a_durable_consumer_with_a_delivery_ceiling_is_refused_not_adopted() {
-    let Some(url) =
-        nats_url_or_skip("a_durable_consumer_with_a_delivery_ceiling_is_refused_not_adopted")
-    else {
-        return;
-    };
-    Fixture::new("nats_consumer_mismatch", url)
-        .await
-        .run(async |fixture| {
-            // The publisher provisions the stream.
-            let _publisher = JetStreamPublisher::connect(fixture.config.clone(), fixture.outbox())
-                .await
-                .expect("the publisher connects");
-            let wanted = fixture.consumer_config();
-
-            // Another deployment got here first and left a durable of the
-            // same name that gives up after three attempts.
-            let client = async_nats::connect(&fixture.url)
-                .await
-                .expect("the broker is up");
-            let stream = async_nats::jetstream::new(client)
-                .get_stream(&fixture.config.stream)
-                .await
-                .expect("the publisher created it");
-            stream
-                .create_consumer(async_nats::jetstream::consumer::pull::Config {
-                    durable_name: Some(wanted.durable_name.clone()),
-                    ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
-                    ack_wait: wanted.ack_wait,
-                    max_deliver: 3,
-                    deliver_policy: async_nats::jetstream::consumer::DeliverPolicy::All,
-                    max_ack_pending: wanted.max_ack_pending,
-                    filter_subject: wanted.subject_filter(),
-                    ..async_nats::jetstream::consumer::pull::Config::default()
-                })
-                .await
-                .expect("the foreign durable is created");
-
-            let error = ReferenceConsumer::connect(wanted, RecordingIntake::new())
-                .await
-                .expect_err("adopting a durable that drops events must be refused");
-            assert!(
-                matches!(
-                    error,
-                    ConsumerError::ConsumerMismatch {
-                        field: "max_deliver",
-                        ..
-                    }
-                ),
-                "expected a consumer mismatch, got {error}"
-            );
-        })
-        .await;
-}
-
-#[tokio::test]
-async fn unsupported_profile_and_bad_config_fail_explicitly() {
+async fn bad_config_fails_explicitly() {
     // No broker needed: these are refusals the configuration makes on its
     // own, before anything is opened.
-    assert!(matches!(
-        DeliveryProfile::parse("cluster"),
-        Err(ConfigError::UnsupportedProfile { .. })
-    ));
-
     let env = |pairs: Vec<(&'static str, &'static str)>| {
         move |key: &str| {
             pairs
@@ -827,10 +848,6 @@ async fn unsupported_profile_and_bad_config_fail_explicitly() {
         ],
         vec![
             ("PROXIMA_NATS_URL", "nats://127.0.0.1:4222"),
-            ("PROXIMA_NATS_MAX_STREAM_BYTES", "0"),
-        ],
-        vec![
-            ("PROXIMA_NATS_URL", "nats://127.0.0.1:4222"),
             ("PROXIMA_NATS_TOKEN", "t"),
             ("PROXIMA_NATS_USER", "u"),
             ("PROXIMA_NATS_PASSWORD", "p"),
@@ -841,12 +858,12 @@ async fn unsupported_profile_and_bad_config_fail_explicitly() {
             .expect_err(&format!("{described} must be refused"));
     }
 
-    // And the presence key alone is a complete configuration.
+    // And the presence key alone is a complete publisher configuration.
     let ok =
         NatsPublisherConfig::from_lookup(env(vec![("PROXIMA_NATS_URL", "nats://127.0.0.1:4222")]))
             .expect("a bare URL is enough")
             .expect("the presence key is set");
-    assert_eq!(ok.profile, DeliveryProfile::LocalFile);
+    assert_eq!(ok.subject_prefix, "proxima.fact");
 }
 
 #[tokio::test]

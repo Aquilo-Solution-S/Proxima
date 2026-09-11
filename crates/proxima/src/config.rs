@@ -63,15 +63,6 @@ pub(crate) const ENV_PUBLICATION_SOURCE: &str = "PROXIMA_PUBLICATION_SOURCE";
 pub(crate) const ENV_OUTBOX_MAX_PENDING: &str = "PROXIMA_OUTBOX_MAX_PENDING";
 /// Environment key bounding one sealed envelope.
 pub(crate) const ENV_OUTBOX_MAX_PAYLOAD_BYTES: &str = "PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES";
-/// Environment key naming the stream's per-message ceiling.
-///
-/// Parsed by the adapter (`crates/outbox-nats/src/config.rs`); named here
-/// only so [`crate::RuntimeBuilder::resolve`] can tell an operator's chosen
-/// value from the adapter's default before deriving one from the capture
-/// ceiling.
-#[cfg(feature = "outbox-nats")]
-pub(crate) const ENV_NATS_MAX_MESSAGE_BYTES: &str = "PROXIMA_NATS_MAX_MESSAGE_BYTES";
-
 /// Environment key retiring records that were already DELIVERED.
 pub(crate) const ENV_OUTBOX_PUBLISHED_RETENTION_SECS: &str =
     "PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS";

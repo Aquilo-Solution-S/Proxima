@@ -47,12 +47,6 @@ pub struct RuntimeBuilder {
     /// keeps published records forever, which is both the default and what
     /// `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS=0` spells.
     published_retention: Option<Duration>,
-    /// Whether the operator named `PROXIMA_NATS_MAX_MESSAGE_BYTES`
-    /// themselves. Kept beside the parsed config because `resolve` needs to
-    /// know the difference between a value an operator chose and the
-    /// adapter's own default — see the derivation in `resolve`.
-    #[cfg(feature = "outbox-nats")]
-    nats_max_message_bytes_explicit: bool,
     #[cfg(feature = "outbox-nats")]
     nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
 }
@@ -114,9 +108,6 @@ impl RuntimeBuilder {
                 .or(base.embedding_runtime_policy),
             publication: self.publication.or(base.publication),
             published_retention: self.published_retention.or(base.published_retention),
-            #[cfg(feature = "outbox-nats")]
-            nats_max_message_bytes_explicit: self.nats_max_message_bytes_explicit
-                || base.nats_max_message_bytes_explicit,
             #[cfg(feature = "outbox-nats")]
             nats: self.nats.or(base.nats),
         }
@@ -434,8 +425,6 @@ impl RuntimeBuilder {
         }
         #[cfg(feature = "outbox-nats")]
         if self.nats.is_none() {
-            self.nats_max_message_bytes_explicit =
-                lookup(crate::config::ENV_NATS_MAX_MESSAGE_BYTES).is_some();
             self.nats = crate::config::nats_from_lookup(&lookup)?;
         }
         Ok(self)
@@ -519,65 +508,12 @@ impl RuntimeBuilder {
             embedding_runtime_policy: self.embedding_runtime_policy.unwrap_or_default(),
             publication: publication.clone(),
             published_retention: self.published_retention,
-            // The stream's per-message ceiling is DERIVED from the capture
-            // ceiling, in the one place that holds both. A broker that
-            // refuses a message the outbox was willing to capture would
-            // strand that record forever; deriving it here makes the two
-            // impossible to set inconsistently.
-            //
-            // Unless the operator named `PROXIMA_NATS_MAX_MESSAGE_BYTES`
-            // themselves, in which case silently overwriting it is the
-            // worse failure: an operator who raised the stream's ceiling to
-            // match a broker-side `max_payload` would watch it be replaced
-            // by a number they never chose. A chosen value is honoured when
-            // it is large enough for what capture may accept, and is a boot
-            // error when it is not — the two ceilings still cannot
-            // disagree, but the disagreement is now reported instead of
-            // resolved behind the operator's back.
             #[cfg(feature = "outbox-nats")]
-            nats: self
-                .nats
-                .map(|nats| {
-                    resolve_nats_message_ceiling(
-                        nats,
-                        &publication.limits,
-                        self.nats_max_message_bytes_explicit,
-                    )
-                })
-                .transpose()?,
+            nats: self.nats,
         };
         config.validate()?;
         Ok((config, parts))
     }
-}
-
-/// Reconcile the stream's per-message ceiling with the capture ceiling.
-///
-/// `explicit` is whether the operator set `PROXIMA_NATS_MAX_MESSAGE_BYTES`.
-/// When they did not, the value is derived from `limits` and there is
-/// nothing to reconcile. When they did, the chosen value stands as long as
-/// it is at least the derived one; anything smaller is a configuration in
-/// which capture may accept a record the broker will refuse forever, and
-/// the boot says so.
-#[cfg(feature = "outbox-nats")]
-fn resolve_nats_message_ceiling(
-    nats: proxima_outbox_nats::NatsPublisherConfig,
-    limits: &proxima_core::publication::PublicationLimits,
-    explicit: bool,
-) -> Result<proxima_outbox_nats::NatsPublisherConfig, ProximaError> {
-    let derived = nats.clone().with_capture_limits(limits);
-    if !explicit {
-        return Ok(derived);
-    }
-    if nats.max_message_bytes < derived.max_message_bytes {
-        return Err(ProximaError::Config(format!(
-            "PROXIMA_NATS_MAX_MESSAGE_BYTES is {}, under the {} the capture ceiling \
-             PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES={} needs with envelope headroom; a record \
-             the outbox accepts and the stream refuses can never be delivered",
-            nats.max_message_bytes, derived.max_message_bytes, limits.max_payload_bytes
-        )));
-    }
-    Ok(nats)
 }
 
 /// Pure, validated runtime config.

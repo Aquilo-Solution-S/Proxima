@@ -211,9 +211,9 @@ pub use proxima_mcp_server::{HostAllowlist, McpAuthContext, ResourceServerMetada
 /// (listenable schema ⇒ bound source) holds without this feature.
 #[cfg(feature = "outbox-nats")]
 pub use proxima_outbox_nats::{
-    ConfigError as NatsConfigError, ConsumerError, DeliveryProfile, DrainReport, DrainSummary,
-    DurableIntake, Intake, IntakeError, JetStreamPublisher, NatsAuth, NatsConsumerConfig,
-    NatsPublisherConfig, PublisherError, ReceivedEvent, ReferenceConsumer, StreamFieldMismatch,
+    ConfigError as NatsConfigError, ConsumerError, DrainReport, DrainSummary, DurableIntake,
+    Intake, IntakeError, JetStreamPublisher, NatsAuth, NatsConsumerConfig, NatsPublisherConfig,
+    PublisherError, ReceivedEvent, ReferenceConsumer,
 };
 #[cfg(feature = "testkit")]
 pub use proxima_pg_testkit as testkit;

@@ -3,8 +3,10 @@
 > **Status:** current.
 
 Host-side at-least-once publication of **declared listenable Facts**. 18 owns
-the listen declaration, the capture record, the delivery state machine, and the
-one shipped JetStream profile. It owns no verb (see
+the listen declaration, the capture record, the delivery state machine, and
+the publisher/consumer adapters. It does not own NATS stream topology: the
+deployment provisions streams, transforms, partitions, consumers, permissions,
+storage, retention and capacity. It owns no verb (see
 [14](14-protocol-surface.md#the-verbs)), no authorization of its own (see
 [01](01-event-source.md)), and no orchestration.
 
@@ -27,7 +29,7 @@ flavor write (typed, authorized)
    publication_outbox row, state `pending`
         │  host publisher: claim(lease) → send the captured bytes, unchanged
         ▼
-   NATS JetStream, stream PROXIMA_FACTS
+   NATS JetStream, deployment-provisioned topology
         │  PubAck → mark_published    (no PubAck → release/expire → `pending`)
         ▼
    durable pull consumer
@@ -245,7 +247,7 @@ cannot work.
 
 | Boundary | Completion condition | What it does NOT mean |
 |---|---|---|
-| outbox → JetStream | PubAck under the configured durability profile permits `mark_published` | that a consumer saw it |
+| outbox → JetStream | PubAck under the deployment's configured broker semantics permits `mark_published` | that a consumer saw it |
 | JetStream → consumer | ACK follows committed durable intake **or** durable retention of a rejection | that a business operation started or finished |
 
 Lost PubAck, timeout, or a crash before the published marker commits ⇒
@@ -254,23 +256,36 @@ permitted; consumers deduplicate on the durable event identity beyond the
 broker's dedup window. The producer never waits for a subscriber's validation
 or response.
 
-## Delivery Profile `local-file`
+## Deployment topology
 
-The only shipped profile; any other `PROXIMA_NATS_PROFILE` value is an explicit
-boot error.
+NATS topology is not an application profile. DevOps provisions the stream and
+durable consumer, including subject transforms and partitioning, before the
+publisher is enabled. The publisher emits the canonical source subject:
 
-| Setting | Value |
-|---|---|
-| stream | `PROXIMA_FACTS`, subjects `proxima.fact.>` |
-| subject | `proxima.fact.<owner_kind>.<owner_uuid>.<type_token>` — see the token rule below |
-| storage | File, `replicas: 1` |
-| retention | Limits, `discard: New` — a full stream returns a PubAck error, so the record stays `pending` (backpressure, not eviction) |
-| `max_age` | **none** (`0`): unacknowledged work never silently expires |
-| `max_bytes` / `max_msgs` | configurable; defaults 1 GiB / unlimited |
-| duplicate window | 2 min, keyed on header `Nats-Msg-Id` = the CloudEvent `id` |
-| `max_message_size` | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` + envelope headroom |
-| consumer | durable **pull**, `ack_policy: Explicit`, `ack_wait: 30s`, `max_deliver: unlimited`, `deliver_policy: All`, `max_ack_pending: 1000` |
-| consumer request timeout | 5 s — a bounded wait for connect and for one JetStream API round trip, deliberately **separate from `ack_wait`**: how long a consumer may take to process a message says nothing about how long the broker may take to answer a control call. Struct field on `NatsConsumerConfig`, no env key |
+```text
+proxima.fact.<owner_kind>.<owner_uuid>.<type_token>
+        │
+        └── deployment-owned stream transform / partition mapping
+                         │
+                         └── deployment-owned durable consumer filter
+```
+
+The publisher needs only broker connectivity, publish permission on the source
+subject, and permission to receive its publish reply inbox. It does not create,
+update, inspect or validate streams or consumers. A successful `PubAck` records
+broker acceptance; the deployment and consumer own the source → transform →
+partition → durable-intake path.
+
+The local fixture provisions a reproducible stream separately so tests can
+exercise the adapter without making the application a topology controller.
+Production deployments must provide equivalent provisioning, permissions,
+retention and capacity through their own infrastructure system.
+
+The adapter acceptance boundary is explicit: a publisher credential with no
+stream-management rights must still connect, publish and record a `PubAck`.
+The deployment acceptance boundary is separate: publish a sentinel through
+the provisioned source → transform → partition → durable-consumer route and
+prove the consumer durably accepts or retains its outcome before ACK.
 
 ### The `type_token` rule
 
@@ -302,19 +317,10 @@ Owner routing lives in the subject, so NATS account permissions restrict a
 consumer by subject prefix. File storage plus PubAck is durability against
 process death, **not** a claim of surviving arbitrary disk loss.
 
-An existing durable consumer is verified the same way: `ack_policy`,
-`ack_wait`, `max_deliver`, `deliver_policy`, `filter_subject` and
-`max_ack_pending` must match the desired configuration, and a mismatch is a
-refusal naming the field, its existing value and the desired one — not a silent
-adoption of somebody else's delivery semantics.
-
-An **existing** stream of the same name is verified, never adopted blind:
-storage, retention, `discard`, subjects, `max_age`, `num_replicas`,
-`max_message_size` and `duplicate_window` must all match what the profile
-claims, and a boot against a mismatching stream fails with **every**
-difference named rather than the first. A `PROXIMA_FACTS` someone created with
-`max_age: 24h` would silently expire captured events that no consumer had
-taken, which is precisely the loss this profile exists to make impossible.
+The reference consumer binds an existing durable by the deployment-provided
+stream and durable names. It does not create, update or validate the consumer's
+filter, ACK policy, redelivery policy or flow-control settings. Those settings
+are part of the deployment topology and are tested there.
 
 ### Stream space never frees itself
 
@@ -325,7 +331,7 @@ stream stays full until an operator acts:
 
 | Signal | What it means | Operator action |
 |---|---|---|
-| PubAck refused, `BrokerCapacity` in the publisher log | the stream is at `max_bytes` | raise `PROXIMA_NATS_MAX_STREAM_BYTES`, or purge already-consumed sequences |
+| PubAck refused, `BrokerCapacity` in the publisher log | the deployment's stream is at capacity | raise the deployment's stream capacity, or purge already-consumed sequences |
 | records stay `pending`, `attempts` climbing | the same, seen from the database | as above; **nothing is lost** — the records are still there with their original bytes |
 | `CapacityExhausted` on writes | the DATABASE backlog hit `PROXIMA_OUTBOX_MAX_PENDING` | the broker side is the cause; fix that first |
 
@@ -333,16 +339,17 @@ Purging is `nats stream purge PROXIMA_FACTS --seq <n>`, and `<n>` is safe only
 when **every** consumer's `ack_floor` is at or beyond it — that is the operator
 judgement the substrate refuses to make for you.
 
-`WorkQueue` and `Interest` retention are **not offered**, and the reason is not
-conservatism: both delete a message once its bound consumers have acknowledged
-it, and a stream with ZERO bound consumers therefore drops what it accepts. A
-deployment whose consumer has not been created yet, or was deleted during an
-incident, would lose committed events and receive a PubAck for each one. A full
-stream that refuses new work is a failure an operator can see and undo; a
-stream that accepts work and discards it is not.
+The local fixture uses `Limits` and `discard: New` because that combination
+makes broker capacity visible as backpressure. Production may choose another
+retention policy, but DevOps must test its exact semantics: a deployment whose
+consumer has not been created, or was deleted during an incident, must not
+silently discard committed events while returning a `PubAck`. A full stream
+that refuses new work is a failure an operator can see and undo; a stream that
+accepts work and discards it is not.
 
-Pins: nats-server **2.14.6**, `async-nats` **0.50.0**. The optional adapter is
-`crates/outbox-nats/`; the NATS dependency never enters `proxima-core`.
+The local fixture pins nats-server **2.14.6** and `async-nats` **0.50.0**. The
+optional adapter is `crates/outbox-nats/`; the NATS dependency never enters
+`proxima-core`.
 
 ## Rollback
 

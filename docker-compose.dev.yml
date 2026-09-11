@@ -87,10 +87,9 @@ services:
   # publisher/consumer tests skip on `PROXIMA_TEST_NATS_URL` being unset and
   # the delivery contract goes unchecked locally.
   #
-  # `--jetstream --store_dir /data` is what makes the stream durable: the
-  # shipped `local-file` profile is File storage with `discard: new`, and a
-  # memory-backed broker would silently give the tests a weaker guarantee
-  # than production.
+  # JetStream is a deployment dependency for the optional Fact-outbox lane.
+  # Tests provision their own streams and consumers; the application publisher
+  # does not create or configure broker topology.
   nats:
     image: nats:2.14.6@sha256:c50b0a773c6c8d033cad54f7c53cb97fd6e09b3bfc1accda7cd4fa94e19e9ed9
     restart: unless-stopped

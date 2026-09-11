@@ -212,10 +212,14 @@ jobs:
       AWS_ACCESS_KEY_ID: proxima
       AWS_SECRET_ACCESS_KEY: proxima-dev
       # NATS JetStream for the Fact-outbox delivery lane (docs/18). The
-      # publisher/consumer tests skip when this is unset, and their own
-      # skip gate PANICS under CI=true, so an outage here fails the job
-      # instead of quietly turning the delivery contract off.
+      # fixture/admin URL provisions the topology; the publisher URL is a
+      # publish-only principal with no stream-management rights.
       PROXIMA_TEST_NATS_URL: nats://127.0.0.1:4222
+      PROXIMA_TEST_NATS_PUBLISHER_URL: nats://127.0.0.1:4222
+      PROXIMA_TEST_NATS_ADMIN_USER: admin
+      PROXIMA_TEST_NATS_ADMIN_PASSWORD: admin
+      PROXIMA_TEST_NATS_PUBLISHER_USER: publisher
+      PROXIMA_TEST_NATS_PUBLISHER_PASSWORD: publisher
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -231,16 +235,15 @@ jobs:
         # per-test clones (psql ships on the ubuntu-latest runner).
         run: psql "postgres://proxima:proxima@localhost:5432/proxima" -c 'CREATE DATABASE proxima_e2e;'
       - name: start NATS JetStream
-        # Not a `services:` entry: the broker needs `--jetstream`, and a
-        # service container cannot override the image's CMD. File storage
-        # with an explicit store dir, matching the shipped `local-file`
-        # delivery profile — a memory-backed broker would give the tests a
-        # weaker durability guarantee than production has.
+        # Not a `services:` entry: the broker needs JetStream and a
+        # deployment-owned authorization policy. The test fixture provisions
+        # each stream and consumer separately.
         run: |
           docker run -d --name proxima-nats \
             -p 4222:4222 -p 8222:8222 \
+            -v "$GITHUB_WORKSPACE/.github/nats/ci.conf:/etc/nats/nats.conf:ro" \
             nats:2.14.6@sha256:c50b0a773c6c8d033cad54f7c53cb97fd6e09b3bfc1accda7cd4fa94e19e9ed9 \
-            --jetstream --store_dir /data -m 8222
+            -c /etc/nats/nats.conf
       - name: wait for NATS JetStream
         # `/healthz` reports JetStream's own state, not just the listener.
         # The image is `FROM scratch` and has no shell, so the probe runs

@@ -19,7 +19,7 @@ use proxima_core::storage_ports::publication::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{DeliveryProfile, NatsPublisherConfig, subject_for};
+use crate::config::{NatsPublisherConfig, subject_for};
 
 /// Header carrying the broker's dedup key: the `CloudEvents` `id`.
 pub const HEADER_MSG_ID: &str = "Nats-Msg-Id";
@@ -106,7 +106,7 @@ impl PublishHook for ContinueHook {
     }
 }
 
-/// A connected publisher bound to one stream and one outbox.
+/// A connected publisher bound to one source subject and one outbox.
 #[derive(Clone)]
 pub struct JetStreamPublisher {
     context: jetstream::Context,
@@ -122,7 +122,6 @@ pub struct JetStreamPublisher {
 impl std::fmt::Debug for JetStreamPublisher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JetStreamPublisher")
-            .field("stream", &self.config.stream)
             .field("subject_prefix", &self.config.subject_prefix)
             .field("publisher_id", &self.config.publisher_id)
             .field("hook", &self.hook)
@@ -131,22 +130,16 @@ impl std::fmt::Debug for JetStreamPublisher {
 }
 
 impl JetStreamPublisher {
-    /// Connect to the broker and make sure the stream exists in the
-    /// configured profile.
-    ///
-    /// An existing stream is VERIFIED, never rewritten: silently updating
-    /// someone else's stream from `Limits`/`New` to whatever this binary
-    /// prefers is how an operator loses undelivered messages during a
-    /// rolling deploy.
+    /// Connect to the broker. Stream topology is provisioned by the
+    /// deployment; this path only needs publish and reply-subscription
+    /// permissions.
     ///
     /// # Errors
     ///
     /// [`PublisherError::Config`] for a lease or timeout the delivery
     /// contract cannot hold, [`PublisherError::Connect`] when the broker is
     /// unreachable or the credentials are refused,
-    /// [`PublisherError::StreamMismatch`] when an existing stream
-    /// contradicts the profile, and [`PublisherError::Broker`] for other
-    /// `JetStream` failures.
+    /// [`PublisherError::Broker`] for `JetStream` failures.
     pub async fn connect(
         config: NatsPublisherConfig,
         outbox: Arc<dyn PublicationOutboxPort>,
@@ -168,9 +161,7 @@ impl JetStreamPublisher {
         let client = crate::connect_client(&config.url, &config.auth, config.publish_timeout)
             .await
             .map_err(|error| PublisherError::Connect(error.to_string()))?;
-        verify_payload_ceiling(&config, client.max_payload())?;
         let context = jetstream::new(client);
-        ensure_stream(&context, &config).await?;
         Ok(Self {
             context,
             outbox,
@@ -462,238 +453,6 @@ fn is_size_refusal(error: &jetstream::context::PublishError) -> bool {
         || error.to_string().contains("message size exceeds maximum")
 }
 
-/// Refuse a configuration in which the outbox would hold records the SERVER
-/// can never accept.
-///
-/// `max_payload` is a server-wide ceiling no stream configuration raises,
-/// so a per-message ceiling above it describes a stream that would refuse
-/// its own largest legal message. The other half of the chain — capture
-/// ceiling + envelope headroom ≤ this per-message ceiling — is settled
-/// before the config is built, by `with_capture_limits` and the facade's
-/// `PROXIMA_NATS_MAX_MESSAGE_BYTES` reconciliation; and an EXISTING stream
-/// with a smaller `max_msg_size` than this one is refused by
-/// [`verify_compatible`]. Together those make "a record the broker can
-/// never take" a configuration error rather than a delivery mystery.
-fn verify_payload_ceiling(
-    config: &NatsPublisherConfig,
-    server_max_payload: usize,
-) -> Result<(), PublisherError> {
-    let configured = usize::try_from(config.max_message_bytes).unwrap_or(usize::MAX);
-    if configured > server_max_payload {
-        return Err(PublisherError::PayloadCeiling {
-            stream: config.stream.clone(),
-            configured,
-            server_max: server_max_payload,
-        });
-    }
-    Ok(())
-}
-
-/// Create the stream, or prove the one already there still honours the
-/// profile.
-async fn ensure_stream(
-    context: &jetstream::Context,
-    config: &NatsPublisherConfig,
-) -> Result<(), PublisherError> {
-    let desired = stream_config(config);
-    match context.get_stream(&config.stream).await {
-        Ok(mut stream) => {
-            let info = stream
-                .info()
-                .await
-                .map_err(|error| PublisherError::Broker(error.to_string()))?;
-            verify_compatible(&config.stream, &info.config, &desired)
-        }
-        Err(error) if is_stream_not_found(&error) => {
-            context
-                .create_stream(desired)
-                .await
-                .map_err(|error| PublisherError::Broker(error.to_string()))?;
-            Ok(())
-        }
-        Err(error) => Err(PublisherError::Broker(error.to_string())),
-    }
-}
-
-/// The `local-file` profile as a stream configuration.
-fn stream_config(config: &NatsPublisherConfig) -> jetstream::stream::Config {
-    let DeliveryProfile::LocalFile = config.profile;
-    jetstream::stream::Config {
-        name: config.stream.clone(),
-        subjects: vec![config.subject_filter()],
-        // File, not Memory: a broker restart must not be a data loss
-        // event for events a Fact write already committed to.
-        storage: jetstream::stream::StorageType::File,
-        num_replicas: 1,
-        retention: jetstream::stream::RetentionPolicy::Limits,
-        // Discard NEW rather than old: a full stream must refuse the
-        // PubAck, leaving the record `pending` in Postgres. Discarding old
-        // would silently drop events a consumer never saw and report
-        // success to the publisher.
-        discard: jetstream::stream::DiscardPolicy::New,
-        // No age limit: unacknowledged work never expires on a clock.
-        max_age: Duration::ZERO,
-        max_bytes: config.max_stream_bytes,
-        max_messages: -1,
-        max_message_size: config.max_message_bytes,
-        duplicate_window: config.duplicate_window,
-        description: Some("Proxima captured Fact publications (docs/18)".to_owned()),
-        ..jetstream::stream::Config::default()
-    }
-}
-
-/// One field on which an existing stream contradicts the profile.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamFieldMismatch {
-    pub field: &'static str,
-    pub found: String,
-    pub expected: String,
-}
-
-impl StreamFieldMismatch {
-    fn new(field: &'static str, found: impl Into<String>, expected: impl Into<String>) -> Self {
-        Self {
-            field,
-            found: found.into(),
-            expected: expected.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for StreamFieldMismatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} = {}, requires {}",
-            self.field, self.found, self.expected
-        )
-    }
-}
-
-/// Refuse an existing stream whose durability contract is weaker than the
-/// profile's, naming EVERY contradiction.
-///
-/// Each of these changes what a `PubAck` means to the outbox, which commits
-/// `state = 'published'` on the strength of one:
-///
-/// - `storage`, `retention`, `discard`: the three that decide whether an
-///   accepted message survives a restart, an ACK, or a full stream.
-/// - `max_age`: with `Limits` retention, a non-zero age silently expires
-///   messages the outbox already marked published — a consumer that was
-///   down over the window never sees them, and nothing anywhere records
-///   that they were lost.
-/// - `num_replicas`: fewer replicas than the profile promises is a
-///   different durability claim under node loss.
-/// - `max_msg_size` and `duplicate_window`: SMALLER than desired is not
-///   operator tuning. Under-sized refuses records this deployment's capture
-///   ceiling admits, and a short dedup window turns the republication that
-///   follows a lost `PubAck` into a duplicate on the stream.
-///
-/// Larger values of the last two, and every other stream setting, are
-/// operator tuning and are left alone. All mismatches are reported together
-/// because the operator's next action is one stream re-creation, not one
-/// per redeploy.
-fn verify_compatible(
-    name: &str,
-    existing: &jetstream::stream::Config,
-    desired: &jetstream::stream::Config,
-) -> Result<(), PublisherError> {
-    let mut mismatches = Vec::new();
-    if existing.storage != desired.storage {
-        mismatches.push(StreamFieldMismatch::new(
-            "storage",
-            format!("{:?}", existing.storage),
-            format!("{:?}", desired.storage),
-        ));
-    }
-    if existing.retention != desired.retention {
-        mismatches.push(StreamFieldMismatch::new(
-            "retention",
-            format!("{:?}", existing.retention),
-            format!("{:?}", desired.retention),
-        ));
-    }
-    if existing.discard != desired.discard {
-        mismatches.push(StreamFieldMismatch::new(
-            "discard",
-            format!("{:?}", existing.discard),
-            format!("{:?}", desired.discard),
-        ));
-    }
-    if existing.max_age != desired.max_age {
-        mismatches.push(StreamFieldMismatch::new(
-            "max_age",
-            format!("{:?}", existing.max_age),
-            "no age limit, so unacknowledged work never expires on a clock",
-        ));
-    }
-    if existing.num_replicas != desired.num_replicas {
-        mismatches.push(StreamFieldMismatch::new(
-            "num_replicas",
-            existing.num_replicas.to_string(),
-            desired.num_replicas.to_string(),
-        ));
-    }
-    if !message_size_admits(existing.max_message_size, desired.max_message_size) {
-        mismatches.push(StreamFieldMismatch::new(
-            "max_msg_size",
-            existing.max_message_size.to_string(),
-            format!("at least {}", desired.max_message_size),
-        ));
-    }
-    if existing.duplicate_window < desired.duplicate_window {
-        mismatches.push(StreamFieldMismatch::new(
-            "duplicate_window",
-            format!("{:?}", existing.duplicate_window),
-            format!("at least {:?}", desired.duplicate_window),
-        ));
-    }
-    if !existing
-        .subjects
-        .iter()
-        .any(|subject| desired.subjects.contains(subject))
-    {
-        mismatches.push(StreamFieldMismatch::new(
-            "subjects",
-            existing.subjects.join(","),
-            desired.subjects.join(","),
-        ));
-    }
-    let Some(first) = mismatches.first().cloned() else {
-        return Ok(());
-    };
-    Err(PublisherError::StreamMismatch {
-        stream: name.to_owned(),
-        field: first.field,
-        found: first.found,
-        expected: first.expected,
-        mismatches,
-    })
-}
-
-/// Whether an existing `max_msg_size` accepts everything the desired one
-/// does. `-1` is `JetStream`'s "no limit" and therefore accepts anything.
-const fn message_size_admits(existing: i32, desired: i32) -> bool {
-    existing < 0 || existing >= desired
-}
-
-/// Every contradiction on one line, in the order the profile checks them.
-fn render_mismatches(mismatches: &[StreamFieldMismatch]) -> String {
-    mismatches
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn is_stream_not_found(error: &jetstream::context::GetStreamError) -> bool {
-    matches!(
-        error.kind(),
-        jetstream::context::GetStreamErrorKind::JetStream(inner)
-            if inner.error_code() == jetstream::ErrorCode::STREAM_NOT_FOUND
-    )
-}
-
 /// Split "the stream is full" out of every other publish failure.
 ///
 /// Backpressure is not an outage. A full `discard: New` stream is the
@@ -782,30 +541,6 @@ pub enum PublisherError {
     #[error("JetStream refused the request: {0}")]
     Broker(String),
     #[error(
-        "stream {stream} already exists in a shape this deployment's delivery profile \
-         refuses ({}); refusing to rewrite a stream that may hold undelivered messages",
-        render_mismatches(.mismatches)
-    )]
-    StreamMismatch {
-        stream: String,
-        /// The first contradiction, so a caller can match on one field name.
-        field: &'static str,
-        found: String,
-        expected: String,
-        /// Every contradiction, that first one included.
-        mismatches: Vec<StreamFieldMismatch>,
-    },
-    #[error(
-        "the per-message ceiling for stream {stream} is {configured} bytes, over the \
-         broker's {server_max}-byte max_payload; a record captured at that size could \
-         never be published, so the configuration is refused before anything is captured"
-    )]
-    PayloadCeiling {
-        stream: String,
-        configured: usize,
-        server_max: usize,
-    },
-    #[error(
         "the stream is at capacity and refused the publish ({0}); the record stays pending \
          until capacity is raised or the backlog drains"
     )]
@@ -820,154 +555,6 @@ pub enum PublisherError {
 mod tests {
     use super::*;
     use crate::config::NatsPublisherConfig;
-
-    fn config() -> NatsPublisherConfig {
-        NatsPublisherConfig::new("nats://127.0.0.1:4222").expect("publisher id")
-    }
-
-    #[test]
-    fn the_local_file_profile_is_the_durable_one() {
-        let stream = stream_config(&config());
-        assert_eq!(stream.storage, jetstream::stream::StorageType::File);
-        assert_eq!(stream.retention, jetstream::stream::RetentionPolicy::Limits);
-        assert_eq!(stream.discard, jetstream::stream::DiscardPolicy::New);
-        assert_eq!(stream.max_age, Duration::ZERO);
-        assert_eq!(stream.num_replicas, 1);
-        assert_eq!(stream.subjects, vec!["proxima.fact.>".to_owned()]);
-        assert!(stream.max_bytes > 0, "capacity must be explicit");
-    }
-
-    #[test]
-    fn an_existing_stream_that_discards_old_messages_is_refused() {
-        let desired = stream_config(&config());
-        let mut existing = desired.clone();
-        existing.discard = jetstream::stream::DiscardPolicy::Old;
-        let err = verify_compatible("S", &existing, &desired).expect_err("downgrade");
-        assert!(
-            matches!(
-                err,
-                PublisherError::StreamMismatch {
-                    field: "discard",
-                    ..
-                }
-            ),
-            "{err}"
-        );
-
-        let mut existing = desired.clone();
-        existing.storage = jetstream::stream::StorageType::Memory;
-        assert!(matches!(
-            verify_compatible("S", &existing, &desired),
-            Err(PublisherError::StreamMismatch {
-                field: "storage",
-                ..
-            })
-        ));
-
-        let mut existing = desired.clone();
-        existing.subjects = vec!["other.>".to_owned()];
-        assert!(matches!(
-            verify_compatible("S", &existing, &desired),
-            Err(PublisherError::StreamMismatch {
-                field: "subjects",
-                ..
-            })
-        ));
-
-        // Operator tuning is left alone: a bigger stream is still the
-        // same durability contract.
-        let mut existing = desired.clone();
-        existing.max_bytes = desired.max_bytes * 4;
-        assert!(verify_compatible("S", &existing, &desired).is_ok());
-    }
-
-    /// The mismatch on this list nobody would notice: the stream still says
-    /// `File`/`Limits`/`New`, and quietly drops committed events on a clock.
-    #[test]
-    fn an_existing_stream_with_a_max_age_expires_events_the_outbox_committed() {
-        let desired = stream_config(&config());
-        let mut existing = desired.clone();
-        existing.max_age = Duration::from_hours(24);
-        let err = verify_compatible("S", &existing, &desired).expect_err("an age limit");
-        assert!(
-            matches!(
-                err,
-                PublisherError::StreamMismatch {
-                    field: "max_age",
-                    ..
-                }
-            ),
-            "{err}"
-        );
-        assert!(
-            err.to_string().contains("max_age"),
-            "the operator must be told which field: {err}"
-        );
-    }
-
-    #[test]
-    fn a_weaker_replica_count_size_or_dedup_window_is_refused() {
-        let desired = stream_config(&config());
-        let refused_field = |existing: &jetstream::stream::Config| -> &'static str {
-            match verify_compatible("S", existing, &desired) {
-                Err(PublisherError::StreamMismatch { field, .. }) => field,
-                other => panic!("a weaker stream must be refused, got {other:?}"),
-            }
-        };
-
-        let mut existing = desired.clone();
-        existing.num_replicas = 0;
-        assert_eq!(refused_field(&existing), "num_replicas");
-
-        let mut existing = desired.clone();
-        existing.max_message_size = 128;
-        assert_eq!(refused_field(&existing), "max_msg_size");
-
-        let mut existing = desired.clone();
-        existing.duplicate_window = Duration::from_secs(1);
-        assert_eq!(refused_field(&existing), "duplicate_window");
-
-        // Bigger than asked for is operator tuning, and `-1` is
-        // JetStream's "no limit" — neither weakens the contract.
-        let mut existing = desired.clone();
-        existing.max_message_size = -1;
-        existing.duplicate_window = desired.duplicate_window * 2;
-        assert!(verify_compatible("S", &existing, &desired).is_ok());
-    }
-
-    #[test]
-    fn every_contradiction_is_reported_at_once() {
-        let desired = stream_config(&config());
-        let mut existing = desired.clone();
-        existing.max_age = Duration::from_mins(1);
-        existing.storage = jetstream::stream::StorageType::Memory;
-        existing.duplicate_window = Duration::ZERO;
-        let err = verify_compatible("S", &existing, &desired).expect_err("three contradictions");
-        let PublisherError::StreamMismatch { mismatches, .. } = &err else {
-            panic!("expected a stream mismatch, got {err}");
-        };
-        let fields: Vec<&str> = mismatches.iter().map(|m| m.field).collect();
-        assert_eq!(fields, ["storage", "max_age", "duplicate_window"], "{err}");
-        let rendered = err.to_string();
-        for field in fields {
-            assert!(
-                rendered.contains(field),
-                "one refusal must name every field an operator has to fix: {rendered}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_stream_ceiling_over_the_servers_max_payload_is_refused_at_connect() {
-        let mut config = config();
-        config.max_message_bytes = 2 * 1024 * 1024;
-        let err = verify_payload_ceiling(&config, 1024 * 1024).expect_err("over the server");
-        assert!(
-            matches!(err, PublisherError::PayloadCeiling { .. }),
-            "{err}"
-        );
-        assert!(verify_payload_ceiling(&config, 4 * 1024 * 1024).is_ok());
-    }
 
     #[test]
     fn the_backoff_doubles_and_stops_growing() {

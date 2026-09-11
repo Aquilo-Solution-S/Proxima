@@ -38,8 +38,7 @@ pub mod publisher;
 use std::time::Duration;
 
 pub use config::{
-    ConfigError, DeliveryProfile, NatsAuth, NatsConsumerConfig, NatsPublisherConfig, subject_for,
-    type_token,
+    ConfigError, NatsAuth, NatsConsumerConfig, NatsPublisherConfig, subject_for, type_token,
 };
 pub use consumer::{
     AckAction, AckAlwaysHook, AckHook, CloudEventEnvelope, ConsumeReport, ConsumerError,
@@ -48,7 +47,6 @@ pub use consumer::{
 pub use publisher::{
     CONTENT_TYPE_CLOUDEVENTS, ContinueHook, DrainReport, DrainSummary, HEADER_CONTENT_TYPE,
     HEADER_MSG_ID, HEADER_SCHEMA, HookAction, JetStreamPublisher, PublishHook, PublisherError,
-    StreamFieldMismatch,
 };
 
 /// Open one client connection under the configured credentials.

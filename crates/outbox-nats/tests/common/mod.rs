@@ -10,6 +10,8 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
+
 use proxima_core::publication::{
     PublicationDraft, PublicationLimits, PublicationPlan, PublicationSource,
 };
@@ -33,6 +35,13 @@ use uuid::Uuid;
 
 /// The broker every test in this lane talks to.
 pub const ENV_NATS_URL: &str = "PROXIMA_TEST_NATS_URL";
+/// Optional publisher-only URL. CI sets this to a principal with publish and
+/// inbox permissions but no `JetStream` stream-management permissions.
+pub const ENV_NATS_PUBLISHER_URL: &str = "PROXIMA_TEST_NATS_PUBLISHER_URL";
+pub const ENV_NATS_ADMIN_USER: &str = "PROXIMA_TEST_NATS_ADMIN_USER";
+pub const ENV_NATS_ADMIN_PASSWORD: &str = "PROXIMA_TEST_NATS_ADMIN_PASSWORD";
+pub const ENV_NATS_PUBLISHER_USER: &str = "PROXIMA_TEST_NATS_PUBLISHER_USER";
+pub const ENV_NATS_PUBLISHER_PASSWORD: &str = "PROXIMA_TEST_NATS_PUBLISHER_PASSWORD";
 
 /// Skip locally, fail under CI.
 ///
@@ -55,13 +64,45 @@ pub fn nats_url_or_skip(test: &str) -> Option<String> {
     }
 }
 
+/// The publisher URL used by the permission-boundary acceptance test.
+#[must_use]
+pub fn publisher_url_or_skip(test: &str) -> Option<String> {
+    match std::env::var(ENV_NATS_PUBLISHER_URL) {
+        Ok(url) if !url.trim().is_empty() => Some(url),
+        _ => {
+            assert!(
+                std::env::var("CI").as_deref() != Ok("true"),
+                "{ENV_NATS_PUBLISHER_URL} required under CI=true (test {test})"
+            );
+            eprintln!("skipping {test}: {ENV_NATS_PUBLISHER_URL} is unset");
+            None
+        }
+    }
+}
+
+async fn admin_client(url: &str) -> Result<async_nats::Client, async_nats::ConnectError> {
+    let options = async_nats::ConnectOptions::new();
+    let options = match (
+        std::env::var(ENV_NATS_ADMIN_USER),
+        std::env::var(ENV_NATS_ADMIN_PASSWORD),
+    ) {
+        (Ok(user), Ok(password)) => options.user_and_password(user, password),
+        (Err(_), Err(_)) => options,
+        _ => panic!("admin NATS credentials must be set together"),
+    };
+    options.connect(url).await
+}
+
 /// One test's isolated world: a fresh database, a fresh stream name, and a
-/// publisher configuration pointing at both.
+/// publisher configuration pointing at the source subject. The topology is
+/// provisioned separately by this fixture, just as DevOps provisions it for
+/// a real deployment.
 pub struct Fixture {
     pub pg: PgStorage,
-    pub db_name: String,
+    _db: proxima_pg_testkit::DbGuard,
     pub owner: Owner,
     pub config: NatsPublisherConfig,
+    pub stream: String,
     pub url: String,
 }
 
@@ -69,30 +110,34 @@ impl Fixture {
     /// Build the world. `prefix` names the database; the stream and the
     /// subject prefix are derived from a fresh UUID.
     pub async fn new(prefix: &str, url: String) -> Self {
-        let (pg, db_name) = fresh_pg(prefix).await;
+        let (pg, db) = fresh_pg(prefix).await;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         register_owner(pg.pool_for_tests(), &owner).await;
         let token = Uuid::now_v7().simple().to_string();
-        let mut config = NatsPublisherConfig::new(url.clone()).expect("a publisher id resolves");
-        config.stream = format!("T_{token}");
-        config.subject_prefix = format!("t_{token}");
+        let publisher_url = std::env::var(ENV_NATS_PUBLISHER_URL).unwrap_or_else(|_| url.clone());
+        let mut config = NatsPublisherConfig::new(publisher_url).expect("a publisher id resolves");
+        if let (Ok(user), Ok(password)) = (
+            std::env::var(ENV_NATS_PUBLISHER_USER),
+            std::env::var(ENV_NATS_PUBLISHER_PASSWORD),
+        ) {
+            config.auth = proxima_outbox_nats::NatsAuth::UserPassword { user, password };
+        }
+        let stream = format!("T_{token}");
+        let subject_prefix = format!("t_{token}");
+        config.subject_prefix.clone_from(&subject_prefix);
         config.lease = Duration::from_secs(2);
         config.publish_timeout = Duration::from_secs(5);
         config.poll_interval = Duration::from_millis(100);
-        Self {
+        let fixture = Self {
             pg,
-            db_name,
+            _db: db,
             owner,
             config,
+            stream,
             url,
-        }
-    }
-
-    /// Adjust the publisher configuration before the world is used.
-    #[must_use]
-    pub fn tweak(mut self, edit: impl FnOnce(&mut NatsPublisherConfig)) -> Self {
-        edit(&mut self.config);
-        self
+        };
+        fixture.provision_topology(Duration::from_mins(2)).await;
+        fixture
     }
 
     /// Run one test body against this world and ALWAYS tear it down.
@@ -111,17 +156,109 @@ impl Fixture {
         }
     }
 
-    /// The consumer half, bound to the same stream and subject prefix.
+    /// The consumer half, bound to the durable provisioned by the fixture.
     #[must_use]
     pub fn consumer_config(&self) -> NatsConsumerConfig {
+        self.consumer_config_named(format!("d_{}", self.stream.to_lowercase()))
+    }
+
+    /// Bind a test consumer to a deployment-provisioned durable by name.
+    #[must_use]
+    pub fn consumer_config_named(&self, durable_name: impl Into<String>) -> NatsConsumerConfig {
         let mut config = NatsConsumerConfig::new(self.url.clone());
-        config.stream.clone_from(&self.config.stream);
+        if let (Ok(user), Ok(password)) = (
+            std::env::var(ENV_NATS_ADMIN_USER),
+            std::env::var(ENV_NATS_ADMIN_PASSWORD),
+        ) {
+            config.auth = proxima_outbox_nats::NatsAuth::UserPassword { user, password };
+        }
+        config.stream.clone_from(&self.stream);
+        config.durable_name = durable_name.into();
         config
-            .subject_prefix
-            .clone_from(&self.config.subject_prefix);
-        config.durable_name = format!("d_{}", self.config.stream.to_lowercase());
-        config.ack_wait = Duration::from_secs(2);
-        config
+    }
+
+    /// Provision the stream and durable consumer used by the test. This is
+    /// deliberately a separate admin-client operation: the publisher itself
+    /// must not need stream-management rights.
+    async fn provision_topology(&self, duplicate_window: Duration) {
+        let client = admin_client(&self.url)
+            .await
+            .expect("the fixture admin connection opens");
+        let context = async_nats::jetstream::new(client);
+        context
+            .create_stream(async_nats::jetstream::stream::Config {
+                name: self.stream.clone(),
+                subjects: vec![format!("{}.>", self.config.subject_prefix)],
+                storage: async_nats::jetstream::stream::StorageType::File,
+                retention: async_nats::jetstream::stream::RetentionPolicy::Limits,
+                discard: async_nats::jetstream::stream::DiscardPolicy::New,
+                max_age: Duration::ZERO,
+                max_bytes: 1024 * 1024 * 1024,
+                max_message_size: -1,
+                duplicate_window,
+                description: Some("Proxima test topology".to_owned()),
+                ..async_nats::jetstream::stream::Config::default()
+            })
+            .await
+            .expect("the fixture stream is provisioned");
+        drop(context);
+        self.provision_consumer(
+            &format!("d_{}", self.stream.to_lowercase()),
+            &format!("{}.>", self.config.subject_prefix),
+        )
+        .await;
+    }
+
+    /// Provision one durable consumer through the test fixture's admin
+    /// connection. The application consumer only binds it later.
+    pub async fn provision_consumer(&self, durable_name: &str, filter_subject: &str) {
+        let client = admin_client(&self.url)
+            .await
+            .expect("the fixture admin connection opens");
+        let context = async_nats::jetstream::new(client);
+        let stream = context
+            .get_stream(&self.stream)
+            .await
+            .expect("the fixture stream is readable");
+        stream
+            .create_consumer(async_nats::jetstream::consumer::pull::Config {
+                durable_name: Some(durable_name.to_owned()),
+                ack_policy: AckPolicy::Explicit,
+                ack_wait: Duration::from_secs(2),
+                max_deliver: -1,
+                deliver_policy: DeliverPolicy::All,
+                max_ack_pending: 1000,
+                filter_subject: filter_subject.to_owned(),
+                ..async_nats::jetstream::consumer::pull::Config::default()
+            })
+            .await
+            .expect("the fixture durable consumer is provisioned");
+    }
+
+    /// Change deployment-owned stream settings for one scenario.
+    pub async fn update_stream(
+        &self,
+        edit: impl FnOnce(&mut async_nats::jetstream::stream::Config),
+    ) {
+        let client = admin_client(&self.url)
+            .await
+            .expect("the fixture admin connection opens");
+        let context = async_nats::jetstream::new(client);
+        let mut stream = context
+            .get_stream(&self.stream)
+            .await
+            .expect("the fixture stream is readable");
+        let mut config = stream
+            .info()
+            .await
+            .expect("the fixture stream info answers")
+            .config
+            .clone();
+        edit(&mut config);
+        context
+            .update_stream(config)
+            .await
+            .expect("the fixture stream update succeeds");
     }
 
     #[must_use]
@@ -209,12 +346,11 @@ impl Fixture {
     /// every path: a leaked stream outlives the run and a leaked database
     /// outlives the machine.
     pub async fn teardown(&self) {
-        if let Ok(client) = async_nats::connect(&self.url).await {
+        if let Ok(client) = admin_client(&self.url).await {
             let context = async_nats::jetstream::new(client);
-            let _ = context.delete_stream(&self.config.stream).await;
+            let _ = context.delete_stream(&self.stream).await;
         }
         self.pg.pool_for_tests().close().await;
-        let _ = proxima_pg_testkit::drop_db(&self.db_name).await;
     }
 }
 
