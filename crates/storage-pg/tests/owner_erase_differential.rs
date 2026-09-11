@@ -209,6 +209,14 @@ fn authorized(owner: OwnerRef, mut draft: FactWriteCommand) -> AuthorizedFactWri
     )
 }
 
+fn authorized_with_sidecars(
+    owner: OwnerRef,
+    draft: FactWriteCommand,
+    sidecars: &[SidecarPayload],
+) -> AuthorizedFactWrite {
+    authorized(owner, draft).with_sidecar_payloads_for_tests(sidecars.to_vec())
+}
+
 /// Attach the capture instruction core resolves for a LISTENABLE schema.
 ///
 /// The corpus's own `core/test-fact-v1` stands in for one. Storage never
@@ -378,27 +386,33 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
             &published(
                 owner,
                 "one",
-                authorized(owner, draft(Some(("src-a", "k1")), None, None)),
+                authorized_with_sidecars(
+                    owner,
+                    draft(Some(("src-a", "k1")), None, None),
+                    &[note("one"), call(TARGET_UPN)],
+                ),
             ),
-            &[note("one"), call(TARGET_UPN)],
             None,
         )
         .await?;
     let handle = first.handle;
     let second = pg
         .ingest_fact_with_typed_sidecar(
-            &authorized(
+            &authorized_with_sidecars(
                 owner,
                 draft(Some(("src-a", "k2")), Some(handle), Some(blob)),
+                &[note("two")],
             ),
-            &[note("two")],
             None,
         )
         .await?;
     let third = pg
         .ingest_fact_with_typed_sidecar(
-            &authorized(owner, draft(Some(("src-b", "k3")), None, None)),
-            &[note("three"), call(TARGET_UPN)],
+            &authorized_with_sidecars(
+                owner,
+                draft(Some(("src-b", "k3")), None, None),
+                &[note("three"), call(TARGET_UPN)],
+            ),
             None,
         )
         .await?;
@@ -407,9 +421,12 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
             &published(
                 other,
                 "neighbour",
-                authorized(other, draft(Some(("src-a", "n1")), None, None)),
+                authorized_with_sidecars(
+                    other,
+                    draft(Some(("src-a", "n1")), None, None),
+                    &[note("neighbour"), call(NEIGHBOUR_UPN)],
+                ),
             ),
-            &[note("neighbour"), call(NEIGHBOUR_UPN)],
             None,
         )
         .await?;

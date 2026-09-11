@@ -172,7 +172,6 @@ pub(crate) mod tests {
         async fn ingest_fact_with_typed_sidecar(
             &self,
             _authorized: &AuthorizedFactWrite,
-            _sidecar_payloads: &[SidecarPayload],
             _embedding_model_id: Option<&str>,
         ) -> Result<FactIngestOutcome, StorageError> {
             self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
@@ -184,7 +183,6 @@ pub(crate) mod tests {
         async fn ingest_fact_with_citation_and_typed_sidecar(
             &self,
             _authorized: &AuthorizedFactWithCitation,
-            _sidecar_payloads: &[SidecarPayload],
             _embedding_model_id: Option<&str>,
         ) -> Result<FactIngestOutcome, StorageError> {
             self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
@@ -196,7 +194,6 @@ pub(crate) mod tests {
         async fn ingest_fact_with_citation_ref_and_typed_sidecar(
             &self,
             _authorized: &crate::verbs::fact_ingest::AuthorizedFactWithCitationRef,
-            _sidecar_payloads: &[SidecarPayload],
             _embedding_model_id: Option<&str>,
         ) -> Result<FactIngestOutcome, StorageError> {
             self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);

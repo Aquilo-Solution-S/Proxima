@@ -7,7 +7,7 @@ use crate::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
 };
 use crate::verbs::query::SidecarAtom;
-use crate::{MemoryId, SchemaId, SidecarPayload};
+use crate::{MemoryId, SchemaId};
 
 /// Backend ceiling on one [`WriteSession::read_own_sidecar`] answer.
 ///
@@ -140,7 +140,6 @@ pub trait WriteSession: Send {
     async fn ingest_fact_with_typed_sidecar(
         &mut self,
         authorized: &AuthorizedFactWrite,
-        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError>;
 

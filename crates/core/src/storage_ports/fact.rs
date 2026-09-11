@@ -1,5 +1,3 @@
-use crate::SidecarPayload;
-
 use crate::storage::StorageError;
 #[cfg(any(test, feature = "test-fixtures"))]
 use crate::storage_ports::OwnerWritePermit;
@@ -37,13 +35,13 @@ pub trait FactIngestPort: Send + Sync {
     /// Persist an authorized Fact together with every typed sidecar row it
     /// carries, in ONE transaction.
     ///
-    /// A slice rather than a single payload because a Fact may be extended:
-    /// the substrate owns the Fact and its own sidecar, and a flavor may add
-    /// further rows of its own against the same `memory_id` — extra columns
-    /// on an event the substrate defines, without the flavor having to own
-    /// the event.
+    /// The authorized wrapper owns the payload slice because a Fact may be
+    /// extended: the substrate owns the Fact and its own sidecar, and a
+    /// flavor may add further rows of its own against the same `memory_id` —
+    /// extra columns on an event the substrate defines, without the flavor
+    /// having to own the event.
     ///
-    /// **Destination is resolved per payload, never positionally.** Storage
+    /// **Destination is resolved per bound payload, never positionally.** Storage
     /// routes each payload by its own `(kind, schema_id, schema_version)`
     /// through the sidecar registry, and an unregistered schema is a
     /// `ConstraintViolation`. Two payloads therefore cannot be transposed
@@ -59,7 +57,7 @@ pub trait FactIngestPort: Send + Sync {
     /// registered — it cannot reach the Fact row, and there is no handle to
     /// misuse.
     ///
-    /// Payloads are DATA, not closures, so the bounded retry around
+    /// Bound payloads are DATA, not closures, so the bounded retry around
     /// begin→body→commit can rebuild the work on every attempt.
     ///
     /// Note what is NOT widened: `AuthorizedFactWrite::fact_sidecar_table`
@@ -74,14 +72,12 @@ pub trait FactIngestPort: Send + Sync {
     async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
-        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError>;
 
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError>;
 
@@ -93,7 +89,6 @@ pub trait FactIngestPort: Send + Sync {
     async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitationRef,
-        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError>;
 }

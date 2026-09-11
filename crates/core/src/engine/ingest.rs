@@ -260,6 +260,7 @@ impl Engine {
                 draft,
                 fact_sidecar_table,
                 fact_natural_key_columns,
+                sidecars.to_vec(),
                 links,
             )
             .with_natural_key_values(natural_key_values)
@@ -316,6 +317,7 @@ impl Engine {
                 draft,
                 fact_sidecar_table,
                 fact_natural_key_columns,
+                sidecars.to_vec(),
                 links,
             )
             .with_natural_key_values(natural_key_values)
@@ -372,6 +374,7 @@ impl Engine {
                 draft,
                 fact_sidecar_table,
                 fact_natural_key_columns,
+                sidecars.to_vec(),
                 links,
             )
             .with_natural_key_values(natural_key_values)
@@ -419,7 +422,6 @@ impl Engine {
                 }
                 references
             });
-        let payload_references = typed_references.clone();
         let raw_references: Vec<EdgeEndpoint> = draft
             .refs
             .iter()
@@ -480,11 +482,7 @@ impl Engine {
                 references.push(target);
             }
         }
-        Ok(AuthorizedNodeLinks::new(
-            Vec::new(),
-            references,
-            payload_references,
-        ))
+        Ok(AuthorizedNodeLinks::new(Vec::new(), references))
     }
 
     async fn authorize_fact_link_targets<A>(
@@ -651,20 +649,15 @@ impl Engine {
     pub async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
-        sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
-        authorized
-            .links()
-            .validate_sidecar_references(sidecars)
-            .map_err(|err| ProtocolError::invalid_argument("sidecars", err))?;
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_typed_sidecar(authorized, sidecars, embedding_model_id)
+            .ingest_fact_with_typed_sidecar(authorized, embedding_model_id)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -684,20 +677,15 @@ impl Engine {
     pub async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
-        authorized
-            .links()
-            .validate_sidecar_references(sidecars)
-            .map_err(|err| ProtocolError::invalid_argument("sidecars", err))?;
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_citation_and_typed_sidecar(authorized, sidecars, embedding_model_id)
+            .ingest_fact_with_citation_and_typed_sidecar(authorized, embedding_model_id)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -719,24 +707,15 @@ impl Engine {
     pub async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitationRef,
-        sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
-        authorized
-            .links()
-            .validate_sidecar_references(sidecars)
-            .map_err(|err| ProtocolError::invalid_argument("sidecars", err))?;
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_citation_ref_and_typed_sidecar(
-                authorized,
-                sidecars,
-                embedding_model_id,
-            )
+            .ingest_fact_with_citation_ref_and_typed_sidecar(authorized, embedding_model_id)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -1657,7 +1636,7 @@ impl Engine {
         let embed_client = self.embed_client();
         let requested = embed_client.as_ref().map(|client| client.model_id());
         let outcome = self
-            .ingest_fact_with_typed_sidecar(&authorized, &sidecars, requested)
+            .ingest_fact_with_typed_sidecar(&authorized, requested)
             .await?;
         Ok(McpCallLogOutcome {
             receipt_id,
@@ -1982,10 +1961,6 @@ mod tests {
             fact_id: "bound-sidecars".to_owned(),
             targets: vec![EdgeEndpoint::memory(EntityKind::Fact, first)],
         };
-        let substituted = ReferencedTestFact {
-            fact_id: "bound-sidecars".to_owned(),
-            targets: vec![EdgeEndpoint::memory(EntityKind::Fact, second)],
-        };
         let admitted_sidecars = [SidecarPayload::fact(admitted.clone())];
         let observed = Arc::new(AtomicUsize::new(0));
         let engine = reference_engine(
@@ -2006,12 +1981,19 @@ mod tests {
             .await
             .expect("the original declaration should authorize");
 
-        let error = engine
-            .ingest_fact_with_typed_sidecar(&authorized, &[SidecarPayload::fact(substituted)], None)
-            .await
-            .expect_err("a substituted declaration must fail before the port");
-
-        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        let bound = authorized
+            .sidecar_payloads()
+            .first()
+            .expect("authorization binds the typed Fact sidecar")
+            .references();
+        assert_eq!(
+            bound[0].target,
+            EdgeEndpoint::memory(EntityKind::Fact, first)
+        );
+        assert_ne!(
+            bound[0].target,
+            EdgeEndpoint::memory(EntityKind::Fact, second)
+        );
         assert_eq!(observed.load(Ordering::Relaxed), 0);
     }
 

@@ -386,6 +386,31 @@ async fn an_unauthorized_listenable_write_captures_nothing() {
                 .fetch_one(built.pool_for_tests())
                 .await?;
         assert_eq!(captured, 1, "the authorized write is captured");
+        let sidecars: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM pubtest.probe_v1")
+            .fetch_one(built.pool_for_tests())
+            .await?;
+        assert_eq!(
+            sidecars, 1,
+            "the standalone Fact keeps its registered sidecar"
+        );
+
+        let mut uow = engine.unit_of_work(&authz).await?;
+        uow.ingest_fact(proxima::FactWrite::new(
+            owner,
+            PubProbeV1::SCHEMA_ID,
+            &probe("uow"),
+        ))
+        .await?;
+        uow.commit().await?;
+        let captured: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.publication_outbox")
+                .fetch_one(built.pool_for_tests())
+                .await?;
+        assert_eq!(captured, 2, "the composed UoW Fact is captured");
+        let sidecars: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM pubtest.probe_v1")
+            .fetch_one(built.pool_for_tests())
+            .await?;
+        assert_eq!(sidecars, 2, "the composed UoW Fact keeps its sidecar");
 
         built.shutdown();
         Ok(())

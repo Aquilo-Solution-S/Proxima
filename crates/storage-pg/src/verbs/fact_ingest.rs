@@ -222,6 +222,11 @@ pub(crate) async fn ingest_fact_command_in_tx(
     authorized: &AuthorizedFactWrite,
     embedding_model_id: Option<&str>,
 ) -> Result<FactIngestOutcome, StorageError> {
+    if !authorized.sidecar_payloads().is_empty() {
+        return Err(StorageError::ConstraintViolation(
+            "typed Fact sidecars require the typed persistence path".into(),
+        ));
+    }
     // The receipt-only route carries no typed payload, so there is nothing
     // to export. Core refuses a listenable schema here before it mints the
     // witness; this is the storage backstop for a caller that reached the

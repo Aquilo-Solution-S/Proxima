@@ -21,8 +21,8 @@ use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::{
-    AccessKind, FactIngestPort, FactPayload, Owner, OwnerRef, SchemaId, SchemaVersion, SourceId,
-    StorageError, UserId,
+    AccessKind, FactIngestPort, FactPayload, Owner, OwnerRef, SchemaId, SchemaVersion,
+    SidecarPayload, SourceId, StorageError, UserId,
 };
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
@@ -142,8 +142,7 @@ async fn ingest_listenable_under(
     let command = fact_command(ListenableProbeV1::SCHEMA_ID, ingest_key);
     let authorized =
         witness(owner, command).with_publication_for_tests(plan_for(*owner, payload, limits));
-    pg.ingest_fact_with_typed_sidecar(&authorized, &[], None)
-        .await
+    pg.ingest_fact_with_typed_sidecar(&authorized, None).await
 }
 
 async fn ingest_unlistenable(
@@ -153,8 +152,7 @@ async fn ingest_unlistenable(
 ) -> Result<FactIngestOutcome, StorageError> {
     let command = fact_command(UnlistenableProbeV1::SCHEMA_ID, ingest_key);
     let authorized = witness(owner, command);
-    pg.ingest_fact_with_typed_sidecar(&authorized, &[], None)
-        .await
+    pg.ingest_fact_with_typed_sidecar(&authorized, None).await
 }
 
 async fn outbox_rows(pool: &sqlx::PgPool) -> i64 {
@@ -566,6 +564,31 @@ async fn the_receipt_only_route_refuses_a_listenable_schema() {
 }
 
 #[tokio::test]
+async fn the_receipt_only_route_refuses_bound_typed_sidecars() {
+    let (pg, db) = fresh_pg("pub_capture_bound_sidecar").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+
+    let payload = probe("bound typed payload");
+    let authorized = witness(&owner, fact_command(ListenableProbeV1::SCHEMA_ID, None))
+        .with_sidecar_payloads_for_tests(vec![SidecarPayload::fact(payload)]);
+    let err = pg
+        .ingest_authorized_fact_atomic(&authorized, None)
+        .await
+        .expect_err("receipt-only persistence must not drop bound typed sidecars");
+    assert!(
+        matches!(err, StorageError::ConstraintViolation(ref message) if message.contains("typed Fact sidecars")),
+        "{err}"
+    );
+    assert_eq!(memory_rows(&pool).await, 0);
+    assert_eq!(outbox_rows(&pool).await, 0);
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+#[tokio::test]
 async fn an_uncommitted_write_session_leaves_no_visible_record() {
     let (pg, db) = fresh_pg("pub_capture_uncommitted").await;
     let pool = pg.pool_for_tests().clone();
@@ -582,7 +605,7 @@ async fn an_uncommitted_write_session_leaves_no_visible_record() {
     {
         let mut session = pg.begin().await.expect("session begins");
         session
-            .ingest_fact_with_typed_sidecar(&authorized, &[], None)
+            .ingest_fact_with_typed_sidecar(&authorized, None)
             .await
             .expect("the write succeeds inside the transaction");
         // Dropped without commit.
@@ -616,7 +639,7 @@ async fn a_late_commit_is_claimed_on_the_next_pass_not_stepped_over() {
     ));
     let mut session_a = pg.begin().await.expect("session A begins");
     let a_outcome = session_a
-        .ingest_fact_with_typed_sidecar(&slow_witness, &[], None)
+        .ingest_fact_with_typed_sidecar(&slow_witness, None)
         .await
         .expect("A writes");
 

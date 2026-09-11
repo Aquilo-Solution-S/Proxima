@@ -303,11 +303,7 @@ impl Engine {
         let embedding_client = self.embed_client();
         let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
         let fact = self
-            .ingest_fact_with_citation_and_typed_sidecar(
-                &authorized,
-                extensions,
-                embedding_model_id,
-            )
+            .ingest_fact_with_citation_and_typed_sidecar(&authorized, embedding_model_id)
             .await?;
 
         // Present on every citation-bearing write, including a replay,

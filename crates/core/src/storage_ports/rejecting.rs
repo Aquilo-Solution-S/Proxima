@@ -37,7 +37,7 @@ use crate::verbs::goal_write::{
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::{
     EmbeddableEntityRef, EntityId, EntityKind, GroupId, MembershipRow, Owner, OwnerRef, Relation,
-    SidecarPayload, SourceId, UserId,
+    SourceId, UserId,
 };
 
 #[derive(Debug)]
@@ -58,7 +58,6 @@ impl FactIngestPort for RejectingStorage {
     async fn ingest_fact_with_typed_sidecar(
         &self,
         _authorized: &AuthorizedFactWrite,
-        _sidecar_payloads: &[SidecarPayload],
         _embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
@@ -69,7 +68,6 @@ impl FactIngestPort for RejectingStorage {
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         _authorized: &AuthorizedFactWithCitation,
-        _sidecar_payloads: &[SidecarPayload],
         _embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
@@ -80,7 +78,6 @@ impl FactIngestPort for RejectingStorage {
     async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         _authorized: &AuthorizedFactWithCitationRef,
-        _sidecar_payloads: &[SidecarPayload],
         _embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(

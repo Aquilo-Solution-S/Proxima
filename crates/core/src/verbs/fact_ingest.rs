@@ -187,11 +187,11 @@ pub struct FactWriteCommand {
     pub kind: String,
 }
 
-/// The five values every authorized Fact witness carries: the mint gate,
-/// the owner-stamped command, the Fact's sidecar contract, and the index
-/// rows storage must assert alongside the Fact row.
+/// The values every authorized Fact witness carries: the mint gate, the
+/// owner-stamped command, the Fact's sidecar contract and payload set, and
+/// the index rows storage must assert alongside the Fact row.
 ///
-/// `pub(crate)`, and no `pub` accessor hands one out. A witness that could
+/// `pub(crate)`, and no `pub` accessor hands the core out. A witness that could
 /// yield its core would let a citing write be routed through the plain-Fact
 /// persistence path, which drops the citation; a witness reveals its core's
 /// values one getter at a time instead.
@@ -202,6 +202,7 @@ pub(crate) struct AuthorizedFactCore {
     fact_sidecar_table: Option<String>,
     fact_natural_key_columns: Vec<String>,
     fact_natural_key_values: Option<Vec<(String, SidecarAtom)>>,
+    sidecar_payloads: Vec<SidecarPayload>,
     links: AuthorizedNodeLinks,
     /// The publication record this admission captures, resolved by the
     /// engine at authorization time from the frozen `SchemaInfo.listenable`
@@ -216,6 +217,7 @@ impl AuthorizedFactCore {
         draft: FactWriteCommand,
         fact_sidecar_table: Option<String>,
         fact_natural_key_columns: Vec<String>,
+        sidecar_payloads: Vec<SidecarPayload>,
         links: AuthorizedNodeLinks,
     ) -> Self {
         Self {
@@ -224,6 +226,7 @@ impl AuthorizedFactCore {
             fact_sidecar_table,
             fact_natural_key_columns,
             fact_natural_key_values: None,
+            sidecar_payloads,
             links,
             publication: None,
         }
@@ -253,6 +256,10 @@ impl AuthorizedFactCore {
     ) -> Self {
         self.fact_natural_key_values = values;
         self
+    }
+
+    pub(crate) fn sidecar_payloads(&self) -> &[SidecarPayload] {
+        &self.sidecar_payloads
     }
 
     pub(crate) const fn links(&self) -> &AuthorizedNodeLinks {
@@ -301,23 +308,13 @@ pub struct AuthorizedFactWrite {
 pub struct AuthorizedNodeLinks {
     origins: Vec<EdgeEndpoint>,
     references: Vec<EdgeEndpoint>,
-    /// Exact stable-deduplicated references emitted by the typed sidecars
-    /// present at authorization. Raw compatibility refs never enter this
-    /// vector, so a later persistence call cannot substitute another typed
-    /// declaration while retaining the authorized pins.
-    payload_references: Vec<EdgeEndpoint>,
 }
 
 impl AuthorizedNodeLinks {
-    pub(crate) fn new(
-        origins: Vec<EdgeEndpoint>,
-        references: Vec<EdgeEndpoint>,
-        payload_references: Vec<EdgeEndpoint>,
-    ) -> Self {
+    pub(crate) fn new(origins: Vec<EdgeEndpoint>, references: Vec<EdgeEndpoint>) -> Self {
         Self {
             origins,
             references,
-            payload_references,
         }
     }
 
@@ -326,7 +323,7 @@ impl AuthorizedNodeLinks {
     #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
     pub fn new_for_tests(origins: Vec<EdgeEndpoint>, references: Vec<EdgeEndpoint>) -> Self {
-        Self::new(origins, references, Vec::new())
+        Self::new(origins, references)
     }
 
     /// Targets the write declared it was made from.
@@ -340,35 +337,6 @@ impl AuthorizedNodeLinks {
     #[must_use]
     pub fn references(&self) -> &[EdgeEndpoint] {
         &self.references
-    }
-
-    /// Whether authorization observed a typed payload reference declaration.
-    #[must_use]
-    pub fn has_payload_references(&self) -> bool {
-        !self.payload_references.is_empty()
-    }
-
-    /// Check that persistence received the same typed reference declaration
-    /// authorization admitted. Values outside reference fields are not part
-    /// of this witness.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed declarations or a changed ordered,
-    /// stable-deduplicated endpoint vector.
-    pub fn validate_sidecar_references(&self, sidecars: &[SidecarPayload]) -> Result<(), String> {
-        let mut actual = Vec::new();
-        for reference in sidecars.iter().flat_map(SidecarPayload::references) {
-            reference.validate()?;
-            reference.target.validate_shape()?;
-            if !actual.contains(&reference.target) {
-                actual.push(reference.target);
-            }
-        }
-        if actual != self.payload_references {
-            return Err("typed Fact sidecar references changed after authorization".to_owned());
-        }
-        Ok(())
     }
 }
 
@@ -404,6 +372,15 @@ impl AuthorizedFactWrite {
         )
     }
 
+    /// Test-only: bind the typed sidecars that a production authorization
+    /// call would carry into the opaque prepared write.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn with_sidecar_payloads_for_tests(mut self, sidecars: Vec<SidecarPayload>) -> Self {
+        self.core.sidecar_payloads = sidecars;
+        self
+    }
+
     /// Test-only mint that intentionally accepts links independent of the
     /// draft. Storage regression tests use it to prove that the backend
     /// persists the authorized carrier rather than compatibility fields.
@@ -424,6 +401,7 @@ impl AuthorizedFactWrite {
             draft,
             fact_sidecar_table,
             fact_natural_key_columns,
+            Vec::new(),
             links,
         ))
     }
@@ -506,6 +484,11 @@ impl AuthorizedFactWrite {
     #[must_use]
     pub fn fact_natural_key_values(&self) -> Option<&[(String, SidecarAtom)]> {
         self.core.fact_natural_key_values.as_deref()
+    }
+
+    #[must_use]
+    pub fn sidecar_payloads(&self) -> &[SidecarPayload] {
+        self.core.sidecar_payloads()
     }
 
     #[cfg(test)]
@@ -759,6 +742,11 @@ impl AuthorizedFactWithCitation {
     pub fn fact_natural_key_values(&self) -> Option<&[(String, SidecarAtom)]> {
         self.core.fact_natural_key_values.as_deref()
     }
+
+    #[must_use]
+    pub fn sidecar_payloads(&self) -> &[SidecarPayload] {
+        self.core.sidecar_payloads()
+    }
 }
 
 /// Proof that a Fact ingest citing an EXISTING cited object by id passed
@@ -866,6 +854,11 @@ impl AuthorizedFactWithCitationRef {
     #[must_use]
     pub fn fact_natural_key_values(&self) -> Option<&[(String, SidecarAtom)]> {
         self.core.fact_natural_key_values.as_deref()
+    }
+
+    #[must_use]
+    pub fn sidecar_payloads(&self) -> &[SidecarPayload] {
+        self.core.sidecar_payloads()
     }
 }
 

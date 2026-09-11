@@ -1,10 +1,10 @@
+use proxima_core::StorageError;
 use proxima_core::storage_ports::{FactIngestPort, McpCallReadPort};
 use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
     FactIngestOutcome,
 };
 use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
-use proxima_core::{SidecarPayload, StorageError};
 
 use crate::error::{internal, with_bounded_retry};
 use crate::{PgStorage, verbs};
@@ -16,9 +16,9 @@ impl FactIngestPort for PgStorage {
         authorized: &AuthorizedFactWrite,
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        if authorized.links().has_payload_references() {
+        if !authorized.sidecar_payloads().is_empty() {
             return Err(StorageError::ConstraintViolation(
-                "typed Fact references require their authorized sidecars".into(),
+                "typed Fact sidecars require the typed persistence path".into(),
             ));
         }
         verbs::fact_ingest::ingest_authorized_fact_atomic(
@@ -32,13 +32,9 @@ impl FactIngestPort for PgStorage {
     async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
-        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        authorized
-            .links()
-            .validate_sidecar_references(sidecar_payloads)
-            .map_err(StorageError::ConstraintViolation)?;
+        let sidecar_payloads = authorized.sidecar_payloads();
         let natural_key = verbs::fact_ingest::fact_natural_key(
             authorized.draft(),
             authorized.fact_sidecar_table(),
@@ -97,13 +93,9 @@ impl FactIngestPort for PgStorage {
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        authorized
-            .links()
-            .validate_sidecar_references(sidecar_payloads)
-            .map_err(StorageError::ConstraintViolation)?;
+        let sidecar_payloads = authorized.sidecar_payloads();
         let natural_key = verbs::fact_ingest::fact_natural_key(
             authorized.draft(),
             authorized.fact_sidecar_table(),
@@ -163,13 +155,9 @@ impl FactIngestPort for PgStorage {
     async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitationRef,
-        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        authorized
-            .links()
-            .validate_sidecar_references(sidecar_payloads)
-            .map_err(StorageError::ConstraintViolation)?;
+        let sidecar_payloads = authorized.sidecar_payloads();
         let natural_key = verbs::fact_ingest::fact_natural_key(
             authorized.draft(),
             authorized.fact_sidecar_table(),
