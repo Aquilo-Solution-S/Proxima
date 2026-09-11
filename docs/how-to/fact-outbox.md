@@ -57,6 +57,12 @@ after a durable accept or a durably retained rejection — the handoff described
 in [18 §Two Acknowledgements](../18-fact-outbox.md#two-acknowledgements). It is
 not an application orchestrator.
 
+The JSONL example retains the exact delivered bytes, a payload digest, the
+decision timestamp and the accepted/rejected outcome. It replays a recorded
+decision before re-validating, records same-ID/different-payload conflicts as
+rejections, serializes journal lookup and append, and truncates only an
+incomplete final append on restart; malformed complete records fail closed.
+
 ## 5. Verify
 
 ```sh
