@@ -2354,6 +2354,7 @@ name = "proxima-pg-testkit"
 version = "0.1.0"
 dependencies = [
  "sqlx",
+ "time",
  "tokio",
  "tracing",
  "url",

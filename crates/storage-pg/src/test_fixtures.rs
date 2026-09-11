@@ -4,7 +4,8 @@ pub mod operator_proofs;
 use proxima_storage_pg::{PgStorage, core_migrator};
 
 use proxima_pg_testkit::{
-    FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template, fnv1a64_extend,
+    DbGuard, FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template,
+    fnv1a64_extend,
 };
 
 #[must_use]
@@ -19,11 +20,14 @@ pub fn core_template_name() -> String {
 
 /// Clone a fresh test database from the core migrated template.
 ///
+/// The returned [`DbGuard`] drops the clone when the test passes and keeps
+/// it (printing a `psql` URL) when the test panics.
+///
 /// # Panics
 ///
 /// Panics when the local test Postgres admin connection, template
 /// creation, clone creation, or cloned database connection fails.
-pub async fn fresh_pg(prefix: &str) -> (PgStorage, String) {
+pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
     let template = core_template_name();
     ensure_template(&template, |pool| async move {
         core_migrator().run(&pool).await.map_err(sqlx::Error::from)
@@ -36,7 +40,7 @@ pub async fn fresh_pg(prefix: &str) -> (PgStorage, String) {
         .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
     let url = db_url(&db_name);
     match PgStorage::connect(&url).await {
-        Ok(pg) => (pg, db_name),
+        Ok(pg) => (pg, DbGuard::adopt(db_name)),
         Err(err) => {
             let _ = drop_db(&db_name).await;
             panic!("PG required for tests but unavailable: {err}");
