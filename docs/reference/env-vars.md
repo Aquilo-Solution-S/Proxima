@@ -149,7 +149,7 @@ remain fixed at `5432` (Postgres) and `9000` (RustFS).
 | `PROXIMA_TEST_NATS_URL` | tests | real JetStream broker for the outbox delivery tests; unset ⇒ those tests skip with a message. CI sets it |
 | `PROXIMA_TEST_NATS_PUBLISHER_URL` | tests | publish-only NATS URL | publisher acceptance path; CI grants publish and reply-inbox access but no stream-management rights |
 | `PROXIMA_DIFFERENTIAL_DIR` | tests | regeneration escape hatch for the owner erase/transfer golden differentials: set it and the test WRITES its dump there instead of comparing. Never set in CI |
-| `PROXIMA_INTAKE_PATH` | example | durable intake file for `crates/outbox-nats/examples/durable_intake.rs`, the reference consumer. Not read by any shipped binary |
+| `PROXIMA_INTAKE_DATABASE_URL` | example | PostgreSQL connection for the reference consumer; required by `crates/outbox-nats/examples/durable_intake.rs`. Provision its example schema first. Not read by any shipped binary |
 | `PROXIMA_ENV_RS_PROCESS_ENV_UNSET` | tests | a name `crates/core/src/env.rs` asserts is absent, to prove the process-env lookup returns `None` rather than an empty string |
 | `PROXIMA_RECONCILE_SHARED_KEYS_CHILD` | tests | marks the re-executed child process in the blob-s3 shared-key reconciliation test |
 | `PROXIMA_S1B_TEST_PRESENT`, `PROXIMA_S1B_TEST_ABSENT`, `PROXIMA_S1B_TEST_REG` | tests | fixture names for the env-lookup unit tests |

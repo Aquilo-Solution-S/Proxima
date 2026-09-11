@@ -48,20 +48,30 @@ writes still capture, records stay `pending`.
 
 ## 4. Run the reference consumer
 
+Provision the example's tables in a PostgreSQL database, then connect the sink.
+The schema belongs to this example and is separate from Proxima's core migrations.
+
 ```sh
+export PROXIMA_INTAKE_DATABASE_URL="postgres://proxima:proxima@127.0.0.1:5434/proxima"
+psql "$PROXIMA_INTAKE_DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f crates/outbox-nats/examples/durable_intake.sql
+export PROXIMA_NATS_CONSUMER_STREAM="PROXIMA_FACTS"
+export PROXIMA_NATS_CONSUMER_NAME="proxima-reference"
 cargo run -p proxima-outbox-nats --example durable_intake
 ```
 
-It binds the durable pull consumer, implements `DurableIntake`, and ACKs only
+Use the stream and durable names provisioned by your deployment. The example
+binds that existing pull consumer, implements `DurableIntake`, and ACKs only
 after a durable accept or a durably retained rejection — the handoff described
 in [18 §Two Acknowledgements](../18-fact-outbox.md#two-acknowledgements). It is
 not an application orchestrator.
 
-The JSONL example retains the exact delivered bytes, a payload digest, the
-decision timestamp and the accepted/rejected outcome. It replays a recorded
-decision before re-validating, records same-ID/different-payload conflicts as
-rejections, serializes journal lookup and append, and truncates only an
-incomplete final append on restart; malformed complete records fail closed.
+The PostgreSQL example commits the exact delivered bytes, a payload digest,
+decision timestamp and accepted/rejected outcome before returning success.
+Identical redelivery returns the recorded outcome. Same-ID/different-payload
+conflicts retain the original decision and a separate rejection. Transactions
+and unique constraints coordinate concurrent consumers and preserve decisions
+across restarts. A storage failure leaves the delivery retryable.
 
 ## 5. Verify
 
@@ -76,6 +86,14 @@ Without the `nats` CLI, run the broker-backed suite instead:
 
 ```sh
 PROXIMA_TEST_NATS_URL=nats://127.0.0.1:4224 cargo nextest run -p proxima-outbox-nats
+```
+
+Run the reference intake's PostgreSQL and broker recovery tests explicitly:
+
+```sh
+PROXIMA_TEST_PG_URL=postgres://proxima:proxima@127.0.0.1:5434/proxima \
+PROXIMA_TEST_NATS_URL=nats://127.0.0.1:4224 CI=true \
+  cargo test -p proxima-outbox-nats --example durable_intake --locked
 ```
 
 Unset `PROXIMA_TEST_NATS_URL` and the broker tests skip with a message rather

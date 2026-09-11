@@ -291,3 +291,5 @@ jobs:
         # lane above (crates/outbox-nats), which is why this is one step
         # and not a job.
         run: cargo nextest run -p proxima-mcp --features nats --test nats_e2e --locked
+      - name: test (durable reference intake)
+        run: cargo test -p proxima-outbox-nats --example durable_intake --locked

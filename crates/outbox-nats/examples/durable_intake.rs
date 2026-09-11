@@ -1,407 +1,217 @@
-//! A durable sink for Proxima's Fact stream (issue #305, docs/18).
+//! A small PostgreSQL-backed durable sink for Proxima's Fact stream.
 //!
-//! Run it against a broker the publisher is feeding:
+//! The schema in `durable_intake.sql` belongs to this reference example. A
+//! deployment provisions it once, then supplies `PROXIMA_INTAKE_DATABASE_URL`.
+//! The application only binds an existing NATS stream and durable consumer;
+//! it never creates broker topology.
 //!
-//! ```text
-//! PROXIMA_NATS_URL=nats://127.0.0.1:4222 \
-//! PROXIMA_INTAKE_PATH=/tmp/proxima-facts.jsonl \
-//!   cargo run -p proxima-outbox-nats --example durable_intake
-//! ```
-//!
-//! It exists to show what a sink OWES the stream, which is exactly two
-//! things and no more:
-//!
-//! 1. **Make the outcome durable before acknowledging.** The journal retains
-//!    the exact delivered bytes, a payload digest, and a separate decision
-//!    timestamp. The append is `write` + `sync_all` — a buffered write that
-//!    had not reached the disk when the process died would leave an
-//!    acknowledged event that no longer exists. Everything the consumer does
-//!    with an ACK is built on the sink having already committed.
-//! 2. **Deduplicate on the `CloudEvents` id.** Delivery is at-least-once,
-//!    always. The broker's `Nats-Msg-Id` window absorbs a republication
-//!    within its duration; beyond it, and after any redelivery caused by a
-//!    lost ACK, the SINK is the only thing that can tell a repeat from a
-//!    new event. The id is `F:<uuid>` — the Fact's `t` — so it is stable
-//!    across every republication of one event.
-//!
-//! Rejection is a THIRD outcome, distinct from failure: an event this sink
-//! will never accept is recorded as rejected and acknowledged, because
-//! leaving it unacknowledged would block the consumer on it forever. An
-//! event the sink could not decide about returns an error instead, and the
-//! consumer leaves it for redelivery.
+//! The sink commits the exact delivered bytes, digest, original id, delivery
+//! facts, decision timestamp, and terminal outcome before returning `Ok`.
+//! `PostgreSQL` constraints own deduplication: a unique partial index preserves
+//! the first decision for each event id, while a later payload is a durable
+//! rejected conflict.
 
-use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, ErrorKind, Write};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::env;
+use std::fmt;
+use std::sync::Arc;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use proxima_outbox_nats::{
     DurableIntake, Intake, IntakeError, NatsConsumerConfig, ReceivedEvent, ReferenceConsumer,
 };
-use time::format_description::well_known::Rfc3339;
+use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use tokio_util::sync::CancellationToken;
 
-/// Where the sink keeps its journal. One JSON object per line: the outcome
-/// this sink committed for one event.
-const ENV_PATH: &str = "PROXIMA_INTAKE_PATH";
-const DEFAULT_PATH: &str = "proxima-facts.jsonl";
+const ENV_DATABASE_URL: &str = "PROXIMA_INTAKE_DATABASE_URL";
 
-/// A file-backed sink: append the exact event bytes and outcome, flush them to
-/// the disk, and only then let the consumer acknowledge.
-#[derive(Debug)]
-struct JsonlIntake {
-    /// The file and the id index behind ONE lock. They are two views of a
-    /// single fact — "this event has been recorded" — and a reader that
-    /// could see the index updated before the bytes were on disk would
-    /// acknowledge an event this sink does not have.
-    state: Mutex<State>,
-    path: PathBuf,
+const INSERT_PRIMARY: &str = "
+    INSERT INTO proxima_durable_intake.decisions (
+        event_id, payload_digest, raw_payload, subject, stream_sequence,
+        delivered_count, decision_at, outcome, reason, is_primary,
+        original_payload_digest
+    ) VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8, true, NULL)
+    ON CONFLICT DO NOTHING
+    RETURNING outcome, reason
+";
+
+const SELECT_PRIMARY: &str = "
+    SELECT payload_digest, outcome, reason
+    FROM proxima_durable_intake.decisions
+    WHERE event_id = $1 AND is_primary
+";
+
+const INSERT_CONFLICT: &str = "
+    INSERT INTO proxima_durable_intake.decisions (
+        event_id, payload_digest, raw_payload, subject, stream_sequence,
+        delivered_count, decision_at, outcome, reason, is_primary,
+        original_payload_digest
+    ) VALUES ($1, $2, $3, $4, $5, $6, now(), 'rejected', $7, false, $8)
+    ON CONFLICT DO NOTHING
+    RETURNING outcome, reason
+";
+
+const SELECT_DECISION: &str = "
+    SELECT outcome, reason
+    FROM proxima_durable_intake.decisions
+    WHERE event_id = $1 AND payload_digest = $2
+";
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct StoredDecision {
+    outcome: String,
+    reason: Option<String>,
 }
 
-#[derive(Debug)]
-struct State {
-    file: File,
-    decisions: HashMap<String, IndexedDecision>,
-    conflicts: HashMap<(String, String), String>,
-}
-
-#[derive(Debug, Clone)]
-struct IndexedDecision {
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct StoredPrimary {
     payload_digest: String,
-    outcome: Intake,
+    outcome: String,
+    reason: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
-enum JournalOutcome {
-    Accepted,
-    Rejected { reason: String },
+/// The reference sink. Independent instances share only `PostgreSQL` state.
+#[derive(Clone)]
+pub struct PostgresIntake {
+    pool: PgPool,
 }
 
-impl JournalOutcome {
-    fn from_intake(outcome: &Intake) -> Self {
-        match outcome {
-            Intake::Accepted => Self::Accepted,
-            Intake::Rejected { reason } => Self::Rejected {
-                reason: reason.clone(),
-            },
-        }
-    }
-
-    fn into_intake(self) -> Intake {
-        match self {
-            Self::Accepted => Intake::Accepted,
-            Self::Rejected { reason } => Intake::Rejected { reason },
-        }
+impl fmt::Debug for PostgresIntake {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PostgresIntake").finish_non_exhaustive()
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "record_type", rename_all = "snake_case")]
-enum JournalRecord {
-    Decision {
-        id: String,
-        payload_digest: String,
-        raw_base64: String,
-        decision_at: String,
-        subject: String,
-        stream_sequence: u64,
-        delivered_count: u64,
-        #[serde(flatten)]
-        outcome: JournalOutcome,
-    },
-    Conflict {
-        id: String,
-        payload_digest: String,
-        raw_base64: String,
-        decision_at: String,
-        subject: String,
-        stream_sequence: u64,
-        delivered_count: u64,
-        original_payload_digest: String,
-        #[serde(flatten)]
-        outcome: JournalOutcome,
-    },
-}
-
-impl JsonlIntake {
-    /// Open the journal and rebuild the outcome index from it.
-    ///
-    /// Rebuilding on start-up rather than trusting in-memory state is the
-    /// point: a restarted sink that forgot what it had recorded would
-    /// duplicate every event still inside the broker's redelivery window.
-    /// Only an incomplete final append is discarded; a malformed complete
-    /// record fails closed.
-    fn open(path: &Path) -> io::Result<Arc<Self>> {
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .open(path)?;
-        let (decisions, conflicts, truncate_at) = {
-            let mut reader = BufReader::new(&file);
-            let mut decisions = HashMap::new();
-            let mut conflicts = HashMap::new();
-            let mut offset = 0_u64;
-            let mut truncate_at = None;
-            loop {
-                let mut line = Vec::new();
-                let read = reader.read_until(b'\n', &mut line)?;
-                if read == 0 {
-                    break;
-                }
-                let terminated = line.last() == Some(&b'\n');
-                if terminated {
-                    line.pop();
-                    if line.last() == Some(&b'\r') {
-                        line.pop();
-                    }
-                }
-                match serde_json::from_slice::<JournalRecord>(&line) {
-                    Ok(record) => {
-                        apply_record(record, &mut decisions, &mut conflicts)?;
-                        offset = offset.saturating_add(read as u64);
-                    }
-                    Err(_error) if !terminated => {
-                        // A crash can leave only the final append without its
-                        // closing newline or with incomplete JSON. It is not
-                        // a durable decision, so remove precisely that tail.
-                        truncate_at = Some(offset);
-                        break;
-                    }
-                    Err(error) => {
-                        return Err(invalid_journal(format!(
-                            "malformed complete JSONL record at byte {offset}: {error}"
-                        )));
-                    }
-                }
-            }
-            (decisions, conflicts, truncate_at)
-        };
-        if let Some(offset) = truncate_at {
-            file.set_len(offset)?;
-        }
-        Ok(Arc::new(Self {
-            state: Mutex::new(State {
-                file,
-                decisions,
-                conflicts,
-            }),
-            path: path.to_path_buf(),
-        }))
+impl PostgresIntake {
+    async fn connect(database_url: &str) -> Result<Self, sqlx::Error> {
+        let pool = PgPoolOptions::new()
+            .max_connections(8)
+            .connect(database_url)
+            .await?;
+        Ok(Self { pool })
     }
 
-    /// Look up, decide, and persist one outcome while holding the same lock.
-    /// The index changes only after the journal append has been synced.
-    fn decide_and_record(&self, event: &ReceivedEvent) -> io::Result<Intake> {
-        let mut state = self.state.lock().expect("the journal lock is not poisoned");
-        let payload_digest = payload_digest(&event.raw);
-        if let Some(existing) = state.decisions.get(&event.id).cloned() {
-            if existing.payload_digest == payload_digest {
-                // Replay the original decision before consulting current
-                // validation rules. A later release must not reinterpret a
-                // durable historical decision.
-                return Ok(existing.outcome);
-            }
+    async fn decide_and_record(&self, event: &ReceivedEvent) -> Result<Intake, sqlx::Error> {
+        let digest_text = blake3::hash(&event.raw).to_hex().to_string();
+        let stream_sequence = i64::try_from(event.stream_sequence).map_err(|_| {
+            sqlx::Error::Protocol("stream sequence does not fit PostgreSQL BIGINT".to_owned())
+        })?;
+        let delivered_count = i64::try_from(event.delivered_count).map_err(|_| {
+            sqlx::Error::Protocol("delivery count does not fit PostgreSQL BIGINT".to_owned())
+        })?;
+        let mut transaction = self.pool.begin().await?;
 
-            let conflict_key = (event.id.clone(), payload_digest.clone());
-            if let Some(reason) = state.conflicts.get(&conflict_key).cloned() {
-                return Ok(Intake::Rejected { reason });
-            }
-
-            let reason = format!(
-                "conflicting payload for event id {}: recorded digest {}, received {}",
-                event.id, existing.payload_digest, payload_digest
-            );
-            let record = JournalRecord::Conflict {
-                id: event.id.clone(),
-                payload_digest: payload_digest.clone(),
-                raw_base64: STANDARD.encode(&event.raw),
-                decision_at: decision_timestamp(),
-                subject: event.subject.clone(),
-                stream_sequence: event.stream_sequence,
-                delivered_count: event.delivered_count,
-                original_payload_digest: existing.payload_digest,
-                outcome: JournalOutcome::Rejected {
-                    reason: reason.clone(),
-                },
-            };
-            append_record(&mut state.file, &record)?;
-            state.conflicts.insert(conflict_key, reason.clone());
-            return Ok(Intake::Rejected { reason });
+        // Read before validation: a terminal historical decision is never
+        // reinterpreted by a later release.
+        if let Some(saved) = sqlx::query_as::<_, StoredDecision>(SELECT_DECISION)
+            .bind(&event.id)
+            .bind(&digest_text)
+            .fetch_optional(&mut *transaction)
+            .await?
+        {
+            let outcome = saved.into_intake()?;
+            transaction.commit().await?;
+            return Ok(outcome);
         }
 
-        let outcome = if event.envelope.specversion == "1.0" {
-            Intake::Accepted
-        } else {
-            Intake::Rejected {
-                reason: format!(
-                    "unsupported CloudEvents specversion {:?}",
-                    event.envelope.specversion
-                ),
+        let outcome = validation_outcome(event);
+        let (outcome_name, reason) = match &outcome {
+            Intake::Accepted => ("accepted", None),
+            Intake::Rejected { reason } => ("rejected", Some(reason.as_str())),
+        };
+        if let Some(inserted) = sqlx::query_as::<_, StoredDecision>(INSERT_PRIMARY)
+            .bind(&event.id)
+            .bind(&digest_text)
+            .bind(event.raw.as_ref())
+            .bind(&event.subject)
+            .bind(stream_sequence)
+            .bind(delivered_count)
+            .bind(outcome_name)
+            .bind(reason)
+            .fetch_optional(&mut *transaction)
+            .await?
+        {
+            let outcome = inserted.into_intake()?;
+            transaction.commit().await?;
+            return Ok(outcome);
+        }
+
+        // Another sink won the primary insert. The unique event-id index has
+        // made that winner visible before this statement runs.
+        let primary = sqlx::query_as::<_, StoredPrimary>(SELECT_PRIMARY)
+            .bind(&event.id)
+            .fetch_one(&mut *transaction)
+            .await?;
+        if primary.payload_digest == digest_text {
+            let outcome = StoredDecision {
+                outcome: primary.outcome,
+                reason: primary.reason,
             }
-        };
-        let record = JournalRecord::Decision {
-            id: event.id.clone(),
-            payload_digest: payload_digest.clone(),
-            raw_base64: STANDARD.encode(&event.raw),
-            decision_at: decision_timestamp(),
-            subject: event.subject.clone(),
-            stream_sequence: event.stream_sequence,
-            delivered_count: event.delivered_count,
-            outcome: JournalOutcome::from_intake(&outcome),
-        };
-        append_record(&mut state.file, &record)?;
-        // The whole contract in one call: the consumer's ACK is only
-        // allowed to mean anything because these bytes are on the disk
-        // before it is sent.
-        state.decisions.insert(
-            event.id.clone(),
-            IndexedDecision {
-                payload_digest,
-                outcome: outcome.clone(),
-            },
+            .into_intake()?;
+            transaction.commit().await?;
+            return Ok(outcome);
+        }
+
+        let conflict_reason = format!(
+            "conflicting payload for event id {}: recorded digest {}, received {}",
+            event.id, primary.payload_digest, digest_text
         );
+        let saved = sqlx::query_as::<_, StoredDecision>(INSERT_CONFLICT)
+            .bind(&event.id)
+            .bind(&digest_text)
+            .bind(event.raw.as_ref())
+            .bind(&event.subject)
+            .bind(stream_sequence)
+            .bind(delivered_count)
+            .bind(&conflict_reason)
+            .bind(&primary.payload_digest)
+            .fetch_optional(&mut *transaction)
+            .await?;
+        let outcome = match saved {
+            Some(saved) => saved.into_intake()?,
+            None => sqlx::query_as::<_, StoredDecision>(SELECT_DECISION)
+                .bind(&event.id)
+                .bind(&digest_text)
+                .fetch_one(&mut *transaction)
+                .await?
+                .into_intake()?,
+        };
+        transaction.commit().await?;
         Ok(outcome)
     }
 }
 
+fn validation_outcome(event: &ReceivedEvent) -> Intake {
+    if event.envelope.specversion == "1.0" {
+        Intake::Accepted
+    } else {
+        Intake::Rejected {
+            reason: format!(
+                "unsupported CloudEvents specversion {:?}",
+                event.envelope.specversion
+            ),
+        }
+    }
+}
+
+impl StoredDecision {
+    fn into_intake(self) -> Result<Intake, sqlx::Error> {
+        match (self.outcome.as_str(), self.reason) {
+            ("accepted", None) => Ok(Intake::Accepted),
+            ("rejected", Some(reason)) => Ok(Intake::Rejected { reason }),
+            _ => Err(sqlx::Error::Protocol(
+                "durable intake schema returned an invalid outcome".to_owned(),
+            )),
+        }
+    }
+}
+
 #[async_trait::async_trait]
-impl DurableIntake for JsonlIntake {
+impl DurableIntake for PostgresIntake {
     async fn accept(&self, event: &ReceivedEvent) -> Result<Intake, IntakeError> {
-        // The journal lookup happens before validation and the lookup,
-        // decision, append, sync, and index update happen under one lock.
-        match self.decide_and_record(event) {
-            Ok(outcome) => {
-                match &outcome {
-                    Intake::Accepted => tracing_line(&format!(
-                        "recorded {} ({})",
-                        event.id, event.envelope.event_type
-                    )),
-                    Intake::Rejected { reason } => {
-                        tracing_line(&format!("rejected {}: {reason}", event.id));
-                    }
-                }
-                Ok(outcome)
-            }
-            Err(error) => Err(IntakeError::new(format!(
-                "could not append to {}: {error}",
-                self.path.display()
-            ))),
-        }
+        self.decide_and_record(event)
+            .await
+            .map_err(|error| IntakeError::new(format!("could not commit durable intake: {error}")))
     }
-}
-
-fn append_record(file: &mut File, record: &JournalRecord) -> io::Result<()> {
-    let line = serde_json::to_string(record)
-        .map_err(|error| invalid_journal(format!("journal record is not serializable: {error}")))?;
-    writeln!(file, "{line}")?;
-    file.sync_all()
-}
-
-fn apply_record(
-    record: JournalRecord,
-    decisions: &mut HashMap<String, IndexedDecision>,
-    conflicts: &mut HashMap<(String, String), String>,
-) -> io::Result<()> {
-    match record {
-        JournalRecord::Decision {
-            id,
-            payload_digest,
-            raw_base64,
-            decision_at,
-            outcome,
-            ..
-        } => {
-            validate_timestamp(&decision_at)?;
-            verify_raw_digest(&raw_base64, &payload_digest)?;
-            if decisions
-                .insert(
-                    id.clone(),
-                    IndexedDecision {
-                        payload_digest,
-                        outcome: outcome.into_intake(),
-                    },
-                )
-                .is_some()
-            {
-                return Err(invalid_journal(format!(
-                    "duplicate primary decision for event id {id}"
-                )));
-            }
-        }
-        JournalRecord::Conflict {
-            id,
-            payload_digest,
-            raw_base64,
-            decision_at,
-            original_payload_digest,
-            outcome,
-            ..
-        } => {
-            validate_timestamp(&decision_at)?;
-            verify_raw_digest(&raw_base64, &payload_digest)?;
-            let Some(original) = decisions.get(&id) else {
-                return Err(invalid_journal(format!(
-                    "conflict record for event id {id} has no primary decision"
-                )));
-            };
-            if original.payload_digest != original_payload_digest
-                || original.payload_digest == payload_digest
-            {
-                return Err(invalid_journal(format!(
-                    "conflict record for event id {id} does not name a distinct current payload"
-                )));
-            }
-            let JournalOutcome::Rejected { reason } = outcome else {
-                return Err(invalid_journal(format!(
-                    "conflict record for event id {id} is not a rejection"
-                )));
-            };
-            let key = (id, payload_digest);
-            if conflicts.insert(key, reason).is_some() {
-                return Err(invalid_journal(
-                    "duplicate conflict decision in JSONL journal".to_owned(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn verify_raw_digest(raw_base64: &str, expected_digest: &str) -> io::Result<()> {
-    let raw = STANDARD
-        .decode(raw_base64)
-        .map_err(|error| invalid_journal(format!("raw event is not valid base64: {error}")))?;
-    let actual_digest = payload_digest(&raw);
-    if actual_digest != expected_digest {
-        return Err(invalid_journal(format!(
-            "raw event digest {actual_digest} does not match journal digest {expected_digest}"
-        )));
-    }
-    Ok(())
-}
-
-fn payload_digest(raw: &[u8]) -> String {
-    blake3::hash(raw).to_hex().to_string()
-}
-
-fn decision_timestamp() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .expect("RFC3339 is a valid fixed timestamp format")
-}
-
-fn validate_timestamp(value: &str) -> io::Result<()> {
-    time::OffsetDateTime::parse(value, &Rfc3339)
-        .map(|_| ())
-        .map_err(|error| invalid_journal(format!("invalid decision timestamp {value:?}: {error}")))
-}
-
-fn invalid_journal(message: String) -> io::Error {
-    io::Error::new(ErrorKind::InvalidData, message)
 }
 
 fn tracing_line(message: &str) {
@@ -413,15 +223,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let Some(config) = NatsConsumerConfig::from_env()? else {
         return Err("PROXIMA_NATS_URL is unset; nothing to consume".into());
     };
-    let path = PathBuf::from(std::env::var(ENV_PATH).unwrap_or_else(|_| DEFAULT_PATH.to_owned()));
-    let intake = JsonlIntake::open(&path)?;
+    let database_url = env::var(ENV_DATABASE_URL)
+        .map_err(|_| format!("{ENV_DATABASE_URL} is unset; provision the example schema first"))?;
+    if database_url.trim().is_empty() {
+        return Err(format!("{ENV_DATABASE_URL} must not be empty").into());
+    }
+    let intake = Arc::new(PostgresIntake::connect(&database_url).await?);
     tracing_line(&format!(
-        "consuming {} on {} into {}",
-        config.stream,
-        config.url,
-        path.display()
+        "consuming stream {} with durable {} into the provisioned PostgreSQL intake schema",
+        config.stream, config.durable_name
     ));
-
     let consumer = ReferenceConsumer::connect(config, intake).await?;
     let cancel = CancellationToken::new();
     let stop = cancel.clone();
@@ -438,29 +249,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use async_nats::jetstream;
+    use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
     use bytes::Bytes;
-    use proxima_outbox_nats::CloudEventEnvelope;
-    use std::fs::{OpenOptions, read_to_string};
+    use proxima_outbox_nats::{AckAction, AckHook, CloudEventEnvelope};
+    use proxima_pg_testkit::{DbGuard, create_db, db_url};
+    use sqlx::postgres::PgPoolOptions;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
     use uuid::Uuid;
 
-    fn test_path(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "proxima-durable-intake-{label}-{}.jsonl",
-            Uuid::now_v7()
-        ))
+    struct DatabaseFixture {
+        intake: PostgresIntake,
+        pool: PgPool,
+        url: String,
+        _guard: DbGuard,
     }
 
-    fn remove(path: &Path) {
-        let _ = std::fs::remove_file(path);
+    impl DatabaseFixture {
+        async fn new() -> Self {
+            let name = format!("intake_{}", Uuid::now_v7().simple());
+            create_db(&name)
+                .await
+                .expect("test PostgreSQL is available");
+            let guard = DbGuard::adopt(name.clone());
+            let url = db_url(&name);
+            let pool = PgPoolOptions::new()
+                .max_connections(8)
+                .connect(&url)
+                .await
+                .expect("the fresh test database connects");
+            sqlx::raw_sql(include_str!("durable_intake.sql"))
+                .execute(&pool)
+                .await
+                .expect("the example schema provisions");
+            let intake = PostgresIntake::connect(&url)
+                .await
+                .expect("the intake pool connects");
+            Self {
+                intake,
+                pool,
+                url,
+                _guard: guard,
+            }
+        }
+
+        async fn count(&self) -> i64 {
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_durable_intake.decisions")
+                .fetch_one(&self.pool)
+                .await
+                .expect("the decision count answers")
+        }
     }
 
-    fn event(id: &str, raw: &'static [u8], specversion: &str) -> ReceivedEvent {
+    fn event(id: &str, raw: &[u8], specversion: &str) -> ReceivedEvent {
         ReceivedEvent {
             id: id.to_owned(),
             subject: "proxima.fact.test".to_owned(),
             stream_sequence: 7,
             delivered_count: 1,
-            raw: Bytes::from_static(raw),
+            raw: Bytes::copy_from_slice(raw),
             envelope: CloudEventEnvelope {
                 specversion: specversion.to_owned(),
                 id: id.to_owned(),
@@ -476,192 +325,463 @@ mod tests {
         }
     }
 
-    fn records(path: &Path) -> Vec<JournalRecord> {
-        read_to_string(path)
-            .expect("the journal is readable")
-            .lines()
-            .map(|line| serde_json::from_str(line).expect("every retained line is valid JSON"))
-            .collect()
-    }
-
     #[tokio::test]
-    async fn rejection_retains_reason_raw_bytes_and_decision_timestamp() {
-        let path = test_path("rejection");
-        let intake = JsonlIntake::open(&path).expect("the journal opens");
+    async fn rejection_persists_raw_reason_digest_and_decision_time() {
+        let database = DatabaseFixture::new().await;
+        let before: time::OffsetDateTime = sqlx::query_scalar("SELECT now()")
+            .fetch_one(&database.pool)
+            .await
+            .expect("the database clock answers");
         let raw = b"not-json-\0-with-exact-bytes";
-        let event = event("F:rejected", raw, "0.9");
-        let outcome = intake.accept(&event).await.expect("rejection is durable");
+        let outcome = database
+            .intake
+            .accept(&event("F:rejected", raw, "0.9"))
+            .await
+            .expect("a rejection is durable");
+        let after: time::OffsetDateTime = sqlx::query_scalar("SELECT now()")
+            .fetch_one(&database.pool)
+            .await
+            .expect("the database clock answers");
         assert_eq!(
             outcome,
             Intake::Rejected {
                 reason: "unsupported CloudEvents specversion \"0.9\"".to_owned()
             }
         );
-        drop(intake);
-
-        let journal = records(&path);
-        let [
-            JournalRecord::Decision {
-                payload_digest: recorded_digest,
-                raw_base64,
-                decision_at,
-                outcome: JournalOutcome::Rejected { reason },
-                ..
-            },
-        ] = journal.as_slice()
-        else {
-            panic!("the rejection must be one primary decision record");
-        };
-        assert_eq!(STANDARD.decode(raw_base64).expect("raw is base64"), raw);
-        assert_eq!(recorded_digest, &payload_digest(raw));
-        assert_eq!(reason, "unsupported CloudEvents specversion \"0.9\"");
-        validate_timestamp(decision_at).expect("the decision timestamp is valid");
-        remove(&path);
-    }
-
-    #[tokio::test]
-    async fn replay_returns_saved_decision_before_current_validation() {
-        let path = test_path("replay");
-        let intake = JsonlIntake::open(&path).expect("the journal opens");
-        let raw = b"same-event-bytes";
-        let first = event("F:replay", raw, "0.9");
-        let saved = intake
-            .accept(&first)
-            .await
-            .expect("first decision is durable");
-
-        // The same raw bytes are now presented with a currently valid view.
-        // The historical rejection must win over re-validation.
-        let redelivery = event("F:replay", raw, "1.0");
+        let row: (
+            Vec<u8>,
+            String,
+            time::OffsetDateTime,
+            String,
+            Option<String>,
+            bool,
+        ) = sqlx::query_as(
+            "SELECT raw_payload, payload_digest, decision_at, outcome, reason, is_primary
+             FROM proxima_durable_intake.decisions WHERE event_id = 'F:rejected'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .expect("the rejected row is present");
+        assert_eq!(row.0, raw);
+        assert_eq!(row.1, blake3::hash(raw).to_hex().to_string());
+        assert!(row.2 >= before && row.2 <= after);
+        assert_eq!(row.3, "rejected");
         assert_eq!(
-            intake
-                .accept(&redelivery)
-                .await
-                .expect("saved decision is returned"),
-            saved
+            row.4.as_deref(),
+            Some("unsupported CloudEvents specversion \"0.9\"")
         );
-        drop(intake);
-        assert_eq!(records(&path).len(), 1);
-        remove(&path);
+        assert!(row.5);
     }
 
     #[tokio::test]
-    async fn conflicting_payload_is_retained_without_overwriting_original_decision() {
-        let path = test_path("conflict");
-        let intake = JsonlIntake::open(&path).expect("the journal opens");
-        let original = event("F:conflict", b"original-bytes", "1.0");
+    async fn accepted_and_rejected_redelivery_survive_reopen_without_new_rows() {
+        let database = DatabaseFixture::new().await;
+        let accepted = event("F:accepted", b"accepted-bytes", "1.0");
+        let rejected = event("F:rejected-again", b"rejected-bytes", "0.9");
+        let accepted_outcome = database.intake.accept(&accepted).await.expect("accepted");
+        let rejected_outcome = database.intake.accept(&rejected).await.expect("rejected");
+        assert_eq!(accepted_outcome, Intake::Accepted);
+        assert!(matches!(rejected_outcome, Intake::Rejected { .. }));
+        assert_eq!(database.count().await, 2);
+        let mut accepted_replay = accepted.clone();
+        accepted_replay.envelope.specversion = "0.9".to_owned();
+        let mut rejected_replay = rejected.clone();
+        rejected_replay.envelope.specversion = "1.0".to_owned();
         assert_eq!(
-            intake.accept(&original).await.expect("original is durable"),
+            database
+                .intake
+                .accept(&accepted_replay)
+                .await
+                .expect("saved accepted"),
             Intake::Accepted
         );
+        assert_eq!(
+            database
+                .intake
+                .accept(&rejected_replay)
+                .await
+                .expect("saved rejected"),
+            rejected_outcome
+        );
+        database.intake.pool.close().await;
+        let reopened = PostgresIntake::connect(&database.url)
+            .await
+            .expect("reopen");
+        assert_eq!(
+            reopened
+                .accept(&accepted_replay)
+                .await
+                .expect("reopened accepted"),
+            Intake::Accepted
+        );
+        assert_eq!(
+            reopened
+                .accept(&rejected_replay)
+                .await
+                .expect("reopened rejected"),
+            rejected_outcome
+        );
+        assert_eq!(database.count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn conflicting_payload_keeps_original_and_deduplicates_conflict() {
+        let database = DatabaseFixture::new().await;
+        let original = event("F:conflict", b"original-bytes", "1.0");
         let conflicting = event("F:conflict", b"different-bytes", "1.0");
-        let rejection = intake
+        assert_eq!(
+            database.intake.accept(&original).await.expect("original"),
+            Intake::Accepted
+        );
+        let rejection = database
+            .intake
             .accept(&conflicting)
             .await
-            .expect("conflict rejection is durable");
+            .expect("conflict rejection");
         assert!(
             matches!(rejection, Intake::Rejected { ref reason } if reason.contains("conflicting payload"))
         );
-        drop(intake);
-
-        let journal = records(&path);
-        assert!(matches!(
-            journal.as_slice(),
-            [
-                JournalRecord::Decision {
-                    outcome: JournalOutcome::Accepted,
-                    ..
-                },
-                JournalRecord::Conflict {
-                    outcome: JournalOutcome::Rejected { .. },
-                    ..
-                }
-            ]
-        ));
-        let JournalRecord::Conflict {
-            raw_base64,
-            payload_digest: conflicting_digest,
-            original_payload_digest,
-            ..
-        } = &journal[1]
-        else {
-            unreachable!("the conflict record was asserted above");
-        };
         assert_eq!(
-            STANDARD
-                .decode(raw_base64)
-                .expect("conflicting raw is base64"),
-            b"different-bytes"
-        );
-        assert_eq!(conflicting_digest, &payload_digest(b"different-bytes"));
-        assert_eq!(original_payload_digest, &payload_digest(b"original-bytes"));
-
-        let restarted = JsonlIntake::open(&path).expect("the restarted journal opens");
-        let replay = event("F:conflict", b"different-bytes", "0.9");
-        assert_eq!(
-            restarted
-                .accept(&replay)
+            database
+                .intake
+                .accept(&conflicting)
                 .await
-                .expect("saved conflict is returned before validation"),
+                .expect("saved conflict"),
             rejection
         );
-        drop(restarted);
-        assert_eq!(records(&path).len(), 2);
-        remove(&path);
-    }
-
-    #[tokio::test]
-    async fn restart_after_crash_before_ack_replays_one_durable_rejection() {
-        let path = test_path("crash-before-ack");
-        let raw = b"crash-safe-rejection";
-        let first_event = event("F:crash-before-ack", raw, "0.9");
-        let first = JsonlIntake::open(&path).expect("the journal opens");
-        let saved = first
-            .accept(&first_event)
+        database.intake.pool.close().await;
+        let reopened = PostgresIntake::connect(&database.url)
             .await
-            .expect("decision is synced");
-        drop(first); // process crash here, before the broker ACK
-
-        let restarted = JsonlIntake::open(&path).expect("the journal restarts");
-        let redelivery = event("F:crash-before-ack", raw, "1.0");
+            .expect("reopen conflict sink");
         assert_eq!(
-            restarted
-                .accept(&redelivery)
+            reopened
+                .accept(&conflicting)
                 .await
-                .expect("redelivery returns the saved decision"),
-            saved
+                .expect("reopened conflict"),
+            rejection
         );
-        drop(restarted);
-        assert_eq!(records(&path).len(), 1);
-        remove(&path);
+        let rows: Vec<(bool, Vec<u8>, Option<String>)> = sqlx::query_as(
+            "SELECT is_primary, raw_payload, original_payload_digest
+             FROM proxima_durable_intake.decisions WHERE event_id = 'F:conflict'
+             ORDER BY is_primary DESC",
+        )
+        .fetch_all(&database.pool)
+        .await
+        .expect("the rows answer");
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].0);
+        assert_eq!(rows[0].1, b"original-bytes");
+        assert!(!rows[1].0);
+        assert_eq!(rows[1].1, b"different-bytes");
+        assert_eq!(
+            rows[1].2.as_deref(),
+            Some(blake3::hash(b"original-bytes").to_hex().as_str())
+        );
     }
 
     #[tokio::test]
-    async fn interrupted_final_append_is_truncated_but_malformed_complete_record_fails_closed() {
-        let path = test_path("interrupted");
-        let intake = JsonlIntake::open(&path).expect("the journal opens");
-        let event = event("F:complete", b"complete", "1.0");
-        intake
-            .accept(&event)
+    async fn independent_sinks_concurrently_commit_one_primary_decision() {
+        let database = DatabaseFixture::new().await;
+        let left = PostgresIntake::connect(&database.url)
             .await
-            .expect("the first decision is durable");
-        drop(intake);
-        let mut file = OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .expect("the journal reopens for the interrupted append");
-        file.write_all(br#"{"record_type":"decision","id":"partial"#)
-            .expect("the partial append writes");
-        file.sync_all()
-            .expect("the partial append reaches the disk");
-        drop(file);
+            .expect("left sink");
+        let right = PostgresIntake::connect(&database.url)
+            .await
+            .expect("right sink");
+        let event = event("F:concurrent", b"same-bytes", "1.0");
+        let (left_outcome, right_outcome) = tokio::join!(left.accept(&event), right.accept(&event));
+        assert_eq!(left_outcome.expect("left commits"), Intake::Accepted);
+        assert_eq!(right_outcome.expect("right replays"), Intake::Accepted);
+        assert_eq!(database.count().await, 1);
+    }
 
-        let restarted = JsonlIntake::open(&path).expect("the incomplete final line is discarded");
-        assert_eq!(records(&path).len(), 1);
-        drop(restarted);
-        std::fs::write(&path, b"{not-json}\n").expect("the malformed record writes");
-        let error = JsonlIntake::open(&path).expect_err("a malformed complete line is fatal");
-        assert_eq!(error.kind(), ErrorKind::InvalidData);
-        remove(&path);
+    #[tokio::test]
+    async fn independent_sinks_concurrently_record_one_conflict_without_overwrite() {
+        let database = DatabaseFixture::new().await;
+        let left = PostgresIntake::connect(&database.url)
+            .await
+            .expect("left sink");
+        let right = PostgresIntake::connect(&database.url)
+            .await
+            .expect("right sink");
+        let left_event = event("F:concurrent-conflict", b"left-bytes", "1.0");
+        let right_event = event("F:concurrent-conflict", b"right-bytes", "1.0");
+        let (left_outcome, right_outcome) =
+            tokio::join!(left.accept(&left_event), right.accept(&right_event));
+        let left_outcome = left_outcome.expect("left commits");
+        let right_outcome = right_outcome.expect("right commits conflict");
+        assert!(
+            matches!(
+                (&left_outcome, &right_outcome),
+                (Intake::Accepted, Intake::Rejected { .. })
+                    | (Intake::Rejected { .. }, Intake::Accepted)
+            ),
+            "one payload must win and the other must be a durable conflict: {left_outcome:?} / {right_outcome:?}"
+        );
+        assert_eq!(database.count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn persistence_failure_returns_error_without_acceptance() {
+        let database = DatabaseFixture::new().await;
+        let verifier = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database.url)
+            .await
+            .expect("verifier connects");
+        database.intake.pool.close().await;
+        let result = database
+            .intake
+            .accept(&event("F:failed", b"not-committed", "1.0"))
+            .await;
+        assert!(result.is_err(), "closed storage must not report acceptance");
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_durable_intake.decisions WHERE event_id = 'F:failed'",
+        ).fetch_one(&verifier).await.expect("verifier query answers");
+        assert_eq!(count, 0);
+        verifier.close().await;
+    }
+
+    #[derive(Debug)]
+    struct DropFirstAck {
+        remaining: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl AckHook for DropFirstAck {
+        async fn before_ack(&self, _event: &ReceivedEvent, _outcome: &Intake) -> AckAction {
+            if self.remaining.swap(false, Ordering::AcqRel) {
+                AckAction::DropAck
+            } else {
+                AckAction::Continue
+            }
+        }
+    }
+
+    struct BrokerFixture {
+        url: String,
+        stream: String,
+        durable: String,
+        subject: String,
+    }
+
+    impl BrokerFixture {
+        async fn new(test: &str) -> Option<Self> {
+            let url = match env::var("PROXIMA_TEST_NATS_URL") {
+                Ok(url) if !url.trim().is_empty() => url,
+                _ => {
+                    assert_ne!(
+                        env::var("CI").as_deref(),
+                        Ok("true"),
+                        "PROXIMA_TEST_NATS_URL required under CI=true (test {test})"
+                    );
+                    eprintln!("skipping {test}: PROXIMA_TEST_NATS_URL is unset");
+                    return None;
+                }
+            };
+            let token = Uuid::now_v7().simple().to_string();
+            let stream = format!("DI_{token}");
+            let durable = format!("di_{token}");
+            let subject = format!("durable.intake.{token}");
+            let client = admin_client(&url).await.expect("test NATS connects");
+            let context = jetstream::new(client);
+            context
+                .create_stream(jetstream::stream::Config {
+                    name: stream.clone(),
+                    subjects: vec![subject.clone()],
+                    storage: jetstream::stream::StorageType::File,
+                    retention: jetstream::stream::RetentionPolicy::Limits,
+                    discard: jetstream::stream::DiscardPolicy::New,
+                    max_age: Duration::ZERO,
+                    max_bytes: 1024 * 1024,
+                    max_message_size: -1,
+                    duplicate_window: Duration::from_millis(100),
+                    ..jetstream::stream::Config::default()
+                })
+                .await
+                .expect("test stream provisions");
+            let stream_handle = context.get_stream(&stream).await.expect("stream reads");
+            stream_handle
+                .create_consumer(jetstream::consumer::pull::Config {
+                    durable_name: Some(durable.clone()),
+                    ack_policy: AckPolicy::Explicit,
+                    ack_wait: Duration::from_millis(200),
+                    max_deliver: -1,
+                    deliver_policy: DeliverPolicy::All,
+                    filter_subject: subject.clone(),
+                    ..jetstream::consumer::pull::Config::default()
+                })
+                .await
+                .expect("test durable provisions");
+            Some(Self {
+                url,
+                stream,
+                durable,
+                subject,
+            })
+        }
+
+        async fn publish(&self, id: &str, raw: Vec<u8>) {
+            let client = admin_client(&self.url).await.expect("test NATS reconnects");
+            let context = jetstream::new(client);
+            let mut headers = async_nats::HeaderMap::new();
+            headers.insert("Nats-Msg-Id", id);
+            context
+                .publish_with_headers(self.subject.clone(), headers, Bytes::from(raw))
+                .await
+                .expect("publish request accepts")
+                .await
+                .expect("publish is acknowledged");
+        }
+
+        async fn close(&self) {
+            if let Ok(client) = admin_client(&self.url).await {
+                let _ = jetstream::new(client).delete_stream(&self.stream).await;
+            }
+        }
+
+        fn config(&self) -> NatsConsumerConfig {
+            let mut config = NatsConsumerConfig::new(self.url.clone());
+            config.stream.clone_from(&self.stream);
+            config.durable_name.clone_from(&self.durable);
+            if let (Ok(user), Ok(password)) = (
+                env::var("PROXIMA_TEST_NATS_ADMIN_USER"),
+                env::var("PROXIMA_TEST_NATS_ADMIN_PASSWORD"),
+            ) {
+                config.auth = proxima_outbox_nats::NatsAuth::UserPassword { user, password };
+            }
+            config
+        }
+    }
+
+    async fn admin_client(url: &str) -> Result<async_nats::Client, async_nats::ConnectError> {
+        let options = async_nats::ConnectOptions::new();
+        let options = match (
+            env::var("PROXIMA_TEST_NATS_ADMIN_USER"),
+            env::var("PROXIMA_TEST_NATS_ADMIN_PASSWORD"),
+        ) {
+            (Ok(user), Ok(password)) => options.user_and_password(user, password),
+            (Err(_), Err(_)) => options,
+            _ => panic!("test NATS credentials must be set together"),
+        };
+        options.connect(url).await
+    }
+
+    fn cloud_event(id: &str, specversion: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "specversion": specversion, "id": id, "source": "urn:proxima:test",
+            "type": "test/event", "data": {"synthetic": true}
+        }))
+        .expect("synthetic event serializes")
+    }
+
+    #[tokio::test]
+    async fn reference_consumer_recreation_recovers_after_lost_ack() {
+        let Some(broker) =
+            BrokerFixture::new("reference_consumer_recreation_recovers_after_lost_ack").await
+        else {
+            return;
+        };
+        let database = DatabaseFixture::new().await;
+        broker
+            .publish("F:lost-ack", cloud_event("F:lost-ack", "1.0"))
+            .await;
+        let first = ReferenceConsumer::connect_with_hook(
+            broker.config(),
+            Arc::new(database.intake.clone()),
+            Arc::new(DropFirstAck {
+                remaining: AtomicBool::new(true),
+            }),
+        )
+        .await
+        .expect("consumer binds");
+        let report = first
+            .process_once(
+                std::num::NonZeroU32::new(1).unwrap(),
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("first pass");
+        assert_eq!(report.accepted, 1);
+        assert_eq!(report.unacked, 1);
+        drop(first);
+        database.intake.pool.close().await;
+        let reopened = PostgresIntake::connect(&database.url)
+            .await
+            .expect("recreated intake reconnects");
+        let restarted = ReferenceConsumer::connect(broker.config(), Arc::new(reopened))
+            .await
+            .expect("recreated consumer binds");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut redelivered = false;
+        while tokio::time::Instant::now() < deadline {
+            let report = restarted
+                .process_once(
+                    std::num::NonZeroU32::new(1).unwrap(),
+                    Duration::from_millis(300),
+                )
+                .await
+                .expect("redelivery pass");
+            if report.accepted == 1 {
+                redelivered = true;
+                break;
+            }
+        }
+        assert!(
+            redelivered,
+            "the committed event must be redelivered after the dropped ACK"
+        );
+        assert_eq!(database.count().await, 1);
+        broker.close().await;
+    }
+
+    #[tokio::test]
+    async fn reference_consumer_naks_storage_failure_then_redelivers() {
+        let Some(broker) =
+            BrokerFixture::new("reference_consumer_naks_storage_failure_then_redelivers").await
+        else {
+            return;
+        };
+        let database = DatabaseFixture::new().await;
+        broker.publish("F:nak", cloud_event("F:nak", "1.0")).await;
+        database.intake.pool.close().await;
+        let consumer =
+            ReferenceConsumer::connect(broker.config(), Arc::new(database.intake.clone()))
+                .await
+                .expect("consumer binds");
+        let first = consumer
+            .process_once(
+                std::num::NonZeroU32::new(1).unwrap(),
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("failed intake is handled by NAK");
+        assert_eq!(first.deferred, 1);
+        assert_eq!(database.count().await, 0);
+        drop(consumer);
+        let recovered = PostgresIntake::connect(&database.url)
+            .await
+            .expect("storage reconnects");
+        let consumer = ReferenceConsumer::connect(broker.config(), Arc::new(recovered))
+            .await
+            .expect("consumer binds recovered storage");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut accepted = false;
+        while tokio::time::Instant::now() < deadline {
+            let report = consumer
+                .process_once(
+                    std::num::NonZeroU32::new(1).unwrap(),
+                    Duration::from_millis(300),
+                )
+                .await
+                .expect("redelivery pass");
+            if report.accepted == 1 {
+                accepted = true;
+                break;
+            }
+        }
+        assert!(accepted, "the NAKed event must reach recovered storage");
+        assert_eq!(database.count().await, 1);
+        broker.close().await;
     }
 }
