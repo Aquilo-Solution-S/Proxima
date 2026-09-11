@@ -160,7 +160,7 @@ impl McpTool for RememberTool {
                     .authorize_fact_ingest(&authz, Relation::Editor, draft, &sidecars)
                     .await?;
                 engine
-                    .ingest_fact_with_typed_sidecar(&authorized, &sidecars, embedding_model_id)
+                    .ingest_fact_with_typed_sidecar(&authorized, embedding_model_id)
                     .await?
             };
 
@@ -198,11 +198,7 @@ async fn ingest_cited_fact(
                 )
                 .await?;
             Ok(engine
-                .ingest_fact_with_citation_and_typed_sidecar(
-                    &authorized,
-                    sidecars,
-                    embedding_model_id,
-                )
+                .ingest_fact_with_citation_and_typed_sidecar(&authorized, embedding_model_id)
                 .await?)
         }
         RememberCitationDrafts::ByRef {
@@ -220,11 +216,7 @@ async fn ingest_cited_fact(
                 )
                 .await?;
             Ok(engine
-                .ingest_fact_with_citation_ref_and_typed_sidecar(
-                    &authorized,
-                    sidecars,
-                    embedding_model_id,
-                )
+                .ingest_fact_with_citation_ref_and_typed_sidecar(&authorized, embedding_model_id)
                 .await?)
         }
     }

@@ -30,8 +30,17 @@ code = ["dep:proxima-code", "proxima-code/host-api"]
 # Compile the `/v1` REST surface into the binary. Serving it still needs
 # `PROXIMA_REST_ENABLED=true` at runtime — see docs/17-rest-surface.md.
 rest = ["proxima/rest"]
+# Compile the NATS JetStream Fact-outbox publisher into the binary. Starting
+# it still needs `PROXIMA_NATS_URL` at runtime — see docs/18-fact-outbox.md.
+nats = ["proxima/outbox-nats"]
+
+[[test]]
+name = "nats_e2e"
+required-features = ["nats"]
 
 [dev-dependencies]
+async-nats = { workspace = true, features = ["nkeys"] }
+async-trait = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
@@ -41,6 +50,7 @@ base64 = { workspace = true }
 proxima-auth-oidc = { path = "../../crates/auth-oidc" }
 proxima-pg-testkit = { path = "../../crates/pg-testkit" }
 jsonwebtoken = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true

@@ -2,6 +2,8 @@ use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::sync::Arc;
+#[cfg(feature = "outbox-nats")]
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -9,6 +11,8 @@ use axum::extract::Request;
 use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::authz::SystemAuthority;
+#[cfg(feature = "outbox-nats")]
+use proxima_core::storage_ports::publication::{PublicationOutboxPort, PublicationRetentionPort};
 use proxima_core::storage_ports::{
     CitedBlobOwnerReconcileService, CitedBlobReadService, CitedBlobService,
     DelegatedAuthorityService,
@@ -209,6 +213,27 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// Bind the deployment's publication source and capture bounds
+    /// (docs/18). Env equivalent: `PROXIMA_PUBLICATION_SOURCE`,
+    /// `PROXIMA_OUTBOX_MAX_PENDING`, `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES`.
+    #[must_use]
+    pub fn publication(
+        mut self,
+        publication: proxima_core::publication::PublicationConfig,
+    ) -> Self {
+        self.overlay = self.overlay.publication(publication);
+        self
+    }
+
+    /// Configure the `JetStream` publisher. Env equivalent: the
+    /// `PROXIMA_NATS_*` block.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn nats(mut self, nats: proxima_outbox_nats::NatsPublisherConfig) -> Self {
+        self.overlay = self.overlay.nats(nats);
+        self
+    }
+
     /// Resolve, validate, boot, and return an in-process service.
     ///
     /// # Errors
@@ -238,6 +263,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             None
         };
 
+        #[cfg(feature = "outbox-nats")]
+        let outbox = booted.outbox().clone();
+        #[cfg(feature = "outbox-nats")]
+        let outbox_retention = booted.outbox_retention().clone();
         Ok(BuiltProxima {
             service,
             engine: booted.engine,
@@ -251,6 +280,14 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             cancel,
             insecure_single_owner: config.insecure_single_owner,
             services,
+            #[cfg(feature = "outbox-nats")]
+            outbox,
+            #[cfg(feature = "outbox-nats")]
+            outbox_retention,
+            #[cfg(feature = "outbox-nats")]
+            published_retention: config.published_retention,
+            #[cfg(feature = "outbox-nats")]
+            nats: config.nats,
         })
     }
 
@@ -320,6 +357,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             services: services.clone(),
         };
         let workers = A::spawn_workers(&worker_ctx);
+        #[cfg(feature = "outbox-nats")]
+        let outbox = booted.outbox().clone();
+        #[cfg(feature = "outbox-nats")]
+        let outbox_retention = booted.outbox_retention().clone();
 
         Ok(RunningProxima {
             engine: booted.engine,
@@ -336,6 +377,14 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             insecure_single_owner: config.insecure_single_owner,
             services,
             workers,
+            #[cfg(feature = "outbox-nats")]
+            outbox,
+            #[cfg(feature = "outbox-nats")]
+            outbox_retention,
+            #[cfg(feature = "outbox-nats")]
+            published_retention: config.published_retention,
+            #[cfg(feature = "outbox-nats")]
+            nats: config.nats,
         })
     }
 
@@ -413,6 +462,26 @@ pub struct BuiltProxima {
     pub cancel: CancellationToken,
     pub insecure_single_owner: bool,
     services: FlavorServices,
+    /// The host-only drain over captured publication records. Private for
+    /// the same reason it is absent from `StoragePorts`: only a publisher
+    /// process may move a captured event through its delivery lifecycle —
+    /// a flavor able to claim a record could delay or suppress an export.
+    ///
+    /// Carried only when an adapter is compiled in. Without one there is
+    /// nothing that could drain it, and holding a handle no code can use
+    /// would just widen the surface.
+    #[cfg(feature = "outbox-nats")]
+    outbox: Arc<dyn PublicationOutboxPort>,
+    /// Reclaim of DELIVERED records, held apart from the drain handle so
+    /// that the loop able to publish is not the loop able to delete.
+    #[cfg(feature = "outbox-nats")]
+    outbox_retention: Arc<dyn PublicationRetentionPort>,
+    /// `None` keeps published records forever
+    /// (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`).
+    #[cfg(feature = "outbox-nats")]
+    published_retention: Option<Duration>,
+    #[cfg(feature = "outbox-nats")]
+    nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
 }
 
 impl BuiltProxima {
@@ -424,6 +493,33 @@ impl BuiltProxima {
     #[must_use]
     pub fn spawn_embedding_worker(&self, cancel: CancellationToken) -> JoinHandle<()> {
         spawn_embedding_worker(self.engine.clone(), cancel)
+    }
+
+    /// Spawn the `JetStream` publisher that drains the captured outbox.
+    ///
+    /// `None` when no broker is configured (`PROXIMA_NATS_URL` unset). That
+    /// is a safe steady state, not a degraded one: capture keeps working,
+    /// the backlog stays bounded by `PROXIMA_OUTBOX_MAX_PENDING`, and a
+    /// publisher started later drains exactly the same records.
+    ///
+    /// The task NEVER fails the boot. A broker that is down at start-up is
+    /// an outage, not a misconfiguration, and refusing to serve reads and
+    /// writes because a downstream consumer's transport is unavailable
+    /// would turn a delivery delay into a total outage. Connect failures
+    /// are retried with a bounded backoff and logged.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn spawn_publication_publisher(&self, cancel: CancellationToken) -> Option<JoinHandle<()>> {
+        Some(spawn_publication_publisher(
+            self.outbox.clone(),
+            self.nats.clone()?,
+            self.published_retention
+                .map(|older_than| PublicationRetention {
+                    port: self.outbox_retention.clone(),
+                    older_than,
+                }),
+            cancel,
+        ))
     }
 
     #[must_use]
@@ -515,6 +611,20 @@ pub struct RunningProxima {
     /// Flavor-contributed background workers spawned by [`Proxima::run`]
     /// via `FlavorBundle::spawn_workers`; joined by [`Self::shutdown`].
     workers: Vec<FlavorWorker>,
+    /// The host-only drain over captured publication records. See
+    /// `BuiltProxima`'s field of the same name.
+    #[cfg(feature = "outbox-nats")]
+    outbox: Arc<dyn PublicationOutboxPort>,
+    /// Reclaim of DELIVERED records, held apart from the drain handle so
+    /// that the loop able to publish is not the loop able to delete.
+    #[cfg(feature = "outbox-nats")]
+    outbox_retention: Arc<dyn PublicationRetentionPort>,
+    /// `None` keeps published records forever
+    /// (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`).
+    #[cfg(feature = "outbox-nats")]
+    published_retention: Option<Duration>,
+    #[cfg(feature = "outbox-nats")]
+    nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
 }
 
 impl RunningProxima {
@@ -536,6 +646,33 @@ impl RunningProxima {
     #[must_use]
     pub fn spawn_embedding_worker(&self, cancel: CancellationToken) -> JoinHandle<()> {
         spawn_embedding_worker(self.engine.clone(), cancel)
+    }
+
+    /// Spawn the `JetStream` publisher that drains the captured outbox.
+    ///
+    /// `None` when no broker is configured (`PROXIMA_NATS_URL` unset). That
+    /// is a safe steady state, not a degraded one: capture keeps working,
+    /// the backlog stays bounded by `PROXIMA_OUTBOX_MAX_PENDING`, and a
+    /// publisher started later drains exactly the same records.
+    ///
+    /// The task NEVER fails the boot. A broker that is down at start-up is
+    /// an outage, not a misconfiguration, and refusing to serve reads and
+    /// writes because a downstream consumer's transport is unavailable
+    /// would turn a delivery delay into a total outage. Connect failures
+    /// are retried with a bounded backoff and logged.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn spawn_publication_publisher(&self, cancel: CancellationToken) -> Option<JoinHandle<()>> {
+        Some(spawn_publication_publisher(
+            self.outbox.clone(),
+            self.nats.clone()?,
+            self.published_retention
+                .map(|older_than| PublicationRetention {
+                    port: self.outbox_retention.clone(),
+                    older_than,
+                }),
+            cancel,
+        ))
     }
 
     #[must_use]
@@ -632,6 +769,132 @@ impl std::fmt::Debug for RunningProxima {
                     .collect::<Vec<_>>(),
             )
             .finish_non_exhaustive()
+    }
+}
+
+/// The publisher's boot-time connect retry.
+///
+/// Doubling from one second, capped, and cancellable. Bounded rather than
+/// infinite-with-no-signal: every attempt logs, so an operator sees the
+/// broker being unreachable rather than a silent stall.
+#[cfg(feature = "outbox-nats")]
+const PUBLISHER_CONNECT_BACKOFF_CEILING: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The configured reclaim of DELIVERED records, and the handle that can
+/// perform it. Absent when the deployment keeps published records forever.
+#[cfg(feature = "outbox-nats")]
+struct PublicationRetention {
+    port: Arc<dyn PublicationRetentionPort>,
+    older_than: Duration,
+}
+
+#[cfg(feature = "outbox-nats")]
+impl std::fmt::Debug for PublicationRetention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublicationRetention")
+            .field("older_than", &self.older_than)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Records one prune pass may remove.
+///
+/// Bounded because the statement runs beside the live write path: the
+/// table has no index on `published_at` (adding one is a migration this
+/// slice does not ship), so each pass is a sequential scan and must not
+/// also hold row locks over an unbounded delete. A backlog larger than this
+/// is reclaimed over several passes.
+#[cfg(feature = "outbox-nats")]
+const RETENTION_PRUNE_BATCH: u32 = 1_000;
+
+/// How often the prune runs.
+///
+/// DELIBERATELY not once per drain pass. The drain polls every
+/// `PROXIMA_NATS_POLL_MS` (500 ms by default), and a sequential scan at
+/// that rate would cost more than the storage it reclaims — while the
+/// horizon it enforces is at least a minute, so nothing becomes prunable
+/// faster than this either.
+#[cfg(feature = "outbox-nats")]
+const RETENTION_PRUNE_INTERVAL: Duration = Duration::from_mins(1);
+
+#[cfg(feature = "outbox-nats")]
+fn spawn_publication_publisher(
+    outbox: Arc<dyn PublicationOutboxPort>,
+    config: proxima_outbox_nats::NatsPublisherConfig,
+    retention: Option<PublicationRetention>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut backoff = std::time::Duration::from_secs(1);
+        let publisher = loop {
+            if cancel.is_cancelled() {
+                return;
+            }
+            match proxima_outbox_nats::JetStreamPublisher::connect(config.clone(), outbox.clone())
+                .await
+            {
+                Ok(publisher) => break publisher,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        retry_in_ms = backoff.as_millis(),
+                        "publication publisher could not reach the broker; capture continues"
+                    );
+                    tokio::select! {
+                        () = cancel.cancelled() => return,
+                        () = tokio::time::sleep(backoff) => {}
+                    }
+                    backoff = (backoff * 2).min(PUBLISHER_CONNECT_BACKOFF_CEILING);
+                }
+            }
+        };
+        // Retention rides in the publisher's task rather than a task of its
+        // own: it is housekeeping over what this loop delivered, it stops
+        // when the loop stops, and a deployment with no broker configured
+        // never reaches here — which is correct, because nothing has been
+        // delivered for it to reclaim.
+        let housekeeping = prune_published_records(retention, cancel.clone());
+        tokio::join!(publisher.run(cancel), housekeeping);
+    })
+}
+
+/// Reclaim delivered records older than the configured horizon, until
+/// cancellation. A no-op future when no horizon is configured.
+#[cfg(feature = "outbox-nats")]
+async fn prune_published_records(
+    retention: Option<PublicationRetention>,
+    cancel: CancellationToken,
+) {
+    let Some(retention) = retention else {
+        return;
+    };
+    let Some(limit) = std::num::NonZeroU32::new(RETENTION_PRUNE_BATCH) else {
+        return;
+    };
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => return,
+            () = tokio::time::sleep(RETENTION_PRUNE_INTERVAL) => {}
+        }
+        match retention
+            .port
+            .prune_published(retention.older_than, limit)
+            .await
+        {
+            Ok(0) => {}
+            Ok(pruned) => tracing::debug!(
+                pruned,
+                horizon_secs = retention.older_than.as_secs(),
+                "reclaimed delivered publication records"
+            ),
+            // Never fatal. Housekeeping that cannot run is a growing table,
+            // which is an operator's problem to see; stopping the publisher
+            // over it would turn it into an undelivered backlog.
+            Err(error) => tracing::warn!(
+                error = %error,
+                "publication retention prune failed; delivered records are retained"
+            ),
+        }
     }
 }
 
@@ -857,7 +1120,8 @@ async fn boot_app<A: FlavorApp + 'static>(
     .deployment_tool_scope(config.tool_scope.clone())
     .pg_pool_config(config.pg_pool_config)
     .pg_tuning(config.pg_tuning)
-    .embedding_runtime_policy(config.embedding_runtime_policy);
+    .embedding_runtime_policy(config.embedding_runtime_policy)
+    .publication(config.publication.clone());
     if config.skip_migrations {
         builder = builder.skip_migrations();
     }

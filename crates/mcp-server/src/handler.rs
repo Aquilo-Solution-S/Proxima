@@ -374,18 +374,37 @@ fn resource_invocation_error_to_error_data(err: ToolInvocationError) -> ErrorDat
     }
 }
 
+/// JSON-RPC "Server error", the implementation-defined range the spec
+/// reserves at -32000..-32099. Declared backpressure has no code of its own
+/// in either JSON-RPC or MCP, and the three standard ones all misdescribe
+/// it: -32602/-32600 blame a request that was legal, and -32603 is the
+/// generic internal fault this exists to stop being confused with.
+const SERVER_ERROR: rmcp::model::ErrorCode = rmcp::model::ErrorCode(-32000);
+
+/// The machine-readable discriminator carried in `error.data.code`, so a
+/// client switches on a token rather than on the human message. Same slug
+/// as the REST surface's problem `type` (`capacity-exhausted`), spelled in
+/// the snake case the JSON-RPC payloads use.
+const CAPACITY_EXHAUSTED_CODE: &str = "capacity_exhausted";
+
 /// Classify an [`McpToolError`] by JSON-RPC code: caller-input faults —
 /// including references to missing entities — → `invalid_params` (-32602);
-/// well-formed-but-illegal requests → `invalid_request` (-32600);
-/// infrastructure faults → `internal_error` (-32603). Resource reads remap
-/// `NotFound` before reaching here (see
-/// [`resource_invocation_error_to_error_data`]).
+/// well-formed-but-illegal requests → `invalid_request` (-32600); declared
+/// backpressure → server error (-32000) with `data.code`
+/// `capacity_exhausted` and the message verbatim; infrastructure faults →
+/// `internal_error` (-32603). Resource reads remap `NotFound` before
+/// reaching here (see [`resource_invocation_error_to_error_data`]).
 fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
     match err.kind() {
         McpToolErrorKind::InvalidInput | McpToolErrorKind::NotFound => {
             ErrorData::invalid_params(err.client_message(), None)
         }
         McpToolErrorKind::InvalidRequest => ErrorData::invalid_request(err.client_message(), None),
+        McpToolErrorKind::CapacityExhausted => ErrorData::new(
+            SERVER_ERROR,
+            err.client_message(),
+            Some(serde_json::json!({ "code": CAPACITY_EXHAUSTED_CODE })),
+        ),
         McpToolErrorKind::Internal => generic_internal_error(err),
     }
 }
@@ -811,6 +830,35 @@ mod tests {
     fn reject_nul_in_args(args: &serde_json::Value) -> Result<(), ErrorData> {
         crate::server::reject_nul_in_args(args)
             .map_err(|error| mcp_tool_error_to_error_data(&error))
+    }
+
+    /// An exhausted publication outbox is the deployment asking the caller
+    /// to back off. On the wire it must be a class of its own, with a
+    /// machine-readable code and the backlog depth intact — not the generic
+    /// -32603 "internal server error" a client's alerting treats as an
+    /// incident.
+    #[test]
+    fn an_exhausted_outbox_is_its_own_json_rpc_class() {
+        let err = McpToolError::Storage(proxima_core::StorageError::PublicationRefused(
+            proxima_core::publication::PublicationError::CapacityExhausted {
+                pending: 100_000,
+                max: 100_000,
+            },
+        ));
+        let data = mcp_tool_error_to_error_data(&err);
+        assert_eq!(data.code, SERVER_ERROR);
+        assert_eq!(
+            data.data,
+            Some(serde_json::json!({ "code": CAPACITY_EXHAUSTED_CODE }))
+        );
+        assert!(data.message.contains("100000"), "{}", data.message);
+
+        // The generic internal fault keeps -32603 and its redaction, so the
+        // two remain distinguishable in both directions.
+        let internal = mcp_tool_error_to_error_data(&McpToolError::Other("boom".into()));
+        assert_eq!(internal.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert_eq!(internal.message, "internal server error");
+        assert_eq!(internal.data, None);
     }
 
     fn flavor_descriptor(

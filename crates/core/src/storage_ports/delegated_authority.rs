@@ -1007,7 +1007,7 @@ mod tests {
             .expect("authorize before expiry");
         authorized.expire_delegated_write_for_test();
         let err = engine
-            .ingest_fact_with_typed_sidecar(&authorized, &[], None)
+            .ingest_fact_with_typed_sidecar(&authorized, None)
             .await
             .expect_err("expired split witness must fail before storage");
         assert_eq!(err.code, ErrorCode::Forbidden);

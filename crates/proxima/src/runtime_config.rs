@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_blob_s3::S3RuntimeConfig;
+use proxima_core::publication::PublicationConfig;
 use proxima_core::{
     Authenticator, EmbeddingClient, EmbeddingRuntimePolicy, FlavorServiceError, Owner,
     RevalidationConfig, ToolScope, is_loopback_host,
@@ -12,7 +13,8 @@ use proxima_storage_pg::{PgPoolConfig, PgTuning};
 
 use crate::EmbedError;
 use crate::config::{
-    parse_bool_value, pg_pool_config_from_lookup, pg_tuning_from_lookup, s3_from_lookup,
+    parse_bool_value, pg_pool_config_from_lookup, pg_tuning_from_lookup,
+    publication_config_from_lookup, s3_from_lookup,
 };
 
 const DEFAULT_MCP_BIND: &str = "127.0.0.1:31415";
@@ -40,6 +42,13 @@ pub struct RuntimeBuilder {
     resource_metadata: Option<ResourceServerMetadata>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     embedding_runtime_policy: Option<EmbeddingRuntimePolicy>,
+    publication: Option<PublicationConfig>,
+    /// Horizon after which a DELIVERED outbox record is reclaimed. `None`
+    /// keeps published records forever, which is both the default and what
+    /// `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS=0` spells.
+    published_retention: Option<Duration>,
+    #[cfg(feature = "outbox-nats")]
+    nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
 }
 
 impl std::fmt::Debug for RuntimeBuilder {
@@ -65,7 +74,9 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("has_resource_metadata", &self.resource_metadata.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
-            .finish()
+            .field("publication", &self.publication)
+            .field("published_retention", &self.published_retention)
+            .finish_non_exhaustive()
     }
 }
 
@@ -95,6 +106,10 @@ impl RuntimeBuilder {
             embedding_runtime_policy: self
                 .embedding_runtime_policy
                 .or(base.embedding_runtime_policy),
+            publication: self.publication.or(base.publication),
+            published_retention: self.published_retention.or(base.published_retention),
+            #[cfg(feature = "outbox-nats")]
+            nats: self.nats.or(base.nats),
         }
     }
 
@@ -116,6 +131,51 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn owner(mut self, owner: Owner) -> Self {
         self.owner = Some(owner);
+        self
+    }
+
+    /// Bind the deployment's publication source and capture bounds.
+    /// Env equivalent: `PROXIMA_PUBLICATION_SOURCE`,
+    /// `PROXIMA_OUTBOX_MAX_PENDING`, `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES`.
+    ///
+    /// Retention of DELIVERED records is deliberately NOT here. It is host
+    /// housekeeping, not engine configuration — the engine never prunes —
+    /// so it lives on [`Self::published_retention`] and is read from
+    /// `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` outside this block's guard.
+    ///
+    /// Setting this suppresses the environment read for the whole block —
+    /// one parser, as with the S3 and Postgres blocks.
+    #[must_use]
+    pub fn publication(mut self, publication: PublicationConfig) -> Self {
+        self.publication = Some(publication);
+        self
+    }
+
+    /// How long an ALREADY-PUBLISHED outbox record is kept before the host
+    /// reclaims its storage. Env equivalent:
+    /// `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`.
+    ///
+    /// `None` — the default — keeps delivered records forever. The horizon
+    /// can never reach a `pending` or `claimed` record whatever its age: an
+    /// undelivered event is a promise this deployment has not kept, and no
+    /// retention policy may quietly cancel it (doc 18, kernel OB-9).
+    ///
+    /// Setting this suppresses the environment read, so a host that composes
+    /// programmatically is not overridden by a stray variable. A value under
+    /// the one-minute floor is refused at `build`, exactly as the
+    /// environment path refuses it at boot.
+    #[must_use]
+    pub const fn published_retention(mut self, horizon: Duration) -> Self {
+        self.published_retention = Some(horizon);
+        self
+    }
+
+    /// Configure the `JetStream` publisher. Env equivalent: the
+    /// `PROXIMA_NATS_*` block.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn nats(mut self, nats: proxima_outbox_nats::NatsPublisherConfig) -> Self {
+        self.nats = Some(nats);
         self
     }
 
@@ -350,6 +410,23 @@ impl RuntimeBuilder {
         if self.embedding_runtime_policy.is_none() && embedding_runtime_policy_env_is_set(&lookup) {
             self.embedding_runtime_policy = Some(embedding_runtime_policy_from_lookup(&lookup)?);
         }
+        // Unconditional: the block is read (and validated) on every boot,
+        // independent of any cargo feature. A malformed bound is a boot
+        // error whether or not this binary can talk to a broker.
+        if self.publication.is_none() {
+            self.publication = Some(publication_config_from_lookup(&lookup)?);
+        }
+        // Read outside the `publication` guard on purpose: retention is a
+        // host-only housekeeping horizon, not part of the engine's
+        // publication configuration, so a host that bound the engine block
+        // programmatically has said nothing about it.
+        if self.published_retention.is_none() {
+            self.published_retention = crate::config::published_retention_from_lookup(&lookup)?;
+        }
+        #[cfg(feature = "outbox-nats")]
+        if self.nats.is_none() {
+            self.nats = crate::config::nats_from_lookup(&lookup)?;
+        }
         Ok(self)
     }
 
@@ -380,6 +457,20 @@ impl RuntimeBuilder {
                 .unwrap_or(default_revalidation.epoch_check_interval),
         };
         validate_revalidation_config(stream_revalidation)?;
+        // One floor, both doors. The environment path refuses a sub-minute
+        // horizon while parsing; a host that set it programmatically would
+        // otherwise get a prune loop that runs every minute over a horizon
+        // shorter than its own interval.
+        if let Some(horizon) = self.published_retention
+            && horizon < crate::config::MIN_PUBLISHED_RETENTION
+        {
+            return Err(ProximaError::Config(format!(
+                "published retention is {}s, under the {}s floor; leave it unset to \
+                 keep published records forever",
+                horizon.as_secs(),
+                crate::config::MIN_PUBLISHED_RETENTION.as_secs(),
+            )));
+        }
         let tool_scope = self.tool_scope.ok_or_else(|| {
             ProximaError::Config(
                 "tool_scope is required: pass ToolScope::All to expose the full tool surface \
@@ -394,6 +485,7 @@ impl RuntimeBuilder {
             embed_client: self.embed_client,
         };
         let pg_pool_config = self.pg_pool_config.unwrap_or_default();
+        let publication = self.publication.unwrap_or_default();
         let config = RuntimeConfig {
             database_url,
             s3: self.s3,
@@ -414,6 +506,10 @@ impl RuntimeBuilder {
             },
             resource_metadata: self.resource_metadata,
             embedding_runtime_policy: self.embedding_runtime_policy.unwrap_or_default(),
+            publication: publication.clone(),
+            published_retention: self.published_retention,
+            #[cfg(feature = "outbox-nats")]
+            nats: self.nats,
         };
         config.validate()?;
         Ok((config, parts))
@@ -462,6 +558,30 @@ pub struct RuntimeConfig {
     pub auth: RuntimeAuthState,
     pub resource_metadata: Option<ResourceServerMetadata>,
     pub embedding_runtime_policy: EmbeddingRuntimePolicy,
+    /// The deployment's `CloudEvents` producer identity and capture bounds
+    /// (`PROXIMA_PUBLICATION_SOURCE`, `PROXIMA_OUTBOX_*`; docs/18).
+    ///
+    /// Always present, never optional: it is handed to the engine builder
+    /// on every boot, and its `limits` are the ones enforced at capture —
+    /// no backend holds a second copy.
+    pub publication: PublicationConfig,
+    /// How long a DELIVERED record is kept before the publisher task
+    /// reclaims it (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`; docs/18
+    /// §Retention).
+    ///
+    /// `None` keeps published records forever — the behaviour of every
+    /// release before the knob existed, and what `0` spells explicitly.
+    /// Host housekeeping, deliberately NOT part of [`Self::publication`]:
+    /// the engine never sees it, and the only port that can act on it is
+    /// host-held.
+    pub published_retention: Option<Duration>,
+    /// The broker the captured outbox drains to (`PROXIMA_NATS_*`).
+    ///
+    /// `None` — the default — leaves the outbox captured and undrained,
+    /// which is a safe state: nothing is lost, the backlog is bounded, and
+    /// the publisher can be started later against the same records.
+    #[cfg(feature = "outbox-nats")]
+    pub nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -489,7 +609,9 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("auth", &self.auth)
             .field("resource_metadata", &self.resource_metadata)
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
-            .finish()
+            .field("publication", &self.publication)
+            .field("published_retention", &self.published_retention)
+            .finish_non_exhaustive()
     }
 }
 
@@ -785,6 +907,10 @@ mod tests {
 
     fn base_config(mcp: Option<SocketAddr>) -> RuntimeConfig {
         RuntimeConfig {
+            publication: PublicationConfig::default(),
+            published_retention: None,
+            #[cfg(feature = "outbox-nats")]
+            nats: None,
             database_url: "postgres://localhost/proxima".to_string(),
             s3: None,
             owner: Some(company_owner(uuid::Uuid::now_v7())),
@@ -1433,6 +1559,45 @@ mod tests {
             .unwrap();
 
         assert_eq!(config.tool_scope, ToolScope::All);
+    }
+
+    /// The one-minute floor guards BOTH doors. The environment path refuses
+    /// a sub-minute horizon while parsing; a host that composes
+    /// programmatically must hit the same wall, or the knob would mean two
+    /// different things depending on how it was set.
+    #[test]
+    fn a_programmatic_retention_horizon_is_floored_like_the_env_one() {
+        let refused = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
+            .published_retention(Duration::from_secs(59))
+            .resolve()
+            .expect_err("a sub-minute horizon must be refused");
+        assert!(
+            matches!(refused, ProximaError::Config(ref message) if message.contains("floor")),
+            "{refused}"
+        );
+
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
+            .published_retention(Duration::from_mins(1))
+            .resolve()
+            .expect("the floor itself is acceptable");
+        assert_eq!(config.published_retention, Some(Duration::from_mins(1)));
+
+        let (default_config, _) = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
+            .resolve()
+            .expect("no horizon is the default");
+        assert_eq!(
+            default_config.published_retention, None,
+            "unset keeps delivered records forever"
+        );
     }
 
     #[test]

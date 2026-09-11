@@ -765,6 +765,44 @@ const KERNEL_SURFACES: &[Surface] = &[
         completeness: None,
     },
     Surface {
+        table: "proxima_core.publication_outbox",
+        key: KeyShape::MemoryT { column: "t" },
+        owner_column: Some("owner_id"),
+        // The captured event names the owner it was captured for, and that
+        // is the owner it stays attributed to: a series that changes hands
+        // does not retroactively make an already-captured event the
+        // destination's to deliver, and re-homing it would put one owner's
+        // payload on another owner's stream.
+        transfer: TransferRule::RetainAtSource {
+            why: "a captured event is a delivery obligation of the owner it was captured \
+                  for; the Fact moves, the event that already described it does not",
+        },
+        // Owner-pinned, not keyed: `forget` deletes the hot `memory` row
+        // while the record stays (below), so an erase that selected on the
+        // memory set would walk past exactly the records a forgotten Fact
+        // left behind.
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Excluded {
+            why: "a derived delivery copy of a typed Fact the export already carries; \
+                  exporting it would hand the subject the same content twice, once in a \
+                  transport envelope naming this installation",
+        },
+        forget: ForgetRule::Keep {
+            why: "cooling a Fact does not un-commit the event captured with it: the \
+                  record is a promise already made to consumers, and dropping it here \
+                  would lose a committed event to an unrelated lifecycle operation",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Counted("publications"),
+        // Deliberately NO FK to memory: the row must outlive `forget`'s
+        // delete of the hot row. Completeness rests on owner_id -> owners,
+        // exactly as `mcp_call_logged_v1` does for the same reason.
+        completeness: Some(DbConstraint {
+            relation: "proxima_core.publication_outbox",
+            name: "publication_outbox_owner_id_fkey",
+        }),
+    },
+    Surface {
         table: "proxima_core.blob",
         key: KeyShape::BlobId { column: "blob_id" },
         owner_column: Some("owner_id"),
@@ -1051,9 +1089,10 @@ const TOOLS: &[ToolContract] = &[
     },
 ];
 
-/// The ten `proxima://` resources. Nine handler modules; `goal_reads` backs
-/// two. A palette built from tools alone denies every one of these reads,
-/// which is why they are contract entries rather than a separate const.
+/// The eleven `proxima://` resources. Ten handler modules; `goal_reads`
+/// backs two. A palette built from tools alone denies every one of these
+/// reads, which is why they are contract entries rather than a separate
+/// const.
 const RESOURCES: &[ResourceContract] = &[
     ResourceContract {
         uri_template: "proxima://schemas{?kind}",
@@ -1063,6 +1102,17 @@ const RESOURCES: &[ResourceContract] = &[
         description: "Registered core and flavor schema catalog, optionally filtered by payload kind.",
         scope_key: scope::SCHEMAS,
         is_template: false,
+        read_only: true,
+        reads: &[],
+    },
+    ResourceContract {
+        uri_template: "proxima://schema/{schema_id}/{schema_version}",
+        path: "schema",
+        name: "proxima-schema",
+        title: "Proxima Schema",
+        description: "JSON Schema of one registered payload type. This is the local target of a published event's CloudEvents dataschema attribute.",
+        scope_key: scope::SCHEMA,
+        is_template: true,
         read_only: true,
         reads: &[],
     },
@@ -1403,10 +1453,11 @@ mod tests {
     }
 
     #[test]
-    fn ten_resources_from_nine_handler_modules() {
-        assert_eq!(RESOURCES.len(), 10);
+    fn eleven_resources_from_ten_handler_modules() {
+        assert_eq!(RESOURCES.len(), 11);
         assert_eq!(resource(scope::GOAL).name, "proxima-goal");
         assert_eq!(resource(scope::GOALS).path, "goals");
+        assert_eq!(resource(scope::SCHEMA).path, "schema");
         assert!(RESOURCES.iter().all(|entry| entry.read_only));
     }
 

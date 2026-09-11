@@ -518,6 +518,36 @@ pub trait FactPayload:
     /// rules, which is the only place such a judgement can be made. Defaults
     /// to `false`. See docs/03 §Special-category declaration.
     const SPECIAL_CATEGORY: bool = false;
+    /// Declared metadata: whether every admitted Fact of this schema
+    /// captures a publication record in its own write transaction
+    /// (docs/18 §Listen declaration).
+    ///
+    /// The guarantee this turns on, and its whole extent:
+    ///
+    /// - **Capture is transactional.** One immutable `CloudEvents` 1.0
+    ///   structured-JSON record, keyed by the Fact's `t`, is inserted in the
+    ///   SAME transaction as the `memory` row and every typed sidecar. An
+    ///   export, size, capacity or insert failure rolls the Fact write back;
+    ///   there is no path that admits the Fact and drops the event.
+    /// - **The event id is the Fact id.** `id` is `t` in canonical wire form
+    ///   (`F:<uuid>`), not the series handle, the receipt or a content hash,
+    ///   and a replayed admission writes no second record.
+    /// - **The snapshot is this payload's serde JSON**, captured once. A
+    ///   later flavor upgrade never reinterprets an already-captured event.
+    ///
+    /// What it does NOT turn on: delivery. Whether anything drains the
+    /// captured records is a host concern, and a deployment with no
+    /// publisher running still captures them.
+    ///
+    /// Two obligations come with setting it. [`Self::json_schema`] must
+    /// return `Some` — freeze refuses a listenable schema without one,
+    /// because the event's `dataschema` names a catalog entry that has to
+    /// resolve. And the deployment must bind a publication source, or every
+    /// write of this schema is refused rather than emitted unattributed.
+    ///
+    /// Defaults to `false`; a schema that leaves it there is internal and
+    /// its writes are untouched.
+    const LISTENABLE: bool = false;
     /// Schema-owned receipt replay key material. This is not a payload
     /// serialization format; the typed sidecar remains the payload.
     #[must_use]

@@ -119,12 +119,42 @@ impl FlavorRegistry {
                 return Err(FlavorRegistryError::DuplicateTool { name: tool.name });
             }
         }
+        self.validate_listenable_schemas_publish_a_json_schema()?;
         self.validate_tools_declare_behavior()?;
         self.validate_dispatcher_action_specs()?;
         self.validate_contracts()?;
         self.validate_scope_declarations()?;
         self.validate_embedding_recipes_match_behavior()?;
         FlavorRegistryFrozen::from_registry(self)
+    }
+
+    /// A listenable schema's captured events name a catalog entry that has
+    /// to resolve.
+    ///
+    /// The pairing is a build-time fact about the composed binary, so it is
+    /// refused at freeze rather than at the first write — the alternative is
+    /// a deployment that emits events pointing at a `dataschema` which
+    /// resolves to nothing, for the lifetime of every one of those events.
+    /// The check reads `protocol_ingress`, because that is where
+    /// `json_schema()` was recorded at registration.
+    fn validate_listenable_schemas_publish_a_json_schema(&self) -> Result<(), FlavorRegistryError> {
+        for schema in &self.schemas {
+            if !schema.listenable {
+                continue;
+            }
+            let has_json_schema = self.protocol_ingress.iter().any(|entry| {
+                entry.schema_id == schema.schema_id
+                    && entry.schema_version == schema.schema_version
+                    && entry.kind == schema.kind
+                    && entry.json_schema.is_some()
+            });
+            if !has_json_schema {
+                return Err(FlavorRegistryError::ListenableWithoutSchema {
+                    schema_id: schema.schema_id.clone(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// One declaration per lifecycle scope, and one for every scope a
@@ -2366,6 +2396,38 @@ mod tests {
     /// A typed registration needs its ingress entry too, or
     /// `SchemaIngressMismatch` fires first and the fixture proves that
     /// instead.
+    /// A listenable schema promises consumers a resolvable `dataschema`.
+    /// A registration that cannot keep that promise is a build error, not a
+    /// runtime surprise on the first admission.
+    #[test]
+    fn a_listenable_schema_without_a_json_schema_fails_the_build() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_contract_or_panic_for_tests(&crate::test_fixtures::SCHEMALESS_PROBE_FLAVOR);
+        registry
+            .add_fact_schema_or_panic_for_tests::<crate::test_fixtures::SchemalessListenableProbeV1>(
+            );
+        let err = registry
+            .try_freeze()
+            .expect_err("a listenable schema with no json_schema() must not freeze");
+        assert!(
+            matches!(
+                err,
+                FlavorRegistryError::ListenableWithoutSchema { ref schema_id }
+                    if schema_id.as_str() == "probe/schemaless-v1"
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// The twin that declares one freezes, so the refusal above is about
+    /// the missing schema and not about the probe flavor.
+    #[test]
+    fn a_listenable_schema_with_a_json_schema_freezes() {
+        let frozen = crate::test_fixtures::probe_registry();
+        let listenable: Vec<&str> = frozen.listenable_schema_ids().collect();
+        assert_eq!(listenable, vec!["probe/listenable-v1"]);
+    }
+
     fn register_fixture_schema(registry: &mut FlavorRegistry, name: &str, table: &str) {
         register_fixture_schema_of_kind(registry, name, table, PayloadKind::Fact);
     }
@@ -2388,6 +2450,7 @@ mod tests {
             tombstone: None,
             has_typed_ingress: true,
             cited_object_schema: None,
+            listenable: false,
         });
         registry
             .protocol_ingress
@@ -2420,6 +2483,7 @@ mod tests {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            listenable: false,
         }
     }
 

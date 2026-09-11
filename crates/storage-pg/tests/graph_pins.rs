@@ -89,28 +89,24 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
         // The typed write, not `ingest_fact_atomic` plus a hand-written row:
         // it stamps `sidecar_tables`, without which the derivation row is one no
         // forget, erase or export can reach.
+        let derived_payload = SidecarPayload::abstraction(AgentDerivationV1 {
+            title: "derived title".into(),
+            body: "made from leaf".into(),
+            tags: Vec::new(),
+            idempotency_key: None,
+            source_memory_ids: vec![leaf.memory_id.into_inner()],
+            model_id: "test".into(),
+            client_name: "test".into(),
+            client_version: "1".into(),
+        });
         let authorized = AuthorizedFactWrite::new_for_tests(
             OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
             derived_cmd,
             Some(AgentDerivationV1::sidecar_table().to_owned()),
             Vec::new(),
-        );
-        let derived = pg
-            .ingest_fact_with_typed_sidecar(
-                &authorized,
-                &[SidecarPayload::abstraction(AgentDerivationV1 {
-                    title: "derived title".into(),
-                    body: "made from leaf".into(),
-                    tags: Vec::new(),
-                    idempotency_key: None,
-                    source_memory_ids: vec![leaf.memory_id.into_inner()],
-                    model_id: "test".into(),
-                    client_name: "test".into(),
-                    client_version: "1".into(),
-                })],
-                None,
-            )
-            .await?;
+        )
+        .with_sidecar_payloads_for_tests(vec![derived_payload]);
+        let derived = pg.ingest_fact_with_typed_sidecar(&authorized, None).await?;
 
         let mut q = QueryRequest::readable();
         q.include_payloads = false;

@@ -30,7 +30,7 @@ mod manifest_tests {
     fn core_resources_manifest_has_expected_shape() {
         let resources = all_core_resources().collect::<Vec<_>>();
 
-        assert_eq!(resources.len(), 10);
+        assert_eq!(resources.len(), 11);
         assert_eq!(
             resources
                 .iter()
@@ -43,7 +43,7 @@ mod manifest_tests {
                 .iter()
                 .filter(|resource| resource.is_template)
                 .count(),
-            7
+            8
         );
         assert!(
             resources
@@ -67,6 +67,12 @@ mod manifest_tests {
                 "schemas",
                 "proxima-schemas",
                 false,
+            ),
+            (
+                "proxima://schema/{schema_id}/{schema_version}",
+                "schema",
+                "proxima-schema",
+                true,
             ),
             ("proxima://tools", "tools", "proxima-tools", false),
             ("proxima://graph", "graph", "proxima-graph", false),
@@ -132,6 +138,7 @@ mod manifest_tests {
     fn resource_constants_match_manifest_scope_keys() {
         let expected = BTreeSet::from([
             protocol_resource::SCHEMAS,
+            protocol_resource::SCHEMA,
             protocol_resource::TOOLS,
             protocol_resource::GRAPH,
             protocol_resource::MEMORY,

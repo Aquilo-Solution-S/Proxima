@@ -76,6 +76,17 @@ pub(crate) struct FactAdmissionInput<'a> {
     /// unspellable at the call site.
     pub(crate) scopes: &'a [ScopeFenceTarget],
     pub(crate) content: ContentResolution<'a>,
+    /// The `CloudEvents` record this admission captures — draft AND the
+    /// limits it is sealed under — when its schema is registered
+    /// listenable. `None` is the overwhelmingly common case and costs the
+    /// write path nothing.
+    ///
+    /// Borrowed straight off the authorization witness. This backend adds
+    /// nothing to it and, in particular, holds no limits of its own: the
+    /// engine's [`PublicationConfig`] is the single authority.
+    ///
+    /// [`PublicationConfig`]: proxima_core::publication::PublicationConfig
+    pub(crate) publication: Option<&'a proxima_core::publication::PublicationPlan>,
 }
 
 pub(crate) fn fact_natural_key(
@@ -211,6 +222,22 @@ pub(crate) async fn ingest_fact_command_in_tx(
     authorized: &AuthorizedFactWrite,
     embedding_model_id: Option<&str>,
 ) -> Result<FactIngestOutcome, StorageError> {
+    if !authorized.sidecar_payloads().is_empty() {
+        return Err(StorageError::ConstraintViolation(
+            "typed Fact sidecars require the typed persistence path".into(),
+        ));
+    }
+    // The receipt-only route carries no typed payload, so there is nothing
+    // to export. Core refuses a listenable schema here before it mints the
+    // witness; this is the storage backstop for a caller that reached the
+    // port directly.
+    if authorized.publication().is_some() {
+        return Err(StorageError::from(
+            proxima_core::publication::PublicationError::UntypedListenableWrite {
+                schema_id: authorized.draft().schema_id.as_str().to_owned(),
+            },
+        ));
+    }
     let options = IngestCoreOptions {
         embedding_model_id,
         citation_plan: CitationPlan::DraftHint,
@@ -235,6 +262,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
                 content_id: None,
                 payloads: None,
             },
+            publication: None,
         },
         |_tx, _outcome| Box::pin(async { Ok(()) }),
     )
@@ -592,6 +620,20 @@ where
     // there; inserting again trips `<table>_pkey` on `t`.
     if !outcome.idempotent_replay {
         sidecar(tx, &outcome).await?;
+        // The capture. Same transaction as the `memory` row and the typed
+        // sidecars, and guarded by the same `!idempotent_replay` test: a
+        // receipt replay reuses `(handle, t)`, so re-capturing would trip
+        // the outbox primary key — and, if it somehow did not, would put a
+        // second copy of one Fact on the wire.
+        if let Some(plan) = input.publication {
+            crate::verbs::publication_outbox::capture_publication_in_tx(
+                tx,
+                owner.stored_owner_id(),
+                outcome.memory_id.into_inner(),
+                plan,
+            )
+            .await?;
+        }
     }
     if outcome.idempotent_replay {
         outcome.cited_object_id =

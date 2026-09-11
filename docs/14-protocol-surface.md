@@ -127,7 +127,15 @@ truncation is always signaled via `has_more` + cursor.
 ## The verbs
 
 Semantic graph/client contract. Five verbs. ChangeHistory is pull-only
-(`announce.seq`). There is no push Subscribe, outbox, or `LISTEN`/`NOTIFY`.
+(`announce.seq`): no push Subscribe, no `LISTEN`/`NOTIFY`, and no verb that
+delivers a change record to a client.
+
+The Fact outbox ([18](18-fact-outbox.md)) does not change that. It is a
+**host-side** at-least-once publication of Facts whose registered type declared
+itself listenable — captured in the Fact's own transaction, drained by a host
+publisher into a broker. It is not a protocol verb: no client subscribes, the
+five verbs are unchanged, and it opens no second read path (a record is exactly
+as readable as its Fact).
 
 > **Forward poll.** `announce` is read in both directions. Backward,
 > bounded reads use the `ChangeHistory` engine verb. The forward seq-cursor

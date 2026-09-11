@@ -18,6 +18,7 @@ core engine (`crates/core`)
         +--> storage ports -> `crates/storage-pg` -> Postgres + pgvector
         +--> optional embedding client (`crates/llm-openai-compat`)
         +--> optional cited blob service (`crates/blob-s3`)
+        +--> optional Fact-outbox publisher (`crates/outbox-nats`) -> NATS JetStream
 ```
 
 ## Package Map
@@ -29,4 +30,5 @@ core engine (`crates/core`)
 | `crates/core` | engine contracts/runtime | flavor authors / maintainers |
 | `crates/storage-pg` | Postgres storage | deployers / maintainers |
 | `crates/mcp-server` | MCP transport/self-doc | MCP integrators |
+| `crates/outbox-nats` | optional Fact-outbox JetStream publisher | hosts publishing declared Facts |
 | `flavors/code` | code-memory flavor | code-agent deployments |

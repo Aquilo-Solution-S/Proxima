@@ -263,6 +263,33 @@ const fn storage_status(err: &StorageError) -> (StatusCode, &'static str, &'stat
             "Idempotency conflict",
         ),
         StorageError::Suppressed(_) => (StatusCode::CONFLICT, "suppressed", "Suppressed"),
+        // A refused publication capture keeps the write path's own split:
+        // an unexportable or oversized payload and a listenable write on
+        // the receipt-only route are the caller's to fix; an unbound
+        // source and an exhausted outbox are the deployment's.
+        StorageError::PublicationRefused(publication) => match publication {
+            proxima_core::publication::PublicationError::PayloadTooLarge { .. }
+            | proxima_core::publication::PublicationError::ExportFailed(_)
+            | proxima_core::publication::PublicationError::UntypedListenableWrite { .. } => {
+                (StatusCode::BAD_REQUEST, "invalid-input", "Invalid input")
+            }
+            // 503, not 500: the write was legal and the publisher is
+            // behind, so this is "retry later", which is what `503` means
+            // and what `500` does not. Distinct `type` slug so a client
+            // switches on the code rather than on the status alone, and
+            // `detail` keeps the backlog depth because `CapacityExhausted`
+            // is its own `McpToolErrorKind` and is therefore not redacted.
+            proxima_core::publication::PublicationError::CapacityExhausted { .. } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "capacity-exhausted",
+                "Capacity exhausted",
+            ),
+            proxima_core::publication::PublicationError::SourceUnbound { .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "Internal error",
+            ),
+        },
         StorageError::Retryable(_)
         | StorageError::Unavailable(_)
         | StorageError::Internal(_)
@@ -391,6 +418,60 @@ mod tests {
         ] {
             assert_eq!(
                 status_of(&ToolInvocationError::Tool(McpToolError::Storage(err))),
+                expected
+            );
+        }
+    }
+
+    /// Declared backpressure is a `503` with its own `type`, and its
+    /// `detail` keeps the backlog depth: a client that reads `500
+    /// internal` cannot tell a full outbox from a broken substrate, and
+    /// retries either the same way.
+    #[test]
+    fn an_exhausted_outbox_is_a_503_with_its_own_type() {
+        let err =
+            ToolInvocationError::Tool(McpToolError::Storage(StorageError::PublicationRefused(
+                proxima_core::publication::PublicationError::CapacityExhausted {
+                    pending: 100_000,
+                    max: 100_000,
+                },
+            )));
+        let problem = problem_for(&err, "/v1/tools/core_remember");
+        assert_eq!(problem.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(problem.slug, "capacity-exhausted");
+        assert!(problem.detail.contains("100000"), "{}", problem.detail);
+        assert_eq!(
+            problem.to_json()["type"],
+            "https://proxima.dev/errors/capacity-exhausted"
+        );
+
+        // The other four publication refusals keep the statuses they had.
+        for (refusal, expected) in [
+            (
+                proxima_core::publication::PublicationError::PayloadTooLarge { bytes: 9, max: 8 },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                proxima_core::publication::PublicationError::ExportFailed("nope".into()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                proxima_core::publication::PublicationError::UntypedListenableWrite {
+                    schema_id: "x/y-v1".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                proxima_core::publication::PublicationError::SourceUnbound {
+                    schema_id: "x/y-v1".into(),
+                },
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ] {
+            assert_eq!(
+                status_of(&ToolInvocationError::Tool(McpToolError::Storage(
+                    StorageError::PublicationRefused(refusal)
+                ))),
                 expected
             );
         }

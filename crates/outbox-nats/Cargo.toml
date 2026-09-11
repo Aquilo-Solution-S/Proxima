@@ -1,0 +1,47 @@
+[package]
+name = "proxima-outbox-nats"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+proxima-core = { path = "../core" }
+async-nats = { workspace = true, features = ["nkeys"] }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# The tests own the streams they create, so they need the client to delete
+# them again; an integration test cannot reach the crate's own dependencies.
+async-nats = { workspace = true, features = ["nkeys"] }
+blake3 = { workspace = true }
+futures = { workspace = true }
+proxima-core = { path = "../core", features = ["test-fixtures"] }
+proxima-pg-testkit = { path = "../pg-testkit" }
+proxima-storage-pg = { path = "../storage-pg", features = ["backend-api", "test-fixtures"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio-util = { workspace = true }
+uuid = { workspace = true }
+
+[[example]]
+name = "durable_intake"
+path = "examples/durable_intake.rs"

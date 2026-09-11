@@ -272,6 +272,12 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
         .ok_or_else(|| CliError::Runtime(ProximaError::Mcp("MCP listener disabled".into())))?;
     tracing::info!(addr = %addr, "proxima-mcp listening; POST http://{addr}/mcp");
     let embedding_worker = running.spawn_embedding_worker(running.cancel.clone());
+    // The Fact-outbox publisher, beside the embedding worker and on the
+    // same cancellation token. `None` when this binary was built without
+    // the `nats` feature or when `PROXIMA_NATS_URL` names no broker —
+    // neither is an error, and neither stops the host from serving.
+    #[cfg(feature = "nats")]
+    let publication_publisher = running.spawn_publication_publisher(running.cancel.clone());
     let server_result = if let Some(server) = running.server {
         server
             .await
@@ -282,6 +288,12 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
     running.cancel.cancel();
     if let Err(err) = embedding_worker.await {
         tracing::warn!(error = %err, "embedding worker join failed");
+    }
+    #[cfg(feature = "nats")]
+    if let Some(publisher) = publication_publisher
+        && let Err(err) = publisher.await
+    {
+        tracing::warn!(error = %err, "publication publisher join failed");
     }
     server_result?;
     Ok(())

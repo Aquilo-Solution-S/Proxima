@@ -261,16 +261,16 @@ async fn ingest_mcp_call_fact(
     // itself pins its configuration and reads no language bind.
     draft.lexical_language =
         Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
+    let mut payloads = vec![SidecarPayload::fact(payload)];
+    payloads.extend_from_slice(extra);
     let authorized = AuthorizedFactWrite::new_for_tests(
         OwnerWritePermit::new_for_tests(*permit.owner(), AccessKind::Fact),
         draft,
         McpCallLoggedV1::sidecar_table().map(str::to_owned),
         Vec::new(),
-    );
-    let mut payloads = vec![SidecarPayload::fact(payload)];
-    payloads.extend_from_slice(extra);
-    pg.ingest_fact_with_typed_sidecar(&authorized, &payloads, None)
-        .await
+    )
+    .with_sidecar_payloads_for_tests(payloads);
+    pg.ingest_fact_with_typed_sidecar(&authorized, None).await
 }
 
 /// A Fact carrying the mcp-call schema, for appending a second version to a
@@ -499,10 +499,9 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             fact,
             AgentNoteV1::sidecar_table().map(str::to_owned),
             Vec::new(),
-        );
-        let written = pg
-            .ingest_fact_with_typed_sidecar(&authorized, &[note_payload("pub", "body")], None)
-            .await?;
+        )
+        .with_sidecar_payloads_for_tests(vec![note_payload("pub", "body")]);
+        let written = pg.ingest_fact_with_typed_sidecar(&authorized, None).await?;
         let t = written.memory_id.into_inner();
         let witness_before: Option<String> = sqlx::query_scalar(
             "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",

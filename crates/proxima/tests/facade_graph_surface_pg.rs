@@ -670,7 +670,7 @@ async fn typed_fact_concurrent_first_observations_share_a_natural_series() {
 }
 
 #[tokio::test]
-async fn natural_key_selection_rejects_payload_substitution_after_authorization() {
+async fn natural_key_selection_uses_the_authorized_payload() {
     let db_name = unique_db_name("sdk_nk_binding");
     create_db(&db_name).await.expect("PG required");
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -694,34 +694,24 @@ async fn natural_key_selection_rejects_payload_substitution_after_authorization(
         let authorized = engine
             .authorize_fact_ingest(&authz, proxima::Relation::Editor, draft.clone(), &sidecars)
             .await?;
-        let mut changed = original;
-        changed.note_id = Uuid::now_v7();
         let err = engine
-            .ingest_fact_with_typed_sidecar(&authorized, &[SidecarPayload::fact(changed)], None)
+            .authorize_fact_ingest(
+                &authz,
+                proxima::Relation::Editor,
+                draft.clone(),
+                &[sidecars[0].clone(), sidecars[0].clone()],
+            )
             .await
-            .expect_err("same-schema payload cannot select a different natural identity");
-        assert_eq!(err.code, proxima::ErrorCode::InvalidArgument);
-        assert!(err.message.contains("natural-key binding differs"), "{err}");
+            .expect_err("ambiguous matching payloads must be rejected at authorization");
+        assert!(err.message.contains("exactly one"), "{err}");
         let missing = engine
             .authorize_fact_ingest(&authz, proxima::Relation::Editor, draft, &[])
             .await?;
         let err = engine
-            .ingest_fact_with_typed_sidecar(&missing, &sidecars, None)
+            .ingest_fact_with_typed_sidecar(&missing, None)
             .await
             .expect_err("automatic NK selection requires authorization-time values");
-        assert!(
-            err.message.contains("supply the typed Fact payload"),
-            "{err}"
-        );
-        let err = engine
-            .ingest_fact_with_typed_sidecar(
-                &authorized,
-                &[sidecars[0].clone(), sidecars[0].clone()],
-                None,
-            )
-            .await
-            .expect_err("ambiguous matching payloads rejected");
-        assert!(err.message.contains("exactly one"), "{err}");
+        assert!(err.message.contains("typed Fact payload"), "{err}");
         assert!(
             engine
                 .query(&authz, &QueryRequest::readable())
@@ -730,7 +720,7 @@ async fn natural_key_selection_rejects_payload_substitution_after_authorization(
                 .is_empty()
         );
         let valid = engine
-            .ingest_fact_with_typed_sidecar(&authorized, &sidecars, None)
+            .ingest_fact_with_typed_sidecar(&authorized, None)
             .await?;
         assert_eq!(
             engine

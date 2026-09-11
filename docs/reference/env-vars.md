@@ -61,6 +61,22 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_PG_HNSW_ITERATIVE_SCAN` | Postgres search | `relaxed_order` | tuning filtered ANN scans | `off` \| `strict_order` \| `relaxed_order`; pgvector `hnsw.iterative_scan` |
 | `PROXIMA_PG_HNSW_MAX_SCAN_TUPLES` | Postgres search | `20000` | bounding iterative scans | sent on every iterative-scan session (`SET LOCAL`); range `1..=2147483647` (the GUC's own bounds); out-of-range refuses at boot. This, not the SQL `LIMIT`, bounds the semantic branch's index scan |
 | `PROXIMA_CHANGE_EVENT_COMMIT_GRACE_MS` | change events | unset (`0`, disabled) | concurrent writers with slow commits | delays forward polling by withholding events newer than `now - grace`; its poll cursor protects only commits within that grace, not an unfiltered Query/ChangeHistory starting watermark |
+| `PROXIMA_PUBLICATION_SOURCE` | Fact outbox | unset | ≥1 listenable Fact type is registered | producer identity URI stamped into every CloudEvent `source`; boot fails without it ([18](../18-fact-outbox.md)) |
+| `PROXIMA_OUTBOX_MAX_PENDING` | Fact outbox | `100000` | tuning capture backpressure | unpublished-record ceiling; at the ceiling a listenable write fails `CapacityExhausted` |
+| `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Fact outbox | `524288` | tuning export size | largest captured export; over-cap writes fail `PayloadTooLarge` |
+| `PROXIMA_NATS_URL` | Fact outbox | unset (publisher off) | enabling the JetStream publisher | needs the `nats` cargo feature; unset keeps capture running with records `pending` |
+| `PROXIMA_NATS_SUBJECT_PREFIX` | Fact outbox | `proxima.fact` | non-default source routing | source subject `<prefix>.<owner_kind>.<owner_uuid>.<type_token>`; deployment-owned transforms and partitions may rewrite it; the token encoding is injective ([18](../18-fact-outbox.md#the-type_token-rule)) |
+| `PROXIMA_NATS_CREDS_FILE` | Fact outbox | unset | credentials-file auth | mutually exclusive with user/password and token |
+| `PROXIMA_NATS_USER` / `PROXIMA_NATS_PASSWORD` | Fact outbox | unset | user/password auth | both required together |
+| `PROXIMA_NATS_TOKEN` | Fact outbox | unset | token auth | |
+| `PROXIMA_NATS_BATCH` | Fact outbox | `64` | tuning drain size | records claimed per publisher pass |
+| `PROXIMA_NATS_LEASE_SECS` | Fact outbox | `30` | tuning claim recovery | expiry returns a record to `pending`; never deletes |
+| `PROXIMA_NATS_POLL_MS` | Fact outbox | `500` | tuning idle latency | idle poll interval |
+| `PROXIMA_NATS_PUBLISH_TIMEOUT_MS` | Fact outbox | `5000` | tuning PubAck wait | timeout releases the claim and republishes the same bytes |
+| `PROXIMA_NATS_PUBLISHER_ID` | Fact outbox | `<HOSTNAME>-<pid>` | naming a publisher in incident logs | recorded as `claimed_by` on every claim; operator-facing, not a credential. `HOSTNAME` is read through the injected lookup, never the process environment |
+| `PROXIMA_NATS_CONSUMER_STREAM` | Fact outbox | `PROXIMA_FACTS` | binding the reference consumer | deployment-provided stream name; the consumer binds an existing durable and never creates topology |
+| `PROXIMA_NATS_CONSUMER_NAME` | Fact outbox | `proxima-reference` | binding the reference consumer | deployment-provided durable name; filter, ACK policy, redelivery and flow control remain broker configuration |
+| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Fact outbox | unset (keep forever) | reclaiming storage from delivered records | deletes only `published` records older than the horizon, in bounded batches; minimum `60` and a smaller value is a boot error; never touches a `pending` or `claimed` record |
 | `PROXIMA_S3_MAX_BLOB_BYTES` | cited blobs | `104857600` | bounding cited-blob size | non-negative integer |
 | `PROXIMA_S3_BUCKET` | cited blobs | unset | enable S3 cited-blob storage | credentials use AWS SDK provider chain |
 | `PROXIMA_S3_REGION` | cited blobs | unset | S3 bucket configured | S3 region |
@@ -121,6 +137,8 @@ remain fixed at `5432` (Postgres) and `9000` (RustFS).
 |---|---|---|---|---|
 | `PROXIMA_DEV_POSTGRES_PORT` | dev Compose | `5434` | the default host port is occupied | published host port for pgvector Postgres; use the same value in `DATABASE_URL` |
 | `PROXIMA_DEV_S3_PORT` | dev Compose | `9100` | the default host port is occupied | published host port for RustFS; use `http://127.0.0.1:<port>` as `PROXIMA_S3_ENDPOINT_URL` |
+| `PROXIMA_DEV_NATS_PORT` | dev Compose | `4224` | the default host port is occupied | published host port mapped to the dev JetStream container's `4222`; use `nats://127.0.0.1:<port>` as `PROXIMA_NATS_URL` / `PROXIMA_TEST_NATS_URL` |
+| `PROXIMA_DEV_NATS_MONITOR_PORT` | dev Compose | `8224` | the default host port is occupied | published host port mapped to that container's monitoring endpoint (`8222`); `curl http://127.0.0.1:<port>/healthz` |
 
 ## Build/Test/Internal Variables
 
@@ -128,7 +146,16 @@ remain fixed at `5432` (Postgres) and `9000` (RustFS).
 |---|---|---|
 | `PROXIMA_TEST_PG_URL` | tests | pg-testkit integration test source DB |
 | `PROXIMA_TEST_DATABASE_URL` | tests | HTTP/OIDC e2e dedicated DB |
-| `PROXIMA_S3_` | source prefix | configuration prefix constant used to resolve the S3 variables listed above |
+| `PROXIMA_TEST_NATS_URL` | tests | real JetStream broker for the outbox delivery tests; unset ⇒ those tests skip with a message. CI sets it |
+| `PROXIMA_TEST_NATS_PUBLISHER_URL` | tests | publish-only NATS URL | publisher acceptance path; CI grants publish and reply-inbox access but no stream-management rights |
+| `PROXIMA_DIFFERENTIAL_DIR` | tests | regeneration escape hatch for the owner erase/transfer golden differentials: set it and the test WRITES its dump there instead of comparing. Never set in CI |
+| `PROXIMA_INTAKE_DATABASE_URL` | example | PostgreSQL connection for the reference consumer; required by `crates/outbox-nats/examples/durable_intake.rs`. Provision its example schema first. Not read by any shipped binary |
+| `PROXIMA_ENV_RS_PROCESS_ENV_UNSET` | tests | a name `crates/core/src/env.rs` asserts is absent, to prove the process-env lookup returns `None` rather than an empty string |
+| `PROXIMA_RECONCILE_SHARED_KEYS_CHILD` | tests | marks the re-executed child process in the blob-s3 shared-key reconciliation test |
+| `PROXIMA_S1B_TEST_PRESENT`, `PROXIMA_S1B_TEST_ABSENT`, `PROXIMA_S1B_TEST_REG` | tests | fixture names for the env-lookup unit tests |
+| `PROXIMA_SCHEMA_PG_URL` | `scripts/regen-schema-sql.sh` | admin URL used to create and drop the scratch database the schema dump is taken from. Falls back to `PROXIMA_TEST_PG_URL` |
+| `PROXIMA_PG_DUMP` | `scripts/regen-schema-sql.sh` | `pg_dump` command to run; its major version must be at least the server's. Default `pg_dump` |
+| `PROXIMA_EMBED_`, `PROXIMA_NATS_`, `PROXIMA_PG_`, `PROXIMA_S3_` | prefix forms | the wildcard spellings the tables above and [15](../15-deployment.md) use to name a family of keys. Not variables themselves — every member is listed individually in this file |
 
 ## Source Inventory Reconciliation
 
@@ -138,6 +165,6 @@ Inventory sources checked: `docs/10-configuration.md`, `docs/15-deployment.md`,
 `crates/proxima/src/config.rs`, `crates/storage-pg/src/lib.rs`,
 `crates/storage-pg/src/pool_config.rs`, `crates/storage-pg/src/tuning.rs`,
 `crates/storage-pg/src/verbs/consolidate/events.rs`,
-`crates/blob-s3/src/config.rs`, and `.github/workflows/ci.yml`. Runtime variables from that inventory are listed in
+`crates/blob-s3/src/config.rs`, `crates/outbox-nats/src/config.rs`, and `.github/workflows/ci.yml`. Runtime variables from that inventory are listed in
 the runtime table. Test-only and source-constant names are listed under
 Build/Test/Internal Variables.

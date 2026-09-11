@@ -311,6 +311,7 @@ mod pg_tests {
                     content_id: None,
                     payloads: Some(&[]),
                 },
+                publication: None,
             },
             move |tx, outcome| {
                 Box::pin(async move {

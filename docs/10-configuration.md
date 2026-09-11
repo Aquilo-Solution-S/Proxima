@@ -27,6 +27,7 @@ host injects for vector retrieval.
 | MCP authentication | per request | host `Authenticator` only; owner roles resolved server-side |
 | Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
 | Large artefact S3 storage | binary-wide | process env + AWS SDK credential chain |
+| Fact outbox publisher | binary-wide | `nats` cargo feature + `PROXIMA_NATS_URL`; capture itself is not configurable (see [18](18-fact-outbox.md)) |
 | source credentials | per source instance | source-owned, not engine-owned |
 
 Not runtime configurable: schema ids, payload types, edge kinds, prompts,
@@ -69,6 +70,26 @@ Proxima::<App>::app()
 | `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `memory` (default, fail-closed) or `full` (opt-in). |
 | `PROXIMA_TOOL_ALLOW` | Optional comma-separated canonical scope keys unioned into the resolved profile. |
 | `PROXIMA_TOOL_DENY` | Optional comma-separated canonical scope keys subtracted from the resolved profile. |
+| `PROXIMA_PUBLICATION_SOURCE` | Producer identity URI stamped into every published CloudEvent `source` (see [18](18-fact-outbox.md)). **Required** once ≥1 listenable Fact type is registered; boot fails otherwise. Never caller-supplied. |
+| `PROXIMA_OUTBOX_MAX_PENDING` | Unpublished-record ceiling. Default `100000`. At the ceiling a listenable write fails `CapacityExhausted` — explicit backpressure, never silent eviction. |
+| `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Largest serialized typed export accepted for capture. Default `524288`. Over-cap writes fail `PayloadTooLarge`. |
+| `PROXIMA_NATS_URL` | NATS server URL. **Unset ⇒ publisher off**; capture still runs and records stay `pending` (the rollback path). Requires the `nats` cargo feature. The publisher only needs publish and reply-inbox permissions. |
+| `PROXIMA_NATS_SUBJECT_PREFIX` | Source subject prefix; full source subject is `<prefix>.<owner_kind>.<owner_uuid>.<type_token>`. Default `proxima.fact`. Stream transforms and partitions are deployment-owned. The token encoding is injective — see [18 §The `type_token` rule](18-fact-outbox.md#the-type_token-rule). |
+| `PROXIMA_NATS_CREDS_FILE` | NATS credentials file. Mutually exclusive with the user/password and token forms. |
+| `PROXIMA_NATS_USER` / `PROXIMA_NATS_PASSWORD` | NATS user credentials. |
+| `PROXIMA_NATS_TOKEN` | NATS auth token. |
+| `PROXIMA_NATS_BATCH` | Records claimed per publisher pass. Default `64`. |
+| `PROXIMA_NATS_LEASE_SECS` | Claim lease. Default `30`. Expiry returns the record to `pending`; it never deletes it. |
+| `PROXIMA_NATS_POLL_MS` | Idle poll interval. Default `500`. |
+| `PROXIMA_NATS_PUBLISH_TIMEOUT_MS` | PubAck wait. Default `5000`. A timeout releases the claim and republishes the same bytes. |
+| `PROXIMA_NATS_PUBLISHER_ID` | Operator-facing identity recorded on every claim (`claimed_by`). Default: `HOSTNAME` (read through the same injected lookup, not the process environment) plus the pid. Not a credential — the fencing token is the claim token. |
+| `PROXIMA_NATS_CONSUMER_STREAM` | Deployment-provided stream name for the reference consumer. Default `PROXIMA_FACTS`; the consumer binds an existing durable and never creates topology. |
+| `PROXIMA_NATS_CONSUMER_NAME` | Deployment-provided durable consumer name for the reference consumer. Default `proxima-reference`. Its filter, ACK policy, redelivery and flow-control settings belong to the broker topology. |
+| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Delete already-`published` outbox records older than this many seconds, in bounded batches. Unset or `0` ⇒ keep forever. Minimum `60`; a smaller value is a boot error. Never removes a `pending` or `claimed` record whatever its age. |
+| `PROXIMA_TEST_NATS_URL` | Test-only. Unset ⇒ broker-backed tests skip with a message; CI sets it. |
+| `PROXIMA_TEST_NATS_PUBLISHER_URL` | Test-only. CI publisher URL with publish and reply-inbox permissions but no stream-management permissions. |
+| `PROXIMA_DEV_NATS_PORT` | Local-dev only (`docker-compose.dev.yml`): host port mapped to the dev JetStream container's `4222`. Default `4224`, so it cannot collide with a system NATS. |
+| `PROXIMA_DEV_NATS_MONITOR_PORT` | Local-dev only: host port mapped to that container's monitoring endpoint (`8222`). Default `8224`. |
 | `PROXIMA_S3_BUCKET` | Enables cited-blob S3 storage. |
 | `PROXIMA_S3_REGION` | S3 region for cited-blob storage. |
 | `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. |

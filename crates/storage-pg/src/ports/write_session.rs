@@ -9,8 +9,8 @@ use proxima_core::verbs::goal_write::{
 };
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, ColdObjectStore, MemoryId, SidecarPayload,
-    StorageError, cold_object_key,
+    AuthorDerivedOutcome, AuthorDerivedRequest, ColdObjectStore, MemoryId, StorageError,
+    cold_object_key,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -109,13 +109,9 @@ impl WriteSession for PgWriteSession {
     async fn ingest_fact_with_typed_sidecar(
         &mut self,
         authorized: &AuthorizedFactWrite,
-        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        authorized
-            .links()
-            .validate_sidecar_references(sidecar_payloads)
-            .map_err(StorageError::ConstraintViolation)?;
+        let sidecar_payloads = authorized.sidecar_payloads();
         let fact_sidecars = self.sidecars.writing(authorized.draft());
         let payloads = sidecar_payloads.to_vec();
         let content_payloads = payloads.clone();
@@ -145,6 +141,7 @@ impl WriteSession for PgWriteSession {
                     content_id: None,
                     payloads: Some(&content_payloads),
                 },
+                publication: authorized.publication(),
             },
             move |tx, outcome| {
                 Box::pin(async move {

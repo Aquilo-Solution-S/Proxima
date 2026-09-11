@@ -3055,6 +3055,29 @@ pub async fn erase_memory(
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
+    // The captured publication, if this Fact had one. Hand-written for the
+    // same reason as the receipt above: the row carries no foreign key into
+    // `memory` (it must outlive `forget`'s delete of the hot row), so the
+    // generated memory-dependent legs do not reach it. Erasing a single
+    // admission destroys its captured payload — an undelivered event is
+    // still this owner's content, and compliance erasure is the one and
+    // only way a record leaves this table.
+    //
+    // On `t` ALONE, deliberately, and this is the one delete in this
+    // function without an `owner_id` predicate. `t` is the outbox's primary
+    // key, so the predicate selects exactly this admission's record. Adding
+    // `AND owner_id = $2` would look safer and would leak: the surface
+    // declares `TransferRule::RetainAtSource`, so a transferred series
+    // leaves its already-captured record under the SOURCE owner while the
+    // memory row moves to the destination — and the destination erasing the
+    // memory would then walk past a record still holding the full typed
+    // payload. The caller has already authorized the erase of this `t`; the
+    // record is that `t`'s content whichever owner it was captured for.
+    sqlx::query("DELETE FROM proxima_core.publication_outbox WHERE t = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
     sqlx::query(
         "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
          SELECT $1, 'erase', 'memory', $2, $3",

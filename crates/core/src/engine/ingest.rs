@@ -252,15 +252,19 @@ impl Engine {
             .await?;
         let natural_key_values =
             bind_fact_natural_key(&draft, &fact_natural_key_columns, sidecars)?;
+        let publication =
+            self.resolve_publication(authority, fact_info, *permit.owner(), sidecars)?;
         Ok(AuthorizedFactWrite::new(
             AuthorizedFactCore::new(
                 permit.into(),
                 draft,
                 fact_sidecar_table,
                 fact_natural_key_columns,
+                sidecars.to_vec(),
                 links,
             )
-            .with_natural_key_values(natural_key_values),
+            .with_natural_key_values(natural_key_values)
+            .with_publication(publication),
         ))
     }
 
@@ -305,15 +309,19 @@ impl Engine {
 
         let natural_key_values =
             bind_fact_natural_key(&draft, &fact_natural_key_columns, sidecars)?;
+        let publication =
+            self.resolve_publication(authority, fact_info, *permit.owner(), sidecars)?;
         Ok(AuthorizedFactWithCitation::new(
             AuthorizedFactCore::new(
                 permit.into(),
                 draft,
                 fact_sidecar_table,
                 fact_natural_key_columns,
+                sidecars.to_vec(),
                 links,
             )
-            .with_natural_key_values(natural_key_values),
+            .with_natural_key_values(natural_key_values)
+            .with_publication(publication),
             cited_object,
             mapping,
         ))
@@ -358,15 +366,19 @@ impl Engine {
 
         let natural_key_values =
             bind_fact_natural_key(&draft, &fact_natural_key_columns, sidecars)?;
+        let publication =
+            self.resolve_publication(authority, fact_info, *permit.owner(), sidecars)?;
         Ok(AuthorizedFactWithCitationRef::new(
             AuthorizedFactCore::new(
                 permit.into(),
                 draft,
                 fact_sidecar_table,
                 fact_natural_key_columns,
+                sidecars.to_vec(),
                 links,
             )
-            .with_natural_key_values(natural_key_values),
+            .with_natural_key_values(natural_key_values)
+            .with_publication(publication),
             cited_object_id,
             expected_object_schema,
             mapping,
@@ -410,7 +422,6 @@ impl Engine {
                 }
                 references
             });
-        let payload_references = typed_references.clone();
         let raw_references: Vec<EdgeEndpoint> = draft
             .refs
             .iter()
@@ -471,11 +482,7 @@ impl Engine {
                 references.push(target);
             }
         }
-        Ok(AuthorizedNodeLinks::new(
-            Vec::new(),
-            references,
-            payload_references,
-        ))
+        Ok(AuthorizedNodeLinks::new(Vec::new(), references))
     }
 
     async fn authorize_fact_link_targets<A>(
@@ -642,20 +649,15 @@ impl Engine {
     pub async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
-        sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
-        authorized
-            .links()
-            .validate_sidecar_references(sidecars)
-            .map_err(|err| ProtocolError::invalid_argument("sidecars", err))?;
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_typed_sidecar(authorized, sidecars, embedding_model_id)
+            .ingest_fact_with_typed_sidecar(authorized, embedding_model_id)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -675,20 +677,15 @@ impl Engine {
     pub async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
-        authorized
-            .links()
-            .validate_sidecar_references(sidecars)
-            .map_err(|err| ProtocolError::invalid_argument("sidecars", err))?;
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_citation_and_typed_sidecar(authorized, sidecars, embedding_model_id)
+            .ingest_fact_with_citation_and_typed_sidecar(authorized, embedding_model_id)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -710,24 +707,15 @@ impl Engine {
     pub async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitationRef,
-        sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
-        authorized
-            .links()
-            .validate_sidecar_references(sidecars)
-            .map_err(|err| ProtocolError::invalid_argument("sidecars", err))?;
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_citation_ref_and_typed_sidecar(
-                authorized,
-                sidecars,
-                embedding_model_id,
-            )
+            .ingest_fact_with_citation_ref_and_typed_sidecar(authorized, embedding_model_id)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -902,6 +890,92 @@ impl Engine {
             ));
         }
         Ok(())
+    }
+
+    /// Resolve the publication plan a Fact admission must capture, or
+    /// `None` when its schema is not listenable.
+    ///
+    /// Everything the envelope needs that is NOT the `t` storage mints is
+    /// bound here, at authorization time, in the one place that holds all
+    /// three inputs: the frozen schema declaration, the deployment's
+    /// configured source, and the authenticated edge's trusted model
+    /// identity. In particular the model label is
+    /// [`crate::AuthzContext::trusted_model_id`] and never the caller's
+    /// own `model_id` argument, which is a claim rather than a credential.
+    ///
+    /// A listenable schema written through a route that carries no typed
+    /// payload is REFUSED here, before any write: the export snapshot IS
+    /// the payload's serde JSON, and a receipt-only admission has none.
+    ///
+    /// The deployment's [`PublicationLimits`] ride along in the returned
+    /// plan. They are read from THIS engine's [`PublicationConfig`] and
+    /// travel with the draft all the way to the seal, so the ceiling a
+    /// host configured is necessarily the ceiling capture enforces.
+    ///
+    /// [`PublicationLimits`]: crate::publication::PublicationLimits
+    /// [`PublicationConfig`]: crate::publication::PublicationConfig
+    fn resolve_publication<A>(
+        &self,
+        authority: &A,
+        fact_info: &SchemaInfo,
+        owner: Owner,
+        sidecars: &[SidecarPayload],
+    ) -> Result<Option<crate::publication::PublicationPlan>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        if !fact_info.listenable {
+            return Ok(None);
+        }
+        let schema_id = fact_info.schema_id.clone();
+        let Some(source) = self.publication.source.clone() else {
+            return Err(super::errors::map_publication_error(
+                &crate::publication::PublicationError::SourceUnbound {
+                    schema_id: schema_id.as_str().to_owned(),
+                },
+            ));
+        };
+        let mut matches = sidecars.iter().filter(|payload| {
+            payload.kind == PayloadKind::Fact
+                && payload.schema_id == schema_id
+                && payload.schema_version == fact_info.schema_version
+        });
+        let Some(payload) = matches.next() else {
+            return Err(super::errors::map_publication_error(
+                &crate::publication::PublicationError::UntypedListenableWrite {
+                    schema_id: schema_id.as_str().to_owned(),
+                },
+            ));
+        };
+        if matches.next().is_some() {
+            return Err(super::errors::map_publication_error(
+                &crate::publication::PublicationError::ExportFailed(format!(
+                    "listenable schema {} was supplied twice in one admission",
+                    schema_id.as_str()
+                )),
+            ));
+        }
+        let data = payload.to_protocol_json().map_err(|err| {
+            super::errors::map_publication_error(
+                &crate::publication::PublicationError::ExportFailed(err),
+            )
+        })?;
+        let model_id = self
+            .operation_authority(authority)?
+            .authz()
+            .trusted_model_id()
+            .map(ToOwned::to_owned);
+        Ok(Some(crate::publication::PublicationPlan::new(
+            crate::publication::PublicationDraft::new(
+                schema_id,
+                fact_info.schema_version,
+                source,
+                owner,
+                model_id,
+                data,
+            ),
+            self.publication.limits,
+        )))
     }
 
     fn fact_schema_info(
@@ -1562,7 +1636,7 @@ impl Engine {
         let embed_client = self.embed_client();
         let requested = embed_client.as_ref().map(|client| client.model_id());
         let outcome = self
-            .ingest_fact_with_typed_sidecar(&authorized, &sidecars, requested)
+            .ingest_fact_with_typed_sidecar(&authorized, requested)
             .await?;
         Ok(McpCallLogOutcome {
             receipt_id,
@@ -1887,10 +1961,6 @@ mod tests {
             fact_id: "bound-sidecars".to_owned(),
             targets: vec![EdgeEndpoint::memory(EntityKind::Fact, first)],
         };
-        let substituted = ReferencedTestFact {
-            fact_id: "bound-sidecars".to_owned(),
-            targets: vec![EdgeEndpoint::memory(EntityKind::Fact, second)],
-        };
         let admitted_sidecars = [SidecarPayload::fact(admitted.clone())];
         let observed = Arc::new(AtomicUsize::new(0));
         let engine = reference_engine(
@@ -1911,12 +1981,19 @@ mod tests {
             .await
             .expect("the original declaration should authorize");
 
-        let error = engine
-            .ingest_fact_with_typed_sidecar(&authorized, &[SidecarPayload::fact(substituted)], None)
-            .await
-            .expect_err("a substituted declaration must fail before the port");
-
-        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        let bound = authorized
+            .sidecar_payloads()
+            .first()
+            .expect("authorization binds the typed Fact sidecar")
+            .references();
+        assert_eq!(
+            bound[0].target,
+            EdgeEndpoint::memory(EntityKind::Fact, first)
+        );
+        assert_ne!(
+            bound[0].target,
+            EdgeEndpoint::memory(EntityKind::Fact, second)
+        );
         assert_eq!(observed.load(Ordering::Relaxed), 0);
     }
 
@@ -2205,5 +2282,195 @@ mod tests {
             .expect("missing embedding client is a no-op");
 
         assert!(!embedded);
+    }
+
+    // ── publication resolution (review R6) ──────────────────────────────
+
+    /// An engine over the probe registry with a bound deployment source —
+    /// the only shape in which a listenable schema can be admitted at all.
+    fn listenable_engine() -> Engine {
+        let source = crate::publication::PublicationSource::new("urn:proxima:r6-tests")
+            .expect("a URN is an absolute source");
+        Engine::new(crate::test_fixtures::probe_registry())
+            .try_with_publication_config(crate::publication::PublicationConfig::new(source))
+            .expect("a bound source boots")
+    }
+
+    fn listenable_probe(note: &str) -> crate::test_fixtures::ListenableProbeV1 {
+        crate::test_fixtures::ListenableProbeV1 {
+            probe_id: uuid::Uuid::now_v7(),
+            note: note.to_owned(),
+        }
+    }
+
+    fn listenable_draft(payload: &crate::test_fixtures::ListenableProbeV1) -> FactWriteCommand {
+        FactWriteCommand::from_payload("probe/source", payload, time::OffsetDateTime::now_utc())
+    }
+
+    /// The capture is assembled from the DEPLOYMENT and the PERMIT, never
+    /// from the draft: the source is the configured installation identity,
+    /// the owner is the one authorization resolved, and the model label is
+    /// the one the authenticated edge certified.
+    #[tokio::test]
+    async fn a_listenable_admission_captures_the_deployment_source_permit_owner_and_trusted_model()
+    {
+        let owner = test_owner();
+        let engine = listenable_engine();
+        let payload = listenable_probe("the quay is sound");
+        let sidecars = [SidecarPayload::fact(payload.clone())];
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .with_trusted_model_id("runner/pinned")
+            .expect("a valid operator label");
+
+        let authorized = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                listenable_draft(&payload),
+                &sidecars,
+            )
+            .await
+            .expect("a typed listenable write authorizes");
+
+        let plan = authorized
+            .publication()
+            .expect("a listenable schema carries a capture plan");
+        assert_eq!(plan.draft.source.as_str(), "urn:proxima:r6-tests");
+        assert_eq!(
+            plan.draft.owner, owner,
+            "the permit's owner, not the draft's"
+        );
+        assert_eq!(plan.draft.model_id.as_deref(), Some("runner/pinned"));
+        assert_eq!(plan.draft.schema_id.as_str(), "probe/listenable-v1");
+        assert_eq!(
+            plan.draft.data,
+            serde_json::to_value(&payload).expect("the probe serializes"),
+            "the export snapshot is the typed payload's own serde form"
+        );
+        assert_eq!(plan.limits, engine.publication_config().limits);
+    }
+
+    /// No certified model identity means no model identity on the wire.
+    ///
+    /// The only value `resolve_publication` reads is
+    /// `AuthzContext::trusted_model_id`. The caller-supplied `model_id`
+    /// label lives on [`crate::tool::ToolCaller`] and is never consulted
+    /// here, so an unauthenticated deployment publishes `None` rather than
+    /// whatever a caller wrote in its arguments.
+    #[tokio::test]
+    async fn an_uncertified_edge_captures_no_model_identity() {
+        let owner = test_owner();
+        let engine = listenable_engine();
+        let payload = listenable_probe("no certified runner");
+        let sidecars = [SidecarPayload::fact(payload.clone())];
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        assert_eq!(authz.trusted_model_id(), None);
+
+        let authorized = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                listenable_draft(&payload),
+                &sidecars,
+            )
+            .await
+            .expect("a typed listenable write authorizes");
+
+        assert_eq!(
+            authorized
+                .publication()
+                .expect("still captured")
+                .draft
+                .model_id,
+            None
+        );
+    }
+
+    /// A listenable Fact written through the untyped receipt-only route has
+    /// no typed payload to export, so there is nothing to publish. Refused
+    /// rather than published empty: a consumer that received an event with
+    /// no data could not tell it from a bug.
+    #[tokio::test]
+    async fn an_untyped_listenable_write_is_refused() {
+        let owner = test_owner();
+        let engine = listenable_engine();
+        let payload = listenable_probe("no sidecar");
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let err = engine
+            .authorize_fact_ingest(&authz, Relation::Ingest, listenable_draft(&payload), &[])
+            .await
+            .expect_err("a listenable schema without its typed payload must refuse");
+
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert!(
+            err.message.contains("probe/listenable-v1"),
+            "the refusal names the schema: {}",
+            err.message
+        );
+    }
+
+    /// One admission, one event. Two typed payloads of the same listenable
+    /// schema give the capture no way to choose, and choosing the first
+    /// would silently drop the second.
+    #[tokio::test]
+    async fn the_same_listenable_schema_supplied_twice_is_refused() {
+        let owner = test_owner();
+        let engine = listenable_engine();
+        let payload = listenable_probe("twice");
+        let sidecars = [
+            SidecarPayload::fact(payload.clone()),
+            SidecarPayload::fact(listenable_probe("and again")),
+        ];
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let err = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                listenable_draft(&payload),
+                &sidecars,
+            )
+            .await
+            .expect_err("two payloads of one listenable schema must refuse");
+
+        assert!(
+            err.message.contains("supplied twice"),
+            "unexpected message: {}",
+            err.message
+        );
+    }
+
+    /// The declaration is the whole difference. The non-listenable twin
+    /// takes the identical route with the identical shape and captures
+    /// nothing.
+    #[tokio::test]
+    async fn a_non_listenable_admission_captures_nothing() {
+        let owner = test_owner();
+        let engine = listenable_engine();
+        let payload = crate::test_fixtures::UnlistenableProbeV1 {
+            probe_id: uuid::Uuid::now_v7(),
+            note: "silent".to_owned(),
+        };
+        let sidecars = [SidecarPayload::fact(payload.clone())];
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .with_trusted_model_id("runner/pinned")
+            .expect("a valid operator label");
+
+        let authorized = engine
+            .authorize_fact_ingest(
+                &authz,
+                Relation::Ingest,
+                FactWriteCommand::from_payload(
+                    "probe/source",
+                    &payload,
+                    time::OffsetDateTime::now_utc(),
+                ),
+                &sidecars,
+            )
+            .await
+            .expect("an unlistenable write authorizes");
+
+        assert!(authorized.publication().is_none());
     }
 }

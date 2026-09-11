@@ -79,7 +79,7 @@ impl Fixture {
             .await?;
         Ok(self
             .engine
-            .ingest_fact_with_typed_sidecar(&authorized, &sidecars, None)
+            .ingest_fact_with_typed_sidecar(&authorized, None)
             .await?)
     }
 

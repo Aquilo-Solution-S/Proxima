@@ -124,6 +124,27 @@ is generated from the declarations:
 | `Cascade { via }` | no statement at all; the named constraint is the proof, and a test asks the `pg_constraint` catalog whether it exists |
 | `Never { why }` | never deleted, with the reason in the declaration — `owners` because seventeen FKs point at it, `cold_purge_pending` because it is the erase's own outbox |
 
+`proxima_core.publication_outbox` (the Fact outbox, [18](18-fact-outbox.md))
+registers here like any other surface, and its rule is **`ByOwner`, not
+`ByKey`** — the one place where an obvious spelling would have been wrong.
+`forget` DELETEs the hot `memory` row while the captured record stays (an
+undelivered event must not die of an unrelated lifecycle operation), so a
+selection set built from `memory` walks past exactly the records a forgotten
+Fact left behind. Erasing on the surface's own `owner_id` reaches them. For
+the same reason there is **no FK to `memory`** and therefore no cascade to
+lean on; completeness rests on `owner_id -> owners`, and a single-memory erase
+deletes the record explicitly on `t` alone — with no owner predicate, because
+`TransferRule::RetainAtSource` means a transferred Fact's record still carries
+the ORIGINAL owner's id.
+
+Counted on the receipt (`publications`), excluded from the export bundle (a
+derived delivery copy of a typed Fact the bundle already carries, wrapped in a
+transport envelope naming this installation), kept by forget. What a broker
+already accepted is outside the database's reach — the stream's own retention
+is the host's obligation, not this verb's. `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`
+is housekeeping, not compliance: it removes only records that were already
+delivered, and no horizon can reach an undelivered one.
+
 Legs whose statement is not the generic shape — those that enqueue before
 deleting, span two selection sets, carry a refcount guard, or rewind a head —
 are named in one sorted exemption list beside the code, and a test asserts

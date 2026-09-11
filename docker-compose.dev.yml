@@ -83,6 +83,35 @@ services:
         aws --endpoint-url http://s3:9000 s3api put-bucket-versioning \
           --bucket proxima-dev --versioning-configuration Status=Enabled
 
+  # NATS with JetStream for the Fact-outbox lane (docs/18). Without it the
+  # publisher/consumer tests skip on `PROXIMA_TEST_NATS_URL` being unset and
+  # the delivery contract goes unchecked locally.
+  #
+  # JetStream is a deployment dependency for the optional Fact-outbox lane.
+  # Tests provision their own streams and consumers; the application publisher
+  # does not create or configure broker topology.
+  nats:
+    image: nats:2.14.6@sha256:c50b0a773c6c8d033cad54f7c53cb97fd6e09b3bfc1accda7cd4fa94e19e9ed9
+    restart: unless-stopped
+    command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
+    ports:
+      # The host default is 4224, not 4222, so a stock local `nats-server`
+      # keeps its port. Override with PROXIMA_DEV_NATS_PORT.
+      - "127.0.0.1:${PROXIMA_DEV_NATS_PORT:-4224}:4222"
+      # Monitoring (`/healthz`, `/jsz`). Same reasoning for 8224 vs 8222.
+      - "127.0.0.1:${PROXIMA_DEV_NATS_MONITOR_PORT:-8224}:8222"
+    volumes:
+      - proxima_dev_nats_data:/data
+    # NO healthcheck, unlike the other two services: this image is built
+    # `FROM scratch` and contains one executable and no shell, so neither
+    # `CMD-SHELL` nor a curl/wget probe can run inside it. Readiness is
+    # observed from OUTSIDE instead — `curl -fsS
+    # http://127.0.0.1:${PROXIMA_DEV_NATS_MONITOR_PORT:-8224}/healthz`,
+    # which is what CI polls and reports JetStream's own state rather than
+    # just the TCP listener. Adding a shell to the image to satisfy compose
+    # would be a larger attack surface bought with nothing.
+
 volumes:
   proxima_dev_pgdata:
   proxima_dev_s3_data:
+  proxima_dev_nats_data:

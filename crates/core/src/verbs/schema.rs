@@ -99,6 +99,12 @@ pub struct SchemaInfo {
     /// `CitedObjectPayload` schema id accepted by a `CitationMappingPayload`.
     /// Populated only for citation-mapping schemas.
     pub cited_object_schema: Option<SchemaId>,
+    /// `FactPayload::LISTENABLE`, carried past the Rust type so the write
+    /// path can ask a registered SCHEMA ID whether its admissions capture a
+    /// publication record — exactly how `sidecar_table` and
+    /// `natural_key_columns` travel. Always `false` for the non-Fact kinds.
+    #[serde(default)]
+    pub listenable: bool,
 }
 
 impl SchemaInfo {
@@ -129,6 +135,7 @@ impl SchemaInfo {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            listenable: false,
         }
     }
 }
@@ -668,6 +675,18 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn schemas(&self) -> &[SchemaInfo] {
         &self.schemas
+    }
+
+    /// Registered schema ids that declared themselves listenable
+    /// (`FactPayload::LISTENABLE`), in registration order.
+    ///
+    /// The boot check reads this: a deployment that freezes one of these
+    /// and binds no publication source is refused, naming them.
+    pub fn listenable_schema_ids(&self) -> impl Iterator<Item = &str> {
+        self.schemas
+            .iter()
+            .filter(|schema| schema.listenable)
+            .map(|schema| schema.schema_id.as_str())
     }
 
     /// Whether a memory written under `schema_id` earns a vector.

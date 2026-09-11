@@ -69,6 +69,21 @@
 //! - The corpus is **flavor #0 only**. `proxima-storage-pg` depends on no
 //!   flavor, so a second flavor's surfaces cannot be reached from here; the
 //!   cross-flavor half is `owner_inverse_reach_pg` in `proxima-code`.
+//!
+//! ## The publication-outbox regeneration (issue #305)
+//!
+//! `publication_outbox` compared equal at `(0)` — the corpus wrote no record,
+//! so `TransferRule::RetainAtSource` on that surface was asserted by the
+//! declaration and witnessed by nothing. Each of the three transferred series
+//! now carries one captured record on its newest version, written by hand like
+//! every other row here and with a FIXED envelope, because the claim is that a
+//! transfer changes NEITHER the record's `owner_id` NOR its bytes, and a
+//! sealed envelope's wall-clock `time` would make the second half
+//! unobservable.
+//!
+//! Checked, not assumed: strip the three new rows from the regenerated file
+//! and re-canonicalise the tokens, and every relation holds the same multiset
+//! of rows as the previous golden, section for section, count for count.
 #![allow(
     clippy::doc_markdown,
     clippy::format_push_string,
@@ -415,6 +430,30 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
         .bind(second.into_inner())
         .bind(source.stored_owner_id())
         .bind(vec![41u8; 32])
+        .execute(pool)
+        .await?;
+        // The other `RetainAtSource` surface: a captured publication record.
+        // A series that changes hands does not retroactively make an event
+        // already captured for the source the destination's to deliver, so
+        // this row must keep its `owner_id` while the memory beside it moves.
+        //
+        // Written by hand, like every other row in this corpus, and with a
+        // FIXED envelope: the transfer must not touch those bytes, and a
+        // literal is the only way the golden can say so — a sealed envelope
+        // carries a wall-clock `time` inside an opaque bytea the tokenizer
+        // cannot normalize.
+        sqlx::query(
+            "INSERT INTO proxima_core.publication_outbox
+                 (t, owner_id, schema_id, schema_version, event_type, event_id,
+                  envelope, envelope_digest, captured_at)
+             VALUES ($1, $2, 'core/test-fact-v1', 1, 'core/test-fact-v1',
+                     'F:' || $1::text, convert_to($3, 'UTF8'), $4,
+                     TIMESTAMPTZ '2026-02-04 00:00:00Z')",
+        )
+        .bind(third.into_inner())
+        .bind(source.stored_owner_id())
+        .bind(format!("{{\"probe\":\"{n}\"}}"))
+        .bind(vec![43u8; 32])
         .execute(pool)
         .await?;
         // `sketch` needs no hand-written row: `ingest_fact_timeseries`

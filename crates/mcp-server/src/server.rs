@@ -9,7 +9,7 @@ use proxima_core::mcp::core_tools::{
     get_memory::{GetMemoryArgs, get_memory},
     goal_reads::{ListGoalsArgs, get_goal, list_goals},
     list_change_events::{ListChangeEventsArgs, list_change_events},
-    list_schemas::{ListSchemasArgs, list_schemas},
+    list_schemas::{ListSchemasArgs, get_schema, list_schemas},
     list_substrate_tools::{ListSubstrateToolsArgs, list_substrate_tools},
     list_wake_candidates::{ListWakeCandidatesArgs, list_wake_candidates},
     walk_memory_lineage::{
@@ -247,6 +247,10 @@ async fn dispatch_resource(
 ) -> Result<serde_json::Value, McpToolError> {
     match parsed {
         ParsedResource::Schemas(args) => resource_output_value(list_schemas(ctx, args).await?),
+        ParsedResource::Schema {
+            schema_id,
+            schema_version,
+        } => resource_output_value(get_schema(ctx, &schema_id, schema_version).await?),
         ParsedResource::Tools(args) => {
             resource_output_value(list_substrate_tools(ctx, args).await?)
         }
@@ -344,6 +348,10 @@ impl ResourceUriError {
 #[derive(Debug)]
 enum ParsedResource {
     Schemas(ListSchemasArgs),
+    Schema {
+        schema_id: String,
+        schema_version: u32,
+    },
     Tools(ListSubstrateToolsArgs),
     Graph(GetGraphArgs),
     Memory(GetMemoryArgs),
@@ -359,6 +367,7 @@ impl ParsedResource {
     const fn scope_key(&self) -> &'static str {
         match self {
             Self::Schemas(_) => protocol_resource::SCHEMAS,
+            Self::Schema { .. } => protocol_resource::SCHEMA,
             Self::Tools(_) => protocol_resource::TOOLS,
             Self::Graph(_) => protocol_resource::GRAPH,
             Self::Memory(_) => protocol_resource::MEMORY,
@@ -382,6 +391,7 @@ mod resource_path {
     use super::{core_resource, protocol_resource};
 
     pub const SCHEMAS: &str = core_resource(protocol_resource::SCHEMAS).path;
+    pub const SCHEMA: &str = core_resource(protocol_resource::SCHEMA).path;
     pub const TOOLS: &str = core_resource(protocol_resource::TOOLS).path;
     pub const GRAPH: &str = core_resource(protocol_resource::GRAPH).path;
     pub const CHANGE_EVENTS: &str = core_resource(protocol_resource::CHANGE_EVENTS).path;
@@ -442,6 +452,31 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
             limit: query_parse(&query, "limit", "a non-negative integer")?,
             cursor: query_value(&query, "cursor").map(ToOwned::to_owned),
         })),
+        // A schema id carries its own `/` separators (`core/note`), so the
+        // version is split off the END of the tail, not the start.
+        path if resource_path::tail(path, resource_path::SCHEMA).is_some() => {
+            let tail = resource_path::tail(path, resource_path::SCHEMA).unwrap_or_default();
+            let (schema_id, version) =
+                tail.rsplit_once('/')
+                    .ok_or(ResourceUriError::MissingParam {
+                        param: "schema_version",
+                    })?;
+            if schema_id.is_empty() {
+                return Err(ResourceUriError::UnknownPath);
+            }
+            let schema_version =
+                version
+                    .parse::<u32>()
+                    .map_err(|_| ResourceUriError::InvalidParam {
+                        param: "schema_version",
+                        value: version.to_string(),
+                        expected: "a non-negative integer",
+                    })?;
+            Ok(ParsedResource::Schema {
+                schema_id: schema_id.to_string(),
+                schema_version,
+            })
+        }
         path if resource_path::tail(path, resource_path::MEMORY).is_some() => {
             parse_memory_resource_path(path, &query)
         }

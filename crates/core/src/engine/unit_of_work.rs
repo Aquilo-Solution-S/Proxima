@@ -406,7 +406,7 @@ impl UnitOfWork<'_> {
         let outcome = self
             .ensure_session()
             .await?
-            .ingest_fact_with_typed_sidecar(&authorized, &sidecars, embedding_model_id)
+            .ingest_fact_with_typed_sidecar(&authorized, embedding_model_id)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(

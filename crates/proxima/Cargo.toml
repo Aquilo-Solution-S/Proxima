@@ -23,6 +23,11 @@ proxima-storage-pg = { path = "../storage-pg", features = ["backend-api"] }
 proxima-blob-s3 = { path = "../blob-s3" }
 proxima-llm-openai-compat = { path = "../llm-openai-compat", optional = true }
 proxima-mcp-server = { path = "../mcp-server" }
+# outbox-nats: the shipped Fact-outbox publisher (docs/18). Optional and
+# OFF by default — a deployment that registers no listenable schema should
+# not link a broker client, and the boot guarantee that a listenable schema
+# needs a bound source holds without it.
+proxima-outbox-nats = { path = "../outbox-nats", optional = true }
 proxima-pg-testkit = { path = "../pg-testkit", optional = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
@@ -40,6 +45,9 @@ uuid = { workspace = true }
 default = ["openai-compat-embed", "auth-oidc"]
 auth-oidc = ["dep:proxima-auth-oidc"]
 openai-compat-embed = ["dep:proxima-llm-openai-compat"]
+# Compile the NATS JetStream publisher and the reference consumer. Compiling
+# is not enabling: the publisher still needs `PROXIMA_NATS_URL`.
+outbox-nats = ["dep:proxima-outbox-nats"]
 # Compile the `/v1` REST rendering of the tool manifest (docs/17). Compiling
 # it is not enabling it: the surface still needs `PROXIMA_REST_ENABLED`.
 rest = ["proxima-mcp-server/rest"]

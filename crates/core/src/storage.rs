@@ -53,6 +53,11 @@ pub enum StorageError {
     ScopeMissing { kind: String, id: Uuid },
     #[error("suppressed: {0}")]
     Suppressed(String),
+    /// A listenable Fact's publication capture was refused (docs/18). The
+    /// whole write is rolled back; the typed cause travels rather than a
+    /// message, so the engine maps it without parsing a string.
+    #[error("publication refused: {0}")]
+    PublicationRefused(#[from] crate::publication::PublicationError),
     #[error("internal storage error: {0}")]
     Internal(String),
 }

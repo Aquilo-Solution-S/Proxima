@@ -154,6 +154,11 @@ pub struct ProximaBuilder {
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
     deployment_tool_scope: Option<proxima_core::ToolScope>,
+    /// The deployment's publication source and capture bounds (docs/18).
+    /// Not `Option`: every boot passes one to the engine builder, so a
+    /// registry that freezes a listenable schema is checked against it
+    /// whether or not the host said anything.
+    publication: proxima_core::publication::PublicationConfig,
     pg_pool_config: Option<proxima_storage_pg::PgPoolConfig>,
     pg_tuning: Option<proxima_storage_pg::PgTuning>,
 }
@@ -170,6 +175,7 @@ impl std::fmt::Debug for ProximaBuilder {
             .field("has_embed_client", &self.embed_client.is_some())
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .field("deployment_tool_scope", &self.deployment_tool_scope)
+            .field("publication", &self.publication)
             .field("pg_pool_config", &self.pg_pool_config)
             .field("pg_tuning", &self.pg_tuning)
             .finish()
@@ -187,6 +193,24 @@ pub struct EmbeddedProxima {
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Option<Owner>,
+    /// The host-only drain over captured publication records.
+    ///
+    /// PRIVATE on purpose. The port is deliberately absent from
+    /// `StoragePorts`, `Engine` and `ToolCtx` — a flavor that could claim
+    /// an outbox record could delay or suppress an export — so the facade
+    /// keeps it too and only the publisher task it spawns ever sees it.
+    ///
+    /// Carried only when an adapter is compiled in: without one there is
+    /// nothing that could drain the outbox.
+    #[cfg(feature = "outbox-nats")]
+    outbox: Arc<dyn proxima_core::storage_ports::publication::PublicationOutboxPort>,
+    /// Operator-only reclaim of records that were already DELIVERED, held
+    /// under the same rule and for the same reason as `outbox`. A second
+    /// handle rather than a method on the first: a drain loop must not be
+    /// able to delete anything, and separate traits are how that is
+    /// enforced rather than promised.
+    #[cfg(feature = "outbox-nats")]
+    outbox_retention: Arc<dyn proxima_core::storage_ports::publication::PublicationRetentionPort>,
 }
 
 impl EmbeddedProxima {
@@ -200,6 +224,24 @@ impl EmbeddedProxima {
     #[must_use]
     pub fn pool_for_tests(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// The host-only publication outbox drain.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub(crate) fn outbox(
+        &self,
+    ) -> &Arc<dyn proxima_core::storage_ports::publication::PublicationOutboxPort> {
+        &self.outbox
+    }
+
+    /// The host-only reclaim of delivered publication records.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub(crate) fn outbox_retention(
+        &self,
+    ) -> &Arc<dyn proxima_core::storage_ports::publication::PublicationRetentionPort> {
+        &self.outbox_retention
     }
 }
 
@@ -231,6 +273,7 @@ impl ProximaBuilder {
             embed_client: None,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
             deployment_tool_scope: None,
+            publication: proxima_core::publication::PublicationConfig::default(),
             pg_pool_config: None,
             pg_tuning: None,
         }
@@ -330,6 +373,19 @@ impl ProximaBuilder {
         self
     }
 
+    /// Bind the deployment's publication source and capture bounds
+    /// (docs/18 §Configuration). The runtime facade forwards its resolved
+    /// `PROXIMA_PUBLICATION_SOURCE` / `PROXIMA_OUTBOX_*` block through
+    /// here; an embedded host can set it directly.
+    #[must_use]
+    pub fn publication(
+        mut self,
+        publication: proxima_core::publication::PublicationConfig,
+    ) -> Self {
+        self.publication = publication;
+        self
+    }
+
     /// Postgres pool policy passthrough. Unset, the process environment
     /// decides. Runtime hosts should pass their already-resolved policy so
     /// storage construction does not perform a second environment read.
@@ -366,6 +422,7 @@ impl ProximaBuilder {
             embed_client,
             embedding_runtime_policy,
             deployment_tool_scope,
+            publication,
             pg_pool_config,
             pg_tuning,
         } = self;
@@ -400,8 +457,20 @@ impl ProximaBuilder {
             &pg,
             embedding_runtime_policy,
             deployment_tool_scope,
+            publication,
             embed_client,
         )?;
+        // The one handle on the captured outbox. Host-only: it is not in
+        // `StoragePorts`, so no flavor, tool or write session can reach a
+        // captured event, and a publisher process gets it from here.
+        #[cfg(feature = "outbox-nats")]
+        let outbox: Arc<
+            dyn proxima_core::storage_ports::publication::PublicationOutboxPort,
+        > = Arc::new(pg.clone());
+        #[cfg(feature = "outbox-nats")]
+        let outbox_retention: Arc<
+            dyn proxima_core::storage_ports::publication::PublicationRetentionPort,
+        > = Arc::new(pg.clone());
 
         let (engine, system_authority, delegation_runtime_authority) =
             engine.into_runtime_authorities();
@@ -427,6 +496,10 @@ impl ProximaBuilder {
             pg_sidecars,
             blobs,
             owner,
+            #[cfg(feature = "outbox-nats")]
+            outbox,
+            #[cfg(feature = "outbox-nats")]
+            outbox_retention,
         })
     }
 }
@@ -580,17 +653,27 @@ fn wire_cold_store(
 }
 
 /// Compose the engine over the frozen registry and wired storage, attaching
-/// the deployment tool scope and the host's embedding client.
+/// the deployment tool scope, the publication configuration and the host's
+/// embedding client.
+///
+/// `try_with_publication_config` is on the UNCONDITIONAL path, with the
+/// parsed config even when it binds no source. That is the whole boot
+/// guarantee: a bundle that freezes a listenable schema and a deployment
+/// that never set `PROXIMA_PUBLICATION_SOURCE` is refused here, naming the
+/// schemas, instead of admitting writes that would each fail at capture.
 fn compose_engine(
     registry: proxima_core::FlavorRegistryFrozen,
     pg: &PgStorage,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
     deployment_tool_scope: Option<proxima_core::ToolScope>,
+    publication: proxima_core::publication::PublicationConfig,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
 ) -> Result<Engine, EmbedError> {
     let mut engine = Engine::new(registry)
         .with_storage_ports(Arc::new(pg.clone()).storage_ports())
-        .with_embedding_runtime_policy(embedding_runtime_policy);
+        .with_embedding_runtime_policy(embedding_runtime_policy)
+        .try_with_publication_config(publication)
+        .map_err(|error| EmbedError::Config(error.to_string()))?;
     if let Some(scope) = deployment_tool_scope {
         engine = engine.with_deployment_tool_scope(scope);
     }

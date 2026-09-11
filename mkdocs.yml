@@ -37,6 +37,7 @@ nav:
       - Troubleshooting: how-to/troubleshoot.md
       - Migration Policy: how-to/migrations.md
       - Rust SDK Upgrade: how-to/migrate-flavor-sdk.md
+      - Publish Facts (Outbox): how-to/fact-outbox.md
   - Reference:
       - Architecture: reference/architecture.md
       - Public API: reference/public-api.md
@@ -68,6 +69,7 @@ nav:
       - Deployment: 15-deployment.md
       - Edges: 16-edges.md
       - REST Surface: 17-rest-surface.md
+      - Fact Outbox: 18-fact-outbox.md
   - Kernel:
       - Lean Kernel: lean/README.md
       - Coverage: lean/COVERAGE.md

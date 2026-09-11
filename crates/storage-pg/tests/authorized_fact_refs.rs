@@ -452,11 +452,7 @@ async fn authorized_links_are_persisted_by_engine_uow() {
             )
             .await?;
         let pool_typed = engine
-            .ingest_fact_with_typed_sidecar(
-                &authorized,
-                &[SidecarPayload::fact(pool_payload)],
-                None,
-            )
+            .ingest_fact_with_typed_sidecar(&authorized, None)
             .await?;
         assert_eq!(
             stored_refs(&pg, pool_typed.memory_id).await?,
@@ -588,11 +584,7 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
             )
             .await?;
         let inline = engine
-            .ingest_fact_with_citation_and_typed_sidecar(
-                &authorized,
-                &[SidecarPayload::fact(inline_payload)],
-                None,
-            )
+            .ingest_fact_with_citation_and_typed_sidecar(&authorized, None)
             .await?;
         assert_eq!(
             stored_refs(&pg, inline.memory_id).await?,
@@ -626,11 +618,7 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
             )
             .await?;
         let by_ref = engine
-            .ingest_fact_with_citation_ref_and_typed_sidecar(
-                &authorized,
-                &[SidecarPayload::fact(by_ref_payload)],
-                None,
-            )
+            .ingest_fact_with_citation_ref_and_typed_sidecar(&authorized, None)
             .await?;
         assert_eq!(
             stored_refs(&pg, by_ref.memory_id).await?,
@@ -676,15 +664,13 @@ async fn typed_raw_refs_cannot_disagree_with_payload_declarations() {
 }
 
 #[tokio::test]
-async fn storage_rejects_sidecars_whose_references_changed_after_authorization() {
+async fn storage_uses_sidecars_bound_during_authorization() {
     let (db_name, pg, registry) = bootstrap().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner();
         let first = seed_fact(&pg, owner).await?;
-        let second = seed_fact(&pg, owner).await?;
         let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
         let admitted = payload("bound-sidecar", first.into_inner(), goal.into_inner());
-        let substituted = payload("bound-sidecar", second.into_inner(), goal.into_inner());
         let admitted_sidecars = [SidecarPayload::fact(admitted.clone())];
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = engine(&pg, &registry);
@@ -696,11 +682,12 @@ async fn storage_rejects_sidecars_whose_references_changed_after_authorization()
                 &admitted_sidecars,
             )
             .await?;
-        let error = pg
-            .ingest_fact_with_typed_sidecar(&authorized, &[SidecarPayload::fact(substituted)], None)
-            .await
-            .expect_err("storage must recheck the authorized reference declaration");
-        assert!(matches!(error, StorageError::ConstraintViolation(_)));
+        drop(admitted_sidecars);
+        let written = pg.ingest_fact_with_typed_sidecar(&authorized, None).await?;
+        assert_eq!(
+            stored_refs(&pg, written.memory_id).await?,
+            vec![first.into_inner()]
+        );
 
         let written: bool = sqlx::query_scalar(
             "SELECT EXISTS (
@@ -713,12 +700,12 @@ async fn storage_rejects_sidecars_whose_references_changed_after_authorization()
         .bind(authorized.draft().ingest_key.as_deref())
         .fetch_one(pg.pool_for_tests())
         .await?;
-        assert!(!written, "a changed declaration must not reach storage");
+        assert!(written, "the authorized sidecar must reach storage");
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("storage accepted a substituted typed reference declaration");
+    result.expect("storage did not use the authorized typed reference");
 }
 
 #[tokio::test]
