@@ -10,3 +10,9 @@ failure-output = "immediate-final"
 success-output = "never"
 status-level = "fail"
 final-status-level = "fail"
+
+# Family GC plants sibling `proxima_tmpl_core_*` names. Parallel live
+# `ensure_template` of the real fingerprint would drop a planted keep.
+[[profile.default.overrides]]
+filter = "test(=ensure_template_drops_other_hashes_in_the_family)"
+threads-required = "num-test-threads"
