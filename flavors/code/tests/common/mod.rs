@@ -10,7 +10,8 @@ use proxima_core::{
     OwnerRef, Role, SchemaId, SchemaVersion, UserId,
 };
 use proxima_pg_testkit::{
-    FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template, fnv1a64_extend,
+    DbGuard, FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template,
+    fnv1a64_extend,
 };
 use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, core_migrator, register_core_pg_sidecars,
@@ -368,6 +369,7 @@ pub fn write_file(repo: &Path, path: &str, contents: &str) {
 
 #[derive(Debug)]
 pub struct TestDb {
+    _guard: DbGuard,
     pub name: String,
     pub pg: PgStorage,
 }
@@ -375,21 +377,12 @@ pub struct TestDb {
 impl TestDb {
     pub async fn fresh() -> Self {
         let (name, pg) = migrated_db().await;
-        Self { name, pg }
-    }
-}
-
-impl Drop for TestDb {
-    fn drop(&mut self) {
-        let name = self.name.clone();
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().expect("drop runtime");
-            runtime.block_on(async {
-                let _ = drop_db(&name).await;
-            });
-        })
-        .join()
-        .expect("drop db thread");
+        let guard = DbGuard::adopt(name.clone());
+        Self {
+            _guard: guard,
+            name,
+            pg,
+        }
     }
 }
 
