@@ -225,6 +225,18 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// Register a typed host-state participant on the [`crate::UnitOfWork`]
+    /// write session. Hosts that register none keep existing Fact/sidecar/lock
+    /// behavior with no extra configuration.
+    #[must_use]
+    pub fn host_state_participant(
+        mut self,
+        participant: Arc<dyn proxima_storage_pg::PgHostStateParticipant>,
+    ) -> Self {
+        self.overlay = self.overlay.host_state_participant(participant);
+        self
+    }
+
     /// Configure the `JetStream` publisher. Env equivalent: the
     /// `PROXIMA_NATS_*` block.
     #[cfg(feature = "outbox-nats")]
@@ -1127,6 +1139,9 @@ async fn boot_app<A: FlavorApp + 'static>(
     }
     if let Some(client) = parts.embed_client.clone() {
         builder = builder.embed_client(client);
+    }
+    if let Some(participant) = parts.host_state_participant.clone() {
+        builder = builder.host_state_participant(participant);
     }
     builder.boot().await.map_err(Into::into)
 }

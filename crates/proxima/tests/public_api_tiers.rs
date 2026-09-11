@@ -20,6 +20,8 @@ impl proxima::flavor::GoalPayload for SdkGoalPayload {
 #[test]
 fn host_api_imports_from_root() {
     fn assert_send_sync<T: Send + Sync>() {}
+    fn needs_host_state_command<T: proxima::HostStateCommand>() {}
+    fn needs_participant<T: proxima::PgHostStateParticipant + ?Sized>() {}
     assert_send_sync::<proxima::OwnerEraseCounts>();
     assert_send_sync::<proxima::OwnerEraseOutcome>();
     assert_send_sync::<proxima::OwnerEraseRefusal>();
@@ -47,6 +49,26 @@ fn host_api_imports_from_root() {
         operation_id: uuid::Uuid::nil(),
         reason: proxima::OwnerEraseRefusal::OwnerNotAbandoned,
     };
+    let _: Option<(
+        proxima::HostStateOutcome<()>,
+        proxima::HostStateReplyKind,
+        proxima::HostStateRequest,
+        proxima::HostStateReply,
+    )> = None;
+    needs_participant::<dyn proxima::PgHostStateParticipant>();
+    needs_host_state_command::<HostStateTierCommand>();
+}
+
+struct HostStateTierCommand;
+
+impl proxima::HostStateCommand for HostStateTierCommand {
+    const PARTICIPANT_ID: &'static str = "tier";
+    const TABLES: &'static [&'static str] = &["tier.table"];
+    type Outcome = ();
+
+    fn owner(&self) -> proxima::Owner {
+        proxima::company_owner(uuid::Uuid::nil())
+    }
 }
 
 #[test]
@@ -1088,6 +1110,28 @@ fn host_extra_table_bridge_is_on_app_context() {
     );
     let _: fn(&proxima::AppContext) -> sqlx::PgPool = proxima::AppContext::clone_pool_for_host;
     let _: fn(&proxima::AppContext) -> proxima::PgTuning = proxima::AppContext::pg_tuning_for_host;
+}
+
+#[test]
+fn host_state_participation_is_host_api_not_flavor_sdk() {
+    let flavor_exports = include_str!("../src/flavor.rs");
+    let host_exports = include_str!("../src/host.rs");
+    assert!(
+        !flavor_exports.contains("HostStateCommand"),
+        "Flavor SDK must not export host-state command types"
+    );
+    assert!(
+        !flavor_exports.contains("PgHostStateParticipant"),
+        "Flavor SDK must not export the PG host-state participant"
+    );
+    assert!(
+        host_exports.contains("HostStateCommand"),
+        "Host API names HostStateCommand"
+    );
+    assert!(
+        host_exports.contains("PgHostStateParticipant"),
+        "Host API names PgHostStateParticipant"
+    );
 }
 
 /// Naming [`proxima::flavor::AuthorizationHook`] is not enough: `veto`

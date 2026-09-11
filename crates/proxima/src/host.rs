@@ -46,8 +46,8 @@ pub use proxima_core::cursor::Cursor;
 /// no per-column filter, so a flavor that wants "search inside this book"
 /// declares a `tag_column` on its projection and filters here.
 pub use proxima_core::engine::{
-    FactWrite, ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse, SearchReadRequest,
-    SearchReadResponse, UnitOfWork,
+    FactWrite, HostStateCommand, HostStateOutcome, ListWakeCandidatesReadRequest,
+    ListWakeCandidatesReadResponse, SearchReadRequest, SearchReadResponse, UnitOfWork,
 };
 /// The owner-authorized batch Memory read already exposed by
 /// [`proxima_core::Engine::get_memories`].
@@ -102,7 +102,7 @@ pub use proxima_core::storage_ports::{
     CitedBlobIntegrityMismatch, CitedBlobMissingObject, CitedBlobOwnerMissingObject,
     CitedBlobOwnerReconcileOutcome, CitedBlobOwnerReconcilePort, CitedBlobOwnerReconcileService,
     CitedBlobReadError, CitedBlobReadPort, CitedBlobReadService, CitedBlobReconcileOutcome,
-    MAX_RECONCILE_SAMPLE, VerifiedCitedBlob,
+    HostStateReply, HostStateReplyKind, HostStateRequest, MAX_RECONCILE_SAMPLE, VerifiedCitedBlob,
 };
 pub use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 pub use proxima_core::verbs::fact_ingest::{
@@ -131,6 +131,9 @@ pub use proxima_core::{
 /// depending only on `proxima` cannot write a typed signature or match
 /// [`McpToolOrigin`]. `CoreToolInfo` stays the projected list DTO.
 pub use proxima_core::{McpToolDescriptor, McpToolOrigin};
+/// Startup-registered participant that runs host-owned state SQL on the
+/// [`crate::UnitOfWork`] transaction. Host API only; Flavor SDK does not export it.
+pub use proxima_storage_pg::PgHostStateParticipant;
 /// The Postgres pool and query-tuning blocks.
 ///
 /// Both are nameable from the host facade and have programmatic builder

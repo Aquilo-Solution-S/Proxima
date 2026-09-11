@@ -65,6 +65,7 @@ pub mod verbs;
 pub use access::PgOwnerAccessResolver;
 pub use delegated_authority::PgDelegationStore;
 pub use pool_config::PgPoolConfig;
+pub use ports::PgHostStateParticipant;
 pub use sidecars::{
     PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, core_pg_sidecars,
     register_core_pg_sidecars,
@@ -1439,6 +1440,11 @@ pub struct PgStorage {
     tuning: PgTuning,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
     cold: Arc<dyn proxima_core::ColdObjectStore>,
+    /// Optional host-state participant invoked on the write-session
+    /// transaction. `None` keeps existing
+    /// [`proxima_core::engine::UnitOfWork`] Fact behavior with no extra
+    /// configuration.
+    host_state: Option<Arc<dyn crate::PgHostStateParticipant>>,
 }
 
 impl std::fmt::Debug for PgStorage {
@@ -1597,7 +1603,21 @@ impl PgStorage {
             tuning,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
             cold: Arc::new(verbs::forget::MemoryColdStore::default()),
+            host_state: None,
         })
+    }
+
+    /// Register the host-state participant that runs on each write session's
+    /// live transaction. Hosts that register none keep the existing
+    /// [`proxima_core::engine::UnitOfWork`] Fact path with no extra
+    /// configuration.
+    #[must_use]
+    pub fn with_host_state_participant(
+        mut self,
+        participant: Arc<dyn crate::PgHostStateParticipant>,
+    ) -> Self {
+        self.host_state = Some(participant);
+        self
     }
 
     /// Replace the forget/hydrate object store (S3 in the host).

@@ -707,7 +707,21 @@ unit.commit().await?;
 `Engine::ingest_fact(&authz, request)` and `Engine::create_goal(&authz, request)`
 use the same requests for standalone writes. Destination authorization precedes
 admission; a multi-owner context retains its readable target set. Dropping an
-uncommitted unit rolls back its Facts, derived rows, Goals, and sidecars.
+uncommitted unit rolls back its Facts, derived rows, Goals, sidecars, and any
+host-state rows written through `UnitOfWork::apply_host_state`.
+
+Host-state participation is **not** Flavor SDK. Flavor handlers do not receive
+raw SQL, a transaction, or a generic state-administration tool. An embedding
+host registers a `PgHostStateParticipant` at boot (`Proxima::host_state_participant`
+/ `RuntimeBuilder::host_state_participant`) and declares the tables on
+`FlavorContract.state_surfaces`. The engine authorizes the destination owner,
+refuses undeclared tables and unregistered participants before mutation, and
+runs the command on the same backend transaction as Fact ingest. Hosts that
+register no participant keep the existing UnitOfWork Fact path with no extra
+configuration. Do not hold the unit open across broker or provider network I/O.
+A participant error after its SQL has succeeded poisons the unit: `commit`
+refuses and drop rolls every participant back. `AppContext::clone_pool_for_host`
+remains a different pool and is not this path.
 
 ## Deriving Abstractions
 
@@ -999,7 +1013,7 @@ Tool contract:
 | Args | `Deserialize + JsonSchema` |
 | Output | `Serialize + JsonSchema` |
 | Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional `ToolCaller`, optional caller Self Perspective, optional Engine, typed ToolServices |
-| Storage | tools: Engine + `FlavorServices` store. Host extra-table: `AppContext::{clone_pool_for_host, pg_tuning_for_host}`, wrap immediately. No `proxima_core.*` SQL |
+| Storage | tools: Engine + `FlavorServices` store. Host extra-table: `AppContext::{clone_pool_for_host, pg_tuning_for_host}`, wrap immediately. Atomic host-state with Facts: Host API `UnitOfWork::apply_host_state` only. No `proxima_core.*` SQL |
 | Writes | emit typed Facts / A/P / Goals through registered schemas; no tool writes an edge |
 
 MCP JSON is protocol boundary only. Flavor SDK tool code targets `Tool`;

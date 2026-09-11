@@ -15,6 +15,7 @@ mod embeddings;
 mod fact;
 mod goals;
 mod handles;
+mod host_state;
 mod mcp;
 mod memory;
 mod owner_inverse;
@@ -66,6 +67,9 @@ pub use handles::{
     MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
     OwnerEraseAuthorityHandle, OwnerInverseHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
     RegistryProjectionHandle, SourceCursorHandle, WriteSessionFactoryHandle,
+};
+pub use host_state::{
+    HostStateCommand, HostStateOutcome, HostStateReply, HostStateReplyKind, HostStateRequest,
 };
 pub use mcp::McpCallReadPort;
 pub use memory::{

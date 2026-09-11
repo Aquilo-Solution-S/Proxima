@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use proxima_core::storage_ports::{
-    OwnerWritePermit, SidecarSessionRead, WriteSession, WriteSessionFactory,
+    HostStateReply, HostStateRequest, OwnerWritePermit, SidecarSessionRead, WriteSession,
+    WriteSessionFactory,
 };
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
 use proxima_core::verbs::goal_write::{
@@ -27,6 +28,7 @@ struct PgWriteSession {
     /// reaching back through the storage handle mid-transaction.
     scopes: crate::access::scope_surfaces::ScopeSurfaces,
     cold: Arc<dyn ColdObjectStore>,
+    host_state: Option<Arc<dyn crate::PgHostStateParticipant>>,
 }
 
 #[async_trait::async_trait]
@@ -39,6 +41,7 @@ impl WriteSessionFactory for PgStorage {
             surfaces: self.surfaces.clone(),
             scopes: self.scopes.clone(),
             cold: Arc::clone(&self.cold),
+            host_state: self.host_state.clone(),
         }))
     }
 }
@@ -276,6 +279,32 @@ impl WriteSession for PgWriteSession {
         permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         verbs::goal_write::create_goal_in_tx(&mut self.tx, &self.sidecars, req, permit).await
+    }
+
+    async fn apply_host_state(
+        &mut self,
+        permit: &OwnerWritePermit,
+        request: HostStateRequest,
+    ) -> Result<HostStateReply, StorageError> {
+        let Some(participant) = self.host_state.clone() else {
+            return Err(StorageError::ConstraintViolation(
+                "no host-state participant is registered".into(),
+            ));
+        };
+        if participant.participant_id() != request.participant_id() {
+            return Err(StorageError::ConstraintViolation(format!(
+                "host-state participant {} is not registered",
+                request.participant_id()
+            )));
+        }
+        for table in request.tables() {
+            if !participant.declared_tables().contains(table) {
+                return Err(StorageError::ConstraintViolation(format!(
+                    "host-state command names {table}, which this participant does not declare"
+                )));
+            }
+        }
+        participant.apply(&mut self.tx, permit, request).await
     }
 
     async fn forget_memory(

@@ -640,6 +640,23 @@ impl FlavorRegistryFrozen {
             .find(|contract| contract.flavor_id == flavor_id)
     }
 
+    /// Whether `table` is a host-owned [`crate::FlavorContract::state_surfaces`]
+    /// binding.
+    ///
+    /// Host-state commands may only name non-core flavor state tables.
+    /// Memory sidecars, kernel surfaces, flavor #0 state (Goals, wake, …),
+    /// and undeclared names are not bindings.
+    #[must_use]
+    pub fn is_declared_state_surface(&self, table: &str) -> bool {
+        self.contracts.iter().any(|contract| {
+            !contract.is_core()
+                && contract
+                    .state_surfaces
+                    .iter()
+                    .any(|surface| surface.table == table)
+        })
+    }
+
     /// Memory sidecar tables whose rows stay with the SOURCE owner on
     /// transfer — [`crate::flavor::TransferRule::RetainAtSource`], the
     /// declaration that replaces `pg_sidecar!(owner_pinned: true)` as the

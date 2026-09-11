@@ -103,7 +103,8 @@ follow.
 | Tier | Import | Surface |
 |---|---|---|
 | Host API | `use proxima::{Proxima, RuntimeBuilder, Engine, AuthzContext};` | boot/migrate/serve/query |
-| Host extra-table | `AppContext::{clone_pool_for_host, pg_tuning_for_host}` | wrap the pool + resolved query policy in a flavor store inside `FlavorApp::services`; tools see the store, never the pool |
+| Host extra-table | `AppContext::{clone_pool_for_host, pg_tuning_for_host}` | wrap the pool + resolved query policy in a flavor store inside `FlavorApp::services`; tools see the store, never the pool. Second connection — not atomic with a UnitOfWork Fact |
+| Host-state in UnitOfWork | `UnitOfWork::apply_host_state`, `PgHostStateParticipant` | startup-registered typed commands on the live write-session transaction; `state_surfaces` + owner write-gate; Host API only |
 | Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, Tool};` | schemas, reference declarations, sidecars, tools. No `PgPool` |
 
 Root `proxima::*` is host-facing. Flavor authoring imports live under
