@@ -5,7 +5,10 @@ use super::memory_authoring::PreparedDerived;
 use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
-use crate::storage_ports::{SidecarSessionRead, WriteSession};
+use crate::storage_ports::{
+    HostStateCommand, HostStateOutcome, HostStateReplyKind, HostStateRequest, SidecarSessionRead,
+    WriteSession,
+};
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 use crate::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalCreateRequest, GoalDraft, GoalReplayRequest, GoalWriteOutcome,
@@ -113,14 +116,22 @@ impl<'a, P: FactPayload> FactWrite<'a, P> {
 /// and embedding run before persistence; automatic natural-key selection
 /// runs inside the storage transaction.
 /// [`crate::storage_ports::WriteSessionFactory::begin`] happens on the first
-/// write, advisory lock, or forget. A multi-derived batch
+/// write, advisory lock, forget, or host-state command. A multi-derived batch
 /// ([`Self::derive_memories`]) embeds every text before that begin, so
 /// a file of N chunks does not hold a pool slot across N provider RTTs.
+///
+/// Host-state commands ([`Self::apply_host_state`]) run on the same
+/// transaction as Fact writes. Do not hold the unit open across broker or
+/// provider network I/O. A participant error poisons the unit: later writes
+/// fail and [`Self::commit`] refuses so a partial host operation cannot land.
 pub struct UnitOfWork<'a> {
     engine: &'a Engine,
     authz: &'a AuthzContext,
     session: Option<Box<dyn WriteSession>>,
     committed: bool,
+    /// Set when a host-state participant returns a storage error after the
+    /// session opened. Commit is then refused and drop rolls the unit back.
+    poisoned: bool,
     /// Memory `t`s written in this transaction. Later writes may cite them
     /// before commit; `authorize_entry_read` only sees committed rows.
     written: Vec<MemoryId>,
@@ -135,6 +146,7 @@ impl std::fmt::Debug for UnitOfWork<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UnitOfWork")
             .field("committed", &self.committed)
+            .field("poisoned", &self.poisoned)
             .field("open", &self.session.is_some())
             .finish_non_exhaustive()
     }
@@ -158,6 +170,7 @@ impl Engine {
             authz,
             session: None,
             committed: false,
+            poisoned: false,
             written: Vec::new(),
             written_kinds: Vec::new(),
             written_owners: Vec::new(),
@@ -184,6 +197,11 @@ impl UnitOfWork<'_> {
     async fn ensure_session(&mut self) -> Result<&mut Box<dyn WriteSession>, ProtocolError> {
         if self.committed {
             return Err(ProtocolError::internal("unit of work already committed"));
+        }
+        if self.poisoned {
+            return Err(ProtocolError::internal(
+                "unit of work failed after a host-state error; drop it or call commit to abort",
+            ));
         }
         if self.session.is_none() {
             let session = self
@@ -353,6 +371,93 @@ impl UnitOfWork<'_> {
             )
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))
+    }
+
+    /// Execute a typed, authorized host-owned state operation on this unit's
+    /// existing write session.
+    ///
+    /// Owner authority is resolved through the same write gate as Fact
+    /// ingest. Declared tables must be [`crate::FlavorContract::state_surfaces`]
+    /// bindings; unregistered participants and invalid bindings are refused
+    /// before mutation. The Postgres backend then runs the command on the
+    /// live transaction — host ops may run before or after a Fact write and
+    /// see this unit's uncommitted rows. Other connections do not.
+    ///
+    /// Do not hold the unit open across broker or provider network I/O.
+    ///
+    /// # Errors
+    ///
+    /// Authorization, undeclared state-surface bindings, unregistered
+    /// participants, or storage faults. A participant error poisons the
+    /// unit: further writes fail and [`Self::commit`] refuses.
+    pub async fn apply_host_state<C: HostStateCommand>(
+        &mut self,
+        command: C,
+    ) -> Result<HostStateOutcome<C::Outcome>, ProtocolError> {
+        if C::TABLES.is_empty() {
+            return Err(ProtocolError::invalid_argument(
+                "host_state",
+                "host-state command declares no state surfaces",
+            ));
+        }
+        let owner = command.owner();
+        let permit = self
+            .engine
+            .authorize_write(self.authz, &owner, Relation::Editor)
+            .await?;
+        self.engine
+            .validate_write_permit(permit.owner_write_permit())?;
+        for table in C::TABLES {
+            if !self.engine.registry().is_declared_state_surface(table) {
+                return Err(ProtocolError::invalid_argument(
+                    "host_state",
+                    format!(
+                        "table {table} is not a declared FlavorContract.state_surfaces binding"
+                    ),
+                ));
+            }
+        }
+        let request = HostStateRequest::from_command(command);
+        self.ensure_session().await?;
+        // Poison after the session is live, before dispatch, so a cancelled
+        // await after participant SQL cannot be followed by a silent commit.
+        self.poisoned = true;
+        let dispatched = {
+            let session = self.session.as_mut().ok_or_else(|| {
+                ProtocolError::internal("unit of work session missing after begin")
+            })?;
+            session
+                .apply_host_state(permit.owner_write_permit(), request)
+                .await
+        };
+        let reply = match dispatched {
+            Ok(reply) => {
+                self.poisoned = false;
+                reply
+            }
+            Err(err) => {
+                return Err(super::errors::map_write_storage_error(
+                    err,
+                    "host_state",
+                    "host-state participant not registered",
+                ));
+            }
+        };
+        match reply.downcast::<C::Outcome>() {
+            Ok((kind, value)) => Ok(match kind {
+                HostStateReplyKind::Permitted => HostStateOutcome::Permitted(value),
+                HostStateReplyKind::AlreadyApplied => HostStateOutcome::AlreadyApplied(value),
+                HostStateReplyKind::Refused => HostStateOutcome::Refused(value),
+            }),
+            Err(err) => {
+                self.poisoned = true;
+                Err(super::errors::map_write_storage_error(
+                    err,
+                    "host_state",
+                    "host-state participant not registered",
+                ))
+            }
+        }
     }
 
     /// Persist one typed observation in this transaction.
@@ -653,6 +758,12 @@ impl UnitOfWork<'_> {
     pub async fn commit(mut self) -> Result<(), ProtocolError> {
         if self.committed {
             return Err(ProtocolError::internal("unit of work already committed"));
+        }
+        if self.poisoned {
+            self.session.take();
+            return Err(ProtocolError::internal(
+                "unit of work failed after a host-state error; the transaction was not committed",
+            ));
         }
         self.committed = true;
         let Some(session) = self.session.take() else {

@@ -3,6 +3,7 @@ use proxima_core::{Owner, StorageError};
 
 mod embeddings;
 mod goals;
+mod host_state;
 mod ingest;
 mod memory;
 mod owner_inverse;
@@ -10,6 +11,8 @@ mod owners;
 mod read;
 mod registry;
 mod write_session;
+
+pub use host_state::PgHostStateParticipant;
 
 fn validate_permit_owner(permit: &OwnerWritePermit, owner: &Owner) -> Result<(), StorageError> {
     if permit.owner() == owner {

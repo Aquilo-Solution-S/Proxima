@@ -18,6 +18,7 @@ Import requests from `proxima::flavor` and `Engine` / `AuthzContext` from `proxi
 | Derive a Perspective | `DerivedMemory::perspective(target, owner, text, payload, origins, identity)?` | `derive_memory` on either receiver |
 | Interpret referenced knowledge | `DerivedMemory::interpretation(target, owner, text, payload)` | `derive_memory` on either receiver |
 | Create a typed Goal | `GoalCreateRequest::product(owner, assignment, request_id, title, text, payload)` | `Engine::create_goal(&authz, request)` / `UnitOfWork::create_goal(request)` |
+| Host-owned state in the same unit | typed `HostStateCommand` (host-defined) | `UnitOfWork::apply_host_state(command)` then `commit` |
 
 Standalone operations commit before returning. `engine.unit_of_work(&authz).await?`
 groups writes; `commit().await?` persists them, dropping the unit rolls them back.
@@ -41,7 +42,8 @@ Supported Rust tiers:
 | Tier | Import | Use |
 |---|---|---|
 | Host API | `use proxima::{Proxima, RuntimeBuilder, RuntimeConfig, Engine, CancellationToken, AccessKind, AccessCeiling, OwnerRoles};` | boot composed binaries; call graph/admin/projector verbs through server-resolved `AuthzContext`. `Role::new` / `Role::may_write` / `OwnerRoles::for_subject` name `AccessKind`, `AccessCeiling`, `AccessError`, `OwnerRoles` |
-| Host extra-table | `AppContext::{clone_pool_for_host, pg_tuning_for_host}` | host `FlavorApp::services` only: wrap the pool and resolved query policy in a flavor-owned store immediately. Tools resolve the store via `FlavorServices`. Not Flavor SDK. No `proxima_core.*` SQL |
+| Host extra-table | `AppContext::{clone_pool_for_host, pg_tuning_for_host}` | host `FlavorApp::services` only: wrap the pool and resolved query policy in a flavor-owned store immediately. Tools resolve the store via `FlavorServices`. Not Flavor SDK. No `proxima_core.*` SQL. **Not** the atomic path with Fact writes — that is a second connection |
+| Host-state in UnitOfWork | `UnitOfWork::apply_host_state` + `PgHostStateParticipant` | Host API only. Startup-register a typed participant on `RuntimeBuilder` / `Proxima::host_state_participant`. Owner write-gate first; command tables must be `FlavorContract.state_surfaces`. Same backend transaction as Fact ingest; drop/poisoned commit rolls every participant back. Do not hold the unit open across broker/provider I/O |
 | Host API (REST OpenAPI) | `use proxima::host::build_openapi_document;` | build the complete registry document with the same generator as `/v1/openapi.json` without depending on `proxima-mcp-server` internals; requires feature `rest` |
 | Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorContract, SchemaContract, Surface, FactPayload, pg_sidecar, InlineCitedObjectDraft, InlineCitationMappingDraft, CitationAttachmentRequest};` | build-time schemas, complete contract declarations, payload references, tools, sidecars. Typed citation drafts and the citation-attachment request + `AuthorizedFactWithCitation{,Ref}` are nameable here; `Engine` stays Host API |
 | Flavor SDK (services) | `use proxima::flavor::{FlavorServices, FlavorServiceError};` | return typed services from `FlavorApp::services`; tuple composition rejects duplicate concrete types and shares one set with MCP, REST, and workers |

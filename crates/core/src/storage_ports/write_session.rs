@@ -1,7 +1,7 @@
 //! Backend-owned write session: one transaction, several Engine writes.
 
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, StorageError};
-use crate::storage_ports::OwnerWritePermit;
+use crate::storage_ports::{HostStateReply, HostStateRequest, OwnerWritePermit};
 use crate::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
 use crate::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
@@ -168,6 +168,26 @@ pub trait WriteSession: Send {
         req: &CreateGoalAtomicRequest<'_>,
         permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError>;
+
+    /// Run one startup-registered host-state command on THIS transaction.
+    ///
+    /// The engine authorizes the destination owner and checks that every
+    /// declared table is a [`crate::FlavorContract::state_surfaces`] binding
+    /// before this method is called. The backend then dispatches only to the
+    /// participant registered at boot, on the same `Transaction` it already
+    /// holds — no second pooled connection, no independent BEGIN/COMMIT, and
+    /// no transaction handle is returned.
+    ///
+    /// # Errors
+    ///
+    /// `ConstraintViolation` when no participant is registered, when the
+    /// command's participant id does not match, or when a declared table is
+    /// not owned by that participant. Storage errors from the participant.
+    async fn apply_host_state(
+        &mut self,
+        permit: &OwnerWritePermit,
+        request: HostStateRequest,
+    ) -> Result<HostStateReply, StorageError>;
 
     async fn commit(self: Box<Self>) -> Result<(), StorageError>;
 }

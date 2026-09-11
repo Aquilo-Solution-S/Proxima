@@ -23,7 +23,9 @@
 //!   not expose raw `PgPool`, raw storage verbs, or proofless append helpers.
 //!   Host extra-table wiring uses [`AppContext::clone_pool_for_host`] plus
 //!   [`AppContext::pg_tuning_for_host`] inside [`FlavorApp::services`] and
-//!   wraps them immediately.
+//!   wraps them immediately. Atomic host-state with Fact writes uses
+//!   [`crate::UnitOfWork::apply_host_state`] on a startup-registered
+//!   [`crate::PgHostStateParticipant`], not the extra-table pool.
 //!   Flavor crates should avoid direct `proxima-core` / `proxima-storage-pg`
 //!   dependencies except backend-owned adapters explicitly outside the stable
 //!   SDK boundary.
@@ -161,6 +163,7 @@ pub struct ProximaBuilder {
     publication: proxima_core::publication::PublicationConfig,
     pg_pool_config: Option<proxima_storage_pg::PgPoolConfig>,
     pg_tuning: Option<proxima_storage_pg::PgTuning>,
+    host_state_participant: Option<Arc<dyn proxima_storage_pg::PgHostStateParticipant>>,
 }
 
 impl std::fmt::Debug for ProximaBuilder {
@@ -178,6 +181,10 @@ impl std::fmt::Debug for ProximaBuilder {
             .field("publication", &self.publication)
             .field("pg_pool_config", &self.pg_pool_config)
             .field("pg_tuning", &self.pg_tuning)
+            .field(
+                "has_host_state_participant",
+                &self.host_state_participant.is_some(),
+            )
             .finish()
     }
 }
@@ -276,6 +283,7 @@ impl ProximaBuilder {
             publication: proxima_core::publication::PublicationConfig::default(),
             pg_pool_config: None,
             pg_tuning: None,
+            host_state_participant: None,
         }
     }
 
@@ -403,6 +411,17 @@ impl ProximaBuilder {
         self
     }
 
+    /// Register a typed host-state participant on each [`crate::UnitOfWork`]
+    /// write session. Hosts that register none keep existing Fact behavior.
+    #[must_use]
+    pub fn host_state_participant(
+        mut self,
+        participant: Arc<dyn proxima_storage_pg::PgHostStateParticipant>,
+    ) -> Self {
+        self.host_state_participant = Some(participant);
+        self
+    }
+
     /// Connect, migrate, compose, and start the embedded engine.
     ///
     /// # Errors
@@ -425,9 +444,10 @@ impl ProximaBuilder {
             publication,
             pg_pool_config,
             pg_tuning,
+            host_state_participant,
         } = self;
 
-        let pg = connect_and_migrate(
+        let mut pg = connect_and_migrate(
             &config.database_url,
             pg_pool_config,
             pg_tuning,
@@ -435,6 +455,9 @@ impl ProximaBuilder {
             skip_migrations,
         )
         .await?;
+        if let Some(participant) = host_state_participant {
+            pg = pg.with_host_state_participant(participant);
+        }
 
         let registry = compose_registry(registers)?;
         let pg_sidecars = compose_pg_sidecars(&pg, &registry, pg_sidecar_registers).await?;

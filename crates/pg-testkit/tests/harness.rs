@@ -97,27 +97,63 @@ async fn uuid_v7_now_is_not_swept_as_untracked_grace() {
     drop_db(&name).await.expect("cleanup");
 }
 
+async fn datnames_like(pattern: &str) -> Vec<String> {
+    let mut conn = PgConnection::connect(&admin_url())
+        .await
+        .expect("admin connect");
+    let names = sqlx::query_scalar::<_, String>(
+        "SELECT datname FROM pg_database
+         WHERE datname LIKE $1 ESCAPE '\\'
+         ORDER BY datname",
+    )
+    .bind(pattern)
+    .fetch_all(&mut conn)
+    .await
+    .expect("list databases");
+    conn.close().await.expect("close");
+    names
+}
+
+fn unique_template(prefix: &str) -> String {
+    format!("{prefix}{:016x}", Uuid::now_v7().as_u64_pair().0)
+}
+
 #[tokio::test]
 async fn ensure_template_drops_other_hashes_in_the_family() {
-    let keep = "proxima_tmpl_core_aaaaaaaaaaaaaaaa";
-    let stale = "proxima_tmpl_core_bbbbbbbbbbbbbbbb";
-    let other_family = "proxima_tmpl_code_cccccccccccccccc";
-    create_db(keep).await.expect("keep");
-    create_db(stale).await.expect("stale");
-    create_db(other_family).await.expect("other family");
+    // `keep` must be a hash the rest of the workspace will also treat as
+    // current. A planted `proxima_tmpl_core_aaa…` is dropped the moment a
+    // parallel test calls `ensure_template` with the live core fingerprint.
+    let stale = unique_template("proxima_tmpl_core_");
+    let other_family = unique_template("proxima_tmpl_code_");
+    create_db(&stale).await.expect("stale");
+    create_db(&other_family).await.expect("other family");
 
-    ensure_template(keep, |_| async { Ok(()) })
+    let existing_core = datnames_like(r"proxima\_tmpl\_core\_%")
+        .await
+        .into_iter()
+        .find(|name| name != &stale);
+    let (keep, created_keep) = if let Some(name) = existing_core {
+        (name, false)
+    } else {
+        let name = unique_template("proxima_tmpl_core_");
+        create_db(&name).await.expect("keep");
+        (name, true)
+    };
+
+    ensure_template(&keep, |_| async { Ok(()) })
         .await
         .expect("reuse keep");
 
-    assert!(exists(keep).await, "current hash must remain");
-    assert!(!exists(stale).await, "sibling core hash must be dropped");
+    assert!(exists(&keep).await, "current hash must remain");
+    assert!(!exists(&stale).await, "sibling core hash must be dropped");
     assert!(
-        exists(other_family).await,
+        exists(&other_family).await,
         "code templates are a different family"
     );
 
-    drop_db(keep).await.expect("cleanup keep");
-    drop_db(other_family).await.expect("cleanup other");
-    let _ = drop_stale_templates(keep).await;
+    if created_keep {
+        drop_db(&keep).await.expect("cleanup keep");
+    }
+    drop_db(&other_family).await.expect("cleanup other");
+    let _ = drop_stale_templates(&keep).await;
 }

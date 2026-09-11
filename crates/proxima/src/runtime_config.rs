@@ -9,7 +9,7 @@ use proxima_core::{
     RevalidationConfig, ToolScope, is_loopback_host,
 };
 use proxima_mcp_server::ResourceServerMetadata;
-use proxima_storage_pg::{PgPoolConfig, PgTuning};
+use proxima_storage_pg::{PgHostStateParticipant, PgPoolConfig, PgTuning};
 
 use crate::EmbedError;
 use crate::config::{
@@ -49,6 +49,7 @@ pub struct RuntimeBuilder {
     published_retention: Option<Duration>,
     #[cfg(feature = "outbox-nats")]
     nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
+    host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
 }
 
 impl std::fmt::Debug for RuntimeBuilder {
@@ -76,6 +77,10 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .field("publication", &self.publication)
             .field("published_retention", &self.published_retention)
+            .field(
+                "has_host_state_participant",
+                &self.host_state_participant.is_some(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -110,6 +115,7 @@ impl RuntimeBuilder {
             published_retention: self.published_retention.or(base.published_retention),
             #[cfg(feature = "outbox-nats")]
             nats: self.nats.or(base.nats),
+            host_state_participant: self.host_state_participant.or(base.host_state_participant),
         }
     }
 
@@ -176,6 +182,15 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn nats(mut self, nats: proxima_outbox_nats::NatsPublisherConfig) -> Self {
         self.nats = Some(nats);
+        self
+    }
+
+    /// Register a typed host-state participant on the [`crate::UnitOfWork`]
+    /// write session. Hosts that register none keep existing Fact/sidecar/lock
+    /// behavior with no extra configuration.
+    #[must_use]
+    pub fn host_state_participant(mut self, participant: Arc<dyn PgHostStateParticipant>) -> Self {
+        self.host_state_participant = Some(participant);
         self
     }
 
@@ -483,6 +498,7 @@ impl RuntimeBuilder {
         let parts = RuntimeParts {
             authenticator: self.authenticator,
             embed_client: self.embed_client,
+            host_state_participant: self.host_state_participant,
         };
         let pg_pool_config = self.pg_pool_config.unwrap_or_default();
         let publication = self.publication.unwrap_or_default();
@@ -719,6 +735,7 @@ pub struct McpSettings {
 pub struct RuntimeParts {
     pub authenticator: Option<Arc<dyn Authenticator>>,
     pub embed_client: Option<Arc<dyn EmbeddingClient>>,
+    pub host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
 }
 
 impl std::fmt::Debug for RuntimeParts {
@@ -726,6 +743,10 @@ impl std::fmt::Debug for RuntimeParts {
         f.debug_struct("RuntimeParts")
             .field("has_authenticator", &self.authenticator.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
+            .field(
+                "has_host_state_participant",
+                &self.host_state_participant.is_some(),
+            )
             .finish()
     }
 }
