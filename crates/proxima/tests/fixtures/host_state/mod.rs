@@ -3,6 +3,8 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use tokio::sync::Notify;
+
 use async_trait::async_trait;
 use proxima::flavor::{
     CounterRule, EraseRule, ExportRule, FlavorBundle, FlavorContract, FlavorRegistry,
@@ -184,12 +186,34 @@ impl HostStateCommand for UnknownParticipantCommand {
     }
 }
 
-#[derive(Debug, Default)]
 #[allow(clippy::struct_field_names)]
 pub struct HostFixtureParticipant {
     pub fail_before_sql: AtomicBool,
     pub fail_after_sql: AtomicBool,
     pub hang_after_sql: AtomicBool,
+    sql_completed: Notify,
+}
+
+impl Default for HostFixtureParticipant {
+    fn default() -> Self {
+        Self {
+            fail_before_sql: AtomicBool::new(false),
+            fail_after_sql: AtomicBool::new(false),
+            hang_after_sql: AtomicBool::new(false),
+            sql_completed: Notify::new(),
+        }
+    }
+}
+
+impl std::fmt::Debug for HostFixtureParticipant {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HostFixtureParticipant")
+            .field("fail_before_sql", &self.fail_before_sql)
+            .field("fail_after_sql", &self.fail_after_sql)
+            .field("hang_after_sql", &self.hang_after_sql)
+            .finish_non_exhaustive()
+    }
 }
 
 impl HostFixtureParticipant {
@@ -203,6 +227,12 @@ impl HostFixtureParticipant {
 
     pub fn arm_hang_after_sql(&self) {
         self.hang_after_sql.store(true, Ordering::SeqCst);
+    }
+
+    /// Subscribe before `apply_host_state`. Completes after host SQL on this
+    /// unit has succeeded and before the optional hang.
+    pub fn sql_completed(&self) -> tokio::sync::futures::Notified<'_> {
+        self.sql_completed.notified()
     }
 }
 
@@ -240,6 +270,7 @@ impl PgHostStateParticipant for HostFixtureParticipant {
             ));
         }
         if self.hang_after_sql.swap(false, Ordering::SeqCst) {
+            self.sql_completed.notify_waiters();
             #[allow(clippy::infinite_loop)]
             loop {
                 tokio::time::sleep(std::time::Duration::from_hours(1)).await;

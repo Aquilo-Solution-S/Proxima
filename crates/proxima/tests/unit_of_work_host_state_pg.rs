@@ -17,7 +17,6 @@ use proxima_core::{AgentNoteV1, Owner, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use sqlx::PgPool;
 use std::sync::Arc;
-use std::time::Duration;
 use uuid::Uuid;
 
 struct EmptyApp;
@@ -765,14 +764,16 @@ async fn cancelled_host_op_after_sql_cannot_commit() {
                 &note("cancel"),
             ))
             .await?;
+        let sql_completed = participant.sql_completed();
         tokio::select! {
+            biased;
+            () = sql_completed => {}
             result = uow.apply_host_state(FixtureHostCommand::Create {
                 owner,
                 invocation_id: fact.memory_id,
             }) => {
                 panic!("hanging host command completed: {result:?}");
             }
-            () = tokio::time::sleep(Duration::from_millis(200)) => {}
         }
         let err = uow
             .commit()
