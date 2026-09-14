@@ -41,7 +41,7 @@ jobs:
           fi
       - name: install git-cliff
         # taiki-e/install-action@v2
-        uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419
+        uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af
         with:
           tool: git-cliff@2.13.1
       - name: generate release notes
