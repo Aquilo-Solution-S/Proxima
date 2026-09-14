@@ -89,6 +89,7 @@ Canonical substrate resources:
 | Resource | Contract |
 |---|---|
 | `proxima://schemas{?kind}` | registered payload schemas |
+| `proxima://schema/{schema_id}/{schema_version}` | one registered JSON Schema plus kind and `listenable`; schema ID may contain `/`, version is the final path segment |
 | `proxima://tools` | live tool catalog |
 | `proxima://graph` | graph snapshot and status fields |
 | `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |

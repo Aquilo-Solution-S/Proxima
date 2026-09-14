@@ -345,7 +345,15 @@ impl ReferenceConsumer {
 /// It keeps an id — derived from the subject and the bytes — so the intake
 /// still has a stable dedup key for a message it cannot understand.
 fn malformed_envelope(subject: &str, raw: &Bytes, error: &serde_json::Error) -> CloudEventEnvelope {
-    let digest = blake3::hash(raw);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(
+        &u64::try_from(subject.len())
+            .expect("subject length must fit in the digest framing")
+            .to_be_bytes(),
+    );
+    hasher.update(subject.as_bytes());
+    hasher.update(raw);
+    let digest = hasher.finalize();
     CloudEventEnvelope {
         specversion: String::new(),
         id: format!("malformed:{}", &digest.to_hex()[..32]),
@@ -406,5 +414,28 @@ mod tests {
         let second = malformed_envelope("proxima.fact.x", &raw, &error);
         assert_eq!(first.id, second.id);
         assert!(first.id.starts_with("malformed:"));
+    }
+
+    #[test]
+    fn malformed_dedup_keys_include_the_subject() {
+        let raw = Bytes::from_static(b"not json at all");
+        let error = serde_json::from_slice::<CloudEventEnvelope>(&raw).expect_err("not json");
+        let first = malformed_envelope("proxima.fact.x", &raw, &error);
+        let error = serde_json::from_slice::<CloudEventEnvelope>(&raw).expect_err("not json");
+        let second = malformed_envelope("proxima.fact.y", &raw, &error);
+        assert_ne!(first.id, second.id);
+    }
+
+    #[test]
+    fn malformed_dedup_keys_frame_subject_before_bytes() {
+        let first_raw = Bytes::from_static(b"bc");
+        let second_raw = Bytes::from_static(b"c");
+        let first_error =
+            serde_json::from_slice::<CloudEventEnvelope>(&first_raw).expect_err("not json");
+        let second_error =
+            serde_json::from_slice::<CloudEventEnvelope>(&second_raw).expect_err("not json");
+        let first = malformed_envelope("a", &first_raw, &first_error);
+        let second = malformed_envelope("ab", &second_raw, &second_error);
+        assert_ne!(first.id, second.id);
     }
 }

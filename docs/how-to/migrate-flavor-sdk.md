@@ -1,7 +1,24 @@
 # Migrate the Flavor SDK
 
-Rust source changes. Existing database migrations, payload key bytes, and
-served MCP/REST tool schemas remain unchanged.
+## v0.0.12
+
+Pin all Proxima Rust dependencies to the same `v0.0.12` tag. Cargo package
+versions remain unpublished; MCP initialization and REST OpenAPI report `0.0.12`.
+
+| Surface | Upgrade |
+|---|---|
+| Database | Normal facade boot applies additive core migration `0011_v012_fact_outbox.sql`; no reset of a compatible v0.0.11 database. See [migration policy](migrations.md#v0012). |
+| Cold operations (breaking behavior) | Database-only facade hosts no longer use in-memory cold storage. Configure durable S3 for forget/hydration; unavailable storage preserves hot data and pending external purge debts. Hot ingest/query remain available. See [S3 configuration](../10-configuration.md). |
+| Split Fact authorization/persistence (breaking Rust API) | Supply sidecars to `authorize_fact_ingest*`; the authorized value now owns them. Remove the sidecar argument from Engine/`FactIngestPort` `ingest_fact_with_*typed_sidecar` calls and `WriteSession::ingest_fact_with_typed_sidecar`. Backend implementations read `authorized.sidecar_payloads()`. |
+| Custom `WriteSession` implementations | Implement `apply_host_state`; unsupported backends must refuse before mutation. PostgreSQL hosts register typed participants with `ProximaBuilder::host_state_participant`. See [transactional host state](../reference/public-api.md#supported-tiers). |
+| Typed flavor writes | `ingest_fact(FactWrite::new(...))` and UoW `ingest_fact` retain their entry points. |
+| Fact outbox (opt-in) | `FactPayload::LISTENABLE = true` requires a publication source at facade boot (`PROXIMA_PUBLICATION_SOURCE` or builder configuration). Capture is atomic with admission; without NATS configuration, records remain pending. Enable the host `nats` feature and configure the deployment-owned broker topology to deliver them. See [setup](fact-outbox.md). |
+| MCP/REST schemas | Schema projections add `listenable`; `proxima://schema/{schema_id}/{schema_version}` resolves one registered JSON Schema. Existing tool names remain. |
+
+## v0.0.11
+
+Rust source changes for v0.0.11. Existing database migrations, payload key
+bytes, and served MCP/REST tool schemas were unchanged by that SDK overhaul.
 
 | Previous Rust API | Replacement |
 |---|---|

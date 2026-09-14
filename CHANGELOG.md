@@ -12,7 +12,7 @@ scripts/changelog.sh
 Pass a tag to preview the unreleased commits under that version:
 
 ```sh
-scripts/changelog.sh v0.0.11
+scripts/changelog.sh v0.0.12
 ```
 
 Before tagging a release:
@@ -27,6 +27,6 @@ Before tagging a release:
 4. Tag the verified `main` commit. The release workflow refuses a tag that differs
    from `v${RELEASE_VERSION}`.
 
-The v0.0.11 Rust SDK changes are documented in the
-[migration guide](docs/how-to/migrate-flavor-sdk.md). Existing database migrations
-and served MCP/REST tool schemas are unchanged by that SDK overhaul.
+Upgrade guidance: [v0.0.12 SDK and runtime changes](docs/how-to/migrate-flavor-sdk.md#v0012),
+[additive database migration](docs/how-to/migrations.md#v0012), and
+[Fact outbox setup](docs/how-to/fact-outbox.md).

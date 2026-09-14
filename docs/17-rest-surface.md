@@ -81,6 +81,7 @@ parser.
 | REST | Engine URI |
 |---|---|
 | `GET /v1/resources/schemas?kind=fact` | `proxima://schemas?kind=fact` |
+| `GET /v1/resources/schema/{schema_id}/{schema_version}` | `proxima://schema/{schema_id}/{schema_version}`; schema ID may contain `/`, version is the final path segment |
 | `GET /v1/resources/tools` | `proxima://tools` |
 | `GET /v1/resources/graph` | `proxima://graph` |
 | `GET /v1/resources/memory/F:{uuid}?expand_neighbors=true` | `proxima://memory/F:{uuid}?expand_neighbors=true` |
