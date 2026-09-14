@@ -13,6 +13,17 @@ for core, one dated `_v0XY_` file per flavor — never several, never edited
 after the tag. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.12
+
+| Lane | Migration |
+|---|---|
+| Core | `0011_v012_fact_outbox.sql`: publication state enum, transactional Fact outbox, claim index, immutable-envelope guards |
+| Code flavor | No new migration |
+
+Normal facade boot applies pending migrations automatically. A compatible
+v0.0.11 database upgrades in place; fresh installs replay the embedded files
+in order. Previously shipped migration bytes remain unchanged.
+
 ## Rules
 
 1. **A version number is never reused** on a database you do not personally own.
