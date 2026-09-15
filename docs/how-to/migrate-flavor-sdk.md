@@ -1,5 +1,16 @@
 # Migrate the Flavor SDK
 
+## v0.0.13
+
+Pin all Proxima Rust dependencies to the same `v0.0.13` tag. Cargo package
+versions remain unpublished; MCP initialization and REST OpenAPI report `0.0.13`.
+
+| Surface | Upgrade |
+|---|---|
+| Database | No core or flavor migration ships in v0.0.13. Existing v0.0.12 databases remain compatible and boot without a reset. |
+| Forwarder hosts | A trusted subject may act for a selected Group owner per request. The host resolves that Group role through `OwnerAccessPort::resolve_group_role`; the caller still selects only the owner. Existing ports retain the eager role-map default, while the shipped Postgres runtime resolves one missing Group per request. |
+| Wire contract | No MCP or REST wire change. Existing owner selection and server-resolved authorization rules remain in force. |
+
 ## v0.0.12
 
 Pin all Proxima Rust dependencies to the same `v0.0.12` tag. Cargo package

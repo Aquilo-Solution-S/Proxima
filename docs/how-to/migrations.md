@@ -13,6 +13,11 @@ for core, one dated `_v0XY_` file per flavor — never several, never edited
 after the tag. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.13
+
+No core or flavor migration ships in this release. Existing v0.0.12 databases
+remain compatible and require no reset.
+
 ## v0.0.12
 
 | Lane | Migration |
