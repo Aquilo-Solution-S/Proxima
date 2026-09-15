@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use tokio::time::{Instant, Interval, Sleep};
 
-use crate::access::{AccessKind, OwnerRoles};
+use crate::access::{AccessKind, OwnerRoles, Role};
 use crate::auth::{AuthError, Credentials};
 use crate::error::ProtocolError;
 use crate::{Owner, OwnerRef, UserId};
@@ -578,17 +578,51 @@ impl AuthzContext {
     }
 
     #[must_use]
-    pub fn narrowed_to_owner(mut self, owner: OwnerRef) -> Option<Self> {
-        let roles = self.owner_roles.as_ref()?;
-        let subject = roles.subject();
+    pub fn narrowed_to_owner(self, owner: OwnerRef) -> Option<Self> {
+        let group_role = match owner {
+            OwnerRef::Group(_) => Some(self.owner_roles.as_ref()?.role_for(&owner)?),
+            OwnerRef::Personal(_) => None,
+        };
+        self.narrowed_with_resolved_role(owner, group_role)
+    }
+
+    /// [`Self::narrowed_to_owner`] against a role the host resolved for this
+    /// one `(subject, owner)` pair instead of out of the eager role map.
+    ///
+    /// Same result, same invariants: the context must already be
+    /// host-resolved, a Personal owner must still be the subject's own and
+    /// still narrows to [`Role::personal`](crate::access::Role::personal)
+    /// (Personal access is a kernel rule, never a membership row, so `role`
+    /// is consulted for [`OwnerRef::Group`] owners only), and
+    /// `accessible_principals` is recomputed from the narrowed roles.
+    ///
+    /// `role` MUST come from an
+    /// [`OwnerAccessPort`](crate::access::OwnerAccessPort) resolution. It is
+    /// the same host-resolved currency `narrowed_to_owner` reads out of the
+    /// map, only fetched on demand — a role taken from a request header, a
+    /// tool argument, or any other caller-controlled payload would make the
+    /// caller its own authorizer.
+    #[must_use]
+    pub fn narrowed_to_owner_with_role(self, owner: OwnerRef, role: Role) -> Option<Self> {
+        self.narrowed_with_resolved_role(owner, Some(role))
+    }
+
+    /// Shared narrowing body. `group_role` is `Some` for a Group owner whose
+    /// role the host resolved (eagerly or on demand) and is ignored for a
+    /// Personal owner, which derives [`Role::personal`] from the subject
+    /// match alone.
+    #[must_use]
+    fn narrowed_with_resolved_role(
+        mut self,
+        owner: OwnerRef,
+        group_role: Option<Role>,
+    ) -> Option<Self> {
+        let subject = self.owner_roles.as_ref()?.subject();
         let narrowed_roles = match owner {
             OwnerRef::Personal(user) if user == subject => {
-                OwnerRoles::scoped_to(subject, owner, crate::access::Role::personal())
+                OwnerRoles::scoped_to(subject, owner, Role::personal())
             }
-            OwnerRef::Group(_) => {
-                let role = roles.role_for(&owner)?;
-                OwnerRoles::scoped_to(subject, owner, role)
-            }
+            OwnerRef::Group(_) => OwnerRoles::scoped_to(subject, owner, group_role?),
             OwnerRef::Personal(_) => return None,
         };
         let accessible_principals = narrowed_roles
@@ -983,6 +1017,115 @@ mod tests {
         let writable = ctx.writable_owners(AccessKind::Goal);
         assert!(writable.contains(&OwnerRef::Personal(subject)));
         assert!(!writable.contains(&group));
+    }
+
+    /// The forwarder shape: a subject whose resolved map carries no Group
+    /// at all is still narrowed to one party, on a role the host resolved
+    /// for that party alone. The eager path refuses the same owner, which
+    /// is exactly why the sibling exists.
+    #[test]
+    fn a_host_resolved_role_narrows_to_exactly_that_owner() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let roles = OwnerRoles::for_subject(subject, []).unwrap();
+        let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer);
+
+        assert!(
+            ctx.clone().narrowed_to_owner(group).is_none(),
+            "the eager map has no role for this group"
+        );
+
+        let narrowed = ctx
+            .narrowed_to_owner_with_role(group, Role::editor())
+            .expect("a host-resolved role narrows");
+
+        assert_eq!(narrowed.subject(), Some(subject));
+        assert_eq!(narrowed.auth_path(), AuthPath::HostBearer);
+        assert_eq!(narrowed.role_for_owner(&group), Some(Role::editor()));
+        assert!(narrowed.may_write(&group, AccessKind::Perspective));
+        assert!(!narrowed.may_write(&group, AccessKind::Goal));
+        assert_eq!(
+            narrowed.readable_owners(AccessKind::Goal),
+            vec![group],
+            "the narrowed set is exactly the one party"
+        );
+        assert!(narrowed.identity.can_access_principal(&group));
+        assert!(
+            !narrowed
+                .identity
+                .can_access_principal(&OwnerRef::Personal(subject)),
+            "accessible principals are recomputed from the narrowed roles"
+        );
+    }
+
+    /// One request, one party: narrowing again for the next party starts
+    /// from the authenticated context, and neither narrowing can see the
+    /// other's owner.
+    #[test]
+    fn each_host_resolved_narrowing_sees_only_its_own_party() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let first = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let second = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let ctx = AuthzContext::server_resolved(
+            OwnerRoles::for_subject(subject, []).unwrap(),
+            AuthPath::HostBearer,
+        );
+
+        let to_first = ctx
+            .clone()
+            .narrowed_to_owner_with_role(first, Role::editor())
+            .expect("first party resolves");
+        let to_second = ctx
+            .narrowed_to_owner_with_role(second, Role::viewer())
+            .expect("second party resolves");
+
+        assert!(to_first.can_access_owner(&first) && !to_first.can_access_owner(&second));
+        assert!(to_second.can_access_owner(&second) && !to_second.can_access_owner(&first));
+        assert!(!to_second.may_write(&second, AccessKind::Fact));
+    }
+
+    /// Personal owners are a kernel rule, not a membership row: another
+    /// party's personal owner is refused whatever role is offered, and the
+    /// subject's own narrows to `personal` — the offered role is not
+    /// consulted, so it cannot promote anyone.
+    #[test]
+    fn a_host_resolved_role_never_authorizes_a_foreign_personal_owner() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let stranger = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let ctx = AuthzContext::server_resolved(
+            OwnerRoles::for_subject(subject, []).unwrap(),
+            AuthPath::HostBearer,
+        );
+
+        assert!(
+            ctx.clone()
+                .narrowed_to_owner_with_role(stranger, Role::admin())
+                .is_none()
+        );
+
+        let own = ctx
+            .narrowed_to_owner_with_role(OwnerRef::Personal(subject), Role::admin())
+            .expect("the subject's own personal owner narrows");
+        assert_eq!(
+            own.role_for_owner(&OwnerRef::Personal(subject)),
+            Some(Role::personal())
+        );
+        assert!(!own.may_manage(&OwnerRef::Personal(subject)));
+    }
+
+    /// Only host-resolved paths narrow. A denied (or otherwise
+    /// non-server-resolved) context carries no subject to resolve against,
+    /// so no offered role can revive it.
+    #[test]
+    fn a_context_that_is_not_host_resolved_cannot_be_narrowed_by_a_role() {
+        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let denied = AuthzContext::denied_for_owner(&owner());
+
+        assert!(
+            denied
+                .narrowed_to_owner_with_role(group, Role::admin())
+                .is_none()
+        );
     }
 
     /// `trusted_model_id` is identity, not a capability: it must survive

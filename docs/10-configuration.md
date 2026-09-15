@@ -125,6 +125,22 @@ connect and body read, to `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` (`10` by default;
 and use it inside `authenticate`; a custom authenticator owns the equivalent
 server-side role resolution.
 
+Per-owner resolution (forwarder hosts). One operator, one host, many parties,
+one trusted subject acting for a different Group owner per request: the role
+map `authenticate` returns would grow with the number of parties rather than
+with the request. The edge therefore narrows out of that map first and, for a
+Group owner the map lacks, calls
+`OwnerAccessPort::resolve_role_for_owner(subject, owner)` — one owner, one
+request. `Ok(None)` refuses with the same status and message a missing map
+entry gives today; `Ok(Some(role))` narrows to that owner alone, and the
+narrowed read set stays exactly that owner. The default
+`resolve_role_for_owner` answers out of `resolve_roles_for_subject`, so a port
+that does not override it is unchanged. The runtime hands the edge the same
+port the authenticator holds; an edge composed without one has only the eager
+map. Nothing moves to the caller: `X-Proxima-Owner` / the session binding
+selects *which* owner to resolve, the host still resolves the role
+([14 §Owner-scoping](14-protocol-surface.md#owner-scoping--the-primary-axis)).
+
 ### Trusted model provenance
 
 A `PROXIMA_OIDC_SUBJECT_MAP_JSON` entry may carry an optional

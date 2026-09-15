@@ -7,7 +7,10 @@
 
 use std::sync::Arc;
 
-use proxima_core::{AuthPath, Authenticator, AuthzContext, Credentials, Owner, ToolScope};
+use proxima_core::{
+    AuthPath, Authenticator, AuthzContext, Credentials, Owner, OwnerAccessPort, OwnerRef, Role,
+    ToolScope,
+};
 
 const RESERVED_PXW_PREFIX: &str = "pxw_";
 const RESERVED_PXM_PREFIX: &str = "pxm_";
@@ -60,12 +63,21 @@ impl ResolvedAuth {
         let authz = self.authz.narrowed_to_owner(owner)?;
         Some(McpAuthContext::bound(authz, owner))
     }
+
+    /// Narrow using a role the host resolved for this one `(subject, owner)`
+    /// pair. Same invariants as [`Self::narrowed_to_owner`] — see
+    /// [`AuthzContext::narrowed_to_owner_with_role`].
+    fn narrowed_to_owner_with_role(self, owner: Owner, role: Role) -> Option<McpAuthContext> {
+        let authz = self.authz.narrowed_to_owner_with_role(owner, role)?;
+        Some(McpAuthContext::bound(authz, owner))
+    }
 }
 
 /// Edge resolver replacing the probe-by-UUID auth store. Composition
 /// decides whether a host authenticator exists.
 pub struct McpEdgeAuth {
     host: Option<Arc<dyn Authenticator>>,
+    owner_access: Option<Arc<dyn OwnerAccessPort>>,
     tool_scope: ToolScope,
 }
 
@@ -73,6 +85,7 @@ impl std::fmt::Debug for McpEdgeAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpEdgeAuth")
             .field("host_path", &self.host.is_some())
+            .field("per_owner_resolution", &self.owner_access.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -83,6 +96,7 @@ impl McpEdgeAuth {
     pub fn headless() -> Self {
         Self {
             host: None,
+            owner_access: None,
             tool_scope: ToolScope::All,
         }
     }
@@ -106,10 +120,59 @@ impl McpEdgeAuth {
         self
     }
 
+    /// Attach the owner-access port so a Group owner the authenticated role
+    /// map does not carry can still be resolved, one owner per request.
+    ///
+    /// For a host that serves many parties through a single trusted
+    /// forwarder subject: the eager map that authentication produced grows
+    /// with the number of Group owners, not with the request, so such a
+    /// host resolves nothing eagerly and everything per selected owner.
+    /// Without this port the edge behaves exactly as before — the eager map
+    /// is the only answer, and an owner missing from it is refused.
+    #[must_use]
+    pub fn with_owner_access(mut self, owner_access: Arc<dyn OwnerAccessPort>) -> Self {
+        self.owner_access = Some(owner_access);
+        self
+    }
+
     pub async fn resolve(&self, raw_bearer: &str, owner: Owner) -> Option<McpAuthContext> {
-        self.resolve_unbound(raw_bearer)
-            .await?
-            .narrowed_to_owner(owner)
+        let resolved = self.resolve_unbound(raw_bearer).await?;
+        self.narrow_to_owner(resolved, owner).await
+    }
+
+    /// Bind an authenticated request to its selected owner.
+    ///
+    /// The eager map answers first, unchanged. Only a Group owner it does
+    /// not carry reaches the port, and only when one is attached; a port
+    /// that answers `None` (or errors) falls through to the eager path,
+    /// which refuses exactly as it did before.
+    pub(crate) async fn narrow_to_owner(
+        &self,
+        resolved: ResolvedAuth,
+        owner: Owner,
+    ) -> Option<McpAuthContext> {
+        match self.role_for_unmapped_owner(&resolved, owner).await {
+            Some(role) => resolved.narrowed_to_owner_with_role(owner, role),
+            None => resolved.narrowed_to_owner(owner),
+        }
+    }
+
+    /// Ask the port for `(subject, owner)` when — and only when — the owner
+    /// is a Group the authenticated role map lacks. Personal owners are a
+    /// kernel rule, never a membership row, so they never reach the port.
+    async fn role_for_unmapped_owner(&self, resolved: &ResolvedAuth, owner: Owner) -> Option<Role> {
+        if !matches!(owner, OwnerRef::Group(_)) || resolved.authz.role_for_owner(&owner).is_some() {
+            return None;
+        }
+        let owner_access = self.owner_access.as_ref()?;
+        let subject = resolved.authz.subject()?;
+        match owner_access.resolve_role_for_owner(subject, owner).await {
+            Ok(role) => role,
+            Err(err) => {
+                tracing::warn!(error = %err, "mcp edge: per-owner access resolution failed");
+                None
+            }
+        }
     }
 
     /// Authenticate `raw_bearer` on an accepted path without narrowing to
