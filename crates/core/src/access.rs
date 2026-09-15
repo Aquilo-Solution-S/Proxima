@@ -228,6 +228,25 @@ impl OwnerRoles {
         Ok(Self { subject, roles })
     }
 
+    /// The same map with one more host-resolved Group role — the entry the
+    /// resolver answered on demand instead of in the eager enumeration.
+    /// Same fold as [`Self::for_subject`]: a Group entry is inserted (a later
+    /// answer replaces an earlier one), a Personal owner is refused because
+    /// Personal roles are derived by the kernel rules, never resolved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccessError::DerivedOwnerOverride`] for a Personal owner.
+    pub fn with_group_role(mut self, owner: OwnerRef, role: Role) -> Result<Self, AccessError> {
+        match owner {
+            OwnerRef::Group(_) => {
+                self.roles.insert(owner, role);
+                Ok(self)
+            }
+            OwnerRef::Personal(_) => Err(AccessError::DerivedOwnerOverride),
+        }
+    }
+
     #[must_use]
     pub const fn subject(&self) -> UserId {
         self.subject

@@ -64,12 +64,12 @@ impl ResolvedAuth {
         Some(McpAuthContext::bound(authz, owner))
     }
 
-    /// Narrow using a role the host resolved for this one `(subject, owner)`
-    /// pair. Same invariants as [`Self::narrowed_to_owner`] — see
-    /// [`AuthzContext::narrowed_to_owner_with_role`].
-    fn narrowed_to_owner_with_role(self, owner: Owner, role: Role) -> Option<McpAuthContext> {
-        let authz = self.authz.narrowed_to_owner_with_role(owner, role)?;
-        Some(McpAuthContext::bound(authz, owner))
+    /// Fold a role the host resolved for this one `(subject, owner)` pair
+    /// into the map [`Self::narrowed_to_owner`] reads — there is no second
+    /// way to narrow; see [`AuthzContext::with_host_resolved_role`].
+    fn with_host_resolved_role(self, owner: Owner, role: Role) -> Option<Self> {
+        let authz = self.authz.with_host_resolved_role(owner, role)?;
+        Some(Self { authz })
     }
 }
 
@@ -143,18 +143,20 @@ impl McpEdgeAuth {
     /// Bind an authenticated request to its selected owner.
     ///
     /// The eager map answers first, unchanged. Only a Group owner it does
-    /// not carry reaches the port, and only when one is attached; a port
-    /// that answers `None` (or errors) falls through to the eager path,
-    /// which refuses exactly as it did before.
+    /// not carry reaches the port, and only when one is attached; the
+    /// port's answer is folded into that map and the one narrowing path
+    /// then reads it. A port that answers `None` (or errors) leaves the map
+    /// as it was, so the same path refuses exactly as it did before.
     pub(crate) async fn narrow_to_owner(
         &self,
         resolved: ResolvedAuth,
         owner: Owner,
     ) -> Option<McpAuthContext> {
-        match self.role_for_unmapped_owner(&resolved, owner).await {
-            Some(role) => resolved.narrowed_to_owner_with_role(owner, role),
-            None => resolved.narrowed_to_owner(owner),
-        }
+        let resolved = match self.role_for_unmapped_owner(&resolved, owner).await {
+            Some(role) => resolved.with_host_resolved_role(owner, role)?,
+            None => resolved,
+        };
+        resolved.narrowed_to_owner(owner)
     }
 
     /// Ask the port for `(subject, owner)` when — and only when — the owner

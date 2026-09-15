@@ -132,7 +132,9 @@ with the request. The edge therefore narrows out of that map first and, for a
 Group owner the map lacks, calls
 `OwnerAccessPort::resolve_role_for_owner(subject, owner)` — one owner, one
 request. `Ok(None)` refuses with the same status and message a missing map
-entry gives today; `Ok(Some(role))` narrows to that owner alone, and the
+entry gives today; `Ok(Some(role))` is folded into that map and the same
+narrowing path then reads it — there is one way to narrow, so a role resolved
+on demand is bound under exactly the rules an eagerly resolved one is, and the
 narrowed read set stays exactly that owner. The default
 `resolve_role_for_owner` answers out of `resolve_roles_for_subject`, so a port
 that does not override it is unchanged. The runtime hands the edge the same
