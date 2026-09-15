@@ -21,6 +21,7 @@ use tokio::time::{Instant, Interval, Sleep};
 use crate::access::{AccessKind, OwnerRoles, Role};
 use crate::auth::{AuthError, Credentials};
 use crate::error::ProtocolError;
+use crate::publication::{PublicationExtensions, PublicationExtensionsError};
 use crate::{GroupId, Owner, OwnerRef, UserId};
 
 pub use hooks::{
@@ -250,6 +251,14 @@ pub struct AuthzContext {
     capabilities: CapabilitySet,
     auth_path: AuthPath,
     owner_roles: Option<OwnerRoles>,
+    /// `CloudEvents` extension attributes the HOST bound to this context.
+    ///
+    /// Deliberately NOT part of [`Identity`]: it is deployment-shaped
+    /// context about the run that produced a write, not a claim about who
+    /// the caller is, so it must not travel through
+    /// [`AuthzContext::identity_for_revalidation`] and be re-presented as
+    /// authenticated identity material.
+    publication_extensions: PublicationExtensions,
 }
 
 /// Opaque authority for one redeemed durable-worker phase.
@@ -444,6 +453,13 @@ impl AuthzContext {
         self.identity.trusted_model_id.as_deref()
     }
 
+    /// `CloudEvents` extension attributes this context contributes to every
+    /// Fact it captures. Empty unless the host bound some.
+    #[must_use]
+    pub fn publication_extensions(&self) -> &PublicationExtensions {
+        &self.publication_extensions
+    }
+
     #[must_use]
     pub fn identity_for_revalidation(&self) -> Identity {
         self.identity.clone()
@@ -535,6 +551,7 @@ impl AuthzContext {
             capabilities: CapabilitySet::all(),
             auth_path,
             owner_roles: Some(owner_roles),
+            publication_extensions: PublicationExtensions::new(),
         }
     }
 
@@ -574,6 +591,42 @@ impl AuthzContext {
     ) -> Result<Self, TrustedModelIdError> {
         self.identity.trusted_model_id =
             Some(crate::tool::validate_trusted_model_id(trusted_model_id)?);
+        Ok(self)
+    }
+
+    /// Bind `CloudEvents` extension attributes onto every Fact this context
+    /// goes on to capture — the orchestration context a run happens under
+    /// (a workflow run, a step, a causal root), recorded without the code
+    /// producing the payload assembling anything.
+    ///
+    /// **For hosts only.** The values must come from the host's own
+    /// knowledge of the run it is executing — never from a payload, a tool
+    /// argument, a request header, or MCP `clientInfo`. A transport that
+    /// lets a caller reach this builder has published a forgeable
+    /// provenance field, exactly as it would by exposing
+    /// [`Self::with_trusted_model_id`].
+    ///
+    /// Additive, deliberately: a second call MERGES, and a name either side
+    /// already bound is an error. There is no "clear it" and no "overwrite
+    /// it" call, so no later step in a builder chain can quietly drop or
+    /// restate context an earlier one established.
+    ///
+    /// Validated here, at the point of binding, rather than at the point of
+    /// capture: an attribute a consumer would refuse is a deployment that
+    /// authenticates and cannot write, and the refusal belongs at the
+    /// boundary that produced it.
+    ///
+    /// # Errors
+    ///
+    /// [`PublicationExtensionsError`] for an illegal, reserved, over-long
+    /// or already-bound name, an illegal value, or a union over
+    /// [`MAX_PUBLICATION_EXTENSIONS`](crate::publication::MAX_PUBLICATION_EXTENSIONS).
+    pub fn with_publication_extensions(
+        mut self,
+        extensions: PublicationExtensions,
+    ) -> Result<Self, PublicationExtensionsError> {
+        self.publication_extensions =
+            std::mem::take(&mut self.publication_extensions).merged(extensions)?;
         Ok(self)
     }
 
@@ -692,6 +745,7 @@ impl AuthzContext {
             },
             auth_path: AuthPath::Denied,
             owner_roles: None,
+            publication_extensions: PublicationExtensions::new(),
         }
     }
 }
@@ -1429,5 +1483,66 @@ mod tests {
         assert_eq!(stream.next().await, Some(2));
         assert_eq!(stream.next().await, Some(3));
         assert_eq!(stream.next().await, None);
+    }
+
+    #[test]
+    fn bound_publication_extensions_merge_and_never_overwrite() {
+        let ctx =
+            AuthzContext::for_subject(UserId::new(uuid::Uuid::now_v7()), AuthPath::HostBearer);
+        assert!(ctx.publication_extensions().is_empty());
+
+        let ctx = ctx
+            .with_publication_extensions(
+                PublicationExtensions::new()
+                    .with("workflowid", "wf-1")
+                    .expect("a workflow id is a legal attribute"),
+            )
+            .expect("the first binding takes");
+        let ctx = ctx
+            .with_publication_extensions(
+                PublicationExtensions::new()
+                    .with("runid", "run-3")
+                    .expect("a run id is a legal attribute"),
+            )
+            .expect("a second binding merges");
+        assert_eq!(
+            ctx.publication_extensions()
+                .iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["runid", "workflowid"]
+        );
+
+        let err = ctx
+            .clone()
+            .with_publication_extensions(
+                PublicationExtensions::new()
+                    .with("runid", "run-4")
+                    .expect("bind"),
+            )
+            .expect_err("nothing may overwrite a bound attribute");
+        assert!(matches!(
+            err,
+            PublicationExtensionsError::DuplicateName { .. }
+        ));
+
+        // Narrowing carries them; the identity handed to a revalidating
+        // stream does not — they are run context, not identity material.
+        let narrowed = ctx
+            .clone()
+            .narrowed_to_owner(OwnerRef::Personal(
+                ctx.identity_for_revalidation().subject.expect("a subject"),
+            ))
+            .expect("a subject may narrow to itself");
+        assert_eq!(narrowed.publication_extensions().len(), 2);
+    }
+
+    #[test]
+    fn a_denied_context_binds_no_publication_extensions() {
+        assert!(
+            AuthzContext::denied_for_owner(&owner())
+                .publication_extensions()
+                .is_empty()
+        );
     }
 }

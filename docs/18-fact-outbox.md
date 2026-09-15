@@ -110,9 +110,31 @@ substitutes today's installation identity.
 | `data` | the typed export (serde of the registered payload) | payload |
 | `proximaowner` (ext) | `OwnerRef` wire form of the Fact's owner | authorized write context |
 | `proximamodel` (ext) | model/runner identity **certified by the authenticating token**, when the deployment binds one; never the caller-supplied `model_id` label (see [15 §Trusted model provenance](15-deployment.md#trusted-model-provenance)). Omitted when absent | authenticated edge |
+| host-bound extensions (ext) | any extension attribute the HOST bound to the authorization context — the orchestration context a run happens under (`workflowid`, `runid`, `stepid`, …). Name-ordered, after `proximamodel` and before `data`; nothing at all when unbound (§Host-bound extension attributes) | host authorization context |
 
 Producer authority is the configured credential and the authorized owner
 binding, never a self-asserted header.
+
+### Host-bound extension attributes
+
+A host running Flavors under an orchestration context binds that context ONCE,
+on the authorization context; every Fact that context goes on to capture
+carries it. Flavor code assembles nothing and can neither set nor read it.
+
+| Property | Value |
+|---|---|
+| Carrier | `AuthzContext::with_publication_extensions(PublicationExtensions)`, on the same footing as `with_trusted_model_id` (see [15 §Trusted model provenance](15-deployment.md#trusted-model-provenance)) — host-only, never a payload, tool argument, request header, or MCP `clientInfo` |
+| Value types | `String` / `Integer` (int32) / `Boolean` — the `CloudEvents` 1.0.2 JSON-format types with no canonicalization question. `Timestamp`/`URI`/`Binary` are absent: each has a string rendering the host produces itself |
+| Name rules | non-empty, `[a-z0-9]` only, ≤ 20 characters (`CloudEvents` 1.0.2 §3.1); never a core context attribute name; never the `proxima` prefix, which this substrate reserves |
+| String values | non-empty, no control characters, ≤ 256 bytes |
+| Bound | ≤ 8 attributes per event |
+| Additivity | a second bind MERGES; a repeated name is an error. Nothing overwrites or clears a bound attribute, and there is no unbind call — a host that should stop emitting one stops binding it |
+| Validation point | at binding, not at capture: an attribute a consumer would refuse is a host misconfiguration, and the refusal belongs at the boundary that produced it |
+| Order | NAME order, not binding order. The digest, the broker dedup key and every consumer signature check are over the envelope bytes, so the order a host happened to bind in must not reach the wire |
+| Unbound | emits nothing — not an empty object, not a null. An event from a deployment that binds none is byte-identical to one from a release without this surface |
+| Storage | no column and no migration: the captured record IS the envelope bytes |
+| Identity | NOT identity material. `identity_for_revalidation()` does not carry them, and a redeemed delegated phase rebuilds without them, exactly as it does for `trusted_model_id` |
+| Consumers | parsed into `CloudEventEnvelope::extensions` (name-ordered); a signature check still reads `ReceivedEvent::raw` |
 
 ## Outbox Row and State Machine
 

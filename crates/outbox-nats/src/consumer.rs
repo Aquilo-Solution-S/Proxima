@@ -7,6 +7,7 @@
 //! the message unacknowledged, because that is the only case where a
 //! redelivery can still change anything.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,11 +22,12 @@ use crate::config::NatsConsumerConfig;
 /// The `CloudEvents` 1.0 structured envelope, as parsed off the wire.
 ///
 /// Deserialized rather than re-derived: the producer's bytes are the
-/// contract. An attribute this struct does not name is DROPPED by the parse
-/// rather than refused — a consumer pinned to today's exact attribute set
-/// would break on the first extension a later release adds — so a sink that
-/// needs an extension attribute reads it out of [`ReceivedEvent::raw`],
-/// which is the delivered bytes and not a re-serialization of this view.
+/// contract. An attribute this struct does not name lands in
+/// [`Self::extensions`] rather than being refused — a consumer pinned to
+/// today's exact attribute set would break on the first extension a later
+/// release adds. A sink verifying a producer signature still reads
+/// [`ReceivedEvent::raw`], the delivered bytes, and not a re-serialization
+/// of this view.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct CloudEventEnvelope {
     pub specversion: String,
@@ -43,6 +45,12 @@ pub struct CloudEventEnvelope {
     pub proximaowner: Option<String>,
     #[serde(default)]
     pub proximamodel: Option<String>,
+    /// Every context attribute the fields above do not name, in name order.
+    /// Host-bound extension attributes arrive here; so does anything a
+    /// later producer release adds. Values are whatever the `CloudEvents`
+    /// JSON format allowed the producer to write.
+    #[serde(flatten)]
+    pub extensions: BTreeMap<String, serde_json::Value>,
     pub data: serde_json::Value,
 }
 
@@ -364,6 +372,7 @@ fn malformed_envelope(subject: &str, raw: &Bytes, error: &serde_json::Error) -> 
         time: None,
         proximaowner: None,
         proximamodel: None,
+        extensions: BTreeMap::new(),
         data: serde_json::Value::String(error.to_string()),
     }
 }
@@ -394,6 +403,30 @@ mod tests {
         assert_eq!(envelope.event_type, "probe/listenable-v1");
         assert_eq!(envelope.proximamodel.as_deref(), Some("m"));
         assert_eq!(envelope.data["note"], serde_json::json!("hi"));
+        assert!(envelope.extensions.is_empty());
+    }
+
+    #[test]
+    fn host_bound_extension_attributes_survive_the_parse() {
+        let bytes = br#"{"specversion":"1.0","id":"F:abc","source":"urn:proxima:test",
+            "type":"probe/listenable-v1","proximaowner":"personal:1","proximamodel":"m",
+            "stepid":"step-7","runid":"run-3","attempt":2,"replay":false,"data":{"note":"hi"}}"#;
+        let envelope: CloudEventEnvelope = serde_json::from_slice(bytes).expect("parses");
+        assert_eq!(
+            envelope
+                .extensions
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["attempt", "replay", "runid", "stepid"]
+        );
+        assert_eq!(envelope.extensions["runid"], serde_json::json!("run-3"));
+        assert_eq!(envelope.extensions["attempt"], serde_json::json!(2));
+        assert_eq!(envelope.extensions["replay"], serde_json::json!(false));
+        // The substrate's own attributes stay on their named fields rather
+        // than doubling up in the map.
+        assert!(!envelope.extensions.contains_key("proximamodel"));
+        assert!(!envelope.extensions.contains_key("data"));
     }
 
     #[test]

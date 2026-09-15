@@ -960,11 +960,12 @@ impl Engine {
                 &crate::publication::PublicationError::ExportFailed(err),
             )
         })?;
-        let model_id = self
-            .operation_authority(authority)?
-            .authz()
-            .trusted_model_id()
-            .map(ToOwned::to_owned);
+        let operation = self.operation_authority(authority)?;
+        let authz = operation.authz();
+        let model_id = authz.trusted_model_id().map(ToOwned::to_owned);
+        // Host-bound attributes ride the SAME authorization context as the
+        // trusted model id: nothing the payload carries can reach them.
+        let extensions = authz.publication_extensions().clone();
         Ok(Some(crate::publication::PublicationPlan::new(
             crate::publication::PublicationDraft::new(
                 schema_id,
@@ -972,6 +973,7 @@ impl Engine {
                 source,
                 owner,
                 model_id,
+                extensions,
                 data,
             ),
             self.publication.limits,

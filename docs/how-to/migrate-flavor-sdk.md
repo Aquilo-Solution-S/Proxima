@@ -1,5 +1,18 @@
 # Migrate the Flavor SDK
 
+## v0.0.14
+
+Pin all Proxima Rust dependencies to the same `v0.0.14` tag. Cargo package
+versions remain unpublished.
+
+| Surface | Upgrade |
+|---|---|
+| Database | No core or flavor migration ships in v0.0.14. Existing v0.0.13 databases remain compatible and boot without a reset. |
+| Host-bound publication extensions (additive Rust API) | `AuthzContext::with_publication_extensions(PublicationExtensions)` binds validated `CloudEvents` extension attributes onto every Fact that context captures. Host-only, additive, never reachable from a payload or a transport. A host that binds nothing is unaffected and its envelopes are byte-identical. See [18 §Host-bound extension attributes](../18-fact-outbox.md#host-bound-extension-attributes). |
+| `PublicationDraft::new` (breaking Rust API — test/host constructors only) | Gained a `PublicationExtensions` parameter between `model_id` and `data`. The engine fills it from the authorization context; code that builds a draft directly passes `PublicationExtensions::new()` for the previous behavior. |
+| Consumer envelope view (breaking Rust API — struct literals only) | `proxima_outbox_nats::CloudEventEnvelope` gained `extensions: BTreeMap<String, serde_json::Value>`, collecting every context attribute its named fields do not claim. Parsing is unchanged; a struct literal of that type needs the field. |
+| Wire contract | Additive. No MCP or REST change; no new required attribute. |
+
 ## v0.0.13
 
 Pin all Proxima Rust dependencies to the same `v0.0.13` tag. Cargo package
