@@ -3,7 +3,8 @@ pub mod scope_surfaces;
 
 use async_trait::async_trait;
 use proxima_core::{
-    AccessError, OwnerAccessPort, OwnerRef, OwnerRoles, Relation, Role, StorageError, UserId,
+    AccessError, GroupId, OwnerAccessPort, OwnerRef, OwnerRoles, Relation, Role, StorageError,
+    UserId,
 };
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -73,30 +74,25 @@ impl OwnerAccessPort for PgOwnerAccessResolver {
     /// One probe on the membership primary key instead of the member's whole
     /// enumeration, folded through the same [`OwnerRoles::for_subject`] path
     /// the eager map uses — so the answer is byte-identical to the default
-    /// method's and bounded by one owner however many groups the subject
-    /// belongs to. That bound is the point for a host whose single forwarder
-    /// subject acts for a different party per request.
-    ///
-    /// Personal owners never reach the table: an empty membership list folds
-    /// to the kernel rule — the subject's own personal owner is `personal`,
-    /// anyone else's is no role.
-    async fn resolve_role_for_owner(
+    /// method's and bounded by one group however many the subject belongs
+    /// to. That bound is the point for a host whose single forwarder subject
+    /// acts for a different party per request.
+    async fn resolve_group_role(
         &self,
         subject: UserId,
-        owner: OwnerRef,
+        group: GroupId,
     ) -> Result<Option<Role>, AccessError> {
-        let group_roles = match owner {
-            OwnerRef::Group(group) => {
-                owner_columns::group_relations_for_member(&self.pool, group, subject)
-                    .await
-                    .map_err(|err| AccessError::Resolution(err.to_string()))?
-                    .into_iter()
-                    .map(|relation| (owner, relation.role()))
-                    .collect::<Vec<_>>()
-            }
-            OwnerRef::Personal(_) => Vec::new(),
-        };
-        Ok(OwnerRoles::for_subject(subject, group_roles)?.role_for(&owner))
+        let owner = OwnerRef::Group(group);
+        let relations = owner_columns::group_relations_for_member(&self.pool, group, subject)
+            .await
+            .map_err(|err| AccessError::Resolution(err.to_string()))?;
+        let roles = OwnerRoles::for_subject(
+            subject,
+            relations
+                .into_iter()
+                .map(|relation| (owner, relation.role())),
+        )?;
+        Ok(roles.role_for(&owner))
     }
 }
 

@@ -125,22 +125,20 @@ connect and body read, to `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` (`10` by default;
 and use it inside `authenticate`; a custom authenticator owns the equivalent
 server-side role resolution.
 
-Per-owner resolution (forwarder hosts). One operator, one host, many parties,
+Per-group resolution (forwarder hosts). One operator, one host, many parties,
 one trusted subject acting for a different Group owner per request: the role
 map `authenticate` returns would grow with the number of parties rather than
-with the request. The edge therefore narrows out of that map first and, for a
-Group owner the map lacks, calls
-`OwnerAccessPort::resolve_role_for_owner(subject, owner)` — one owner, one
-request. `Ok(None)` refuses with the same status and message a missing map
-entry gives today; `Ok(Some(role))` is folded into that map and the same
-narrowing path then reads it — there is one way to narrow, so a role resolved
-on demand is bound under exactly the rules an eagerly resolved one is, and the
-narrowed read set stays exactly that owner. The default
-`resolve_role_for_owner` answers out of `resolve_roles_for_subject`, so a port
-that does not override it is unchanged. The runtime hands the edge the same
-port the authenticator holds; an edge composed without one has only the eager
-map. Nothing moves to the caller: `X-Proxima-Owner` / the session binding
-selects *which* owner to resolve, the host still resolves the role
+with the request. The edge has one narrowing path and one loop back: a Group
+that map lacks is asked of `OwnerAccessPort::resolve_group_role(subject,
+group)`, the answer is folded into the map, and the same path narrows. The
+port is typed on `GroupId`, so a Personal owner cannot take the loop (it is a
+kernel rule, never a resolved role); an absent port, `Ok(None)` and an error
+fold nothing, so the path refuses with the same status and message a missing
+map entry gives today. The default `resolve_group_role` answers out of
+`resolve_roles_for_subject`, so a port that does not override it is unchanged;
+the runtime hands the edge the same port the authenticator holds. The caller
+still only selects the owner (`X-Proxima-Owner` / the session binding), the
+host still resolves the role
 ([14 §Owner-scoping](14-protocol-surface.md#owner-scoping--the-primary-axis)).
 
 ### Trusted model provenance

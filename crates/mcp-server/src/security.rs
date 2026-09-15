@@ -968,7 +968,7 @@ mod tests {
 
     /// Access port that answers one owner at a time and never enumerates:
     /// its eager map is empty, so every accepted party in these tests was
-    /// resolved through [`OwnerAccessPort::resolve_role_for_owner`].
+    /// resolved through [`OwnerAccessPort::resolve_group_role`].
     struct PerOwnerAccess {
         subject: UserId,
         roles: HashMap<Owner, Role>,
@@ -994,16 +994,16 @@ mod tests {
             OwnerRoles::for_subject(subject, [])
         }
 
-        async fn resolve_role_for_owner(
+        async fn resolve_group_role(
             &self,
             subject: UserId,
-            owner: Owner,
+            group: GroupId,
         ) -> Result<Option<Role>, AccessError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if subject != self.subject {
                 return Ok(None);
             }
-            Ok(self.roles.get(&owner).copied())
+            Ok(self.roles.get(&OwnerRef::Group(group)).copied())
         }
     }
 

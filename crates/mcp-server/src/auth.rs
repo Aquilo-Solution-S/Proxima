@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use proxima_core::{
-    AuthPath, Authenticator, AuthzContext, Credentials, Owner, OwnerAccessPort, OwnerRef, Role,
+    AuthPath, Authenticator, AuthzContext, Credentials, GroupId, Owner, OwnerAccessPort, OwnerRef,
     ToolScope,
 };
 
@@ -64,12 +64,34 @@ impl ResolvedAuth {
         Some(McpAuthContext::bound(authz, owner))
     }
 
-    /// Fold a role the host resolved for this one `(subject, owner)` pair
-    /// into the map [`Self::narrowed_to_owner`] reads — there is no second
-    /// way to narrow; see [`AuthzContext::with_host_resolved_role`].
-    fn with_host_resolved_role(self, owner: Owner, role: Role) -> Option<Self> {
-        let authz = self.authz.with_host_resolved_role(owner, role)?;
-        Some(Self { authz })
+    /// Whether the eager map already carries the selected owner.
+    fn carries(&self, owner: Owner) -> bool {
+        self.authz.role_for_owner(&owner).is_some()
+    }
+
+    /// The loop back through the port for one Group the eager map lacks:
+    /// ask, fold the answer into the map, rejoin. There is no second way to
+    /// narrow — [`Self::narrowed_to_owner`] reads the map afterwards under
+    /// the same rules as for every eagerly resolved entry. An absent port,
+    /// `Ok(None)` and an error all fold nothing, so the map is exactly what
+    /// it was and the one path refuses as it always did.
+    async fn filled_from(self, port: Option<&dyn OwnerAccessPort>, group: GroupId) -> Option<Self> {
+        let (Some(port), Some(subject)) = (port, self.authz.subject()) else {
+            return Some(self);
+        };
+        let role = port
+            .resolve_group_role(subject, group)
+            .await
+            .unwrap_or_else(|err| {
+                tracing::warn!(error = %err, "mcp edge: per-group access resolution failed");
+                None
+            });
+        match role {
+            Some(role) => Some(Self {
+                authz: self.authz.with_host_resolved_role(group, role)?,
+            }),
+            None => Some(self),
+        }
     }
 }
 
@@ -140,41 +162,26 @@ impl McpEdgeAuth {
         self.narrow_to_owner(resolved, owner).await
     }
 
-    /// Bind an authenticated request to its selected owner.
-    ///
-    /// The eager map answers first, unchanged. Only a Group owner it does
-    /// not carry reaches the port, and only when one is attached; the
-    /// port's answer is folded into that map and the one narrowing path
-    /// then reads it. A port that answers `None` (or errors) leaves the map
-    /// as it was, so the same path refuses exactly as it did before.
+    /// Bind an authenticated request to its selected owner through the one
+    /// narrowing path. The eager map is what authentication pre-filled; a
+    /// Group it lacks takes the loop through the port and rejoins the map
+    /// before [`ResolvedAuth::narrowed_to_owner`] reads it. A Personal
+    /// owner cannot take that loop — the port is typed on `GroupId` — and a
+    /// Group the map carries never needs to.
     pub(crate) async fn narrow_to_owner(
         &self,
         resolved: ResolvedAuth,
         owner: Owner,
     ) -> Option<McpAuthContext> {
-        let resolved = match self.role_for_unmapped_owner(&resolved, owner).await {
-            Some(role) => resolved.with_host_resolved_role(owner, role)?,
-            None => resolved,
+        let resolved = match owner {
+            OwnerRef::Group(group) if !resolved.carries(owner) => {
+                resolved
+                    .filled_from(self.owner_access.as_deref(), group)
+                    .await?
+            }
+            OwnerRef::Group(_) | OwnerRef::Personal(_) => resolved,
         };
         resolved.narrowed_to_owner(owner)
-    }
-
-    /// Ask the port for `(subject, owner)` when — and only when — the owner
-    /// is a Group the authenticated role map lacks. Personal owners are a
-    /// kernel rule, never a membership row, so they never reach the port.
-    async fn role_for_unmapped_owner(&self, resolved: &ResolvedAuth, owner: Owner) -> Option<Role> {
-        if !matches!(owner, OwnerRef::Group(_)) || resolved.authz.role_for_owner(&owner).is_some() {
-            return None;
-        }
-        let owner_access = self.owner_access.as_ref()?;
-        let subject = resolved.authz.subject()?;
-        match owner_access.resolve_role_for_owner(subject, owner).await {
-            Ok(role) => role,
-            Err(err) => {
-                tracing::warn!(error = %err, "mcp edge: per-owner access resolution failed");
-                None
-            }
-        }
     }
 
     /// Authenticate `raw_bearer` on an accepted path without narrowing to

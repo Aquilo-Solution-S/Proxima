@@ -1,12 +1,13 @@
-//! The per-owner half of the Postgres access port.
+//! The per-group half of the Postgres access port.
 //!
-//! `PgOwnerAccessResolver::resolve_role_for_owner` answers out of one probe
-//! on the membership primary key, not the member's whole enumeration. What is
-//! pinned here is that the probe is *byte-identical* to the eager map's answer
-//! for every owner shape — a mapped group, an unmapped group, a group with
-//! more than one relation, the subject's own personal owner, a stranger's —
-//! so a host that serves many parties through one forwarder subject can lean
-//! on it without a second authorization vocabulary.
+//! `PgOwnerAccessResolver::resolve_group_role` answers out of one probe on
+//! the membership primary key, not the member's whole enumeration. What is
+//! pinned here is that the probe is *byte-identical* to the eager map's
+//! answer for every group shape — a mapped group, an unmapped group, a group
+//! with more than one relation — so a host that serves many parties through
+//! one forwarder subject can lean on it without a second authorization
+//! vocabulary. Personal owners are not a shape: the port is typed on
+//! `GroupId`, so they cannot be asked.
 
 use proxima_core::{GroupId, OwnerAccessPort, OwnerRef, Relation, Role, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
@@ -28,7 +29,7 @@ async fn seed_membership(pool: &sqlx::PgPool, group: GroupId, member: UserId, re
 }
 
 #[tokio::test]
-async fn per_owner_probe_matches_the_eager_map_for_every_owner_shape() {
+async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(error) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
@@ -55,45 +56,27 @@ async fn per_owner_probe_matches_the_eager_map_for_every_owner_shape() {
         let port = PgOwnerAccessResolver::new(pool);
         let eager = port.resolve_roles_for_subject(forwarder).await?;
 
-        for owner in [
-            OwnerRef::Group(editor_group),
-            OwnerRef::Group(layered_group),
-            OwnerRef::Group(unmapped_group),
-            OwnerRef::Personal(forwarder),
-            OwnerRef::Personal(stranger),
-        ] {
-            let probed = port.resolve_role_for_owner(forwarder, owner).await?;
+        for group in [editor_group, layered_group, unmapped_group] {
+            let probed = port.resolve_group_role(forwarder, group).await?;
             assert_eq!(
                 probed,
-                eager.role_for(&owner),
-                "per-owner probe must equal the eager map for {owner:?}"
+                eager.role_for(&OwnerRef::Group(group)),
+                "per-group probe must equal the eager map for {group:?}"
             );
         }
 
         assert_eq!(
-            port.resolve_role_for_owner(forwarder, OwnerRef::Group(editor_group))
-                .await?,
+            port.resolve_group_role(forwarder, editor_group).await?,
             Some(Role::editor())
         );
         assert_eq!(
-            port.resolve_role_for_owner(forwarder, OwnerRef::Group(unmapped_group))
-                .await?,
+            port.resolve_group_role(forwarder, unmapped_group).await?,
             None,
             "a group the subject holds no relation in is no role, never a default one"
-        );
-        assert_eq!(
-            port.resolve_role_for_owner(forwarder, OwnerRef::Personal(forwarder))
-                .await?,
-            Some(Role::personal())
-        );
-        assert_eq!(
-            port.resolve_role_for_owner(forwarder, OwnerRef::Personal(stranger))
-                .await?,
-            None
         );
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("per-owner probe matches the eager map");
+    result.expect("per-group probe matches the eager map");
 }
