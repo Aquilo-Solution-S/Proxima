@@ -18,10 +18,10 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use tokio::time::{Instant, Interval, Sleep};
 
-use crate::access::{AccessKind, OwnerRoles};
+use crate::access::{AccessKind, OwnerRoles, Role};
 use crate::auth::{AuthError, Credentials};
 use crate::error::ProtocolError;
-use crate::{Owner, OwnerRef, UserId};
+use crate::{GroupId, Owner, OwnerRef, UserId};
 
 pub use hooks::{
     AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, MembershipChange,
@@ -583,7 +583,7 @@ impl AuthzContext {
         let subject = roles.subject();
         let narrowed_roles = match owner {
             OwnerRef::Personal(user) if user == subject => {
-                OwnerRoles::scoped_to(subject, owner, crate::access::Role::personal())
+                OwnerRoles::scoped_to(subject, owner, Role::personal())
             }
             OwnerRef::Group(_) => {
                 let role = roles.role_for(&owner)?;
@@ -597,6 +597,32 @@ impl AuthzContext {
             .collect();
         self.owner_roles = Some(narrowed_roles);
         self.identity.accessible_principals = accessible_principals;
+        Some(self)
+    }
+
+    /// The same context with one more host-resolved Group role in its map —
+    /// the entry an [`OwnerAccessPort`](crate::access::OwnerAccessPort)
+    /// answered on demand instead of in the eager enumeration. There is
+    /// still exactly one way to narrow: [`Self::narrowed_to_owner`] reads
+    /// this map, so a role folded in here is narrowed on under the same
+    /// rules as every eagerly resolved one. Typed on [`GroupId`] because a
+    /// Personal role is a kernel rule, never a resolver's answer.
+    ///
+    /// `None` when the context is not host-resolved (nothing to fold into).
+    /// The accessible set is recomputed from the map the same way
+    /// [`Self::server_resolved`] computes it.
+    ///
+    /// `role` MUST come from an `OwnerAccessPort` resolution. A role taken
+    /// from a request header, a tool argument, or any other
+    /// caller-controlled payload would make the caller its own authorizer.
+    #[must_use]
+    pub fn with_host_resolved_role(mut self, group: GroupId, role: Role) -> Option<Self> {
+        let roles = self.owner_roles.take()?.with_group_role(group, role);
+        self.identity.accessible_principals = roles
+            .readable_owners(AccessKind::Goal)
+            .into_iter()
+            .collect();
+        self.owner_roles = Some(roles);
         Some(self)
     }
 
@@ -983,6 +1009,127 @@ mod tests {
         let writable = ctx.writable_owners(AccessKind::Goal);
         assert!(writable.contains(&OwnerRef::Personal(subject)));
         assert!(!writable.contains(&group));
+    }
+
+    /// The forwarder shape: a subject whose resolved map carries no Group
+    /// at all is still narrowed to one party, on a role the host resolved
+    /// for that party alone. The role is folded into the map and the one
+    /// narrowing path reads it — the same path that refused the owner a
+    /// moment earlier, when the map did not carry it.
+    #[test]
+    fn a_host_resolved_role_narrows_to_exactly_that_owner() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let group_id = GroupId::new(uuid::Uuid::now_v7());
+        let group = OwnerRef::Group(group_id);
+        let roles = OwnerRoles::for_subject(subject, []).unwrap();
+        let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer);
+
+        assert!(
+            ctx.clone().narrowed_to_owner(group).is_none(),
+            "the eager map has no role for this group"
+        );
+
+        let with_role = ctx
+            .with_host_resolved_role(group_id, Role::editor())
+            .expect("a host-resolved Group role folds into the map");
+        assert!(
+            with_role.identity.can_access_principal(&group),
+            "the accessible set is recomputed from the extended map"
+        );
+        let narrowed = with_role
+            .narrowed_to_owner(group)
+            .expect("the one narrowing path now finds the role");
+
+        assert_eq!(narrowed.subject(), Some(subject));
+        assert_eq!(narrowed.auth_path(), AuthPath::HostBearer);
+        assert_eq!(narrowed.role_for_owner(&group), Some(Role::editor()));
+        assert!(narrowed.may_write(&group, AccessKind::Perspective));
+        assert!(!narrowed.may_write(&group, AccessKind::Goal));
+        assert_eq!(
+            narrowed.readable_owners(AccessKind::Goal),
+            vec![group],
+            "the narrowed set is exactly the one party"
+        );
+        assert!(narrowed.identity.can_access_principal(&group));
+        assert!(
+            !narrowed
+                .identity
+                .can_access_principal(&OwnerRef::Personal(subject)),
+            "accessible principals are recomputed from the narrowed roles"
+        );
+    }
+
+    /// One request, one party: narrowing again for the next party starts
+    /// from the authenticated context, and neither narrowing can see the
+    /// other's owner.
+    #[test]
+    fn each_host_resolved_narrowing_sees_only_its_own_party() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let first_id = GroupId::new(uuid::Uuid::now_v7());
+        let second_id = GroupId::new(uuid::Uuid::now_v7());
+        let first = OwnerRef::Group(first_id);
+        let second = OwnerRef::Group(second_id);
+        let ctx = AuthzContext::server_resolved(
+            OwnerRoles::for_subject(subject, []).unwrap(),
+            AuthPath::HostBearer,
+        );
+
+        let to_first = ctx
+            .clone()
+            .with_host_resolved_role(first_id, Role::editor())
+            .and_then(|ctx| ctx.narrowed_to_owner(first))
+            .expect("first party resolves");
+        let to_second = ctx
+            .with_host_resolved_role(second_id, Role::viewer())
+            .and_then(|ctx| ctx.narrowed_to_owner(second))
+            .expect("second party resolves");
+
+        assert!(to_first.can_access_owner(&first) && !to_first.can_access_owner(&second));
+        assert!(to_second.can_access_owner(&second) && !to_second.can_access_owner(&first));
+        assert!(!to_second.may_write(&second, AccessKind::Fact));
+    }
+
+    /// Personal owners are a kernel rule, not a membership row: no resolved
+    /// role can reach the map for one (the fold is typed on `GroupId`), so
+    /// a stranger's personal owner stays refused and the subject's own
+    /// still narrows through the one path, to `personal`, whatever Group
+    /// roles were folded in beside it.
+    #[test]
+    fn a_host_resolved_role_never_authorizes_a_foreign_personal_owner() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let stranger = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let ctx = AuthzContext::server_resolved(
+            OwnerRoles::for_subject(subject, []).unwrap(),
+            AuthPath::HostBearer,
+        )
+        .with_host_resolved_role(GroupId::new(uuid::Uuid::now_v7()), Role::admin())
+        .expect("a Group role folds");
+
+        assert!(ctx.clone().narrowed_to_owner(stranger).is_none());
+
+        let own = ctx
+            .narrowed_to_owner(OwnerRef::Personal(subject))
+            .expect("the subject's own personal owner narrows");
+        assert_eq!(
+            own.role_for_owner(&OwnerRef::Personal(subject)),
+            Some(Role::personal())
+        );
+        assert!(!own.may_manage(&OwnerRef::Personal(subject)));
+    }
+
+    /// Only host-resolved paths narrow. A denied (or otherwise
+    /// non-server-resolved) context carries no map to fold into and no
+    /// subject to resolve against, so no offered role can revive it.
+    #[test]
+    fn a_context_that_is_not_host_resolved_cannot_be_narrowed_by_a_role() {
+        let group = GroupId::new(uuid::Uuid::now_v7());
+        let denied = AuthzContext::denied_for_owner(&owner());
+
+        assert!(
+            denied
+                .with_host_resolved_role(group, Role::admin())
+                .is_none()
+        );
     }
 
     /// `trusted_model_id` is identity, not a capability: it must survive

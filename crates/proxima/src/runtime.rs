@@ -1157,7 +1157,14 @@ fn build_router<A: FlavorApp>(
     let engine = app_ctx.engine.clone();
     let mut edge_auth = McpEdgeAuth::headless().with_tool_scope(config.tool_scope.clone());
     if let Some(authenticator) = authenticator {
-        edge_auth = edge_auth.with_host(authenticator);
+        // The same port the authenticator resolves the eager role map
+        // through, handed to the edge so a Group owner that map does not
+        // carry can still be resolved one owner per request. A host serving
+        // many parties through one forwarder subject cannot enumerate them
+        // eagerly; without this the edge would refuse every such owner.
+        edge_auth = edge_auth
+            .with_host(authenticator)
+            .with_owner_access(Arc::new(PgOwnerAccessResolver::new(app_ctx.pool.clone())));
     }
     let edge_auth = Arc::new(edge_auth);
     let mcp_host =

@@ -573,7 +573,9 @@ async fn mcp_auth(
     // token always yields 401 regardless of session/owner-header state.
     // This closes the 401/403 oracle: an unauthenticated caller learns
     // nothing about owner or session requirements. Owner narrowing happens
-    // in memory after selection, using this retained authentication result.
+    // after selection, from this retained authentication result — plus, for
+    // a Group owner its role map does not carry, one per-owner resolution
+    // through the host's access port.
     let Some(resolved) = state.auth.resolve_unbound(&token).await else {
         return unauthorized(&state);
     };
@@ -595,7 +597,7 @@ async fn mcp_auth(
                     .into_response();
             }
         };
-    let Some(ctx) = resolved.narrowed_to_owner(selected_owner) else {
+    let Some(ctx) = state.auth.narrow_to_owner(resolved, selected_owner).await else {
         return if via_session {
             session_not_found()
         } else {
@@ -854,6 +856,7 @@ fn parse_origin(value: &str) -> Option<ParsedOrigin> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::convert::Infallible;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -863,12 +866,13 @@ mod tests {
     use axum::Router;
     use axum::body::{Body, Bytes, to_bytes};
     use axum::http::{Method, Request, StatusCode, header};
-    use axum::response::Response;
+    use axum::response::{IntoResponse, Response};
     use axum::routing::any;
     use futures_util::stream;
     use proxima_core::{
-        AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Identity, Owner, OwnerRef,
-        RevalidationConfig, UserId,
+        AccessError, AccessKind, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
+        GroupId, Identity, Owner, OwnerAccessPort, OwnerRef, OwnerRoles, RevalidationConfig, Role,
+        UserId,
     };
     use tokio::sync::mpsc;
     use tokio::time;
@@ -879,7 +883,7 @@ mod tests {
         host_guard_layer, mcp_auth_layer_with_sessions,
     };
     use crate::McpServerError;
-    use crate::auth::McpEdgeAuth;
+    use crate::auth::{McpAuthContext, McpEdgeAuth};
     use crate::session::{McpSessionBindings, owner_key};
 
     /// Host authenticator that accepts exactly `good-token` for `owner`.
@@ -940,6 +944,267 @@ mod tests {
                 RevalidationConfig::default(),
                 None,
             ))
+    }
+
+    /// One operator, one host, many parties: the bearer authenticates a
+    /// single forwarder subject whose resolved role map carries no Group at
+    /// all. Which party a request acts for is the owner selection, and the
+    /// role for it comes from the access port.
+    struct ForwarderAuth {
+        subject: UserId,
+    }
+
+    #[async_trait]
+    impl Authenticator for ForwarderAuth {
+        async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
+            match creds {
+                Credentials::Bearer(token) if token == "good-token" => Ok(
+                    AuthzContext::for_subject(self.subject, AuthPath::HostBearer),
+                ),
+                Credentials::Bearer(_) => Err(AuthError::InvalidCredentials),
+            }
+        }
+    }
+
+    /// Access port that answers one owner at a time and never enumerates:
+    /// its eager map is empty, so every accepted party in these tests was
+    /// resolved through [`OwnerAccessPort::resolve_group_role`].
+    struct PerOwnerAccess {
+        subject: UserId,
+        roles: HashMap<Owner, Role>,
+        calls: Arc<AtomicU64>,
+    }
+
+    impl PerOwnerAccess {
+        fn new(subject: UserId, roles: impl IntoIterator<Item = (Owner, Role)>) -> Self {
+            Self {
+                subject,
+                roles: roles.into_iter().collect(),
+                calls: Arc::new(AtomicU64::new(0)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl OwnerAccessPort for PerOwnerAccess {
+        async fn resolve_roles_for_subject(
+            &self,
+            subject: UserId,
+        ) -> Result<OwnerRoles, AccessError> {
+            OwnerRoles::for_subject(subject, [])
+        }
+
+        async fn resolve_group_role(
+            &self,
+            subject: UserId,
+            group: GroupId,
+        ) -> Result<Option<Role>, AccessError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if subject != self.subject {
+                return Ok(None);
+            }
+            Ok(self.roles.get(&OwnerRef::Group(group)).copied())
+        }
+    }
+
+    /// Production stack with an access port attached, over a stub that
+    /// reports what the request was narrowed to.
+    fn forwarder_app(
+        authenticator: Arc<dyn Authenticator>,
+        owner_access: Arc<dyn OwnerAccessPort>,
+        sessions: McpSessionBindings,
+    ) -> Router {
+        let auth = McpEdgeAuth::headless()
+            .with_host(authenticator)
+            .with_owner_access(owner_access);
+        Router::new()
+            .route("/mcp", any(narrowed_owners))
+            .layer(mcp_auth_layer_with_sessions(
+                Arc::new(auth),
+                sessions,
+                RevalidationConfig::default(),
+                None,
+            ))
+    }
+
+    /// Body = the owners this request may read, so a test can see the
+    /// narrowing and not just the status code.
+    async fn narrowed_owners(request: Request<Body>) -> Response {
+        let Some(ctx) = request.extensions().get::<McpAuthContext>() else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        let mut owners: Vec<String> = ctx
+            .authz
+            .readable_owners(AccessKind::Goal)
+            .into_iter()
+            .map(owner_key)
+            .collect();
+        owners.sort();
+        (StatusCode::OK, owners.join(",")).into_response()
+    }
+
+    async fn narrowed_to(app: Router, request: Request<Body>) -> (StatusCode, Bytes) {
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, body)
+    }
+
+    fn group_owner() -> Owner {
+        OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()))
+    }
+
+    // One forwarder subject, one party per request: each request is
+    // narrowed to exactly the party it selected, and a party the port does
+    // not resolve is refused with today's status.
+    #[tokio::test]
+    async fn a_forwarder_is_narrowed_to_one_party_per_request() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let first = group_owner();
+        let second = group_owner();
+        let unresolved = group_owner();
+        let app = forwarder_app(
+            Arc::new(ForwarderAuth { subject }),
+            Arc::new(PerOwnerAccess::new(
+                subject,
+                [(first, Role::editor()), (second, Role::viewer())],
+            )),
+            McpSessionBindings::new(),
+        );
+
+        for party in [first, second, first] {
+            let request = mcp_request("Bearer good-token")
+                .header("X-Proxima-Owner", owner_key(party))
+                .body(Body::empty())
+                .unwrap();
+            let (status, body) = narrowed_to(app.clone(), request).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                body,
+                Bytes::from(owner_key(party)),
+                "a request reads exactly the party it selected"
+            );
+        }
+
+        let request = mcp_request("Bearer good-token")
+            .header("X-Proxima-Owner", owner_key(unresolved))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(app, request).await, StatusCode::UNAUTHORIZED);
+    }
+
+    // The session binding still decides WHICH party a request acts for; the
+    // port still decides whether that party resolves. A forwarder bound to
+    // one party may present another by header on a session-less request and
+    // is narrowed to that one, for that request only.
+    #[tokio::test]
+    async fn a_bound_session_and_a_later_owner_header_each_resolve_per_request() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let bound = group_owner();
+        let other = group_owner();
+        let sessions = McpSessionBindings::new();
+        sessions.bind("sess-1", bound).await;
+        let app = forwarder_app(
+            Arc::new(ForwarderAuth { subject }),
+            Arc::new(PerOwnerAccess::new(
+                subject,
+                [(bound, Role::editor()), (other, Role::editor())],
+            )),
+            sessions,
+        );
+
+        let via_session = mcp_request("Bearer good-token")
+            .header("Mcp-Session-Id", "sess-1")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            narrowed_to(app.clone(), via_session).await,
+            (StatusCode::OK, Bytes::from(owner_key(bound)))
+        );
+
+        let via_header = mcp_request("Bearer good-token")
+            .header("X-Proxima-Owner", owner_key(other))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            narrowed_to(app.clone(), via_header).await,
+            (StatusCode::OK, Bytes::from(owner_key(other)))
+        );
+
+        let back_via_session = mcp_request("Bearer good-token")
+            .header("Mcp-Session-Id", "sess-1")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            narrowed_to(app, back_via_session).await,
+            (StatusCode::OK, Bytes::from(owner_key(bound))),
+            "the binding is untouched by the other party's request"
+        );
+    }
+
+    // A session whose bound party the port refuses answers 404, the
+    // session-path refusal this edge already gave.
+    #[tokio::test]
+    async fn a_session_bound_to_an_unresolvable_party_is_not_found() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let sessions = McpSessionBindings::new();
+        sessions.bind("sess-1", group_owner()).await;
+        let app = forwarder_app(
+            Arc::new(ForwarderAuth { subject }),
+            Arc::new(PerOwnerAccess::new(subject, [])),
+            sessions,
+        );
+
+        let request = mcp_request("Bearer good-token")
+            .header("Mcp-Session-Id", "sess-1")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(app, request).await, StatusCode::NOT_FOUND);
+    }
+
+    // Without an access port the edge is what it was: the authenticated
+    // role map is the only answer, and a Group it lacks is refused.
+    #[tokio::test]
+    async fn an_edge_without_an_access_port_refuses_an_unmapped_party() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let party = group_owner();
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(ForwarderAuth { subject }));
+        let app =
+            Router::new()
+                .route("/mcp", any(narrowed_owners))
+                .layer(mcp_auth_layer_with_sessions(
+                    Arc::new(auth),
+                    McpSessionBindings::new(),
+                    RevalidationConfig::default(),
+                    None,
+                ));
+
+        let request = mcp_request("Bearer good-token")
+            .header("X-Proxima-Owner", owner_key(party))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(app, request).await, StatusCode::UNAUTHORIZED);
+    }
+
+    // An eager-map host is unchanged: an owner the authenticated map
+    // already carries is answered from it, and the port is never asked.
+    #[tokio::test]
+    async fn an_owner_the_eager_map_carries_never_reaches_the_access_port() {
+        let owner = user_owner();
+        let access = PerOwnerAccess::new(UserId::new(uuid::Uuid::now_v7()), []);
+        let calls = Arc::clone(&access.calls);
+        let app = forwarder_app(
+            Arc::new(TokenAuth { owner }),
+            Arc::new(access),
+            McpSessionBindings::new(),
+        );
+
+        let request = mcp_request("Bearer good-token")
+            .header("X-Proxima-Owner", owner_key(owner))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(app, request).await, StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     fn mcp_request(bearer: &str) -> axum::http::request::Builder {

@@ -228,6 +228,18 @@ impl OwnerRoles {
         Ok(Self { subject, roles })
     }
 
+    /// The same map with one more host-resolved Group role — the entry the
+    /// resolver answered on demand instead of in the eager enumeration.
+    /// Same fold as [`Self::for_subject`]: the entry is inserted, a later
+    /// answer replaces an earlier one. Typed on [`GroupId`] because Personal
+    /// roles are derived by the kernel rules and cannot be resolved, so the
+    /// fold has nothing to refuse.
+    #[must_use]
+    pub fn with_group_role(mut self, group: GroupId, role: Role) -> Self {
+        self.roles.insert(OwnerRef::Group(group), role);
+        self
+    }
+
     #[must_use]
     pub const fn subject(&self) -> UserId {
         self.subject
@@ -297,6 +309,39 @@ pub trait OwnerAccessPort: Send + Sync {
     ///
     /// Returns [`AccessError`] when the host cannot resolve access roles.
     async fn resolve_roles_for_subject(&self, subject: UserId) -> Result<OwnerRoles, AccessError>;
+
+    /// Resolve only the role `subject` holds in `group`, on demand.
+    ///
+    /// Same host-resolved currency as [`Self::resolve_roles_for_subject`],
+    /// asked one Group at a time. A host that serves many parties from one
+    /// trusted forwarder subject cannot bound the eager map — it grows with
+    /// the number of Group owners, not with the request — so the edge asks
+    /// per selected Group instead. `Ok(None)` is "no role", which every
+    /// caller must treat as a refusal; it is never a reason to fall back to
+    /// a caller-supplied role.
+    ///
+    /// Typed on [`GroupId`]: a Personal owner is a kernel rule (the subject's
+    /// own is `personal`, anyone else's is no role) and never a resolver's
+    /// answer, so it cannot be asked here.
+    ///
+    /// The default implementation answers out of the eager map, so every
+    /// existing implementor keeps its current behavior byte for byte.
+    /// Override it when a single-group probe is cheaper than the full
+    /// enumeration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccessError`] when the host cannot resolve access roles.
+    async fn resolve_group_role(
+        &self,
+        subject: UserId,
+        group: GroupId,
+    ) -> Result<Option<Role>, AccessError> {
+        Ok(self
+            .resolve_roles_for_subject(subject)
+            .await?
+            .role_for(&OwnerRef::Group(group)))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::Type)]
@@ -427,6 +472,65 @@ mod tests {
             OwnerRoles::for_subject(subject, [(OwnerRef::Personal(subject), Role::admin())])
                 .is_err()
         );
+    }
+
+    /// A port that implements only the eager enumeration still answers the
+    /// per-group question, through the default method.
+    #[tokio::test]
+    async fn the_default_per_group_method_answers_out_of_the_eager_map() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let mapped = GroupId::new(uuid::Uuid::now_v7());
+        let unmapped = GroupId::new(uuid::Uuid::now_v7());
+        let port = EagerOnlyAccess {
+            roles: OwnerRoles::for_subject(subject, [(OwnerRef::Group(mapped), Role::editor())])
+                .unwrap(),
+        };
+
+        assert_eq!(
+            port.resolve_group_role(subject, mapped).await.unwrap(),
+            Some(Role::editor())
+        );
+        assert_eq!(
+            port.resolve_group_role(subject, unmapped).await.unwrap(),
+            None,
+            "a group the map lacks is no role, never a default one"
+        );
+    }
+
+    /// The fold is the same one `for_subject` performs: the entry lands in
+    /// the map and the derived personal entry is untouched.
+    #[test]
+    fn a_group_role_folds_into_the_map() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let group = GroupId::new(uuid::Uuid::now_v7());
+        let roles = OwnerRoles::for_subject(subject, [])
+            .unwrap()
+            .with_group_role(group, Role::viewer())
+            .with_group_role(group, Role::editor());
+        assert_eq!(
+            roles.role_for(&OwnerRef::Group(group)),
+            Some(Role::editor())
+        );
+        assert_eq!(
+            roles.role_for(&OwnerRef::Personal(subject)),
+            Some(Role::personal())
+        );
+    }
+
+    /// Implements the eager method only: the per-group method it inherits is
+    /// exactly the default under test.
+    struct EagerOnlyAccess {
+        roles: OwnerRoles,
+    }
+
+    #[async_trait]
+    impl OwnerAccessPort for EagerOnlyAccess {
+        async fn resolve_roles_for_subject(
+            &self,
+            _subject: UserId,
+        ) -> Result<OwnerRoles, AccessError> {
+            Ok(self.roles.clone())
+        }
     }
 
     #[test]

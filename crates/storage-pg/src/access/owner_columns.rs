@@ -605,6 +605,35 @@ pub(crate) async fn has_group_relation(
     .map_err(map_err)
 }
 
+/// Every relation `member_user_id` holds on `group_id`, in the order
+/// [`resolve_membership`] enumerates them — one probe on the primary key
+/// instead of the member's whole membership. The caller folds these through
+/// the same [`OwnerRoles`](proxima_core::OwnerRoles) path as the full
+/// enumeration, so the answer is byte-identical to the eager map's and
+/// bounded by one group whatever the member's fan-out.
+///
+/// # Errors
+///
+/// Returns `Internal` on sqlx failure.
+pub(crate) async fn group_relations_for_member(
+    pool: &PgPool,
+    group_id: GroupId,
+    member_user_id: UserId,
+) -> Result<Vec<Relation>, StorageError> {
+    sqlx::query_scalar(
+        "SELECT relation
+           FROM proxima_core.group_memberships
+          WHERE group_id = $1
+            AND member_user_id = $2
+          ORDER BY relation",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_user_id.into_inner())
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)
+}
+
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.

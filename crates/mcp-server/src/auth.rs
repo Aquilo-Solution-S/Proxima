@@ -7,7 +7,10 @@
 
 use std::sync::Arc;
 
-use proxima_core::{AuthPath, Authenticator, AuthzContext, Credentials, Owner, ToolScope};
+use proxima_core::{
+    AuthPath, Authenticator, AuthzContext, Credentials, GroupId, Owner, OwnerAccessPort, OwnerRef,
+    ToolScope,
+};
 
 const RESERVED_PXW_PREFIX: &str = "pxw_";
 const RESERVED_PXM_PREFIX: &str = "pxm_";
@@ -60,12 +63,43 @@ impl ResolvedAuth {
         let authz = self.authz.narrowed_to_owner(owner)?;
         Some(McpAuthContext::bound(authz, owner))
     }
+
+    /// Whether the eager map already carries the selected owner.
+    fn carries(&self, owner: Owner) -> bool {
+        self.authz.role_for_owner(&owner).is_some()
+    }
+
+    /// The loop back through the port for one Group the eager map lacks:
+    /// ask, fold the answer into the map, rejoin. There is no second way to
+    /// narrow — [`Self::narrowed_to_owner`] reads the map afterwards under
+    /// the same rules as for every eagerly resolved entry. An absent port,
+    /// `Ok(None)` and an error all fold nothing, so the map is exactly what
+    /// it was and the one path refuses as it always did.
+    async fn filled_from(self, port: Option<&dyn OwnerAccessPort>, group: GroupId) -> Option<Self> {
+        let (Some(port), Some(subject)) = (port, self.authz.subject()) else {
+            return Some(self);
+        };
+        let role = port
+            .resolve_group_role(subject, group)
+            .await
+            .unwrap_or_else(|err| {
+                tracing::warn!(error = %err, "mcp edge: per-group access resolution failed");
+                None
+            });
+        match role {
+            Some(role) => Some(Self {
+                authz: self.authz.with_host_resolved_role(group, role)?,
+            }),
+            None => Some(self),
+        }
+    }
 }
 
 /// Edge resolver replacing the probe-by-UUID auth store. Composition
 /// decides whether a host authenticator exists.
 pub struct McpEdgeAuth {
     host: Option<Arc<dyn Authenticator>>,
+    owner_access: Option<Arc<dyn OwnerAccessPort>>,
     tool_scope: ToolScope,
 }
 
@@ -73,6 +107,7 @@ impl std::fmt::Debug for McpEdgeAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpEdgeAuth")
             .field("host_path", &self.host.is_some())
+            .field("per_owner_resolution", &self.owner_access.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -83,6 +118,7 @@ impl McpEdgeAuth {
     pub fn headless() -> Self {
         Self {
             host: None,
+            owner_access: None,
             tool_scope: ToolScope::All,
         }
     }
@@ -106,10 +142,46 @@ impl McpEdgeAuth {
         self
     }
 
+    /// Attach the owner-access port so a Group owner the authenticated role
+    /// map does not carry can still be resolved, one owner per request.
+    ///
+    /// For a host that serves many parties through a single trusted
+    /// forwarder subject: the eager map that authentication produced grows
+    /// with the number of Group owners, not with the request, so such a
+    /// host resolves nothing eagerly and everything per selected owner.
+    /// Without this port the edge behaves exactly as before — the eager map
+    /// is the only answer, and an owner missing from it is refused.
+    #[must_use]
+    pub fn with_owner_access(mut self, owner_access: Arc<dyn OwnerAccessPort>) -> Self {
+        self.owner_access = Some(owner_access);
+        self
+    }
+
     pub async fn resolve(&self, raw_bearer: &str, owner: Owner) -> Option<McpAuthContext> {
-        self.resolve_unbound(raw_bearer)
-            .await?
-            .narrowed_to_owner(owner)
+        let resolved = self.resolve_unbound(raw_bearer).await?;
+        self.narrow_to_owner(resolved, owner).await
+    }
+
+    /// Bind an authenticated request to its selected owner through the one
+    /// narrowing path. The eager map is what authentication pre-filled; a
+    /// Group it lacks takes the loop through the port and rejoins the map
+    /// before [`ResolvedAuth::narrowed_to_owner`] reads it. A Personal
+    /// owner cannot take that loop — the port is typed on `GroupId` — and a
+    /// Group the map carries never needs to.
+    pub(crate) async fn narrow_to_owner(
+        &self,
+        resolved: ResolvedAuth,
+        owner: Owner,
+    ) -> Option<McpAuthContext> {
+        let resolved = match owner {
+            OwnerRef::Group(group) if !resolved.carries(owner) => {
+                resolved
+                    .filled_from(self.owner_access.as_deref(), group)
+                    .await?
+            }
+            OwnerRef::Group(_) | OwnerRef::Personal(_) => resolved,
+        };
+        resolved.narrowed_to_owner(owner)
     }
 
     /// Authenticate `raw_bearer` on an accepted path without narrowing to

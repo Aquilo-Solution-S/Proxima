@@ -3,7 +3,8 @@ pub mod scope_surfaces;
 
 use async_trait::async_trait;
 use proxima_core::{
-    AccessError, OwnerAccessPort, OwnerRef, OwnerRoles, Relation, StorageError, UserId,
+    AccessError, GroupId, OwnerAccessPort, OwnerRef, OwnerRoles, Relation, Role, StorageError,
+    UserId,
 };
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -68,6 +69,30 @@ impl OwnerAccessPort for PgOwnerAccessResolver {
                 .into_iter()
                 .map(|row| (OwnerRef::Group(row.group), row.relation.role())),
         )
+    }
+
+    /// One probe on the membership primary key instead of the member's whole
+    /// enumeration, folded through the same [`OwnerRoles::for_subject`] path
+    /// the eager map uses — so the answer is byte-identical to the default
+    /// method's and bounded by one group however many the subject belongs
+    /// to. That bound is the point for a host whose single forwarder subject
+    /// acts for a different party per request.
+    async fn resolve_group_role(
+        &self,
+        subject: UserId,
+        group: GroupId,
+    ) -> Result<Option<Role>, AccessError> {
+        let owner = OwnerRef::Group(group);
+        let relations = owner_columns::group_relations_for_member(&self.pool, group, subject)
+            .await
+            .map_err(|err| AccessError::Resolution(err.to_string()))?;
+        let roles = OwnerRoles::for_subject(
+            subject,
+            relations
+                .into_iter()
+                .map(|relation| (owner, relation.role())),
+        )?;
+        Ok(roles.role_for(&owner))
     }
 }
 
