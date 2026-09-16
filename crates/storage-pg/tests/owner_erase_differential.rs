@@ -109,7 +109,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use proxima_core::publication::{
-    PublicationDraft, PublicationLimits, PublicationPlan, PublicationSource,
+    PublicationDraft, PublicationExtensions, PublicationLimits, PublicationPlan, PublicationSource,
 };
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
@@ -234,6 +234,7 @@ fn published(owner: OwnerRef, note: &str, write: AuthorizedFactWrite) -> Authori
             source,
             owner,
             Some("trusted/runner".to_owned()),
+            PublicationExtensions::new(),
             serde_json::json!({ "note": note }),
         ),
         PublicationLimits::default(),

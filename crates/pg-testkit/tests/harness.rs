@@ -90,10 +90,39 @@ async fn uuid_v7_now_is_not_swept_as_untracked_grace() {
     create_db(&name).await.expect("create");
     // Fresh clones are newer than process_start - 5m, so the untracked
     // prefix path must not delete them. The tracking row is also newer
-    // than process_start, so the tracked path must not either.
+    // than now() - 5m, so the tracked path must not either.
     let dropped = sweep_stale_test_dbs().await.expect("sweep");
     let _ = dropped;
     assert!(exists(&name).await, "live clone must survive a later sweep");
+    drop_db(&name).await.expect("cleanup");
+}
+
+#[tokio::test]
+async fn recent_tracked_clone_survives_a_later_process_start() {
+    let name = unique_db_name("proxima_test");
+    create_db(&name).await.expect("create");
+    let mut conn = PgConnection::connect(&admin_url())
+        .await
+        .expect("admin connect");
+    // A sibling nextest binary's process_start is later than this row, but
+    // the clone is still inside the 5-minute grace. Sweeping on
+    // `created_at < process_start` would DROP it between create_db and boot.
+    sqlx::query(
+        "UPDATE _proxima_test.databases
+         SET created_at = now() - interval '4 minutes'
+         WHERE db_name = $1",
+    )
+    .bind(&name)
+    .execute(&mut conn)
+    .await
+    .expect("backdate inside grace");
+    conn.close().await.expect("close");
+
+    let _dropped = sweep_stale_test_dbs().await.expect("sweep");
+    assert!(
+        exists(&name).await,
+        "in-flight clone must survive a later binary's sweep"
+    );
     drop_db(&name).await.expect("cleanup");
 }
 

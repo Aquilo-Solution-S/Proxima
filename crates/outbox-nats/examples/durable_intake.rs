@@ -320,6 +320,7 @@ mod tests {
                 time: None,
                 proximaowner: None,
                 proximamodel: None,
+                extensions: std::collections::BTreeMap::new(),
                 data: serde_json::json!({}),
             },
         }

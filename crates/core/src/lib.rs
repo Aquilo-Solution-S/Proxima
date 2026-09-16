@@ -91,8 +91,10 @@ pub use payload::*;
 pub use payload_contract::assert_no_serde_json_value_fields;
 pub use publication::{
     CLOUDEVENTS_DATA_CONTENT_TYPE, CLOUDEVENTS_SPEC_VERSION, DEFAULT_MAX_PAYLOAD_BYTES,
-    DEFAULT_MAX_PENDING, PublicationConfig, PublicationDraft, PublicationError, PublicationLimits,
-    PublicationPlan, PublicationSource, PublicationSourceError, SealedPublication, data_schema_uri,
+    DEFAULT_MAX_PENDING, ExtensionValue, MAX_EXTENSION_NAME_CHARS, MAX_EXTENSION_VALUE_BYTES,
+    MAX_PUBLICATION_EXTENSIONS, PublicationConfig, PublicationDraft, PublicationError,
+    PublicationExtensions, PublicationExtensionsError, PublicationLimits, PublicationPlan,
+    PublicationSource, PublicationSourceError, SealedPublication, data_schema_uri,
 };
 pub use read_models::*;
 pub use scope::{ScopeDecl, ScopeKind, ScopeRef, scope_set};

@@ -9,7 +9,8 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use proxima_core::publication::{
-    PublicationDraft, PublicationLimits, PublicationPlan, PublicationSource, SealedPublication,
+    PublicationDraft, PublicationExtensions, PublicationLimits, PublicationPlan, PublicationSource,
+    SealedPublication,
 };
 use proxima_core::storage_ports::publication::{
     AckOutcome, BrokerReceipt, ClaimToken, PublicationOutboxPort, PublicationRetentionPort,
@@ -67,8 +68,22 @@ fn draft_for(owner: Owner, payload: &ListenableProbeV1) -> PublicationDraft {
         source(),
         owner,
         Some("trusted/runner".to_owned()),
+        PublicationExtensions::new(),
         serde_json::to_value(payload).expect("the probe serializes"),
     )
+}
+
+/// The orchestration context a host binds to its authorization context —
+/// bound out of alphabetical order, because the envelope must not depend on
+/// the order the host bound them in.
+fn host_extensions() -> PublicationExtensions {
+    PublicationExtensions::new()
+        .with("stepid", "step-7")
+        .expect("a step id is a legal attribute")
+        .with("runid", "run-3")
+        .expect("a run id is a legal attribute")
+        .with("attempt", 2)
+        .expect("an integer is a legal value")
 }
 
 /// The capture instruction core would hand storage: the draft plus the
@@ -142,6 +157,22 @@ async fn ingest_listenable_under(
     let command = fact_command(ListenableProbeV1::SCHEMA_ID, ingest_key);
     let authorized =
         witness(owner, command).with_publication_for_tests(plan_for(*owner, payload, limits));
+    pg.ingest_fact_with_typed_sidecar(&authorized, None).await
+}
+
+/// The same route with host-bound extension attributes on the draft —
+/// what core produces from an authorization context that carries them.
+async fn ingest_listenable_with_extensions(
+    pg: &PgStorage,
+    owner: &Owner,
+    payload: &ListenableProbeV1,
+    extensions: PublicationExtensions,
+) -> Result<FactIngestOutcome, StorageError> {
+    let command = fact_command(ListenableProbeV1::SCHEMA_ID, None);
+    let mut draft = draft_for(*owner, payload);
+    draft.extensions = extensions;
+    let authorized = witness(owner, command)
+        .with_publication_for_tests(PublicationPlan::new(draft, PublicationLimits::default()));
     pg.ingest_fact_with_typed_sidecar(&authorized, None).await
 }
 
@@ -257,6 +288,80 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
     assert_eq!(parsed["time"], expected);
 
     assert_eq!(digest, blake3::hash(&envelope).as_bytes().to_vec());
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// Bytes are bytes: no migration, no column, no storage-side awareness.
+/// The captured row carries whatever core sealed, extension attributes
+/// included, in name order between the substrate's own attributes and
+/// `data` — and the digest is over exactly those bytes.
+#[tokio::test]
+async fn host_bound_extension_attributes_reach_the_captured_row() {
+    let (pg, db) = fresh_pg("pub_capture_ext").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+
+    let payload = probe("the lock gates hold");
+    ingest_listenable_with_extensions(&pg, &owner, &payload, host_extensions())
+        .await
+        .expect("a listenable write with bound extensions commits");
+
+    let (envelope, digest): (Vec<u8>, Vec<u8>) =
+        sqlx::query_as("SELECT envelope, envelope_digest FROM proxima_core.publication_outbox")
+            .fetch_one(&pool)
+            .await
+            .expect("exactly one row");
+    let text = String::from_utf8(envelope.clone()).expect("the envelope is UTF-8");
+    let mut cursor = 0usize;
+    for key in [
+        "\"proximamodel\"",
+        "\"attempt\":2",
+        "\"runid\":\"run-3\"",
+        "\"stepid\":\"step-7\"",
+        "\"data\"",
+    ] {
+        let at = text[cursor..]
+            .find(key)
+            .unwrap_or_else(|| panic!("{key} missing or out of order in {text}"));
+        cursor += at + key.len();
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&envelope).expect("valid JSON");
+    assert_eq!(parsed["runid"], "run-3");
+    assert_eq!(parsed["stepid"], "step-7");
+    assert_eq!(parsed["attempt"], 2);
+    assert_eq!(parsed["proximamodel"], "trusted/runner");
+    assert_eq!(digest, blake3::hash(&envelope).as_bytes().to_vec());
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// An unbound set adds nothing at all — not an empty object, not a null.
+#[tokio::test]
+async fn an_unbound_extension_set_adds_no_attribute() {
+    let (pg, db) = fresh_pg("pub_capture_no_ext").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+
+    let payload = probe("no orchestration context here");
+    ingest_listenable(&pg, &owner, &payload, None)
+        .await
+        .expect("a listenable write commits");
+
+    let envelope: Vec<u8> =
+        sqlx::query_scalar("SELECT envelope FROM proxima_core.publication_outbox")
+            .fetch_one(&pool)
+            .await
+            .expect("exactly one row");
+    let text = String::from_utf8(envelope).expect("the envelope is UTF-8");
+    assert!(
+        text.contains("\"proximamodel\":\"trusted/runner\",\"data\""),
+        "{text}"
+    );
 
     drop(pg);
     let _ = drop_db(&db).await;

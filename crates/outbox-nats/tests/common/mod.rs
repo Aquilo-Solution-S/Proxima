@@ -13,7 +13,7 @@ use std::time::Duration;
 use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
 
 use proxima_core::publication::{
-    PublicationDraft, PublicationLimits, PublicationPlan, PublicationSource,
+    PublicationDraft, PublicationExtensions, PublicationLimits, PublicationPlan, PublicationSource,
 };
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::storage_ports::publication::PublicationOutboxPort;
@@ -308,6 +308,7 @@ impl Fixture {
                 source,
                 owner,
                 Some("trusted/runner".to_owned()),
+                PublicationExtensions::new(),
                 serde_json::to_value(&payload).expect("the probe serializes"),
             ),
             PublicationLimits::default(),

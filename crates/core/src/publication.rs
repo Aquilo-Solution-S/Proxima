@@ -13,6 +13,8 @@
 //! - [`PublicationDraft`] — everything core resolves BEFORE storage is
 //!   called. It is plain `Clone` data so the bounded write retry can re-run
 //!   the whole transaction body without re-deriving it.
+//! - [`PublicationExtensions`] — the host-bound `CloudEvents` extension
+//!   attributes every captured event of this deployment carries.
 //! - [`SealedPublication`] — the envelope bytes and their digest, sealed
 //!   against the `t` storage minted.
 //!
@@ -20,6 +22,7 @@
 //! [`crate::storage_ports::publication`]; it is host-only and is reachable
 //! from no flavor-facing facade.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -201,6 +204,311 @@ impl PublicationConfig {
     }
 }
 
+/// Ceiling on host-bound extension attributes carried by one event.
+///
+/// Small on purpose: these attributes travel on EVERY captured Fact of a
+/// listenable schema, and a broker header set that grows with the host's
+/// imagination is a cost every consumer pays forever.
+pub const MAX_PUBLICATION_EXTENSIONS: usize = 8;
+
+/// `CloudEvents` 1.0.2 §3.1 ceiling on an extension attribute NAME.
+pub const MAX_EXTENSION_NAME_CHARS: usize = 20;
+
+/// Ceiling on one string-valued extension attribute, in bytes.
+pub const MAX_EXTENSION_VALUE_BYTES: usize = 256;
+
+/// The `CloudEvents` 1.0.2 core context attribute names, which an extension
+/// may never shadow. `data_base64` is included although this substrate only
+/// emits structured JSON: a consumer that re-encodes into binary mode would
+/// otherwise find two things claiming that name.
+const CLOUDEVENTS_CORE_ATTRIBUTES: [&str; 10] = [
+    "specversion",
+    "id",
+    "source",
+    "type",
+    "datacontenttype",
+    "dataschema",
+    "subject",
+    "time",
+    "data",
+    "data_base64",
+];
+
+/// Extension-name prefix this substrate keeps for itself (`proximaowner`,
+/// `proximamodel`, and whatever a later release adds).
+const PROXIMA_EXTENSION_PREFIX: &str = "proxima";
+
+/// One extension attribute's value.
+///
+/// The three types the `CloudEvents` 1.0.2 JSON format serializes without a
+/// canonicalization question: a JSON string, a JSON number that is a 32-bit
+/// signed integer (the spec's `Integer` is `int32`), and a JSON boolean.
+/// `Timestamp`, `URI` and `Binary` are deliberately absent — each has a
+/// string rendering the host can produce itself, and each would otherwise
+/// give the substrate a second chance to format it differently.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(untagged)]
+pub enum ExtensionValue {
+    String(String),
+    Integer(i32),
+    Boolean(bool),
+}
+
+impl From<String> for ExtensionValue {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
+impl From<&str> for ExtensionValue {
+    fn from(value: &str) -> Self {
+        Self::String(value.to_owned())
+    }
+}
+
+impl From<i32> for ExtensionValue {
+    fn from(value: i32) -> Self {
+        Self::Integer(value)
+    }
+}
+
+impl From<bool> for ExtensionValue {
+    fn from(value: bool) -> Self {
+        Self::Boolean(value)
+    }
+}
+
+/// A validated, name-ordered, bounded set of `CloudEvents` extension
+/// attributes a HOST binds to every Fact it captures.
+///
+/// Name-ordered because the envelope bytes are the stored artifact: the
+/// digest, the broker's dedup key and every consumer's signature check are
+/// over them, so the attribute order cannot depend on the order a host
+/// happened to bind things in. A `BTreeMap` makes "sorted by name" a
+/// property of the type rather than of the caller.
+///
+/// Validation is at binding time, not at seal time: an attribute a
+/// consumer would refuse is a host misconfiguration, and the refusal
+/// belongs at the boundary that produced it rather than on the first Fact
+/// write hours later.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PublicationExtensions(BTreeMap<String, ExtensionValue>);
+
+impl PublicationExtensions {
+    /// The empty set. A deployment that binds nothing emits no extension
+    /// attributes at all.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Bind one more attribute.
+    ///
+    /// # Errors
+    ///
+    /// [`PublicationExtensionsError`], one variant per rule: an illegal or
+    /// over-long name, a core or reserved name, an empty/over-long/control
+    /// character string value, a name already bound, or more than
+    /// [`MAX_PUBLICATION_EXTENSIONS`] attributes.
+    pub fn with(
+        mut self,
+        name: impl Into<String>,
+        value: impl Into<ExtensionValue>,
+    ) -> Result<Self, PublicationExtensionsError> {
+        self.bind(name.into(), value.into())?;
+        Ok(self)
+    }
+
+    /// Fold `other` in, keeping the set additive: a name bound on either
+    /// side is an error rather than an overwrite. Nothing can replace or
+    /// clear provenance a host already bound.
+    ///
+    /// # Errors
+    ///
+    /// [`PublicationExtensionsError::DuplicateName`] for a name both sets
+    /// carry, [`PublicationExtensionsError::TooMany`] when the union is
+    /// over the ceiling.
+    pub fn merged(mut self, other: Self) -> Result<Self, PublicationExtensionsError> {
+        for (name, value) in other.0 {
+            self.bind(name, value)?;
+        }
+        Ok(self)
+    }
+
+    fn bind(
+        &mut self,
+        name: String,
+        value: ExtensionValue,
+    ) -> Result<(), PublicationExtensionsError> {
+        validate_extension_name(&name)?;
+        validate_extension_value(&name, &value)?;
+        if self.0.contains_key(&name) {
+            return Err(PublicationExtensionsError::DuplicateName { name });
+        }
+        if self.0.len() >= MAX_PUBLICATION_EXTENSIONS {
+            return Err(PublicationExtensionsError::TooMany {
+                name,
+                max: MAX_PUBLICATION_EXTENSIONS,
+            });
+        }
+        self.0.insert(name, value);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&ExtensionValue> {
+        self.0.get(name)
+    }
+
+    /// The bound attributes in name order — the order they serialize in.
+    pub fn iter(&self) -> ExtensionEntries<'_> {
+        self.0.iter().map(borrow_entry as fn(_) -> _)
+    }
+}
+
+/// One bound attribute, borrowed.
+pub type ExtensionEntry<'a> = (&'a str, &'a ExtensionValue);
+
+/// The iterator [`PublicationExtensions::iter`] returns. Named rather than
+/// `impl Iterator` so `&PublicationExtensions` can also be `IntoIterator`.
+pub type ExtensionEntries<'a> = std::iter::Map<
+    std::collections::btree_map::Iter<'a, String, ExtensionValue>,
+    fn((&'a String, &'a ExtensionValue)) -> ExtensionEntry<'a>,
+>;
+
+fn borrow_entry<'a>((name, value): (&'a String, &'a ExtensionValue)) -> ExtensionEntry<'a> {
+    (name.as_str(), value)
+}
+
+impl<'a> IntoIterator for &'a PublicationExtensions {
+    type Item = ExtensionEntry<'a>;
+    type IntoIter = ExtensionEntries<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl serde::Serialize for PublicationExtensions {
+    /// Serializes as a MAP so the envelope can flatten it inline, in name
+    /// order, between the substrate's own attributes and `data`.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(self.0.iter())
+    }
+}
+
+/// Why a host-bound extension attribute was refused.
+///
+/// A configuration fault in the host, never a caller fault: nothing on the
+/// wire can reach the binder.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PublicationExtensionsError {
+    #[error("extension attribute name must not be empty")]
+    EmptyName,
+    #[error(
+        "extension attribute name {name:?} must use only lowercase letters and digits \
+         (CloudEvents 1.0.2 §3.1)"
+    )]
+    IllegalNameCharacter { name: String },
+    #[error(
+        "extension attribute name {name:?} is {chars} characters, \
+         over the {max}-character limit"
+    )]
+    NameTooLong {
+        name: String,
+        chars: usize,
+        max: usize,
+    },
+    #[error("extension attribute name {name:?} is a CloudEvents core context attribute")]
+    CoreAttributeName { name: String },
+    #[error("extension attribute name {name:?} uses the reserved {prefix:?} prefix")]
+    ReservedName { name: String, prefix: &'static str },
+    #[error("extension attribute {name:?} must not carry an empty string value")]
+    EmptyValue { name: String },
+    #[error("extension attribute {name:?} must not carry control characters")]
+    IllegalValueCharacter { name: String },
+    #[error("extension attribute {name:?} is {bytes} bytes, over the {max}-byte limit")]
+    ValueTooLong {
+        name: String,
+        bytes: usize,
+        max: usize,
+    },
+    #[error("extension attribute {name:?} is already bound; a bound attribute is never replaced")]
+    DuplicateName { name: String },
+    #[error("extension attribute {name:?} is over the {max}-attribute limit")]
+    TooMany { name: String, max: usize },
+}
+
+fn validate_extension_name(name: &str) -> Result<(), PublicationExtensionsError> {
+    if name.is_empty() {
+        return Err(PublicationExtensionsError::EmptyName);
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    {
+        return Err(PublicationExtensionsError::IllegalNameCharacter {
+            name: name.to_owned(),
+        });
+    }
+    if name.len() > MAX_EXTENSION_NAME_CHARS {
+        return Err(PublicationExtensionsError::NameTooLong {
+            name: name.to_owned(),
+            chars: name.len(),
+            max: MAX_EXTENSION_NAME_CHARS,
+        });
+    }
+    if CLOUDEVENTS_CORE_ATTRIBUTES.contains(&name) {
+        return Err(PublicationExtensionsError::CoreAttributeName {
+            name: name.to_owned(),
+        });
+    }
+    if name.starts_with(PROXIMA_EXTENSION_PREFIX) {
+        return Err(PublicationExtensionsError::ReservedName {
+            name: name.to_owned(),
+            prefix: PROXIMA_EXTENSION_PREFIX,
+        });
+    }
+    Ok(())
+}
+
+fn validate_extension_value(
+    name: &str,
+    value: &ExtensionValue,
+) -> Result<(), PublicationExtensionsError> {
+    let ExtensionValue::String(text) = value else {
+        return Ok(());
+    };
+    if text.is_empty() {
+        return Err(PublicationExtensionsError::EmptyValue {
+            name: name.to_owned(),
+        });
+    }
+    if text.chars().any(char::is_control) {
+        return Err(PublicationExtensionsError::IllegalValueCharacter {
+            name: name.to_owned(),
+        });
+    }
+    if text.len() > MAX_EXTENSION_VALUE_BYTES {
+        return Err(PublicationExtensionsError::ValueTooLong {
+            name: name.to_owned(),
+            bytes: text.len(),
+            max: MAX_EXTENSION_VALUE_BYTES,
+        });
+    }
+    Ok(())
+}
+
 /// Everything core resolves about one listenable Fact before storage opens
 /// its transaction.
 ///
@@ -228,6 +536,10 @@ pub struct PublicationDraft {
     pub model_id: Option<String>,
     /// The server-resolved owner of the Fact being admitted.
     pub owner: Owner,
+    /// Extension attributes the HOST bound to this write's authorization
+    /// context. Never assembled by the code producing the payload, and
+    /// never reachable from anything on the wire.
+    pub extensions: PublicationExtensions,
     /// The typed payload's serde JSON — the export snapshot.
     pub data: serde_json::Value,
 }
@@ -241,6 +553,7 @@ impl PublicationDraft {
         source: PublicationSource,
         owner: Owner,
         model_id: Option<String>,
+        extensions: PublicationExtensions,
         data: serde_json::Value,
     ) -> Self {
         let event_type = schema_id.as_str().to_owned();
@@ -253,6 +566,7 @@ impl PublicationDraft {
             source,
             model_id,
             owner,
+            extensions,
             data,
         }
     }
@@ -312,6 +626,12 @@ struct CloudEventEnvelope<'a> {
     proximaowner: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     proximamodel: Option<&'a str>,
+    /// Host-bound extension attributes, inlined in name order. Serialized
+    /// AFTER the substrate's own attributes and BEFORE `data`, so a host
+    /// binding a new attribute never reorders the ones already shipping.
+    /// An empty set emits nothing.
+    #[serde(flatten)]
+    extensions: &'a PublicationExtensions,
     data: &'a serde_json::Value,
 }
 
@@ -362,6 +682,7 @@ impl SealedPublication {
             time: &time,
             proximaowner: &owner,
             proximamodel: draft.model_id.as_deref(),
+            extensions: &draft.extensions,
             data: &draft.data,
         };
         let bytes = serde_json::to_vec(&envelope)
@@ -446,6 +767,7 @@ mod tests {
             PublicationSource::new("urn:proxima:test").expect("source"),
             Owner::Personal(UserId::new(Uuid::nil())),
             Some("model-x".into()),
+            PublicationExtensions::new(),
             serde_json::json!({ "body": "hello" }),
         )
     }
@@ -476,11 +798,27 @@ mod tests {
         );
     }
 
+    /// Bound in a deliberately non-alphabetical order, so the ordering
+    /// assertion below is about the type and not about the caller.
+    fn extensions() -> PublicationExtensions {
+        PublicationExtensions::new()
+            .with("stepid", "step-7")
+            .expect("a step id is a legal attribute")
+            .with("runid", "run-3")
+            .expect("a run id is a legal attribute")
+            .with("attempt", 2)
+            .expect("an integer is a legal value")
+            .with("replay", false)
+            .expect("a boolean is a legal value")
+    }
+
     #[test]
     fn the_envelope_key_order_is_fixed_and_the_time_comes_from_the_v7_id() {
         let t = Uuid::parse_str("01930000-0000-7000-8000-000000000001").expect("v7 id");
+        let mut draft = draft();
+        draft.extensions = extensions();
         let sealed = SealedPublication::seal(
-            &PublicationPlan::new(draft(), PublicationLimits::default()),
+            &PublicationPlan::new(draft, PublicationLimits::default()),
             t,
         )
         .expect("seal");
@@ -499,6 +837,12 @@ mod tests {
             "\"time\"",
             "\"proximaowner\"",
             "\"proximamodel\"",
+            // Host-bound extensions: after the substrate's own attributes,
+            // before `data`, in NAME order rather than binding order.
+            "\"attempt\":2",
+            "\"replay\":false",
+            "\"runid\":\"run-3\"",
+            "\"stepid\":\"step-7\"",
             "\"data\"",
         ] {
             let at = text[cursor..]
@@ -580,5 +924,147 @@ mod tests {
             ),
             "proxima://schema/core/agent-note-v1/3"
         );
+    }
+
+    #[test]
+    fn an_empty_extension_set_emits_nothing() {
+        let sealed = SealedPublication::seal(
+            &PublicationPlan::new(draft(), PublicationLimits::default()),
+            Uuid::now_v7(),
+        )
+        .expect("seal");
+        let text = String::from_utf8(sealed.bytes).expect("utf8");
+        assert!(
+            text.contains("\"proximamodel\":\"model-x\",\"data\""),
+            "an unbound set must not open so much as an empty object: {text}"
+        );
+    }
+
+    #[test]
+    fn sealing_the_same_bindings_twice_produces_the_same_bytes() {
+        let t = Uuid::parse_str("01930000-0000-7000-8000-000000000002").expect("v7 id");
+        let seal_once = |ext: PublicationExtensions| {
+            let mut draft = draft();
+            draft.extensions = ext;
+            SealedPublication::seal(
+                &PublicationPlan::new(draft, PublicationLimits::default()),
+                t,
+            )
+            .expect("seal")
+        };
+        // Same attributes, opposite binding order.
+        let forwards = seal_once(
+            PublicationExtensions::new()
+                .with("runid", "r")
+                .expect("bind")
+                .with("stepid", "s")
+                .expect("bind"),
+        );
+        let backwards = seal_once(
+            PublicationExtensions::new()
+                .with("stepid", "s")
+                .expect("bind")
+                .with("runid", "r")
+                .expect("bind"),
+        );
+        assert_eq!(forwards.bytes, backwards.bytes);
+        assert_eq!(forwards.digest, backwards.digest);
+    }
+
+    #[test]
+    fn an_extension_name_follows_the_cloudevents_naming_rule() {
+        let empty = PublicationExtensions::new();
+        assert!(matches!(
+            empty.clone().with("", "v"),
+            Err(PublicationExtensionsError::EmptyName)
+        ));
+        assert!(matches!(
+            empty.clone().with("run_id", "v"),
+            Err(PublicationExtensionsError::IllegalNameCharacter { .. })
+        ));
+        assert!(matches!(
+            empty.clone().with("RunId", "v"),
+            Err(PublicationExtensionsError::IllegalNameCharacter { .. })
+        ));
+        assert!(matches!(
+            empty.clone().with("a".repeat(21), "v"),
+            Err(PublicationExtensionsError::NameTooLong { max: 20, .. })
+        ));
+        assert!(empty.clone().with("a".repeat(20), "v").is_ok());
+        assert!(matches!(
+            empty.clone().with("time", "v"),
+            Err(PublicationExtensionsError::CoreAttributeName { .. })
+        ));
+        assert!(matches!(
+            empty.clone().with("data", "v"),
+            Err(PublicationExtensionsError::CoreAttributeName { .. })
+        ));
+        assert!(matches!(
+            empty.with("proximaowner", "v"),
+            Err(PublicationExtensionsError::ReservedName {
+                prefix: "proxima",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_string_value_is_bounded_and_printable() {
+        let empty = PublicationExtensions::new();
+        assert!(matches!(
+            empty.clone().with("runid", ""),
+            Err(PublicationExtensionsError::EmptyValue { .. })
+        ));
+        assert!(matches!(
+            empty.clone().with("runid", "a\nb"),
+            Err(PublicationExtensionsError::IllegalValueCharacter { .. })
+        ));
+        assert!(matches!(
+            empty.clone().with("runid", "x".repeat(257)),
+            Err(PublicationExtensionsError::ValueTooLong { max: 256, .. })
+        ));
+        assert!(empty.with("runid", "x".repeat(256)).is_ok());
+    }
+
+    #[test]
+    fn the_set_is_bounded_and_a_bound_name_is_never_replaced() {
+        let mut set = PublicationExtensions::new();
+        for index in 0..8 {
+            set = set.with(format!("a{index}"), index).expect("within bounds");
+        }
+        assert_eq!(set.len(), 8);
+        assert!(matches!(
+            set.clone().with("a9", 9),
+            Err(PublicationExtensionsError::TooMany { max: 8, .. })
+        ));
+        assert!(matches!(
+            set.clone().with("a0", "other"),
+            Err(PublicationExtensionsError::DuplicateName { .. })
+        ));
+        assert_eq!(set.get("a0"), Some(&ExtensionValue::Integer(0)));
+        assert!(PublicationExtensions::new().is_empty());
+    }
+
+    #[test]
+    fn merging_is_additive_and_refuses_a_name_both_sides_bind() {
+        let host = PublicationExtensions::new()
+            .with("runid", "r")
+            .expect("bind");
+        let more = PublicationExtensions::new()
+            .with("stepid", "s")
+            .expect("bind");
+        let merged = host.clone().merged(more).expect("disjoint sets merge");
+        assert_eq!(
+            merged.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            vec!["runid", "stepid"]
+        );
+        assert!(matches!(
+            host.merged(
+                PublicationExtensions::new()
+                    .with("runid", "other")
+                    .expect("bind")
+            ),
+            Err(PublicationExtensionsError::DuplicateName { .. })
+        ));
     }
 }

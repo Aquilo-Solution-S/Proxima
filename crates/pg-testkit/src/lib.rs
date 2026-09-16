@@ -5,12 +5,14 @@
 //! - each clone is recorded in `_proxima_test.databases` on the admin DB
 //! - a successful [`DbGuard`] drop runs `DROP DATABASE … WITH (FORCE)`
 //! - a panicking test **keeps** the database and prints a redacted `psql` URL
-//! - the first admin operation in a process sweeps clones from earlier runs
+//! - the first admin operation in a process sweeps clones older than
+//!   five minutes with no live backend (`pg_stat_activity`)
 //! - [`ensure_template`] drops other hashes in the same family (`proxima_tmpl_core_*`
 //!   / `proxima_tmpl_code_*`), keeping only the current fingerprint
 //!
-//! Failed tests stay until the next test binary starts, or until a live
-//! `psql` session (visible in `pg_stat_activity`) is closed.
+//! Failed tests stay until that grace elapses with no live session, so a
+//! later nextest binary cannot drop an in-flight clone in the create-then-connect
+//! window.
 
 use std::fmt;
 use std::future::Future;
@@ -428,7 +430,11 @@ pub async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
 ///
 /// Called automatically from the first admin operation. Safe to invoke
 /// by hand. Idle `psql` sessions keep a database (it is visible in
-/// `pg_stat_activity`).
+/// `pg_stat_activity`). Tracked rows younger than five minutes
+/// are kept even with no backend: nextest starts many binaries against
+/// one Postgres, and `created_at < this_process_start` would otherwise
+/// `DROP DATABASE` a sibling's clone in the window between
+/// [`create_db`] and its first connection.
 ///
 /// # Errors
 ///
@@ -553,6 +559,10 @@ async fn drop_db_on(conn: &mut PgConnection, name: &str) -> Result<(), sqlx::Err
 async fn sweep_stale_on(conn: &mut PgConnection) -> Result<usize, sqlx::Error> {
     ensure_catalog(conn).await?;
     let start = process_start(conn).await?;
+    let now: OffsetDateTime = sqlx::query_scalar("SELECT now()")
+        .fetch_one(&mut *conn)
+        .await?;
+    let tracked_cutoff = now - UNTRACKED_GRACE;
     let cutoff = start - UNTRACKED_GRACE;
     let tracked: Vec<String> = sqlx::query_scalar(
         "SELECT d.db_name FROM _proxima_test.databases d
@@ -561,7 +571,7 @@ async fn sweep_stale_on(conn: &mut PgConnection) -> Result<usize, sqlx::Error> {
              SELECT 1 FROM pg_stat_activity a WHERE a.datname = d.db_name
            )",
     )
-    .bind(start)
+    .bind(tracked_cutoff)
     .fetch_all(&mut *conn)
     .await?;
     let untracked: Vec<String> = sqlx::query_scalar(
