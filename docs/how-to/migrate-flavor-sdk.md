@@ -3,7 +3,7 @@
 ## v0.0.14
 
 Pin all Proxima Rust dependencies to the same `v0.0.14` tag. Cargo package
-versions remain unpublished.
+versions remain unpublished; MCP initialization and REST OpenAPI report `0.0.14`.
 
 | Surface | Upgrade |
 |---|---|
