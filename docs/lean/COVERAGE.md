@@ -290,6 +290,20 @@ the ceiling is `{propext, Quot.sound}` with no new Causa axioms.
 | HM-6 | Both owner kinds admit maintenance, without requiring ordinary Fact-write authority | THEOREMs `every_owner_supported`, `every_owner_step` quantify over existing `OwnerRef`; `maintenance_without_fact_write` constructs an authorized personal-owner admission with ordinary Fact-write denial; `distinct_users_exist` discharges its distinct-user inhabitance |
 | HM-R | Runtime containment, owner lifecycle fence, transaction atomicity, SQL fidelity and liveness | EXCLUDED: fresh binding/actual descriptor capture, private Rust constructors, host-only possession, shared owner locking against exclusive erasure, rollback and trusted participant SQL require runtime evidence. Participant/table scope does not distinguish commands within that participant. No liveness claim |
 
+## 20 — Host-state lifecycle (HL)
+
+Carriers live in `Causa/HostStateLifecycle.lean`.
+
+| ID | Invariant | Carrier |
+|---|---|---|
+| HL-1 | Lifecycle requests bind a typed `OwnerRef` to whole-owner scope or a source scope carrying its typed source token | `LifecycleRequest`, `Scope`, `SourceScopeId`; `committed_erase_binds_owner_and_scope` |
+| HL-2 | Frozen participant tables have complete, duplicate-free erase/export policies and are disjoint from generic-path tables | `CoverageComplete`, `ExactTableSet`; `coverage_is_complete_and_disjoint`; `example_registration_has_complete_disjoint_coverage` |
+| HL-3 | Erase receipts bind participant, owner and scope; report exact declared table keys with separate deleted/scrubbed counts; explicit retention has zero counts | `EraseReceiptValid`, `receipt_binds_participant_owner_scope_and_tables`, `retained_source_surface_has_zero_counts` |
+| HL-4 | Missing registration/callback, incomplete coverage, callback failure, invalid receipt or failed commit rejects the erase and preserves core plus host state | `EraseTransaction` rejection constructors; `rejected_erase_preserves_core_and_host` maps `.rejected` to the identical input state |
+| HL-5 | Commit requires complete coverage, a valid same-owner/scope receipt and successful commit; the core candidate remains supplied by the existing authorized erasure path | `EraseTransaction.committed`, `committed_erase_binds_owner_and_scope`; no erase capability or Compliance rule is added |
+| HL-6 | Whole-owner export is one owner-bound snapshot containing exactly the surfaces explicitly marked include; every returned surface is declared | `OwnerExportValid`, `ExportTransaction`, `completed_export_is_owner_bound`, `completed_export_contains_only_declared_surfaces`; source export is not modeled |
+| HL-R | Boot capture, existing erasure selection/authorization, SQL transaction isolation, callback SQL fidelity and row-count truth; commit observation | EXCLUDED: runtime evidence required; the model does not refine arbitrary SQL or prove snapshot consistency. Tests cover task cancellation before COMMIT and a server-rejected COMMIT. A connection loss or cancellation after COMMIT dispatch can leave the caller unable to observe the database's atomic outcome; the model assumes known committed-vs-rejected state and does not prove transport outcome reporting. |
+
 ## Principle surface map
 
 Principles aggregate multiple ID rows above under one named surface property

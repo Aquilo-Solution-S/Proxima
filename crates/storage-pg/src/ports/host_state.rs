@@ -5,6 +5,7 @@ use proxima_core::storage_ports::{
     HostStateReply, HostStateRequest, HostStateWritePermit, StateSurfaceName,
 };
 use sqlx::{Postgres, Transaction};
+use std::sync::Arc;
 
 /// Trusted host/backend code that mutates declared state surfaces on the
 /// write session's live transaction.
@@ -19,6 +20,14 @@ pub trait PgHostStateParticipant: Send + Sync {
     /// Tables this participant is allowed to touch. Must be a subset of
     /// some linked flavor's `state_surfaces`.
     fn declared_tables(&self) -> &'static [StateSurfaceName];
+
+    /// Optional typed erase/export port for the lifecycle-managed subset of
+    /// this participant's host state. Storage captures this once with the
+    /// normal participant descriptor at boot. A frozen managed table set
+    /// requires this port and an exact table match.
+    fn lifecycle_port(&self) -> Option<Arc<dyn super::PgHostStateLifecyclePort>> {
+        None
+    }
 
     /// Run `request` on `tx`. The session has already checked participant
     /// id and declared tables; SQL must stamp the permit's owner.

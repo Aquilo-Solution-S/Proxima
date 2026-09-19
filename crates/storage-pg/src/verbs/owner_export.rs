@@ -9,6 +9,7 @@ use sqlx::PgPool;
 use crate::access::owner_columns::owner_binds;
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
+use sqlx::{Connection, Postgres, Transaction};
 
 /// One owner's bundle: every surface the contract declares exportable, as
 /// table name → rows, plus the pins projected from those rows.
@@ -20,21 +21,73 @@ pub async fn export_owner_bundle(
     pool: &PgPool,
     auth: &ExportAuthorization,
     surfaces: &OwnerSurfaces,
+    lifecycle: Option<crate::RegisteredHostStateLifecycle>,
 ) -> Result<OwnerExportBundle, StorageError> {
     let owner = auth.audit().owner();
     let (_owner_kind, owner_id) = owner_binds(&owner);
+    validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
+    let mut conn = pool.acquire().await.map_err(map_err)?.detach();
+    // Session locks survive the following transaction and are released when
+    // this detached connection is dropped. If cancellation/error interrupts
+    // any later await, Drop closes the connection instead of returning a
+    // still-locked session to the pool.
+    crate::access::owner_columns::lock_host_lifecycle_fence_shared_session(&mut conn).await?;
+    crate::access::owner_columns::lock_owner_fence_exclusive_session(&mut conn, &owner).await?;
+    let result = export_owner_bundle_snapshot(
+        &mut conn,
+        auth,
+        owner,
+        owner_id,
+        surfaces,
+        lifecycle.as_ref(),
+    )
+    .await;
+    drop(conn);
+    result
+}
+
+async fn export_owner_bundle_snapshot(
+    conn: &mut sqlx::postgres::PgConnection,
+    auth: &ExportAuthorization,
+    owner: proxima_core::OwnerRef,
+    owner_id: uuid::Uuid,
+    surfaces: &OwnerSurfaces,
+    lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
+) -> Result<OwnerExportBundle, StorageError> {
+    let mut tx = conn.begin().await.map_err(map_err)?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
     let mut tables: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    for surface in surfaces.surfaces() {
+    for surface in surfaces.generic_surfaces() {
         let Some(sql) = export_statement(surface)? else {
             continue;
         };
         // SQL-POLICY: PgIdent
         let rows: Vec<Value> = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(sql))
             .bind(owner_id)
-            .fetch_all(pool)
+            .fetch_all(&mut *tx)
             .await
             .map_err(map_err)?;
         tables.insert(surface.table.to_owned(), rows);
+    }
+
+    invoke_host_lifecycle_export(&mut tx, surfaces, owner, lifecycle, &mut tables).await?;
+    let expected_tables = surfaces
+        .surfaces()
+        .iter()
+        .filter(|surface| !matches!(surface.export, ExportRule::Excluded { .. }))
+        .map(|surface| surface.table)
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_tables = tables
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    if actual_tables != expected_tables {
+        return Err(StorageError::Internal(
+            "owner export did not return the exact included declared surface set".into(),
+        ));
     }
 
     let edges = tables
@@ -48,7 +101,7 @@ pub async fn export_owner_bundle(
         .collect();
     counts.insert("edges".to_owned(), edges.len());
 
-    Ok(OwnerExportBundle {
+    let bundle = OwnerExportBundle {
         operation_id: auth.audit().operation_id(),
         target: auth.audit().target().clone(),
         owner,
@@ -58,7 +111,143 @@ pub async fn export_owner_bundle(
         counts,
         tables,
         edges,
-    })
+    };
+    tx.commit().await.map_err(map_err)?;
+    Ok(bundle)
+}
+
+fn validate_lifecycle_dispatch(
+    surfaces: &OwnerSurfaces,
+    lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
+) -> Result<(), StorageError> {
+    use std::collections::BTreeSet;
+    let expected = surfaces
+        .host_lifecycle_surfaces()
+        .iter()
+        .map(|policy| policy.table)
+        .collect::<BTreeSet<_>>();
+    let Some(lifecycle) = lifecycle else {
+        return if expected.is_empty() {
+            Ok(())
+        } else {
+            Err(StorageError::Internal(
+                "managed host lifecycle surface has no registered callback; refusing export".into(),
+            ))
+        };
+    };
+    let declared = lifecycle
+        .descriptor
+        .tables()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if expected.is_empty()
+        || lifecycle.descriptor.tables().len() != declared.len()
+        || declared != expected
+    {
+        return Err(StorageError::Internal(
+            "registered host lifecycle descriptor does not exactly match export surfaces".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn invoke_host_lifecycle_export(
+    tx: &mut Transaction<'_, Postgres>,
+    surfaces: &OwnerSurfaces,
+    owner: proxima_core::OwnerRef,
+    lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
+    tables: &mut BTreeMap<String, Vec<Value>>,
+) -> Result<(), StorageError> {
+    validate_lifecycle_dispatch(surfaces, lifecycle)?;
+    let Some(lifecycle) = lifecycle else {
+        return Ok(());
+    };
+    let included_tables = surfaces
+        .host_lifecycle_surfaces()
+        .iter()
+        .filter(|policy| !matches!(policy.owner_export, ExportRule::Excluded { .. }))
+        .map(|policy| policy.table)
+        .collect::<Vec<_>>();
+    let receipt = lifecycle
+        .port
+        .export(
+            tx,
+            proxima_core::storage_ports::HostStateExportRequest::new(
+                lifecycle.descriptor.participant_id(),
+                owner,
+                included_tables.clone(),
+            ),
+        )
+        .await?;
+    if receipt.participant != lifecycle.descriptor.participant_id() || receipt.owner != owner {
+        return Err(StorageError::Internal(
+            "host lifecycle export receipt has a foreign participant or owner".into(),
+        ));
+    }
+    let expected = included_tables
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut received = std::collections::BTreeMap::new();
+    for table in receipt.tables {
+        if received.insert(table.table, table.rows).is_some() {
+            return Err(StorageError::Internal(
+                "host lifecycle export receipt contains a duplicate table".into(),
+            ));
+        }
+    }
+    let actual = received
+        .keys()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    if actual != expected {
+        return Err(StorageError::Internal(
+            "host lifecycle export receipt does not contain the exact included table set".into(),
+        ));
+    }
+    for (table, rows) in received {
+        let policy = surfaces
+            .host_lifecycle_surfaces()
+            .iter()
+            .find(|policy| policy.table == table)
+            .expect("exact receipt table set was checked against frozen policies");
+        validate_host_export_rows(table.as_str(), policy.owner_export, &rows)?;
+        tables.insert(table.as_str().to_owned(), rows);
+    }
+    Ok(())
+}
+
+fn validate_host_export_rows(
+    table: &str,
+    policy: ExportRule,
+    rows: &[Value],
+) -> Result<(), StorageError> {
+    for row in rows {
+        let Some(object) = row.as_object() else {
+            return Err(StorageError::Internal(format!(
+                "host lifecycle export row for {table} is not a JSON object"
+            )));
+        };
+        match policy {
+            ExportRule::Rows => {}
+            ExportRule::Allowlist(fields) => {
+                if object.len() != fields.len()
+                    || fields.iter().any(|field| !object.contains_key(*field))
+                {
+                    return Err(StorageError::Internal(format!(
+                        "host lifecycle export row for {table} differs from its field allowlist"
+                    )));
+                }
+            }
+            ExportRule::Excluded { .. } => {
+                return Err(StorageError::Internal(format!(
+                    "excluded host lifecycle table {table} appeared in export receipt"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The statement one surface's declaration earns it, or `None` when the

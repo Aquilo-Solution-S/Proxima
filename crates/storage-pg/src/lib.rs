@@ -65,7 +65,7 @@ pub mod verbs;
 pub use access::PgOwnerAccessResolver;
 pub use delegated_authority::PgDelegationStore;
 pub use pool_config::PgPoolConfig;
-pub use ports::PgHostStateParticipant;
+pub use ports::{PgHostStateLifecyclePort, PgHostStateParticipant};
 pub use sidecars::{
     PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, core_pg_sidecars,
     register_core_pg_sidecars,
@@ -1450,9 +1450,106 @@ pub struct PgStorage {
 /// Participant instance and the exact metadata snapshot captured when it
 /// was registered. Dispatch never calls metadata getters again.
 #[derive(Clone)]
-struct RegisteredHostStateParticipant {
-    participant: Arc<dyn crate::PgHostStateParticipant>,
-    descriptor: proxima_core::storage_ports::HostStateParticipantDescriptor,
+pub(crate) struct RegisteredHostStateParticipant {
+    pub(crate) participant: Arc<dyn crate::PgHostStateParticipant>,
+    pub(crate) descriptor: proxima_core::storage_ports::HostStateParticipantDescriptor,
+    pub(crate) lifecycle: Option<RegisteredHostStateLifecycle>,
+}
+
+#[derive(Clone)]
+pub(crate) struct RegisteredHostStateLifecycle {
+    pub(crate) port: Arc<dyn crate::PgHostStateLifecyclePort>,
+    pub(crate) descriptor: proxima_core::storage_ports::HostStateParticipantDescriptor,
+}
+
+fn validate_host_lifecycle_registration(
+    surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
+    registered: Option<&RegisteredHostStateParticipant>,
+) -> Result<(), StorageError> {
+    use std::collections::BTreeSet;
+
+    let expected = surfaces
+        .host_lifecycle_surfaces()
+        .iter()
+        .map(|policy| policy.table)
+        .collect::<BTreeSet<_>>();
+    let Some(registered) = registered else {
+        if expected.is_empty() {
+            return Ok(());
+        }
+        return Err(StorageError::ConstraintViolation(
+            "frozen host lifecycle surfaces have no registered participant".into(),
+        ));
+    };
+    let Some(lifecycle) = registered.lifecycle.as_ref() else {
+        if expected.is_empty() {
+            return Ok(());
+        }
+        return Err(StorageError::ConstraintViolation(
+            "frozen host lifecycle surfaces have no lifecycle callback port".into(),
+        ));
+    };
+    if expected.is_empty() {
+        return Err(StorageError::ConstraintViolation(
+            "lifecycle callback port is registered but the frozen contracts declare no managed surfaces".into(),
+        ));
+    }
+    if lifecycle.descriptor.participant_id() != registered.descriptor.participant_id() {
+        return Err(StorageError::ConstraintViolation(
+            "lifecycle callback participant id differs from the registered host participant".into(),
+        ));
+    }
+    let lifecycle_tables = lifecycle
+        .descriptor
+        .tables()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let registered_tables = registered
+        .descriptor
+        .tables()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if registered_tables.len() != registered.descriptor.tables().len()
+        || lifecycle_tables.len() != lifecycle.descriptor.tables().len()
+        || lifecycle_tables != expected
+        || !expected.is_subset(&registered_tables)
+    {
+        return Err(StorageError::ConstraintViolation(
+            "registered lifecycle tables must uniquely match every frozen managed surface and be a subset of the host participant descriptor".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_registered_state_tables(
+    surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
+    registered: Option<&RegisteredHostStateParticipant>,
+) -> Result<(), StorageError> {
+    let Some(registered) = registered else {
+        return Ok(());
+    };
+    let declared = registered
+        .descriptor
+        .tables()
+        .iter()
+        .map(|table| table.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if declared.len() != registered.descriptor.tables().len() {
+        return Err(StorageError::ConstraintViolation(
+            "registered host participant declares a state table more than once".into(),
+        ));
+    }
+    if let Some(table) = declared
+        .iter()
+        .find(|table| !surfaces.is_declared_state_surface(table))
+    {
+        return Err(StorageError::ConstraintViolation(format!(
+            "registered host participant table {table} is not declared in linked flavor state_surfaces"
+        )));
+    }
+    Ok(())
 }
 
 impl std::fmt::Debug for PgStorage {
@@ -1629,10 +1726,28 @@ impl PgStorage {
             participant.declared_tables(),
         );
         self.host_state = Some(RegisteredHostStateParticipant {
+            lifecycle: participant.lifecycle_port().map(|port| {
+                let descriptor = proxima_core::storage_ports::HostStateParticipantDescriptor::new(
+                    port.participant_id(),
+                    port.declared_tables(),
+                );
+                RegisteredHostStateLifecycle { port, descriptor }
+            }),
             participant,
             descriptor,
         });
         self
+    }
+
+    pub(crate) fn host_lifecycle_for_surfaces(
+        &self,
+        surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<Option<RegisteredHostStateLifecycle>, StorageError> {
+        validate_host_lifecycle_registration(surfaces, self.host_state.as_ref())?;
+        Ok(self
+            .host_state
+            .as_ref()
+            .and_then(|registered| registered.lifecycle.clone()))
     }
 
     /// Replace the forget/hydrate object store (S3 in the host).
@@ -1703,6 +1818,31 @@ impl PgStorage {
         self.surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(registry);
         self.scopes = crate::access::scope_surfaces::ScopeSurfaces::for_registry(registry);
         self
+    }
+
+    /// Fallible flavor installation used by production boot. It validates
+    /// lifecycle policy coverage against the participant and callback port
+    /// captured at registration, before these surfaces can reach an engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::ConstraintViolation`] when lifecycle policies
+    /// overlap generic inverses, lack a registered callback, or disagree with
+    /// the captured participant/callback descriptors.
+    pub fn try_with_flavors(
+        mut self,
+        registry: &proxima_core::FlavorRegistryFrozen,
+    ) -> Result<Self, StorageError> {
+        let surfaces = proxima_core::owner_inverse::OwnerSurfaces::try_for_registry(registry)
+            .map_err(|error| StorageError::ConstraintViolation(error.to_string()))?;
+        validate_host_lifecycle_registration(&surfaces, self.host_state.as_ref())?;
+        validate_registered_state_tables(&surfaces, self.host_state.as_ref())?;
+        self.search_projections = registry.search_projections().to_vec();
+        self.embed_units = registry.embed_units().to_vec();
+        self.non_embeddable_schemas = registry.non_embeddable_schema_ids().to_vec();
+        self.surfaces = surfaces;
+        self.scopes = crate::access::scope_surfaces::ScopeSurfaces::for_registry(registry);
+        Ok(self)
     }
 
     /// The resolved lifecycle-scope declarations this storage fences on.

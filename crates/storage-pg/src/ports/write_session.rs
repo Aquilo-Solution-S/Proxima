@@ -40,7 +40,12 @@ impl WriteSessionFactory for PgStorage {
     }
 
     async fn begin(&self) -> Result<Box<dyn WriteSession>, StorageError> {
-        let tx = self.pool.begin().await.map_err(internal)?;
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+        if !self.surfaces.host_lifecycle_surfaces().is_empty() {
+            // This global shared xact fence is the first lock in a host-capable
+            // UoW, before a cognitive method can take owner/handle locks.
+            crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut tx).await?;
+        }
         Ok(Box::new(PgWriteSession {
             tx,
             sidecars: self.sidecars.clone(),

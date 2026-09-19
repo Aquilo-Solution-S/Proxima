@@ -438,6 +438,8 @@ mod purge_tests {
                 outcome: OwnerEraseOutcome::Completed {
                     operation_id: uuid::Uuid::now_v7(),
                     counts: OwnerEraseCounts::default(),
+                    host_state_deleted: std::collections::BTreeMap::default(),
+                    host_state_scrubbed: std::collections::BTreeMap::default(),
                     cold_object_purge_pending: true,
                 },
                 erase_calls: AtomicUsize::new(0),
@@ -449,6 +451,8 @@ mod purge_tests {
                 outcome: OwnerEraseOutcome::Completed {
                     operation_id: uuid::Uuid::now_v7(),
                     counts: OwnerEraseCounts::default(),
+                    host_state_deleted: std::collections::BTreeMap::default(),
+                    host_state_scrubbed: std::collections::BTreeMap::default(),
                     cold_object_purge_pending: false,
                 },
                 erase_calls: AtomicUsize::new(0),

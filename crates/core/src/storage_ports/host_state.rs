@@ -31,7 +31,7 @@ impl HostStateParticipantId {
 }
 
 /// Typed name of a host-owned state surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StateSurfaceName(&'static str);
 
 impl StateSurfaceName {

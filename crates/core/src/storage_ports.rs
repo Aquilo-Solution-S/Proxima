@@ -16,6 +16,7 @@ mod fact;
 mod goals;
 mod handles;
 mod host_state;
+mod host_state_lifecycle;
 mod mcp;
 mod memory;
 mod owner_inverse;
@@ -71,6 +72,10 @@ pub use handles::{
 pub use host_state::{
     HostStateCommand, HostStateOutcome, HostStateParticipantDescriptor, HostStateParticipantId,
     HostStateReply, HostStateReplyKind, HostStateRequest, StateSurfaceName,
+};
+pub use host_state_lifecycle::{
+    HostStateEraseReceipt, HostStateEraseRequest, HostStateEraseScope, HostStateEraseTableCount,
+    HostStateExportReceipt, HostStateExportRequest, HostStateExportTable,
 };
 pub use mcp::McpCallReadPort;
 pub use memory::{
