@@ -798,6 +798,7 @@ pub enum EraseRule {
     HostState {
         whole_owner: HostStateEraseDisposition,
         source: HostStateEraseDisposition,
+        exact_fact: HostStateEraseDisposition,
     },
     Never {
         why: &'static str,

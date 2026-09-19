@@ -231,6 +231,48 @@ record keeps the ORIGINAL owner's `owner_id`, so `WHERE t = $1 AND owner_id =
 $2` would have walked past exactly the records a transferred-then-erased Fact
 left behind.
 
+## Original publication attribution and erase
+
+Migration `0012` adds `proxima_core.publication_origin`: one payload-free row
+per published Fact `t`, with its immutable original typed owner and optional
+native `SourceId`. Capture inserts it in the same transaction as a genuinely
+new Fact and its outbox row. Non-listenable writes and receipt replays create
+no origin; cooling, owner transfer, and pruning a delivered outbox body keep
+the origin. The outbox still has only `owner_id`; its owner kind is recovered
+through the retained `owners.kind` row, rather than added as a duplicate
+column. This native Proxima `SourceId` is the Fact's source-scope label; it is
+distinct from the configured CloudEvents producer `source` URI above.
+
+The origin is the selector for later revocation after the delivery body is
+gone or the Fact has moved. Whole-owner erase revokes every origin captured by
+that owner, including rows with no source. Source-scope erase selects both
+physical Fact ids still in the requested owner/source and matching immutable
+original owner/source locators. A destination-owner erase also selects every
+physical Fact `t`, even when its origin belongs to a former owner. Each SQL
+predicate is a union over unique `t` keys, so a row matching both legs is
+deleted and counted once. A source erase can revoke an original copy while a
+transferred live Fact stays with its current owner. An authorized physical
+hard erase removes origin and outbox rows by exact Fact `t`, regardless of the
+publisher that captured it. The same source label may be used by a fresh Fact
+`t` after revocation.
+
+Before host code accepts a delayed payload, `PublicationOriginEligibilityPort`
+checks the typed original owner and Fact `MemoryId` for a surviving origin and
+the absence of a hard-delete witness. It returns only eligible/ineligible; it
+does not expose Fact payload. The caller runs this check inside its existing
+unit-of-work transaction, under the shared lifecycle fence held from entry,
+and keeps that transaction through the payload write. Owner/source and custom
+physical erases take the exclusive fence before their owner, source, handle,
+or target locks, so revocation cannot pass between the check and the write.
+
+The migration backfills only a surviving outbox row plus a retained hot or
+cooled Fact that proves source identity. Both source columns NULL mean known
+source absence; a missing retained Fact, a malformed one-NULL cooled pair, a
+hard-delete witness, or an outbox row already pruned before this migration
+does not produce an origin. History already removed by retention cannot be
+reconstructed. Direct SQL or separately composed engines remain trusted-host
+residuals; lifecycle registration is not a SQL sandbox.
+
 ## Host-Only Ports
 
 ```rust

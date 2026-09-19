@@ -279,6 +279,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         let outbox = booted.outbox().clone();
         #[cfg(feature = "outbox-nats")]
         let outbox_retention = booted.outbox_retention().clone();
+        let publication_origin_eligibility = booted.publication_origin_eligibility_for_host();
         Ok(BuiltProxima {
             service,
             engine: booted.engine,
@@ -288,6 +289,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             pool: booted.pool,
             registry: booted.registry,
             pg_sidecars: booted.pg_sidecars,
+            publication_origin_eligibility,
             blobs: booted.blobs,
             owner: booted.owner,
             cancel,
@@ -427,6 +429,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             pool: booted.pool.clone(),
             pg_tuning: config.pg_tuning,
             pg_sidecars: booted.pg_sidecars.clone(),
+            host_state_erase_context: booted.host_state_erase_context_for_host(),
             blobs: booted.blobs.clone(),
             owner: booted.owner,
         };
@@ -472,6 +475,8 @@ pub struct BuiltProxima {
     pool: PgPool,
     pub registry: Arc<FlavorRegistryFrozen>,
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
+    publication_origin_eligibility:
+        Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Option<Owner>,
     pub cancel: CancellationToken,
@@ -500,6 +505,15 @@ pub struct BuiltProxima {
 }
 
 impl BuiltProxima {
+    /// Narrow host-only guard for deciding whether an event remains eligible
+    /// for intake or a retry/re-offer. It exposes no payload data.
+    #[must_use]
+    pub fn publication_origin_eligibility_for_host(
+        &self,
+    ) -> Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort> {
+        self.publication_origin_eligibility.clone()
+    }
+
     pub fn shutdown(self) {
         self.cancel.cancel();
         self.engine.stop(self.handle);
@@ -1403,6 +1417,11 @@ mod tests {
             pool,
             pg_tuning: proxima_storage_pg::PgTuning::default(),
             pg_sidecars: Arc::default(),
+            host_state_erase_context:
+                proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
+                    proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(Vec::new()),
+                )
+                .expect("empty fixture registry has no host lifecycle tables"),
             blobs: Some(store),
             owner: None,
         };
@@ -1454,6 +1473,11 @@ mod tests {
             pool,
             pg_tuning: proxima_storage_pg::PgTuning::default(),
             pg_sidecars: Arc::default(),
+            host_state_erase_context:
+                proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
+                    proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(Vec::new()),
+                )
+                .expect("empty fixture registry has no host lifecycle tables"),
             blobs: None,
             owner: None,
         };
@@ -1510,6 +1534,11 @@ mod tests {
             pool,
             pg_tuning: proxima_storage_pg::PgTuning::default(),
             pg_sidecars: Arc::default(),
+            host_state_erase_context:
+                proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
+                    proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(Vec::new()),
+                )
+                .expect("empty fixture registry has no host lifecycle tables"),
             blobs: Some(store),
             owner: None,
         };

@@ -448,9 +448,15 @@ async fn erase_repo_once(
     let (kind, principal_id) = owner.columns();
     let pool: &PgPool = store.pool();
     let mut tx = pool.begin().await?;
-    // Before anything that takes a lock, which is the very next statement.
+    // Configure bounded waits before the first advisory lock, including the
+    // global host-lifecycle fence. SET LOCAL is transaction setup; it does
+    // not inspect or mutate erase targets.
     sqlx::query(ERASE_LOCK_TIMEOUT_SQL)
         .execute(&mut *tx)
+        .await?;
+    store
+        .erase_context()
+        .lock_before_physical_erase(&mut tx)
         .await?;
 
     // Transfer takes both endpoint owner fences exclusively before it moves
@@ -510,7 +516,7 @@ async fn erase_repo_once(
     }
 
     let (memories_deleted, cold_purge) =
-        erase_memory_series(&mut tx, store.sidecars(), store.surfaces(), owner, &ts).await?;
+        erase_memory_series(&mut tx, store.sidecars(), store.erase_context(), owner, &ts).await?;
 
     let repo_record_deleted = sqlx::query(DELETE_REPO_SQL)
         .bind(kind)

@@ -1462,6 +1462,62 @@ pub(crate) struct RegisteredHostStateLifecycle {
     pub(crate) descriptor: proxima_core::storage_ports::HostStateParticipantDescriptor,
 }
 
+/// Opaque authority-free context for one production boot's physical memory
+/// erasure path. It carries the entire registry-frozen surface set and the
+/// lifecycle callback actually validated against that set at boot.
+#[derive(Clone)]
+pub struct PgHostStateEraseContext {
+    pub(crate) surfaces: proxima_core::owner_inverse::OwnerSurfaces,
+    pub(crate) lifecycle: Option<RegisteredHostStateLifecycle>,
+}
+
+impl std::fmt::Debug for PgHostStateEraseContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PgHostStateEraseContext")
+            .field(
+                "host_lifecycle_tables",
+                &self.surfaces.host_lifecycle_surfaces(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl PgHostStateEraseContext {
+    /// Acquire the global host-state exclusive fence as the transaction's
+    /// first erase lock. Callers that perform flavor-owned queries or DML
+    /// before delegating a physical erase must call this immediately after
+    /// BEGIN and before any owner/source/handle/target locks.
+    ///
+    /// # Errors
+    /// Returns a storage error when `PostgreSQL` cannot acquire the fence.
+    pub async fn lock_before_physical_erase(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<(), StorageError> {
+        crate::access::owner_columns::lock_host_lifecycle_fence_exclusive_tx(tx).await
+    }
+
+    /// Explicit fixture constructor for registries without lifecycle-owned
+    /// tables. A registry that declares host lifecycle state must come from a
+    /// real validated `PgStorage` boot, so tests cannot silently omit its
+    /// callback.
+    #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+    #[doc(hidden)]
+    pub fn for_surfaces_for_tests(
+        surfaces: proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<Self, StorageError> {
+        if !surfaces.host_lifecycle_surfaces().is_empty() {
+            return Err(StorageError::ConstraintViolation(
+                "host lifecycle erase fixtures require a validated PgStorage registration".into(),
+            ));
+        }
+        Ok(Self {
+            surfaces,
+            lifecycle: None,
+        })
+    }
+}
+
 fn validate_host_lifecycle_registration(
     surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
     registered: Option<&RegisteredHostStateParticipant>,
@@ -1787,6 +1843,23 @@ impl PgStorage {
     #[must_use]
     pub fn surfaces(&self) -> &proxima_core::owner_inverse::OwnerSurfaces {
         &self.surfaces
+    }
+
+    /// Capture the boot-frozen registry and its validated host lifecycle
+    /// callback for a flavor that invokes the shared physical erase verb.
+    ///
+    /// # Errors
+    /// Returns an error if the frozen host lifecycle declarations no longer
+    /// match the participant and callback captured by this storage instance.
+    pub fn host_state_erase_context(&self) -> Result<PgHostStateEraseContext, StorageError> {
+        validate_host_lifecycle_registration(&self.surfaces, self.host_state.as_ref())?;
+        Ok(PgHostStateEraseContext {
+            surfaces: self.surfaces.clone(),
+            lifecycle: self
+                .host_state
+                .as_ref()
+                .and_then(|registered| registered.lifecycle.clone()),
+        })
     }
 
     /// Replace the entire sidecar registry.
@@ -2122,7 +2195,7 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
              0003_v010_reference_integrity.sql, 0004_v011_goal_refs.sql, \
@@ -2130,7 +2203,7 @@ mod tests {
              0006_v013_goal_replay_declaration.sql, \
              0007_upload_content_identity.sql, 0008_cold_integrity_digest.sql, \
              0009_declared_sidecar_presence.sql, 0010_purge_queue_backend.sql \
-             and 0011_v012_fact_outbox.sql"
+             0011_v012_fact_outbox.sql and 0012_v013_publication_origin.sql"
         );
     }
 
@@ -2224,10 +2297,18 @@ mod tests {
             &["publication_outbox", "publication_state"],
             "capture a listenable Fact's event in the Fact's own transaction",
         );
-        // The legacy range shrinks as the head advances: versions 7 through 11
-        // are current additive migrations, so only 12..=21 remain retired by
+        carries(
+            12,
+            &[
+                "publication_origin",
+                "publication_origin_identity_immutable",
+            ],
+            "pin a published Fact's immutable original owner and source",
+        );
+        // The legacy range shrinks as the head advances: versions 7 through 12
+        // are current additive migrations, so only 13..=21 remain retired by
         // the v0.0.8 squash.
-        for dead in 12..=21 {
+        for dead in 13..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"

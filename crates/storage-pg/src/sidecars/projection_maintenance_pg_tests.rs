@@ -37,6 +37,11 @@ fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     )
 }
 
+fn erase_context() -> crate::PgHostStateEraseContext {
+    crate::PgHostStateEraseContext::for_surfaces_for_tests(transfer_surfaces())
+        .expect("projection fixture has no host lifecycle tables")
+}
+
 const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
 
 /// `language` is the write's own: `agent-note-v1` declares
@@ -316,7 +321,7 @@ async fn erasing_an_admission_takes_its_projection_row() {
         erase_memory(
             &mut tx,
             &core_pg_sidecars(),
-            &transfer_surfaces(),
+            &erase_context(),
             &owner,
             erased.into_inner(),
         )

@@ -74,8 +74,9 @@ pub use host_state::{
     HostStateReply, HostStateReplyKind, HostStateRequest, StateSurfaceName,
 };
 pub use host_state_lifecycle::{
-    HostStateEraseReceipt, HostStateEraseRequest, HostStateEraseScope, HostStateEraseTableCount,
-    HostStateExportReceipt, HostStateExportRequest, HostStateExportTable,
+    HostStateEraseReceipt, HostStateEraseRequest, HostStateEraseScope, HostStateEraseSelection,
+    HostStateEraseTableCount, HostStateExportReceipt, HostStateExportRequest, HostStateExportTable,
+    HostStateFactCopyLocator,
 };
 pub use mcp::McpCallReadPort;
 pub use memory::{

@@ -2,7 +2,7 @@ import Causa.HostStateMaintenance
 
 /-
 Host-state lifecycle callbacks are an inverse inside an already selected core
-owner/source transaction. This module adds no erase authority and leaves
+owner/source/exact-Fact transaction. This module adds no erase authority and leaves
 Compliance.wipeable and its hard-erase transitions unchanged. It models exact
 coverage, receipt shape, atomic commit choice, and one owner-bound export
 snapshot. Selection, authorization, SQL isolation, callback SQL fidelity, and
@@ -13,6 +13,27 @@ namespace Causa.HostStateLifecycle
 
 open Causa.HostStateMaintenance
 
+structure FactCopyLocator where
+  originalOwner : OwnerRef
+  fact : MemoryId
+
+/-- The two disjoint identity domains supplied to a host lifecycle inverse. -/
+structure CopyEraseSelection where
+  physicalFacts : Set MemoryId
+  originalCopies : Set FactCopyLocator
+
+def noFacts : Set MemoryId := fun _ => False
+def noCopies : Set FactCopyLocator := fun _ => False
+
+def emptyCopyEraseSelection : CopyEraseSelection := ⟨noFacts, noCopies⟩
+
+def physicalFactsSelection (facts : Set MemoryId) : CopyEraseSelection :=
+  ⟨facts, noCopies⟩
+
+def selectionMatches (expected actual : CopyEraseSelection) : Prop :=
+  (∀ fact, fact ∈ expected.physicalFacts ↔ fact ∈ actual.physicalFacts) ∧
+    (∀ locator, locator ∈ expected.originalCopies ↔ locator ∈ actual.originalCopies)
+
 structure SourceScopeId where
   private mk ::
   token : String
@@ -20,14 +41,23 @@ structure SourceScopeId where
 
 def SourceScopeId.ofToken (token : String) : SourceScopeId := ⟨token⟩
 
+theorem SourceScopeId.ext_of_token {left right : SourceScopeId}
+    (same : left.token = right.token) : left = right := by
+  cases left
+  cases right
+  cases same
+  rfl
+
 inductive Scope where
   | wholeOwner
   | source (source : SourceScopeId)
+  | exactFacts
   deriving DecidableEq, Repr
 
 structure LifecycleRequest where
   owner : OwnerRef
   scope : Scope
+  selection : CopyEraseSelection
 
 inductive EraseDisposition where
   | erase
@@ -43,6 +73,7 @@ structure SurfacePolicy where
   surface : StateSurface
   wholeOwnerErase : EraseDisposition
   sourceErase : EraseDisposition
+  exactFactErase : EraseDisposition
   ownerExport : ExportDisposition
   deriving DecidableEq
 
@@ -79,6 +110,15 @@ theorem coverage_is_complete_and_disjoint {registration : LifecycleRegistration}
   ⟨valid.declaredUnique, valid.genericUnique, valid.disjointFromGeneric,
     valid.everyDeclaredTableHasPolicy⟩
 
+theorem exact_facts_scope_is_distinct :
+    Scope.exactFacts ≠ Scope.wholeOwner ∧
+      ∀ source, Scope.exactFacts ≠ Scope.source source := by
+  constructor
+  · intro impossible
+    cases impossible
+  · intro source impossible
+    cases impossible
+
 def includedExportTables (registration : LifecycleRegistration) : List StateSurface :=
   (registration.policies.filter
     (fun policy => decide (policy.ownerExport = .include))).map SurfacePolicy.surface
@@ -87,6 +127,7 @@ def eraseDispositionFor (policy : SurfacePolicy) (scope : Scope) : EraseDisposit
   match scope with
   | .wholeOwner => policy.wholeOwnerErase
   | .source _ => policy.sourceErase
+  | .exactFacts => policy.exactFactErase
 
 structure EraseCount where
   surface : StateSurface
@@ -98,6 +139,7 @@ structure EraseReceipt where
   participant : ParticipantId
   owner : OwnerRef
   scope : Scope
+  selection : CopyEraseSelection
   counts : List EraseCount
 
 def eraseCountTables (receipt : EraseReceipt) : List StateSurface :=
@@ -108,6 +150,9 @@ structure EraseReceiptValid (registration : LifecycleRegistration)
   participantMatches : receipt.participant = registration.participant
   ownerMatches : receipt.owner = request.owner
   scopeMatches : receipt.scope = request.scope
+  selectionMatchesRequest : selectionMatches request.selection receipt.selection
+  exactFactsHasNoOriginalCopySelection :
+    request.scope = .exactFacts → ∀ locator, locator ∉ request.selection.originalCopies
   exactTables : ExactTableSet registration.tables (eraseCountTables receipt)
   retainedTablesHaveZeroCounts :
     ∀ count, count ∈ receipt.counts →
@@ -124,6 +169,38 @@ theorem receipt_binds_participant_owner_scope_and_tables
       ExactTableSet registration.tables (eraseCountTables receipt) :=
   ⟨valid.participantMatches, valid.ownerMatches, valid.scopeMatches, valid.exactTables⟩
 
+theorem receipt_binds_typed_selection
+    {registration : LifecycleRegistration} {request : LifecycleRequest}
+    {receipt : EraseReceipt} (valid : EraseReceiptValid registration request receipt) :
+    selectionMatches request.selection receipt.selection :=
+  valid.selectionMatchesRequest
+
+theorem selection_mismatch_invalidates_receipt
+    {registration : LifecycleRegistration} {request : LifecycleRequest}
+    {receipt : EraseReceipt}
+    (mismatch : ¬ selectionMatches request.selection receipt.selection) :
+    ¬ EraseReceiptValid registration request receipt := by
+  intro valid
+  exact mismatch valid.selectionMatchesRequest
+
+theorem exact_facts_receipt_has_no_original_copy_selection
+    {registration : LifecycleRegistration} {request : LifecycleRequest}
+    {receipt : EraseReceipt} (valid : EraseReceiptValid registration request receipt)
+    (exactScope : request.scope = .exactFacts) :
+    ∀ locator, locator ∉ receipt.selection.originalCopies := by
+  intro locator receiptSelected
+  have requestSelected := (valid.selectionMatchesRequest.2 locator).mpr receiptSelected
+  exact valid.exactFactsHasNoOriginalCopySelection exactScope locator requestSelected
+
+theorem exact_facts_request_and_receipt_have_no_original_copy_selection
+    {registration : LifecycleRegistration} {request : LifecycleRequest}
+    {receipt : EraseReceipt} (valid : EraseReceiptValid registration request receipt)
+    (exactScope : request.scope = .exactFacts) :
+    (∀ locator, locator ∉ request.selection.originalCopies) ∧
+      (∀ locator, locator ∉ receipt.selection.originalCopies) := by
+  exact ⟨valid.exactFactsHasNoOriginalCopySelection exactScope,
+    exact_facts_receipt_has_no_original_copy_selection valid exactScope⟩
+
 theorem retained_source_surface_has_zero_counts
     {registration : LifecycleRegistration} {request : LifecycleRequest}
     {receipt : EraseReceipt} {count : EraseCount} {policy : SurfacePolicy}
@@ -137,6 +214,20 @@ theorem retained_source_surface_has_zero_counts
     count.deleted = 0 ∧ count.scrubbed = 0 := by
   apply valid.retainedTablesHaveZeroCounts count countPresent policy policyPresent sameSurface
   rw [sourceScope]
+  simp [eraseDispositionFor, retained]
+
+theorem retained_exact_fact_surface_has_zero_counts
+    {registration : LifecycleRegistration} {request : LifecycleRequest}
+    {receipt : EraseReceipt} {count : EraseCount} {policy : SurfacePolicy}
+    (valid : EraseReceiptValid registration request receipt)
+    (countPresent : count ∈ receipt.counts)
+    (policyPresent : policy ∈ registration.policies)
+    (sameSurface : policy.surface = count.surface)
+    (exactScope : request.scope = .exactFacts)
+    (retained : policy.exactFactErase = .retain) :
+    count.deleted = 0 ∧ count.scrubbed = 0 := by
+  apply valid.retainedTablesHaveZeroCounts count countPresent policy policyPresent sameSurface
+  rw [exactScope]
   simp [eraseDispositionFor, retained]
 
 structure LifecycleState (Core Host : Type) where
@@ -213,11 +304,12 @@ theorem committed_erase_binds_owner_and_scope
       (.committed ⟨coreAfter, hostAfter⟩ receipt)) :
     receipt.participant = frozen.participant ∧ receipt.owner = request.owner ∧
       receipt.scope = request.scope ∧
+      selectionMatches request.selection receipt.selection ∧
       (∀ surface, surface ∈ eraseCountTables receipt → surface ∈ frozen.tables) := by
   cases attempt with
   | committed coverage valid =>
       exact ⟨valid.participantMatches, valid.ownerMatches, valid.scopeMatches,
-        valid.exactTables.actualWithinDeclared⟩
+        valid.selectionMatchesRequest, valid.exactTables.actualWithinDeclared⟩
 
 structure ExportItem (Payload : Type) where
   surface : StateSurface
@@ -319,8 +411,8 @@ def exampleRegistration : LifecycleRegistration := {
   tables := [exampleExecutionSurface, exampleConfigurationSurface]
   genericTables := [exampleGenericSurface]
   policies := [
-    ⟨exampleExecutionSurface, .erase, .erase, .include⟩,
-    ⟨exampleConfigurationSurface, .erase, .retain, .exclude⟩
+    ⟨exampleExecutionSurface, .erase, .erase, .erase, .include⟩,
+    ⟨exampleConfigurationSurface, .erase, .retain, .retain, .exclude⟩
   ]
 }
 
@@ -349,8 +441,10 @@ theorem example_registration_has_complete_disjoint_coverage :
 theorem example_configuration_has_explicit_source_retention_and_export_exclusion :
     ∃ policy, policy ∈ exampleRegistration.policies ∧
       policy.surface = exampleConfigurationSurface ∧
-      policy.sourceErase = .retain ∧ policy.ownerExport = .exclude := by
-  refine ⟨⟨exampleConfigurationSurface, .erase, .retain, .exclude⟩, ?_, rfl, rfl, rfl⟩
+      policy.sourceErase = .retain ∧ policy.exactFactErase = .retain ∧
+      policy.ownerExport = .exclude := by
+  refine ⟨⟨exampleConfigurationSurface, .erase, .retain, .retain, .exclude⟩,
+    ?_, rfl, rfl, rfl, rfl⟩
   simp [exampleRegistration]
 
 end Causa.HostStateLifecycle

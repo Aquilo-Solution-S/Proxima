@@ -5,7 +5,7 @@ use proxima_storage_pg::query::{
     owned_file_revision_heads, owned_present_file_revision_heads_except,
     readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
 };
-use proxima_storage_pg::{PgSidecarRegistryFrozen, PgTuning};
+use proxima_storage_pg::{PgHostStateEraseContext, PgSidecarRegistryFrozen, PgTuning};
 use sqlx::PgPool;
 
 use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1};
@@ -28,14 +28,9 @@ pub struct CodeFlavorStore {
     pool: PgPool,
     tuning: PgTuning,
     sidecars: PgSidecarRegistryFrozen,
-    /// The declared surfaces of core plus this flavor, resolved into legs.
-    ///
-    /// The forget reads its `Deleted` legs off this. Composed from the two
-    /// contracts rather than handed in, exactly as `test_sidecars` composes
-    /// the PG registry: both are a function of `const` declarations, so a
-    /// store that saw a different set would be a store built against a
-    /// registry that cannot exist.
-    surfaces: proxima_core::owner_inverse::OwnerSurfaces,
+    /// Opaque boot-frozen full surface set plus the validated host lifecycle
+    /// callback. Physical erasure must use the same registry as the engine.
+    erase_context: PgHostStateEraseContext,
 }
 
 impl std::fmt::Debug for CodeFlavorStore {
@@ -52,12 +47,13 @@ impl CodeFlavorStore {
         pool: PgPool,
         tuning: PgTuning,
         sidecars: PgSidecarRegistryFrozen,
+        erase_context: PgHostStateEraseContext,
     ) -> Self {
         Self {
             pool,
             tuning,
             sidecars,
-            surfaces: flavor_surfaces(),
+            erase_context,
         }
     }
 
@@ -76,7 +72,8 @@ impl CodeFlavorStore {
             pool,
             tuning,
             sidecars: test_sidecars(),
-            surfaces: flavor_surfaces(),
+            erase_context: PgHostStateEraseContext::for_surfaces_for_tests(flavor_surfaces())
+                .expect("Code test registry declares no host lifecycle callback"),
         }
     }
 
@@ -88,8 +85,8 @@ impl CodeFlavorStore {
         &self.sidecars
     }
 
-    pub(crate) fn surfaces(&self) -> &proxima_core::owner_inverse::OwnerSurfaces {
-        &self.surfaces
+    pub(crate) fn erase_context(&self) -> &PgHostStateEraseContext {
+        &self.erase_context
     }
 
     /// Owner-only current file-revision heads of `repo_id` for `file_paths`.
@@ -297,18 +294,10 @@ impl CodeFlavorStore {
     }
 }
 
-/// Core's surfaces plus this flavor's, resolved once. See the field.
-///
-/// NOT test-only, unlike [`test_sidecars`] below: the host constructor needs
-/// it too, and a `#[cfg(any(test, debug_assertions))]` gate on it compiles in
-/// dev and vanishes under `--release`. The gate is therefore the UNION of its
-/// callers' gates,
-/// not either one of them: `from_backend_pool_for_host` is `host-api` and the
-/// two fixture constructors are `test, debug_assertions`, so a release build
-/// of this crate WITHOUT `host-api` has no caller at all and the function is
-/// dead. A workspace build hides that — `proxima-mcp` unifies `host-api` on —
-/// which is why `cargo build --release -p proxima-code` is its own gate.
-#[cfg(any(feature = "host-api", test, debug_assertions))]
+/// Core plus Code surfaces for the standalone fixture constructors.
+/// Production receives the actual full boot registry in its erase context,
+/// so this partial registry exists only alongside the test/debug callers.
+#[cfg(any(test, debug_assertions))]
 fn flavor_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     let mut registry = proxima_core::FlavorRegistry::new();
     crate::register(&mut registry).expect("the code flavor registers against a fresh registry");

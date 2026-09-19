@@ -1132,7 +1132,7 @@ async fn the_connect_default_resolves_surfaces_through_the_registry() {
 async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
     /// Declared keys with no unique index behind them, and why each is
     /// tolerable. Alphabetical.
-    const NOT_UNIQUE: [&str; 5] = [
+    const NOT_UNIQUE: [&str; 6] = [
         // One row per (entity, model, version); the key names the entity.
         "proxima_core.embedding_heads",
         // One job per (owner, entity, model).
@@ -1144,6 +1144,10 @@ async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
         "proxima_core.ingest_keys",
         // PK is (memory_id, schema_id): one memory projects per schema.
         "proxima_core.projection",
+        // The declared key is the owner column, and an owner publishes many
+        // Facts. Tolerable because the surface is ExportRule::Excluded, so
+        // there is no bundle whose row order the repeat could make undefined.
+        "proxima_core.publication_origin",
     ];
 
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());

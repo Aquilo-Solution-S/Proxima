@@ -4,7 +4,10 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
 
+use proxima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
+use proxima_core::{AccessKind, EntityId, GroupId, MemoryId, OwnerRef, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_storage_pg::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory_oneshot};
 use proxima_storage_pg::{PgStorage, ensure_core_schema_markers};
 use uuid::Uuid;
 
@@ -3150,7 +3153,7 @@ async fn a_v008_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
             "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
              baseline"
         );
@@ -3232,6 +3235,239 @@ async fn apply_core_migrations(
         sqlx::raw_sql(migration.sql.clone()).execute(pool).await?;
     }
     Ok(())
+}
+
+async fn insert_legacy_outbox_row(
+    pool: &sqlx::PgPool,
+    t: Uuid,
+    owner_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO proxima_core.publication_outbox
+             (t, owner_id, schema_id, schema_version, event_type, event_id,
+              envelope, envelope_digest)
+         VALUES ($1, $2, 'test/fact.v1', 1, 'fact.created', $3, '{}'::bytea, $4)",
+    )
+    .bind(t)
+    .bind(owner_id)
+    .bind(format!("F:{t}"))
+    .bind(vec![0x5a_u8; 32])
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn insert_backfill_fact(
+    pool: &sqlx::PgPool,
+    t: Uuid,
+    owner_id: Uuid,
+    source_id: Option<&str>,
+    ingest_key: Option<&str>,
+) -> Result<Uuid, sqlx::Error> {
+    let handle = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'fact', 'upgrade.fact.v1', $2, $3)",
+    )
+    .bind(handle)
+    .bind(owner_id)
+    .bind(t)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, source_id, ingest_key)
+         VALUES ($1, $2, 'fact', $3, 'upgrade.fact.v1', $4, $5)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(owner_id)
+    .bind(source_id)
+    .bind(ingest_key)
+    .execute(pool)
+    .await?;
+    Ok(handle)
+}
+
+/// Migration 0012 preserves the captured owner across transfer and admits
+/// source evidence only from a retained hot/cooled Fact. A missing retained
+/// row, malformed one-NULL pair, hard-delete witness, or pruned outbox is not
+/// evidence and produces no origin.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // upgrade, transfer, hot/cold, malformed and exclusion proofs share one fixture
+async fn publication_origin_backfill_uses_original_outbox_owner_after_transfer() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
+        apply_core_migrations(&pool, 1..=11).await?;
+
+        let original_personal = Uuid::now_v7();
+        let current_group = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal'), ($2, 'group')",
+        )
+        .bind(original_personal)
+        .bind(current_group)
+        .execute(&pool)
+        .await?;
+
+        let transferred = Uuid::now_v7();
+        let hot = Uuid::now_v7();
+        let hot_transferred = Uuid::now_v7();
+        let known_none = Uuid::now_v7();
+        let malformed = Uuid::now_v7();
+        let malformed_reverse = Uuid::now_v7();
+        let pruned = Uuid::now_v7();
+        let orphan = Uuid::now_v7();
+        let witnessed = Uuid::now_v7();
+
+        insert_backfill_fact(&pool, transferred, original_personal, Some("repo-a"), Some("k-a"))
+            .await?;
+        insert_backfill_fact(&pool, hot, current_group, Some("repo-hot"), Some("k-hot")).await?;
+        insert_backfill_fact(
+            &pool,
+            hot_transferred,
+            original_personal,
+            Some("repo-hot-transfer"),
+            Some("k-hot-transfer"),
+        )
+        .await?;
+        insert_backfill_fact(&pool, known_none, current_group, None, None).await?;
+        insert_backfill_fact(&pool, malformed, current_group, Some("repo-b"), Some("k-b"))
+            .await?;
+        insert_backfill_fact(
+            &pool,
+            malformed_reverse,
+            current_group,
+            Some("repo-d"),
+            Some("k-d"),
+        )
+        .await?;
+        insert_backfill_fact(&pool, pruned, current_group, Some("repo-c"), Some("k-c")).await?;
+        insert_backfill_fact(&pool, witnessed, original_personal, None, None).await?;
+
+        insert_legacy_outbox_row(&pool, transferred, original_personal).await?;
+        insert_legacy_outbox_row(&pool, hot, current_group).await?;
+        insert_legacy_outbox_row(&pool, hot_transferred, original_personal).await?;
+        insert_legacy_outbox_row(&pool, known_none, current_group).await?;
+        insert_legacy_outbox_row(&pool, malformed, current_group).await?;
+        insert_legacy_outbox_row(&pool, malformed_reverse, current_group).await?;
+        insert_legacy_outbox_row(&pool, pruned, current_group).await?;
+        insert_legacy_outbox_row(&pool, orphan, current_group).await?;
+        insert_legacy_outbox_row(&pool, witnessed, original_personal).await?;
+
+        // Establish the transfer through the runtime path: origin is the
+        // outbox's original owner even though the retained hot/cold Fact is
+        // now owned by the group.
+        let pg = PgStorage::connect(&db_url(&db_name)).await?;
+        let original_owner = OwnerRef::Personal(UserId::new(original_personal));
+        let group_owner = OwnerRef::Group(GroupId::new(current_group));
+        let transfer_permit = OwnerWritePermit::new_for_tests(original_owner, AccessKind::Fact);
+        for t in [transferred, hot_transferred] {
+            assert!(
+                OwnerTransferPort::transfer_to_owner(
+                    &pg,
+                    &transfer_permit,
+                    EntityId::Memory(MemoryId::new(t)),
+                    group_owner,
+                    pg.surfaces(),
+                )
+                .await?,
+                "the migration fixture must perform an actual A-to-B transfer"
+            );
+        }
+
+        let cold = MemoryColdStore::default();
+        for (t, owner_id) in [
+            (transferred, current_group),
+            (known_none, current_group),
+            (malformed, current_group),
+            (malformed_reverse, current_group),
+            (pruned, current_group),
+        ] {
+            let key = cold_object_key(t);
+            forget_memory_oneshot(
+                pg.pool_for_tests(),
+                pg.sidecars(),
+                pg.surfaces(),
+                &cold,
+                &key,
+                t,
+                owner_id,
+            )
+            .await?;
+        }
+        // Manufacture a malformed legacy cooled pair while preserving every
+        // other identity seal. The append-only exception is test-local data
+        // corruption, not a production write path.
+        sqlx::query("ALTER TABLE proxima_core.cooled DISABLE TRIGGER cooled_append_only")
+            .execute(&pool)
+            .await?;
+        sqlx::query("UPDATE proxima_core.cooled SET ingest_key = NULL WHERE t = $1")
+            .bind(malformed)
+            .execute(&pool)
+            .await?;
+        sqlx::query("UPDATE proxima_core.cooled SET source_id = NULL WHERE t = $1")
+            .bind(malformed_reverse)
+            .execute(&pool)
+            .await?;
+        sqlx::query("ALTER TABLE proxima_core.cooled ENABLE TRIGGER cooled_append_only")
+            .execute(&pool)
+            .await?;
+
+        // This published row was legitimately removed by old outbox
+        // retention before provenance metadata existed. Retained Fact source
+        // evidence alone must not invent a publication origin.
+        sqlx::query("DELETE FROM proxima_core.publication_outbox WHERE t = $1")
+            .bind(pruned)
+            .execute(&pool)
+            .await?;
+
+        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+            .bind(witnessed)
+            .execute(&pool)
+            .await?;
+        let witness_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM proxima_core.erased_pin_target WHERE t = $1)",
+        )
+        .bind(witnessed)
+        .fetch_one(&pool)
+        .await?;
+        assert!(witness_exists, "the excluded identity has a real erase witness");
+
+        apply_core_migrations(&pool, 12..=12).await?;
+        let rows: Vec<(Uuid, Uuid, String, Option<String>)> = sqlx::query_as(
+            "SELECT t, original_owner_id, original_owner_kind::text, source_id
+               FROM proxima_core.publication_origin ORDER BY t",
+        )
+        .fetch_all(&pool)
+        .await?;
+        let mut expected = vec![
+            (transferred, original_personal, "personal".into(), Some("repo-a".into())),
+            (hot, current_group, "group".into(), Some("repo-hot".into())),
+            (
+                hot_transferred,
+                original_personal,
+                "personal".into(),
+                Some("repo-hot-transfer".into()),
+            ),
+            (known_none, current_group, "group".into(), None),
+        ];
+        expected.sort_by_key(|row| row.0);
+        assert_eq!(
+            rows,
+            expected,
+            "only rows with retained source evidence are admitted, and transfer keeps the outbox owner"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("publication-origin upgrade backfill failed");
 }
 
 struct UploadContentIdentityFixture {

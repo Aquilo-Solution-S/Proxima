@@ -696,6 +696,10 @@ pub const DROPPED_TABLES: &[&str] = &[
     "compliance_audit_log",
     "owner_fact_retention",
     "owner_legal_holds",
+    // Added after the pinned fd362509 baseline. Its capture/revoke/backfill
+    // semantics have focused publication-origin PG oracles; this differential
+    // continues to compare only relations available to both implementations.
+    "publication_origin",
 ];
 pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0007 added staged BLAKE3 identity after this frozen baseline;

@@ -803,6 +803,29 @@ const KERNEL_SURFACES: &[Surface] = &[
         }),
     },
     Surface {
+        table: "proxima_core.publication_origin",
+        key: KeyShape::Custom(&["original_owner_id"]),
+        owner_column: Some("original_owner_id"),
+        // Original publication identity remains with its author across Fact
+        // transfer. Exact-Fact and owner/source erases remove it explicitly.
+        transfer: TransferRule::RetainAtSource {
+            why: "publication origin records the immutable original owner",
+        },
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Excluded {
+            why: "internal payload-free delivery identity is not owner export content",
+        },
+        forget: ForgetRule::Keep {
+            why: "cooling or pruning does not change original publication identity",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Counted("publication_origins"),
+        completeness: Some(DbConstraint {
+            relation: "proxima_core.publication_origin",
+            name: "publication_origin_original_owner_id_fkey",
+        }),
+    },
+    Surface {
         table: "proxima_core.blob",
         key: KeyShape::BlobId { column: "blob_id" },
         owner_column: Some("owner_id"),
@@ -1256,14 +1279,16 @@ const RESOURCES: &[ResourceContract] = &[
 /// fact about `proxima-storage-pg`, and the place to read it is
 /// `proxima-storage-pg`.
 ///
-/// Sixteen entries, and every one of them earns the exemption by needing
+/// Seventeen entries, and every one of them earns the exemption by needing
 /// something a generated `DELETE ... USING <selection set>` cannot express:
 /// a refcount anti-join before a shared object may go (`blob`,
 /// `blob_uploads`, `content`), a cold-purge row enqueued in the same
 /// transaction as the delete (`cooled`, `wake_config`), a head table
 /// resynchronised rather than emptied (`memory_head`, `goal_head`), an
-/// ordering the embedding tables have to be taken in, or the spine itself
-/// (`memory`, `goal`) which the selection sets were built FROM.
+/// ordering the embedding tables have to be taken in, an immutable
+/// publication-origin inverse selected by physical Fact ids OR original
+/// owner/source, or the spine itself (`memory`, `goal`) which the selection
+/// sets were built FROM.
 ///
 /// The list lives in the contract rather than in `proxima-storage-pg`
 /// because freeze reads it: a surface that neither the generator reaches
@@ -1286,6 +1311,7 @@ const BESPOKE_ERASE_LEGS: &[&str] = &[
     "proxima_core.goal_head",
     "proxima_core.memory",
     "proxima_core.memory_head",
+    "proxima_core.publication_origin",
     "proxima_core.sketch",
     "proxima_core.source_cursors",
     "proxima_core.wake_config",
@@ -1421,13 +1447,23 @@ pub(crate) fn register(
 #[cfg(test)]
 mod tests {
     use super::{FLAVOR_0, RESOURCES, resource};
-    use crate::flavor::contract::{SearchProjectionDecl, TransferRule};
+    use crate::flavor::contract::{EraseLeg, SearchProjectionDecl, TransferRule};
     use crate::protocol::resource as scope;
 
     #[test]
     fn flavor_zero_is_core_and_holds_the_zero_ordinal() {
         assert_eq!(FLAVOR_0.flavor_id, "core");
         assert!(FLAVOR_0.is_core());
+    }
+
+    #[test]
+    fn publication_origin_is_classified_as_a_bespoke_erase_leg() {
+        let surface = FLAVOR_0
+            .kernel_surfaces
+            .iter()
+            .find(|surface| surface.table == "proxima_core.publication_origin")
+            .expect("publication origin is declared");
+        assert_eq!(FLAVOR_0.erase_leg(surface), EraseLeg::Bespoke);
     }
 
     #[test]

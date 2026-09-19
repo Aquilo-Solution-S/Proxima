@@ -12,16 +12,20 @@ use proxima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget,
     OwnerExportTarget, OwnerSurfaces,
 };
+use proxima_core::storage_ports::publication::{
+    PublicationOriginEligibility, PublicationOriginEligibilityPort,
+};
 use proxima_core::storage_ports::{
     FactIngestPort, HostStateEraseReceipt, HostStateEraseRequest, HostStateEraseScope,
     HostStateEraseTableCount, HostStateExportReceipt, HostStateExportRequest, HostStateExportTable,
     HostStateParticipantId, HostStateReply, HostStateRequest, HostStateWritePermit,
-    MemoryAuthoringPort, OwnerInversePort, OwnerWritePermit, StateSurfaceName, WriteSessionFactory,
+    MemoryAuthoringPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit, StateSurfaceName,
+    WriteSessionFactory,
 };
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AccessKind, GroupId, MemoryId, OwnerRef, SchemaId, SchemaVersion, SourceId, StorageError,
-    UserId,
+    AccessKind, EntityId, GroupId, MemoryId, OwnerRef, SchemaId, SchemaVersion, SourceId,
+    StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::{
@@ -62,6 +66,7 @@ const FACTS_SURFACE: Surface = Surface {
     erase: EraseRule::HostState {
         whole_owner: proxima_core::flavor::HostStateEraseDisposition::Erase,
         source: proxima_core::flavor::HostStateEraseDisposition::Erase,
+        exact_fact: proxima_core::flavor::HostStateEraseDisposition::Erase,
     },
     export: ExportRule::Allowlist(FACT_EXPORT_FIELDS),
     forget: ForgetRule::Keep {
@@ -82,6 +87,7 @@ const METADATA_SURFACE: Surface = Surface {
     erase: EraseRule::HostState {
         whole_owner: proxima_core::flavor::HostStateEraseDisposition::Erase,
         source: proxima_core::flavor::HostStateEraseDisposition::Retain,
+        exact_fact: proxima_core::flavor::HostStateEraseDisposition::Retain,
     },
     export: ExportRule::Excluded {
         why: "internal lifecycle metadata is not portable owner content",
@@ -153,11 +159,17 @@ enum EraseFault {
     ForeignParticipant,
     ForeignOwnerKind,
     ForeignScope,
+    ForeignPhysicalSelection,
+    ForeignOriginalOwnerSelection,
+    ForeignOriginalFactSelection,
     MissingTable,
     DuplicateTable,
     ForeignTable,
     RetainedCount,
     RetainedScrubbedCount,
+    ExactForeignScope,
+    ExactRetainedCount,
+    ExactRetainedScrubbedCount,
     ScrubFacts,
     DeferredCommitFailure,
 }
@@ -257,58 +269,100 @@ impl PgHostStateLifecyclePort for Lifecycle {
             .iter()
             .map(|id| id.into_inner())
             .collect::<Vec<_>>();
-        let (facts_deleted, facts_scrubbed, metadata_deleted, metadata_scrubbed) =
-            match request.scope() {
-                HostStateEraseScope::WholeOwner => {
-                    let facts = sqlx::query(
-                        "DELETE FROM proxima_core.test_host_lifecycle_facts WHERE owner_id = $1",
-                    )
-                    .bind(owner_id)
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(|error| pg_error(&error))?
-                    .rows_affected();
-                    let metadata = sqlx::query(
-                        "DELETE FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
-                    )
-                    .bind(owner_id)
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(|error| pg_error(&error))?
-                    .rows_affected();
-                    (facts, 0, metadata, 0)
-                }
-                HostStateEraseScope::Source(source) => {
-                    let (facts, scrubbed_facts) = if fault == EraseFault::ScrubFacts {
-                        let scrubbed = sqlx::query(
-                            "UPDATE proxima_core.test_host_lifecycle_facts
+        let original_copy_owner_ids = request
+            .selection()
+            .original_copies()
+            .iter()
+            .map(|locator| locator.original_owner.stored_owner_id())
+            .collect::<Vec<_>>();
+        let original_copy_fact_ids = request
+            .selection()
+            .original_copies()
+            .iter()
+            .map(|locator| locator.fact_id.into_inner())
+            .collect::<Vec<_>>();
+        let (facts_deleted, facts_scrubbed, metadata_deleted, metadata_scrubbed) = match request
+            .scope()
+        {
+            HostStateEraseScope::WholeOwner => {
+                let facts = sqlx::query(
+                    "DELETE FROM proxima_core.test_host_lifecycle_facts f
+                          WHERE f.owner_id = $1
+                             OR f.fact_id = ANY($2)
+                             OR EXISTS (
+                                  SELECT 1
+                                    FROM unnest($3::uuid[], $4::uuid[]) AS copy(owner_id, fact_id)
+                                   WHERE copy.owner_id = f.owner_id
+                                     AND copy.fact_id = f.fact_id
+                             )",
+                )
+                .bind(owner_id)
+                .bind(&selected_ids)
+                .bind(&original_copy_owner_ids)
+                .bind(&original_copy_fact_ids)
+                .execute(&mut **tx)
+                .await
+                .map_err(|error| pg_error(&error))?
+                .rows_affected();
+                let metadata = sqlx::query(
+                    "DELETE FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
+                )
+                .bind(owner_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|error| pg_error(&error))?
+                .rows_affected();
+                (facts, 0, metadata, 0)
+            }
+            HostStateEraseScope::Source(source) => {
+                let (facts, scrubbed_facts) = if fault == EraseFault::ScrubFacts {
+                    let scrubbed = sqlx::query(
+                        "UPDATE proxima_core.test_host_lifecycle_facts f
                             SET payload = decode('', 'hex')
-                          WHERE owner_id = $1 AND source_id = $2 AND fact_id = ANY($3)",
+                          WHERE (f.owner_id = $1 AND f.source_id = $2)
+                             OR f.fact_id = ANY($3)
+                             OR EXISTS (
+                                  SELECT 1
+                                    FROM unnest($4::uuid[], $5::uuid[]) AS copy(owner_id, fact_id)
+                                   WHERE copy.owner_id = f.owner_id
+                                     AND copy.fact_id = f.fact_id
+                             )",
+                    )
+                    .bind(owner_id)
+                    .bind(source.as_str())
+                    .bind(&selected_ids)
+                    .bind(&original_copy_owner_ids)
+                    .bind(&original_copy_fact_ids)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|error| pg_error(&error))?
+                    .rows_affected();
+                    (0, scrubbed)
+                } else {
+                    let deleted = sqlx::query(
+                            "DELETE FROM proxima_core.test_host_lifecycle_facts f
+                              WHERE (f.owner_id = $1 AND f.source_id = $2)
+                                 OR f.fact_id = ANY($3)
+                                 OR EXISTS (
+                                      SELECT 1
+                                        FROM unnest($4::uuid[], $5::uuid[]) AS copy(owner_id, fact_id)
+                                       WHERE copy.owner_id = f.owner_id
+                                         AND copy.fact_id = f.fact_id
+                                 )",
                         )
                         .bind(owner_id)
                         .bind(source.as_str())
                         .bind(&selected_ids)
+                        .bind(&original_copy_owner_ids)
+                        .bind(&original_copy_fact_ids)
                         .execute(&mut **tx)
                         .await
                         .map_err(|error| pg_error(&error))?
                         .rows_affected();
-                        (0, scrubbed)
-                    } else {
-                        let deleted = sqlx::query(
-                            "DELETE FROM proxima_core.test_host_lifecycle_facts
-                          WHERE owner_id = $1 AND source_id = $2 AND fact_id = ANY($3)",
-                        )
-                        .bind(owner_id)
-                        .bind(source.as_str())
-                        .bind(&selected_ids)
-                        .execute(&mut **tx)
-                        .await
-                        .map_err(|error| pg_error(&error))?
-                        .rows_affected();
-                        (deleted, 0)
-                    };
-                    let metadata = if fault == EraseFault::RetainedCount {
-                        sqlx::query(
+                    (deleted, 0)
+                };
+                let metadata = if fault == EraseFault::RetainedCount {
+                    sqlx::query(
                         "DELETE FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
                     )
                     .bind(owner_id)
@@ -316,27 +370,65 @@ impl PgHostStateLifecyclePort for Lifecycle {
                     .await
                     .map_err(|error| pg_error(&error))?
                     .rows_affected()
-                    } else {
-                        0
-                    };
-                    let scrubbed_metadata = if fault == EraseFault::RetainedScrubbedCount {
-                        sqlx::query(
-                            "UPDATE proxima_core.test_host_lifecycle_metadata
+                } else {
+                    0
+                };
+                let scrubbed_metadata = if fault == EraseFault::RetainedScrubbedCount {
+                    sqlx::query(
+                        "UPDATE proxima_core.test_host_lifecycle_metadata
                             SET payload = decode('', 'hex')
                           WHERE owner_id = $1 AND source_id = $2",
-                        )
-                        .bind(owner_id)
-                        .bind(source.as_str())
-                        .execute(&mut **tx)
-                        .await
-                        .map_err(|error| pg_error(&error))?
-                        .rows_affected()
-                    } else {
-                        0
-                    };
-                    (facts, scrubbed_facts, metadata, scrubbed_metadata)
-                }
-            };
+                    )
+                    .bind(owner_id)
+                    .bind(source.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|error| pg_error(&error))?
+                    .rows_affected()
+                } else {
+                    0
+                };
+                (facts, scrubbed_facts, metadata, scrubbed_metadata)
+            }
+            HostStateEraseScope::ExactFacts => {
+                let facts = sqlx::query(
+                    "DELETE FROM proxima_core.test_host_lifecycle_facts
+                          WHERE fact_id = ANY($1)",
+                )
+                .bind(&selected_ids)
+                .execute(&mut **tx)
+                .await
+                .map_err(|error| pg_error(&error))?
+                .rows_affected();
+                let metadata_deleted = if fault == EraseFault::ExactRetainedCount {
+                    sqlx::query(
+                        "DELETE FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
+                    )
+                    .bind(owner_id)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|error| pg_error(&error))?
+                    .rows_affected()
+                } else {
+                    0
+                };
+                let metadata_scrubbed = if fault == EraseFault::ExactRetainedScrubbedCount {
+                    sqlx::query(
+                        "UPDATE proxima_core.test_host_lifecycle_metadata
+                            SET payload = decode('', 'hex')
+                          WHERE owner_id = $1",
+                    )
+                    .bind(owner_id)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|error| pg_error(&error))?
+                    .rows_affected()
+                } else {
+                    0
+                };
+                (facts, 0, metadata_deleted, metadata_scrubbed)
+            }
+        };
         if fault == EraseFault::DeferredCommitFailure {
             sqlx::query(
                 "INSERT INTO proxima_core.test_host_lifecycle_facts
@@ -362,6 +454,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
             participant: self.participant_id,
             owner: request.owner(),
             scope: request.scope().clone(),
+            selection: request.selection().clone(),
             counts: vec![
                 HostStateEraseTableCount {
                     table: StateSurfaceName::new(FACTS_TABLE),
@@ -385,7 +478,42 @@ impl PgHostStateLifecyclePort for Lifecycle {
                     OwnerRef::Group(group) => OwnerRef::Personal(UserId::new(group.into_inner())),
                 };
             }
-            EraseFault::ForeignScope => receipt.scope = HostStateEraseScope::WholeOwner,
+            EraseFault::ForeignScope | EraseFault::ExactForeignScope => {
+                receipt.scope = HostStateEraseScope::WholeOwner;
+            }
+            EraseFault::ForeignPhysicalSelection => {
+                receipt.selection = proxima_core::storage_ports::HostStateEraseSelection::new(
+                    vec![MemoryId::new(Uuid::now_v7())],
+                    request.selection().original_copies().to_vec(),
+                );
+            }
+            EraseFault::ForeignOriginalOwnerSelection => {
+                let mut copies = request.selection().original_copies().to_vec();
+                if let Some(locator) = copies.first_mut() {
+                    locator.original_owner = match locator.original_owner {
+                        OwnerRef::Personal(user) => {
+                            OwnerRef::Group(GroupId::new(user.into_inner()))
+                        }
+                        OwnerRef::Group(group) => {
+                            OwnerRef::Personal(UserId::new(group.into_inner()))
+                        }
+                    };
+                }
+                receipt.selection = proxima_core::storage_ports::HostStateEraseSelection::new(
+                    request.selection().physical_facts().to_vec(),
+                    copies,
+                );
+            }
+            EraseFault::ForeignOriginalFactSelection => {
+                let mut copies = request.selection().original_copies().to_vec();
+                if let Some(locator) = copies.first_mut() {
+                    locator.fact_id = MemoryId::new(Uuid::now_v7());
+                }
+                receipt.selection = proxima_core::storage_ports::HostStateEraseSelection::new(
+                    request.selection().physical_facts().to_vec(),
+                    copies,
+                );
+            }
             EraseFault::MissingTable => {
                 receipt.counts.pop();
             }
@@ -393,7 +521,12 @@ impl PgHostStateLifecyclePort for Lifecycle {
             EraseFault::ForeignTable => {
                 receipt.counts[1].table = StateSurfaceName::new("proxima_core.unknown_table");
             }
-            EraseFault::RetainedCount => receipt.counts[1].deleted = metadata_deleted,
+            EraseFault::RetainedCount | EraseFault::ExactRetainedCount => {
+                receipt.counts[1].deleted = metadata_deleted;
+            }
+            EraseFault::ExactRetainedScrubbedCount => {
+                receipt.counts[1].scrubbed = metadata_scrubbed;
+            }
             EraseFault::None
             | EraseFault::ScrubFacts
             | EraseFault::RetainedScrubbedCount
@@ -779,6 +912,14 @@ async fn core_fact_count(pool: &PgPool, fact_id: MemoryId) -> i64 {
     .expect("core Fact count")
 }
 
+async fn publication_origin_count(pool: &PgPool, fact_id: MemoryId) -> i64 {
+    sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.publication_origin WHERE t = $1")
+        .bind(fact_id.into_inner())
+        .fetch_one(pool)
+        .await
+        .expect("publication origin count")
+}
+
 #[tokio::test]
 async fn source_erase_binds_exact_hot_and_cooled_fact_selection_and_owner_kind() {
     let (db_name, pg, lifecycle) = fresh_pg(5).await;
@@ -906,6 +1047,421 @@ async fn source_erase_binds_exact_hot_and_cooled_fact_selection_and_owner_kind()
 }
 
 #[tokio::test]
+async fn source_erase_combines_physical_and_original_copy_selectors_once() {
+    let (db_name, pg, lifecycle) = fresh_pg(4).await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let original_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let transferred_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let unrelated_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = SourceId::new("combined-source");
+        let both = ingest(&pg, original_owner, source.as_str(), "both-selected").await;
+        let original_only =
+            ingest(&pg, original_owner, source.as_str(), "original-only").await;
+        let unrelated = ingest(&pg, unrelated_owner, source.as_str(), "neither-selected").await;
+        assert!(
+            pg.transfer_to_owner(
+                &OwnerWritePermit::new_for_tests(original_owner, AccessKind::Fact),
+                EntityId::Memory(original_only),
+                transferred_owner,
+                pg.surfaces(),
+            )
+            .await?,
+            "the original-only selector is a transferred Fact"
+        );
+        // The lifecycle fixture's facts are ordinary Proxima facts, not
+        // published admissions. Seed the payload-free origin index directly
+        // to exercise both copy-selection domains; publication_outbox tests
+        // cover production capture into this same index.
+        sqlx::query(
+            "INSERT INTO proxima_core.publication_origin
+                 (t, original_owner_id, original_owner_kind, source_id)
+             VALUES
+                 ($1, $2, 'personal', $4),
+                 ($3, $2, 'personal', $4)",
+        )
+        .bind(both.into_inner())
+        .bind(original_owner.stored_owner_id())
+        .bind(original_only.into_inner())
+        .bind(source.as_str())
+        .execute(pool)
+        .await?;
+
+        // The current owner's `both` row is selected by both sets. The
+        // transferred `original_only` row is selected only by its immutable
+        // original-owner locator. A second owner's row for each Fact proves
+        // the physical selector is global while the copy locator is exact.
+        for (owner, fact, row_source, payload) in [
+            (original_owner, both, source.as_str(), &[1][..]),
+            (transferred_owner, both, "other-source", &[2][..]),
+            (original_owner, original_only, source.as_str(), &[3][..]),
+            (transferred_owner, original_only, source.as_str(), &[4][..]),
+            (unrelated_owner, unrelated, source.as_str(), &[5][..]),
+        ] {
+            seed_host_fact(pool, owner, fact, row_source, payload).await;
+        }
+
+        let auth = erase_auth(original_owner, Some(source.clone()));
+        let OwnerEraseOutcome::Completed {
+            host_state_deleted, ..
+        } = pg
+            .erase_personal_source_scope(
+                &auth,
+                match original_owner {
+                    OwnerRef::Personal(id) => id,
+                    OwnerRef::Group(_) => unreachable!(),
+                },
+                &source,
+                pg.surfaces(),
+            )
+            .await?
+        else {
+            panic!("source erase should complete");
+        };
+
+        let request = lifecycle
+            .last_request
+            .lock()
+            .expect("request mutex")
+            .clone()
+            .expect("callback received a request");
+        assert_eq!(request.selected_fact_ids(), &[both]);
+        assert_eq!(
+            request.selection().original_copies(),
+            &[
+                proxima_core::storage_ports::HostStateFactCopyLocator {
+                    original_owner,
+                    fact_id: both,
+                },
+                proxima_core::storage_ports::HostStateFactCopyLocator {
+                    original_owner,
+                    fact_id: original_only,
+                },
+            ]
+        );
+        assert_eq!(
+            host_state_deleted.get(FACTS_TABLE),
+            Some(&3),
+            "both-selected row is counted once; only two physical rows plus one original copy are removed"
+        );
+
+        let remaining: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT owner_id, fact_id
+               FROM proxima_core.test_host_lifecycle_facts
+              ORDER BY owner_id, fact_id",
+        )
+        .fetch_all(pool)
+        .await?;
+        let mut expected = vec![
+            (transferred_owner.stored_owner_id(), original_only.into_inner()),
+            (unrelated_owner.stored_owner_id(), unrelated.into_inner()),
+        ];
+        expected.sort_unstable();
+        assert_eq!(remaining, expected, "the OR inverse preserves neither-selected rows");
+        assert_eq!(core_fact_count(pool, both).await, 0);
+        assert_eq!(core_fact_count(pool, original_only).await, 1);
+        assert_eq!(core_fact_count(pool, unrelated).await, 1);
+        Ok(())
+    }
+    .await;
+    close_pg(&db_name).await;
+    result.expect("combined physical/original-copy selector oracle failed");
+}
+
+#[tokio::test]
+async fn source_erase_exclusive_fence_makes_waiting_origin_check_see_revocation() {
+    let (db_name, pg, lifecycle) = fresh_pg(4).await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests().clone();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let OwnerRef::Personal(user_id) = owner else {
+            unreachable!()
+        };
+        let source = SourceId::new("exclusive-source-first");
+        let fact = ingest(&pg, owner, source.as_str(), "exclusive-source-fact").await;
+        sqlx::query(
+            "INSERT INTO proxima_core.publication_origin
+                 (t, original_owner_id, original_owner_kind, source_id)
+             VALUES ($1, $2, 'personal', $3)",
+        )
+        .bind(fact.into_inner())
+        .bind(owner.stored_owner_id())
+        .bind(source.as_str())
+        .execute(&pool)
+        .await?;
+
+        let gate = Arc::new(CallbackGate::default());
+        lifecycle.set_erase_gate(Some(gate.clone()));
+        let erase_pg = pg.clone();
+        let erase_source = source.clone();
+        let auth = erase_auth(owner, Some(source.clone()));
+        let eraser = tokio::spawn(async move {
+            OwnerInversePort::erase_personal_source_scope(
+                erase_pg.as_ref(),
+                &auth,
+                user_id,
+                &erase_source,
+                erase_pg.surfaces(),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), gate.entered.notified())
+            .await
+            .expect("source callback entered under the exclusive lifecycle fence");
+
+        let reader_pg = pg.clone();
+        let reader_pool = pool.clone();
+        let reader = tokio::spawn(async move {
+            let mut tx = reader_pool.begin().await.expect("begin waiting UoW");
+            // The lifecycle fence key is the stable ASCII `proxhlcy` key
+            // documented by `access::owner_columns`; use the same transaction
+            // advisory lock as a host-capable UnitOfWork.
+            let fence_key = i64::from_be_bytes(*b"proxhlcy");
+            sqlx::query("SELECT pg_advisory_xact_lock_shared($1)")
+                .bind(fence_key)
+                .execute(&mut *tx)
+                .await
+                .expect("eligibility UoW acquires shared fence after erase");
+            let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
+                reader_pg.as_ref(),
+                &mut tx,
+                owner,
+                fact,
+            )
+            .await
+            .expect("revoked origin is a negative result");
+            tx.commit().await.expect("eligibility UoW commits");
+            eligibility
+        });
+
+        let fence_key = i64::from_be_bytes(*b"proxhlcy");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (
+                         SELECT 1 FROM pg_locks
+                          WHERE locktype = 'advisory' AND NOT granted
+                            AND mode = 'ShareLock'
+                            AND database = (
+                                SELECT oid FROM pg_database WHERE datname = current_database()
+                            )
+                            AND classid::bigint = (($1::bigint >> 32) & 4294967295)
+                            AND objid::bigint = ($1::bigint & 4294967295)
+                     )",
+                )
+                .bind(fence_key)
+                .fetch_one(&pool)
+                .await?;
+                if waiting {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Ok::<(), sqlx::Error>(())
+        })
+        .await
+        .expect("late eligibility transaction waits behind erase")?;
+
+        gate.release.notify_one();
+        let outcome = tokio::time::timeout(Duration::from_secs(3), eraser)
+            .await
+            .expect("source erase completes within the bound")??;
+        assert!(matches!(outcome, OwnerEraseOutcome::Completed { .. }));
+        let eligibility = tokio::time::timeout(Duration::from_secs(3), reader)
+            .await
+            .expect("waiting eligibility transaction completes")?;
+        assert_eq!(eligibility, PublicationOriginEligibility::Ineligible);
+        assert_eq!(core_fact_count(&pool, fact).await, 0);
+        assert_eq!(host_fact_count(&pool, owner).await, 0);
+        assert_eq!(publication_origin_count(&pool, fact).await, 0);
+        lifecycle.set_erase_gate(None);
+        Ok(())
+    }
+    .await;
+    lifecycle.set_erase_gate(None);
+    close_pg(&db_name).await;
+    result.expect("exclusive source erase must precede late eligibility");
+}
+
+#[tokio::test]
+async fn exact_physical_erase_invokes_global_copy_inverse_only_for_selected_fact() {
+    let (db_name, pg, lifecycle) = fresh_pg(4).await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let other_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let source = SourceId::new("exact-physical-source");
+        let selected = ingest(&pg, owner, source.as_str(), "exact-selected").await;
+        let unrelated = ingest(&pg, owner, source.as_str(), "exact-unrelated").await;
+        let other_owner_fact =
+            ingest(&pg, other_owner, "other-source", "register-other-owner").await;
+        seed_host_fact(pool, owner, selected, source.as_str(), &[1]).await;
+        seed_host_fact(pool, other_owner, selected, "foreign-copy", &[2]).await;
+        seed_host_fact(pool, owner, unrelated, source.as_str(), &[3]).await;
+        seed_metadata(pool, owner).await;
+
+        let context = pg
+            .host_state_erase_context()
+            .expect("boot-frozen lifecycle callback is present");
+        let mut tx = pool.begin().await?;
+        proxima_storage_pg::verbs::forget::erase_memory(
+            &mut tx,
+            pg.sidecars(),
+            &context,
+            &owner,
+            selected.into_inner(),
+        )
+        .await?;
+        tx.commit().await?;
+
+        let request = lifecycle
+            .last_request
+            .lock()
+            .expect("request mutex")
+            .clone()
+            .expect("physical erase invokes callback");
+        assert_eq!(request.owner(), owner);
+        assert_eq!(request.scope(), &HostStateEraseScope::ExactFacts);
+        assert_eq!(request.selected_fact_ids(), &[selected]);
+        assert!(request.selection().original_copies().is_empty());
+        assert_eq!(core_fact_count(pool, selected).await, 0);
+        assert_eq!(core_fact_count(pool, unrelated).await, 1);
+        assert_eq!(core_fact_count(pool, other_owner_fact).await, 1);
+
+        let remaining: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT owner_id, fact_id
+               FROM proxima_core.test_host_lifecycle_facts
+              ORDER BY owner_id, fact_id",
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            remaining,
+            vec![(owner.stored_owner_id(), unrelated.into_inner())],
+            "physical selection removes every owner copy of the target and preserves other Facts"
+        );
+        let metadata_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
+        )
+        .bind(owner.stored_owner_id())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            metadata_count, 1,
+            "independent authored metadata is retained"
+        );
+        Ok(())
+    }
+    .await;
+    close_pg(&db_name).await;
+    result.expect("exact physical Fact inverse oracle failed");
+}
+
+#[tokio::test]
+async fn exact_receipt_scope_and_retained_counts_fail_closed_and_wrong_owner_never_dispatches() {
+    let (db_name, pg, lifecycle) = fresh_pg(4).await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let wrong_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let source = SourceId::new("exact-receipt-source");
+        let selected = ingest(&pg, owner, source.as_str(), "exact-receipt-selected").await;
+        seed_host_fact(pool, owner, selected, source.as_str(), &[1, 2, 3]).await;
+        seed_metadata(pool, owner).await;
+        sqlx::query(
+            "INSERT INTO proxima_core.publication_origin
+                 (t, original_owner_id, original_owner_kind, source_id)
+             VALUES ($1, $2, 'personal', $3)",
+        )
+        .bind(selected.into_inner())
+        .bind(owner.stored_owner_id())
+        .bind(source.as_str())
+        .execute(pool)
+        .await?;
+
+        // A foreign owner cannot reach callback dispatch, the core erase,
+        // host inverse, or the publication-origin inverse.
+        let context = pg
+            .host_state_erase_context()
+            .expect("boot-frozen lifecycle callback is present");
+        let mut wrong_owner_tx = pool.begin().await?;
+        let wrong = proxima_storage_pg::verbs::forget::erase_memory(
+            &mut wrong_owner_tx,
+            pg.sidecars(),
+            &context,
+            &wrong_owner,
+            selected.into_inner(),
+        )
+        .await;
+        assert!(matches!(wrong, Err(StorageError::NotFound)));
+        wrong_owner_tx.rollback().await?;
+        assert!(
+            lifecycle
+                .last_request
+                .lock()
+                .expect("request mutex")
+                .is_none()
+        );
+        assert_eq!(core_fact_count(pool, selected).await, 1);
+        assert_eq!(host_fact_count(pool, owner).await, 1);
+        assert_eq!(publication_origin_count(pool, selected).await, 1);
+
+        for fault in [
+            EraseFault::ExactForeignScope,
+            EraseFault::ExactRetainedCount,
+            EraseFault::ExactRetainedScrubbedCount,
+        ] {
+            lifecycle.set_erase_fault(fault);
+            let mut tx = pool.begin().await?;
+            let rejected = proxima_storage_pg::verbs::forget::erase_memory(
+                &mut tx,
+                pg.sidecars(),
+                &context,
+                &owner,
+                selected.into_inner(),
+            )
+            .await;
+            assert!(
+                rejected.is_err(),
+                "exact receipt fault {fault:?} is rejected"
+            );
+            tx.rollback().await?;
+            assert_eq!(
+                core_fact_count(pool, selected).await,
+                1,
+                "core rolls back for {fault:?}"
+            );
+            assert_eq!(
+                host_fact_count(pool, owner).await,
+                1,
+                "host copy rolls back for {fault:?}"
+            );
+            assert_eq!(
+                publication_origin_count(pool, selected).await,
+                1,
+                "origin rolls back for {fault:?}"
+            );
+            let metadata_payload: Vec<u8> = sqlx::query_scalar(
+                "SELECT payload FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
+            )
+            .bind(owner.stored_owner_id())
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(
+                metadata_payload,
+                vec![0xaa],
+                "retained metadata is unchanged for {fault:?}"
+            );
+        }
+        lifecycle.set_erase_fault(EraseFault::None);
+        Ok(())
+    }
+    .await;
+    close_pg(&db_name).await;
+    result.expect("exact receipt scope/retained count oracles failed");
+}
+
+#[tokio::test]
 async fn invalid_callback_receipts_and_commit_failure_roll_back_core_and_host_rows() {
     let (db_name, pg, lifecycle) = fresh_pg(4).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -915,6 +1471,32 @@ async fn invalid_callback_receipts_and_commit_failure_roll_back_core_and_host_ro
         let fact = ingest(&pg, owner, source.as_str(), "rollback-fact").await;
         seed_host_fact(pool, owner, fact, source.as_str(), &[42, 0, 254]).await;
         seed_metadata_for_source(pool, owner, source.as_str()).await;
+        sqlx::query(
+            "INSERT INTO proxima_core.publication_origin
+                 (t, original_owner_id, original_owner_kind, source_id)
+             VALUES ($1, $2, 'personal', $3)",
+        )
+        .bind(fact.into_inner())
+        .bind(owner.stored_owner_id())
+        .bind(source.as_str())
+        .execute(pool)
+        .await?;
+        let outbox_bytes = [0x11_u8, 0x00, 0xff];
+        let outbox_digest = [0xab_u8; 32];
+        sqlx::query(
+            "INSERT INTO proxima_core.publication_outbox
+                 (t, owner_id, schema_id, schema_version, event_type, event_id,
+                  envelope, envelope_digest)
+             VALUES ($1, $2, 'core.test-lifecycle-rollback', 1,
+                     'com.proxima.test.lifecycle', $3, $4, $5)",
+        )
+        .bind(fact.into_inner())
+        .bind(owner.stored_owner_id())
+        .bind(fact.into_inner().to_string())
+        .bind(outbox_bytes.as_slice())
+        .bind(outbox_digest.as_slice())
+        .execute(pool)
+        .await?;
         let OwnerRef::Personal(user_id) = owner else {
             unreachable!()
         };
@@ -923,6 +1505,9 @@ async fn invalid_callback_receipts_and_commit_failure_roll_back_core_and_host_ro
             EraseFault::ForeignParticipant,
             EraseFault::ForeignOwnerKind,
             EraseFault::ForeignScope,
+            EraseFault::ForeignPhysicalSelection,
+            EraseFault::ForeignOriginalOwnerSelection,
+            EraseFault::ForeignOriginalFactSelection,
             EraseFault::MissingTable,
             EraseFault::DuplicateTable,
             EraseFault::ForeignTable,
@@ -952,8 +1537,32 @@ async fn invalid_callback_receipts_and_commit_failure_roll_back_core_and_host_ro
             .fetch_one(pool)
             .await?;
             assert_eq!(metadata_payload, vec![0xaa], "scrub rolled back for {fault:?}");
+            assert_eq!(publication_origin_count(pool, fact).await, 1, "origin inverse rolls back for {fault:?}");
+            let retained_outbox: (Vec<u8>, Vec<u8>) = sqlx::query_as(
+                "SELECT envelope, envelope_digest FROM proxima_core.publication_outbox WHERE t = $1",
+            )
+            .bind(fact.into_inner())
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(retained_outbox.0.as_slice(), outbox_bytes.as_slice(), "outbox bytes roll back for {fault:?}");
+            assert_eq!(retained_outbox.1.as_slice(), outbox_digest.as_slice(), "outbox digest rolls back for {fault:?}");
         }
         lifecycle.set_erase_fault(EraseFault::None);
+        let auth = erase_auth(owner, Some(source.clone()));
+        let erased = pg
+            .erase_personal_source_scope(&auth, user_id, &source, pg.surfaces())
+            .await?;
+        assert!(matches!(erased, OwnerEraseOutcome::Completed { .. }));
+        assert_eq!(core_fact_count(pool, fact).await, 0);
+        assert_eq!(host_fact_count(pool, owner).await, 0);
+        assert_eq!(publication_origin_count(pool, fact).await, 0);
+        let remaining_outbox: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxima_core.publication_outbox WHERE t = $1",
+        )
+        .bind(fact.into_inner())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(remaining_outbox, 0, "the success path actually selects the seeded outbox");
         Ok(())
     }
     .await;

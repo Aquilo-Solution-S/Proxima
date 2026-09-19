@@ -36,6 +36,8 @@ use proxima_storage_pg::verbs::wake_timeseries::{
 use proxima_storage_pg::{PgStorage, core_pg_sidecars};
 use uuid::Uuid;
 
+const HOST_STATE_LIFECYCLE_FENCE_KEY: i64 = i64::from_be_bytes(*b"proxhlcy");
+
 fn memory_schema_specs() -> Vec<MemorySchemaSpec> {
     proxima_core::FlavorRegistry::new()
         .freeze_or_panic_for_tests()
@@ -68,6 +70,11 @@ fn memory_schema_specs() -> Vec<MemorySchemaSpec> {
 /// measure.
 fn contract_sidecar_tables() -> OwnerSurfaces {
     OwnerSurfaces::for_registry(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
+}
+
+fn erase_context() -> proxima_storage_pg::PgHostStateEraseContext {
+    proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(contract_sidecar_tables())
+        .expect("owner-transfer fixture has no host lifecycle tables")
 }
 
 /// Observe one specific advisory waiter/holder, including its mode and lock
@@ -197,6 +204,21 @@ async fn object_key_waiter_count(
             ) & 4294967295)",
     )
     .bind(object_key)
+    .fetch_one(pool)
+    .await
+}
+
+async fn host_lifecycle_fence_waiter_count(pool: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND NOT granted
+            AND mode = 'ExclusiveLock'
+            AND classid::bigint = (($1::bigint >> 32) & 4294967295)
+            AND objid::bigint = ($1::bigint & 4294967295)",
+    )
+    .bind(HOST_STATE_LIFECYCLE_FENCE_KEY)
     .fetch_one(pool)
     .await
 }
@@ -2291,7 +2313,7 @@ async fn transfer_does_not_move_a_handle_reused_after_complete_erase() {
         let (erased, plan) = erase_memory_series(
             &mut erase,
             &core_pg_sidecars(),
-            &contract_sidecar_tables(),
+            &erase_context(),
             &owner,
             &[original.memory_id.into_inner()],
         )
@@ -4468,10 +4490,11 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
 /// than an observation: the second erase runs its refcount after the first
 /// has committed its deletion.
 ///
-/// The rendezvous is the proof that the lock is the one being taken. A third
-/// session holds `proxima-object-key:<key>` and both erases must queue behind
-/// it; drop that lock from the erase path and the wait never happens, so this
-/// test fails at the barrier rather than on the byte count.
+/// The rendezvous is the proof that both boundaries are taken in order. A
+/// third session holds `proxima-object-key:<key>`; the first erase must queue
+/// behind it while the second queues behind the global lifecycle fence. Once
+/// both waits are visible, releasing the object key lets the serialized
+/// refcount decisions prove that the bytes are destroyed exactly once.
 #[tokio::test]
 async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() {
     let (db_name, pg, cold) = fresh_pg_with_counting_cold().await;
@@ -4504,8 +4527,9 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
         .await?;
         assert_eq!(mounts, 2, "two owners now name one object");
 
-        // Hold the object's key so neither erase can decide until both are
-        // in flight and past their own owner fences.
+        // Hold the object's key so the first erase cannot decide. The second
+        // must queue at the lifecycle fence rather than pass the origin
+        // revocation boundary concurrently.
         let mut barrier = pool.begin().await?;
         sqlx::query(
             "SELECT pg_advisory_xact_lock(
@@ -4544,7 +4568,9 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
 
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                if object_key_waiter_count(pool, &object_key).await? >= 2 {
+                if object_key_waiter_count(pool, &object_key).await? >= 1
+                    && host_lifecycle_fence_waiter_count(pool).await? >= 1
+                {
                     return Ok::<(), sqlx::Error>(());
                 }
                 tokio::task::yield_now().await;
@@ -4737,7 +4763,7 @@ async fn erasing_the_last_admission_citing_a_blob_takes_the_blob_and_owes_its_by
         let (erased, plan) = erase_memory_series(
             &mut tx,
             &core_pg_sidecars(),
-            &contract_sidecar_tables(),
+            &erase_context(),
             &owner,
             &[
                 mine.memory_id.into_inner(),
@@ -4827,7 +4853,7 @@ async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
         let (erased, plan) = erase_memory_series(
             &mut tx,
             &core_pg_sidecars(),
-            &contract_sidecar_tables(),
+            &erase_context(),
             &owner,
             &[mine.memory_id.into_inner()],
         )

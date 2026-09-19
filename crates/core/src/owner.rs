@@ -11,7 +11,9 @@ use crate::{GroupId, UserId};
 /// role map used for authorization.
 pub type Owner = OwnerRef;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum OwnerRef {
     Personal(UserId),
     Group(GroupId),
@@ -90,7 +92,17 @@ pub enum OwnerExternalKeyParseError {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, sqlx::Type,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.owner_kind", rename_all = "lowercase")]
 pub enum OwnerRefKind {

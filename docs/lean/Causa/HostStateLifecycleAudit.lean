@@ -2,17 +2,45 @@ import Causa.HostStateLifecycle
 
 namespace Causa.HostStateLifecycle
 
+/-- info: 'Causa.HostStateLifecycle.SourceScopeId.ext_of_token' does not depend on any axioms -/
+#guard_msgs in
+#print axioms SourceScopeId.ext_of_token
+
 /-- info: 'Causa.HostStateLifecycle.coverage_is_complete_and_disjoint' does not depend on any axioms -/
 #guard_msgs in
 #print axioms coverage_is_complete_and_disjoint
+
+/-- info: 'Causa.HostStateLifecycle.exact_facts_scope_is_distinct' does not depend on any axioms -/
+#guard_msgs in
+#print axioms exact_facts_scope_is_distinct
 
 /-- info: 'Causa.HostStateLifecycle.receipt_binds_participant_owner_scope_and_tables' does not depend on any axioms -/
 #guard_msgs in
 #print axioms receipt_binds_participant_owner_scope_and_tables
 
+/-- info: 'Causa.HostStateLifecycle.receipt_binds_typed_selection' does not depend on any axioms -/
+#guard_msgs in
+#print axioms receipt_binds_typed_selection
+
+/-- info: 'Causa.HostStateLifecycle.selection_mismatch_invalidates_receipt' does not depend on any axioms -/
+#guard_msgs in
+#print axioms selection_mismatch_invalidates_receipt
+
+/-- info: 'Causa.HostStateLifecycle.exact_facts_receipt_has_no_original_copy_selection' does not depend on any axioms -/
+#guard_msgs in
+#print axioms exact_facts_receipt_has_no_original_copy_selection
+
+/-- info: 'Causa.HostStateLifecycle.exact_facts_request_and_receipt_have_no_original_copy_selection' does not depend on any axioms -/
+#guard_msgs in
+#print axioms exact_facts_request_and_receipt_have_no_original_copy_selection
+
 /-- info: 'Causa.HostStateLifecycle.retained_source_surface_has_zero_counts' depends on axioms: [propext] -/
 #guard_msgs in
 #print axioms retained_source_surface_has_zero_counts
+
+/-- info: 'Causa.HostStateLifecycle.retained_exact_fact_surface_has_zero_counts' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms retained_exact_fact_surface_has_zero_counts
 
 /-- info: 'Causa.HostStateLifecycle.rejected_erase_preserves_core_and_host' does not depend on any axioms -/
 #guard_msgs in

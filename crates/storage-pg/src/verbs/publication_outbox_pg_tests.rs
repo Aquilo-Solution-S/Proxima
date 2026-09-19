@@ -8,22 +8,26 @@
 use std::num::NonZeroU32;
 use std::time::Duration;
 
+use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
 use proxima_core::publication::{
     PublicationDraft, PublicationExtensions, PublicationLimits, PublicationPlan, PublicationSource,
     SealedPublication,
 };
 use proxima_core::storage_ports::publication::{
-    AckOutcome, BrokerReceipt, ClaimToken, PublicationOutboxPort, PublicationRetentionPort,
-    PublisherId, ReleaseOutcome,
+    AckOutcome, BrokerReceipt, ClaimToken, PublicationOriginEligibility,
+    PublicationOriginEligibilityPort, PublicationOutboxPort, PublicationRetentionPort, PublisherId,
+    ReleaseOutcome,
 };
-use proxima_core::storage_ports::{OwnerWritePermit, WriteSessionFactory};
+use proxima_core::storage_ports::{
+    MemoryAuthoringPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit, WriteSessionFactory,
+};
 use proxima_core::test_fixtures::{ListenableProbeV1, UnlistenableProbeV1};
 use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::{
-    AccessKind, FactIngestPort, FactPayload, Owner, OwnerRef, SchemaId, SchemaVersion,
-    SidecarPayload, SourceId, StorageError, UserId,
+    AccessKind, EntityId, FactIngestPort, FactPayload, GroupId, MemoryId, Owner, OwnerRef,
+    SchemaId, SchemaVersion, SidecarPayload, SourceId, StorageError, UserId,
 };
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
@@ -146,6 +150,26 @@ async fn ingest_listenable(
     ingest_listenable_under(pg, owner, payload, ingest_key, PublicationLimits::default()).await
 }
 
+async fn ingest_listenable_with_source_id(
+    pg: &PgStorage,
+    owner: &Owner,
+    payload: &ListenableProbeV1,
+    source_id: Option<&str>,
+) -> Result<FactIngestOutcome, StorageError> {
+    let ingest_key = source_id.map(|source| format!("origin-{source}-{}", Uuid::now_v7()));
+    let mut command = fact_command(ListenableProbeV1::SCHEMA_ID, ingest_key.as_deref());
+    command.source_id = source_id.map(ToOwned::to_owned);
+    if let (Some(source_id), Some(receipt)) = (source_id, command.receipt.as_mut()) {
+        receipt.source_id = SourceId::new(source_id);
+    }
+    let authorized = witness(owner, command).with_publication_for_tests(plan_for(
+        *owner,
+        payload,
+        PublicationLimits::default(),
+    ));
+    pg.ingest_fact_with_typed_sidecar(&authorized, None).await
+}
+
 /// The same route under an explicit deployment bound.
 async fn ingest_listenable_under(
     pg: &PgStorage,
@@ -193,8 +217,47 @@ async fn outbox_rows(pool: &sqlx::PgPool) -> i64 {
         .expect("count reads")
 }
 
+async fn assert_ineligible_under_shared_fence(
+    pg: &PgStorage,
+    pool: &sqlx::PgPool,
+    owner: Owner,
+    fact: MemoryId,
+) {
+    let mut tx = pool.begin().await.expect("begin late eligibility check");
+    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut tx)
+        .await
+        .expect("hold shared lifecycle fence for admission check");
+    let eligibility =
+        PublicationOriginEligibilityPort::check_in_transaction(pg, &mut tx, owner, fact)
+            .await
+            .expect("revoked or hard-deleted origin is a negative result");
+    assert_eq!(eligibility, PublicationOriginEligibility::Ineligible);
+    tx.commit().await.expect("finish late eligibility check");
+}
+
 async fn memory_rows(pool: &sqlx::PgPool) -> i64 {
     sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory")
+        .fetch_one(pool)
+        .await
+        .expect("count reads")
+}
+
+async fn publication_origin(
+    pool: &sqlx::PgPool,
+    t: Uuid,
+) -> Option<(Uuid, String, Option<String>)> {
+    sqlx::query_as(
+        "SELECT original_owner_id, original_owner_kind::text, source_id
+           FROM proxima_core.publication_origin WHERE t = $1",
+    )
+    .bind(t)
+    .fetch_optional(pool)
+    .await
+    .expect("publication origin reads")
+}
+
+async fn publication_origin_rows(pool: &sqlx::PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM proxima_core.publication_origin")
         .fetch_one(pool)
         .await
         .expect("count reads")
@@ -234,6 +297,11 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
     assert_eq!(state, "pending");
     assert_eq!(attempts, 0);
     assert_eq!(outbox_rows(&pool).await, 1);
+    assert_eq!(
+        publication_origin(&pool, t).await,
+        Some((owner.stored_owner_id(), "personal".into(), None)),
+        "a fresh listenable Fact captures its typed original owner and known source absence"
+    );
 
     // The envelope is the exact `CloudEvents` document, in the declared key
     // order, and the digest is over those bytes.
@@ -288,6 +356,96 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
     assert_eq!(parsed["time"], expected);
 
     assert_eq!(digest, blake3::hash(&envelope).as_bytes().to_vec());
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+#[tokio::test]
+async fn a_group_capture_keeps_its_typed_original_owner_and_native_source() {
+    let (pg, db) = fresh_pg("pub_capture_group_origin").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    register_owner(&pool, &owner).await;
+
+    let outcome = ingest_listenable(&pg, &owner, &probe("group capture"), Some("group-origin-1"))
+        .await
+        .expect("a group Fact with a native source commits");
+    assert_eq!(
+        publication_origin(&pool, outcome.memory_id.into_inner()).await,
+        Some((
+            owner.stored_owner_id(),
+            "group".into(),
+            Some("probe/source".into())
+        )),
+        "fresh capture preserves the group kind and native source"
+    );
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+#[tokio::test]
+async fn origin_eligibility_fails_closed_for_wrong_owner_and_hard_delete_witness() {
+    let (pg, db) = fresh_pg("pub_origin_eligibility").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    let published = ingest_listenable(&pg, &owner, &probe("eligibility"), Some("eligibility-1"))
+        .await
+        .expect("capture");
+    let t = published.memory_id.into_inner();
+
+    for wrong_owner in [
+        OwnerRef::Group(GroupId::new(Uuid::now_v7())),
+        OwnerRef::Group(GroupId::new(owner.stored_owner_id())),
+    ] {
+        let mut wrong_owner_tx = pool.begin().await.expect("begin wrong-owner check");
+        crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut wrong_owner_tx)
+            .await
+            .expect("hold the caller's shared lifecycle fence");
+        let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
+            &pg,
+            &mut wrong_owner_tx,
+            wrong_owner,
+            MemoryId::new(t),
+        )
+        .await
+        .expect("wrong owner is a negative result");
+        assert_eq!(eligibility, PublicationOriginEligibility::Ineligible);
+        wrong_owner_tx
+            .commit()
+            .await
+            .expect("finish wrong-owner check");
+    }
+
+    // This direct hard delete intentionally leaves the origin row behind, a
+    // stale state that the normal same-transaction inverse prevents. The
+    // append-only core witness must still make admission fail closed.
+    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+        .bind(t)
+        .execute(&pool)
+        .await
+        .expect("hard delete writes the core witness");
+    assert_eq!(
+        publication_origin(&pool, t).await.unwrap().0,
+        owner.stored_owner_id()
+    );
+
+    let mut witnessed_tx = pool.begin().await.expect("begin witnessed check");
+    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut witnessed_tx)
+        .await
+        .expect("hold the caller's shared lifecycle fence");
+    let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
+        &pg,
+        &mut witnessed_tx,
+        owner,
+        MemoryId::new(t),
+    )
+    .await
+    .expect("a hard-delete witness is a negative result");
+    assert_eq!(eligibility, PublicationOriginEligibility::Ineligible);
+    witnessed_tx.commit().await.expect("finish witnessed check");
 
     drop(pg);
     let _ = drop_db(&db).await;
@@ -384,6 +542,7 @@ async fn a_non_listenable_write_captures_nothing() {
         0,
         "a schema that declares nothing must be untouched by capture"
     );
+    assert_eq!(publication_origin_rows(&pool).await, 0);
 
     drop(pg);
     let _ = drop_db(&db).await;
@@ -411,6 +570,22 @@ async fn a_replayed_receipt_captures_no_second_record() {
         1,
         "a replay must not put a second copy of one Fact on the wire"
     );
+    assert_eq!(publication_origin_rows(&pool).await, 1);
+
+    // Model a previously revoked origin while retaining the receipt/outbox
+    // row. An idempotent replay is not fresh publication and must not restore
+    // the missing provenance row.
+    sqlx::query("DELETE FROM proxima_core.publication_origin WHERE t = $1")
+        .bind(first.memory_id.into_inner())
+        .execute(&pool)
+        .await
+        .expect("revoke test origin");
+    let replay = ingest_listenable(&pg, &owner, &payload, Some("replay-1"))
+        .await
+        .expect("replay after origin revocation");
+    assert!(replay.idempotent_replay);
+    assert_eq!(publication_origin_rows(&pool).await, 0);
+    assert_eq!(outbox_rows(&pool).await, 1);
 
     drop(pg);
     let _ = drop_db(&db).await;
@@ -456,6 +631,7 @@ async fn a_failing_sidecar_rolls_back_the_fact_and_its_capture() {
 
     assert_eq!(memory_rows(&pool).await, 0);
     assert_eq!(outbox_rows(&pool).await, 0);
+    assert_eq!(publication_origin_rows(&pool).await, 0);
     let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.ingest_keys")
         .fetch_one(&pool)
         .await
@@ -543,6 +719,7 @@ async fn a_failure_after_the_capture_takes_the_captured_record_with_it() {
 
     assert_eq!(memory_rows(&pool).await, 0, "the Fact rolled back");
     assert_eq!(outbox_rows(&pool).await, 0, "and took its capture with it");
+    assert_eq!(publication_origin_rows(&pool).await, 0, "and its origin");
     let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.ingest_keys")
         .fetch_one(&pool)
         .await
@@ -1141,7 +1318,9 @@ async fn erasing_one_memory_destroys_its_captured_event() {
     let (pg, db) = fresh_pg("pub_erase_memory").await;
     let pool = pg.pool_for_tests().clone();
     let owner = owner_fixture();
+    let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     register_owner(&pool, &owner).await;
+    register_owner(&pool, &destination).await;
 
     let kept = ingest_listenable(&pg, &owner, &probe("kept"), None)
         .await
@@ -1150,13 +1329,31 @@ async fn erasing_one_memory_destroys_its_captured_event() {
         .await
         .expect("capture");
     assert_eq!(outbox_rows(&pool).await, 2);
+    let transfer = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+    assert!(
+        OwnerTransferPort::transfer_to_owner(
+            &pg,
+            &transfer,
+            EntityId::Memory(erased.memory_id),
+            destination,
+            pg.surfaces(),
+        )
+        .await
+        .expect("transfer preserves publication origin")
+    );
+    assert_eq!(
+        publication_origin(&pool, erased.memory_id.into_inner()).await,
+        Some((owner.stored_owner_id(), "personal".into(), None)),
+        "transfer leaves immutable original publication identity intact"
+    );
 
     let mut tx = pool.begin().await.expect("begin");
     crate::verbs::forget::erase_memory(
         &mut tx,
         pg.sidecars(),
-        pg.surfaces(),
-        &owner,
+        &pg.host_state_erase_context()
+            .expect("storage has a validated erase context"),
+        &destination,
         erased.memory_id.into_inner(),
     )
     .await
@@ -1168,6 +1365,734 @@ async fn erasing_one_memory_destroys_its_captured_event() {
         .await
         .expect("rows read");
     assert_eq!(surviving, vec![kept.memory_id.into_inner()]);
+    assert_eq!(
+        publication_origin(&pool, erased.memory_id.into_inner()).await,
+        None,
+        "exact physical deletion removes copied outbox and origin globally"
+    );
+    assert_eq!(
+        publication_origin(&pool, kept.memory_id.into_inner()).await,
+        Some((owner.stored_owner_id(), "personal".into(), None)),
+        "an unrelated original publication survives"
+    );
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // barriers and assertions establish one same-UoW race proof
+async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
+    let (pg, db) = fresh_pg("pub_eligibility_uow").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    let OwnerRef::Personal(user_id) = owner else {
+        unreachable!("the fixture is a personal owner")
+    };
+    let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    register_owner(&pool, &owner).await;
+    register_owner(&pool, &group).await;
+    let fact = ingest_listenable(&pg, &owner, &probe("same transaction"), Some("race-key"))
+        .await
+        .expect("capture");
+    let t = fact.memory_id.into_inner();
+    let transfer_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+    assert!(
+        OwnerTransferPort::transfer_to_owner(
+            &pg,
+            &transfer_permit,
+            EntityId::Memory(fact.memory_id),
+            group,
+            pg.surfaces(),
+        )
+        .await
+        .expect("A-to-B transfer succeeds"),
+        "the source erase must target an original owner after transfer"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            .bind(t)
+            .fetch_one(&pool)
+            .await
+            .expect("transferred Fact remains live"),
+        group.stored_owner_id()
+    );
+
+    // Model the GT UnitOfWork's entry fence. Eligibility and the following
+    // host-state update both remain in this transaction until commit.
+    let mut host_tx = pool.begin().await.expect("begin host UoW");
+    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut host_tx)
+        .await
+        .expect("host UoW holds shared lifecycle fence");
+    let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
+        &pg,
+        &mut host_tx,
+        owner,
+        MemoryId::new(t),
+    )
+    .await
+    .expect("the exact origin check succeeds");
+    assert_eq!(eligibility, PublicationOriginEligibility::Eligible);
+
+    let claimed_by = "same-uow-race";
+    let claim_token = Uuid::now_v7();
+    let updated = sqlx::query(
+        "UPDATE proxima_core.publication_outbox
+            SET state = 'claimed', claim_token = $2, claimed_by = $3,
+                lease_expires_at = now() + interval '30 seconds', attempts = 1
+          WHERE t = $1",
+    )
+    .bind(t)
+    .bind(claim_token)
+    .bind(claimed_by)
+    .execute(&mut *host_tx)
+    .await
+    .expect("host side effect uses the checked transaction");
+    assert_eq!(updated.rows_affected(), 1);
+
+    // Source revocation must wait for this exact transaction. It cannot pass
+    // between the eligibility read and the host write/commit, even though the
+    // transferred physical Fact is no longer owned by the original publisher.
+    let erase_pg = pg.clone();
+    let source = SourceId::new("probe/source");
+    let erase_source = source.clone();
+    let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
+        user_id,
+        source_id: source,
+        drop_event_id: "same-uow-source-erase".into(),
+    });
+    let mut eraser = tokio::spawn(async move {
+        let outcome = OwnerInversePort::erase_personal_source_scope(
+            &erase_pg,
+            &auth,
+            user_id,
+            &erase_source,
+            erase_pg.surfaces(),
+        )
+        .await
+        .expect("source erase");
+        assert!(matches!(outcome, OwnerEraseOutcome::Completed { .. }));
+    });
+
+    let key = crate::access::owner_columns::HOST_STATE_LIFECYCLE_FENCE_KEY;
+    let wait_seen = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1 FROM pg_locks
+                      WHERE locktype = 'advisory' AND NOT granted
+                        AND mode = 'ExclusiveLock'
+                        AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                        AND classid::bigint = (($1::bigint >> 32) & 4294967295)
+                        AND objid::bigint = ($1::bigint & 4294967295)
+                 )",
+            )
+            .bind(key)
+            .fetch_one(&pool)
+            .await
+            .expect("inspect lifecycle fence wait");
+            if waiting {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        wait_seen.is_ok(),
+        "erase must block on the UoW shared fence"
+    );
+
+    host_tx
+        .commit()
+        .await
+        .expect("eligibility and host write commit");
+    (&mut eraser)
+        .await
+        .expect("erase task completes without panic");
+
+    let erased_host_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxima_core.publication_outbox WHERE t = $1")
+            .bind(t)
+            .fetch_one(&pool)
+            .await
+            .expect("erased outbox lookup");
+    assert_eq!(
+        erased_host_rows, 0,
+        "the source inverse removes the committed host row"
+    );
+    let origin_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM proxima_core.publication_origin WHERE t = $1)",
+    )
+    .bind(t)
+    .fetch_one(&pool)
+    .await
+    .expect("origin lookup");
+    assert!(!origin_exists, "the origin is revoked with source erase");
+
+    assert_eq!(
+        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            .bind(t)
+            .fetch_one(&pool)
+            .await
+            .expect("source erase keeps the transferred Fact"),
+        group.stored_owner_id(),
+        "revoking original source metadata does not hard-erase the live Fact"
+    );
+
+    let mut after_erase = pool.begin().await.expect("begin post-erase check");
+    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut after_erase)
+        .await
+        .expect("post-erase UoW holds shared fence");
+    let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
+        &pg,
+        &mut after_erase,
+        owner,
+        MemoryId::new(t),
+    )
+    .await
+    .expect("a missing origin is a negative result, not a read error");
+    assert_eq!(eligibility, PublicationOriginEligibility::Ineligible);
+    after_erase
+        .commit()
+        .await
+        .expect("check transaction commits");
+
+    let reused = ingest_listenable(
+        &pg,
+        &owner,
+        &probe("source label reused"),
+        Some("race-key-2"),
+    )
+    .await
+    .expect("a fresh Fact can reuse the revoked source label");
+    assert_ne!(reused.memory_id.into_inner(), t);
+    assert_eq!(
+        publication_origin(&pool, reused.memory_id.into_inner()).await,
+        Some((
+            owner.stored_owner_id(),
+            "personal".into(),
+            Some("probe/source".into())
+        )),
+        "the source name has no permanent stop marker"
+    );
+    let mut reuse_check = pool.begin().await.expect("begin reused-source check");
+    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut reuse_check)
+        .await
+        .expect("reused-source UoW holds the shared lifecycle fence");
+    let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
+        &pg,
+        &mut reuse_check,
+        owner,
+        reused.memory_id,
+    )
+    .await
+    .expect("fresh source reuse is eligible");
+    assert_eq!(eligibility, PublicationOriginEligibility::Eligible);
+    reuse_check
+        .commit()
+        .await
+        .expect("reused-source check commits");
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+#[tokio::test]
+async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
+    let (pg, db) = fresh_pg("pub_erase_first_eligibility").await;
+    let pool = pg.pool_for_tests().clone();
+
+    // Whole-owner erase first, then a fresh shared-fence UoW admission check.
+    let whole_owner = owner_fixture();
+    let whole_fact = ingest_listenable_with_source_id(
+        &pg,
+        &whole_owner,
+        &probe("whole owner erase first"),
+        Some("whole-owner-late-check"),
+    )
+    .await
+    .expect("capture whole-owner Fact")
+    .memory_id;
+    let Owner::Personal(whole_user) = whole_owner else {
+        unreachable!("fixture is personal")
+    };
+    let whole_auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+        user_id: whole_user,
+        drop_event_id: "whole-owner-first".into(),
+    });
+    OwnerInversePort::erase_personal_owner(&pg, &whole_auth, whole_user, pg.surfaces())
+        .await
+        .expect("whole-owner erase commits first");
+    assert_ineligible_under_shared_fence(&pg, &pool, whole_owner, whole_fact).await;
+
+    // Source erase first after transfer: the live physical Fact remains at B,
+    // but the original A admission can no longer pass the late check.
+    let source_owner = owner_fixture();
+    let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    register_owner(&pool, &destination).await;
+    let source_id = SourceId::new("source-erase-first");
+    let source_fact = ingest_listenable_with_source_id(
+        &pg,
+        &source_owner,
+        &probe("source erase first after transfer"),
+        Some(source_id.as_str()),
+    )
+    .await
+    .expect("capture source Fact")
+    .memory_id;
+    assert!(
+        OwnerTransferPort::transfer_to_owner(
+            &pg,
+            &OwnerWritePermit::new_for_tests(source_owner, AccessKind::Fact),
+            EntityId::Memory(source_fact),
+            destination,
+            pg.surfaces(),
+        )
+        .await
+        .expect("transfer to current owner")
+    );
+    let Owner::Personal(source_user) = source_owner else {
+        unreachable!("fixture is personal")
+    };
+    let source_auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
+        user_id: source_user,
+        source_id: source_id.clone(),
+        drop_event_id: "source-first".into(),
+    });
+    OwnerInversePort::erase_personal_source_scope(
+        &pg,
+        &source_auth,
+        source_user,
+        &source_id,
+        pg.surfaces(),
+    )
+    .await
+    .expect("original source erase commits first");
+    assert_eq!(
+        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            .bind(source_fact.into_inner())
+            .fetch_one(&pool)
+            .await
+            .expect("source-erased transferred Fact remains live"),
+        destination.stored_owner_id()
+    );
+    assert_ineligible_under_shared_fence(&pg, &pool, source_owner, source_fact).await;
+
+    // Exact physical erase first removes the origin and leaves its append-only
+    // witness; the late eligibility check is denied by that committed state.
+    let exact_owner = owner_fixture();
+    let exact_fact = ingest_listenable_with_source_id(
+        &pg,
+        &exact_owner,
+        &probe("exact erase first"),
+        Some("exact-late-check"),
+    )
+    .await
+    .expect("capture exact Fact")
+    .memory_id;
+    let context = pg
+        .host_state_erase_context()
+        .expect("core-only lifecycle context freezes");
+    let mut erase_tx = pool.begin().await.expect("begin exact erase");
+    crate::verbs::forget::erase_memory(
+        &mut erase_tx,
+        pg.sidecars(),
+        &context,
+        &exact_owner,
+        exact_fact.into_inner(),
+    )
+    .await
+    .expect("exact Fact erase succeeds");
+    erase_tx.commit().await.expect("exact erase commits first");
+    assert_ineligible_under_shared_fence(&pg, &pool, exact_owner, exact_fact).await;
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+#[tokio::test]
+async fn source_erase_after_outbox_prune_revokes_transferred_origin_only() {
+    let (pg, db) = fresh_pg("pub_pruned_origin_erase").await;
+    let pool = pg.pool_for_tests().clone();
+    let original_owner = owner_fixture();
+    let OwnerRef::Personal(user_id) = original_owner else {
+        unreachable!("the fixture owner is personal")
+    };
+    let current_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    register_owner(&pool, &original_owner).await;
+    register_owner(&pool, &current_owner).await;
+
+    let fact = ingest_listenable(
+        &pg,
+        &original_owner,
+        &probe("published body later pruned"),
+        Some("pruned-origin-1"),
+    )
+    .await
+    .expect("capture");
+    let t = fact.memory_id.into_inner();
+    let transfer = OwnerWritePermit::new_for_tests(original_owner, AccessKind::Fact);
+    assert!(
+        OwnerTransferPort::transfer_to_owner(
+            &pg,
+            &transfer,
+            EntityId::Memory(fact.memory_id),
+            current_owner,
+            pg.surfaces(),
+        )
+        .await
+        .expect("transfer to current owner")
+    );
+    publish_and_backdate(&pg, &pool, t, 7_200.0).await;
+    assert_eq!(
+        pg.prune_published(
+            Duration::from_hours(1),
+            NonZeroU32::new(1).expect("nonzero limit"),
+        )
+        .await
+        .expect("body retention"),
+        1
+    );
+    assert_eq!(outbox_rows(&pool).await, 0);
+    assert_eq!(
+        publication_origin(&pool, t).await,
+        Some((
+            original_owner.stored_owner_id(),
+            "personal".into(),
+            Some("probe/source".into())
+        )),
+        "body pruning retains exact original-owner/source identity"
+    );
+
+    let source_id = SourceId::new("probe/source");
+    let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
+        user_id,
+        source_id: source_id.clone(),
+        drop_event_id: "pruned-origin-source-erase".into(),
+    });
+    let outcome = OwnerInversePort::erase_personal_source_scope(
+        &pg,
+        &auth,
+        user_id,
+        &source_id,
+        pg.surfaces(),
+    )
+    .await
+    .expect("original source revoke after body prune");
+    assert!(matches!(outcome, OwnerEraseOutcome::Completed { .. }));
+    assert_eq!(publication_origin(&pool, t).await, None);
+    assert_eq!(outbox_rows(&pool).await, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            .bind(t)
+            .fetch_one(&pool)
+            .await
+            .expect("transferred Fact survives original-source revocation"),
+        current_owner.stored_owner_id()
+    );
+
+    let mut check = pool.begin().await.expect("begin late-delivery check");
+    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut check)
+        .await
+        .expect("hold lifecycle shared fence");
+    let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
+        &pg,
+        &mut check,
+        original_owner,
+        fact.memory_id,
+    )
+    .await
+    .expect("missing revoked origin is a negative result");
+    assert_eq!(eligibility, PublicationOriginEligibility::Ineligible);
+    check.commit().await.expect("finish late-delivery check");
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // the physical/original-selection matrix shares one transaction fixture
+async fn source_and_destination_erase_revoke_physical_and_original_publication_sets_once() {
+    let (pg, db) = fresh_pg("pub_erase_physical_origin_union").await;
+    let pool = pg.pool_for_tests().clone();
+    let original = owner_fixture();
+    let destination = owner_fixture();
+    let Owner::Personal(original_user) = original else {
+        unreachable!("the fixture owner is personal")
+    };
+    let Owner::Personal(destination_user) = destination else {
+        unreachable!("the fixture owner is personal")
+    };
+    register_owner(&pool, &original).await;
+    register_owner(&pool, &destination).await;
+
+    let source_transferred = ingest_listenable_with_source_id(
+        &pg,
+        &original,
+        &probe("source erase after transfer"),
+        Some("source-transfer"),
+    )
+    .await
+    .expect("source-scoped capture");
+    let overlap = ingest_listenable_with_source_id(
+        &pg,
+        &original,
+        &probe("physical and original scope overlap"),
+        Some("overlap-source"),
+    )
+    .await
+    .expect("overlap capture");
+    let destination_transferred = ingest_listenable_with_source_id(
+        &pg,
+        &original,
+        &probe("destination owner physical erase"),
+        None,
+    )
+    .await
+    .expect("source-free capture");
+    let destination_source_transferred = ingest_listenable_with_source_id(
+        &pg,
+        &original,
+        &probe("destination source physical erase without origin"),
+        Some("destination-source"),
+    )
+    .await
+    .expect("destination source capture");
+    let unrelated = ingest_listenable_with_source_id(
+        &pg,
+        &original,
+        &probe("unrelated original publication"),
+        None,
+    )
+    .await
+    .expect("unrelated capture");
+
+    let transfer = OwnerWritePermit::new_for_tests(original, AccessKind::Fact);
+    for fact in [
+        &source_transferred,
+        &destination_transferred,
+        &destination_source_transferred,
+    ] {
+        assert!(
+            OwnerTransferPort::transfer_to_owner(
+                &pg,
+                &transfer,
+                EntityId::Memory(fact.memory_id),
+                destination,
+                pg.surfaces(),
+            )
+            .await
+            .expect("A-to-B transfer succeeds")
+        );
+    }
+
+    // A's source erase reaches a transferred Fact through the original
+    // locator, and the still-A Fact through both selection legs. The second
+    // Fact must be counted once despite matching physical t and origin.
+    let source = SourceId::new("source-transfer");
+    let source_auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
+        user_id: original_user,
+        source_id: source.clone(),
+        drop_event_id: "source-transfer-erase".into(),
+    });
+    let source_outcome = OwnerInversePort::erase_personal_source_scope(
+        &pg,
+        &source_auth,
+        original_user,
+        &source,
+        pg.surfaces(),
+    )
+    .await
+    .expect("original source erase after transfer");
+    let OwnerEraseOutcome::Completed {
+        counts: source_counts,
+        ..
+    } = source_outcome
+    else {
+        panic!("source erase should complete: {source_outcome:?}");
+    };
+    assert_eq!(source_counts.get("publications"), 1);
+    assert_eq!(source_counts.get("publication_origins"), 1);
+    let transferred_t = source_transferred.memory_id.into_inner();
+    assert_eq!(publication_origin(&pool, transferred_t).await, None);
+    assert_eq!(
+        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            .bind(transferred_t)
+            .fetch_one(&pool)
+            .await
+            .expect("source-revoked Fact remains live"),
+        destination.stored_owner_id()
+    );
+
+    let overlap_source = SourceId::new("overlap-source");
+    let overlap_auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
+        user_id: original_user,
+        source_id: overlap_source.clone(),
+        drop_event_id: "overlap-source-erase".into(),
+    });
+    let overlap_outcome = OwnerInversePort::erase_personal_source_scope(
+        &pg,
+        &overlap_auth,
+        original_user,
+        &overlap_source,
+        pg.surfaces(),
+    )
+    .await
+    .expect("overlapping source erase");
+    let OwnerEraseOutcome::Completed {
+        counts: overlap_counts,
+        ..
+    } = overlap_outcome
+    else {
+        panic!("overlapping source erase should complete: {overlap_outcome:?}");
+    };
+    assert_eq!(overlap_counts.get("publications"), 1);
+    assert_eq!(overlap_counts.get("publication_origins"), 1);
+    assert_eq!(
+        publication_origin(&pool, overlap.memory_id.into_inner()).await,
+        None
+    );
+
+    // An unrelated source request is a negative selection: it reports zero
+    // publication work and leaves the source-free original copy available.
+    let absent_source = SourceId::new("no-such-source");
+    let absent_auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
+        user_id: original_user,
+        source_id: absent_source.clone(),
+        drop_event_id: "absent-source-erase".into(),
+    });
+    let absent_outcome = OwnerInversePort::erase_personal_source_scope(
+        &pg,
+        &absent_auth,
+        original_user,
+        &absent_source,
+        pg.surfaces(),
+    )
+    .await
+    .expect("unmatched source erase");
+    let OwnerEraseOutcome::Completed {
+        counts: absent_counts,
+        ..
+    } = absent_outcome
+    else {
+        panic!("unmatched source erase should complete: {absent_outcome:?}");
+    };
+    assert_eq!(absent_counts.get("publications"), 0);
+    assert_eq!(absent_counts.get("publication_origins"), 0);
+    assert_eq!(
+        publication_origin(&pool, unrelated.memory_id.into_inner()).await,
+        Some((original.stored_owner_id(), "personal".into(), None)),
+        "an unmatched source scope preserves unrelated original attribution"
+    );
+
+    // Destination source-scope erase must use the physical Fact selector
+    // even if a legacy/malformed retained row has no origin evidence. The
+    // outbox copy is still selected by t and removed exactly once.
+    let destination_source_t = destination_source_transferred.memory_id.into_inner();
+    sqlx::query("DELETE FROM proxima_core.publication_origin WHERE t = $1")
+        .bind(destination_source_t)
+        .execute(&pool)
+        .await
+        .expect("remove only the origin evidence to model legacy data");
+    assert_eq!(publication_origin(&pool, destination_source_t).await, None);
+    let legacy_outbox: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxima_core.publication_outbox WHERE t = $1",
+    )
+    .bind(destination_source_t)
+    .fetch_one(&pool)
+    .await
+    .expect("legacy outbox row remains selected by physical t");
+    assert_eq!(legacy_outbox, 1);
+    let destination_source = SourceId::new("destination-source");
+    let destination_source_auth =
+        EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
+            user_id: destination_user,
+            source_id: destination_source.clone(),
+            drop_event_id: "destination-source-erase".into(),
+        });
+    let destination_source_outcome = OwnerInversePort::erase_personal_source_scope(
+        &pg,
+        &destination_source_auth,
+        destination_user,
+        &destination_source,
+        pg.surfaces(),
+    )
+    .await
+    .expect("destination source erase selects physical t without origin");
+    let OwnerEraseOutcome::Completed {
+        counts: destination_source_counts,
+        ..
+    } = destination_source_outcome
+    else {
+        panic!("destination source erase should complete: {destination_source_outcome:?}");
+    };
+    assert_eq!(destination_source_counts.get("publications"), 1);
+    assert_eq!(destination_source_counts.get("publication_origins"), 0);
+    assert_eq!(publication_origin(&pool, destination_source_t).await, None);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM proxima_core.publication_outbox WHERE t = $1",
+        )
+        .bind(destination_source_t)
+        .fetch_one(&pool)
+        .await
+        .expect("selected legacy outbox row is gone"),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxima_core.memory WHERE t = $1",)
+            .bind(destination_source_t)
+            .fetch_one(&pool)
+            .await
+            .expect("destination source Fact was physically erased"),
+        0
+    );
+
+    // The destination owner selects the transferred physical t values.
+    // It removes the remaining A-origin outbox/origin for one t while the
+    // earlier source-revoked t has no copy to double count.
+    let destination_auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+        user_id: destination_user,
+        drop_event_id: "destination-whole-owner-erase".into(),
+    });
+    let destination_outcome = OwnerInversePort::erase_personal_owner(
+        &pg,
+        &destination_auth,
+        destination_user,
+        pg.surfaces(),
+    )
+    .await
+    .expect("destination owner erase");
+    let OwnerEraseOutcome::Completed {
+        counts: destination_counts,
+        ..
+    } = destination_outcome
+    else {
+        panic!("destination owner erase should complete: {destination_outcome:?}");
+    };
+    assert_eq!(destination_counts.get("publications"), 1);
+    assert_eq!(destination_counts.get("publication_origins"), 1);
+    assert_eq!(
+        publication_origin(&pool, destination_transferred.memory_id.into_inner()).await,
+        None,
+        "physical destination erasure removes the original A copy"
+    );
+    assert_eq!(
+        publication_origin(&pool, unrelated.memory_id.into_inner()).await,
+        Some((original.stored_owner_id(), "personal".into(), None)),
+        "destination erase leaves an unrelated A original intact"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM proxima_core.publication_outbox WHERE t = $1",
+        )
+        .bind(unrelated.memory_id.into_inner())
+        .fetch_one(&pool)
+        .await
+        .expect("unrelated outbox survives"),
+        1
+    );
 
     drop(pg);
     let _ = drop_db(&db).await;
@@ -1185,24 +2110,64 @@ async fn forgetting_a_fact_keeps_the_event_it_already_committed() {
         .expect("capture");
     let t = outcome.memory_id.into_inner();
 
-    let cold = crate::verbs::forget::MemoryColdStore::default();
-    crate::verbs::forget::forget_memory_oneshot(
-        &pool,
-        pg.sidecars(),
-        pg.surfaces(),
-        &cold,
-        &crate::verbs::forget::cold_object_key(t),
-        t,
-        owner.stored_owner_id(),
-    )
-    .await
-    .expect("forget");
+    let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+    MemoryAuthoringPort::forget_memory(&pg, &permit, outcome.memory_id)
+        .await
+        .expect("cool through the configured storage port");
 
     assert_eq!(
         outbox_rows(&pool).await,
         1,
         "cooling the Fact does not un-commit the event captured with it"
     );
+    assert_eq!(
+        publication_origin(&pool, t).await,
+        Some((owner.stored_owner_id(), "personal".into(), None)),
+        "cooling preserves its payload-free publication origin"
+    );
+    let mut cold_check = pool.begin().await.expect("begin cooled eligibility check");
+    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut cold_check)
+        .await
+        .expect("hold shared lifecycle fence while cooled");
+    let cold_eligibility = PublicationOriginEligibilityPort::check_in_transaction(
+        &pg,
+        &mut cold_check,
+        owner,
+        outcome.memory_id,
+    )
+    .await
+    .expect("cooling leaves origin eligibility intact");
+    assert_eq!(cold_eligibility, PublicationOriginEligibility::Eligible);
+    cold_check.commit().await.expect("finish cooled check");
+
+    let hydrated = MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[outcome.memory_id])
+        .await
+        .expect("hydrate the same real cooled Fact");
+    assert_eq!(hydrated.outcomes.len(), 1);
+    assert_eq!(
+        hydrated.outcomes[0].status,
+        proxima_core::MemoryHydrationStatus::Hydrated
+    );
+    let mut hydrated_check = pool
+        .begin()
+        .await
+        .expect("begin hydrated eligibility check");
+    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut hydrated_check)
+        .await
+        .expect("hold shared lifecycle fence after hydration");
+    let hydrated_eligibility = PublicationOriginEligibilityPort::check_in_transaction(
+        &pg,
+        &mut hydrated_check,
+        owner,
+        outcome.memory_id,
+    )
+    .await
+    .expect("hydration leaves origin eligibility intact");
+    assert_eq!(hydrated_eligibility, PublicationOriginEligibility::Eligible);
+    hydrated_check
+        .commit()
+        .await
+        .expect("finish hydrated check");
     let publisher = PublisherId::new(PUBLISHER).expect("valid");
     let claimed = pg
         .claim(
@@ -1308,6 +2273,19 @@ async fn an_owner_erase_removes_that_owners_records_and_no_others() {
         "the erase must reach pending AND published records, and only this owner's"
     );
     assert!(!surviving.contains(&pending.memory_id.into_inner()));
+    assert_eq!(
+        publication_origin(&pool, pending.memory_id.into_inner()).await,
+        None
+    );
+    assert_eq!(
+        publication_origin(&pool, delivered.memory_id.into_inner()).await,
+        None
+    );
+    assert_eq!(
+        publication_origin(&pool, survivor.memory_id.into_inner()).await,
+        Some((bystander.stored_owner_id(), "personal".into(), None)),
+        "whole-owner erase removes source-free origins only for that owner"
+    );
 
     drop(pg);
     let _ = drop_db(&db).await;

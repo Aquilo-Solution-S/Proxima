@@ -163,6 +163,7 @@ impl FlavorApp for ProximaMcpApp {
                 ctx.clone_pool_for_host(),
                 ctx.pg_tuning_for_host(),
                 ctx.pg_sidecars_for_host(),
+                ctx.host_state_erase_context_for_host(),
             ))?;
             Ok(services)
         }

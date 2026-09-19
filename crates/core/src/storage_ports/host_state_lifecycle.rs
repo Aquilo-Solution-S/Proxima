@@ -8,11 +8,58 @@ use crate::{MemoryId, OwnerRef, SourceId};
 
 use super::{HostStateParticipantId, StateSurfaceName};
 
+/// One payload copy captured when the physical Fact was originally
+/// published. The current owner may differ after transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HostStateFactCopyLocator {
+    pub original_owner: OwnerRef,
+    pub fact_id: MemoryId,
+}
+
+/// Shared set identity carried by a physical Fact erase and its callback
+/// receipt. Construction sorts and removes duplicates, so order and repeated
+/// members cannot change which physical Facts or original copies are selected.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HostStateEraseSelection {
+    physical_facts: Vec<MemoryId>,
+    original_copies: Vec<HostStateFactCopyLocator>,
+}
+
+impl HostStateEraseSelection {
+    #[must_use]
+    pub fn new(
+        mut physical_facts: Vec<MemoryId>,
+        mut original_copies: Vec<HostStateFactCopyLocator>,
+    ) -> Self {
+        physical_facts.sort_unstable();
+        physical_facts.dedup();
+        original_copies.sort_unstable();
+        original_copies.dedup();
+        Self {
+            physical_facts,
+            original_copies,
+        }
+    }
+
+    #[must_use]
+    pub fn physical_facts(&self) -> &[MemoryId] {
+        &self.physical_facts
+    }
+
+    #[must_use]
+    pub fn original_copies(&self) -> &[HostStateFactCopyLocator] {
+        &self.original_copies
+    }
+}
+
 /// The exact target selected by the already-authorized core owner erase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostStateEraseScope {
     WholeOwner,
     Source(SourceId),
+    /// The caller has already authorized a hard erase of exact physical
+    /// Fact IDs. This scope never carries original-owner selectors.
+    ExactFacts,
 }
 
 /// A host callback invoked inside the active core erase transaction.
@@ -21,9 +68,9 @@ pub struct HostStateEraseRequest {
     participant: HostStateParticipantId,
     owner: OwnerRef,
     scope: HostStateEraseScope,
-    /// Exact `t` values in the sealed hot ∪ cooled Fact selection. This is
-    /// informational scope for the host callback, not a new core read port.
-    selected_fact_ids: Vec<MemoryId>,
+    /// Exact physical Facts and immutable original-owner copies selected by
+    /// the already-authorized core erase.
+    selection: HostStateEraseSelection,
     declared_tables: Vec<StateSurfaceName>,
 }
 
@@ -33,14 +80,17 @@ impl HostStateEraseRequest {
         participant: HostStateParticipantId,
         owner: OwnerRef,
         scope: HostStateEraseScope,
-        selected_fact_ids: Vec<MemoryId>,
+        selection: HostStateEraseSelection,
         declared_tables: Vec<StateSurfaceName>,
     ) -> Self {
         Self {
             participant,
             owner,
             scope,
-            selected_fact_ids,
+            selection: HostStateEraseSelection::new(
+                selection.physical_facts,
+                selection.original_copies,
+            ),
             declared_tables,
         }
     }
@@ -62,7 +112,12 @@ impl HostStateEraseRequest {
 
     #[must_use]
     pub fn selected_fact_ids(&self) -> &[MemoryId] {
-        &self.selected_fact_ids
+        self.selection.physical_facts()
+    }
+
+    #[must_use]
+    pub fn selection(&self) -> &HostStateEraseSelection {
+        &self.selection
     }
 
     #[must_use]
@@ -86,6 +141,7 @@ pub struct HostStateEraseReceipt {
     pub participant: HostStateParticipantId,
     pub owner: OwnerRef,
     pub scope: HostStateEraseScope,
+    pub selection: HostStateEraseSelection,
     pub counts: Vec<HostStateEraseTableCount>,
 }
 
@@ -142,4 +198,33 @@ pub struct HostStateExportReceipt {
     pub participant: HostStateParticipantId,
     pub owner: OwnerRef,
     pub tables: Vec<HostStateExportTable>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HostStateEraseSelection, HostStateFactCopyLocator};
+    use crate::{MemoryId, OwnerRef, UserId};
+    use uuid::Uuid;
+
+    #[test]
+    fn erase_selection_is_a_canonical_set() {
+        let first = MemoryId::new(Uuid::now_v7());
+        let second = MemoryId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let locator = HostStateFactCopyLocator {
+            original_owner: owner,
+            fact_id: first,
+        };
+
+        let left =
+            HostStateEraseSelection::new(vec![second, first, second], vec![locator, locator]);
+        let right = HostStateEraseSelection::new(vec![first, second], vec![locator]);
+
+        assert_eq!(left, right);
+        assert_eq!(
+            left.physical_facts(),
+            &[first.min(second), first.max(second)]
+        );
+        assert_eq!(left.original_copies(), &[locator]);
+    }
 }

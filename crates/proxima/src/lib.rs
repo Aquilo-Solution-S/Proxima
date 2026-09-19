@@ -267,6 +267,9 @@ pub struct EmbeddedProxima {
     pool: PgPool,
     pub registry: Arc<proxima_core::FlavorRegistryFrozen>,
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
+    erase_context: proxima_storage_pg::PgHostStateEraseContext,
+    publication_origin_eligibility:
+        Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Option<Owner>,
     /// The host-only drain over captured publication records.
@@ -290,6 +293,23 @@ pub struct EmbeddedProxima {
 }
 
 impl EmbeddedProxima {
+    /// The boot-frozen full owner-surface registry and validated lifecycle
+    /// callback for a host flavor that delegates physical erasure.
+    #[must_use]
+    pub fn host_state_erase_context_for_host(&self) -> proxima_storage_pg::PgHostStateEraseContext {
+        self.erase_context.clone()
+    }
+
+    /// Narrow host-only provenance check for intake and backlog re-offer.
+    /// The port reveals only eligible/ineligible for one typed owner/Fact
+    /// pair, never Fact contents or a general core read capability.
+    #[must_use]
+    pub fn publication_origin_eligibility_for_host(
+        &self,
+    ) -> Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort> {
+        self.publication_origin_eligibility.clone()
+    }
+
     #[must_use]
     pub const fn system_authority(&self) -> &SystemAuthority {
         &self.system_authority
@@ -545,6 +565,13 @@ impl ProximaBuilder {
             .map_err(|error| EmbedError::Storage(error.to_string()))?
             .with_embedding_runtime_policy(embedding_runtime_policy);
 
+        let erase_context = pg
+            .host_state_erase_context()
+            .map_err(|error| EmbedError::Storage(error.to_string()))?;
+        let publication_origin_eligibility: Arc<
+            dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort,
+        > = Arc::new(pg.clone());
+
         let pool = pg.clone_pool_for_backend();
         let configured_bucket = config.s3.as_ref().map(|s3| s3.bucket.clone());
         let blobs = config
@@ -600,6 +627,8 @@ impl ProximaBuilder {
             pool,
             registry,
             pg_sidecars,
+            erase_context,
+            publication_origin_eligibility,
             blobs,
             owner,
             #[cfg(feature = "outbox-nats")]

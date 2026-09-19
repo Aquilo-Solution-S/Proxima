@@ -7,7 +7,6 @@
 
 use std::sync::Arc;
 
-use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort};
 use proxima_core::storage_ports::{GoalWritePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
@@ -206,13 +205,11 @@ async fn erase_target(
     owner: &OwnerRef,
     target: proxima_core::MemoryId,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-    let surfaces = OwnerSurfaces::for_registry(&registry);
     let mut tx = pg.pool_for_tests().begin().await?;
     erase_memory(
         &mut tx,
         &proxima_storage_pg::core_pg_sidecars(),
-        &surfaces,
+        &pg.host_state_erase_context()?,
         owner,
         target.into_inner(),
     )

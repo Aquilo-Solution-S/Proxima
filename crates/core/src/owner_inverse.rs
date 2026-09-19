@@ -50,6 +50,7 @@ pub struct HostStateLifecycleSurface {
     pub table: StateSurfaceName,
     pub whole_owner_erase: HostStateEraseDisposition,
     pub source_erase: HostStateEraseDisposition,
+    pub exact_fact_erase: HostStateEraseDisposition,
     pub owner_export: ExportRule,
     pub counter: CounterRule,
 }
@@ -141,6 +142,7 @@ impl OwnerSurfaces {
                 if let crate::flavor::EraseRule::HostState {
                     whole_owner,
                     source,
+                    exact_fact,
                 } = surface.erase
                 {
                     if !contract
@@ -159,6 +161,7 @@ impl OwnerSurfaces {
                                 table: StateSurfaceName::new(surface.table),
                                 whole_owner_erase: whole_owner,
                                 source_erase: source,
+                                exact_fact_erase: exact_fact,
                                 owner_export: surface.export,
                                 counter: surface.counter,
                             },
@@ -236,6 +239,7 @@ impl OwnerSurfaces {
             if let crate::flavor::EraseRule::HostState {
                 whole_owner,
                 source,
+                exact_fact,
             } = surface.erase
             {
                 if host_lifecycle
@@ -245,6 +249,7 @@ impl OwnerSurfaces {
                             table: StateSurfaceName::new(surface.table),
                             whole_owner_erase: whole_owner,
                             source_erase: source,
+                            exact_fact_erase: exact_fact,
                             owner_export: surface.export,
                             counter: surface.counter,
                         },
