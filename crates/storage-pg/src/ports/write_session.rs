@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use proxima_core::storage_ports::{
-    HostStateReply, HostStateRequest, OwnerWritePermit, SidecarSessionRead, WriteSession,
-    WriteSessionFactory,
+    HostStateParticipantDescriptor, HostStateReply, HostStateRequest, HostStateWritePermit,
+    OwnerWritePermit, SidecarSessionRead, WriteSession, WriteSessionFactory,
 };
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
 use proxima_core::verbs::goal_write::{
@@ -28,11 +28,17 @@ struct PgWriteSession {
     /// reaching back through the storage handle mid-transaction.
     scopes: crate::access::scope_surfaces::ScopeSurfaces,
     cold: Arc<dyn ColdObjectStore>,
-    host_state: Option<Arc<dyn crate::PgHostStateParticipant>>,
+    host_state: Option<crate::RegisteredHostStateParticipant>,
 }
 
 #[async_trait::async_trait]
 impl WriteSessionFactory for PgStorage {
+    fn host_state_descriptor(&self) -> Option<HostStateParticipantDescriptor> {
+        self.host_state
+            .as_ref()
+            .map(|registered| registered.descriptor)
+    }
+
     async fn begin(&self) -> Result<Box<dyn WriteSession>, StorageError> {
         let tx = self.pool.begin().await.map_err(internal)?;
         Ok(Box::new(PgWriteSession {
@@ -283,28 +289,41 @@ impl WriteSession for PgWriteSession {
 
     async fn apply_host_state(
         &mut self,
-        permit: &OwnerWritePermit,
+        permit: &HostStateWritePermit,
         request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError> {
-        let Some(participant) = self.host_state.clone() else {
+        if !permit.matches_request(&request) {
+            return Err(StorageError::ConstraintViolation(
+                "host-state request exceeds the participant or table scope stamped by the engine"
+                    .into(),
+            ));
+        }
+        let Some(registered) = self.host_state.clone() else {
             return Err(StorageError::ConstraintViolation(
                 "no host-state participant is registered".into(),
             ));
         };
-        if participant.participant_id() != request.participant_id() {
+        let descriptor = registered.descriptor;
+        if descriptor.participant_id() != request.participant_id() {
             return Err(StorageError::ConstraintViolation(format!(
                 "host-state participant {} is not registered",
-                request.participant_id()
+                request.participant_id().as_str()
             )));
         }
         for table in request.tables() {
-            if !participant.declared_tables().contains(table) {
+            if !descriptor.tables().contains(table) {
                 return Err(StorageError::ConstraintViolation(format!(
-                    "host-state command names {table}, which this participant does not declare"
+                    "host-state command names {}, which this participant does not declare",
+                    table.as_str()
                 )));
             }
         }
-        participant.apply(&mut self.tx, permit, request).await
+        crate::access::owner_columns::lock_owner_fence_shared_tx(&mut self.tx, permit.owner())
+            .await?;
+        registered
+            .participant
+            .apply(&mut self.tx, permit, request)
+            .await
     }
 
     async fn forget_memory(

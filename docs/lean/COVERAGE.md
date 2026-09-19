@@ -274,6 +274,22 @@ Carriers live in `Causa/Publication.lean` (doc [18](../18-fact-outbox.md)).
 | OB-8 | At-least-once delivery: duplicates share durable identity and bytes; no exactly-once, no global order | SPLIT. Safety = THEOREM `duplicates_share_identity` (a redelivery is keyed by `t` and byte-identical, so a consumer deduplicates on durable identity beyond the broker window). **Liveness excluded** — "every pending record is eventually published" needs a run/schedule/temporal operator and the kernel has no trace vocabulary at all; carried by the `outbox-nats` publisher- and consumer-recovery tests against a real pinned JetStream server. **All-or-none (Fact + sidecars + record commit together) excluded** — storage-layer transaction contract, the same stance as CN-9 / CI-18 / CI-20 / ST-SCOPE: the kernel models a set of rows, with no partial state, no write ordering and no transaction. Carried by the storage-pg publication-outbox fault-injection PG tests, not by a theorem |
 | OB-9 | Retention reclaims DELIVERED records only: a `pending` or `claimed` record survives every horizon at every age, and a delivery inside the horizon survives too | THEOREMs `prune_never_removes_undelivered`, `prune_keeps_recent_deliveries` over `prunePublished`, written as a KEEP predicate so "may be removed" cannot widen by accident. Runtime carrier is the host-only `PublicationRetentionPort` — a SECOND trait beside `PublicationOutboxPort`, so the handle a drain loop holds carries no DELETE at all — with the storage-pg predicate `state = 'published' AND published_at < now() - horizon` and its PG tests. The horizon is operator configuration (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`, off by default, floored at 60 s) |
 
+## 19 — Host-state maintenance (HM)
+
+Carriers live in `Causa/HostStateMaintenance.lean` ([decision 19](../19-host-state-maintenance.md)).
+`Causa/HostStateMaintenanceAudit.lean` guards every payoff theorem's axiom set;
+the ceiling is `{propext, Quot.sound}` with no new Causa axioms.
+
+| ID | Invariant | Carrier |
+|---|---|---|
+| HM-1 | Minting uses the matching boot witness and actual registered participant; its full descriptor is duplicate-free and confined to declared state surfaces | THEOREMs `minted_from_registration`, `minted_registration_valid`, `no_registration_no_capability`, `foreign_system_witness_rejected`, `invalid_registration_rejected`, `duplicate_registration_rejected` |
+| HM-2 | Capability cannot cross engine or participant registration | THEOREMs `authorization_sound`, `foreign_engine_rejected`, `foreign_participant_rejected`, `registration_change_rejected` |
+| HM-3 | Commands declare a nonempty duplicate-free subset of participant tables and frozen state surfaces | THEOREMs `empty_tables_rejected`, `duplicate_tables_rejected`, `undeclared_table_rejected`, `authorized_tables_are_state_surfaces`, `non_state_surface_rejected` |
+| HM-4 | Permit owner is stamped from the command; participant payload and fixed unit owner must agree | THEOREMs `authorization_sound`, `payload_owner_is_command_owner`, `unit_owner_is_preserved`, `foreign_unit_owner_rejected`; payload checking is an explicit `Step` premise |
+| HM-5 | Maintenance changes neither cognitive state nor ordinary write authority | THEOREMs `maintenance_preserves_cognitive_state`, `maintenance_preserves_ordinary_write_authority` over the separate host-only `Step`; SQL refinement remains a residual |
+| HM-6 | Both owner kinds admit maintenance, without requiring ordinary Fact-write authority | THEOREMs `every_owner_supported`, `every_owner_step` quantify over existing `OwnerRef`; `maintenance_without_fact_write` constructs an authorized personal-owner admission with ordinary Fact-write denial; `distinct_users_exist` discharges its distinct-user inhabitance |
+| HM-R | Runtime containment, owner lifecycle fence, transaction atomicity, SQL fidelity and liveness | EXCLUDED: fresh binding/actual descriptor capture, private Rust constructors, host-only possession, shared owner locking against exclusive erasure, rollback and trusted participant SQL require runtime evidence. Participant/table scope does not distinguish commands within that participant. No liveness claim |
+
 ## Principle surface map
 
 Principles aggregate multiple ID rows above under one named surface property

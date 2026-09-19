@@ -29,6 +29,60 @@
 //!   Flavor crates should avoid direct `proxima-core` / `proxima-storage-pg`
 //!   dependencies except backend-owned adapters explicitly outside the stable
 //!   SDK boundary.
+//!
+//! The host-only capability and its permit cannot be caller-constructed:
+//!
+//! ```compile_fail
+//! use proxima::HostStateMaintenanceAuthority;
+//! let _authority = HostStateMaintenanceAuthority::new();
+//! ```
+//!
+//! ```compile_fail
+//! fn clone_authority(authority: &proxima::HostStateMaintenanceAuthority) {
+//!     let _copy = Clone::clone(authority);
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use proxima::{HostStateWritePermit, Owner};
+//! let _permit = HostStateWritePermit::new(Owner::Personal(proxima::UserId::new(uuid::Uuid::nil())));
+//! ```
+//!
+//! A host-state stamp cannot be widened into an ordinary owner write permit:
+//!
+//! ```compile_fail
+//! use proxima::HostStateWritePermit;
+//! fn widen(permit: HostStateWritePermit) -> proxima_core::storage_ports::OwnerWritePermit {
+//!     permit.into()
+//! }
+//! ```
+//!
+//! The maintenance unit intentionally has no cognitive write or read methods:
+//!
+//! ```compile_fail
+//! fn fact(unit: &mut proxima::HostStateUnitOfWork<'_>) {
+//!     let _ = unit.ingest_fact;
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! fn goal(unit: &mut proxima::HostStateUnitOfWork<'_>) {
+//!     let _ = unit.create_goal;
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! fn read_or_forget(unit: &mut proxima::HostStateUnitOfWork<'_>) {
+//!     let _ = unit.owned_series_head_memory_id;
+//!     let _ = unit.forget;
+//! }
+//! ```
+//!
+//! Flavor SDK imports cannot name the host-only authority:
+//!
+//! ```compile_fail
+//! use proxima::flavor::HostStateMaintenanceAuthority;
+//! ```
 
 mod app;
 #[cfg(feature = "auth-oidc")]
@@ -193,6 +247,7 @@ impl std::fmt::Debug for ProximaBuilder {
 pub struct EmbeddedProxima {
     pub engine: Arc<Engine>,
     pub system_authority: SystemAuthority,
+    host_state_maintenance_authority: Option<proxima_core::engine::HostStateMaintenanceAuthority>,
     delegation_runtime_authority: proxima_core::DelegationRuntimeAuthority,
     pub handle: EngineHandle,
     pool: PgPool,
@@ -224,6 +279,15 @@ impl EmbeddedProxima {
     #[must_use]
     pub const fn system_authority(&self) -> &SystemAuthority {
         &self.system_authority
+    }
+
+    /// Boot-held authority for the registered host-state participant.
+    /// Absent when the runtime booted without such a participant.
+    #[must_use]
+    pub const fn host_state_maintenance_authority(
+        &self,
+    ) -> Option<&proxima_core::engine::HostStateMaintenanceAuthority> {
+        self.host_state_maintenance_authority.as_ref()
     }
 
     /// Test-only backend pool access for integration fixtures.
@@ -497,6 +561,9 @@ impl ProximaBuilder {
 
         let (engine, system_authority, delegation_runtime_authority) =
             engine.into_runtime_authorities();
+        let host_state_maintenance_authority = engine
+            .host_state_maintenance_authority(&system_authority)
+            .map_err(|error| EmbedError::Engine(error.to_string()))?;
         if let Some(store) = &blobs {
             store
                 .bind_system_authority(&system_authority)
@@ -512,6 +579,7 @@ impl ProximaBuilder {
         Ok(EmbeddedProxima {
             engine,
             system_authority,
+            host_state_maintenance_authority,
             delegation_runtime_authority,
             handle,
             pool,

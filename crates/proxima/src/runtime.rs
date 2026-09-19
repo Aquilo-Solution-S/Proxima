@@ -283,6 +283,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             service,
             engine: booted.engine,
             system_authority: booted.system_authority,
+            host_state_maintenance_authority: booted.host_state_maintenance_authority,
             handle: booted.handle,
             pool: booted.pool,
             registry: booted.registry,
@@ -377,6 +378,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         Ok(RunningProxima {
             engine: booted.engine,
             system_authority: booted.system_authority,
+            host_state_maintenance_authority: booted.host_state_maintenance_authority,
             handle: booted.handle,
             pool: booted.pool,
             registry: booted.registry,
@@ -465,6 +467,7 @@ pub struct BuiltProxima {
     pub service: Option<Router>,
     pub engine: Arc<Engine>,
     pub system_authority: SystemAuthority,
+    host_state_maintenance_authority: Option<proxima_core::engine::HostStateMaintenanceAuthority>,
     pub handle: EngineHandle,
     pool: PgPool,
     pub registry: Arc<FlavorRegistryFrozen>,
@@ -547,6 +550,15 @@ impl BuiltProxima {
         &self.system_authority
     }
 
+    /// Boot-held authority for the registered host-state participant.
+    /// Absent when the runtime booted without such a participant.
+    #[must_use]
+    pub const fn host_state_maintenance_authority(
+        &self,
+    ) -> Option<&proxima_core::engine::HostStateMaintenanceAuthority> {
+        self.host_state_maintenance_authority.as_ref()
+    }
+
     #[must_use]
     pub fn core_mcp_tools(&self) -> CoreMcpTools {
         CoreMcpTools::new(
@@ -609,6 +621,7 @@ impl std::fmt::Debug for BuiltProxima {
 pub struct RunningProxima {
     pub engine: Arc<Engine>,
     pub system_authority: SystemAuthority,
+    host_state_maintenance_authority: Option<proxima_core::engine::HostStateMaintenanceAuthority>,
     pub handle: EngineHandle,
     pool: PgPool,
     pub registry: Arc<FlavorRegistryFrozen>,
@@ -698,6 +711,15 @@ impl RunningProxima {
     #[must_use]
     pub const fn system_authority(&self) -> &SystemAuthority {
         &self.system_authority
+    }
+
+    /// Boot-held authority for the registered host-state participant.
+    /// Absent when the runtime booted without such a participant.
+    #[must_use]
+    pub const fn host_state_maintenance_authority(
+        &self,
+    ) -> Option<&proxima_core::engine::HostStateMaintenanceAuthority> {
+        self.host_state_maintenance_authority.as_ref()
     }
 
     #[must_use]
@@ -1095,6 +1117,12 @@ fn assemble_services<A: FlavorApp>(
     runtime_authority: &DelegationRuntimeAuthority,
 ) -> Result<FlavorServices, ProximaError> {
     let mut services = A::services(app_ctx)?;
+    debug_assert!(
+        services
+            .get::<proxima_core::engine::HostStateMaintenanceAuthority>()
+            .is_none(),
+        "host-state maintenance authority must remain outside FlavorServices"
+    );
     if let Some((transfer, verified_read, owner_reconcile)) =
         cited_blob_services(app_ctx.blobs.as_ref(), runtime_authority)
     {
@@ -1400,6 +1428,12 @@ mod tests {
         assert!(
             services.get::<SystemAuthority>().is_none(),
             "global operator authority must never enter the flavor service set"
+        );
+        assert!(
+            services
+                .get::<proxima_core::engine::HostStateMaintenanceAuthority>()
+                .is_none(),
+            "host-state maintenance authority must remain outside FlavorServices"
         );
         assert!(
             services.get::<DelegatedAuthorityService>().is_none(),

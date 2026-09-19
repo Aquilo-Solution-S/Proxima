@@ -5,18 +5,21 @@
 mod host_state_fixture;
 
 use host_state_fixture::{
-    CoreStateSurfaceCommand, FixtureHostCommand, FixtureHostResult, HostFixtureApp,
-    HostFixtureParticipant, InvalidBindingCommand, UnknownParticipantCommand, invocation_lock_key,
+    AuxiliaryHostCommand, CoreStateSurfaceCommand, DuplicateDescriptorParticipant,
+    DuplicateTablesCommand, EmptyDescriptorParticipant, EmptyTablesCommand, FixtureHostCommand,
+    FixtureHostResult, HostFixtureApp, HostFixtureParticipant, InvalidBindingCommand,
+    UndeclaredDescriptorParticipant, UnknownParticipantCommand, invocation_lock_key,
 };
 use proxima::flavor::{FlavorBundle, NamedMigrator};
 use proxima::{
-    AppInfo, AuthPath, AuthzContext, ErrorCode, FlavorApp, HostStateOutcome, Proxima, Role,
-    ToolScope, company_owner,
+    AppInfo, AuthPath, AuthzContext, ErrorCode, FlavorApp, HostStateOutcome,
+    PgHostStateParticipant, Proxima, Role, ToolScope, company_owner,
 };
-use proxima_core::{AgentNoteV1, Owner, UserId};
+use proxima_core::{AgentNoteV1, GroupId, Owner, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 
 struct EmptyApp;
@@ -53,6 +56,9 @@ fn note(title: &str) -> AgentNoteV1 {
 }
 
 fn admin_authz_for(owner: Owner) -> AuthzContext {
+    if matches!(owner, Owner::Personal(_)) {
+        return AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    }
     AuthzContext::for_subject_with_role(
         UserId::new(Uuid::now_v7()),
         [(owner, Role::admin())],
@@ -65,7 +71,7 @@ fn admin_authz_for(owner: Owner) -> AuthzContext {
 async fn boot_fixture(
     db_url: &str,
     owner: Owner,
-    participant: Option<Arc<HostFixtureParticipant>>,
+    participant: Option<Arc<dyn PgHostStateParticipant>>,
 ) -> Result<proxima::BuiltProxima, Box<dyn std::error::Error>> {
     let mut app = Proxima::<HostFixtureApp>::app()
         .database_url(db_url)
@@ -110,6 +116,125 @@ async fn execution_status(
     .bind(memory_id.into_inner())
     .fetch_optional(pool)
     .await
+}
+
+fn owner_fence_label(owner: Owner) -> String {
+    let kind = match owner {
+        Owner::Personal(_) => "personal",
+        Owner::Group(_) => "group",
+    };
+    format!("proxima-owner-fence:{kind}:{}", owner.stored_owner_id())
+}
+
+async fn wait_for_owner_fence_wait(
+    pool: &PgPool,
+    owner: Owner,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let label = owner_fence_label(owner);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "WITH lock_key AS (SELECT hashtextextended($1, 0) AS key)
+                 SELECT EXISTS (
+                     SELECT 1
+                       FROM pg_locks l
+                       CROSS JOIN lock_key k
+                      WHERE l.locktype = 'advisory'
+                        AND NOT l.granted
+                        AND l.classid::bigint = ((k.key >> 32) & 4294967295)
+                        AND l.objid::bigint = (k.key & 4294967295)
+                 )",
+            )
+            .bind(label.as_str())
+            .fetch_one(pool)
+            .await?;
+            if waiting {
+                return Ok::<(), sqlx::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    Ok(())
+}
+
+async fn advisory_wait_reports_lock_event(pool: &PgPool, label: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "WITH lock_key AS (SELECT hashtextextended($1, 0) AS key)
+         SELECT EXISTS (
+             SELECT 1
+               FROM pg_locks l
+               JOIN pg_stat_activity a USING (pid)
+               CROSS JOIN lock_key k
+              WHERE l.locktype = 'advisory' AND NOT l.granted
+                AND a.wait_event_type = 'Lock'
+                AND l.classid::bigint = ((k.key >> 32) & 4294967295)
+                AND l.objid::bigint = (k.key & 4294967295)
+         )",
+    )
+    .bind(label)
+    .fetch_one(pool)
+    .await
+}
+
+async fn advisory_integer_wait_reports_lock_event(
+    pool: &PgPool,
+    key: i64,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM pg_locks l
+               JOIN pg_stat_activity a USING (pid)
+              WHERE l.locktype = 'advisory' AND NOT l.granted
+                AND a.wait_event_type = 'Lock'
+                AND l.classid::bigint = (($1::bigint >> 32) & 4294967295)
+                AND l.objid::bigint = ($1::bigint & 4294967295)
+         )",
+    )
+    .bind(key)
+    .fetch_one(pool)
+    .await
+}
+
+async fn wait_for_erase_holding_owner_fence_and_waiting_on_test_lock(
+    pool: &PgPool,
+    owner: Owner,
+    test_lock_key: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let label = owner_fence_label(owner);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let observed: bool = sqlx::query_scalar(
+                "WITH owner_key AS (SELECT hashtextextended($1, 0) AS key),
+                      test_key AS (SELECT $2::bigint AS key)
+                 SELECT EXISTS (
+                     SELECT 1 FROM pg_locks l CROSS JOIN owner_key k
+                      WHERE l.locktype = 'advisory' AND l.granted
+                        AND l.mode = 'ExclusiveLock'
+                        AND l.classid::bigint = ((k.key >> 32) & 4294967295)
+                        AND l.objid::bigint = (k.key & 4294967295)
+                 ) AND EXISTS (
+                     SELECT 1
+                       FROM pg_locks l
+                       CROSS JOIN test_key k
+                      WHERE l.locktype = 'advisory' AND NOT l.granted
+                        AND l.classid::bigint = ((k.key >> 32) & 4294967295)
+                        AND l.objid::bigint = (k.key & 4294967295)
+                 )",
+            )
+            .bind(label.as_str())
+            .bind(test_lock_key)
+            .fetch_one(pool)
+            .await?;
+            if observed {
+                return Ok::<(), sqlx::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    Ok(())
 }
 
 #[tokio::test]
@@ -329,7 +454,7 @@ async fn injected_failures_leave_no_partial_commit() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(Arc::clone(&participant))).await?;
+        let built = boot_fixture(&url, owner, Some(participant.clone())).await?;
         let other = PgPool::connect(&url).await?;
         let authz = built.single_owner_authz().expect("single owner");
         let engine = built.engine();
@@ -683,6 +808,7 @@ async fn host_without_participant_still_ingests_facts() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
+        assert!(built.host_state_maintenance_authority().is_none());
         let authz = built.single_owner_authz().expect("single owner");
         let engine = built.engine();
         let mut uow = engine.unit_of_work(&authz).await?;
@@ -750,7 +876,7 @@ async fn cancelled_host_op_after_sql_cannot_commit() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(Arc::clone(&participant))).await?;
+        let built = boot_fixture(&url, owner, Some(participant.clone())).await?;
         let other = PgPool::connect(&url).await?;
         let authz = built.single_owner_authz().expect("single owner");
         let engine = built.engine();
@@ -788,4 +914,494 @@ async fn cancelled_host_op_after_sql_cannot_commit() {
     .await;
     drop_db(&db_name).await.expect("drop fixture");
     result.expect("cancel after SQL");
+}
+
+#[tokio::test]
+async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_and_group() {
+    let db_name = unique_db_name("proxima_uow_hs_authority");
+    create_db(&db_name).await.expect("PG required");
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let group = Owner::Group(GroupId::new(Uuid::now_v7()));
+        let personal = Owner::Personal(UserId::new(Uuid::now_v7()));
+        let participant = Arc::new(HostFixtureParticipant::default());
+        let built = boot_fixture(&url, group, Some(participant.clone())).await?;
+        let authority = built
+            .host_state_maintenance_authority()
+            .expect("registered participant mints host-only authority");
+        let engine = built.engine();
+        let observer = PgPool::connect(&url).await?;
+
+        for (owner, key) in [
+            (group, "host-authority-group"),
+            (personal, "host-authority-personal"),
+        ] {
+            let authz = admin_authz_for(owner);
+            let mut setup = engine.unit_of_work(&authz).await?;
+            let fact = setup
+                .ingest_fact(proxima::FactWrite::new(owner, key, &note(key)))
+                .await?;
+            setup
+                .apply_host_state(FixtureHostCommand::Create {
+                    owner,
+                    invocation_id: fact.memory_id,
+                })
+                .await?;
+            setup.commit().await?;
+
+            // No AuthzContext is accepted by this one-owner maintenance API.
+            let mut maintenance = engine.host_state_unit_of_work(authority, owner)?;
+            let result = maintenance
+                .apply_host_state(FixtureHostCommand::Read {
+                    owner,
+                    invocation_id: fact.memory_id,
+                })
+                .await?;
+            assert!(matches!(
+                result,
+                HostStateOutcome::Permitted(FixtureHostResult::Row(Some(ref row)))
+                    if row.status == "created" && row.version == 1
+            ));
+
+            let finalized = maintenance
+                .apply_host_state(FixtureHostCommand::Finalize {
+                    owner,
+                    invocation_id: fact.memory_id,
+                })
+                .await?;
+            assert!(matches!(
+                finalized,
+                HostStateOutcome::Permitted(FixtureHostResult::Finalized {
+                    invocation_id,
+                    version: 2,
+                }) if invocation_id == fact.memory_id
+            ));
+            maintenance.commit().await?;
+
+            assert_eq!(
+                execution_status(&observer, fact.memory_id).await?,
+                Some(("finalized".to_owned(), 2)),
+                "host-only mutation must commit for {owner:?} and be visible on another connection"
+            );
+        }
+
+        let calls_before_rejections = participant.callback_calls();
+        let mut wrong_owner = engine.host_state_unit_of_work(authority, group)?;
+        let error = wrong_owner
+            .apply_host_state(FixtureHostCommand::Read {
+                owner: personal,
+                invocation_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+            })
+            .await
+            .expect_err("fixed unit owner rejects another command owner");
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+        drop(wrong_owner);
+
+        let mut wrong_participant = engine.host_state_unit_of_work(authority, group)?;
+        let error = wrong_participant
+            .apply_host_state(UnknownParticipantCommand { owner: group })
+            .await
+            .expect_err("command participant must match actual registration");
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+        drop(wrong_participant);
+
+        let mut wrong_table = engine.host_state_unit_of_work(authority, group)?;
+        let error = wrong_table
+            .apply_host_state(AuxiliaryHostCommand { owner: group })
+            .await
+            .expect_err("unregistered participant table must fail before dispatch");
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+        drop(wrong_table);
+
+        let mut duplicate = engine.host_state_unit_of_work(authority, group)?;
+        let error = duplicate
+            .apply_host_state(DuplicateTablesCommand { owner: group })
+            .await
+            .expect_err("duplicate request tables are rejected");
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+        drop(duplicate);
+
+        let empty_invocation = proxima_core::MemoryId::new(Uuid::now_v7());
+        let mut empty = engine.host_state_unit_of_work(authority, group)?;
+        let error = empty
+            .apply_host_state(EmptyTablesCommand { owner: group })
+            .await
+            .expect_err("empty request tables are rejected before opening a session");
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+        assert!(error.message.contains("no state surfaces"), "{error:?}");
+        drop(empty);
+        assert_eq!(participant.callback_calls(), calls_before_rejections);
+        assert_eq!(
+            count_execution(built.pool_for_tests(), empty_invocation).await?,
+            0
+        );
+
+        // A capability minted by one engine cannot be paired with another
+        // boot, even when both engines captured identical metadata.
+        let second_participant = Arc::new(HostFixtureParticipant::default());
+        let second = boot_fixture(&url, group, Some(second_participant.clone())).await?;
+        let second_engine = second.engine();
+        let error = second_engine
+            .host_state_unit_of_work(authority, group)
+            .expect_err("capability belongs to the first engine");
+        assert_eq!(error.code, ErrorCode::Forbidden, "{error:?}");
+        assert_eq!(second_participant.callback_calls(), 0);
+
+        second.shutdown();
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("host authority invariants");
+}
+
+#[tokio::test]
+async fn frozen_descriptor_rejects_full_invalid_registration_and_cannot_widen_after_boot() {
+    let db_name = unique_db_name("proxima_uow_hs_descriptor");
+    create_db(&db_name).await.expect("PG required");
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        for (participant, expected_message) in [
+            (
+                Arc::new(DuplicateDescriptorParticipant) as Arc<dyn PgHostStateParticipant>,
+                "more than once",
+            ),
+            (
+                Arc::new(UndeclaredDescriptorParticipant) as Arc<dyn PgHostStateParticipant>,
+                "state_surfaces",
+            ),
+            (
+                Arc::new(EmptyDescriptorParticipant) as Arc<dyn PgHostStateParticipant>,
+                "no state surfaces",
+            ),
+        ] {
+            let error = boot_fixture(&url, owner, Some(participant))
+                .await
+                .expect_err("invalid full participant registration must fail boot");
+            assert!(error.to_string().contains(expected_message), "{error}");
+        }
+
+        let participant = Arc::new(HostFixtureParticipant::default());
+        let built = boot_fixture(&url, owner, Some(participant.clone())).await?;
+        assert_eq!(
+            participant.metadata_reads(),
+            2,
+            "id and tables captured once"
+        );
+        participant.arm_widen_descriptor_after_capture();
+
+        let authority = built
+            .host_state_maintenance_authority()
+            .expect("valid participant capability");
+        let engine = built.engine();
+        let mut widened = engine.host_state_unit_of_work(authority, owner)?;
+        let error = widened
+            .apply_host_state(AuxiliaryHostCommand { owner })
+            .await
+            .expect_err("metadata getter change cannot widen the boot descriptor");
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+        drop(widened);
+        assert_eq!(participant.callback_calls(), 0);
+
+        let mut valid = engine.host_state_unit_of_work(authority, owner)?;
+        let result = valid
+            .apply_host_state(FixtureHostCommand::Read {
+                owner,
+                invocation_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+            })
+            .await?;
+        assert!(matches!(
+            result,
+            HostStateOutcome::Permitted(FixtureHostResult::Row(None))
+        ));
+        valid.commit().await?;
+        assert_eq!(
+            participant.metadata_reads(),
+            2,
+            "dispatch never re-reads getters"
+        );
+        assert_eq!(participant.callback_calls(), 1);
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("frozen registration descriptor");
+}
+
+#[tokio::test]
+async fn opaque_payload_owner_mismatch_is_checked_inside_participant_before_sql() {
+    let db_name = unique_db_name("proxima_uow_hs_payload_owner");
+    create_db(&db_name).await.expect("PG required");
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let foreign = Owner::Personal(UserId::new(Uuid::now_v7()));
+        let participant = Arc::new(HostFixtureParticipant::default());
+        let built = boot_fixture(&url, owner, Some(participant.clone())).await?;
+        let authority = built
+            .host_state_maintenance_authority()
+            .expect("host authority");
+        let invocation = proxima_core::MemoryId::new(Uuid::now_v7());
+        let engine = built.engine();
+        let mut maintenance = engine.host_state_unit_of_work(authority, owner)?;
+        let error = maintenance
+            .apply_host_state(FixtureHostCommand::CreateWithPayloadOwner {
+                owner,
+                payload_owner: foreign,
+                invocation_id: invocation,
+            })
+            .await
+            .expect_err("opaque payload's owner is participant-checked");
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+        assert_eq!(
+            participant.callback_calls(),
+            1,
+            "callback owns payload check"
+        );
+        drop(maintenance);
+        assert_eq!(
+            count_execution(built.pool_for_tests(), invocation).await?,
+            0
+        );
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("payload owner boundary");
+}
+
+#[tokio::test]
+async fn deferred_fk_commit_failure_rolls_back_fact_and_host_state_rows() {
+    let db_name = unique_db_name("proxima_uow_hs_deferred");
+    create_db(&db_name).await.expect("PG required");
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let participant = Arc::new(HostFixtureParticipant::default());
+        let built = boot_fixture(&url, owner, Some(participant)).await?;
+        let other = PgPool::connect(&url).await?;
+        let authz = admin_authz_for(owner);
+        let engine = built.engine();
+        let mut unit = engine.unit_of_work(&authz).await?;
+        let fact = unit
+            .ingest_fact(proxima::FactWrite::new(
+                owner,
+                "test/host-state-deferred-fk",
+                &note("deferred-fk"),
+            ))
+            .await?;
+        unit.apply_host_state(FixtureHostCommand::Create {
+            owner,
+            invocation_id: fact.memory_id,
+        })
+        .await?;
+        unit.apply_host_state(FixtureHostCommand::InsertDeferredInvalid {
+            owner,
+            invocation_id: fact.memory_id,
+        })
+        .await?;
+        let error = unit
+            .commit()
+            .await
+            .expect_err("deferred constraint fails at actual COMMIT");
+        assert_eq!(error.code, ErrorCode::Internal, "{error:?}");
+        assert_eq!(count_memory(&other, fact.memory_id).await?, 0);
+        assert_eq!(count_execution(&other, fact.memory_id).await?, 0);
+        let deferred_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM host_fixture.deferred_reference WHERE invocation_id = $1",
+        )
+        .bind(fact.memory_id.into_inner())
+        .fetch_one(&other)
+        .await?;
+        assert_eq!(deferred_rows, 0);
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("deferred COMMIT rollback");
+}
+
+#[tokio::test]
+async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways() {
+    const TRIGGER_LOCK_KEY: i64 = 8_719_872_200_019;
+
+    let db_name = unique_db_name("proxima_uow_hs_owner_fence");
+    create_db(&db_name).await.expect("PG required");
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = Owner::Group(GroupId::new(Uuid::now_v7()));
+        let participant = Arc::new(HostFixtureParticipant::default());
+        let built = boot_fixture(&url, owner, Some(participant.clone())).await?;
+        let engine = built.engine();
+        let pool = built.pool_for_tests();
+        let authz = admin_authz_for(owner);
+
+        let mut setup = engine.unit_of_work(&authz).await?;
+        let fact = setup
+            .ingest_fact(proxima::FactWrite::new(
+                owner,
+                "test/host-state-owner-fence",
+                &note("owner-fence"),
+            ))
+            .await?;
+        setup
+            .apply_host_state(FixtureHostCommand::Create {
+                owner,
+                invocation_id: fact.memory_id,
+            })
+            .await?;
+        setup.commit().await?;
+
+        // A host participant holds the production shared fence until its
+        // write session is dropped. Whole-owner erase must wait for it.
+        participant.arm_hang_after_sql();
+        let completion = participant.sql_completed();
+        let maintenance_engine = engine.clone();
+        let maintenance_authority = engine
+            .host_state_maintenance_authority(built.system_authority())?
+            .expect("host participant authority");
+        let maintenance = tokio::spawn(async move {
+            let mut unit =
+                maintenance_engine.host_state_unit_of_work(&maintenance_authority, owner)?;
+            unit.apply_host_state(FixtureHostCommand::Read {
+                owner,
+                invocation_id: fact.memory_id,
+            })
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(10), completion)
+            .await
+            .map_err(|error| {
+                std::io::Error::other(format!("participant callback wait: {error}"))
+            })?;
+
+        let erase_engine = engine.clone();
+        let erase_authz = AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::System);
+        let erase = tokio::spawn(async move {
+            erase_engine
+                .erase_group_owner(&erase_authz, GroupId::new(owner.stored_owner_id()))
+                .await
+        });
+        wait_for_owner_fence_wait(pool, owner)
+            .await
+            .map_err(|error| std::io::Error::other(format!("erase fence wait: {error}")))?;
+        assert!(advisory_wait_reports_lock_event(pool, &owner_fence_label(owner)).await?);
+        maintenance.abort();
+        assert!(
+            maintenance
+                .await
+                .expect_err("cancelled maintenance")
+                .is_cancelled()
+        );
+        let erased = erase.await??;
+        assert!(matches!(
+            erased,
+            proxima::OwnerEraseOutcome::Completed { .. }
+        ));
+        assert_eq!(count_execution(pool, fact.memory_id).await?, 0);
+
+        // Hold an independent test advisory lock inside a trigger. The real
+        // erase path first acquires its exclusive owner fence, then waits in
+        // the trigger. A host-state call started behind it must show a
+        // Lock wait on that same owner fence before the trigger lock releases.
+        let trigger_key = TRIGGER_LOCK_KEY;
+        let mut blocker = pool.acquire().await?;
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(trigger_key)
+            .execute(&mut *blocker)
+            .await?;
+        sqlx::query(
+            "CREATE FUNCTION host_fixture.block_execution_erase() RETURNS trigger \
+             LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(8719872200019); \
+             RETURN OLD; END $$",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE TRIGGER block_execution_erase BEFORE DELETE ON host_fixture.execution \
+             FOR EACH ROW EXECUTE FUNCTION host_fixture.block_execution_erase()",
+        )
+        .execute(pool)
+        .await?;
+
+        let mut setup_again = engine.unit_of_work(&authz).await?;
+        let seeded_fact = setup_again
+            .ingest_fact(proxima::FactWrite::new(
+                owner,
+                "test/host-state-owner-fence-second",
+                &note("owner-fence-second"),
+            ))
+            .await?;
+        setup_again
+            .apply_host_state(FixtureHostCommand::Create {
+                owner,
+                invocation_id: seeded_fact.memory_id,
+            })
+            .await?;
+        setup_again.commit().await?;
+
+        let erase_engine = engine.clone();
+        let erase_authz = AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::System);
+        let erase = tokio::spawn(async move {
+            erase_engine
+                .erase_group_owner(&erase_authz, GroupId::new(owner.stored_owner_id()))
+                .await
+        });
+        wait_for_erase_holding_owner_fence_and_waiting_on_test_lock(pool, owner, trigger_key)
+            .await
+            .map_err(|error| std::io::Error::other(format!("erase trigger lock wait: {error}")))?;
+        assert!(advisory_integer_wait_reports_lock_event(pool, trigger_key).await?);
+
+        let callback_count = participant.callback_calls();
+        let waiting_engine = engine.clone();
+        let waiting_authority = engine
+            .host_state_maintenance_authority(built.system_authority())?
+            .expect("host participant authority");
+        let waiting = tokio::spawn(async move {
+            let mut unit = waiting_engine.host_state_unit_of_work(&waiting_authority, owner)?;
+            let result = unit
+                .apply_host_state(FixtureHostCommand::Read {
+                    owner,
+                    invocation_id: seeded_fact.memory_id,
+                })
+                .await?;
+            unit.commit().await?;
+            Ok::<_, proxima::ProtocolError>(result)
+        });
+        wait_for_owner_fence_wait(pool, owner)
+            .await
+            .map_err(|error| std::io::Error::other(format!("maintenance fence wait: {error}")))?;
+        assert!(advisory_wait_reports_lock_event(pool, &owner_fence_label(owner)).await?);
+        assert_eq!(
+            participant.callback_calls(),
+            callback_count,
+            "the callback waits until erase releases the exclusive owner fence"
+        );
+
+        let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
+            .bind(trigger_key)
+            .fetch_one(&mut *blocker)
+            .await?;
+        assert!(unlocked, "test releases trigger blocker");
+        assert!(matches!(
+            erase.await??,
+            proxima::OwnerEraseOutcome::Completed { .. }
+        ));
+        let after_erase = waiting.await??;
+        assert!(matches!(
+            after_erase,
+            HostStateOutcome::Permitted(FixtureHostResult::Row(None))
+        ));
+        assert_eq!(count_execution(pool, seeded_fact.memory_id).await?, 0);
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("owner-fence serialization");
 }

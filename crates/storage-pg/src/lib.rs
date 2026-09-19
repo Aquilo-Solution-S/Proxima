@@ -1444,7 +1444,15 @@ pub struct PgStorage {
     /// transaction. `None` keeps existing
     /// [`proxima_core::engine::UnitOfWork`] Fact behavior with no extra
     /// configuration.
-    host_state: Option<Arc<dyn crate::PgHostStateParticipant>>,
+    host_state: Option<RegisteredHostStateParticipant>,
+}
+
+/// Participant instance and the exact metadata snapshot captured when it
+/// was registered. Dispatch never calls metadata getters again.
+#[derive(Clone)]
+struct RegisteredHostStateParticipant {
+    participant: Arc<dyn crate::PgHostStateParticipant>,
+    descriptor: proxima_core::storage_ports::HostStateParticipantDescriptor,
 }
 
 impl std::fmt::Debug for PgStorage {
@@ -1616,7 +1624,14 @@ impl PgStorage {
         mut self,
         participant: Arc<dyn crate::PgHostStateParticipant>,
     ) -> Self {
-        self.host_state = Some(participant);
+        let descriptor = proxima_core::storage_ports::HostStateParticipantDescriptor::new(
+            participant.participant_id(),
+            participant.declared_tables(),
+        );
+        self.host_state = Some(RegisteredHostStateParticipant {
+            participant,
+            descriptor,
+        });
         self
     }
 

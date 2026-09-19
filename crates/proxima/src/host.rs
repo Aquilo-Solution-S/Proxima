@@ -46,8 +46,9 @@ pub use proxima_core::cursor::Cursor;
 /// no per-column filter, so a flavor that wants "search inside this book"
 /// declares a `tag_column` on its projection and filters here.
 pub use proxima_core::engine::{
-    FactWrite, HostStateCommand, HostStateOutcome, ListWakeCandidatesReadRequest,
-    ListWakeCandidatesReadResponse, SearchReadRequest, SearchReadResponse, UnitOfWork,
+    FactWrite, HostStateCommand, HostStateMaintenanceAuthority, HostStateOutcome,
+    HostStateUnitOfWork, ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse,
+    SearchReadRequest, SearchReadResponse, UnitOfWork,
 };
 /// The owner-authorized batch Memory read already exposed by
 /// [`proxima_core::Engine::get_memories`].
@@ -102,7 +103,9 @@ pub use proxima_core::storage_ports::{
     CitedBlobIntegrityMismatch, CitedBlobMissingObject, CitedBlobOwnerMissingObject,
     CitedBlobOwnerReconcileOutcome, CitedBlobOwnerReconcilePort, CitedBlobOwnerReconcileService,
     CitedBlobReadError, CitedBlobReadPort, CitedBlobReadService, CitedBlobReconcileOutcome,
-    HostStateReply, HostStateReplyKind, HostStateRequest, MAX_RECONCILE_SAMPLE, VerifiedCitedBlob,
+    HostStateParticipantDescriptor, HostStateParticipantId, HostStateReply, HostStateReplyKind,
+    HostStateRequest, HostStateWritePermit, MAX_RECONCILE_SAMPLE, StateSurfaceName,
+    VerifiedCitedBlob,
 };
 pub use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 pub use proxima_core::verbs::fact_ingest::{

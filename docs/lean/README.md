@@ -31,6 +31,7 @@ minimization discipline) — a failing build is drift.
 | `Causa/Goals.lean` | Goal `(handle, t)`, wake_id, GoalHead, transitions, evidence/assignment pins, `situatedSelf` cue-indexed query (docs 06) |
 | `Causa/Edges.lean` | pins on the node (no Edge table): two closed kinds, OriginKindValid, derivePins identity, interpretation-as-node |
 | `Causa/Authorization.lean` | owner-role read/write ceilings, owner-state resolution, personal/group access theorems |
+| `Causa/HostStateMaintenance.lean` | engine/participant-bound host-state capability, fixed transaction owner, ordinary authority separation ([doc 19](../19-host-state-maintenance.md)); guarded theorem audit in `HostStateMaintenanceAudit.lean` |
 | `Causa/EdgeAuthorization.lean` | source-owned index reads and the uniform source-write + target-read admission rule |
 | `Causa/Operators.lean` | F→A / A→P / A→Goal phase contracts, no downward writes, invocation-ledger completeness (docs 02, 04) |
 | `Causa/Provenance.lean` | admitted graph validity, grounding, table-scoped provenance/uniqueness witnesses |
