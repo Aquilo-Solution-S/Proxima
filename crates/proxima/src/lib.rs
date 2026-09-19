@@ -44,8 +44,22 @@
 //! ```
 //!
 //! ```compile_fail
-//! use proxima::{HostStateWritePermit, Owner};
-//! let _permit = HostStateWritePermit::new(Owner::Personal(proxima::UserId::new(uuid::Uuid::nil())));
+//! use proxima::{
+//!     HostStateParticipantId, HostStateWriteOrigin, HostStateWritePermit, Owner, StateSurfaceName,
+//! };
+//! let _permit = HostStateWritePermit::new(
+//!     Owner::Personal(proxima::UserId::new(uuid::Uuid::nil())),
+//!     HostStateParticipantId::new("fixture"),
+//!     &[StateSurfaceName::new("fixture.state")],
+//!     HostStateWriteOrigin::Maintenance,
+//! );
+//! ```
+
+//! ```compile_fail
+//! use proxima::{HostStateWriteOrigin, HostStateWritePermit};
+//! fn overwrite_origin(permit: &mut HostStateWritePermit) {
+//!     permit.origin = HostStateWriteOrigin::Maintenance;
+//! }
 //! ```
 //!
 //! A host-state stamp cannot be widened into an ordinary owner write permit:

@@ -106,8 +106,8 @@ pub use proxima_core::storage_ports::{
     HostStateEraseReceipt, HostStateEraseRequest, HostStateEraseScope, HostStateEraseTableCount,
     HostStateExportReceipt, HostStateExportRequest, HostStateExportTable,
     HostStateParticipantDescriptor, HostStateParticipantId, HostStateReply, HostStateReplyKind,
-    HostStateRequest, HostStateWritePermit, MAX_RECONCILE_SAMPLE, StateSurfaceName,
-    VerifiedCitedBlob,
+    HostStateRequest, HostStateWriteOrigin, HostStateWritePermit, MAX_RECONCILE_SAMPLE,
+    StateSurfaceName, VerifiedCitedBlob,
 };
 pub use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 pub use proxima_core::verbs::fact_ingest::{

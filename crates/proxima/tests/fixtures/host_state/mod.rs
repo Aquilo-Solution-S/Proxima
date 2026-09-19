@@ -11,7 +11,7 @@ use proxima::flavor::{
     FlavorRegistryError, ForgetRule, KeyShape, NamedMigrator, ProjectionDecl, Surface,
     TransferRule,
 };
-use proxima::{AppInfo, FlavorApp, HostStateCommand, HostStateReply, Owner};
+use proxima::{AppInfo, FlavorApp, HostStateCommand, HostStateReply, HostStateWriteOrigin, Owner};
 use proxima_core::storage_ports::{
     HostStateParticipantId, HostStateRequest, HostStateWritePermit, StateSurfaceName,
 };
@@ -136,6 +136,11 @@ pub enum FixtureHostCommand {
         payload_owner: Owner,
         invocation_id: MemoryId,
     },
+    CreateWithPayloadSavedBy {
+        owner: Owner,
+        saved_by: Owner,
+        invocation_id: MemoryId,
+    },
     InsertDeferredInvalid {
         owner: Owner,
         invocation_id: MemoryId,
@@ -173,6 +178,7 @@ impl HostStateCommand for FixtureHostCommand {
             | Self::Finalize { owner, .. }
             | Self::Read { owner, .. }
             | Self::CreateWithPayloadOwner { owner, .. }
+            | Self::CreateWithPayloadSavedBy { owner, .. }
             | Self::InsertDeferredInvalid { owner, .. } => owner,
         }
     }
@@ -468,14 +474,19 @@ async fn dispatch(
     command: FixtureHostCommand,
 ) -> Result<HostStateReply, StorageError> {
     match command {
-        FixtureHostCommand::Create { invocation_id, .. } => create(tx, permit, invocation_id).await,
+        FixtureHostCommand::Create { invocation_id, .. }
+        | FixtureHostCommand::CreateWithPayloadOwner { invocation_id, .. } => {
+            create(tx, permit, invocation_id, None).await
+        }
         FixtureHostCommand::Finalize { invocation_id, .. } => {
             finalize(tx, permit, invocation_id).await
         }
         FixtureHostCommand::Read { invocation_id, .. } => read(tx, permit, invocation_id).await,
-        FixtureHostCommand::CreateWithPayloadOwner { invocation_id, .. } => {
-            create(tx, permit, invocation_id).await
-        }
+        FixtureHostCommand::CreateWithPayloadSavedBy {
+            saved_by,
+            invocation_id,
+            ..
+        } => create(tx, permit, invocation_id, Some(saved_by)).await,
         FixtureHostCommand::InsertDeferredInvalid { invocation_id, .. } => {
             sqlx::query(
                 "INSERT INTO host_fixture.deferred_reference (invocation_id, execution_id) \
@@ -497,6 +508,7 @@ async fn create(
     tx: &mut Transaction<'_, Postgres>,
     permit: &HostStateWritePermit,
     invocation_id: MemoryId,
+    payload_saved_by: Option<Owner>,
 ) -> Result<HostStateReply, StorageError> {
     let (kind, owner_id) = permit.owner().columns();
     // Same-transaction probe: a second connection cannot see the Fact
@@ -512,15 +524,31 @@ async fn create(
     if fact_visible.is_none() {
         return Ok(HostStateReply::refused(FixtureHostResult::Missing));
     }
+    let (principal_kind, principal_id, maintenance_origin) = permit_origin_columns(permit);
+    let (payload_saved_by_kind, payload_saved_by_id) = match payload_saved_by {
+        Some(owner) => {
+            let (kind, id) = owner.columns();
+            (Some(kind), Some(id))
+        }
+        None => (None, None),
+    };
     let inserted = sqlx::query(
-        "INSERT INTO host_fixture.execution (invocation_id, owner_kind, owner_id, status, version)
-         VALUES ($1, $2, $3, 'created', 1)
+        "INSERT INTO host_fixture.execution
+             (invocation_id, owner_kind, owner_id, status, version,
+              principal_kind, principal_id, maintenance_origin,
+              payload_saved_by_kind, payload_saved_by_id)
+         VALUES ($1, $2, $3, 'created', 1, $4, $5, $6, $7, $8)
          ON CONFLICT (invocation_id) DO NOTHING
          RETURNING version",
     )
     .bind(invocation_id.into_inner())
     .bind(kind)
     .bind(owner_id)
+    .bind(principal_kind)
+    .bind(principal_id)
+    .bind(maintenance_origin)
+    .bind(payload_saved_by_kind)
+    .bind(payload_saved_by_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|err| StorageError::Internal(err.to_string()))?;
@@ -539,15 +567,20 @@ async fn finalize(
     invocation_id: MemoryId,
 ) -> Result<HostStateReply, StorageError> {
     let (kind, owner_id) = permit.owner().columns();
+    let (principal_kind, principal_id, maintenance_origin) = permit_origin_columns(permit);
     let updated: Option<i32> = sqlx::query_scalar(
         "UPDATE host_fixture.execution
-         SET status = 'finalized', version = version + 1
+         SET status = 'finalized', version = version + 1,
+             principal_kind = $4, principal_id = $5, maintenance_origin = $6
          WHERE invocation_id = $1 AND owner_kind = $2 AND owner_id = $3 AND status = 'created'
          RETURNING version",
     )
     .bind(invocation_id.into_inner())
     .bind(kind)
     .bind(owner_id)
+    .bind(principal_kind)
+    .bind(principal_id)
+    .bind(maintenance_origin)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|err| StorageError::Internal(err.to_string()))?;
@@ -558,6 +591,18 @@ async fn finalize(
         }));
     }
     conflict_or_applied(tx, permit, invocation_id, false).await
+}
+
+fn permit_origin_columns(
+    permit: &HostStateWritePermit,
+) -> (Option<proxima_core::OwnerRefKind>, Option<Uuid>, bool) {
+    match permit.origin() {
+        HostStateWriteOrigin::OwnerAuthorized { principal } => {
+            let (kind, id) = principal.columns();
+            (Some(kind), Some(id), false)
+        }
+        HostStateWriteOrigin::Maintenance => (None, None, true),
+    }
 }
 
 async fn read(

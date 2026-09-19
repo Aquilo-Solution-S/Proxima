@@ -345,7 +345,12 @@ mod tests {
     #[test]
     fn permit_rejects_requests_outside_its_stamped_participant_and_tables() {
         let owner = OwnerRef::Group(GroupId::new(Uuid::nil()));
-        let permit = HostStateWritePermit::new(owner, Dummy::PARTICIPANT_ID, Dummy::TABLES);
+        let permit = HostStateWritePermit::new(
+            owner,
+            Dummy::PARTICIPANT_ID,
+            Dummy::TABLES,
+            crate::storage_ports::HostStateWriteOrigin::Maintenance,
+        );
 
         assert!(permit.matches_request(&HostStateRequest::from_command(Dummy { owner })));
         assert!(

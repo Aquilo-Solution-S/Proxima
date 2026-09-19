@@ -337,3 +337,16 @@ Parked design choices:
   P2 to operator-derived Goals only.
 - P6 matrix-version axis removed with materialized read-scope; wake context
   evolution remains deferred.
+
+## 21 — Host-state write attribution (HWA)
+
+Carriers live in `Causa/HostStateWriteAttribution.lean`.
+`Causa/HostStateWriteAttributionAudit.lean` checks their axiom surface.
+
+| ID | Invariant | Carrier |
+|---|---|---|
+| HWA-1 | After the existing ordinary authorization path, attribution is the typed principal in its admitted context | Lean: `AlreadyAuthorizedContext`, `stampOrdinaryPermit`, `ordinary_stamp_uses_context_principal`. Runtime: `UnitOfWork::apply_host_state` stamps `authz.principal()` after `authorize_write` and permit validation; real-PG `ordinary_group_editor_provenance_is_not_target_or_command_metadata` verifies editor ≠ group target |
+| HWA-2 | Maintenance is a closed origin without an ordinary caller principal | Lean: `AdmittedWriteSource.maintenance`, `maintenance_stamp_has_no_ordinary_principal`. Runtime: maintenance branch stamps `HostStateWriteOrigin::Maintenance`; `host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_and_group` verifies null principal and `maintenance_origin=true` after committed maintenance mutation |
+| HWA-3 | Target-owner and command bytes cannot alter attributed identity | Lean: `command_target_and_bytes_cannot_change_attribution`. Runtime: the group-editor PG fixture persists target, permit principal and forged payload `saved_by` in separate columns and asserts they stay distinct |
+| HWA-4 | Attribution carries the existing permit unchanged and adds no authorization scope | Lean: `AttributedPermit`, `attribution_preserves_existing_permit`, `ordinary_attribution_preserves_existing_permit`; Rust stores origin beside the existing owner/participant/table scope in a private `HostStateWritePermit`; external mint/mutation and permit widening are compile-fail doctests in `crates/proxima/src/lib.rs` |
+| HWA-R | Existing authz admission and context authenticity remain trusted runtime boundaries | `subjectless_denied_ordinary_host_write_never_dispatches` verifies denied `AuthzContext::denied_for_owner` has zero participant calls. The Lean model starts after ordinary authorization; no new `may_write` rule, role, cognitive permit, or proof of caller authentication is claimed |
