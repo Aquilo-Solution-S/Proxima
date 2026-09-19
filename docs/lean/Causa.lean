@@ -18,6 +18,8 @@ import Causa.Knowledge
 import Causa.Goals
 import Causa.Edges
 import Causa.Authorization
+import Causa.HostStateMaintenance
+import Causa.HostStateMaintenanceAudit
 import Causa.EdgeAuthorization
 import Causa.Operators
 import Causa.Provenance

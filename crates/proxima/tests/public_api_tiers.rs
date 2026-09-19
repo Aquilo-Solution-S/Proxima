@@ -62,8 +62,10 @@ fn host_api_imports_from_root() {
 struct HostStateTierCommand;
 
 impl proxima::HostStateCommand for HostStateTierCommand {
-    const PARTICIPANT_ID: &'static str = "tier";
-    const TABLES: &'static [&'static str] = &["tier.table"];
+    const PARTICIPANT_ID: proxima::HostStateParticipantId =
+        proxima::HostStateParticipantId::new("tier");
+    const TABLES: &'static [proxima::StateSurfaceName] =
+        &[proxima::StateSurfaceName::new("tier.table")];
     type Outcome = ();
 
     fn owner(&self) -> proxima::Owner {

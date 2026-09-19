@@ -1,7 +1,10 @@
 //! Backend-owned write session: one transaction, several Engine writes.
 
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, StorageError};
-use crate::storage_ports::{HostStateReply, HostStateRequest, OwnerWritePermit};
+use crate::storage_ports::{
+    HostStateParticipantDescriptor, HostStateReply, HostStateRequest, HostStateWritePermit,
+    OwnerWritePermit,
+};
 use crate::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
 use crate::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
@@ -56,6 +59,14 @@ pub struct SidecarSessionRead<'a> {
 /// Opens a backend-owned write session (one transaction).
 #[async_trait::async_trait]
 pub trait WriteSessionFactory: Send + Sync {
+    /// Actual host-state registration frozen by the backend at boot.
+    ///
+    /// Implementations without a participant return `None`. This value is
+    /// also the snapshot used by every session created by the factory.
+    fn host_state_descriptor(&self) -> Option<HostStateParticipantDescriptor> {
+        None
+    }
+
     /// Begin a transaction. Drop without [`WriteSession::commit`] rolls back.
     async fn begin(&self) -> Result<Box<dyn WriteSession>, StorageError>;
 }
@@ -185,7 +196,7 @@ pub trait WriteSession: Send {
     /// not owned by that participant. Storage errors from the participant.
     async fn apply_host_state(
         &mut self,
-        permit: &OwnerWritePermit,
+        permit: &HostStateWritePermit,
         request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError>;
 

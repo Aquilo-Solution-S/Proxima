@@ -384,9 +384,10 @@ pub use storage_ports::{
     EmbeddingJobPort, EmbeddingJobStatusCounts, EmbeddingMaintenancePort, EmbeddingOrphanCounts,
     EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, EmbeddingReconcileOptions,
     EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome,
-    EmbeddingWritePort, FactIngestPort, GoalReadPort, GoalWritePort, InboundPinQuery,
+    EmbeddingWritePort, FactIngestPort, GoalReadPort, GoalWritePort,
+    HostStateParticipantDescriptor, HostStateParticipantId, HostStateWritePermit, InboundPinQuery,
     McpCallReadPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
     OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort, OwnerEraseAuthorityPort,
     OwnerInversePort, OwnerMembershipAdminPort, OwnerTransferPort, RegistryProjectionPort,
-    SourceCursorPort, StoragePorts,
+    SourceCursorPort, StateSurfaceName, StoragePorts,
 };

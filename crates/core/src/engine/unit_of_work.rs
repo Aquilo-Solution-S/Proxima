@@ -3,11 +3,11 @@
 use super::Engine;
 use super::memory_authoring::PreparedDerived;
 use crate::access::Relation;
-use crate::authz::AuthzContext;
+use crate::authz::{AuthzContext, SystemAuthority, SystemAuthorityBinding};
 use crate::error::ProtocolError;
 use crate::storage_ports::{
-    HostStateCommand, HostStateOutcome, HostStateReplyKind, HostStateRequest, SidecarSessionRead,
-    WriteSession,
+    HostStateCommand, HostStateOutcome, HostStateParticipantDescriptor, HostStateReplyKind,
+    HostStateRequest, HostStateWritePermit, SidecarSessionRead, WriteSession,
 };
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 use crate::verbs::goal_write::{
@@ -126,7 +126,7 @@ impl<'a, P: FactPayload> FactWrite<'a, P> {
 /// fail and [`Self::commit`] refuses so a partial host operation cannot land.
 pub struct UnitOfWork<'a> {
     engine: &'a Engine,
-    authz: &'a AuthzContext,
+    authorization: UnitAuthorization<'a>,
     session: Option<Box<dyn WriteSession>>,
     committed: bool,
     /// Set when a host-state participant returns a storage error after the
@@ -140,6 +140,139 @@ pub struct UnitOfWork<'a> {
     written_kinds: Vec<(MemoryId, EntityKind)>,
     /// Resolved destinations, for owner-constrained pending Goal assignments.
     written_owners: Vec<(MemoryId, Owner)>,
+}
+
+enum UnitAuthorization<'a> {
+    Ordinary(&'a AuthzContext),
+    HostState {
+        owner: Owner,
+        descriptor: HostStateParticipantDescriptor,
+    },
+}
+
+/// Uncloneable capability minted for one booted engine's actual, frozen
+/// host-state participant registration.
+pub struct HostStateMaintenanceAuthority {
+    system_binding: SystemAuthorityBinding,
+    descriptor: HostStateParticipantDescriptor,
+    _private: (),
+}
+
+impl std::fmt::Debug for HostStateMaintenanceAuthority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostStateMaintenanceAuthority")
+            .field("descriptor", &self.descriptor)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One-owner host-state maintenance unit. It shares the ordinary unit's
+/// lazy session, poisoning, commit, and rollback behavior while exposing no
+/// cognitive write or read methods.
+pub struct HostStateUnitOfWork<'a> {
+    inner: UnitOfWork<'a>,
+}
+
+fn validate_registration(
+    registry: &crate::verbs::schema::FlavorRegistryFrozen,
+    descriptor: HostStateParticipantDescriptor,
+) -> Result<(), ProtocolError> {
+    if descriptor.participant_id().as_str().is_empty() {
+        return Err(ProtocolError::invalid_argument(
+            "host_state",
+            "registered host-state participant id is empty",
+        ));
+    }
+    if descriptor.tables().is_empty() {
+        return Err(ProtocolError::invalid_argument(
+            "host_state",
+            "registered host-state participant declares no state surfaces",
+        ));
+    }
+    for (index, table) in descriptor.tables().iter().enumerate() {
+        if table.as_str().is_empty() {
+            return Err(ProtocolError::invalid_argument(
+                "host_state",
+                "registered host-state participant declares an empty state surface",
+            ));
+        }
+        if descriptor.tables()[..index].contains(table) {
+            return Err(ProtocolError::invalid_argument(
+                "host_state",
+                format!(
+                    "registered host-state participant declares {} more than once",
+                    table.as_str()
+                ),
+            ));
+        }
+        if !registry.is_declared_state_surface(table.as_str()) {
+            return Err(ProtocolError::invalid_argument(
+                "host_state",
+                format!(
+                    "registered table {} is not a declared FlavorContract.state_surfaces binding",
+                    table.as_str()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_host_state_command<C: HostStateCommand>(
+    engine: &Engine,
+    descriptor: HostStateParticipantDescriptor,
+) -> Result<(), ProtocolError> {
+    if C::PARTICIPANT_ID != descriptor.participant_id() {
+        return Err(ProtocolError::invalid_argument(
+            "host_state",
+            format!(
+                "host-state participant {} is not the registered participant {}",
+                C::PARTICIPANT_ID.as_str(),
+                descriptor.participant_id().as_str()
+            ),
+        ));
+    }
+    if C::TABLES.is_empty() {
+        return Err(ProtocolError::invalid_argument(
+            "host_state",
+            "host-state command declares no state surfaces",
+        ));
+    }
+    for (index, table) in C::TABLES.iter().enumerate() {
+        if C::TABLES[..index].contains(table) {
+            return Err(ProtocolError::invalid_argument(
+                "host_state",
+                "host-state command declares a state surface more than once",
+            ));
+        }
+        if !engine.registry().is_declared_state_surface(table.as_str()) {
+            return Err(ProtocolError::invalid_argument(
+                "host_state",
+                format!(
+                    "table {} is not a declared FlavorContract.state_surfaces binding",
+                    table.as_str()
+                ),
+            ));
+        }
+        if !descriptor.tables().contains(table) {
+            return Err(ProtocolError::invalid_argument(
+                "host_state",
+                format!(
+                    "host-state command names {}, which the registered participant does not declare",
+                    table.as_str()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl std::fmt::Debug for HostStateUnitOfWork<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostStateUnitOfWork")
+            .field("inner", &self.inner)
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for UnitOfWork<'_> {
@@ -167,13 +300,84 @@ impl Engine {
     ) -> Result<UnitOfWork<'a>, ProtocolError> {
         Ok(UnitOfWork {
             engine: self,
-            authz,
+            authorization: UnitAuthorization::Ordinary(authz),
             session: None,
             committed: false,
             poisoned: false,
             written: Vec::new(),
             written_kinds: Vec::new(),
             written_owners: Vec::new(),
+        })
+    }
+
+    /// Mint the host-only maintenance capability from this engine's boot
+    /// witness and its backend's actual frozen participant registration.
+    ///
+    /// `None` means the backend has no participant. Invalid or undeclared
+    /// registrations fail closed before the runtime is exposed.
+    ///
+    /// # Errors
+    /// Returns a forbidden error for a foreign boot witness, or an invalid
+    /// argument error when the backend registration is malformed or names
+    /// undeclared state surfaces.
+    pub fn host_state_maintenance_authority(
+        &self,
+        system_authority: &SystemAuthority,
+    ) -> Result<Option<HostStateMaintenanceAuthority>, ProtocolError> {
+        if !system_authority.authorizes(&self.system_authority_binding) {
+            return Err(ProtocolError::forbidden(
+                "system authority belongs to a different engine boot",
+            ));
+        }
+        let Some(descriptor) = self.storage.write_session.host_state_descriptor() else {
+            return Ok(None);
+        };
+        validate_registration(&self.registry, descriptor)?;
+        Ok(Some(HostStateMaintenanceAuthority {
+            system_binding: system_authority.binding(),
+            descriptor,
+            _private: (),
+        }))
+    }
+
+    /// Open the host-only, one-owner transaction surface. Engine identity
+    /// and the live storage descriptor are checked before any session can
+    /// begin.
+    ///
+    /// # Errors
+    /// Returns a forbidden error when the capability belongs to another
+    /// engine boot or the backend registration changed, and an invalid
+    /// argument error for a malformed or undeclared registration.
+    pub fn host_state_unit_of_work<'a>(
+        &'a self,
+        authority: &HostStateMaintenanceAuthority,
+        owner: Owner,
+    ) -> Result<HostStateUnitOfWork<'a>, ProtocolError> {
+        if authority.system_binding != self.system_authority_binding {
+            return Err(ProtocolError::forbidden(
+                "host-state maintenance authority belongs to a different engine",
+            ));
+        }
+        if self.storage.write_session.host_state_descriptor() != Some(authority.descriptor) {
+            return Err(ProtocolError::forbidden(
+                "host-state participant registration changed after authority minting",
+            ));
+        }
+        validate_registration(&self.registry, authority.descriptor)?;
+        Ok(HostStateUnitOfWork {
+            inner: UnitOfWork {
+                engine: self,
+                authorization: UnitAuthorization::HostState {
+                    owner,
+                    descriptor: authority.descriptor,
+                },
+                session: None,
+                committed: false,
+                poisoned: false,
+                written: Vec::new(),
+                written_kinds: Vec::new(),
+                written_owners: Vec::new(),
+            },
         })
     }
 
@@ -194,6 +398,15 @@ impl Engine {
 }
 
 impl UnitOfWork<'_> {
+    fn authz(&self) -> Result<&AuthzContext, ProtocolError> {
+        match self.authorization {
+            UnitAuthorization::Ordinary(authz) => Ok(authz),
+            UnitAuthorization::HostState { .. } => Err(ProtocolError::forbidden(
+                "host-state unit does not authorize ordinary cognitive writes",
+            )),
+        }
+    }
+
     async fn ensure_session(&mut self) -> Result<&mut Box<dyn WriteSession>, ProtocolError> {
         if self.committed {
             return Err(ProtocolError::internal("unit of work already committed"));
@@ -229,7 +442,7 @@ impl UnitOfWork<'_> {
         let item = self
             .engine
             .prepare_derived_memory(
-                self.authz,
+                self.authz()?,
                 memory,
                 &self.written_kinds,
                 self.session.is_some(),
@@ -253,7 +466,7 @@ impl UnitOfWork<'_> {
             prepared.push(
                 self.engine
                     .prepare_derived_memory(
-                        self.authz,
+                        self.authz()?,
                         memory,
                         &self.written_kinds,
                         self.session.is_some(),
@@ -329,7 +542,7 @@ impl UnitOfWork<'_> {
     ) -> Result<Vec<serde_json::Value>, ProtocolError> {
         let write_permit = self
             .engine
-            .authorize_write(self.authz, &owner, Relation::Editor)
+            .authorize_write(self.authz()?, &owner, Relation::Editor)
             .await?;
         self.ensure_session()
             .await?
@@ -359,7 +572,7 @@ impl UnitOfWork<'_> {
     ) -> Result<Option<MemoryId>, ProtocolError> {
         let write_permit = self
             .engine
-            .authorize_write(self.authz, &owner, Relation::Editor)
+            .authorize_write(self.authz()?, &owner, Relation::Editor)
             .await?;
         self.ensure_session()
             .await?
@@ -394,29 +607,47 @@ impl UnitOfWork<'_> {
         &mut self,
         command: C,
     ) -> Result<HostStateOutcome<C::Outcome>, ProtocolError> {
-        if C::TABLES.is_empty() {
-            return Err(ProtocolError::invalid_argument(
-                "host_state",
-                "host-state command declares no state surfaces",
-            ));
-        }
-        let owner = command.owner();
-        let permit = self
-            .engine
-            .authorize_write(self.authz, &owner, Relation::Editor)
-            .await?;
-        self.engine
-            .validate_write_permit(permit.owner_write_permit())?;
-        for table in C::TABLES {
-            if !self.engine.registry().is_declared_state_surface(table) {
-                return Err(ProtocolError::invalid_argument(
-                    "host_state",
-                    format!(
-                        "table {table} is not a declared FlavorContract.state_surfaces binding"
-                    ),
-                ));
+        let host_permit = match &self.authorization {
+            UnitAuthorization::Ordinary(authz) => {
+                let owner = command.owner();
+                let permit = self
+                    .engine
+                    .authorize_write(*authz, &owner, Relation::Editor)
+                    .await?;
+                self.engine
+                    .validate_write_permit(permit.owner_write_permit())?;
+                let descriptor = self
+                    .engine
+                    .storage()
+                    .write_session
+                    .host_state_descriptor()
+                    .ok_or_else(|| {
+                        ProtocolError::invalid_argument(
+                            "host_state",
+                            "no host-state participant is registered",
+                        )
+                    })?;
+                validate_host_state_command::<C>(self.engine, descriptor)?;
+                HostStateWritePermit::new(
+                    *permit.owner_write_permit().owner(),
+                    C::PARTICIPANT_ID,
+                    C::TABLES,
+                )
             }
-        }
+            UnitAuthorization::HostState {
+                owner: fixed_owner,
+                descriptor,
+            } => {
+                if command.owner() != *fixed_owner {
+                    return Err(ProtocolError::invalid_argument(
+                        "host_state",
+                        "host-state command owner does not match this unit's owner",
+                    ));
+                }
+                validate_host_state_command::<C>(self.engine, *descriptor)?;
+                HostStateWritePermit::new(*fixed_owner, C::PARTICIPANT_ID, C::TABLES)
+            }
+        };
         let request = HostStateRequest::from_command(command);
         self.ensure_session().await?;
         // Poison after the session is live, before dispatch, so a cancelled
@@ -426,9 +657,7 @@ impl UnitOfWork<'_> {
             let session = self.session.as_mut().ok_or_else(|| {
                 ProtocolError::internal("unit of work session missing after begin")
             })?;
-            session
-                .apply_host_state(permit.owner_write_permit(), request)
-                .await
+            session.apply_host_state(&host_permit, request).await
         };
         let reply = match dispatched {
             Ok(reply) => {
@@ -471,14 +700,14 @@ impl UnitOfWork<'_> {
     ) -> Result<FactIngestOutcome, ProtocolError> {
         let permit = self
             .engine
-            .authorize_write(self.authz, &spec.owner, Relation::Editor)
+            .authorize_write(self.authz()?, &spec.owner, Relation::Editor)
             .await?;
         let observed_at = spec
             .observed_at
             .unwrap_or_else(time::OffsetDateTime::now_utc);
         let references = self
             .engine
-            .resolve_memory_targets(self.authz, &spec.refs, &self.written_kinds)
+            .resolve_memory_targets(self.authz()?, &spec.refs, &self.written_kinds)
             .await?;
         let mut draft = FactWriteCommand::from_payload(spec.source_id, spec.payload, observed_at)
             .with_additional_references(references)
@@ -493,7 +722,7 @@ impl UnitOfWork<'_> {
         let authorized = self
             .engine
             .authorize_fact_ingest_permitted_visible(
-                self.authz,
+                self.authz()?,
                 permit,
                 draft,
                 &sidecars,
@@ -578,7 +807,7 @@ impl UnitOfWork<'_> {
     {
         let permit = self
             .engine
-            .authorize_write(self.authz, &request.owner, Relation::Editor)
+            .authorize_write(self.authz()?, &request.owner, Relation::Editor)
             .await?;
         let request = self.engine.normalize_goal_request(request)?;
         self.create_goal_payload_authorized(request, None, &permit)
@@ -593,7 +822,7 @@ impl UnitOfWork<'_> {
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
             .engine
-            .authorize_write(self.authz, &req.owner, Relation::Editor)
+            .authorize_write(self.authz()?, &req.owner, Relation::Editor)
             .await?;
         let req = super::GoalCreatePayloadWriteRequest {
             payload: self.engine.normalize_payload_write(req.payload)?,
@@ -646,7 +875,7 @@ impl UnitOfWork<'_> {
         }
         self.engine
             .validate_goal_topology_authorized_visible(
-                self.authz,
+                self.authz()?,
                 permit.owner(),
                 &req.topology,
                 &self.written,
@@ -658,11 +887,11 @@ impl UnitOfWork<'_> {
             .is_none_or(|id| !self.written.contains(&id))
         {
             self.engine
-                .author_self_perspective_authorized(self.authz, req.author_self_perspective_id)
+                .author_self_perspective_authorized(self.authz()?, req.author_self_perspective_id)
                 .await?;
         }
         self.engine
-            .validate_wake_config_for_write(self.authz, req.wake.as_ref())
+            .validate_wake_config_for_write(self.authz()?, req.wake.as_ref())
             .await?;
         let outcome = self
             .ensure_session()
@@ -739,7 +968,7 @@ impl UnitOfWork<'_> {
     pub async fn forget(&mut self, owner: Owner, memory_id: MemoryId) -> Result<(), ProtocolError> {
         let write_permit = self
             .engine
-            .authorize_write(self.authz, &owner, Relation::Editor)
+            .authorize_write(self.authz()?, &owner, Relation::Editor)
             .await?;
         self.ensure_session()
             .await?
@@ -776,8 +1005,171 @@ impl UnitOfWork<'_> {
     }
 }
 
+impl HostStateUnitOfWork<'_> {
+    /// Execute a command for this unit's fixed owner and captured participant.
+    ///
+    /// # Errors
+    /// Returns before storage access for an owner, participant, or table
+    /// mismatch. Participant faults poison this unit and prevent commit.
+    pub async fn apply_host_state<C: HostStateCommand>(
+        &mut self,
+        command: C,
+    ) -> Result<HostStateOutcome<C::Outcome>, ProtocolError> {
+        self.inner.apply_host_state(command).await
+    }
+
+    /// Commit this host-state-only unit.
+    ///
+    /// # Errors
+    /// Returns a storage fault or refuses a unit poisoned by participant
+    /// failure/cancellation.
+    pub async fn commit(self) -> Result<(), ProtocolError> {
+        self.inner.commit().await
+    }
+}
+
 impl Drop for UnitOfWork<'_> {
     fn drop(&mut self) {
         self.session.take();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::flavor::contract::{
+        CounterRule, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape, ProjectionDecl,
+        Surface, TransferRule,
+    };
+    use crate::storage::StorageError;
+    use crate::storage_ports::{
+        HostStateCommand, HostStateParticipantDescriptor, HostStateParticipantId, StateSurfaceName,
+        StoragePorts, WriteSession, WriteSessionFactory,
+    };
+    use crate::{Engine, Owner, UserId};
+
+    const PARTICIPANT_ID: HostStateParticipantId = HostStateParticipantId::new("host_state_test");
+    const STATE_TABLE: StateSurfaceName = StateSurfaceName::new("host_state_test.state");
+    const STATE_TABLES: &[StateSurfaceName] = &[STATE_TABLE];
+    const DESCRIPTOR: HostStateParticipantDescriptor =
+        HostStateParticipantDescriptor::new(PARTICIPANT_ID, STATE_TABLES);
+    const STATE_SURFACES: &[Surface] = &[Surface {
+        table: "host_state_test.state",
+        key: KeyShape::OwnerId,
+        owner_column: Some("owner_id"),
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Rows,
+        forget: ForgetRule::Keep {
+            why: "a host-state test surface is not a memory sidecar",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "the test surface is outside owner-erase receipts",
+        },
+        completeness: None,
+    }];
+    static HOST_STATE_TEST_CONTRACT: FlavorContract = FlavorContract {
+        flavor_id: "host_state_test",
+        ordinal: 97,
+        schemas: &[],
+        state_surfaces: STATE_SURFACES,
+        scopes: &[],
+        kernel_surfaces: &[],
+        tools: &[],
+        resources: &[],
+        projection: ProjectionDecl::None {
+            why: "the host-state test flavor has no search surface",
+        },
+        bespoke_erase_legs: &[],
+        bespoke_transfer_legs: &[],
+    };
+
+    struct EmptyTablesCommand {
+        owner: Owner,
+    }
+
+    impl HostStateCommand for EmptyTablesCommand {
+        const PARTICIPANT_ID: HostStateParticipantId = PARTICIPANT_ID;
+        const TABLES: &'static [StateSurfaceName] = &[];
+        type Outcome = ();
+
+        fn owner(&self) -> Owner {
+            self.owner
+        }
+    }
+
+    struct BeginSpyFactory {
+        begin_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl WriteSessionFactory for BeginSpyFactory {
+        fn host_state_descriptor(&self) -> Option<HostStateParticipantDescriptor> {
+            Some(DESCRIPTOR)
+        }
+
+        async fn begin(&self) -> Result<Box<dyn WriteSession>, StorageError> {
+            self.begin_calls.fetch_add(1, Ordering::SeqCst);
+            Err(StorageError::Unavailable(
+                "the begin spy must not open a session".to_owned(),
+            ))
+        }
+    }
+
+    fn engine(begin_calls: Arc<AtomicUsize>) -> Engine {
+        let factory = Arc::new(BeginSpyFactory { begin_calls });
+        Engine::try_compose(
+            StoragePorts::rejecting_with_write_session(factory),
+            |registry| {
+                registry.try_add_contract(&HOST_STATE_TEST_CONTRACT)?;
+                Ok(())
+            },
+        )
+        .expect("the host-state test registry must freeze")
+    }
+
+    #[test]
+    fn foreign_engine_maintenance_authority_is_rejected_before_storage_begin() {
+        let issuer_begins = Arc::new(AtomicUsize::new(0));
+        let (issuer, system, _) = engine(issuer_begins.clone()).into_runtime_authorities();
+        let authority = issuer
+            .host_state_maintenance_authority(&system)
+            .expect("the issuer's descriptor is valid")
+            .expect("the test backend has a host-state participant");
+
+        let foreign_begins = Arc::new(AtomicUsize::new(0));
+        let foreign_engine = engine(foreign_begins.clone());
+        let err = foreign_engine
+            .host_state_unit_of_work(&authority, Owner::Personal(UserId::new(uuid::Uuid::nil())))
+            .expect_err("another engine boot cannot accept the authority");
+
+        assert!(err.to_string().contains("different engine"));
+        assert_eq!(issuer_begins.load(Ordering::SeqCst), 0);
+        assert_eq!(foreign_begins.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn empty_host_state_command_is_rejected_before_storage_begin() {
+        let begin_calls = Arc::new(AtomicUsize::new(0));
+        let (engine, system, _) = engine(begin_calls.clone()).into_runtime_authorities();
+        let authority = engine
+            .host_state_maintenance_authority(&system)
+            .expect("the participant descriptor is valid")
+            .expect("the test backend has a host-state participant");
+        let owner = Owner::Personal(UserId::new(uuid::Uuid::nil()));
+        let mut unit = engine
+            .host_state_unit_of_work(&authority, owner)
+            .expect("the capability belongs to the engine");
+
+        let err = unit
+            .apply_host_state(EmptyTablesCommand { owner })
+            .await
+            .expect_err("an empty command table declaration must be refused");
+
+        assert!(err.to_string().contains("no state surfaces"));
+        assert_eq!(begin_calls.load(Ordering::SeqCst), 0);
     }
 }
