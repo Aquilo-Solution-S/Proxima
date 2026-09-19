@@ -118,6 +118,42 @@ async fn execution_status(
     .await
 }
 
+async fn execution_provenance(
+    pool: &PgPool,
+    memory_id: proxima_core::MemoryId,
+) -> Result<
+    Option<(
+        String,
+        Uuid,
+        Option<String>,
+        Option<Uuid>,
+        bool,
+        Option<String>,
+        Option<Uuid>,
+    )>,
+    sqlx::Error,
+> {
+    sqlx::query_as::<
+        _,
+        (
+            String,
+            Uuid,
+            Option<String>,
+            Option<Uuid>,
+            bool,
+            Option<String>,
+            Option<Uuid>,
+        ),
+    >(
+        "SELECT owner_kind::text, owner_id, principal_kind::text, principal_id,
+                maintenance_origin, payload_saved_by_kind::text, payload_saved_by_id
+         FROM host_fixture.execution WHERE invocation_id = $1",
+    )
+    .bind(memory_id.into_inner())
+    .fetch_optional(pool)
+    .await
+}
+
 fn owner_fence_label(owner: Owner) -> String {
     let kind = match owner {
         Owner::Personal(_) => "personal",
@@ -983,6 +1019,20 @@ async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_
                 Some(("finalized".to_owned(), 2)),
                 "host-only mutation must commit for {owner:?} and be visible on another connection"
             );
+            let (target_kind, target_id) = owner.columns();
+            assert_eq!(
+                execution_provenance(&observer, fact.memory_id).await?,
+                Some((
+                    target_kind.as_str().to_owned(),
+                    target_id,
+                    None,
+                    None,
+                    true,
+                    None,
+                    None,
+                )),
+                "maintenance stamps no ordinary principal and preserves the target owner"
+            );
         }
 
         let calls_before_rejections = participant.callback_calls();
@@ -1129,6 +1179,102 @@ async fn frozen_descriptor_rejects_full_invalid_registration_and_cannot_widen_af
     .await;
     drop_db(&db_name).await.expect("drop fixture");
     result.expect("frozen registration descriptor");
+}
+
+#[tokio::test]
+async fn ordinary_group_editor_provenance_is_not_target_or_command_metadata() {
+    let db_name = unique_db_name("proxima_uow_hs_origin");
+    create_db(&db_name).await.expect("PG required");
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let group = company_owner(Uuid::now_v7());
+        let editor = UserId::new(Uuid::now_v7());
+        let participant = Arc::new(HostFixtureParticipant::default());
+        let built = boot_fixture(&url, group, Some(participant.clone())).await?;
+        let authz = AuthzContext::for_subject_with_role(
+            editor,
+            [(group, Role::editor())],
+            AuthPath::HostBearer,
+        )
+        .narrowed_to_owner(group)
+        .expect("group editor is narrowed to its target owner");
+        assert_eq!(authz.principal(), Owner::Personal(editor));
+        assert_ne!(authz.principal(), group);
+
+        let engine = built.engine();
+        let mut unit = engine.unit_of_work(&authz).await?;
+        let fact = unit
+            .ingest_fact(proxima::FactWrite::new(
+                group,
+                "test/hs-group-editor-origin",
+                &note("group-editor-origin"),
+            ))
+            .await?;
+        unit.apply_host_state(FixtureHostCommand::CreateWithPayloadSavedBy {
+            owner: group,
+            saved_by: group,
+            invocation_id: fact.memory_id,
+        })
+        .await?;
+        unit.commit().await?;
+
+        let (target_kind, target_id) = group.columns();
+        assert_eq!(
+            execution_provenance(built.pool_for_tests(), fact.memory_id).await?,
+            Some((
+                target_kind.as_str().to_owned(),
+                target_id,
+                Some("personal".to_owned()),
+                Some(editor.into_inner()),
+                false,
+                Some("group".to_owned()),
+                Some(group.stored_owner_id()),
+            )),
+            "the committed fixture row distinguishes target, caller stamp and fake payload"
+        );
+        assert_eq!(participant.callback_calls(), 1);
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("ordinary caller provenance");
+}
+
+#[tokio::test]
+async fn subjectless_denied_ordinary_host_write_never_dispatches() {
+    let db_name = unique_db_name("proxima_uow_hs_denied_origin");
+    create_db(&db_name).await.expect("PG required");
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let participant = Arc::new(HostFixtureParticipant::default());
+        let built = boot_fixture(&url, owner, Some(participant.clone())).await?;
+        let authz = AuthzContext::denied_for_owner(&owner);
+        assert_eq!(authz.subject(), None);
+        let engine = built.engine();
+        let mut unit = engine.unit_of_work(&authz).await?;
+        let invocation_id = proxima_core::MemoryId::new(Uuid::now_v7());
+        let error = unit
+            .apply_host_state(FixtureHostCommand::Read {
+                owner,
+                invocation_id,
+            })
+            .await
+            .expect_err("subjectless denied context has no ordinary host-write authority");
+        assert_eq!(error.code, ErrorCode::Forbidden, "{error:?}");
+        drop(unit);
+        assert_eq!(participant.callback_calls(), 0);
+        assert_eq!(
+            count_execution(built.pool_for_tests(), invocation_id).await?,
+            0
+        );
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop fixture");
+    result.expect("denied ordinary host state");
 }
 
 #[tokio::test]

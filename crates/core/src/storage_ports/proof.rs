@@ -22,6 +22,14 @@ pub struct OwnerWritePermit {
     _private: (),
 }
 
+/// Provenance stamped on a host-state request after its existing admission path.
+/// It describes the caller or maintenance path and grants no authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostStateWriteOrigin {
+    OwnerAuthorized { principal: crate::OwnerRef },
+    Maintenance,
+}
+
 /// Narrow command stamp for host-state SQL. This is deliberately distinct
 /// from [`OwnerWritePermit`]: it binds the fixed owner, participant and exact
 /// command table subset, carries no access kind, cannot authorize ordinary
@@ -30,6 +38,7 @@ pub struct HostStateWritePermit {
     owner: Owner,
     participant_id: crate::storage_ports::HostStateParticipantId,
     tables: &'static [crate::storage_ports::StateSurfaceName],
+    origin: HostStateWriteOrigin,
     _private: (),
 }
 
@@ -40,6 +49,7 @@ impl std::fmt::Debug for HostStateWritePermit {
             .field("owner", &self.owner)
             .field("participant_id", &self.participant_id)
             .field("tables", &self.tables)
+            .field("origin", &self.origin)
             .finish_non_exhaustive()
     }
 }
@@ -50,11 +60,13 @@ impl HostStateWritePermit {
         owner: Owner,
         participant_id: crate::storage_ports::HostStateParticipantId,
         tables: &'static [crate::storage_ports::StateSurfaceName],
+        origin: HostStateWriteOrigin,
     ) -> Self {
         Self {
             owner,
             participant_id,
             tables,
+            origin,
             _private: (),
         }
     }
@@ -75,6 +87,13 @@ impl HostStateWritePermit {
     #[must_use]
     pub const fn tables(&self) -> &'static [crate::storage_ports::StateSurfaceName] {
         self.tables
+    }
+
+    /// Authenticated caller provenance or host maintenance for this request.
+    /// This value describes the existing admission path; it grants no authority.
+    #[must_use]
+    pub const fn origin(&self) -> HostStateWriteOrigin {
+        self.origin
     }
 
     /// Whether this request carries exactly the participant and table scope

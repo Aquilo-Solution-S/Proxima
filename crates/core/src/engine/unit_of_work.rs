@@ -7,7 +7,7 @@ use crate::authz::{AuthzContext, SystemAuthority, SystemAuthorityBinding};
 use crate::error::ProtocolError;
 use crate::storage_ports::{
     HostStateCommand, HostStateOutcome, HostStateParticipantDescriptor, HostStateReplyKind,
-    HostStateRequest, HostStateWritePermit, SidecarSessionRead, WriteSession,
+    HostStateRequest, HostStateWriteOrigin, HostStateWritePermit, SidecarSessionRead, WriteSession,
 };
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 use crate::verbs::goal_write::{
@@ -632,6 +632,9 @@ impl UnitOfWork<'_> {
                     *permit.owner_write_permit().owner(),
                     C::PARTICIPANT_ID,
                     C::TABLES,
+                    HostStateWriteOrigin::OwnerAuthorized {
+                        principal: authz.principal(),
+                    },
                 )
             }
             UnitAuthorization::HostState {
@@ -645,7 +648,12 @@ impl UnitOfWork<'_> {
                     ));
                 }
                 validate_host_state_command::<C>(self.engine, *descriptor)?;
-                HostStateWritePermit::new(*fixed_owner, C::PARTICIPANT_ID, C::TABLES)
+                HostStateWritePermit::new(
+                    *fixed_owner,
+                    C::PARTICIPANT_ID,
+                    C::TABLES,
+                    HostStateWriteOrigin::Maintenance,
+                )
             }
         };
         let request = HostStateRequest::from_command(command);
