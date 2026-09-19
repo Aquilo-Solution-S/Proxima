@@ -527,7 +527,8 @@ impl ProximaBuilder {
         let pg_sidecars = compose_pg_sidecars(&pg, &registry, pg_sidecar_registers).await?;
         let pg = pg
             .with_sidecars(pg_sidecars.as_ref().clone())
-            .with_flavors(&registry)
+            .try_with_flavors(&registry)
+            .map_err(|error| EmbedError::Storage(error.to_string()))?
             .with_embedding_runtime_policy(embedding_runtime_policy);
 
         let pool = pg.clone_pool_for_backend();

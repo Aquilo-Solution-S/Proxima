@@ -452,6 +452,9 @@ impl FlavorRegistry {
                     EraseRule::Cascade { .. } => {
                         "a constraint removes, so no hand-written statement should touch it"
                     }
+                    EraseRule::HostState { .. } => {
+                        "is handled by the registered host lifecycle callback, not a bespoke SQL leg"
+                    }
                     EraseRule::Never { .. } => {
                         "is a declared non-erase, so no statement should touch it"
                     }

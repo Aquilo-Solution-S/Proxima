@@ -14,14 +14,27 @@ impl OwnerInversePort for PgStorage {
         group_id: GroupId,
         tables: &proxima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<OwnerEraseOutcome, StorageError> {
-        verbs::owner_erase::erase_group_owner(
-            &self.pool,
-            self.cold.as_ref(),
-            auth,
-            group_id,
-            tables,
-        )
-        .await
+        let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
+        if let Some(lifecycle) = lifecycle {
+            verbs::owner_erase::erase_group_owner_with_lifecycle(
+                &self.pool,
+                self.cold.as_ref(),
+                auth,
+                group_id,
+                tables,
+                Some(lifecycle),
+            )
+            .await
+        } else {
+            verbs::owner_erase::erase_group_owner(
+                &self.pool,
+                self.cold.as_ref(),
+                auth,
+                group_id,
+                tables,
+            )
+            .await
+        }
     }
 
     async fn erase_personal_owner(
@@ -30,14 +43,27 @@ impl OwnerInversePort for PgStorage {
         user_id: UserId,
         tables: &proxima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<OwnerEraseOutcome, StorageError> {
-        verbs::owner_erase::erase_personal_owner(
-            &self.pool,
-            self.cold.as_ref(),
-            auth,
-            user_id,
-            tables,
-        )
-        .await
+        let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
+        if let Some(lifecycle) = lifecycle {
+            verbs::owner_erase::erase_personal_owner_with_lifecycle(
+                &self.pool,
+                self.cold.as_ref(),
+                auth,
+                user_id,
+                tables,
+                Some(lifecycle),
+            )
+            .await
+        } else {
+            verbs::owner_erase::erase_personal_owner(
+                &self.pool,
+                self.cold.as_ref(),
+                auth,
+                user_id,
+                tables,
+            )
+            .await
+        }
     }
 
     async fn erase_group_source_scope(
@@ -47,15 +73,29 @@ impl OwnerInversePort for PgStorage {
         source_id: &SourceId,
         tables: &proxima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<OwnerEraseOutcome, StorageError> {
-        verbs::owner_erase::erase_group_source_scope(
-            &self.pool,
-            self.cold.as_ref(),
-            auth,
-            group_id,
-            source_id,
-            tables,
-        )
-        .await
+        let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
+        if let Some(lifecycle) = lifecycle {
+            verbs::owner_erase::erase_group_source_scope_with_lifecycle(
+                &self.pool,
+                self.cold.as_ref(),
+                auth,
+                group_id,
+                source_id,
+                tables,
+                Some(lifecycle),
+            )
+            .await
+        } else {
+            verbs::owner_erase::erase_group_source_scope(
+                &self.pool,
+                self.cold.as_ref(),
+                auth,
+                group_id,
+                source_id,
+                tables,
+            )
+            .await
+        }
     }
 
     async fn erase_personal_source_scope(
@@ -65,15 +105,29 @@ impl OwnerInversePort for PgStorage {
         source_id: &SourceId,
         tables: &proxima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<OwnerEraseOutcome, StorageError> {
-        verbs::owner_erase::erase_personal_source_scope(
-            &self.pool,
-            self.cold.as_ref(),
-            auth,
-            user_id,
-            source_id,
-            tables,
-        )
-        .await
+        let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
+        if let Some(lifecycle) = lifecycle {
+            verbs::owner_erase::erase_personal_source_scope_with_lifecycle(
+                &self.pool,
+                self.cold.as_ref(),
+                auth,
+                user_id,
+                source_id,
+                tables,
+                Some(lifecycle),
+            )
+            .await
+        } else {
+            verbs::owner_erase::erase_personal_source_scope(
+                &self.pool,
+                self.cold.as_ref(),
+                auth,
+                user_id,
+                source_id,
+                tables,
+            )
+            .await
+        }
     }
 
     async fn export_owner_bundle(
@@ -81,6 +135,7 @@ impl OwnerInversePort for PgStorage {
         auth: &ExportAuthorization,
         tables: &proxima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<OwnerExportBundle, StorageError> {
-        verbs::owner_export::export_owner_bundle(&self.pool, auth, tables).await
+        let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
+        verbs::owner_export::export_owner_bundle(&self.pool, auth, tables, lifecycle).await
     }
 }

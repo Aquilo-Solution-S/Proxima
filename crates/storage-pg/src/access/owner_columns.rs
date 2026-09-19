@@ -8,6 +8,77 @@ use proxima_core::{
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
+/// One cross-process boundary shared by every host-capable `UoW` and exclusive
+/// owner/source erasure. ASCII `proxhlcy` is a stable advisory-lock key.
+pub(crate) const HOST_STATE_LIFECYCLE_FENCE_KEY: i64 = i64::from_be_bytes(*b"proxhlcy");
+
+pub(crate) async fn lock_host_lifecycle_fence_shared_tx(
+    tx: &mut Transaction<'_, Postgres>,
+) -> Result<(), StorageError> {
+    sqlx::query("SELECT pg_advisory_xact_lock_shared($1)")
+        .bind(HOST_STATE_LIFECYCLE_FENCE_KEY)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
+pub(crate) async fn lock_host_lifecycle_fence_exclusive_tx(
+    tx: &mut Transaction<'_, Postgres>,
+) -> Result<(), StorageError> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(HOST_STATE_LIFECYCLE_FENCE_KEY)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
+pub(crate) async fn lock_host_lifecycle_fence_shared_session(
+    conn: &mut sqlx::postgres::PgConnection,
+) -> Result<(), StorageError> {
+    sqlx::query("SELECT pg_advisory_lock_shared($1)")
+        .bind(HOST_STATE_LIFECYCLE_FENCE_KEY)
+        .execute(&mut *conn)
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
+pub(crate) async fn lock_owner_fence_exclusive_session(
+    conn: &mut sqlx::postgres::PgConnection,
+    owner: &OwnerRef,
+) -> Result<(), StorageError> {
+    lock_owner_fences_session(conn, std::slice::from_ref(owner), true).await
+}
+
+async fn lock_owner_fences_session(
+    conn: &mut sqlx::postgres::PgConnection,
+    owners: &[OwnerRef],
+    exclusive: bool,
+) -> Result<(), StorageError> {
+    if owners.is_empty() {
+        return Ok(());
+    }
+    let mut keys: Vec<(OwnerRefKind, uuid::Uuid)> = owners.iter().map(owner_binds).collect();
+    keys.sort_unstable_by_key(|(kind, id)| (kind.as_str(), *id));
+    keys.dedup();
+    let kinds: Vec<&str> = keys.iter().map(|(kind, _)| kind.as_str()).collect();
+    let ids: Vec<uuid::Uuid> = keys.iter().map(|(_, id)| *id).collect();
+    let sql = if exclusive {
+        "SELECT pg_advisory_lock(hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)) FROM unnest($1::text[], $2::uuid[]) AS f(k, i)"
+    } else {
+        "SELECT pg_advisory_lock_shared(hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)) FROM unnest($1::text[], $2::uuid[]) AS f(k, i)"
+    };
+    sqlx::query(sql)
+        .bind(&kinds)
+        .bind(&ids)
+        .execute(&mut *conn)
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
 use crate::error::{internal, map_err, with_bounded_retry};
 
 #[must_use]
