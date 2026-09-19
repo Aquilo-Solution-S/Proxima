@@ -65,12 +65,16 @@ async fn lock_owner_fences_session(
     keys.dedup();
     let kinds: Vec<&str> = keys.iter().map(|(kind, _)| kind.as_str()).collect();
     let ids: Vec<uuid::Uuid> = keys.iter().map(|(_, id)| *id).collect();
-    let sql = if exclusive {
-        "SELECT pg_advisory_lock(hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)) FROM unnest($1::text[], $2::uuid[]) AS f(k, i)"
+    let query = if exclusive {
+        sqlx::query(
+            "SELECT pg_advisory_lock(hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)) FROM unnest($1::text[], $2::uuid[]) AS f(k, i)",
+        )
     } else {
-        "SELECT pg_advisory_lock_shared(hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)) FROM unnest($1::text[], $2::uuid[]) AS f(k, i)"
+        sqlx::query(
+            "SELECT pg_advisory_lock_shared(hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)) FROM unnest($1::text[], $2::uuid[]) AS f(k, i)",
+        )
     };
-    sqlx::query(sql)
+    query
         .bind(&kinds)
         .bind(&ids)
         .execute(&mut *conn)

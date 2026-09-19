@@ -518,7 +518,7 @@ pub struct OwnerExportRequest {
 /// Owner-scoped export bundle: one entry per declared exportable surface.
 ///
 /// The shape is DERIVED: `tables` has exactly the surfaces whose
-/// [`ExportRule`](crate::flavor::ExportRule) is `Rows` or `Allowlist`, and
+/// [`ExportRule`] is `Rows` or `Allowlist`, and
 /// `counts` is a projection of `tables`, so a new surface joins the bundle
 /// by declaring itself and nothing else. A typed field per table would put
 /// every new surface behind a hand edit here.
