@@ -39,6 +39,11 @@ pub const DEFAULT_CONSUMER_NAME: &str = "proxima-reference";
 pub const DEFAULT_BATCH: u32 = 64;
 pub const DEFAULT_LEASE: Duration = Duration::from_secs(30);
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// Upper bound on [`ENV_POLL_MS`]. One hour is far past any real pacing
+/// choice and far short of the saturation that makes a parked publisher look
+/// healthy, so it separates "patient" from "mistyped" without constraining a
+/// deployment that genuinely wants a slow drain.
+pub const MAX_POLL_INTERVAL: Duration = Duration::from_hours(1);
 pub const DEFAULT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the consumer waits for a connection and for one `JetStream`
 /// API round trip.
@@ -294,9 +299,10 @@ impl NatsPublisherConfig {
     ///
     /// # Errors
     ///
-    /// [`ConfigError::LeaseTooShort`] for a lease under one second and
+    /// [`ConfigError::LeaseTooShort`] for a lease under one second,
     /// [`ConfigError::ZeroTimeout`] for a zero publish timeout or poll
-    /// interval.
+    /// interval, and [`ConfigError::IntervalTooLong`] for a poll interval
+    /// past [`MAX_POLL_INTERVAL`].
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.lease < Duration::from_secs(1) {
             return Err(ConfigError::LeaseTooShort {
@@ -310,6 +316,21 @@ impl NatsPublisherConfig {
         }
         if self.poll_interval.is_zero() {
             return Err(ConfigError::ZeroTimeout { key: ENV_POLL_MS });
+        }
+        // An unbounded interval is not merely slow, it is INVISIBLE. The
+        // drain loop assigns `backoff = poll_interval` on every clean pass,
+        // and `tokio::time::sleep` saturates rather than panicking, so a
+        // fat-fingered value parks the publisher until the process restarts
+        // while `PublisherHealth::is_ready()` still answers true: task
+        // Running, connection live from the client, drain Clean from the
+        // last empty claim. Refusing the value at boot is the only point
+        // where that is still observable.
+        if self.poll_interval > MAX_POLL_INTERVAL {
+            return Err(ConfigError::IntervalTooLong {
+                key: ENV_POLL_MS,
+                millis: u64::try_from(self.poll_interval.as_millis()).unwrap_or(u64::MAX),
+                max_millis: u64::try_from(MAX_POLL_INTERVAL.as_millis()).unwrap_or(u64::MAX),
+            });
         }
         Ok(())
     }
@@ -430,6 +451,15 @@ pub enum ConfigError {
     LeaseTooShort { millis: u64 },
     #[error("{key} must be greater than zero")]
     ZeroTimeout { key: &'static str },
+    #[error(
+        "{key} is {millis}ms, past the {max_millis}ms bound; a publisher that sleeps \
+         that long is indistinguishable from a stopped one and still reports ready"
+    )]
+    IntervalTooLong {
+        key: &'static str,
+        millis: u64,
+        max_millis: u64,
+    },
     #[error("publisher id: {error}")]
     PublisherId { error: PublisherIdError },
 }
@@ -640,6 +670,48 @@ mod tests {
                 .expect("parses")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_poll_interval_past_the_bound_is_refused_at_boot() {
+        let base = NatsPublisherConfig::from_lookup(env(&[(ENV_URL, "nats://127.0.0.1:4222")]))
+            .expect("parses")
+            .expect("a url means the publisher is on");
+        base.validate().expect("the default interval validates");
+
+        // The exact bound stays legal; one millisecond past it does not.
+        let at_bound = NatsPublisherConfig {
+            poll_interval: MAX_POLL_INTERVAL,
+            ..base.clone()
+        };
+        at_bound.validate().expect("the bound itself is allowed");
+
+        // Without this, `tokio::time::sleep` saturates and the publisher
+        // parks forever while `is_ready()` still answers true.
+        let absurd = NatsPublisherConfig {
+            poll_interval: MAX_POLL_INTERVAL + Duration::from_millis(1),
+            ..base.clone()
+        };
+        assert!(
+            matches!(
+                absurd.validate(),
+                Err(ConfigError::IntervalTooLong {
+                    key: ENV_POLL_MS,
+                    ..
+                })
+            ),
+            "an out-of-range poll interval must not reach the drain loop"
+        );
+
+        // A u64-millisecond maximum is the shape that actually saturates.
+        let saturating = NatsPublisherConfig {
+            poll_interval: Duration::from_millis(u64::MAX),
+            ..base
+        };
+        assert!(matches!(
+            saturating.validate(),
+            Err(ConfigError::IntervalTooLong { .. })
+        ));
     }
 
     #[test]

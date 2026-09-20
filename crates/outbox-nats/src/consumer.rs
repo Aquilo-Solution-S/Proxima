@@ -520,7 +520,7 @@ impl ReferenceConsumer {
                 .process_once_observed(batch, Duration::from_secs(1), guard)
                 .await
             {
-                Ok(report) if report.fetched > 0 => continue,
+                Ok(report) if pass_drained_work(&report) => continue,
                 Ok(_) | Err(_) => {}
             }
             tokio::select! {
@@ -561,6 +561,20 @@ impl ReferenceConsumer {
 ///
 /// It keeps an id — derived from the subject and the bytes — so the intake
 /// still has a stable dedup key for a message it cannot understand.
+/// Whether one pass drained work that will NOT come back, and so has earned
+/// an immediate next fetch instead of the idle sleep.
+///
+/// `fetched` alone is not that test. It counts every delivery, including a
+/// redelivery, and a failing intake NAKs with the sink's own `retry_after` —
+/// which is `None` for a sink that names no backoff. So gating the `continue`
+/// on `fetched` spins fetch/NAK/refetch with no sleep at all, at full speed
+/// against a sink that is already failing, and emits a warning per message
+/// per turn. A deferred or hook-withheld message is still owed to the broker;
+/// only the pass that permanently retired what it pulled skips the pause.
+const fn pass_drained_work(report: &ConsumeReport) -> bool {
+    report.fetched > 0 && report.deferred == 0 && report.unacked == 0
+}
+
 fn malformed_envelope(subject: &str, raw: &Bytes, error: &serde_json::Error) -> CloudEventEnvelope {
     let mut hasher = blake3::Hasher::new();
     hasher.update(
@@ -812,6 +826,63 @@ mod tests {
         let first = malformed_envelope("a", &first_raw, &first_error);
         let second = malformed_envelope("ab", &second_raw, &second_error);
         assert_ne!(first.id, second.id);
+    }
+
+    #[test]
+    fn a_deferred_pass_does_not_earn_an_immediate_refetch() {
+        // The regression this guards: a sink that fails with no `retry_after`
+        // is NAKed for immediate redelivery, so the very same messages come
+        // straight back. Counting them as work drained the sleep out of the
+        // loop and span the consumer against an already-failing Postgres.
+        let deferred = ConsumeReport {
+            fetched: 64,
+            deferred: 64,
+            ..ConsumeReport::default()
+        };
+        assert!(
+            !pass_drained_work(&deferred),
+            "a fully deferred pass retired nothing: {deferred:?}"
+        );
+
+        // One straggler is enough: the pass still owes the broker a message,
+        // and the batch it would refetch is dominated by that redelivery.
+        let partial = ConsumeReport {
+            fetched: 64,
+            accepted: 63,
+            deferred: 1,
+            ..ConsumeReport::default()
+        };
+        assert!(!pass_drained_work(&partial), "{partial:?}");
+
+        // A hook that withholds an ACK has the same shape: not yet retired.
+        let withheld = ConsumeReport {
+            fetched: 1,
+            accepted: 1,
+            unacked: 1,
+            ..ConsumeReport::default()
+        };
+        assert!(!pass_drained_work(&withheld), "{withheld:?}");
+
+        // Progress still skips the pause, so a healthy backlog drains at
+        // full speed rather than 64 messages per 200ms.
+        for drained in [
+            ConsumeReport {
+                fetched: 64,
+                accepted: 64,
+                ..ConsumeReport::default()
+            },
+            ConsumeReport {
+                fetched: 2,
+                rejected: 1,
+                malformed: 1,
+                ..ConsumeReport::default()
+            },
+        ] {
+            assert!(pass_drained_work(&drained), "{drained:?}");
+        }
+
+        // An idle pass sleeps; there is nothing to come back for.
+        assert!(!pass_drained_work(&ConsumeReport::default()));
     }
 
     #[test]

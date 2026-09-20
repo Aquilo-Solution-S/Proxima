@@ -301,6 +301,22 @@ where
                     guard.attach(publisher.context.client());
                     break publisher;
                 }
+                // A rejected CONFIG is deterministic: the next attempt
+                // builds the same config and fails the same way. Retrying
+                // it every 30s for the process lifetime buries the one
+                // message that would fix it, so stop and say which key is
+                // wrong. `ConfigError` names keys and non-secret values
+                // only — it never echoes the URL, user or password.
+                Err(PublisherError::Config(error)) => {
+                    guard.set_connection(PublisherConnectionState::Disconnected);
+                    guard.set_drain(PublisherDrainState::Failed);
+                    tracing::error!(
+                        failure_category = ?PublisherFailureCategory::Config,
+                        %error,
+                        "publication publisher configuration is invalid; not retrying"
+                    );
+                    return;
+                }
                 Err(error) => {
                     guard.set_connection(PublisherConnectionState::Disconnected);
                     log_connect_failure(&error, backoff);
@@ -308,7 +324,7 @@ where
                         () = cancel.cancelled() => return,
                         () = tokio::time::sleep(backoff) => {}
                     }
-                    backoff = (backoff * 2).min(Duration::from_secs(30));
+                    backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
                 }
             }
         };
@@ -692,8 +708,15 @@ impl JetStreamPublisher {
             Ok(ReleaseOutcome::Released) => report.released += 1,
             Ok(ReleaseOutcome::AlreadyPublished) => report.published += 1,
             Ok(ReleaseOutcome::StaleClaim) => report.stale += 1,
+            // Deliberately NOT counted in `report.failed`, for two reasons.
+            // The contract above says a failed release is not an error, and
+            // `failed` now drives `PublisherDrainState`, so counting it here
+            // would report an unhealthy publisher for a hiccup the lease
+            // expiry already handles. It would also DOUBLE-count: the caller
+            // that releases after a publish failure has incremented `failed`
+            // for that record already, so one record could reach `failed: 2`.
+            // The warning is the whole signal.
             Err(_) => {
-                report.failed += 1;
                 tracing::warn!(
                     failure_category = ?PublisherFailureCategory::Storage,
                     "releasing a claim failed; the lease expiry still returns it"
