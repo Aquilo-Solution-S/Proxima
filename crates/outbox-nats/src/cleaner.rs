@@ -34,7 +34,8 @@ pub const COPY_CLEANER_SUBJECT_PREFIX: &str = "proxima.fact";
 /// Reply namespace reserved for the cleaner credential.
 pub const COPY_CLEANER_INBOX_PREFIX: &str = "PROXIMA_PURGE_INBOX";
 
-const DEFAULT_ITEMS_PER_SLICE: u32 = 128;
+const DEFAULT_ITEMS_PER_SLICE: NonZeroU32 =
+    NonZeroU32::new(128).expect("const-evaluated: 128 is not zero");
 const DEFAULT_SLICE_BUDGET: Duration = Duration::from_secs(2);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_SCAN_INTERVAL: Duration = Duration::from_secs(30);
@@ -60,18 +61,17 @@ pub struct JetStreamCopyCleanerConfig {
 impl JetStreamCopyCleanerConfig {
     /// Configure a cleaner for the canonical Proxima stream.
     ///
-    /// # Panics
-    /// The built-in inbox prefix is a fixed valid token; this can panic only
-    /// if that source constant is changed to an invalid value.
+    /// Both built-in constants are proved at build time — the prefix by
+    /// [`const_inbox_prefix!`](crate::const_inbox_prefix), the slice limit by
+    /// `NonZeroU32` being the constant's own type — so there is no startup
+    /// unwrap to fail.
     #[must_use]
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
             auth: NatsAuth::None,
-            inbox_prefix: InboxPrefix::new(COPY_CLEANER_INBOX_PREFIX)
-                .expect("the built-in cleaner inbox prefix is valid"),
-            items_per_slice: NonZeroU32::new(DEFAULT_ITEMS_PER_SLICE)
-                .expect("the cleaner item limit is positive"),
+            inbox_prefix: crate::const_inbox_prefix!(COPY_CLEANER_INBOX_PREFIX),
+            items_per_slice: DEFAULT_ITEMS_PER_SLICE,
             slice_budget: DEFAULT_SLICE_BUDGET,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             scan_interval: DEFAULT_SCAN_INTERVAL,

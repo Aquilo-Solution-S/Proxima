@@ -12,7 +12,7 @@ use crate::verbs::query::{
     FactCitationReadback, MAX_RELEVANCE_SEARCH_DEPTH, MemorySearchRequest, MemorySearchResult,
     SearchCursor, SearchMode,
 };
-use crate::verbs::schema::{MemorySearchProjection, PayloadKind};
+use crate::verbs::schema::{MemorySearchProjection, payload_entity_kind};
 use crate::{EntityKind, MemoryId, OwnerRef, SchemaId, SchemaVersion};
 
 use super::Engine;
@@ -437,26 +437,24 @@ impl Engine {
         facts_citing_object_authorized(&self.storage.read_verb, &read_owners, req, &schemas).await
     }
 
+    /// The registry's memory-bearing schemas, as the read verbs want them.
+    ///
+    /// `payload_entity_kind` is both the filter and the projection: a kind
+    /// with no `EntityKind` is not a memory, so the `None` it returns is the
+    /// same answer a separate `filter` would have given. Selecting and
+    /// converting in one step is what keeps an "impossible" arm off the
+    /// `match` — there is no second place for the two lists to disagree.
     pub(in crate::engine) fn memory_schema_specs(&self) -> Vec<MemorySchemaSpec> {
         self.registry
             .list()
             .into_iter()
-            .filter(|schema| {
-                matches!(
-                    schema.kind,
-                    PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
-                )
-            })
-            .map(|schema| MemorySchemaSpec {
-                kind: match schema.kind {
-                    PayloadKind::Fact => EntityKind::Fact,
-                    PayloadKind::Abstraction => EntityKind::Abstraction,
-                    PayloadKind::Perspective => EntityKind::Perspective,
-                    _ => unreachable!("filtered to memory payload kinds"),
-                },
-                schema_id: SchemaId::new(schema.schema_id.as_str().to_string()),
-                schema_version: SchemaVersion::new(schema.schema_version.into_inner()),
-                sidecar_table: schema.sidecar_table,
+            .filter_map(|schema| {
+                Some(MemorySchemaSpec {
+                    kind: payload_entity_kind(schema.kind)?,
+                    schema_id: SchemaId::new(schema.schema_id.as_str().to_string()),
+                    schema_version: SchemaVersion::new(schema.schema_version.into_inner()),
+                    sidecar_table: schema.sidecar_table,
+                })
             })
             .collect()
     }

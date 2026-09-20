@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::EntityKind;
 use crate::edge::EdgeEndpoint;
-use crate::engine::MemoryPermit;
+use crate::engine::WritePermit;
 use crate::storage_ports::OwnerWritePermit;
 use crate::{
     FactPayload, FactReceiptId, MemoryId, Owner, OwnerRefKind, SchemaId, SchemaVersion,
@@ -197,7 +197,7 @@ pub struct FactWriteCommand {
 /// values one getter at a time instead.
 #[derive(Debug)]
 pub(crate) struct AuthorizedFactCore {
-    permit: MemoryPermit,
+    permit: WritePermit,
     draft: FactWriteCommand,
     fact_sidecar_table: Option<String>,
     fact_natural_key_columns: Vec<String>,
@@ -213,7 +213,7 @@ pub(crate) struct AuthorizedFactCore {
 
 impl AuthorizedFactCore {
     pub(crate) fn new(
-        permit: MemoryPermit,
+        permit: WritePermit,
         draft: FactWriteCommand,
         fact_sidecar_table: Option<String>,
         fact_natural_key_columns: Vec<String>,
@@ -266,7 +266,7 @@ impl AuthorizedFactCore {
         &self.links
     }
 
-    pub(crate) const fn permit(&self) -> &MemoryPermit {
+    pub(crate) const fn permit(&self) -> &WritePermit {
         &self.permit
     }
 
@@ -394,10 +394,7 @@ impl AuthorizedFactWrite {
         links: AuthorizedNodeLinks,
     ) -> Self {
         Self::new(AuthorizedFactCore::new(
-            crate::engine::MemoryPermit::owner_scoped_with_write_for_tests(
-                owner_write,
-                crate::access::Relation::Editor,
-            ),
+            WritePermit::for_tests(owner_write, crate::access::Relation::Editor),
             draft,
             fact_sidecar_table,
             fact_natural_key_columns,
@@ -437,20 +434,13 @@ impl AuthorizedFactWrite {
     }
 
     #[must_use]
-    pub const fn permit(&self) -> &MemoryPermit {
+    pub const fn permit(&self) -> &WritePermit {
         self.core.permit()
     }
 
-    /// # Panics
-    ///
-    /// Panics only if this authorized wrapper was not constructed through the
-    /// engine fact-ingest authorization path.
     #[must_use]
     pub fn owner_write_permit(&self) -> &OwnerWritePermit {
-        self.core
-            .permit()
-            .owner_write_permit()
-            .expect("AuthorizedFactWrite is constructed from a write permit")
+        self.core.permit().owner_write_permit()
     }
 
     #[must_use]
@@ -582,7 +572,7 @@ impl AuthorizedInlineCitationMapping {
 /// mapping target validation.
 #[derive(Debug)]
 pub struct AuthorizedCitationAttachment {
-    permit: MemoryPermit,
+    permit: WritePermit,
     memory_id: MemoryId,
     memory_kind: crate::EntityKind,
     owner: Owner,
@@ -592,7 +582,7 @@ pub struct AuthorizedCitationAttachment {
 
 impl AuthorizedCitationAttachment {
     pub(crate) fn new(
-        permit: MemoryPermit,
+        permit: WritePermit,
         memory_id: MemoryId,
         memory_kind: crate::EntityKind,
         owner: Owner,
@@ -618,19 +608,13 @@ impl AuthorizedCitationAttachment {
     }
 
     #[must_use]
-    pub fn permit(&self) -> &MemoryPermit {
+    pub fn permit(&self) -> &WritePermit {
         &self.permit
     }
 
-    /// # Panics
-    ///
-    /// Panics only if this authorized wrapper was not constructed through the
-    /// engine citation-attachment authorization path.
     #[must_use]
     pub fn owner_write_permit(&self) -> &OwnerWritePermit {
-        self.permit
-            .owner_write_permit()
-            .expect("AuthorizedCitationAttachment is constructed from a write permit")
+        self.permit.owner_write_permit()
     }
 
     #[must_use]
@@ -684,20 +668,13 @@ impl AuthorizedFactWithCitation {
     }
 
     #[must_use]
-    pub const fn permit(&self) -> &MemoryPermit {
+    pub const fn permit(&self) -> &WritePermit {
         self.core.permit()
     }
 
-    /// # Panics
-    ///
-    /// Panics only if this authorized wrapper was not constructed through the
-    /// engine fact-with-citation authorization path.
     #[must_use]
     pub fn owner_write_permit(&self) -> &OwnerWritePermit {
-        self.core
-            .permit()
-            .owner_write_permit()
-            .expect("AuthorizedFactWithCitation is constructed from a write permit")
+        self.core.permit().owner_write_permit()
     }
 
     #[must_use]
@@ -790,20 +767,13 @@ impl AuthorizedFactWithCitationRef {
     }
 
     #[must_use]
-    pub const fn permit(&self) -> &MemoryPermit {
+    pub const fn permit(&self) -> &WritePermit {
         self.core.permit()
     }
 
-    /// # Panics
-    ///
-    /// Panics only if this authorized wrapper was not constructed through the
-    /// engine by-ref fact-with-citation authorization path.
     #[must_use]
     pub fn owner_write_permit(&self) -> &OwnerWritePermit {
-        self.core
-            .permit()
-            .owner_write_permit()
-            .expect("AuthorizedFactWithCitationRef is constructed from a write permit")
+        self.core.permit().owner_write_permit()
     }
 
     #[must_use]

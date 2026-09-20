@@ -256,7 +256,7 @@ impl Engine {
             self.resolve_publication(authority, fact_info, *permit.owner(), sidecars)?;
         Ok(AuthorizedFactWrite::new(
             AuthorizedFactCore::new(
-                permit.into(),
+                permit,
                 draft,
                 fact_sidecar_table,
                 fact_natural_key_columns,
@@ -313,7 +313,7 @@ impl Engine {
             self.resolve_publication(authority, fact_info, *permit.owner(), sidecars)?;
         Ok(AuthorizedFactWithCitation::new(
             AuthorizedFactCore::new(
-                permit.into(),
+                permit,
                 draft,
                 fact_sidecar_table,
                 fact_natural_key_columns,
@@ -370,7 +370,7 @@ impl Engine {
             self.resolve_publication(authority, fact_info, *permit.owner(), sidecars)?;
         Ok(AuthorizedFactWithCitationRef::new(
             AuthorizedFactCore::new(
-                permit.into(),
+                permit,
                 draft,
                 fact_sidecar_table,
                 fact_natural_key_columns,
@@ -771,7 +771,7 @@ impl Engine {
         }
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
         Ok(AuthorizedCitationAttachment::new(
-            permit.into(),
+            permit,
             memory_id,
             memory_kind,
             owner,

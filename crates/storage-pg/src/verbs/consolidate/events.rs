@@ -26,14 +26,31 @@ const COMMIT_GRACE_ENV: &str = "PROXIMA_CHANGE_EVENT_COMMIT_GRACE_MS";
 /// Default off: consumers rely on immediate write-then-read visibility.
 /// Enabling it trades up to `grace` of wake latency for skip-safety, and is
 /// correct only while commit latency stays below `grace`.
-fn configured_commit_grace() -> Duration {
-    static GRACE: OnceLock<Duration> = OnceLock::new();
-    *GRACE.get_or_init(|| {
-        std::env::var(COMMIT_GRACE_ENV)
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .map_or(Duration::ZERO, Duration::from_millis)
-    })
+///
+/// # Errors
+///
+/// [`StorageError::Unavailable`] when the variable is set to something that
+/// is not a whole number of milliseconds. Deliberately not read as "unset":
+/// unset and `50ms` both used to resolve to `Duration::ZERO`, so a typo
+/// silently disabled the very skip-safety it was written to turn on — and
+/// because off IS the default, nothing downstream ever looked wrong.
+fn configured_commit_grace() -> Result<Duration, StorageError> {
+    static GRACE: OnceLock<Result<Duration, String>> = OnceLock::new();
+    GRACE
+        .get_or_init(|| {
+            // `env_value` is the workspace's one rule for "set to
+            // something": trimmed, and blank reads as unset.
+            let Some(raw) = proxima_core::env_value(&proxima_core::process_env, COMMIT_GRACE_ENV)
+            else {
+                return Ok(Duration::ZERO);
+            };
+            raw.parse::<u64>().map(Duration::from_millis).map_err(|_| {
+                format!("{COMMIT_GRACE_ENV}={raw} is not a whole number of milliseconds")
+            })
+        })
+        .as_ref()
+        .copied()
+        .map_err(|message| StorageError::Unavailable(message.clone()))
 }
 
 /// `UUIDv7` low-water horizon for a wall-clock `grace`: the smallest v7 uuid
@@ -84,7 +101,7 @@ pub async fn list_change_events_after(
         .copied()
         .map(OwnerRef::stored_owner_id)
         .collect();
-    let horizon = commit_horizon_seq(now_unix_ms(), configured_commit_grace());
+    let horizon = commit_horizon_seq(now_unix_ms(), configured_commit_grace()?);
     let horizon_clause = if horizon.is_some() {
         "AND seq < $4"
     } else {

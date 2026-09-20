@@ -1499,15 +1499,28 @@ async fn transfer_cited_blobs(
 const BLOB_SURFACE: &str = "proxima_core.blob";
 const CONTENT_SURFACE: &str = "proxima_core.content";
 
+/// The dedupe arm's payload, carried as itself.
+///
+/// [`TransferLeg`] spans every arm a surface can resolve to; the statements
+/// below serve exactly one of them. Narrowing once, at the resolve, is what
+/// lets everything downstream take the two fields rather than a leg it would
+/// have to re-test — the refusal happens where the answer is produced, not
+/// at each place it is read.
+#[derive(Debug, Clone, Copy)]
+struct DedupeLeg {
+    dedupe_key: &'static [&'static str],
+    remaps: &'static [&'static str],
+}
+
 /// The registry-resolved dedupe leg for one surface, or a typed refusal.
 ///
 /// `freeze` has already proved this resolves — a `FollowOrDedupe` surface
 /// that is not in the flavor's bespoke list is `UnmovableSurface` at boot —
 /// so the error arm is reachable only from a hand-assembled registry, and
 /// refusing is the honest answer there.
-fn dedupe_leg(surfaces: &OwnerSurfaces, table: &str) -> Result<TransferLeg, StorageError> {
+fn dedupe_leg(surfaces: &OwnerSurfaces, table: &str) -> Result<DedupeLeg, StorageError> {
     match surfaces.transfer_leg(table) {
-        leg @ TransferLeg::Deduped { .. } => Ok(leg),
+        TransferLeg::Deduped { dedupe_key, remaps } => Ok(DedupeLeg { dedupe_key, remaps }),
         other => Err(StorageError::Internal(format!(
             "{table} resolved to {other:?}; this statement serves the dedupe arm"
         ))),
@@ -1577,17 +1590,13 @@ fn remap_sql(entry: &str) -> Result<String, StorageError> {
 /// One cited blob, one of the three cases.
 async fn transfer_one_cited_blob(
     tx: &mut Transaction<'_, Postgres>,
-    leg: TransferLeg,
+    leg: DedupeLeg,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     to_id: uuid::Uuid,
     blob_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    let TransferLeg::Deduped { dedupe_key, remaps } = leg else {
-        return Err(StorageError::Internal(
-            "the cited-blob statement serves the dedupe arm".into(),
-        ));
-    };
+    let DedupeLeg { dedupe_key, remaps } = leg;
     let Some((schema_id, content_hash)) = sqlx::query_as::<_, (String, Vec<u8>)>(
         "SELECT schema_id, content_hash
            FROM proxima_core.blob
@@ -1952,9 +1961,7 @@ async fn transfer_content_for_handle(
     from_id: uuid::Uuid,
     to_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    let TransferLeg::Deduped { remaps, .. } = dedupe_leg(surfaces, CONTENT_SURFACE)? else {
-        unreachable!("dedupe_leg returns only the Deduped arm");
-    };
+    let DedupeLeg { remaps, .. } = dedupe_leg(surfaces, CONTENT_SURFACE)?;
     let rows: Vec<(uuid::Uuid, String, Vec<u8>)> = sqlx::query_as(
         "SELECT DISTINCT c.content_id, c.schema_id, c.content_hash
            FROM proxima_core.content c

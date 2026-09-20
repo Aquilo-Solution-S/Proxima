@@ -6,8 +6,8 @@
 use crate::authz::{AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, OwnerResolver};
 use crate::error::ProtocolError;
 use crate::flavor::contract::{
-    Band, BandComparability, FlavorContract, LanguagePolicy, RankSource, SearchProjectionDecl,
-    SubstringArm,
+    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability,
+    FlavorContract, LanguagePolicy, RankSource, SearchProjectionDecl, SubstringArm,
 };
 use crate::mcp::RequestBehavior;
 use crate::{
@@ -160,6 +160,52 @@ pub struct MemorySearchProjectionField {
     pub weight: f32,
 }
 
+/// The three score windows the core renderer resolves, resolved once.
+///
+/// `bands` is an unordered `&[Band]` keyed by name, so a renderer that wants
+/// the exact arm has to search it. Freeze already proves a
+/// `RankSource::Projection` schema declares all three
+/// ([`FlavorRegistryError::ProjectionBandName`]), so the search can happen
+/// there, once, instead of per statement on the query path — and the proof
+/// travels as a value the renderer destructures rather than as an error arm
+/// it can never take.
+///
+/// [`FlavorRegistryError::ProjectionBandName`]: crate::flavor::FlavorRegistryError::ProjectionBandName
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderBands {
+    pub exact: Band,
+    pub rescue: Band,
+    pub substring: Band,
+}
+
+impl RenderBands {
+    /// The three arms resolved out of a declared band set.
+    ///
+    /// The one place the core renderer's arm names are listed. `Err` carries
+    /// the first missing name, which is exactly what
+    /// [`FlavorRegistryError::ProjectionBandName`] reports.
+    ///
+    /// # Errors
+    ///
+    /// The name of the first arm `bands` does not declare.
+    ///
+    /// [`FlavorRegistryError::ProjectionBandName`]: crate::flavor::FlavorRegistryError::ProjectionBandName
+    pub fn resolve(bands: &[Band]) -> Result<Self, &'static str> {
+        let named = |name: &'static str| {
+            bands
+                .iter()
+                .copied()
+                .find(|band| band.name == name)
+                .ok_or(name)
+        };
+        Ok(Self {
+            exact: named(BAND_NAME_EXACT)?,
+            rescue: named(BAND_NAME_RESCUE)?,
+            substring: named(BAND_NAME_SUBSTRING)?,
+        })
+    }
+}
+
 /// One search surface, as the SQL builders need it — the runtime reading of
 /// a `SchemaContract` whose `search` is `Projected`.
 ///
@@ -195,11 +241,14 @@ pub struct MemorySearchProjection {
     /// weight level. `None` — the uniform case — passes no array, which is
     /// what keeps the score identical to the unweighted vector's.
     pub rank_weights: Option<[f32; 4]>,
-    /// The score windows the arms over this schema render, resolved by
-    /// [`Band::name`]. Read at query-build time; freeze holds a
-    /// projection-ranked flavor to the three names the core renderer
-    /// resolves.
-    pub bands: &'static [Band],
+    /// The score windows the arms over this schema render.
+    ///
+    /// Resolved at freeze from the declared `&[Band]`, and carried INSTEAD
+    /// of that slice: two fields for one fact can disagree, and the renderer
+    /// only ever wanted these three. `Some` exactly when
+    /// `rank_source.is_projection()`, the condition freeze checks the three
+    /// names under.
+    pub render_bands: Option<RenderBands>,
     /// Whether this schema opts into a substring arm, and in which shape.
     /// [`SubstringArm::Off`] means the arm contributes no statement and no
     /// rows — which is what makes deleting the blanket `LIKE` retry a
@@ -446,7 +495,17 @@ fn contract_search_projections(
                 tag_column: tag_column.map(str::to_owned),
                 language: *language,
                 rank_weights: schema.search.rank_weight_array(),
-                bands,
+                render_bands: if spec.rank_source.is_projection() {
+                    Some(RenderBands::resolve(bands).map_err(|missing| {
+                        crate::flavor::FlavorRegistryError::ProjectionBandName {
+                            flavor_id: contract.flavor_id,
+                            schema_id: schema.schema_id(),
+                            missing,
+                        }
+                    })?)
+                } else {
+                    None
+                },
                 substring: *substring,
                 overfetch_k: spec.overfetch_k,
                 band_comparability: spec.band_comparability,
