@@ -31,22 +31,34 @@
 //! [`PublicationOutboxPort`]: proxima_core::storage_ports::publication::PublicationOutboxPort
 //! [`ClaimedPublication::envelope`]: proxima_core::storage_ports::publication::ClaimedPublication::envelope
 
+pub mod cleaner;
 pub mod config;
 pub mod consumer;
 pub mod publisher;
 
 use std::time::Duration;
 
+pub use cleaner::{
+    COPY_CLEANER_INBOX_PREFIX, COPY_CLEANER_STREAM, COPY_CLEANER_SUBJECT_PREFIX,
+    CleanerConfigError, CopyCleanerConnectError, CopyCleanerConnectionState, CopyCleanerFailure,
+    CopyCleanerHealth, CopyCleanerHealthReader, CopyCleanerScanState, CopyCleanerSliceReport,
+    CopyCleanerTaskState, JetStreamCopyCleaner, JetStreamCopyCleanerConfig,
+    spawn_supervised_copy_cleaner,
+};
 pub use config::{
-    ConfigError, NatsAuth, NatsConsumerConfig, NatsPublisherConfig, subject_for, type_token,
+    ConfigError, InboxPrefix, NatsAuth, NatsConsumerConfig, NatsPublisherConfig, subject_for,
+    type_token,
 };
 pub use consumer::{
-    AckAction, AckAlwaysHook, AckHook, CloudEventEnvelope, ConsumeReport, ConsumerError,
+    AckAction, AckAlwaysHook, AckHook, CloudEventEnvelope, ConsumeReport, ConsumerConnectionState,
+    ConsumerError, ConsumerHealth, ConsumerHealthReader, ConsumerPassState, ConsumerTaskState,
     DurableIntake, Intake, IntakeError, ReceivedEvent, ReferenceConsumer,
 };
 pub use publisher::{
     CONTENT_TYPE_CLOUDEVENTS, ContinueHook, DrainReport, DrainSummary, HEADER_CONTENT_TYPE,
-    HEADER_MSG_ID, HEADER_SCHEMA, HookAction, JetStreamPublisher, PublishHook, PublisherError,
+    HEADER_MSG_ID, HEADER_SCHEMA, HookAction, JetStreamPublisher, PublishHook,
+    PublisherConnectionState, PublisherDrainState, PublisherError, PublisherHealth,
+    PublisherHealthReader, PublisherTaskState, SupervisedPublisher, spawn_supervised,
 };
 
 /// Open one client connection under the configured credentials.
@@ -58,6 +70,7 @@ pub use publisher::{
 async fn connect_client(
     url: &str,
     auth: &NatsAuth,
+    inbox_prefix: Option<&InboxPrefix>,
     timeout: Duration,
 ) -> Result<async_nats::Client, async_nats::ConnectError> {
     let servers: Vec<String> = url
@@ -82,6 +95,10 @@ async fn connect_client(
             options.user_and_password(user.clone(), password.clone())
         }
         NatsAuth::Token(token) => options.token(token.clone()),
+    };
+    let options = match inbox_prefix {
+        Some(prefix) => options.custom_inbox_prefix(prefix.as_str()),
+        None => options,
     };
     options.connect(servers).await
 }

@@ -8,7 +8,8 @@
 //! arrived — and its answer is the same as every other failure's:
 //! republish the same bytes under the same id.
 
-use std::sync::Arc;
+use std::future::Future;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_nats::jetstream;
@@ -63,6 +64,258 @@ pub struct DrainSummary {
     pub released: u64,
     pub failed: u64,
     pub errors: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublisherTaskState {
+    Starting,
+    Running,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublisherConnectionState {
+    NotObserved,
+    Pending,
+    Connected,
+    Disconnected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublisherDrainState {
+    NotObserved,
+    Clean,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublisherHealth {
+    pub task: PublisherTaskState,
+    pub connection: PublisherConnectionState,
+    pub drain: PublisherDrainState,
+}
+
+impl PublisherHealth {
+    #[must_use]
+    pub const fn is_ready(self) -> bool {
+        matches!(self.task, PublisherTaskState::Running)
+            && matches!(self.connection, PublisherConnectionState::Connected)
+            && matches!(self.drain, PublisherDrainState::Clean)
+    }
+}
+
+#[derive(Clone)]
+pub struct PublisherHealthReader {
+    inner: Arc<Mutex<PublisherHealthInner>>,
+}
+
+impl std::fmt::Debug for PublisherHealthReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("PublisherHealthReader")
+            .field(&self.snapshot())
+            .finish()
+    }
+}
+
+struct PublisherHealthInner {
+    task: PublisherTaskState,
+    connection: PublisherConnectionState,
+    drain: PublisherDrainState,
+    client: Option<async_nats::Client>,
+}
+
+impl Default for PublisherHealthInner {
+    fn default() -> Self {
+        Self {
+            task: PublisherTaskState::Starting,
+            connection: PublisherConnectionState::NotObserved,
+            drain: PublisherDrainState::NotObserved,
+            client: None,
+        }
+    }
+}
+
+impl PublisherHealthReader {
+    #[must_use]
+    pub fn snapshot(&self) -> PublisherHealth {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let connection = inner.client.as_ref().map_or(inner.connection, |client| {
+            match client.connection_state() {
+                async_nats::connection::State::Pending => PublisherConnectionState::Pending,
+                async_nats::connection::State::Connected => PublisherConnectionState::Connected,
+                async_nats::connection::State::Disconnected => {
+                    PublisherConnectionState::Disconnected
+                }
+            }
+        });
+        PublisherHealth {
+            task: inner.task,
+            connection,
+            drain: inner.drain,
+        }
+    }
+}
+
+pub struct SupervisedPublisher {
+    health: PublisherHealthReader,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl std::fmt::Debug for SupervisedPublisher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SupervisedPublisher")
+            .field("health", &self.health)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SupervisedPublisher {
+    #[must_use]
+    pub fn health(&self) -> &PublisherHealthReader {
+        &self.health
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (PublisherHealthReader, tokio::task::JoinHandle<()>) {
+        (self.health, self.task)
+    }
+}
+
+struct PublisherTaskGuard {
+    inner: Arc<Mutex<PublisherHealthInner>>,
+}
+
+impl PublisherTaskGuard {
+    fn update(&self, update: impl FnOnce(&mut PublisherHealthInner)) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        update(&mut inner);
+    }
+
+    fn set_task(&self, state: PublisherTaskState) {
+        self.update(|inner| inner.task = state);
+    }
+
+    fn set_connection(&self, state: PublisherConnectionState) {
+        self.update(|inner| {
+            inner.connection = state;
+            inner.client = None;
+        });
+    }
+
+    fn attach(&self, client: async_nats::Client) {
+        self.update(|inner| {
+            inner.connection = PublisherConnectionState::Connected;
+            inner.client = Some(client);
+        });
+    }
+
+    fn set_drain(&self, state: PublisherDrainState) {
+        self.update(|inner| inner.drain = state);
+    }
+}
+
+impl Drop for PublisherTaskGuard {
+    fn drop(&mut self) {
+        self.update(|inner| {
+            inner.task = PublisherTaskState::Stopped;
+            inner.connection = PublisherConnectionState::NotObserved;
+            inner.client = None;
+        });
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublisherFailureCategory {
+    Config,
+    Connect,
+    Broker,
+    BrokerCapacity,
+    Publish,
+    Storage,
+    PartialPass,
+}
+
+impl PublisherError {
+    fn category(&self) -> PublisherFailureCategory {
+        match self {
+            Self::Config(_) => PublisherFailureCategory::Config,
+            Self::Connect(_) => PublisherFailureCategory::Connect,
+            Self::Broker(_) => PublisherFailureCategory::Broker,
+            Self::BrokerCapacity(_) => PublisherFailureCategory::BrokerCapacity,
+            Self::Publish(_) => PublisherFailureCategory::Publish,
+            Self::Storage(_) => PublisherFailureCategory::Storage,
+        }
+    }
+}
+
+fn log_connect_failure(error: &PublisherError, retry_in: Duration) {
+    tracing::warn!(
+        failure_category = ?error.category(),
+        retry_in_ms = retry_in.as_millis(),
+        "publication publisher could not reach the broker; capture continues"
+    );
+}
+
+fn log_drain_failure(error: &PublisherError) {
+    tracing::warn!(
+        failure_category = ?error.category(),
+        "publication drain failed"
+    );
+}
+
+/// Spawn the single publisher loop and expose only a read-only health view.
+/// The supplied housekeeping future starts after the first successful broker
+/// connection, matching the publisher's retained-record cleanup lifecycle.
+pub fn spawn_supervised<F, Fut>(
+    config: NatsPublisherConfig,
+    outbox: Arc<dyn PublicationOutboxPort>,
+    cancel: CancellationToken,
+    housekeeping: F,
+) -> SupervisedPublisher
+where
+    F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let inner = Arc::new(Mutex::new(PublisherHealthInner::default()));
+    let health = PublisherHealthReader {
+        inner: inner.clone(),
+    };
+    let guard = PublisherTaskGuard { inner };
+    let task = tokio::spawn(async move {
+        let guard = guard;
+        guard.set_task(PublisherTaskState::Running);
+        let mut backoff = Duration::from_secs(1);
+        let publisher = loop {
+            if cancel.is_cancelled() {
+                return;
+            }
+            guard.set_connection(PublisherConnectionState::Pending);
+            match JetStreamPublisher::connect(config.clone(), outbox.clone()).await {
+                Ok(publisher) => {
+                    guard.attach(publisher.context.client());
+                    break publisher;
+                }
+                Err(error) => {
+                    guard.set_connection(PublisherConnectionState::Disconnected);
+                    log_connect_failure(&error, backoff);
+                    tokio::select! {
+                        () = cancel.cancelled() => return,
+                        () = tokio::time::sleep(backoff) => {}
+                    }
+                    backoff = (backoff * 2).min(Duration::from_secs(30));
+                }
+            }
+        };
+        let housekeeping = housekeeping(cancel.clone());
+        tokio::join!(publisher.run_observed(cancel, guard), housekeeping);
+    });
+    SupervisedPublisher { health, task }
 }
 
 /// What the publisher does after the broker acknowledged one record and
@@ -158,9 +411,14 @@ impl JetStreamPublisher {
         hook: Arc<dyn PublishHook>,
     ) -> Result<Self, PublisherError> {
         config.validate()?;
-        let client = crate::connect_client(&config.url, &config.auth, config.publish_timeout)
-            .await
-            .map_err(|error| PublisherError::Connect(error.to_string()))?;
+        let client = crate::connect_client(
+            &config.url,
+            &config.auth,
+            config.inbox_prefix.as_ref(),
+            config.publish_timeout,
+        )
+        .await
+        .map_err(|error| PublisherError::Connect(error.to_string()))?;
         let context = jetstream::new(client);
         Ok(Self {
             context,
@@ -252,6 +510,22 @@ impl JetStreamPublisher {
     /// on a broker outage would turn a recoverable delivery pause into a
     /// silent permanent one, and capture keeps running either way.
     pub async fn run(self, cancel: CancellationToken) -> DrainSummary {
+        self.run_inner(cancel, None).await
+    }
+
+    async fn run_observed(
+        self,
+        cancel: CancellationToken,
+        health: PublisherTaskGuard,
+    ) -> DrainSummary {
+        self.run_inner(cancel, Some(health)).await
+    }
+
+    async fn run_inner(
+        self,
+        cancel: CancellationToken,
+        health: Option<PublisherTaskGuard>,
+    ) -> DrainSummary {
         let mut summary = DrainSummary::default();
         let mut backoff = self.config.poll_interval;
         loop {
@@ -261,6 +535,21 @@ impl JetStreamPublisher {
             summary.passes += 1;
             let idle = match self.drain_batch(&cancel).await {
                 Ok(report) => {
+                    if let Some(health) = &health {
+                        health.set_drain(if report.failed == 0 {
+                            PublisherDrainState::Clean
+                        } else {
+                            PublisherDrainState::Failed
+                        });
+                    }
+                    if report.failed > 0 {
+                        tracing::warn!(
+                            failure_category = ?PublisherFailureCategory::PartialPass,
+                            failed = report.failed,
+                            published = report.published,
+                            "publication drain completed with failed records"
+                        );
+                    }
                     backoff = self.config.poll_interval;
                     summary.published += report.published as u64;
                     summary.released += report.released as u64;
@@ -277,8 +566,11 @@ impl JetStreamPublisher {
                     report.claimed == 0
                 }
                 Err(error) => {
+                    if let Some(health) = &health {
+                        health.set_drain(PublisherDrainState::Failed);
+                    }
                     summary.errors += 1;
-                    tracing::warn!(error = %error, "publication drain failed");
+                    log_drain_failure(&error);
                     backoff = next_backoff(backoff, self.config.poll_interval);
                     true
                 }
@@ -400,11 +692,10 @@ impl JetStreamPublisher {
             Ok(ReleaseOutcome::Released) => report.released += 1,
             Ok(ReleaseOutcome::AlreadyPublished) => report.published += 1,
             Ok(ReleaseOutcome::StaleClaim) => report.stale += 1,
-            Err(error) => {
+            Err(_) => {
                 report.failed += 1;
                 tracing::warn!(
-                    event_id = %record.event_id,
-                    error = %error,
+                    failure_category = ?PublisherFailureCategory::Storage,
                     "releasing a claim failed; the lease expiry still returns it"
                 );
             }
@@ -427,16 +718,13 @@ enum Flow {
 /// A size refusal is the one publish failure no retry can fix: not a
 /// backoff, not a reconnection, not draining the stream. It is an operator
 /// action item — raise `max_msg_size`, or lower the capture ceiling — so it
-/// is logged with the id of the record that will otherwise sit in the
-/// outbox forever.
+/// is logged with its fixed category and byte count.
 fn refuse(record: &ClaimedPublication, error: &jetstream::context::PublishError) -> PublisherError {
     let classified = classify_publish_error(error);
     if is_size_refusal(error) {
         tracing::error!(
-            event_id = %record.event_id,
-            schema = %record.schema_id,
             envelope_bytes = record.envelope.len(),
-            error = %classified,
+            failure_category = ?classified.category(),
             "the broker refused this envelope for its size; no retry can deliver it \
              and it stays pending until the stream's max_msg_size or the capture \
              ceiling changes"
@@ -555,6 +843,146 @@ pub enum PublisherError {
 mod tests {
     use super::*;
     use crate::config::NatsPublisherConfig;
+    use proxima_core::StorageError;
+    use proxima_core::storage_ports::publication::{
+        AckOutcome, BrokerReceipt, ClaimToken, ClaimedPublication, PublicationOutboxPort,
+        PublisherId, ReleaseOutcome,
+    };
+    use std::num::NonZeroU32;
+    use tracing::field::{Field, Visit};
+    use tracing::{Event, Subscriber};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+
+    #[derive(Clone)]
+    struct EventBuffer(Arc<Mutex<Vec<String>>>);
+
+    impl<S> Layer<S> for EventBuffer
+    where
+        S: Subscriber,
+    {
+        fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+            let mut fields = EventFields::default();
+            event.record(&mut fields);
+            self.0.lock().expect("event buffer lock").push(fields.0);
+        }
+    }
+
+    #[derive(Default)]
+    struct EventFields(String);
+
+    impl Visit for EventFields {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            write!(&mut self.0, "{}={value:?} ", field.name()).expect("string write");
+        }
+    }
+
+    #[derive(Debug)]
+    struct EmptyOutbox;
+
+    #[async_trait::async_trait]
+    impl PublicationOutboxPort for EmptyOutbox {
+        async fn claim(
+            &self,
+            _publisher: &PublisherId,
+            _limit: NonZeroU32,
+            _lease: Duration,
+        ) -> Result<Vec<ClaimedPublication>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn mark_published(
+            &self,
+            _id: uuid::Uuid,
+            _claim: ClaimToken,
+            _receipt: &BrokerReceipt,
+        ) -> Result<AckOutcome, StorageError> {
+            Err(StorageError::Unavailable("unused".to_owned()))
+        }
+
+        async fn release(
+            &self,
+            _id: uuid::Uuid,
+            _claim: ClaimToken,
+        ) -> Result<ReleaseOutcome, StorageError> {
+            Err(StorageError::Unavailable("unused".to_owned()))
+        }
+
+        async fn pending_count(&self) -> Result<u64, StorageError> {
+            Ok(0)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn abort_before_first_poll_marks_the_task_terminal() {
+        let config =
+            NatsPublisherConfig::new("nats://127.0.0.1:4222").expect("publisher configuration");
+        let supervised = spawn_supervised(
+            config,
+            Arc::new(EmptyOutbox),
+            CancellationToken::new(),
+            |_| async {},
+        );
+        let (health, task) = supervised.into_parts();
+        task.abort();
+        assert!(task.await.expect_err("task is aborted").is_cancelled());
+        let snapshot = health.snapshot();
+        assert_eq!(snapshot.task, PublisherTaskState::Stopped);
+        assert_eq!(snapshot.connection, PublisherConnectionState::NotObserved);
+        assert!(!snapshot.is_ready());
+    }
+
+    #[test]
+    fn readiness_requires_a_live_task_connection_and_clean_drain() {
+        let ready = PublisherHealth {
+            task: PublisherTaskState::Running,
+            connection: PublisherConnectionState::Connected,
+            drain: PublisherDrainState::Clean,
+        };
+        assert!(ready.is_ready());
+        for health in [
+            PublisherHealth {
+                task: PublisherTaskState::Starting,
+                ..ready
+            },
+            PublisherHealth {
+                connection: PublisherConnectionState::Disconnected,
+                ..ready
+            },
+            PublisherHealth {
+                drain: PublisherDrainState::Failed,
+                ..ready
+            },
+            PublisherHealth {
+                drain: PublisherDrainState::NotObserved,
+                ..ready
+            },
+        ] {
+            assert!(!health.is_ready(), "{health:?}");
+        }
+    }
+
+    #[test]
+    fn connect_failure_logging_uses_a_fixed_category() {
+        const MARKER: &str = "SYNTHETIC_CONNECT_SECRET_MARKER";
+        let error = PublisherError::Connect(MARKER.to_owned());
+        assert!(error.to_string().contains(MARKER));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(EventBuffer(events.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            log_connect_failure(&error, Duration::from_secs(1));
+        });
+        let events = events.lock().expect("event buffer lock");
+        assert_eq!(events.len(), 1, "expected a connect failure event");
+        assert!(events[0].contains("failure_category=Connect"), "{events:?}");
+        assert!(!events[0].contains(MARKER), "{events:?}");
+        let reader = PublisherHealthReader {
+            inner: Arc::new(Mutex::new(PublisherHealthInner::default())),
+        };
+        assert!(!format!("{reader:?}").contains(MARKER));
+    }
 
     #[test]
     fn the_backoff_doubles_and_stops_growing() {

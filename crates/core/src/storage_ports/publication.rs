@@ -37,6 +37,25 @@ pub enum PublicationOriginEligibility {
 /// grants neither Fact reads nor writes.
 #[async_trait::async_trait]
 pub trait PublicationOriginEligibilityPort: Send + Sync {
+    /// Check one exact `(original owner, physical Fact)` pair in its own
+    /// short transaction. This method takes the database-wide shared
+    /// lifecycle fence before the existing per-Fact target fence, commits,
+    /// and only then returns the result to a host caller. It grants no
+    /// authority to read the Fact or retain a database fence across an
+    /// external operation.
+    ///
+    /// This convenience is for host work that must not carry a caller's
+    /// transaction into an external await. Atomic host-state admission must
+    /// continue to use [`Self::check_in_transaction`].
+    ///
+    /// # Errors
+    /// Returns a storage error when the fenced check or commit fails.
+    async fn check_committed(
+        &self,
+        original_owner: OwnerRef,
+        fact_id: MemoryId,
+    ) -> Result<PublicationOriginEligibility, StorageError>;
+
     /// Check one `(original owner, physical Fact)` pair inside the caller's
     /// current `UoW` transaction, under the same target fence used by hard
     /// deletion. The caller must hold the database-wide lifecycle fence in

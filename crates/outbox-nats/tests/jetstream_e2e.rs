@@ -13,15 +13,20 @@
 // claim being made.
 #![allow(clippy::too_many_lines)]
 
+#[allow(dead_code)]
 mod common;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
-    DropFirstAcks, Fixture, RecordingIntake, SeenOutcome, batch, nats_url_or_skip,
-    publisher_url_or_skip,
+    DropFirstAcks, ENV_NATS_INBOX_CONSUMER_PASSWORD, ENV_NATS_INBOX_CONSUMER_USER,
+    ENV_NATS_INBOX_PUBLISHER_PASSWORD, ENV_NATS_INBOX_PUBLISHER_USER, Fixture,
+    INBOX_CONSUMER_PREFIX, INBOX_ISOLATION_DURABLE, INBOX_ISOLATION_STREAM,
+    INBOX_ISOLATION_SUBJECT, INBOX_PUBLISHER_PREFIX, RecordingIntake, SeenOutcome, batch,
+    nats_url_or_skip, publisher_url_or_skip,
 };
+use futures::StreamExt;
 use proxima_core::storage_ports::publication::{
     AckOutcome, BrokerReceipt, ClaimToken, PublisherId,
 };
@@ -1055,4 +1060,282 @@ async fn broker_outage_does_not_block_capture() {
             assert_eq!(fixture.outbox().pending_count().await.expect("count"), 0);
         })
         .await;
+}
+
+#[tokio::test]
+async fn role_specific_reply_inboxes_are_isolated() {
+    let test = "role_specific_reply_inboxes_are_isolated";
+    let Some(url) = nats_url_or_skip(test) else {
+        return;
+    };
+    let credentials = (
+        std::env::var(ENV_NATS_INBOX_PUBLISHER_USER),
+        std::env::var(ENV_NATS_INBOX_PUBLISHER_PASSWORD),
+        std::env::var(ENV_NATS_INBOX_CONSUMER_USER),
+        std::env::var(ENV_NATS_INBOX_CONSUMER_PASSWORD),
+    );
+    let (Ok(publisher_user), Ok(publisher_password), Ok(consumer_user), Ok(consumer_password)) =
+        credentials
+    else {
+        assert_ne!(
+            std::env::var("CI").as_deref(),
+            Ok("true"),
+            "all four isolated NATS credential variables are required under CI=true"
+        );
+        eprintln!("skipping {test}: isolated role credentials are unset");
+        return;
+    };
+
+    Fixture::new_inbox_isolation(url.clone(), publisher_user.clone(), publisher_password.clone())
+        .await
+        .run(async |fixture| {
+            let admin = common::test_admin_client(&url).await;
+            let context = async_nats::jetstream::new(admin.clone());
+            match context.get_stream(INBOX_ISOLATION_STREAM).await {
+                Ok(_) => panic!(
+                    "the fixed inbox-isolation stream already exists; refusing to reuse or delete it"
+                ),
+                Err(error) => match error.kind() {
+                    async_nats::jetstream::context::GetStreamErrorKind::JetStream(error)
+                        if error.kind() == async_nats::jetstream::ErrorCode::STREAM_NOT_FOUND => {}
+                    kind => panic!(
+                        "checking the fixed inbox-isolation stream failed outside the not-found case: {kind}"
+                    ),
+                },
+            }
+
+            context
+                .create_stream(async_nats::jetstream::stream::Config {
+                    name: INBOX_ISOLATION_STREAM.to_owned(),
+                    subjects: vec![format!("{INBOX_ISOLATION_SUBJECT}.>")],
+                    storage: async_nats::jetstream::stream::StorageType::File,
+                    retention: async_nats::jetstream::stream::RetentionPolicy::Limits,
+                    discard: async_nats::jetstream::stream::DiscardPolicy::New,
+                    max_age: Duration::ZERO,
+                    max_bytes: 1024 * 1024 * 1024,
+                    max_message_size: -1,
+                    duplicate_window: Duration::from_mins(2),
+                    description: Some("Proxima inbox isolation test".to_owned()),
+                    ..async_nats::jetstream::stream::Config::default()
+                })
+                .await
+                .expect("the guarded inbox-isolation stream is created");
+            fixture.mark_stream_created();
+            fixture
+                .provision_consumer(
+                    INBOX_ISOLATION_DURABLE,
+                    &format!("{INBOX_ISOLATION_SUBJECT}.>"),
+                )
+                .await;
+
+            // Both role grants admit their own reply namespace. This live
+            // control proves later cross-role failures are ACL denials.
+            assert_role_inbox_round_trip(
+                &url,
+                &publisher_user,
+                &publisher_password,
+                INBOX_PUBLISHER_PREFIX,
+                &admin,
+                "publisher-own-inbox-marker",
+            )
+            .await;
+            assert_role_inbox_round_trip(
+                &url,
+                &consumer_user,
+                &consumer_password,
+                INBOX_CONSUMER_PREFIX,
+                &admin,
+                "consumer-own-inbox-marker",
+            )
+            .await;
+
+            let outcome = fixture
+                .capture("isolated reply inbox publication", None)
+                .await
+                .expect("capture succeeds before publication");
+            let id = outcome.memory_id.into_inner();
+            let stored = fixture.stored_envelope(id).await;
+            let publisher = JetStreamPublisher::connect(fixture.config.clone(), fixture.outbox())
+                .await
+                .expect("isolated publisher connects and can subscribe only in its inbox");
+            let report = publisher.drain_once().await.expect("publisher round trips PubAck");
+            assert_eq!(report.published, 1, "{report:?}");
+            assert_eq!(fixture.state(id).await, "published");
+
+            let mut consumer_config = proxima_outbox_nats::NatsConsumerConfig::new(url.clone());
+            consumer_config.auth = proxima_outbox_nats::NatsAuth::UserPassword {
+                user: consumer_user.clone(),
+                password: consumer_password.clone(),
+            };
+            consumer_config.inbox_prefix = Some(
+                proxima_outbox_nats::InboxPrefix::new(INBOX_CONSUMER_PREFIX)
+                    .expect("the consumer prefix is valid"),
+            );
+            consumer_config.stream = INBOX_ISOLATION_STREAM.to_owned();
+            consumer_config.durable_name = INBOX_ISOLATION_DURABLE.to_owned();
+            let intake = RecordingIntake::new();
+            let consumer = ReferenceConsumer::connect(consumer_config, intake.clone())
+                .await
+                .expect("consumer uses only its isolated API reply inbox");
+            let report = consumer
+                .process_once(batch(1), Duration::from_secs(2))
+                .await
+                .expect("consumer fetches and acknowledges through its own inbox");
+            assert_eq!(report.accepted, 1, "{report:?}");
+            assert_eq!(intake.seen().len(), 1);
+            assert_eq!(intake.seen()[0].raw, stored);
+
+            // Each role receives an actual authorization event for both the
+            // other role's reply namespace and a broad inbox subscription.
+            for (user, password, own_prefix, other_prefix, stem) in [
+                (
+                    publisher_user.as_str(),
+                    publisher_password.as_str(),
+                    INBOX_PUBLISHER_PREFIX,
+                    INBOX_CONSUMER_PREFIX,
+                    "publisher",
+                ),
+                (
+                    consumer_user.as_str(),
+                    consumer_password.as_str(),
+                    INBOX_CONSUMER_PREFIX,
+                    INBOX_PUBLISHER_PREFIX,
+                    "consumer",
+                ),
+            ] {
+                assert_subscription_denied_and_no_marker(
+                    &url,
+                    user,
+                    password,
+                    own_prefix,
+                    &format!("{other_prefix}.denied-{stem}"),
+                    &format!("{other_prefix}.denied-{stem}"),
+                    &admin,
+                )
+                .await;
+                assert_subscription_denied_and_no_marker(
+                    &url,
+                    user,
+                    password,
+                    own_prefix,
+                    "_INBOX.>",
+                    &format!("{own_prefix}.denied-broad-{stem}"),
+                    &admin,
+                )
+                .await;
+            }
+        })
+        .await;
+}
+
+async fn assert_role_inbox_round_trip(
+    url: &str,
+    user: &str,
+    password: &str,
+    prefix: &str,
+    admin: &async_nats::Client,
+    marker: &str,
+) {
+    let client = async_nats::ConnectOptions::new()
+        .user_and_password(user.to_owned(), password.to_owned())
+        .custom_inbox_prefix(prefix)
+        .connect(url)
+        .await
+        .expect("isolated role connects");
+    let inbox = client.new_inbox();
+    assert!(inbox.starts_with(&format!("{prefix}.")), "{inbox}");
+    let mut subscription = client
+        .subscribe(inbox.clone())
+        .await
+        .expect("role subscribes inside its own inbox namespace");
+    client
+        .flush()
+        .await
+        .expect("own inbox subscription is active");
+    // `Client::flush` empties this connection's write buffer; it is not a
+    // server round trip, and the marker travels on the admin connection. So
+    // the SUB above and the PUB below race, and core NATS drops a publish
+    // that lands before the subscription is registered. Republish until the
+    // interest is live: the control asserts the role MAY receive here, and a
+    // dropped fire-and-forget publish is not evidence that it may not.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let message = loop {
+        admin
+            .publish(inbox.clone(), marker.as_bytes().to_vec().into())
+            .await
+            .expect("admin publishes the positive-control marker");
+        admin
+            .flush()
+            .await
+            .expect("marker publication is processed");
+        match tokio::time::timeout(Duration::from_millis(100), subscription.next()).await {
+            Ok(received) => break received.expect("subscription remains open"),
+            Err(_) => assert!(
+                std::time::Instant::now() < deadline,
+                "positive-control marker never arrives on {inbox}"
+            ),
+        }
+    };
+    assert_eq!(message.payload.as_ref(), marker.as_bytes());
+}
+
+async fn assert_subscription_denied_and_no_marker(
+    url: &str,
+    user: &str,
+    password: &str,
+    inbox_prefix: &str,
+    subscription_subject: &str,
+    marker_subject: &str,
+    admin: &async_nats::Client,
+) {
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let client = async_nats::ConnectOptions::new()
+        .user_and_password(user.to_owned(), password.to_owned())
+        .custom_inbox_prefix(inbox_prefix)
+        .event_callback(move |event| {
+            let event_tx = event_tx.clone();
+            async move {
+                if let async_nats::Event::ServerError(error) = event {
+                    let permission_denied = match error {
+                        async_nats::ServerError::AuthorizationViolation => true,
+                        async_nats::ServerError::Other(message) => {
+                            message.to_ascii_lowercase().contains("permission")
+                        }
+                        async_nats::ServerError::SlowConsumer(_) => false,
+                    };
+                    if permission_denied {
+                        let _ = event_tx.send(());
+                    }
+                }
+            }
+        })
+        .connect(url)
+        .await
+        .expect("isolated role connects for the denial probe");
+    let subscription = client.subscribe(subscription_subject.to_owned()).await;
+    client
+        .flush()
+        .await
+        .expect("the server processes the forbidden subscription");
+    tokio::time::timeout(Duration::from_secs(3), event_rx.recv())
+        .await
+        .expect("server emits an authorization event, not only a silent timeout")
+        .expect("the authorization event callback remains open");
+
+    admin
+        .publish(
+            marker_subject.to_owned(),
+            b"must-not-cross-role-inbox".to_vec().into(),
+        )
+        .await
+        .expect("admin publishes a marker under the denied subject");
+    admin.flush().await.expect("denied marker is processed");
+    if let Ok(mut subscription) = subscription {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), subscription.next())
+                .await
+                .is_err(),
+            "a role received a marker from a denied inbox subscription"
+        );
+    }
 }

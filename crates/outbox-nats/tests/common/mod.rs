@@ -7,6 +7,7 @@
 
 use futures::FutureExt;
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -42,6 +43,20 @@ pub const ENV_NATS_ADMIN_USER: &str = "PROXIMA_TEST_NATS_ADMIN_USER";
 pub const ENV_NATS_ADMIN_PASSWORD: &str = "PROXIMA_TEST_NATS_ADMIN_PASSWORD";
 pub const ENV_NATS_PUBLISHER_USER: &str = "PROXIMA_TEST_NATS_PUBLISHER_USER";
 pub const ENV_NATS_PUBLISHER_PASSWORD: &str = "PROXIMA_TEST_NATS_PUBLISHER_PASSWORD";
+pub const ENV_NATS_INBOX_PUBLISHER_USER: &str = "PROXIMA_TEST_NATS_INBOX_PUBLISHER_USER";
+pub const ENV_NATS_INBOX_PUBLISHER_PASSWORD: &str = "PROXIMA_TEST_NATS_INBOX_PUBLISHER_PASSWORD";
+pub const ENV_NATS_INBOX_CONSUMER_USER: &str = "PROXIMA_TEST_NATS_INBOX_CONSUMER_USER";
+pub const ENV_NATS_INBOX_CONSUMER_PASSWORD: &str = "PROXIMA_TEST_NATS_INBOX_CONSUMER_PASSWORD";
+pub const ENV_NATS_CLEANER_URL: &str = "PROXIMA_TEST_NATS_CLEANER_URL";
+pub const ENV_NATS_CLEANER_USER: &str = "PROXIMA_TEST_NATS_CLEANER_USER";
+pub const ENV_NATS_CLEANER_PASSWORD: &str = "PROXIMA_TEST_NATS_CLEANER_PASSWORD";
+pub const COPY_CLEANER_STREAM: &str = "PROXIMA_FACTS";
+pub const COPY_CLEANER_SUBJECT_PREFIX: &str = "proxima.fact";
+pub const INBOX_ISOLATION_STREAM: &str = "PROXIMA_INBOX_ISOLATION";
+pub const INBOX_ISOLATION_DURABLE: &str = "inbox-isolation-reference";
+pub const INBOX_ISOLATION_SUBJECT: &str = "inboxisolation.fact";
+pub const INBOX_PUBLISHER_PREFIX: &str = "_INBOX.isolated_publisher";
+pub const INBOX_CONSUMER_PREFIX: &str = "_INBOX.isolated_consumer";
 
 /// Skip locally, fail under CI.
 ///
@@ -80,6 +95,44 @@ pub fn publisher_url_or_skip(test: &str) -> Option<String> {
     }
 }
 
+/// Cleaner credentials are mandatory under CI because this fixture proves
+/// the fourth role's real ACL. A local run without them is not evidence.
+pub fn cleaner_config_or_skip(
+    test: &str,
+) -> Option<proxima_outbox_nats::JetStreamCopyCleanerConfig> {
+    let values = [
+        ENV_NATS_CLEANER_URL,
+        ENV_NATS_CLEANER_USER,
+        ENV_NATS_CLEANER_PASSWORD,
+    ]
+    .map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    });
+    if let [Some(url), Some(user), Some(password)] = values {
+        Some(
+            proxima_outbox_nats::JetStreamCopyCleanerConfig::new(url)
+                .auth(proxima_outbox_nats::NatsAuth::UserPassword { user, password }),
+        )
+    } else {
+        assert!(
+            std::env::var("CI").as_deref() != Ok("true"),
+            "{ENV_NATS_CLEANER_URL}, {ENV_NATS_CLEANER_USER}, and \
+             {ENV_NATS_CLEANER_PASSWORD} are required under CI=true (test {test})"
+        );
+        eprintln!("skipping {test}: cleaner credential environment is incomplete");
+        None
+    }
+}
+
+pub async fn test_admin_client(url: &str) -> async_nats::Client {
+    admin_client(url)
+        .await
+        .expect("the test admin connection opens")
+}
+
 async fn admin_client(url: &str) -> Result<async_nats::Client, async_nats::ConnectError> {
     let options = async_nats::ConnectOptions::new();
     let options = match (
@@ -104,6 +157,7 @@ pub struct Fixture {
     pub config: NatsPublisherConfig,
     pub stream: String,
     pub url: String,
+    created_stream: AtomicBool,
 }
 
 impl Fixture {
@@ -135,9 +189,86 @@ impl Fixture {
             config,
             stream,
             url,
+            created_stream: AtomicBool::new(false),
         };
         fixture.provision_topology(Duration::from_mins(2)).await;
         fixture
+    }
+
+    /// Build a real PG fixture whose publisher targets the dedicated cleaner
+    /// stream. The test owns and guards creation of that fixed broker stream.
+    pub async fn new_copy_cleaner(url: String) -> Self {
+        let (pg, db) = fresh_pg("nats_copy_cleaner").await;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        register_owner(pg.pool_for_tests(), &owner).await;
+        let publisher_url = std::env::var(ENV_NATS_PUBLISHER_URL).unwrap_or_else(|_| url.clone());
+        let mut config = NatsPublisherConfig::new(publisher_url).expect("a publisher id resolves");
+        if let (Ok(user), Ok(password)) = (
+            std::env::var(ENV_NATS_PUBLISHER_USER),
+            std::env::var(ENV_NATS_PUBLISHER_PASSWORD),
+        ) {
+            config.auth = proxima_outbox_nats::NatsAuth::UserPassword { user, password };
+        }
+        COPY_CLEANER_SUBJECT_PREFIX.clone_into(&mut config.subject_prefix);
+        config.lease = Duration::from_secs(2);
+        config.publish_timeout = Duration::from_secs(5);
+        config.poll_interval = Duration::from_millis(100);
+        Self {
+            pg,
+            _db: db,
+            owner,
+            config,
+            stream: COPY_CLEANER_STREAM.to_owned(),
+            url,
+            created_stream: AtomicBool::new(false),
+        }
+    }
+
+    /// Build the database side of the fixed-name inbox isolation test.
+    /// The test body guards and creates the broker resources after confirming
+    /// that the static stream name is absent.
+    pub async fn new_inbox_isolation(
+        url: String,
+        publisher_user: String,
+        publisher_password: String,
+    ) -> Self {
+        let (pg, db) = fresh_pg("nats_inbox_isolation").await;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        register_owner(pg.pool_for_tests(), &owner).await;
+        let mut config = NatsPublisherConfig::new(url.clone()).expect("a publisher id resolves");
+        config.auth = proxima_outbox_nats::NatsAuth::UserPassword {
+            user: publisher_user,
+            password: publisher_password,
+        };
+        config.inbox_prefix = Some(
+            proxima_outbox_nats::InboxPrefix::new(INBOX_PUBLISHER_PREFIX)
+                .expect("the test prefix is valid"),
+        );
+        INBOX_ISOLATION_SUBJECT.clone_into(&mut config.subject_prefix);
+        config.lease = Duration::from_secs(2);
+        config.publish_timeout = Duration::from_secs(5);
+        config.poll_interval = Duration::from_millis(100);
+        Self {
+            pg,
+            _db: db,
+            owner,
+            config,
+            stream: INBOX_ISOLATION_STREAM.to_owned(),
+            url,
+            created_stream: AtomicBool::new(false),
+        }
+    }
+
+    /// Mark the fixed stream owned by the inbox isolation test for guarded
+    /// cleanup. Call only immediately after this test creates it.
+    pub fn mark_stream_created(&self) {
+        self.created_stream.store(true, Ordering::Release);
+    }
+
+    /// Return whether this fixture created its broker stream.
+    #[must_use]
+    pub fn owns_stream(&self) -> bool {
+        self.created_stream.load(Ordering::Acquire)
     }
 
     /// Run one test body against this world and ALWAYS tear it down.
@@ -201,6 +332,7 @@ impl Fixture {
             })
             .await
             .expect("the fixture stream is provisioned");
+        self.mark_stream_created();
         drop(context);
         self.provision_consumer(
             &format!("d_{}", self.stream.to_lowercase()),
@@ -296,11 +428,30 @@ impl Fixture {
         note: &str,
         ingest_key: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
+        self.capture_with_source_scope(
+            owner,
+            source,
+            ingest_key.map(|_| "probe/source"),
+            note,
+            ingest_key,
+        )
+        .await
+    }
+
+    /// The same, with an explicit receipt source for cleaner erasure cases.
+    pub async fn capture_with_source_scope(
+        &self,
+        owner: Owner,
+        source: PublicationSource,
+        source_id: Option<&str>,
+        note: &str,
+        ingest_key: Option<&str>,
+    ) -> Result<FactIngestOutcome, StorageError> {
         let payload = ListenableProbeV1 {
             probe_id: Uuid::now_v7(),
             note: note.to_owned(),
         };
-        let command = fact_command(ingest_key);
+        let command = fact_command_for_source(ingest_key, source_id);
         let plan = PublicationPlan::new(
             PublicationDraft::new(
                 ListenableProbeV1::schema_id(),
@@ -347,7 +498,9 @@ impl Fixture {
     /// every path: a leaked stream outlives the run and a leaked database
     /// outlives the machine.
     pub async fn teardown(&self) {
-        if let Ok(client) = admin_client(&self.url).await {
+        if self.owns_stream()
+            && let Ok(client) = admin_client(&self.url).await
+        {
             let context = async_nats::jetstream::new(client);
             let _ = context.delete_stream(&self.stream).await;
         }
@@ -374,19 +527,19 @@ async fn register_owner(pool: &sqlx::PgPool, owner: &Owner) {
     .expect("owner registers");
 }
 
-fn fact_command(ingest_key: Option<&str>) -> FactWriteCommand {
+fn fact_command_for_source(ingest_key: Option<&str>, source_id: Option<&str>) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
         schema_id: SchemaId::new(ListenableProbeV1::SCHEMA_ID.to_owned()),
         schema_version: SchemaVersion::new(1),
         handle: None,
-        source_id: ingest_key.map(|_| "probe/source".to_owned()),
+        source_id: source_id.map(ToOwned::to_owned),
         ingest_key: ingest_key.map(ToOwned::to_owned),
         payload: Vec::new(),
         rendered_text: Some("probe".to_owned()),
         lexical_language: None,
-        receipt: ingest_key.map(|_| FactReceiptDraft {
-            source_id: SourceId::new("probe/source"),
+        receipt: source_id.map(|source_id| FactReceiptDraft {
+            source_id: SourceId::new(source_id),
             observed_at: now,
             occurred_at: now,
         }),

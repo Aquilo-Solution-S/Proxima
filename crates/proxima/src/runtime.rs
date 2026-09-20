@@ -321,6 +321,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             app_ctx,
             services,
         } = self.boot_common().await?;
+        #[cfg(feature = "outbox-nats")]
+        let publication_origin_eligibility = booted.publication_origin_eligibility_for_host();
 
         let (mcp_addr, server) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist) {
             if !config.expose_network {
@@ -385,6 +387,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             pool: booted.pool,
             registry: booted.registry,
             pg_sidecars: booted.pg_sidecars,
+            #[cfg(feature = "outbox-nats")]
+            publication_origin_eligibility,
             blobs: booted.blobs,
             owner: booted.owner,
             mcp_addr,
@@ -539,7 +543,19 @@ impl BuiltProxima {
     #[cfg(feature = "outbox-nats")]
     #[must_use]
     pub fn spawn_publication_publisher(&self, cancel: CancellationToken) -> Option<JoinHandle<()>> {
-        Some(spawn_publication_publisher(
+        self.spawn_publication_publisher_supervised(cancel)
+            .map(|publisher| publisher.into_parts().1)
+    }
+
+    /// Spawn the outbox publisher with a read-only health view and an
+    /// ordinary abortable, joinable task handle.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn spawn_publication_publisher_supervised(
+        &self,
+        cancel: CancellationToken,
+    ) -> Option<proxima_outbox_nats::SupervisedPublisher> {
+        Some(spawn_publication_publisher_supervised(
             self.outbox.clone(),
             self.nats.clone()?,
             self.published_retention
@@ -549,6 +565,23 @@ impl BuiltProxima {
                 }),
             cancel,
         ))
+    }
+
+    /// Spawn retained-copy cleanup independently from GT intake and the
+    /// publication publisher. Centauri reads its own explicit config and
+    /// owns this returned task handle.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn spawn_publication_copy_cleaner(
+        &self,
+        config: proxima_outbox_nats::JetStreamCopyCleanerConfig,
+        cancel: CancellationToken,
+    ) -> (proxima_outbox_nats::CopyCleanerHealthReader, JoinHandle<()>) {
+        proxima_outbox_nats::spawn_supervised_copy_cleaner(
+            config,
+            self.publication_origin_eligibility.clone(),
+            cancel,
+        )
     }
 
     #[must_use]
@@ -654,6 +687,10 @@ pub struct RunningProxima {
     /// `BuiltProxima`'s field of the same name.
     #[cfg(feature = "outbox-nats")]
     outbox: Arc<dyn PublicationOutboxPort>,
+    /// The narrow host-only origin check shared with the copy cleaner.
+    #[cfg(feature = "outbox-nats")]
+    publication_origin_eligibility:
+        Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
     /// Reclaim of DELIVERED records, held apart from the drain handle so
     /// that the loop able to publish is not the loop able to delete.
     #[cfg(feature = "outbox-nats")]
@@ -702,7 +739,19 @@ impl RunningProxima {
     #[cfg(feature = "outbox-nats")]
     #[must_use]
     pub fn spawn_publication_publisher(&self, cancel: CancellationToken) -> Option<JoinHandle<()>> {
-        Some(spawn_publication_publisher(
+        self.spawn_publication_publisher_supervised(cancel)
+            .map(|publisher| publisher.into_parts().1)
+    }
+
+    /// Spawn the outbox publisher with a read-only health view and an
+    /// ordinary abortable, joinable task handle.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn spawn_publication_publisher_supervised(
+        &self,
+        cancel: CancellationToken,
+    ) -> Option<proxima_outbox_nats::SupervisedPublisher> {
+        Some(spawn_publication_publisher_supervised(
             self.outbox.clone(),
             self.nats.clone()?,
             self.published_retention
@@ -712,6 +761,23 @@ impl RunningProxima {
                 }),
             cancel,
         ))
+    }
+
+    /// Spawn retained-copy cleanup independently from GT intake and the
+    /// publication publisher. Centauri reads its own explicit config and
+    /// owns this returned task handle.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn spawn_publication_copy_cleaner(
+        &self,
+        config: proxima_outbox_nats::JetStreamCopyCleanerConfig,
+        cancel: CancellationToken,
+    ) -> (proxima_outbox_nats::CopyCleanerHealthReader, JoinHandle<()>) {
+        proxima_outbox_nats::spawn_supervised_copy_cleaner(
+            config,
+            self.publication_origin_eligibility.clone(),
+            cancel,
+        )
     }
 
     #[must_use]
@@ -820,14 +886,6 @@ impl std::fmt::Debug for RunningProxima {
     }
 }
 
-/// The publisher's boot-time connect retry.
-///
-/// Doubling from one second, capped, and cancellable. Bounded rather than
-/// infinite-with-no-signal: every attempt logs, so an operator sees the
-/// broker being unreachable rather than a silent stall.
-#[cfg(feature = "outbox-nats")]
-const PUBLISHER_CONNECT_BACKOFF_CEILING: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// The configured reclaim of DELIVERED records, and the handle that can
 /// perform it. Absent when the deployment keeps published records forever.
 #[cfg(feature = "outbox-nats")]
@@ -866,43 +924,14 @@ const RETENTION_PRUNE_BATCH: u32 = 1_000;
 const RETENTION_PRUNE_INTERVAL: Duration = Duration::from_mins(1);
 
 #[cfg(feature = "outbox-nats")]
-fn spawn_publication_publisher(
+fn spawn_publication_publisher_supervised(
     outbox: Arc<dyn PublicationOutboxPort>,
     config: proxima_outbox_nats::NatsPublisherConfig,
     retention: Option<PublicationRetention>,
     cancel: CancellationToken,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut backoff = std::time::Duration::from_secs(1);
-        let publisher = loop {
-            if cancel.is_cancelled() {
-                return;
-            }
-            match proxima_outbox_nats::JetStreamPublisher::connect(config.clone(), outbox.clone())
-                .await
-            {
-                Ok(publisher) => break publisher,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        retry_in_ms = backoff.as_millis(),
-                        "publication publisher could not reach the broker; capture continues"
-                    );
-                    tokio::select! {
-                        () = cancel.cancelled() => return,
-                        () = tokio::time::sleep(backoff) => {}
-                    }
-                    backoff = (backoff * 2).min(PUBLISHER_CONNECT_BACKOFF_CEILING);
-                }
-            }
-        };
-        // Retention rides in the publisher's task rather than a task of its
-        // own: it is housekeeping over what this loop delivered, it stops
-        // when the loop stops, and a deployment with no broker configured
-        // never reaches here — which is correct, because nothing has been
-        // delivered for it to reclaim.
-        let housekeeping = prune_published_records(retention, cancel.clone());
-        tokio::join!(publisher.run(cancel), housekeeping);
+) -> proxima_outbox_nats::SupervisedPublisher {
+    proxima_outbox_nats::spawn_supervised(config, outbox, cancel, move |cancel| {
+        prune_published_records(retention, cancel)
     })
 }
 
@@ -938,10 +967,11 @@ async fn prune_published_records(
             // Never fatal. Housekeeping that cannot run is a growing table,
             // which is an operator's problem to see; stopping the publisher
             // over it would turn it into an undelivered backlog.
-            Err(error) => tracing::warn!(
-                error = %error,
-                "publication retention prune failed; delivered records are retained"
-            ),
+            Err(_) => {
+                tracing::warn!(
+                    "publication retention prune failed; delivered records are retained"
+                );
+            }
         }
     }
 }
@@ -1929,3 +1959,7 @@ mod tests {
         assert!(err.to_string().contains("tool_scope is required"));
     }
 }
+
+#[cfg(all(test, feature = "outbox-nats"))]
+#[path = "publisher_supervision_tests.rs"]
+mod publisher_supervision_tests;

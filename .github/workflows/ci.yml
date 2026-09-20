@@ -220,6 +220,13 @@ jobs:
       PROXIMA_TEST_NATS_ADMIN_PASSWORD: admin
       PROXIMA_TEST_NATS_PUBLISHER_USER: publisher
       PROXIMA_TEST_NATS_PUBLISHER_PASSWORD: publisher
+      PROXIMA_TEST_NATS_INBOX_PUBLISHER_USER: isolated-publisher
+      PROXIMA_TEST_NATS_INBOX_PUBLISHER_PASSWORD: isolated-publisher
+      PROXIMA_TEST_NATS_INBOX_CONSUMER_USER: isolated-consumer
+      PROXIMA_TEST_NATS_INBOX_CONSUMER_PASSWORD: isolated-consumer
+      PROXIMA_TEST_NATS_CLEANER_URL: nats://127.0.0.1:4222
+      PROXIMA_TEST_NATS_CLEANER_USER: cleaner
+      PROXIMA_TEST_NATS_CLEANER_PASSWORD: cleaner
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -291,5 +298,13 @@ jobs:
         # lane above (crates/outbox-nats), which is why this is one step
         # and not a job.
         run: cargo nextest run -p proxima-mcp --features nats --test nats_e2e --locked
+      - name: test (Fact-outbox publisher supervision)
+        run: cargo nextest run --locked -p proxima --features outbox-nats --lib --test publication_supervision_pg
+      - name: test (durable reference consumer supervision)
+        run: cargo nextest run --locked -p proxima-outbox-nats --test consumer_supervision_nats
+      - name: test (retained-copy cleaner)
+        # This target owns the fixed, initially empty PROXIMA_FACTS stream;
+        # keep its cases serial even as the fixture grows.
+        run: cargo nextest run --locked -p proxima-outbox-nats --test copy_cleaner_pg_nats --test-threads=1
       - name: test (durable reference intake)
         run: cargo test -p proxima-outbox-nats --example durable_intake --locked

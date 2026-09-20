@@ -359,6 +359,20 @@ impl PublicationOutboxPort for PgStorage {
 
 #[async_trait::async_trait]
 impl PublicationOriginEligibilityPort for PgStorage {
+    async fn check_committed(
+        &self,
+        original_owner: proxima_core::OwnerRef,
+        fact_id: proxima_core::MemoryId,
+    ) -> Result<PublicationOriginEligibility, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(map_err)?;
+        crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut tx).await?;
+        let result = self
+            .check_in_transaction(&mut tx, original_owner, fact_id)
+            .await?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(result)
+    }
+
     async fn check_in_transaction(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,

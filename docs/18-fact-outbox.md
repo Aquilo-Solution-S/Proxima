@@ -307,6 +307,36 @@ re-claimed while it was still in flight; the floor is a refusal rather than a
 silent clamp, because a caller that asked for 0 s asked for something that
 cannot work.
 
+### Publisher task health
+
+`BuiltProxima` and `RunningProxima` keep `spawn_publication_publisher` returning
+the ordinary abortable and joinable `JoinHandle<()>`. Their supervised variant
+returns a read-only health reader plus that same handle through `into_parts()`.
+Health keeps task, live connection, and latest drain-pass status separate. The
+connection sample comes from the publisher's actual async-nats client, even
+when no outbox rows are available. A pass is failed when it returns an error or
+reports one or more failed records; a later clean pass recovers the latest-pass
+state. Readiness requires a running task, a connected client, and a clean pass.
+Initial and terminal states are unready. The terminal guard clears its client
+slot on normal cancellation, abort, and unwind, so retaining the reader cannot
+keep the NATS client alive. This observation does not prove publish permission
+or deployment stream topology; only actual publication and deployment-owned
+topology checks establish those facts.
+
+`ReferenceConsumer::into_observed_parts` returns a read-only health reader and
+the consumer's existing fetch/ACK future. The compatibility `run` method uses
+that same loop. Health keeps task, live connection, and latest consume-pass
+status separate; the connection sample comes from the consumer's actual
+async-nats client, including while intake is waiting. A pass is failed when it
+returns an error or reports deferred or unacknowledged deliveries. Accepted
+and durably rejected outcomes are clean only when their ACK succeeds; a later
+clean pass recovers the latest-pass state. Readiness requires a running task,
+a connected client, and a clean pass. The terminal guard clears its client slot
+on cancellation, abort, unwind, and drop before first poll, so retaining the
+reader cannot keep the NATS client alive. This reports the latest observed
+pass; it does not impose a callback deadline or prove that the backlog is
+empty.
+
 ## Two Acknowledgements
 
 | Boundary | Completion condition | What it does NOT mean |
@@ -340,6 +370,15 @@ update, inspect or validate streams or consumers. A successful `PubAck` records
 broker acceptance; the deployment and consumer own the source → transform →
 partition → durable-intake path.
 
+Publisher and consumer clients can use separate validated reply-inbox
+namespaces through `PROXIMA_NATS_PUBLISHER_INBOX_PREFIX` and
+`PROXIMA_NATS_CONSUMER_INBOX_PREFIX`. Each is a nonempty dot-separated prefix
+whose tokens contain only ASCII letters, digits, `_` or `-`; an unset value
+preserves async-nats' `_INBOX` default. Configure matching role-specific NATS
+subscribe permissions for those prefixes. The option routes client replies; it
+does not establish broker permissions, and a server account that still grants
+both roles `_INBOX.>` does not provide isolation.
+
 The local fixture provisions a reproducible stream separately so tests can
 exercise the adapter without making the application a topology controller.
 Production deployments must provide equivalent provisioning, permissions,
@@ -350,6 +389,46 @@ stream-management rights must still connect, publish and record a `PubAck`.
 The deployment acceptance boundary is separate: publish a sentinel through
 the provisioned source → transform → partition → durable-consumer route and
 prove the consumer durably accepts or retains its outcome before ACK.
+
+### Retained-copy cleanup
+
+An embedding host may separately own `spawn_publication_copy_cleaner` even
+when Fact intake or publication is disabled. It scans the fixed
+`PROXIMA_FACTS` stream for the canonical `proxima.fact` source subjects and
+uses its own bounded API-only NATS role and `PROXIMA_PURGE_INBOX` reply
+namespace. Configure the cleaner against the **same Proxima database and cell**
+that captured the origins. The stream must be new, initially empty, dedicated
+to Proxima as its exclusive publisher, and preserve the source subjects. This
+is the trust premise that lets a verified, now-ineligible captured origin
+authorize deletion; it is not a general purge rule for imported, historical,
+transformed, or shared-producer streams.
+
+The database erase commits without a broker request. Later finite cleaner
+slices recheck each canonical message against committed origin and hard-delete
+witness state, deleting only when storage returns `Ineligible`. A database or
+broker error retains the current scan position for retry; unknown message
+identity is retained, counted, and makes the completed cycle unhealthy. Each
+completed cycle starts again from the stream's first retained sequence so an
+erase or publication arriving behind the in-memory cursor is found later.
+The item limit is strict, while the time budget is checked between messages;
+a started GET, committed origin check, and DELETE can finish after that soft
+budget, with each request bounded by the configured timeout. These bounds do
+not promise a cleanup deadline.
+Health and logs contain fixed categories and aggregate counts, never payloads
+or Fact identities. The result means the broker no longer serves that message
+sequence; it does not prove physical media, snapshots, or backups were erased.
+
+This adapter does not sanitize dependency debug output. In the pinned
+`async-nats` 0.50.0 source, `jetstream/context.rs:1570–1573` logs the raw
+JetStream request response through a `DEBUG` event. The embedding host must
+keep the `async_nats` target at `INFO` or lower; enabling dependency `DEBUG` or
+`TRACE` can expose broker response content. Centauri will enforce that limit
+independently of `RUST_LOG`.
+
+Do not enable cleanup during a coordinated database/broker restore or stream
+recreation until both sides are known consistent. Provision and verify the
+fresh stream, dedicated producer policy, cleaner API permissions, and same-cell
+database binding before enabling this host task.
 
 ### The `type_token` rule
 

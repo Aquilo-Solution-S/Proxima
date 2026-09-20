@@ -30,6 +30,8 @@ pub const ENV_PUBLISH_TIMEOUT_MS: &str = "PROXIMA_NATS_PUBLISH_TIMEOUT_MS";
 pub const ENV_PUBLISHER_ID: &str = "PROXIMA_NATS_PUBLISHER_ID";
 pub const ENV_CONSUMER_STREAM: &str = "PROXIMA_NATS_CONSUMER_STREAM";
 pub const ENV_CONSUMER_NAME: &str = "PROXIMA_NATS_CONSUMER_NAME";
+pub const ENV_PUBLISHER_INBOX_PREFIX: &str = "PROXIMA_NATS_PUBLISHER_INBOX_PREFIX";
+pub const ENV_CONSUMER_INBOX_PREFIX: &str = "PROXIMA_NATS_CONSUMER_INBOX_PREFIX";
 
 pub const DEFAULT_SUBJECT_PREFIX: &str = "proxima.fact";
 pub const DEFAULT_CONSUMER_STREAM: &str = "PROXIMA_FACTS";
@@ -88,17 +90,70 @@ impl std::fmt::Debug for NatsAuth {
 /// What every redacted field prints instead of its value.
 const REDACTED: &str = "<redacted>";
 
+/// A validated, role-specific NATS reply-inbox namespace.
+///
+/// Tokens are dot-separated and contain only ASCII letters, digits, `_` or
+/// `-`. Wildcards and protocol delimiters are rejected before the value is
+/// passed to async-nats.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct InboxPrefix(String);
+
+impl InboxPrefix {
+    /// Construct a validated reply-inbox namespace.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::InvalidInboxPrefix`] when the value is empty or
+    /// contains a token character outside `[A-Za-z0-9_-]`.
+    pub fn new(value: impl Into<String>) -> Result<Self, ConfigError> {
+        Self::parse("inbox prefix", value.into())
+    }
+
+    fn parse(key: &'static str, value: String) -> Result<Self, ConfigError> {
+        if value.is_empty()
+            || value.split('.').any(|token| {
+                token.is_empty()
+                    || !token
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+            })
+        {
+            return Err(ConfigError::InvalidInboxPrefix { key });
+        }
+        Ok(Self(value))
+    }
+
+    /// The validated prefix to give the NATS client.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for InboxPrefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InboxPrefix(<configured>)")
+    }
+}
+
 /// A broker URL with any `user:password@` userinfo removed.
 ///
 /// `nats://user:secret@host:4222` is a documented NATS form, so the URL is
 /// as much a credential as [`NatsAuth`] is.
-fn redacted_url(url: &str) -> String {
+pub(crate) fn redacted_url(url: &str) -> String {
     url.split(',')
-        .map(|server| match (server.find("//"), server.rfind('@')) {
-            (Some(scheme), Some(at)) if at > scheme => {
-                format!("{}//{REDACTED}@{}", &server[..scheme], &server[at + 1..])
+        .map(|server| {
+            let authority_start = server.find("://").map_or(0, |scheme| scheme + 3);
+            let authority = &server[authority_start..];
+            let authority_end = authority.find(['/', '?', '#']).unwrap_or(authority.len());
+            match authority[..authority_end].rfind('@') {
+                Some(at) => format!(
+                    "{}{REDACTED}@{}",
+                    &server[..authority_start],
+                    &authority[at + 1..]
+                ),
+                None => server.to_owned(),
             }
-            _ => server.to_owned(),
         })
         .collect::<Vec<_>>()
         .join(",")
@@ -112,6 +167,8 @@ pub struct NatsPublisherConfig {
     /// cluster.
     pub url: String,
     pub auth: NatsAuth,
+    /// Optional validated reply namespace. `None` preserves async-nats' default.
+    pub inbox_prefix: Option<InboxPrefix>,
     /// Validated: dot-separated tokens of `[A-Za-z0-9_-]`, no wildcards. This
     /// is the source subject prefix; stream transforms and partitions are
     /// deployment-owned and may rewrite it after publication.
@@ -132,6 +189,7 @@ impl std::fmt::Debug for NatsPublisherConfig {
         f.debug_struct("NatsPublisherConfig")
             .field("url", &redacted_url(&self.url))
             .field("auth", &self.auth)
+            .field("inbox_prefix", &self.inbox_prefix)
             .field("subject_prefix", &self.subject_prefix)
             .field("publisher_id", &self.publisher_id)
             .field("batch", &self.batch)
@@ -157,6 +215,7 @@ impl NatsPublisherConfig {
         Ok(Self {
             url: url.into(),
             auth: NatsAuth::None,
+            inbox_prefix: None,
             subject_prefix: DEFAULT_SUBJECT_PREFIX.to_owned(),
             publisher_id: default_publisher_id(&proxima_core::process_env)?,
             batch: NonZeroU32::new(DEFAULT_BATCH).expect("64 is not zero"),
@@ -185,6 +244,9 @@ impl NatsPublisherConfig {
         let mut config = Self::new(url)?;
         if let Some(raw) = lookup(ENV_SUBJECT_PREFIX) {
             config.subject_prefix = validated_subject_prefix(&raw)?;
+        }
+        if let Some(raw) = lookup(ENV_PUBLISHER_INBOX_PREFIX) {
+            config.inbox_prefix = Some(InboxPrefix::parse(ENV_PUBLISHER_INBOX_PREFIX, raw)?);
         }
         // Both the explicit key and the default's `HOSTNAME` come out of the
         // INJECTED lookup: a host that hands us an environment must not get
@@ -259,6 +321,8 @@ impl NatsPublisherConfig {
 pub struct NatsConsumerConfig {
     pub url: String,
     pub auth: NatsAuth,
+    /// Optional validated reply namespace. `None` preserves async-nats' default.
+    pub inbox_prefix: Option<InboxPrefix>,
     pub stream: String,
     /// Durable name. Two processes sharing it share the work; two
     /// deployments sharing it by accident share the acknowledgements.
@@ -277,6 +341,7 @@ impl std::fmt::Debug for NatsConsumerConfig {
         f.debug_struct("NatsConsumerConfig")
             .field("url", &redacted_url(&self.url))
             .field("auth", &self.auth)
+            .field("inbox_prefix", &self.inbox_prefix)
             .field("stream", &self.stream)
             .field("durable_name", &self.durable_name)
             .field("request_timeout", &self.request_timeout)
@@ -290,6 +355,7 @@ impl NatsConsumerConfig {
         Self {
             url: url.into(),
             auth: NatsAuth::None,
+            inbox_prefix: None,
             stream: DEFAULT_CONSUMER_STREAM.to_owned(),
             durable_name: DEFAULT_CONSUMER_NAME.to_owned(),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -311,6 +377,9 @@ impl NatsConsumerConfig {
             return Ok(None);
         };
         let mut config = Self::new(url);
+        if let Some(raw) = lookup(ENV_CONSUMER_INBOX_PREFIX) {
+            config.inbox_prefix = Some(InboxPrefix::parse(ENV_CONSUMER_INBOX_PREFIX, raw)?);
+        }
         if let Some(raw) = lookup(ENV_CONSUMER_STREAM) {
             config.stream = validated_name(ENV_CONSUMER_STREAM, &raw)?;
         }
@@ -334,6 +403,8 @@ impl NatsConsumerConfig {
 /// Why a `PROXIMA_NATS_*` block was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
+    #[error("{key} must be a nonempty dot-separated NATS inbox prefix using only [A-Za-z0-9_-]")]
+    InvalidInboxPrefix { key: &'static str },
     #[error(
         "PROXIMA_NATS_SUBJECT_PREFIX must be dot-separated tokens of [A-Za-z0-9_-] \
          and must not carry the `*` or `>` wildcards, got {value:?}"
@@ -557,15 +628,102 @@ mod tests {
     #[test]
     fn an_unset_url_is_a_publisher_that_is_off_not_a_broken_host() {
         assert!(
-            NatsPublisherConfig::from_lookup(env(&[(ENV_CONSUMER_STREAM, "OTHER")]))
+            NatsPublisherConfig::from_lookup(env(&[
+                (ENV_CONSUMER_STREAM, "OTHER"),
+                (ENV_PUBLISHER_INBOX_PREFIX, "_INBOX.publisher"),
+            ]))
+            .expect("parses")
+            .is_none()
+        );
+        assert!(
+            NatsConsumerConfig::from_lookup(env(&[(ENV_CONSUMER_INBOX_PREFIX, "_INBOX.consumer")]))
                 .expect("parses")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn inbox_prefix_is_an_opaque_validated_domain_value() {
+        for valid in ["_INBOX.isolated_publisher", "_INBOX.a-b.c_2.9"] {
+            let prefix = InboxPrefix::new(valid).expect("valid inbox prefix");
+            assert_eq!(prefix.as_str(), valid);
+        }
+
+        for invalid in [
+            "",
+            ".leading",
+            "trailing.",
+            "a..b",
+            "a.*",
+            "a.>",
+            "a b",
+            "a/b",
+            "a,b",
+            "$SYS.a",
+            "a\0b",
+            "é",
+        ] {
+            let error = InboxPrefix::new(invalid).expect_err("invalid prefix refused");
+            assert!(matches!(error, ConfigError::InvalidInboxPrefix { .. }));
+            if !invalid.is_empty() {
+                assert!(
+                    !error.to_string().contains(invalid),
+                    "invalid input echoed by error: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn publisher_and_consumer_inbox_environment_keys_are_independent() {
+        let publisher = NatsPublisherConfig::from_lookup(env(&[
+            (ENV_URL, "nats://127.0.0.1:4222"),
+            (ENV_PUBLISHER_INBOX_PREFIX, "_INBOX.publisher"),
+            (ENV_CONSUMER_INBOX_PREFIX, "_INBOX.consumer"),
+        ]))
+        .expect("publisher config")
+        .expect("URL present");
+        assert_eq!(
+            publisher.inbox_prefix.as_ref().map(InboxPrefix::as_str),
+            Some("_INBOX.publisher")
+        );
+
+        let consumer = NatsConsumerConfig::from_lookup(env(&[
+            (ENV_URL, "nats://127.0.0.1:4222"),
+            (ENV_PUBLISHER_INBOX_PREFIX, "_INBOX.publisher"),
+            (ENV_CONSUMER_INBOX_PREFIX, "_INBOX.consumer"),
+        ]))
+        .expect("consumer config")
+        .expect("URL present");
+        assert_eq!(
+            consumer.inbox_prefix.as_ref().map(InboxPrefix::as_str),
+            Some("_INBOX.consumer")
+        );
+
+        assert!(
+            NatsPublisherConfig::new("nats://127.0.0.1:4222")
+                .expect("publisher config")
+                .inbox_prefix
                 .is_none()
         );
         assert!(
-            NatsConsumerConfig::from_lookup(env(&[]))
-                .expect("parses")
+            NatsConsumerConfig::new("nats://127.0.0.1:4222")
+                .inbox_prefix
                 .is_none()
         );
+
+        let invalid = "_INBOX.invalid.*.marker";
+        for key in [ENV_PUBLISHER_INBOX_PREFIX, ENV_CONSUMER_INBOX_PREFIX] {
+            let error = if key == ENV_PUBLISHER_INBOX_PREFIX {
+                NatsPublisherConfig::from_lookup(env(&[(ENV_URL, "nats://x:4222"), (key, invalid)]))
+                    .expect_err("publisher prefix validated")
+            } else {
+                NatsConsumerConfig::from_lookup(env(&[(ENV_URL, "nats://x:4222"), (key, invalid)]))
+                    .expect_err("consumer prefix validated")
+            };
+            assert!(matches!(error, ConfigError::InvalidInboxPrefix { .. }));
+            assert!(!error.to_string().contains(invalid));
+        }
     }
 
     #[test]
@@ -743,7 +901,10 @@ mod tests {
     #[test]
     fn the_debug_of_a_config_carries_no_credential() {
         let mut config = NatsPublisherConfig::from_lookup(env(&[
-            (ENV_URL, "nats://someone:hunter2@broker.internal:4222"),
+            (
+                ENV_URL,
+                "someone:hunter2@broker.internal:4222,nats://backup:secret@backup.internal:4222",
+            ),
             (ENV_TOKEN, "s3cr3t-token"),
         ]))
         .expect("parses")
@@ -751,10 +912,12 @@ mod tests {
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("s3cr3t-token"), "{rendered}");
         assert!(!rendered.contains("hunter2"), "{rendered}");
+        assert!(!rendered.contains("secret"), "{rendered}");
         assert!(
             rendered.contains("broker.internal:4222"),
             "the host is not the secret: {rendered}"
         );
+        assert!(rendered.contains("backup.internal:4222"), "{rendered}");
 
         config.auth = NatsAuth::UserPassword {
             user: "someone".to_owned(),
@@ -769,7 +932,7 @@ mod tests {
         assert!(!rendered.contains("nats.creds"), "{rendered}");
 
         let consumer = NatsConsumerConfig::from_lookup(env(&[
-            (ENV_URL, "nats://someone:hunter2@broker.internal:4222"),
+            (ENV_URL, "someone:hunter2@broker.internal:4222"),
             (ENV_PASSWORD, "hunter2"),
             (ENV_USER, "someone"),
         ]))
@@ -777,7 +940,44 @@ mod tests {
         .expect("url set");
         let rendered = format!("{consumer:?}");
         assert!(!rendered.contains("hunter2"), "{rendered}");
+        assert!(
+            rendered.contains("<redacted>@broker.internal:4222"),
+            "{rendered}"
+        );
         assert_eq!(consumer.request_timeout, DEFAULT_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn url_redaction_handles_schemeless_userinfo_and_server_lists() {
+        assert_eq!(
+            redacted_url("user:secret@host.internal:4222"),
+            "<redacted>@host.internal:4222"
+        );
+        assert_eq!(
+            redacted_url("nats://user:secret@first:4222,tls://other:token@second:4222"),
+            "nats://<redacted>@first:4222,tls://<redacted>@second:4222"
+        );
+        assert_eq!(
+            redacted_url("nats://host.internal:4222"),
+            "nats://host.internal:4222"
+        );
+        for url in [
+            "nats://user:secret@tail@host.internal:4222",
+            "user:secret@tail@host.internal:4222",
+        ] {
+            assert!(
+                url.parse::<async_nats::ServerAddr>().is_ok(),
+                "the pinned NATS parser accepts {url:?}"
+            );
+            assert_eq!(
+                redacted_url(url),
+                if url.contains("://") {
+                    "nats://<redacted>@host.internal:4222"
+                } else {
+                    "<redacted>@host.internal:4222"
+                }
+            );
+        }
     }
 
     #[test]
