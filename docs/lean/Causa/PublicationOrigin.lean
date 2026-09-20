@@ -452,6 +452,34 @@ theorem replay_does_not_restore_revoked_origin
       ¬ originExists after.origins id :=
   ⟨state, .replay state id metadata, rfl, revoked⟩
 
+/-- The universal behind the existential above: NO step of any kind restores a
+    revoked origin once fresh capture is barred for that Fact.
+
+    `replay_does_not_restore_revoked_origin` only exhibits one step that leaves
+    the origin absent, which a no-op relation satisfies for free. This quantifies
+    over every reachable step instead, and so is the result that actually carries
+    "a revoked origin stays revoked". The `blocked` hypothesis is necessary, not
+    incidental: a Fact whose origin was revoked and whose live row, outbox key,
+    capture binding and hard-delete witness are ALL absent is by definition
+    admissible again, and `fresh_fact_can_reuse_revoked_source` is the deliberate
+    case where that happens. `live_fact_cannot_be_freshly_recaptured` and
+    `hard_deleted_fact_cannot_be_freshly_recaptured` are what discharge `blocked`
+    for the two ways the runtime bars it. -/
+theorem no_step_restores_revoked_origin
+    (witnesses : Set ErasedPinTarget) (state after : State) (id : MemoryId)
+    (revoked : ¬ originExists state.origins id)
+    (blocked : ¬ FreshCaptureAllowed state id witnesses)
+    (step : PublicationStep witnesses state after) :
+    ¬ originExists after.origins id := by
+  cases step with
+  | replay _ _ => exact revoked
+  | freshAdmission captured metadata fresh =>
+    rintro ⟨record, hmem, hfact⟩
+    rcases hmem with hmem | heq
+    · exact revoked ⟨record, hmem, hfact⟩
+    · subst heq
+      exact blocked (hfact ▸ fresh)
+
 theorem source_revocation_does_not_enable_same_fact_recapture
     (state : State) (owner : OwnerRef) (source : SourceId)
     (id : MemoryId) (witnesses : Set ErasedPinTarget)

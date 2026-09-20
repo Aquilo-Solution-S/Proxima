@@ -66,4 +66,24 @@ namespace Causa.HostStateLifecycle
 #guard_msgs in
 #print axioms example_configuration_has_explicit_source_retention_and_export_exclusion
 
+/-- info: 'Causa.HostStateLifecycle.committed_erase_requires_every_admission_condition' does not depend on any axioms -/
+#guard_msgs in
+#print axioms committed_erase_requires_every_admission_condition
+
+/-- info: 'Causa.HostStateLifecycle.invalid_receipt_never_commits' does not depend on any axioms -/
+#guard_msgs in
+#print axioms invalid_receipt_never_commits
+
+/-- info: 'Causa.HostStateLifecycle.failed_commit_never_commits' does not depend on any axioms -/
+#guard_msgs in
+#print axioms failed_commit_never_commits
+
+/-- info: 'Causa.HostStateLifecycle.missing_registration_never_commits' does not depend on any axioms -/
+#guard_msgs in
+#print axioms missing_registration_never_commits
+
+/-- info: 'Causa.HostStateLifecycle.incomplete_coverage_never_commits' does not depend on any axioms -/
+#guard_msgs in
+#print axioms incomplete_coverage_never_commits
+
 end Causa.HostStateLifecycle

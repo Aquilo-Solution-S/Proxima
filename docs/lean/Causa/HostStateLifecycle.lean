@@ -295,6 +295,81 @@ theorem rejected_erase_preserves_core_and_host
     (_attempt : EraseTransaction request registration coreAfter callback commit before .rejected) :
     stateAfterErase before .rejected = before := rfl
 
+/-- The direction `rejected_erase_preserves_core_and_host` does NOT establish.
+
+    That theorem maps `.rejected` to the input state, which holds by the
+    definition of `stateAfterErase` whether or not any transaction produced the
+    `.rejected` — its `_attempt` hypothesis is unused. So on its own it says
+    "a rejection changes nothing", never "a bad input rejects". This inversion
+    supplies the missing half: reaching `.committed` at all FORCES every
+    admission condition, because `EraseTransaction.committed` is the sole
+    constructor whose result is `.committed`. Every other constructor is
+    eliminated by unification, which is what makes the case analysis below
+    one line. -/
+theorem committed_erase_requires_every_admission_condition
+    {Core Host : Type} {request : LifecycleRequest}
+    {registration : Option LifecycleRegistration} {coreAfter : Core}
+    {callback : Option (CallbackResult Host)} {commit : CommitStatus}
+    {before state : LifecycleState Core Host} {receipt : EraseReceipt}
+    (attempt : EraseTransaction request registration coreAfter callback commit before
+      (.committed state receipt)) :
+    ∃ frozen, registration = some frozen ∧
+      commit = .committed ∧
+      callback = some (.completed state.host receipt) ∧
+      CoverageComplete frozen ∧
+      EraseReceiptValid frozen request receipt ∧
+      state.core = coreAfter := by
+  cases attempt with
+  | committed coverage valid => exact ⟨_, rfl, rfl, rfl, coverage, valid, rfl⟩
+
+/-- HL-4's "invalid receipt rejects the erase", as a prohibition. -/
+theorem invalid_receipt_never_commits
+    {Core Host : Type} {request : LifecycleRequest}
+    {frozen : LifecycleRegistration} {coreAfter : Core} {hostAfter : Host}
+    {receipt stamped : EraseReceipt} {commit : CommitStatus}
+    {before state : LifecycleState Core Host}
+    (invalid : ¬ EraseReceiptValid frozen request receipt)
+    (attempt : EraseTransaction request (some frozen) coreAfter
+      (some (.completed hostAfter receipt)) commit before (.committed state stamped)) :
+    False := by
+  cases attempt with
+  | committed coverage valid => exact invalid valid
+
+/-- HL-4's "failed commit rejects the erase", as a prohibition. No hypothesis
+    about the receipt is needed: the commit status alone rules the result out. -/
+theorem failed_commit_never_commits
+    {Core Host : Type} {request : LifecycleRequest}
+    {registration : Option LifecycleRegistration} {coreAfter : Core}
+    {callback : Option (CallbackResult Host)}
+    {before state : LifecycleState Core Host} {stamped : EraseReceipt}
+    (attempt : EraseTransaction request registration coreAfter callback .failed before
+      (.committed state stamped)) :
+    False := by
+  cases attempt
+
+/-- Likewise for the two structural refusals: no registration, or coverage that
+    the frozen registration does not satisfy. -/
+theorem missing_registration_never_commits
+    {Core Host : Type} {request : LifecycleRequest} {coreAfter : Core}
+    {callback : Option (CallbackResult Host)} {commit : CommitStatus}
+    {before state : LifecycleState Core Host} {stamped : EraseReceipt}
+    (attempt : EraseTransaction request none coreAfter callback commit before
+      (.committed state stamped)) :
+    False := by
+  cases attempt
+
+theorem incomplete_coverage_never_commits
+    {Core Host : Type} {request : LifecycleRequest}
+    {frozen : LifecycleRegistration} {coreAfter : Core}
+    {callback : Option (CallbackResult Host)} {commit : CommitStatus}
+    {before state : LifecycleState Core Host} {stamped : EraseReceipt}
+    (invalid : ¬ CoverageComplete frozen)
+    (attempt : EraseTransaction request (some frozen) coreAfter callback commit before
+      (.committed state stamped)) :
+    False := by
+  cases attempt with
+  | committed coverage valid => exact invalid coverage
+
 theorem committed_erase_binds_owner_and_scope
     {Core Host : Type} {request : LifecycleRequest}
     {frozen : LifecycleRegistration} {coreAfter : Core} {hostAfter : Host}

@@ -126,6 +126,10 @@ namespace Causa.PublicationOrigin
 #guard_msgs in
 #print axioms replay_does_not_restore_revoked_origin
 
+/-- info: 'Causa.PublicationOrigin.no_step_restores_revoked_origin' does not depend on any axioms -/
+#guard_msgs in
+#print axioms no_step_restores_revoked_origin
+
 /-- info: 'Causa.PublicationOrigin.source_revocation_does_not_enable_same_fact_recapture' does not depend on any axioms -/
 #guard_msgs in
 #print axioms source_revocation_does_not_enable_same_fact_recapture

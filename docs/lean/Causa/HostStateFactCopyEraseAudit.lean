@@ -30,6 +30,14 @@ namespace Causa.HostStateFactCopyErase
 #guard_msgs in
 #print axioms exact_fact_selection_has_no_original_scope
 
+/-- info: 'Causa.HostStateFactCopyErase.source_copy_locators_are_exact' does not depend on any axioms -/
+#guard_msgs in
+#print axioms source_copy_locators_are_exact
+
+/-- info: 'Causa.HostStateFactCopyErase.owner_copy_locators_are_exact' does not depend on any axioms -/
+#guard_msgs in
+#print axioms owner_copy_locators_are_exact
+
 /-- info: 'Causa.HostStateFactCopyErase.mapped_source_copy_locators_are_exact' does not depend on any axioms -/
 #guard_msgs in
 #print axioms mapped_source_copy_locators_are_exact
