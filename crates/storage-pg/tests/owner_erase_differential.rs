@@ -696,6 +696,10 @@ pub const DROPPED_TABLES: &[&str] = &[
     "compliance_audit_log",
     "owner_fact_retention",
     "owner_legal_holds",
+    // Added after the pinned fd362509 baseline. Its capture/revoke/backfill
+    // semantics have focused publication-origin PG oracles; this differential
+    // continues to compare only relations available to both implementations.
+    "publication_origin",
 ];
 pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0007 added staged BLAKE3 identity after this frozen baseline;
@@ -724,9 +728,12 @@ fn names_relation(table: &str, relation: &str) -> bool {
 /// have put two dynamic-SQL sites in the tree for a harness, and the whole
 /// point of a harness is that it costs nothing to keep.
 pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::Error>> {
-    // The witness is permanent owner-free erase metadata: the erase-side
-    // snapshot legitimately gains rows that a transfer-side snapshot cannot.
-    // Exclude it so this harness compares only mutable owner-scoped state.
+    // Two permanent owner-free relations are excluded so this harness
+    // compares only mutable owner-scoped state: `erased_pin_target`, whose
+    // rows an erase-side snapshot legitimately gains where a transfer-side
+    // one cannot, and `installation`, one row minted by the migration that
+    // no lifecycle operation can reach and whose value differs per test
+    // database by construction.
     let relations: Vec<(String, Vec<String>)> = sqlx::query_as(
         "SELECT t.table_name::text,
                 (xpath(
@@ -741,7 +748,7 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
                 ))::text[]
            FROM information_schema.tables t
           WHERE t.table_schema = 'proxima_core' AND t.table_type = 'BASE TABLE'
-            AND t.table_name <> 'erased_pin_target'
+            AND t.table_name NOT IN ('erased_pin_target', 'installation')
           ORDER BY t.table_name",
     )
     .fetch_all(pool)

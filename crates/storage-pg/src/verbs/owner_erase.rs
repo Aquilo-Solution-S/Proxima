@@ -3,11 +3,19 @@
 // handed, and bundling them into a struct would only move the arity to its
 // constructor.
 
-use proxima_core::flavor::{EraseLeg, KeyShape};
+use std::collections::BTreeMap;
+
+use proxima_core::flavor::{EraseLeg, HostStateEraseDisposition, KeyShape};
 use proxima_core::owner_inverse::{
     EraseAuthorization, OwnerEraseCounts, OwnerEraseOutcome, OwnerEraseRefusal, OwnerSurfaces,
 };
-use proxima_core::{ColdObjectStore, GroupId, OwnerRef, SourceId, StorageError, UserId};
+use proxima_core::storage_ports::{
+    HostStateEraseReceipt, HostStateEraseRequest, HostStateEraseScope, HostStateEraseSelection,
+    HostStateFactCopyLocator,
+};
+use proxima_core::{
+    ColdObjectStore, GroupId, OwnerRef, OwnerRefKind, SourceId, StorageError, UserId,
+};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::access::owner_columns::{
@@ -54,6 +62,21 @@ impl<'a> SelectionScope<'a> {
 /// load-bearing rather than incidental.
 async fn begin_bulk_erase_tx(pool: &PgPool) -> Result<Tx<'_>, StorageError> {
     let mut tx = pool.begin().await.map_err(map_err)?;
+    // The database-wide lifecycle fence is the first lock in this
+    // transaction. Bound that wait before taking it: the long-work
+    // statement_timeout override below is for the erase body and must not
+    // turn a queued erase into an unbounded first-lock wait. 55P03 is a
+    // retryable lock conflict, so the outer erase retries the whole tx.
+    sqlx::query("SET LOCAL lock_timeout = '5s'")
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+    // Publication-origin eligibility is checked inside ordinary host UoWs,
+    // which hold this fence shared from transaction entry. Every owner or
+    // source erase now revokes that origin index, even when no optional
+    // lifecycle callback is registered, so it must take the exclusive fence
+    // before owner/source/target locks in every configuration.
+    crate::access::owner_columns::lock_host_lifecycle_fence_exclusive_tx(&mut tx).await?;
     sqlx::query("SET LOCAL statement_timeout = 0")
         .execute(&mut *tx)
         .await
@@ -110,20 +133,42 @@ pub async fn erase_group_owner(
     group_id: GroupId,
     surfaces: &OwnerSurfaces,
 ) -> Result<OwnerEraseOutcome, StorageError> {
+    erase_group_owner_with_lifecycle(pool, cold, auth, group_id, surfaces, None).await
+}
+
+pub(crate) async fn erase_group_owner_with_lifecycle(
+    pool: &PgPool,
+    cold: &dyn ColdObjectStore,
+    auth: &EraseAuthorization,
+    group_id: GroupId,
+    surfaces: &OwnerSurfaces,
+    lifecycle: Option<crate::RegisteredHostStateLifecycle>,
+) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
-    erase_with_retry(pool, cold, |pool| async move {
-        let mut tx = begin_bulk_erase_tx(pool).await?;
-        lock_group_membership_tx(&mut tx, group_id).await?;
-        if group_member_count(&mut tx, group_id).await? > 0 {
-            return Ok(EraseAttempt::Refused(refused(
-                auth,
-                OwnerEraseRefusal::OwnerNotAbandoned,
-            )));
+    validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
+    erase_with_retry(pool, cold, |pool| {
+        let lifecycle = lifecycle.clone();
+        async move {
+            let mut tx = begin_bulk_erase_tx(pool).await?;
+            lock_group_membership_tx(&mut tx, group_id).await?;
+            if group_member_count(&mut tx, group_id).await? > 0 {
+                return Ok(EraseAttempt::Refused(refused(
+                    auth,
+                    OwnerEraseRefusal::OwnerNotAbandoned,
+                )));
+            }
+            let cold_purge = erase_selected(
+                &mut tx,
+                owner,
+                SelectionScope::Owner,
+                surfaces,
+                lifecycle.as_ref(),
+            )
+            .await?;
+            let outcome = complete(auth, &mut tx, &cold_purge).await?;
+            tx.commit().await.map_err(map_err)?;
+            Ok(EraseAttempt::Completed(cold_purge, outcome))
         }
-        let cold_purge = erase_selected(&mut tx, owner, SelectionScope::Owner, surfaces).await?;
-        let outcome = complete(auth, &mut tx, &cold_purge).await?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(EraseAttempt::Completed(cold_purge, outcome))
     })
     .await
 }
@@ -135,13 +180,35 @@ pub async fn erase_personal_owner(
     user_id: UserId,
     surfaces: &OwnerSurfaces,
 ) -> Result<OwnerEraseOutcome, StorageError> {
+    erase_personal_owner_with_lifecycle(pool, cold, auth, user_id, surfaces, None).await
+}
+
+pub(crate) async fn erase_personal_owner_with_lifecycle(
+    pool: &PgPool,
+    cold: &dyn ColdObjectStore,
+    auth: &EraseAuthorization,
+    user_id: UserId,
+    surfaces: &OwnerSurfaces,
+    lifecycle: Option<crate::RegisteredHostStateLifecycle>,
+) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
-    erase_with_retry(pool, cold, |pool| async move {
-        let mut tx = begin_bulk_erase_tx(pool).await?;
-        let cold_purge = erase_selected(&mut tx, owner, SelectionScope::Owner, surfaces).await?;
-        let outcome = complete(auth, &mut tx, &cold_purge).await?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(EraseAttempt::Completed(cold_purge, outcome))
+    validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
+    erase_with_retry(pool, cold, |pool| {
+        let lifecycle = lifecycle.clone();
+        async move {
+            let mut tx = begin_bulk_erase_tx(pool).await?;
+            let cold_purge = erase_selected(
+                &mut tx,
+                owner,
+                SelectionScope::Owner,
+                surfaces,
+                lifecycle.as_ref(),
+            )
+            .await?;
+            let outcome = complete(auth, &mut tx, &cold_purge).await?;
+            tx.commit().await.map_err(map_err)?;
+            Ok(EraseAttempt::Completed(cold_purge, outcome))
+        }
     })
     .await
 }
@@ -154,21 +221,44 @@ pub async fn erase_group_source_scope(
     source_id: &SourceId,
     surfaces: &OwnerSurfaces,
 ) -> Result<OwnerEraseOutcome, StorageError> {
+    erase_group_source_scope_with_lifecycle(pool, cold, auth, group_id, source_id, surfaces, None)
+        .await
+}
+
+pub(crate) async fn erase_group_source_scope_with_lifecycle(
+    pool: &PgPool,
+    cold: &dyn ColdObjectStore,
+    auth: &EraseAuthorization,
+    group_id: GroupId,
+    source_id: &SourceId,
+    surfaces: &OwnerSurfaces,
+    lifecycle: Option<crate::RegisteredHostStateLifecycle>,
+) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
-    erase_with_retry(pool, cold, |pool| async move {
-        let mut tx = begin_bulk_erase_tx(pool).await?;
-        lock_group_membership_tx(&mut tx, group_id).await?;
-        if group_member_count(&mut tx, group_id).await? > 0 {
-            return Ok(EraseAttempt::Refused(refused(
-                auth,
-                OwnerEraseRefusal::SourceScopeOwnerStillLive,
-            )));
+    validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
+    erase_with_retry(pool, cold, |pool| {
+        let lifecycle = lifecycle.clone();
+        async move {
+            let mut tx = begin_bulk_erase_tx(pool).await?;
+            lock_group_membership_tx(&mut tx, group_id).await?;
+            if group_member_count(&mut tx, group_id).await? > 0 {
+                return Ok(EraseAttempt::Refused(refused(
+                    auth,
+                    OwnerEraseRefusal::SourceScopeOwnerStillLive,
+                )));
+            }
+            let cold_purge = erase_selected(
+                &mut tx,
+                owner,
+                SelectionScope::Source(source_id),
+                surfaces,
+                lifecycle.as_ref(),
+            )
+            .await?;
+            let outcome = complete(auth, &mut tx, &cold_purge).await?;
+            tx.commit().await.map_err(map_err)?;
+            Ok(EraseAttempt::Completed(cold_purge, outcome))
         }
-        let cold_purge =
-            erase_selected(&mut tx, owner, SelectionScope::Source(source_id), surfaces).await?;
-        let outcome = complete(auth, &mut tx, &cold_purge).await?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(EraseAttempt::Completed(cold_purge, outcome))
     })
     .await
 }
@@ -181,14 +271,37 @@ pub async fn erase_personal_source_scope(
     source_id: &SourceId,
     surfaces: &OwnerSurfaces,
 ) -> Result<OwnerEraseOutcome, StorageError> {
+    erase_personal_source_scope_with_lifecycle(pool, cold, auth, user_id, source_id, surfaces, None)
+        .await
+}
+
+pub(crate) async fn erase_personal_source_scope_with_lifecycle(
+    pool: &PgPool,
+    cold: &dyn ColdObjectStore,
+    auth: &EraseAuthorization,
+    user_id: UserId,
+    source_id: &SourceId,
+    surfaces: &OwnerSurfaces,
+    lifecycle: Option<crate::RegisteredHostStateLifecycle>,
+) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
-    erase_with_retry(pool, cold, |pool| async move {
-        let mut tx = begin_bulk_erase_tx(pool).await?;
-        let cold_purge =
-            erase_selected(&mut tx, owner, SelectionScope::Source(source_id), surfaces).await?;
-        let outcome = complete(auth, &mut tx, &cold_purge).await?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(EraseAttempt::Completed(cold_purge, outcome))
+    validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
+    erase_with_retry(pool, cold, |pool| {
+        let lifecycle = lifecycle.clone();
+        async move {
+            let mut tx = begin_bulk_erase_tx(pool).await?;
+            let cold_purge = erase_selected(
+                &mut tx,
+                owner,
+                SelectionScope::Source(source_id),
+                surfaces,
+                lifecycle.as_ref(),
+            )
+            .await?;
+            let outcome = complete(auth, &mut tx, &cold_purge).await?;
+            tx.commit().await.map_err(map_err)?;
+            Ok(EraseAttempt::Completed(cold_purge, outcome))
+        }
     })
     .await
 }
@@ -200,9 +313,12 @@ async fn complete(
     tx: &mut Tx<'_>,
     cold_purge: &ColdPurgePlan,
 ) -> Result<OwnerEraseOutcome, StorageError> {
+    let (host_state_deleted, host_state_scrubbed) = final_host_state_counts(tx).await?;
     Ok(OwnerEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
         counts: final_counts(tx).await?,
+        host_state_deleted,
+        host_state_scrubbed,
         cold_object_purge_pending: !cold_purge.is_empty(),
     })
 }
@@ -217,6 +333,8 @@ async fn finalize_cold_purge(
     let OwnerEraseOutcome::Completed {
         operation_id,
         counts,
+        host_state_deleted,
+        host_state_scrubbed,
         ..
     } = outcome
     else {
@@ -225,6 +343,8 @@ async fn finalize_cold_purge(
     OwnerEraseOutcome::Completed {
         operation_id,
         counts,
+        host_state_deleted,
+        host_state_scrubbed,
         cold_object_purge_pending: purge.pending,
     }
 }
@@ -425,8 +545,14 @@ async fn erase_selected(
     owner: OwnerRef,
     scope: SelectionScope<'_>,
     surfaces: &OwnerSurfaces,
+    lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
 ) -> Result<ColdPurgePlan, StorageError> {
     open_erase_bookkeeping(tx, surfaces, owner, scope).await?;
+    invoke_host_lifecycle_erase(tx, surfaces, owner, scope, lifecycle).await?;
+    let (origins_revoked, publications_revoked) =
+        revoke_original_publications(tx, owner, scope).await?;
+    record_count(tx, "publication_origins", origins_revoked).await?;
+    record_count(tx, "publications", publications_revoked).await?;
 
     let delegated_authority_grants = delete_delegated_authority_grants(tx, owner, scope).await?;
     record_count(tx, "delegated_authority_grants", delegated_authority_grants).await?;
@@ -484,6 +610,269 @@ async fn erase_selected(
     Ok(ColdPurgePlan::from_entries(entries))
 }
 
+fn validate_lifecycle_dispatch(
+    surfaces: &OwnerSurfaces,
+    lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
+) -> Result<(), StorageError> {
+    use std::collections::BTreeSet;
+
+    let expected = surfaces
+        .host_lifecycle_surfaces()
+        .iter()
+        .map(|policy| policy.table)
+        .collect::<BTreeSet<_>>();
+    let Some(lifecycle) = lifecycle else {
+        return if expected.is_empty() {
+            Ok(())
+        } else {
+            Err(StorageError::Internal(
+                "managed host lifecycle surface has no registered callback; refusing erase".into(),
+            ))
+        };
+    };
+    let declared = lifecycle
+        .descriptor
+        .tables()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if expected.is_empty()
+        || lifecycle.descriptor.tables().len() != declared.len()
+        || declared != expected
+    {
+        return Err(StorageError::Internal(
+            "registered host lifecycle descriptor does not exactly match the erase surfaces".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn invoke_host_lifecycle_erase(
+    tx: &mut Tx<'_>,
+    surfaces: &OwnerSurfaces,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+    lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
+) -> Result<(), StorageError> {
+    validate_lifecycle_dispatch(surfaces, lifecycle)?;
+    let Some(lifecycle) = lifecycle else {
+        return Ok(());
+    };
+    let selected_fact_ids = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT memory_id FROM selected_memories WHERE kind = 'fact' ORDER BY memory_id",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .into_iter()
+    .map(proxima_core::MemoryId::new)
+    .collect();
+    let (owner_kind, owner_id) = owner.columns();
+    let source_id = match scope {
+        SelectionScope::Owner => None,
+        SelectionScope::Source(source) => Some(source.as_str()),
+    };
+    let original_copies = sqlx::query_as::<_, (OwnerRefKind, uuid::Uuid, uuid::Uuid)>(
+        "SELECT origin.original_owner_kind, origin.original_owner_id, origin.t
+           FROM proxima_core.publication_origin origin
+          WHERE EXISTS (
+                    SELECT 1 FROM selected_memories sm
+                     WHERE sm.kind = 'fact' AND sm.memory_id = origin.t
+                )
+             OR (origin.original_owner_id = $1
+                 AND origin.original_owner_kind = $2
+                 AND ($3::text IS NULL OR origin.source_id = $3))
+          ORDER BY origin.original_owner_kind, origin.original_owner_id, origin.t",
+    )
+    .bind(owner_id)
+    .bind(owner_kind)
+    .bind(source_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .into_iter()
+    .map(|(kind, owner_id, t)| HostStateFactCopyLocator {
+        original_owner: kind.with_uuid(owner_id),
+        fact_id: proxima_core::MemoryId::new(t),
+    })
+    .collect();
+    let selection = HostStateEraseSelection::new(selected_fact_ids, original_copies);
+    let request_scope = match scope {
+        SelectionScope::Owner => HostStateEraseScope::WholeOwner,
+        SelectionScope::Source(source) => HostStateEraseScope::Source((*source).clone()),
+    };
+    let expected_tables = surfaces
+        .host_lifecycle_surfaces()
+        .iter()
+        .map(|policy| policy.table)
+        .collect::<Vec<_>>();
+    let request = HostStateEraseRequest::new(
+        lifecycle.descriptor.participant_id(),
+        owner,
+        request_scope.clone(),
+        selection.clone(),
+        expected_tables,
+    );
+    let receipt = lifecycle.port.erase(tx, request).await?;
+    validate_erase_receipt(
+        tx,
+        surfaces,
+        owner,
+        &request_scope,
+        &selection,
+        lifecycle,
+        receipt,
+        true,
+    )
+    .await
+}
+
+/// Exact physical Fact inverse used by the already-authorized hard erase.
+/// This path carries no original-owner selector and does not aggregate its
+/// callback counts into owner-scope bookkeeping.
+pub(crate) async fn invoke_host_lifecycle_exact_erase(
+    tx: &mut Tx<'_>,
+    context: &crate::PgHostStateEraseContext,
+    owner: OwnerRef,
+    physical_facts: &[uuid::Uuid],
+) -> Result<(), StorageError> {
+    validate_lifecycle_dispatch(&context.surfaces, context.lifecycle.as_ref())?;
+    let Some(lifecycle) = context.lifecycle.as_ref() else {
+        return Ok(());
+    };
+    let selection = HostStateEraseSelection::new(
+        physical_facts
+            .iter()
+            .copied()
+            .map(proxima_core::MemoryId::new)
+            .collect(),
+        Vec::new(),
+    );
+    let scope = HostStateEraseScope::ExactFacts;
+    let expected_tables = context
+        .surfaces
+        .host_lifecycle_surfaces()
+        .iter()
+        .map(|policy| policy.table)
+        .collect();
+    let request = HostStateEraseRequest::new(
+        lifecycle.descriptor.participant_id(),
+        owner,
+        scope.clone(),
+        selection.clone(),
+        expected_tables,
+    );
+    let receipt = lifecycle.port.erase(tx, request).await?;
+    validate_erase_receipt(
+        tx,
+        &context.surfaces,
+        owner,
+        &scope,
+        &selection,
+        lifecycle,
+        receipt,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)] // compare one receipt against its complete frozen transaction context
+async fn validate_erase_receipt(
+    tx: &mut Tx<'_>,
+    surfaces: &OwnerSurfaces,
+    owner: OwnerRef,
+    scope: &HostStateEraseScope,
+    selection: &HostStateEraseSelection,
+    lifecycle: &crate::RegisteredHostStateLifecycle,
+    receipt: HostStateEraseReceipt,
+    aggregate_counters: bool,
+) -> Result<(), StorageError> {
+    use std::collections::{BTreeMap as Map, BTreeSet};
+
+    if receipt.participant != lifecycle.descriptor.participant_id()
+        || receipt.owner != owner
+        || &receipt.scope != scope
+        || HostStateEraseSelection::new(
+            receipt.selection.physical_facts().to_vec(),
+            receipt.selection.original_copies().to_vec(),
+        ) != *selection
+    {
+        return Err(StorageError::Internal(
+            "host lifecycle erase receipt has a foreign participant, owner, or scope".into(),
+        ));
+    }
+    let expected = surfaces
+        .host_lifecycle_surfaces()
+        .iter()
+        .map(|policy| policy.table)
+        .collect::<BTreeSet<_>>();
+    let mut counts = Map::new();
+    for count in receipt.counts {
+        if counts.insert(count.table, count).is_some() {
+            return Err(StorageError::Internal(
+                "host lifecycle erase receipt contains a duplicate table".into(),
+            ));
+        }
+    }
+    let actual = counts.keys().copied().collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err(StorageError::Internal(
+            "host lifecycle erase receipt does not contain the exact declared table set".into(),
+        ));
+    }
+    for policy in surfaces.host_lifecycle_surfaces() {
+        let count = counts.get(&policy.table).ok_or_else(|| {
+            StorageError::Internal(format!(
+                "host lifecycle erase receipt is missing {}",
+                policy.table.as_str()
+            ))
+        })?;
+        let disposition = match scope {
+            HostStateEraseScope::WholeOwner => policy.whole_owner_erase,
+            HostStateEraseScope::Source(_) => policy.source_erase,
+            HostStateEraseScope::ExactFacts => policy.exact_fact_erase,
+        };
+        if disposition == HostStateEraseDisposition::Retain
+            && (count.deleted != 0 || count.scrubbed != 0)
+        {
+            return Err(StorageError::Internal(format!(
+                "retained host lifecycle table {} reported deletion or scrubbing",
+                policy.table.as_str()
+            )));
+        }
+        let deleted = i64::try_from(count.deleted).map_err(|_| {
+            StorageError::Internal("host lifecycle deleted count exceeds PostgreSQL bigint".into())
+        })?;
+        let scrubbed = i64::try_from(count.scrubbed).map_err(|_| {
+            StorageError::Internal("host lifecycle scrubbed count exceeds PostgreSQL bigint".into())
+        })?;
+        if aggregate_counters && let Some(counter) = policy.counter.key() {
+            record_count(tx, counter, count.deleted).await?;
+        }
+        if !aggregate_counters {
+            continue;
+        }
+        let changed = sqlx::query(
+            "UPDATE host_state_erase_counts
+                SET deleted = $2, scrubbed = $3
+              WHERE table_name = $1",
+        )
+        .bind(policy.table.as_str())
+        .bind(deleted)
+        .bind(scrubbed)
+        .execute(&mut **tx)
+        .await;
+        let changed = changed.map_err(map_err)?;
+        if changed.rows_affected() != 1 {
+            return Err(StorageError::Internal(format!(
+                "host lifecycle erase count table is missing {}",
+                policy.table.as_str()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Build the selection sets and open the per-transaction count table the
 /// deletions below tally into, seeded with a zero for every counter the
 /// frozen contracts declare.
@@ -504,14 +893,11 @@ async fn open_erase_bookkeeping(
     owner: OwnerRef,
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
-    // The scope fence comes first, before the selection reads anything. Held
-    // this way the snapshot is exact by construction: an admission for this
-    // owner needs the fence shared, and a transfer needs both endpoints
-    // exclusively, so neither can commit into the scope between the selection
-    // and the deletes. Source scope is exact one level down for the same
-    // reason — the shared owner fence excludes transfer, the exclusive source
-    // fence excludes same-source admission, and a different-source admission
-    // was never in scope.
+    // The global lifecycle fence is acquired by `begin_bulk_erase_tx` before
+    // this selection. It protects original-publication provenance against
+    // checked host UoWs through commit. The following scope fence then keeps
+    // the core selection exact while preserving different-source concurrency
+    // for direct storage admissions that do not carry host lifecycle state.
     //
     // Selecting first and revalidating afterwards was the earlier shape, and
     // it could not make progress under load. The window between the selection
@@ -522,8 +908,6 @@ async fn open_erase_bookkeeping(
     match scope {
         SelectionScope::Owner => lock_owner_fence_exclusive_tx(tx, &owner).await?,
         SelectionScope::Source(source_id) => {
-            // Source erase remains compatible with other source admissions;
-            // the owner shared fence only excludes a full-owner erase.
             lock_owner_fence_shared_tx(tx, &owner).await?;
             lock_source_fence_exclusive_tx(tx, &owner, source_id.as_str()).await?;
         }
@@ -531,6 +915,7 @@ async fn open_erase_bookkeeping(
     create_selected_sets(tx, owner, scope).await?;
     lock_selected_memory_handles(tx).await?;
     lock_selected_lifecycle_targets(tx).await?;
+    lock_selected_publication_origins(tx, owner, scope).await?;
     lock_selected_object_keys(tx, owner, scope).await?;
     capture_selected_handles(tx).await?;
     sqlx::query("CREATE TEMP TABLE erase_counts(name text PRIMARY KEY, count bigint NOT NULL) ON COMMIT DROP")
@@ -540,7 +925,113 @@ async fn open_erase_bookkeeping(
     for counter in surfaces.counters() {
         record_count(tx, counter, 0).await?;
     }
+    sqlx::query(
+        "CREATE TEMP TABLE host_state_erase_counts(
+             table_name text PRIMARY KEY,
+             deleted bigint NOT NULL,
+             scrubbed bigint NOT NULL
+         ) ON COMMIT DROP",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    for policy in surfaces.host_lifecycle_surfaces() {
+        sqlx::query(
+            "INSERT INTO host_state_erase_counts(table_name, deleted, scrubbed)
+             VALUES ($1, 0, 0)",
+        )
+        .bind(policy.table.as_str())
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    }
     Ok(())
+}
+
+/// Serialize origin revocation with the typed owner/Fact eligibility check.
+/// Lock origins selected either by physical Fact `t` or by immutable
+/// original owner/source, covering both transferred Facts outside the live
+/// scope and copies whose origin and physical selection overlap.
+async fn lock_selected_publication_origins(
+    tx: &mut Tx<'_>,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_id) = owner.columns();
+    let ids = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT origin.t
+           FROM proxima_core.publication_origin origin
+          WHERE EXISTS (
+                    SELECT 1 FROM selected_memories sm
+                     WHERE sm.kind = 'fact' AND sm.memory_id = origin.t
+                )
+             OR (origin.original_owner_id = $1
+                 AND origin.original_owner_kind = $2
+                 AND ($3::text IS NULL OR origin.source_id = $3))
+          ORDER BY origin.t",
+    )
+    .bind(owner_id)
+    .bind(owner_kind)
+    .bind(scope.source_bind())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    super::forget::lock_lifecycle_targets_tx(tx, &ids).await
+}
+
+/// Revoke copies selected by either physical Fact identity or immutable
+/// original publication owner/source. A destination-owner erase therefore
+/// reaches an A-origin copy after A→B transfer, while an original-source
+/// erase reaches it when the live Fact is no longer owned by A. The OR
+/// predicates operate over unique `t` keys, so a Fact matching both legs is
+/// deleted and counted once. Rows without trustworthy origins are still
+/// removed when their physical Fact is selected.
+async fn revoke_original_publications(
+    tx: &mut Tx<'_>,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+) -> Result<(u64, u64), StorageError> {
+    let (owner_kind, owner_id) = owner.columns();
+    let source = scope.source_bind();
+    let publications = sqlx::query(
+        "DELETE FROM proxima_core.publication_outbox outbox
+          WHERE EXISTS (
+                    SELECT 1 FROM selected_memories sm
+                     WHERE sm.kind = 'fact' AND sm.memory_id = outbox.t
+                )
+             OR EXISTS (
+                    SELECT 1 FROM proxima_core.publication_origin origin
+                     WHERE origin.t = outbox.t
+                       AND origin.original_owner_id = $1
+                       AND origin.original_owner_kind = $2
+                       AND ($3::text IS NULL OR origin.source_id = $3)
+                )",
+    )
+    .bind(owner_id)
+    .bind(owner_kind)
+    .bind(source)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .rows_affected();
+    let origins = sqlx::query(
+        "DELETE FROM proxima_core.publication_origin origin
+          WHERE EXISTS (
+                    SELECT 1 FROM selected_memories sm
+                     WHERE sm.kind = 'fact' AND sm.memory_id = origin.t
+                )
+             OR (origin.original_owner_id = $1
+                 AND origin.original_owner_kind = $2
+                 AND ($3::text IS NULL OR origin.source_id = $3))",
+    )
+    .bind(owner_id)
+    .bind(owner_kind)
+    .bind(source)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .rows_affected();
+    Ok((origins, publications))
 }
 
 /// Acquire the complete series-handle footprint from the immutable selection
@@ -864,6 +1355,34 @@ async fn final_counts(tx: &mut Tx<'_>) -> Result<OwnerEraseCounts, StorageError>
             .map(|(name, count)| (name, u64::try_from(count).unwrap_or_default()))
             .collect(),
     ))
+}
+
+async fn final_host_state_counts(
+    tx: &mut Tx<'_>,
+) -> Result<(BTreeMap<String, u64>, BTreeMap<String, u64>), StorageError> {
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT table_name, deleted, scrubbed
+           FROM host_state_erase_counts
+          ORDER BY table_name",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    let mut deleted = BTreeMap::new();
+    let mut scrubbed = BTreeMap::new();
+    for (table, deleted_count, scrubbed_count) in rows {
+        deleted.insert(
+            table.clone(),
+            u64::try_from(deleted_count)
+                .map_err(|_| StorageError::Internal("negative host-state deleted count".into()))?,
+        );
+        scrubbed.insert(
+            table,
+            u64::try_from(scrubbed_count)
+                .map_err(|_| StorageError::Internal("negative host-state scrubbed count".into()))?,
+        );
+    }
+    Ok((deleted, scrubbed))
 }
 
 async fn delete_fixed_by_selected(
@@ -1482,6 +2001,7 @@ mod tests {
                 EraseLeg::Owned { .. }
                 | EraseLeg::Bespoke
                 | EraseLeg::Cascade
+                | EraseLeg::HostState
                 | EraseLeg::Never { .. } => {}
             }
         }
@@ -1516,5 +2036,40 @@ mod tests {
         );
         assert_eq!(keyed_set(KeyShape::OwnerId), None);
         assert_eq!(keyed_set(KeyShape::Custom(&["a", "b"])), None);
+    }
+
+    #[tokio::test]
+    async fn bulk_erase_bounds_the_first_global_fence_wait_and_releases_the_tx() {
+        use std::time::Duration;
+
+        use crate::test_fixtures::fresh_pg;
+        use proxima_core::StorageError;
+        use proxima_pg_testkit::drop_db;
+
+        let (pg, database) = fresh_pg("owner_erase_global_lock_timeout").await;
+        let pool = pg.pool_for_tests();
+        let mut blocker = pool.begin().await.expect("begin shared-fence blocker");
+        crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut blocker)
+            .await
+            .expect("hold the lifecycle fence shared");
+
+        let attempt =
+            tokio::time::timeout(Duration::from_secs(8), super::begin_bulk_erase_tx(pool))
+                .await
+                .expect("the first global fence wait is bounded by lock_timeout");
+        assert!(
+            matches!(attempt, Err(StorageError::Retryable(_))),
+            "the waiter returns a retryable lock conflict, got {attempt:?}"
+        );
+        drop(attempt);
+
+        blocker.rollback().await.expect("release shared fence");
+        let tx = super::begin_bulk_erase_tx(pool)
+            .await
+            .expect("a fresh attempt acquires the fence after release");
+        tx.commit().await.expect("empty retry transaction commits");
+
+        drop(pg);
+        drop_db(&database).await.expect("drop task database");
     }
 }

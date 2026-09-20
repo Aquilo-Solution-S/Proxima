@@ -65,7 +65,7 @@ pub mod verbs;
 pub use access::PgOwnerAccessResolver;
 pub use delegated_authority::PgDelegationStore;
 pub use pool_config::PgPoolConfig;
-pub use ports::PgHostStateParticipant;
+pub use ports::{PgHostStateLifecyclePort, PgHostStateParticipant};
 pub use sidecars::{
     PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, core_pg_sidecars,
     register_core_pg_sidecars,
@@ -1444,7 +1444,168 @@ pub struct PgStorage {
     /// transaction. `None` keeps existing
     /// [`proxima_core::engine::UnitOfWork`] Fact behavior with no extra
     /// configuration.
-    host_state: Option<Arc<dyn crate::PgHostStateParticipant>>,
+    host_state: Option<RegisteredHostStateParticipant>,
+}
+
+/// Participant instance and the exact metadata snapshot captured when it
+/// was registered. Dispatch never calls metadata getters again.
+#[derive(Clone)]
+pub(crate) struct RegisteredHostStateParticipant {
+    pub(crate) participant: Arc<dyn crate::PgHostStateParticipant>,
+    pub(crate) descriptor: proxima_core::storage_ports::HostStateParticipantDescriptor,
+    pub(crate) lifecycle: Option<RegisteredHostStateLifecycle>,
+}
+
+#[derive(Clone)]
+pub(crate) struct RegisteredHostStateLifecycle {
+    pub(crate) port: Arc<dyn crate::PgHostStateLifecyclePort>,
+    pub(crate) descriptor: proxima_core::storage_ports::HostStateParticipantDescriptor,
+}
+
+/// Opaque authority-free context for one production boot's physical memory
+/// erasure path. It carries the entire registry-frozen surface set and the
+/// lifecycle callback actually validated against that set at boot.
+#[derive(Clone)]
+pub struct PgHostStateEraseContext {
+    pub(crate) surfaces: proxima_core::owner_inverse::OwnerSurfaces,
+    pub(crate) lifecycle: Option<RegisteredHostStateLifecycle>,
+}
+
+impl std::fmt::Debug for PgHostStateEraseContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PgHostStateEraseContext")
+            .field(
+                "host_lifecycle_tables",
+                &self.surfaces.host_lifecycle_surfaces(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl PgHostStateEraseContext {
+    /// Acquire the global host-state exclusive fence as the transaction's
+    /// first erase lock. Callers that perform flavor-owned queries or DML
+    /// before delegating a physical erase must call this immediately after
+    /// BEGIN and before any owner/source/handle/target locks.
+    ///
+    /// # Errors
+    /// Returns a storage error when `PostgreSQL` cannot acquire the fence.
+    pub async fn lock_before_physical_erase(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<(), StorageError> {
+        crate::access::owner_columns::lock_host_lifecycle_fence_exclusive_tx(tx).await
+    }
+
+    /// Explicit fixture constructor for registries without lifecycle-owned
+    /// tables. A registry that declares host lifecycle state must come from a
+    /// real validated `PgStorage` boot, so tests cannot silently omit its
+    /// callback.
+    #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+    #[doc(hidden)]
+    pub fn for_surfaces_for_tests(
+        surfaces: proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<Self, StorageError> {
+        if !surfaces.host_lifecycle_surfaces().is_empty() {
+            return Err(StorageError::ConstraintViolation(
+                "host lifecycle erase fixtures require a validated PgStorage registration".into(),
+            ));
+        }
+        Ok(Self {
+            surfaces,
+            lifecycle: None,
+        })
+    }
+}
+
+fn validate_host_lifecycle_registration(
+    surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
+    registered: Option<&RegisteredHostStateParticipant>,
+) -> Result<(), StorageError> {
+    use std::collections::BTreeSet;
+
+    let expected = surfaces
+        .host_lifecycle_surfaces()
+        .iter()
+        .map(|policy| policy.table)
+        .collect::<BTreeSet<_>>();
+    let Some(registered) = registered else {
+        if expected.is_empty() {
+            return Ok(());
+        }
+        return Err(StorageError::ConstraintViolation(
+            "frozen host lifecycle surfaces have no registered participant".into(),
+        ));
+    };
+    let Some(lifecycle) = registered.lifecycle.as_ref() else {
+        if expected.is_empty() {
+            return Ok(());
+        }
+        return Err(StorageError::ConstraintViolation(
+            "frozen host lifecycle surfaces have no lifecycle callback port".into(),
+        ));
+    };
+    if expected.is_empty() {
+        return Err(StorageError::ConstraintViolation(
+            "lifecycle callback port is registered but the frozen contracts declare no managed surfaces".into(),
+        ));
+    }
+    if lifecycle.descriptor.participant_id() != registered.descriptor.participant_id() {
+        return Err(StorageError::ConstraintViolation(
+            "lifecycle callback participant id differs from the registered host participant".into(),
+        ));
+    }
+    let lifecycle_tables = lifecycle
+        .descriptor
+        .tables()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let registered_tables = registered
+        .descriptor
+        .tables()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if registered_tables.len() != registered.descriptor.tables().len()
+        || lifecycle_tables.len() != lifecycle.descriptor.tables().len()
+        || lifecycle_tables != expected
+        || !expected.is_subset(&registered_tables)
+    {
+        return Err(StorageError::ConstraintViolation(
+            "registered lifecycle tables must uniquely match every frozen managed surface and be a subset of the host participant descriptor".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_registered_state_tables(
+    surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
+    registered: Option<&RegisteredHostStateParticipant>,
+) -> Result<(), StorageError> {
+    let Some(registered) = registered else {
+        return Ok(());
+    };
+    let declared = registered
+        .descriptor
+        .tables()
+        .iter()
+        .map(|table| table.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if declared.len() != registered.descriptor.tables().len() {
+        return Err(StorageError::ConstraintViolation(
+            "registered host participant declares a state table more than once".into(),
+        ));
+    }
+    if let Some(table) = declared
+        .iter()
+        .find(|table| !surfaces.is_declared_state_surface(table))
+    {
+        return Err(StorageError::ConstraintViolation(format!(
+            "registered host participant table {table} is not declared in linked flavor state_surfaces"
+        )));
+    }
+    Ok(())
 }
 
 impl std::fmt::Debug for PgStorage {
@@ -1616,8 +1777,33 @@ impl PgStorage {
         mut self,
         participant: Arc<dyn crate::PgHostStateParticipant>,
     ) -> Self {
-        self.host_state = Some(participant);
+        let descriptor = proxima_core::storage_ports::HostStateParticipantDescriptor::new(
+            participant.participant_id(),
+            participant.declared_tables(),
+        );
+        self.host_state = Some(RegisteredHostStateParticipant {
+            lifecycle: participant.lifecycle_port().map(|port| {
+                let descriptor = proxima_core::storage_ports::HostStateParticipantDescriptor::new(
+                    port.participant_id(),
+                    port.declared_tables(),
+                );
+                RegisteredHostStateLifecycle { port, descriptor }
+            }),
+            participant,
+            descriptor,
+        });
         self
+    }
+
+    pub(crate) fn host_lifecycle_for_surfaces(
+        &self,
+        surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<Option<RegisteredHostStateLifecycle>, StorageError> {
+        validate_host_lifecycle_registration(surfaces, self.host_state.as_ref())?;
+        Ok(self
+            .host_state
+            .as_ref()
+            .and_then(|registered| registered.lifecycle.clone()))
     }
 
     /// Replace the forget/hydrate object store (S3 in the host).
@@ -1659,6 +1845,23 @@ impl PgStorage {
         &self.surfaces
     }
 
+    /// Capture the boot-frozen registry and its validated host lifecycle
+    /// callback for a flavor that invokes the shared physical erase verb.
+    ///
+    /// # Errors
+    /// Returns an error if the frozen host lifecycle declarations no longer
+    /// match the participant and callback captured by this storage instance.
+    pub fn host_state_erase_context(&self) -> Result<PgHostStateEraseContext, StorageError> {
+        validate_host_lifecycle_registration(&self.surfaces, self.host_state.as_ref())?;
+        Ok(PgHostStateEraseContext {
+            surfaces: self.surfaces.clone(),
+            lifecycle: self
+                .host_state
+                .as_ref()
+                .and_then(|registered| registered.lifecycle.clone()),
+        })
+    }
+
     /// Replace the entire sidecar registry.
     ///
     /// The caller must include the core sidecars. The boot/facade path
@@ -1688,6 +1891,31 @@ impl PgStorage {
         self.surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(registry);
         self.scopes = crate::access::scope_surfaces::ScopeSurfaces::for_registry(registry);
         self
+    }
+
+    /// Fallible flavor installation used by production boot. It validates
+    /// lifecycle policy coverage against the participant and callback port
+    /// captured at registration, before these surfaces can reach an engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::ConstraintViolation`] when lifecycle policies
+    /// overlap generic inverses, lack a registered callback, or disagree with
+    /// the captured participant/callback descriptors.
+    pub fn try_with_flavors(
+        mut self,
+        registry: &proxima_core::FlavorRegistryFrozen,
+    ) -> Result<Self, StorageError> {
+        let surfaces = proxima_core::owner_inverse::OwnerSurfaces::try_for_registry(registry)
+            .map_err(|error| StorageError::ConstraintViolation(error.to_string()))?;
+        validate_host_lifecycle_registration(&surfaces, self.host_state.as_ref())?;
+        validate_registered_state_tables(&surfaces, self.host_state.as_ref())?;
+        self.search_projections = registry.search_projections().to_vec();
+        self.embed_units = registry.embed_units().to_vec();
+        self.non_embeddable_schemas = registry.non_embeddable_schema_ids().to_vec();
+        self.surfaces = surfaces;
+        self.scopes = crate::access::scope_surfaces::ScopeSurfaces::for_registry(registry);
+        Ok(self)
     }
 
     /// The resolved lifecycle-scope declarations this storage fences on.
@@ -1967,7 +2195,7 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
              0003_v010_reference_integrity.sql, 0004_v011_goal_refs.sql, \
@@ -1975,7 +2203,7 @@ mod tests {
              0006_v013_goal_replay_declaration.sql, \
              0007_upload_content_identity.sql, 0008_cold_integrity_digest.sql, \
              0009_declared_sidecar_presence.sql, 0010_purge_queue_backend.sql \
-             and 0011_v012_fact_outbox.sql"
+             0011_v012_fact_outbox.sql and 0012_v013_publication_origin.sql"
         );
     }
 
@@ -2069,10 +2297,21 @@ mod tests {
             &["publication_outbox", "publication_state"],
             "capture a listenable Fact's event in the Fact's own transaction",
         );
-        // The legacy range shrinks as the head advances: versions 7 through 11
-        // are current additive migrations, so only 12..=21 remain retired by
+        carries(
+            12,
+            &[
+                "publication_origin",
+                "publication_origin_identity_immutable",
+                "proxima_core.installation",
+                "installation_identity_immutable",
+            ],
+            "pin a published Fact's immutable original owner and source, and mint \
+             the installation identity a retained copy is attributed to",
+        );
+        // The legacy range shrinks as the head advances: versions 7 through 12
+        // are current additive migrations, so only 13..=21 remain retired by
         // the v0.0.8 squash.
-        for dead in 12..=21 {
+        for dead in 13..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"

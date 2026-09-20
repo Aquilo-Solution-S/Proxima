@@ -19,8 +19,60 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
-use crate::owner::OwnerRefKind;
+use crate::MemoryId;
+use crate::owner::{OwnerRef, OwnerRefKind};
 use crate::storage::StorageError;
+
+/// Fail-closed result of checking whether one exact captured Fact may still
+/// be admitted by a host consumer. This reveals no payload or foreign owner
+/// state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationOriginEligibility {
+    Eligible,
+    Ineligible,
+}
+
+/// Narrow host-only check over immutable publication origin and the core
+/// hard-delete witness. It is deliberately separate from `StoragePorts` and
+/// grants neither Fact reads nor writes.
+#[async_trait::async_trait]
+pub trait PublicationOriginEligibilityPort: Send + Sync {
+    /// Check one exact `(original owner, physical Fact)` pair in its own
+    /// short transaction. This method takes the database-wide shared
+    /// lifecycle fence before the existing per-Fact target fence, commits,
+    /// and only then returns the result to a host caller. It grants no
+    /// authority to read the Fact or retain a database fence across an
+    /// external operation.
+    ///
+    /// This convenience is for host work that must not carry a caller's
+    /// transaction into an external await. Atomic host-state admission must
+    /// continue to use [`Self::check_in_transaction`].
+    ///
+    /// # Errors
+    /// Returns a storage error when the fenced check or commit fails.
+    async fn check_committed(
+        &self,
+        original_owner: OwnerRef,
+        fact_id: MemoryId,
+    ) -> Result<PublicationOriginEligibility, StorageError>;
+
+    /// Check one `(original owner, physical Fact)` pair inside the caller's
+    /// current `UoW` transaction, under the same target fence used by hard
+    /// deletion. The caller must hold the database-wide lifecycle fence in
+    /// shared mode from transaction entry, before acquiring owner or target
+    /// locks; this method does not acquire that fence after the fact. The
+    /// caller must commit any corresponding host-state write in this
+    /// transaction; a pool-only preflight is not authoritative.
+    ///
+    /// # Errors
+    /// Returns a storage error when the fenced check cannot be completed.
+    async fn check_in_transaction(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        original_owner: OwnerRef,
+        fact_id: MemoryId,
+    ) -> Result<PublicationOriginEligibility, StorageError>;
+}
 
 /// Identity of one publisher process, recorded on every claim.
 ///
@@ -69,6 +121,43 @@ pub enum PublisherIdError {
     IllegalCharacter { value: String },
     #[error("publisher id is {bytes} bytes, over the 128-byte limit")]
     TooLong { bytes: usize },
+}
+
+/// The identity of one Proxima installation, minted once by the schema.
+///
+/// This exists because [`PublicationOriginEligibility`] is answered from the
+/// ABSENCE of a row, and an absence carries no scope. "No origin row for
+/// this Fact" reads identically whether the row was revoked by erasure or
+/// was never in this database at all, so a cleaner pointed at a stream some
+/// other installation published to would read every message as revoked.
+///
+/// A publisher stamps this on the broker message; a cleaner compares it
+/// against the value it read from the same database that answers the
+/// eligibility check. That makes the binding a fact about the data rather
+/// than a deployment precondition an operator is trusted to have met.
+///
+/// It identifies an installation LINEAGE, not a database instance: a
+/// restore or a clone carries the same value, which is why pointing a copy
+/// at the original's broker remains an operator responsibility (docs/18).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OriginScope(Uuid);
+
+impl OriginScope {
+    #[must_use]
+    pub const fn new(id: Uuid) -> Self {
+        Self(id)
+    }
+
+    #[must_use]
+    pub const fn into_inner(self) -> Uuid {
+        self.0
+    }
+}
+
+impl std::fmt::Display for OriginScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.as_hyphenated())
+    }
 }
 
 /// The fencing token minted by one claim.

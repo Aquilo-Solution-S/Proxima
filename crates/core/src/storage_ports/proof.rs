@@ -22,6 +22,88 @@ pub struct OwnerWritePermit {
     _private: (),
 }
 
+/// Provenance stamped on a host-state request after its existing admission path.
+/// It describes the caller or maintenance path and grants no authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostStateWriteOrigin {
+    OwnerAuthorized { principal: crate::OwnerRef },
+    Maintenance,
+}
+
+/// Narrow command stamp for host-state SQL. This is deliberately distinct
+/// from [`OwnerWritePermit`]: it binds the fixed owner, participant and exact
+/// command table subset, carries no access kind, cannot authorize ordinary
+/// cognitive writes, and has no conversion back to that permit.
+pub struct HostStateWritePermit {
+    owner: Owner,
+    participant_id: crate::storage_ports::HostStateParticipantId,
+    tables: &'static [crate::storage_ports::StateSurfaceName],
+    origin: HostStateWriteOrigin,
+    _private: (),
+}
+
+impl std::fmt::Debug for HostStateWritePermit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HostStateWritePermit")
+            .field("owner", &self.owner)
+            .field("participant_id", &self.participant_id)
+            .field("tables", &self.tables)
+            .field("origin", &self.origin)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HostStateWritePermit {
+    #[must_use]
+    pub(crate) const fn new(
+        owner: Owner,
+        participant_id: crate::storage_ports::HostStateParticipantId,
+        tables: &'static [crate::storage_ports::StateSurfaceName],
+        origin: HostStateWriteOrigin,
+    ) -> Self {
+        Self {
+            owner,
+            participant_id,
+            tables,
+            origin,
+            _private: (),
+        }
+    }
+
+    /// Owner stamped by the engine for this host-state operation.
+    #[must_use]
+    pub const fn owner(&self) -> &Owner {
+        &self.owner
+    }
+
+    /// Participant stamped by the engine for this host-state operation.
+    #[must_use]
+    pub const fn participant_id(&self) -> crate::storage_ports::HostStateParticipantId {
+        self.participant_id
+    }
+
+    /// Exact table subset stamped by the engine for this command.
+    #[must_use]
+    pub const fn tables(&self) -> &'static [crate::storage_ports::StateSurfaceName] {
+        self.tables
+    }
+
+    /// Authenticated caller provenance or host maintenance for this request.
+    /// This value describes the existing admission path; it grants no authority.
+    #[must_use]
+    pub const fn origin(&self) -> HostStateWriteOrigin {
+        self.origin
+    }
+
+    /// Whether this request carries exactly the participant and table scope
+    /// already stamped into the permit by the engine.
+    #[must_use]
+    pub fn matches_request(&self, request: &crate::storage_ports::HostStateRequest) -> bool {
+        self.participant_id == request.participant_id() && self.tables == request.tables()
+    }
+}
+
 impl std::fmt::Debug for OwnerWritePermit {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = formatter.debug_struct("OwnerWritePermit");

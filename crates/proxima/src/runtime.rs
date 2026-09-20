@@ -279,14 +279,21 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         let outbox = booted.outbox().clone();
         #[cfg(feature = "outbox-nats")]
         let outbox_retention = booted.outbox_retention().clone();
+        let publication_origin_eligibility = booted.publication_origin_eligibility_for_host();
+        #[cfg(feature = "outbox-nats")]
+        let origin_scope = booted.origin_scope_for_host();
         Ok(BuiltProxima {
             service,
             engine: booted.engine,
             system_authority: booted.system_authority,
+            host_state_maintenance_authority: booted.host_state_maintenance_authority,
             handle: booted.handle,
             pool: booted.pool,
             registry: booted.registry,
             pg_sidecars: booted.pg_sidecars,
+            publication_origin_eligibility,
+            #[cfg(feature = "outbox-nats")]
+            origin_scope,
             blobs: booted.blobs,
             owner: booted.owner,
             cancel,
@@ -299,7 +306,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             #[cfg(feature = "outbox-nats")]
             published_retention: config.published_retention,
             #[cfg(feature = "outbox-nats")]
-            nats: config.nats,
+            nats: config.nats.map(|mut nats| {
+                nats.origin_scope = Some(origin_scope);
+                nats
+            }),
         })
     }
 
@@ -318,6 +328,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             app_ctx,
             services,
         } = self.boot_common().await?;
+        #[cfg(feature = "outbox-nats")]
+        let publication_origin_eligibility = booted.publication_origin_eligibility_for_host();
+        #[cfg(feature = "outbox-nats")]
+        let origin_scope = booted.origin_scope_for_host();
 
         let (mcp_addr, server) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist) {
             if !config.expose_network {
@@ -377,10 +391,15 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         Ok(RunningProxima {
             engine: booted.engine,
             system_authority: booted.system_authority,
+            host_state_maintenance_authority: booted.host_state_maintenance_authority,
             handle: booted.handle,
             pool: booted.pool,
             registry: booted.registry,
             pg_sidecars: booted.pg_sidecars,
+            #[cfg(feature = "outbox-nats")]
+            publication_origin_eligibility,
+            #[cfg(feature = "outbox-nats")]
+            origin_scope,
             blobs: booted.blobs,
             owner: booted.owner,
             mcp_addr,
@@ -396,7 +415,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             #[cfg(feature = "outbox-nats")]
             published_retention: config.published_retention,
             #[cfg(feature = "outbox-nats")]
-            nats: config.nats,
+            nats: config.nats.map(|mut nats| {
+                nats.origin_scope = Some(origin_scope);
+                nats
+            }),
         })
     }
 
@@ -425,6 +447,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             pool: booted.pool.clone(),
             pg_tuning: config.pg_tuning,
             pg_sidecars: booted.pg_sidecars.clone(),
+            host_state_erase_context: booted.host_state_erase_context_for_host(),
             blobs: booted.blobs.clone(),
             owner: booted.owner,
         };
@@ -465,10 +488,19 @@ pub struct BuiltProxima {
     pub service: Option<Router>,
     pub engine: Arc<Engine>,
     pub system_authority: SystemAuthority,
+    host_state_maintenance_authority: Option<proxima_core::engine::HostStateMaintenanceAuthority>,
     pub handle: EngineHandle,
     pool: PgPool,
     pub registry: Arc<FlavorRegistryFrozen>,
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
+    publication_origin_eligibility:
+        Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
+    /// This installation's identity, read at boot from the same database.
+    /// Stamped onto the publisher config below and handed to every cleaner
+    /// this runtime spawns, so neither can be pointed at a stream some
+    /// other installation published to.
+    #[cfg(feature = "outbox-nats")]
+    origin_scope: proxima_core::storage_ports::publication::OriginScope,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Option<Owner>,
     pub cancel: CancellationToken,
@@ -497,6 +529,15 @@ pub struct BuiltProxima {
 }
 
 impl BuiltProxima {
+    /// Narrow host-only guard for deciding whether an event remains eligible
+    /// for intake or a retry/re-offer. It exposes no payload data.
+    #[must_use]
+    pub fn publication_origin_eligibility_for_host(
+        &self,
+    ) -> Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort> {
+        self.publication_origin_eligibility.clone()
+    }
+
     pub fn shutdown(self) {
         self.cancel.cancel();
         self.engine.stop(self.handle);
@@ -522,7 +563,19 @@ impl BuiltProxima {
     #[cfg(feature = "outbox-nats")]
     #[must_use]
     pub fn spawn_publication_publisher(&self, cancel: CancellationToken) -> Option<JoinHandle<()>> {
-        Some(spawn_publication_publisher(
+        self.spawn_publication_publisher_supervised(cancel)
+            .map(|publisher| publisher.into_parts().1)
+    }
+
+    /// Spawn the outbox publisher with a read-only health view and an
+    /// ordinary abortable, joinable task handle.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn spawn_publication_publisher_supervised(
+        &self,
+        cancel: CancellationToken,
+    ) -> Option<proxima_outbox_nats::SupervisedPublisher> {
+        Some(spawn_publication_publisher_supervised(
             self.outbox.clone(),
             self.nats.clone()?,
             self.published_retention
@@ -532,6 +585,24 @@ impl BuiltProxima {
                 }),
             cancel,
         ))
+    }
+
+    /// Spawn retained-copy cleanup independently from GT intake and the
+    /// publication publisher. Centauri reads its own explicit config and
+    /// owns this returned task handle.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn spawn_publication_copy_cleaner(
+        &self,
+        config: proxima_outbox_nats::JetStreamCopyCleanerConfig,
+        cancel: CancellationToken,
+    ) -> (proxima_outbox_nats::CopyCleanerHealthReader, JoinHandle<()>) {
+        proxima_outbox_nats::spawn_supervised_copy_cleaner(
+            config,
+            self.publication_origin_eligibility.clone(),
+            self.origin_scope,
+            cancel,
+        )
     }
 
     #[must_use]
@@ -545,6 +616,15 @@ impl BuiltProxima {
     #[must_use]
     pub const fn system_authority(&self) -> &SystemAuthority {
         &self.system_authority
+    }
+
+    /// Boot-held authority for the registered host-state participant.
+    /// Absent when the runtime booted without such a participant.
+    #[must_use]
+    pub const fn host_state_maintenance_authority(
+        &self,
+    ) -> Option<&proxima_core::engine::HostStateMaintenanceAuthority> {
+        self.host_state_maintenance_authority.as_ref()
     }
 
     #[must_use]
@@ -609,6 +689,7 @@ impl std::fmt::Debug for BuiltProxima {
 pub struct RunningProxima {
     pub engine: Arc<Engine>,
     pub system_authority: SystemAuthority,
+    host_state_maintenance_authority: Option<proxima_core::engine::HostStateMaintenanceAuthority>,
     pub handle: EngineHandle,
     pool: PgPool,
     pub registry: Arc<FlavorRegistryFrozen>,
@@ -627,6 +708,16 @@ pub struct RunningProxima {
     /// `BuiltProxima`'s field of the same name.
     #[cfg(feature = "outbox-nats")]
     outbox: Arc<dyn PublicationOutboxPort>,
+    /// The narrow host-only origin check shared with the copy cleaner.
+    #[cfg(feature = "outbox-nats")]
+    publication_origin_eligibility:
+        Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
+    /// This installation's identity, read at boot from the same database.
+    /// Stamped onto the publisher config below and handed to every cleaner
+    /// this runtime spawns, so neither can be pointed at a stream some
+    /// other installation published to.
+    #[cfg(feature = "outbox-nats")]
+    origin_scope: proxima_core::storage_ports::publication::OriginScope,
     /// Reclaim of DELIVERED records, held apart from the drain handle so
     /// that the loop able to publish is not the loop able to delete.
     #[cfg(feature = "outbox-nats")]
@@ -675,7 +766,19 @@ impl RunningProxima {
     #[cfg(feature = "outbox-nats")]
     #[must_use]
     pub fn spawn_publication_publisher(&self, cancel: CancellationToken) -> Option<JoinHandle<()>> {
-        Some(spawn_publication_publisher(
+        self.spawn_publication_publisher_supervised(cancel)
+            .map(|publisher| publisher.into_parts().1)
+    }
+
+    /// Spawn the outbox publisher with a read-only health view and an
+    /// ordinary abortable, joinable task handle.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn spawn_publication_publisher_supervised(
+        &self,
+        cancel: CancellationToken,
+    ) -> Option<proxima_outbox_nats::SupervisedPublisher> {
+        Some(spawn_publication_publisher_supervised(
             self.outbox.clone(),
             self.nats.clone()?,
             self.published_retention
@@ -685,6 +788,24 @@ impl RunningProxima {
                 }),
             cancel,
         ))
+    }
+
+    /// Spawn retained-copy cleanup independently from GT intake and the
+    /// publication publisher. Centauri reads its own explicit config and
+    /// owns this returned task handle.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn spawn_publication_copy_cleaner(
+        &self,
+        config: proxima_outbox_nats::JetStreamCopyCleanerConfig,
+        cancel: CancellationToken,
+    ) -> (proxima_outbox_nats::CopyCleanerHealthReader, JoinHandle<()>) {
+        proxima_outbox_nats::spawn_supervised_copy_cleaner(
+            config,
+            self.publication_origin_eligibility.clone(),
+            self.origin_scope,
+            cancel,
+        )
     }
 
     #[must_use]
@@ -698,6 +819,15 @@ impl RunningProxima {
     #[must_use]
     pub const fn system_authority(&self) -> &SystemAuthority {
         &self.system_authority
+    }
+
+    /// Boot-held authority for the registered host-state participant.
+    /// Absent when the runtime booted without such a participant.
+    #[must_use]
+    pub const fn host_state_maintenance_authority(
+        &self,
+    ) -> Option<&proxima_core::engine::HostStateMaintenanceAuthority> {
+        self.host_state_maintenance_authority.as_ref()
     }
 
     #[must_use]
@@ -784,14 +914,6 @@ impl std::fmt::Debug for RunningProxima {
     }
 }
 
-/// The publisher's boot-time connect retry.
-///
-/// Doubling from one second, capped, and cancellable. Bounded rather than
-/// infinite-with-no-signal: every attempt logs, so an operator sees the
-/// broker being unreachable rather than a silent stall.
-#[cfg(feature = "outbox-nats")]
-const PUBLISHER_CONNECT_BACKOFF_CEILING: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// The configured reclaim of DELIVERED records, and the handle that can
 /// perform it. Absent when the deployment keeps published records forever.
 #[cfg(feature = "outbox-nats")]
@@ -830,43 +952,14 @@ const RETENTION_PRUNE_BATCH: u32 = 1_000;
 const RETENTION_PRUNE_INTERVAL: Duration = Duration::from_mins(1);
 
 #[cfg(feature = "outbox-nats")]
-fn spawn_publication_publisher(
+fn spawn_publication_publisher_supervised(
     outbox: Arc<dyn PublicationOutboxPort>,
     config: proxima_outbox_nats::NatsPublisherConfig,
     retention: Option<PublicationRetention>,
     cancel: CancellationToken,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut backoff = std::time::Duration::from_secs(1);
-        let publisher = loop {
-            if cancel.is_cancelled() {
-                return;
-            }
-            match proxima_outbox_nats::JetStreamPublisher::connect(config.clone(), outbox.clone())
-                .await
-            {
-                Ok(publisher) => break publisher,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        retry_in_ms = backoff.as_millis(),
-                        "publication publisher could not reach the broker; capture continues"
-                    );
-                    tokio::select! {
-                        () = cancel.cancelled() => return,
-                        () = tokio::time::sleep(backoff) => {}
-                    }
-                    backoff = (backoff * 2).min(PUBLISHER_CONNECT_BACKOFF_CEILING);
-                }
-            }
-        };
-        // Retention rides in the publisher's task rather than a task of its
-        // own: it is housekeeping over what this loop delivered, it stops
-        // when the loop stops, and a deployment with no broker configured
-        // never reaches here — which is correct, because nothing has been
-        // delivered for it to reclaim.
-        let housekeeping = prune_published_records(retention, cancel.clone());
-        tokio::join!(publisher.run(cancel), housekeeping);
+) -> proxima_outbox_nats::SupervisedPublisher {
+    proxima_outbox_nats::spawn_supervised(config, outbox, cancel, move |cancel| {
+        prune_published_records(retention, cancel)
     })
 }
 
@@ -902,10 +995,11 @@ async fn prune_published_records(
             // Never fatal. Housekeeping that cannot run is a growing table,
             // which is an operator's problem to see; stopping the publisher
             // over it would turn it into an undelivered backlog.
-            Err(error) => tracing::warn!(
-                error = %error,
-                "publication retention prune failed; delivered records are retained"
-            ),
+            Err(_) => {
+                tracing::warn!(
+                    "publication retention prune failed; delivered records are retained"
+                );
+            }
         }
     }
 }
@@ -1095,6 +1189,12 @@ fn assemble_services<A: FlavorApp>(
     runtime_authority: &DelegationRuntimeAuthority,
 ) -> Result<FlavorServices, ProximaError> {
     let mut services = A::services(app_ctx)?;
+    debug_assert!(
+        services
+            .get::<proxima_core::engine::HostStateMaintenanceAuthority>()
+            .is_none(),
+        "host-state maintenance authority must remain outside FlavorServices"
+    );
     if let Some((transfer, verified_read, owner_reconcile)) =
         cited_blob_services(app_ctx.blobs.as_ref(), runtime_authority)
     {
@@ -1375,6 +1475,11 @@ mod tests {
             pool,
             pg_tuning: proxima_storage_pg::PgTuning::default(),
             pg_sidecars: Arc::default(),
+            host_state_erase_context:
+                proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
+                    proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(Vec::new()),
+                )
+                .expect("empty fixture registry has no host lifecycle tables"),
             blobs: Some(store),
             owner: None,
         };
@@ -1402,6 +1507,12 @@ mod tests {
             "global operator authority must never enter the flavor service set"
         );
         assert!(
+            services
+                .get::<proxima_core::engine::HostStateMaintenanceAuthority>()
+                .is_none(),
+            "host-state maintenance authority must remain outside FlavorServices"
+        );
+        assert!(
             services.get::<DelegatedAuthorityService>().is_none(),
             "delegation service requires a real authenticator"
         );
@@ -1420,6 +1531,11 @@ mod tests {
             pool,
             pg_tuning: proxima_storage_pg::PgTuning::default(),
             pg_sidecars: Arc::default(),
+            host_state_erase_context:
+                proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
+                    proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(Vec::new()),
+                )
+                .expect("empty fixture registry has no host lifecycle tables"),
             blobs: None,
             owner: None,
         };
@@ -1476,6 +1592,11 @@ mod tests {
             pool,
             pg_tuning: proxima_storage_pg::PgTuning::default(),
             pg_sidecars: Arc::default(),
+            host_state_erase_context:
+                proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
+                    proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(Vec::new()),
+                )
+                .expect("empty fixture registry has no host lifecycle tables"),
             blobs: Some(store),
             owner: None,
         };
@@ -1866,3 +1987,7 @@ mod tests {
         assert!(err.to_string().contains("tool_scope is required"));
     }
 }
+
+#[cfg(all(test, feature = "outbox-nats"))]
+#[path = "publisher_supervision_tests.rs"]
+mod publisher_supervision_tests;

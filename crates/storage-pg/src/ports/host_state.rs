@@ -1,8 +1,11 @@
 //! Startup-registered host-state participant for [`super::write_session`].
 
 use proxima_core::StorageError;
-use proxima_core::storage_ports::{HostStateReply, HostStateRequest, OwnerWritePermit};
+use proxima_core::storage_ports::{
+    HostStateReply, HostStateRequest, HostStateWritePermit, StateSurfaceName,
+};
 use sqlx::{Postgres, Transaction};
+use std::sync::Arc;
 
 /// Trusted host/backend code that mutates declared state surfaces on the
 /// write session's live transaction.
@@ -12,11 +15,19 @@ use sqlx::{Postgres, Transaction};
 #[async_trait::async_trait]
 pub trait PgHostStateParticipant: Send + Sync {
     /// Stable id matched against [`proxima_core::storage_ports::HostStateCommand::PARTICIPANT_ID`].
-    fn participant_id(&self) -> &'static str;
+    fn participant_id(&self) -> proxima_core::storage_ports::HostStateParticipantId;
 
     /// Tables this participant is allowed to touch. Must be a subset of
     /// some linked flavor's `state_surfaces`.
-    fn declared_tables(&self) -> &'static [&'static str];
+    fn declared_tables(&self) -> &'static [StateSurfaceName];
+
+    /// Optional typed erase/export port for the lifecycle-managed subset of
+    /// this participant's host state. Storage captures this once with the
+    /// normal participant descriptor at boot. A frozen managed table set
+    /// requires this port and an exact table match.
+    fn lifecycle_port(&self) -> Option<Arc<dyn super::PgHostStateLifecyclePort>> {
+        None
+    }
 
     /// Run `request` on `tx`. The session has already checked participant
     /// id and declared tables; SQL must stamp the permit's owner.
@@ -29,7 +40,7 @@ pub trait PgHostStateParticipant: Send + Sync {
     async fn apply(
         &self,
         tx: &mut Transaction<'_, Postgres>,
-        permit: &OwnerWritePermit,
+        permit: &HostStateWritePermit,
         request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError>;
 }

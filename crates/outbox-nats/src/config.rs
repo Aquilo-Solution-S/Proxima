@@ -14,7 +14,7 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use proxima_core::storage_ports::publication::{PublisherId, PublisherIdError};
+use proxima_core::storage_ports::publication::{OriginScope, PublisherId, PublisherIdError};
 
 /// Presence key for the whole block.
 pub const ENV_URL: &str = "PROXIMA_NATS_URL";
@@ -30,6 +30,8 @@ pub const ENV_PUBLISH_TIMEOUT_MS: &str = "PROXIMA_NATS_PUBLISH_TIMEOUT_MS";
 pub const ENV_PUBLISHER_ID: &str = "PROXIMA_NATS_PUBLISHER_ID";
 pub const ENV_CONSUMER_STREAM: &str = "PROXIMA_NATS_CONSUMER_STREAM";
 pub const ENV_CONSUMER_NAME: &str = "PROXIMA_NATS_CONSUMER_NAME";
+pub const ENV_PUBLISHER_INBOX_PREFIX: &str = "PROXIMA_NATS_PUBLISHER_INBOX_PREFIX";
+pub const ENV_CONSUMER_INBOX_PREFIX: &str = "PROXIMA_NATS_CONSUMER_INBOX_PREFIX";
 
 pub const DEFAULT_SUBJECT_PREFIX: &str = "proxima.fact";
 pub const DEFAULT_CONSUMER_STREAM: &str = "PROXIMA_FACTS";
@@ -37,6 +39,11 @@ pub const DEFAULT_CONSUMER_NAME: &str = "proxima-reference";
 pub const DEFAULT_BATCH: u32 = 64;
 pub const DEFAULT_LEASE: Duration = Duration::from_secs(30);
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// Upper bound on [`ENV_POLL_MS`]. One hour is far past any real pacing
+/// choice and far short of the saturation that makes a parked publisher look
+/// healthy, so it separates "patient" from "mistyped" without constraining a
+/// deployment that genuinely wants a slow drain.
+pub const MAX_POLL_INTERVAL: Duration = Duration::from_hours(1);
 pub const DEFAULT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the consumer waits for a connection and for one `JetStream`
 /// API round trip.
@@ -88,17 +95,70 @@ impl std::fmt::Debug for NatsAuth {
 /// What every redacted field prints instead of its value.
 const REDACTED: &str = "<redacted>";
 
+/// A validated, role-specific NATS reply-inbox namespace.
+///
+/// Tokens are dot-separated and contain only ASCII letters, digits, `_` or
+/// `-`. Wildcards and protocol delimiters are rejected before the value is
+/// passed to async-nats.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct InboxPrefix(String);
+
+impl InboxPrefix {
+    /// Construct a validated reply-inbox namespace.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::InvalidInboxPrefix`] when the value is empty or
+    /// contains a token character outside `[A-Za-z0-9_-]`.
+    pub fn new(value: impl Into<String>) -> Result<Self, ConfigError> {
+        Self::parse("inbox prefix", value.into())
+    }
+
+    fn parse(key: &'static str, value: String) -> Result<Self, ConfigError> {
+        if value.is_empty()
+            || value.split('.').any(|token| {
+                token.is_empty()
+                    || !token
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+            })
+        {
+            return Err(ConfigError::InvalidInboxPrefix { key });
+        }
+        Ok(Self(value))
+    }
+
+    /// The validated prefix to give the NATS client.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for InboxPrefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InboxPrefix(<configured>)")
+    }
+}
+
 /// A broker URL with any `user:password@` userinfo removed.
 ///
 /// `nats://user:secret@host:4222` is a documented NATS form, so the URL is
 /// as much a credential as [`NatsAuth`] is.
-fn redacted_url(url: &str) -> String {
+pub(crate) fn redacted_url(url: &str) -> String {
     url.split(',')
-        .map(|server| match (server.find("//"), server.rfind('@')) {
-            (Some(scheme), Some(at)) if at > scheme => {
-                format!("{}//{REDACTED}@{}", &server[..scheme], &server[at + 1..])
+        .map(|server| {
+            let authority_start = server.find("://").map_or(0, |scheme| scheme + 3);
+            let authority = &server[authority_start..];
+            let authority_end = authority.find(['/', '?', '#']).unwrap_or(authority.len());
+            match authority[..authority_end].rfind('@') {
+                Some(at) => format!(
+                    "{}{REDACTED}@{}",
+                    &server[..authority_start],
+                    &authority[at + 1..]
+                ),
+                None => server.to_owned(),
             }
-            _ => server.to_owned(),
         })
         .collect::<Vec<_>>()
         .join(",")
@@ -112,11 +172,23 @@ pub struct NatsPublisherConfig {
     /// cluster.
     pub url: String,
     pub auth: NatsAuth,
+    /// Optional validated reply namespace. `None` preserves async-nats' default.
+    pub inbox_prefix: Option<InboxPrefix>,
     /// Validated: dot-separated tokens of `[A-Za-z0-9_-]`, no wildcards. This
     /// is the source subject prefix; stream transforms and partitions are
     /// deployment-owned and may rewrite it after publication.
     pub subject_prefix: String,
     pub publisher_id: PublisherId,
+    /// This installation's identity, stamped on every published message so
+    /// a retained-copy cleaner can tell a copy it may reason about from one
+    /// some other installation published.
+    ///
+    /// NOT read from the environment, and there is no default: the only
+    /// valid source is the database that also answers publication-origin
+    /// eligibility, so the runtime fills this in at boot. `None` publishes
+    /// unstamped — safe, because a cleaner retains what it cannot attribute
+    /// — but nothing on that stream will ever be cleaned.
+    pub origin_scope: Option<OriginScope>,
     pub batch: NonZeroU32,
     pub lease: Duration,
     pub poll_interval: Duration,
@@ -132,8 +204,10 @@ impl std::fmt::Debug for NatsPublisherConfig {
         f.debug_struct("NatsPublisherConfig")
             .field("url", &redacted_url(&self.url))
             .field("auth", &self.auth)
+            .field("inbox_prefix", &self.inbox_prefix)
             .field("subject_prefix", &self.subject_prefix)
             .field("publisher_id", &self.publisher_id)
+            .field("origin_scope", &self.origin_scope)
             .field("batch", &self.batch)
             .field("lease", &self.lease)
             .field("poll_interval", &self.poll_interval)
@@ -157,8 +231,10 @@ impl NatsPublisherConfig {
         Ok(Self {
             url: url.into(),
             auth: NatsAuth::None,
+            inbox_prefix: None,
             subject_prefix: DEFAULT_SUBJECT_PREFIX.to_owned(),
             publisher_id: default_publisher_id(&proxima_core::process_env)?,
+            origin_scope: None,
             batch: NonZeroU32::new(DEFAULT_BATCH).expect("64 is not zero"),
             lease: DEFAULT_LEASE,
             poll_interval: DEFAULT_POLL_INTERVAL,
@@ -185,6 +261,9 @@ impl NatsPublisherConfig {
         let mut config = Self::new(url)?;
         if let Some(raw) = lookup(ENV_SUBJECT_PREFIX) {
             config.subject_prefix = validated_subject_prefix(&raw)?;
+        }
+        if let Some(raw) = lookup(ENV_PUBLISHER_INBOX_PREFIX) {
+            config.inbox_prefix = Some(InboxPrefix::parse(ENV_PUBLISHER_INBOX_PREFIX, raw)?);
         }
         // Both the explicit key and the default's `HOSTNAME` come out of the
         // INJECTED lookup: a host that hands us an environment must not get
@@ -232,9 +311,10 @@ impl NatsPublisherConfig {
     ///
     /// # Errors
     ///
-    /// [`ConfigError::LeaseTooShort`] for a lease under one second and
+    /// [`ConfigError::LeaseTooShort`] for a lease under one second,
     /// [`ConfigError::ZeroTimeout`] for a zero publish timeout or poll
-    /// interval.
+    /// interval, and [`ConfigError::IntervalTooLong`] for a poll interval
+    /// past [`MAX_POLL_INTERVAL`].
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.lease < Duration::from_secs(1) {
             return Err(ConfigError::LeaseTooShort {
@@ -249,6 +329,21 @@ impl NatsPublisherConfig {
         if self.poll_interval.is_zero() {
             return Err(ConfigError::ZeroTimeout { key: ENV_POLL_MS });
         }
+        // An unbounded interval is not merely slow, it is INVISIBLE. The
+        // drain loop assigns `backoff = poll_interval` on every clean pass,
+        // and `tokio::time::sleep` saturates rather than panicking, so a
+        // fat-fingered value parks the publisher until the process restarts
+        // while `PublisherHealth::is_ready()` still answers true: task
+        // Running, connection live from the client, drain Clean from the
+        // last empty claim. Refusing the value at boot is the only point
+        // where that is still observable.
+        if self.poll_interval > MAX_POLL_INTERVAL {
+            return Err(ConfigError::IntervalTooLong {
+                key: ENV_POLL_MS,
+                millis: u64::try_from(self.poll_interval.as_millis()).unwrap_or(u64::MAX),
+                max_millis: u64::try_from(MAX_POLL_INTERVAL.as_millis()).unwrap_or(u64::MAX),
+            });
+        }
         Ok(())
     }
 }
@@ -259,6 +354,8 @@ impl NatsPublisherConfig {
 pub struct NatsConsumerConfig {
     pub url: String,
     pub auth: NatsAuth,
+    /// Optional validated reply namespace. `None` preserves async-nats' default.
+    pub inbox_prefix: Option<InboxPrefix>,
     pub stream: String,
     /// Durable name. Two processes sharing it share the work; two
     /// deployments sharing it by accident share the acknowledgements.
@@ -277,6 +374,7 @@ impl std::fmt::Debug for NatsConsumerConfig {
         f.debug_struct("NatsConsumerConfig")
             .field("url", &redacted_url(&self.url))
             .field("auth", &self.auth)
+            .field("inbox_prefix", &self.inbox_prefix)
             .field("stream", &self.stream)
             .field("durable_name", &self.durable_name)
             .field("request_timeout", &self.request_timeout)
@@ -290,6 +388,7 @@ impl NatsConsumerConfig {
         Self {
             url: url.into(),
             auth: NatsAuth::None,
+            inbox_prefix: None,
             stream: DEFAULT_CONSUMER_STREAM.to_owned(),
             durable_name: DEFAULT_CONSUMER_NAME.to_owned(),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -311,6 +410,9 @@ impl NatsConsumerConfig {
             return Ok(None);
         };
         let mut config = Self::new(url);
+        if let Some(raw) = lookup(ENV_CONSUMER_INBOX_PREFIX) {
+            config.inbox_prefix = Some(InboxPrefix::parse(ENV_CONSUMER_INBOX_PREFIX, raw)?);
+        }
         if let Some(raw) = lookup(ENV_CONSUMER_STREAM) {
             config.stream = validated_name(ENV_CONSUMER_STREAM, &raw)?;
         }
@@ -334,6 +436,8 @@ impl NatsConsumerConfig {
 /// Why a `PROXIMA_NATS_*` block was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
+    #[error("{key} must be a nonempty dot-separated NATS inbox prefix using only [A-Za-z0-9_-]")]
+    InvalidInboxPrefix { key: &'static str },
     #[error(
         "PROXIMA_NATS_SUBJECT_PREFIX must be dot-separated tokens of [A-Za-z0-9_-] \
          and must not carry the `*` or `>` wildcards, got {value:?}"
@@ -359,6 +463,15 @@ pub enum ConfigError {
     LeaseTooShort { millis: u64 },
     #[error("{key} must be greater than zero")]
     ZeroTimeout { key: &'static str },
+    #[error(
+        "{key} is {millis}ms, past the {max_millis}ms bound; a publisher that sleeps \
+         that long is indistinguishable from a stopped one and still reports ready"
+    )]
+    IntervalTooLong {
+        key: &'static str,
+        millis: u64,
+        max_millis: u64,
+    },
     #[error("publisher id: {error}")]
     PublisherId { error: PublisherIdError },
 }
@@ -557,15 +670,144 @@ mod tests {
     #[test]
     fn an_unset_url_is_a_publisher_that_is_off_not_a_broken_host() {
         assert!(
-            NatsPublisherConfig::from_lookup(env(&[(ENV_CONSUMER_STREAM, "OTHER")]))
+            NatsPublisherConfig::from_lookup(env(&[
+                (ENV_CONSUMER_STREAM, "OTHER"),
+                (ENV_PUBLISHER_INBOX_PREFIX, "_INBOX.publisher"),
+            ]))
+            .expect("parses")
+            .is_none()
+        );
+        assert!(
+            NatsConsumerConfig::from_lookup(env(&[(ENV_CONSUMER_INBOX_PREFIX, "_INBOX.consumer")]))
                 .expect("parses")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_poll_interval_past_the_bound_is_refused_at_boot() {
+        let base = NatsPublisherConfig::from_lookup(env(&[(ENV_URL, "nats://127.0.0.1:4222")]))
+            .expect("parses")
+            .expect("a url means the publisher is on");
+        base.validate().expect("the default interval validates");
+
+        // The exact bound stays legal; one millisecond past it does not.
+        let at_bound = NatsPublisherConfig {
+            poll_interval: MAX_POLL_INTERVAL,
+            ..base.clone()
+        };
+        at_bound.validate().expect("the bound itself is allowed");
+
+        // Without this, `tokio::time::sleep` saturates and the publisher
+        // parks forever while `is_ready()` still answers true.
+        let absurd = NatsPublisherConfig {
+            poll_interval: MAX_POLL_INTERVAL + Duration::from_millis(1),
+            ..base.clone()
+        };
+        assert!(
+            matches!(
+                absurd.validate(),
+                Err(ConfigError::IntervalTooLong {
+                    key: ENV_POLL_MS,
+                    ..
+                })
+            ),
+            "an out-of-range poll interval must not reach the drain loop"
+        );
+
+        // A u64-millisecond maximum is the shape that actually saturates.
+        let saturating = NatsPublisherConfig {
+            poll_interval: Duration::from_millis(u64::MAX),
+            ..base
+        };
+        assert!(matches!(
+            saturating.validate(),
+            Err(ConfigError::IntervalTooLong { .. })
+        ));
+    }
+
+    #[test]
+    fn inbox_prefix_is_an_opaque_validated_domain_value() {
+        for valid in ["_INBOX.isolated_publisher", "_INBOX.a-b.c_2.9"] {
+            let prefix = InboxPrefix::new(valid).expect("valid inbox prefix");
+            assert_eq!(prefix.as_str(), valid);
+        }
+
+        for invalid in [
+            "",
+            ".leading",
+            "trailing.",
+            "a..b",
+            "a.*",
+            "a.>",
+            "a b",
+            "a/b",
+            "a,b",
+            "$SYS.a",
+            "a\0b",
+            "é",
+        ] {
+            let error = InboxPrefix::new(invalid).expect_err("invalid prefix refused");
+            assert!(matches!(error, ConfigError::InvalidInboxPrefix { .. }));
+            if !invalid.is_empty() {
+                assert!(
+                    !error.to_string().contains(invalid),
+                    "invalid input echoed by error: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn publisher_and_consumer_inbox_environment_keys_are_independent() {
+        let publisher = NatsPublisherConfig::from_lookup(env(&[
+            (ENV_URL, "nats://127.0.0.1:4222"),
+            (ENV_PUBLISHER_INBOX_PREFIX, "_INBOX.publisher"),
+            (ENV_CONSUMER_INBOX_PREFIX, "_INBOX.consumer"),
+        ]))
+        .expect("publisher config")
+        .expect("URL present");
+        assert_eq!(
+            publisher.inbox_prefix.as_ref().map(InboxPrefix::as_str),
+            Some("_INBOX.publisher")
+        );
+
+        let consumer = NatsConsumerConfig::from_lookup(env(&[
+            (ENV_URL, "nats://127.0.0.1:4222"),
+            (ENV_PUBLISHER_INBOX_PREFIX, "_INBOX.publisher"),
+            (ENV_CONSUMER_INBOX_PREFIX, "_INBOX.consumer"),
+        ]))
+        .expect("consumer config")
+        .expect("URL present");
+        assert_eq!(
+            consumer.inbox_prefix.as_ref().map(InboxPrefix::as_str),
+            Some("_INBOX.consumer")
+        );
+
+        assert!(
+            NatsPublisherConfig::new("nats://127.0.0.1:4222")
+                .expect("publisher config")
+                .inbox_prefix
                 .is_none()
         );
         assert!(
-            NatsConsumerConfig::from_lookup(env(&[]))
-                .expect("parses")
+            NatsConsumerConfig::new("nats://127.0.0.1:4222")
+                .inbox_prefix
                 .is_none()
         );
+
+        let invalid = "_INBOX.invalid.*.marker";
+        for key in [ENV_PUBLISHER_INBOX_PREFIX, ENV_CONSUMER_INBOX_PREFIX] {
+            let error = if key == ENV_PUBLISHER_INBOX_PREFIX {
+                NatsPublisherConfig::from_lookup(env(&[(ENV_URL, "nats://x:4222"), (key, invalid)]))
+                    .expect_err("publisher prefix validated")
+            } else {
+                NatsConsumerConfig::from_lookup(env(&[(ENV_URL, "nats://x:4222"), (key, invalid)]))
+                    .expect_err("consumer prefix validated")
+            };
+            assert!(matches!(error, ConfigError::InvalidInboxPrefix { .. }));
+            assert!(!error.to_string().contains(invalid));
+        }
     }
 
     #[test]
@@ -743,7 +985,10 @@ mod tests {
     #[test]
     fn the_debug_of_a_config_carries_no_credential() {
         let mut config = NatsPublisherConfig::from_lookup(env(&[
-            (ENV_URL, "nats://someone:hunter2@broker.internal:4222"),
+            (
+                ENV_URL,
+                "someone:hunter2@broker.internal:4222,nats://backup:secret@backup.internal:4222",
+            ),
             (ENV_TOKEN, "s3cr3t-token"),
         ]))
         .expect("parses")
@@ -751,10 +996,12 @@ mod tests {
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("s3cr3t-token"), "{rendered}");
         assert!(!rendered.contains("hunter2"), "{rendered}");
+        assert!(!rendered.contains("secret"), "{rendered}");
         assert!(
             rendered.contains("broker.internal:4222"),
             "the host is not the secret: {rendered}"
         );
+        assert!(rendered.contains("backup.internal:4222"), "{rendered}");
 
         config.auth = NatsAuth::UserPassword {
             user: "someone".to_owned(),
@@ -769,7 +1016,7 @@ mod tests {
         assert!(!rendered.contains("nats.creds"), "{rendered}");
 
         let consumer = NatsConsumerConfig::from_lookup(env(&[
-            (ENV_URL, "nats://someone:hunter2@broker.internal:4222"),
+            (ENV_URL, "someone:hunter2@broker.internal:4222"),
             (ENV_PASSWORD, "hunter2"),
             (ENV_USER, "someone"),
         ]))
@@ -777,7 +1024,44 @@ mod tests {
         .expect("url set");
         let rendered = format!("{consumer:?}");
         assert!(!rendered.contains("hunter2"), "{rendered}");
+        assert!(
+            rendered.contains("<redacted>@broker.internal:4222"),
+            "{rendered}"
+        );
         assert_eq!(consumer.request_timeout, DEFAULT_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn url_redaction_handles_schemeless_userinfo_and_server_lists() {
+        assert_eq!(
+            redacted_url("user:secret@host.internal:4222"),
+            "<redacted>@host.internal:4222"
+        );
+        assert_eq!(
+            redacted_url("nats://user:secret@first:4222,tls://other:token@second:4222"),
+            "nats://<redacted>@first:4222,tls://<redacted>@second:4222"
+        );
+        assert_eq!(
+            redacted_url("nats://host.internal:4222"),
+            "nats://host.internal:4222"
+        );
+        for url in [
+            "nats://user:secret@tail@host.internal:4222",
+            "user:secret@tail@host.internal:4222",
+        ] {
+            assert!(
+                url.parse::<async_nats::ServerAddr>().is_ok(),
+                "the pinned NATS parser accepts {url:?}"
+            );
+            assert_eq!(
+                redacted_url(url),
+                if url.contains("://") {
+                    "nats://<redacted>@host.internal:4222"
+                } else {
+                    "<redacted>@host.internal:4222"
+                }
+            );
+        }
     }
 
     #[test]

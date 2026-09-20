@@ -16,6 +16,7 @@ mod fact;
 mod goals;
 mod handles;
 mod host_state;
+mod host_state_lifecycle;
 mod mcp;
 mod memory;
 mod owner_inverse;
@@ -69,7 +70,13 @@ pub use handles::{
     RegistryProjectionHandle, SourceCursorHandle, WriteSessionFactoryHandle,
 };
 pub use host_state::{
-    HostStateCommand, HostStateOutcome, HostStateReply, HostStateReplyKind, HostStateRequest,
+    HostStateCommand, HostStateOutcome, HostStateParticipantDescriptor, HostStateParticipantId,
+    HostStateReply, HostStateReplyKind, HostStateRequest, StateSurfaceName,
+};
+pub use host_state_lifecycle::{
+    HostStateEraseReceipt, HostStateEraseRequest, HostStateEraseScope, HostStateEraseSelection,
+    HostStateEraseTableCount, HostStateExportReceipt, HostStateExportRequest, HostStateExportTable,
+    HostStateFactCopyLocator,
 };
 pub use mcp::McpCallReadPort;
 pub use memory::{
@@ -77,7 +84,9 @@ pub use memory::{
     OperatorWriteProof,
 };
 pub use owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
-pub use proof::{OperatorMaintenanceProof, OwnerWritePermit};
+pub use proof::{
+    HostStateWriteOrigin, HostStateWritePermit, OperatorMaintenanceProof, OwnerWritePermit,
+};
 pub use publication::{
     AckOutcome, BrokerReceipt, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
     PublisherIdError, ReleaseOutcome,

@@ -141,6 +141,7 @@
 {"lexical_language":"english","memory_id":"<id008>","owner_id":"<id039>","schema_id":"core/agent-note-v1","tag":["survey"]}
 {"lexical_language":"english","memory_id":"<id010>","owner_id":"<id039>","schema_id":"core/agent-note-v1","tag":["survey"]}
 {"lexical_language":"english","memory_id":"<id012>","owner_id":"<id039>","schema_id":"core/agent-note-v1","tag":["survey"]}
+## proxima_core.publication_origin (0)
 ## proxima_core.publication_outbox (3)
 {"attempts":0,"captured_at":"<ts074>","claim_token":null,"claimed_by":null,"envelope":"\\x7b2270726f6265223a22696e2d706c616365227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id004>","event_type":"core/test-fact-v1","lease_expires_at":null,"owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id004>"}
 {"attempts":0,"captured_at":"<ts074>","claim_token":null,"claimed_by":null,"envelope":"\\x7b2270726f6265223a22646564757065227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id008>","event_type":"core/test-fact-v1","lease_expires_at":null,"owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id008>"}

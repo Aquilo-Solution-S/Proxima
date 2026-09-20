@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
@@ -52,10 +51,6 @@ fn perspective_draft(origin: MemoryId) -> FactWriteCommand {
     draft.kind = "perspective".into();
     draft.additional_references = vec![EdgeEndpoint::memory(EntityKind::Abstraction, origin)];
     draft
-}
-
-fn erase_surfaces() -> OwnerSurfaces {
-    OwnerSurfaces::for_registry(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
 }
 
 #[tokio::test]
@@ -186,7 +181,7 @@ async fn wake_target_erase_and_admission_have_one_lifecycle_order() {
         erase_memory(
             &mut tx,
             &proxima_storage_pg::core_pg_sidecars(),
-            &erase_surfaces(),
+            &pg.host_state_erase_context()?,
             &owner,
             first.memory_id.into_inner(),
         )
@@ -247,7 +242,7 @@ async fn wake_target_erase_and_admission_have_one_lifecycle_order() {
         erase_memory(
             &mut erase_tx,
             &proxima_storage_pg::core_pg_sidecars(),
-            &erase_surfaces(),
+            &pg.host_state_erase_context()?,
             &owner,
             target_t,
         )
@@ -327,7 +322,7 @@ async fn carried_wake_with_erased_target_rejects_without_a_goal_head() {
         erase_memory(
             &mut tx,
             &proxima_storage_pg::core_pg_sidecars(),
-            &erase_surfaces(),
+            &pg.host_state_erase_context()?,
             &owner,
             target.memory_id.into_inner(),
         )
@@ -731,7 +726,7 @@ async fn goal_assignment_and_evidence_erase_before_head_have_one_order() {
         erase_memory(
             &mut erase_assignment,
             &proxima_storage_pg::core_pg_sidecars(),
-            &erase_surfaces(),
+            &pg.host_state_erase_context()?,
             &owner,
             assignment_t,
         )
@@ -795,7 +790,7 @@ async fn goal_assignment_and_evidence_erase_before_head_have_one_order() {
         erase_memory(
             &mut erase_evidence,
             &proxima_storage_pg::core_pg_sidecars(),
-            &erase_surfaces(),
+            &pg.host_state_erase_context()?,
             &owner,
             evidence_t,
         )

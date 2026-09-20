@@ -46,8 +46,9 @@ pub use proxima_core::cursor::Cursor;
 /// no per-column filter, so a flavor that wants "search inside this book"
 /// declares a `tag_column` on its projection and filters here.
 pub use proxima_core::engine::{
-    FactWrite, HostStateCommand, HostStateOutcome, ListWakeCandidatesReadRequest,
-    ListWakeCandidatesReadResponse, SearchReadRequest, SearchReadResponse, UnitOfWork,
+    FactWrite, HostStateCommand, HostStateMaintenanceAuthority, HostStateOutcome,
+    HostStateUnitOfWork, ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse,
+    SearchReadRequest, SearchReadResponse, UnitOfWork,
 };
 /// The owner-authorized batch Memory read already exposed by
 /// [`proxima_core::Engine::get_memories`].
@@ -102,7 +103,11 @@ pub use proxima_core::storage_ports::{
     CitedBlobIntegrityMismatch, CitedBlobMissingObject, CitedBlobOwnerMissingObject,
     CitedBlobOwnerReconcileOutcome, CitedBlobOwnerReconcilePort, CitedBlobOwnerReconcileService,
     CitedBlobReadError, CitedBlobReadPort, CitedBlobReadService, CitedBlobReconcileOutcome,
-    HostStateReply, HostStateReplyKind, HostStateRequest, MAX_RECONCILE_SAMPLE, VerifiedCitedBlob,
+    HostStateEraseReceipt, HostStateEraseRequest, HostStateEraseScope, HostStateEraseTableCount,
+    HostStateExportReceipt, HostStateExportRequest, HostStateExportTable,
+    HostStateParticipantDescriptor, HostStateParticipantId, HostStateReply, HostStateReplyKind,
+    HostStateRequest, HostStateWriteOrigin, HostStateWritePermit, MAX_RECONCILE_SAMPLE,
+    StateSurfaceName, VerifiedCitedBlob,
 };
 pub use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 pub use proxima_core::verbs::fact_ingest::{
@@ -131,14 +136,14 @@ pub use proxima_core::{
 /// depending only on `proxima` cannot write a typed signature or match
 /// [`McpToolOrigin`]. `CoreToolInfo` stays the projected list DTO.
 pub use proxima_core::{McpToolDescriptor, McpToolOrigin};
-/// Startup-registered participant that runs host-owned state SQL on the
-/// [`crate::UnitOfWork`] transaction. Host API only; Flavor SDK does not export it.
-pub use proxima_storage_pg::PgHostStateParticipant;
 /// The Postgres pool and query-tuning blocks.
 ///
 /// Both are nameable from the host facade and have programmatic builder
 /// methods; hosts do not need process environment to configure either block.
 pub use proxima_storage_pg::{HnswIterativeScan, PgPoolConfig, PgTuning};
+/// Startup-registered participant that runs host-owned state SQL on the
+/// [`crate::UnitOfWork`] transaction. Host API only; Flavor SDK does not export it.
+pub use proxima_storage_pg::{PgHostStateLifecyclePort, PgHostStateParticipant};
 // `GoalWriteBuildError`'s variants carry this, so a host that matches on
 // them cannot bind the payload without being able to name its type. An
 // unnameable type in a public signature is the usual shape of an

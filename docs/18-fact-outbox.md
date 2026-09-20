@@ -231,6 +231,48 @@ record keeps the ORIGINAL owner's `owner_id`, so `WHERE t = $1 AND owner_id =
 $2` would have walked past exactly the records a transferred-then-erased Fact
 left behind.
 
+## Original publication attribution and erase
+
+Migration `0012` adds `proxima_core.publication_origin`: one payload-free row
+per published Fact `t`, with its immutable original typed owner and optional
+native `SourceId`. Capture inserts it in the same transaction as a genuinely
+new Fact and its outbox row. Non-listenable writes and receipt replays create
+no origin; cooling, owner transfer, and pruning a delivered outbox body keep
+the origin. The outbox still has only `owner_id`; its owner kind is recovered
+through the retained `owners.kind` row, rather than added as a duplicate
+column. This native Proxima `SourceId` is the Fact's source-scope label; it is
+distinct from the configured CloudEvents producer `source` URI above.
+
+The origin is the selector for later revocation after the delivery body is
+gone or the Fact has moved. Whole-owner erase revokes every origin captured by
+that owner, including rows with no source. Source-scope erase selects both
+physical Fact ids still in the requested owner/source and matching immutable
+original owner/source locators. A destination-owner erase also selects every
+physical Fact `t`, even when its origin belongs to a former owner. Each SQL
+predicate is a union over unique `t` keys, so a row matching both legs is
+deleted and counted once. A source erase can revoke an original copy while a
+transferred live Fact stays with its current owner. An authorized physical
+hard erase removes origin and outbox rows by exact Fact `t`, regardless of the
+publisher that captured it. The same source label may be used by a fresh Fact
+`t` after revocation.
+
+Before host code accepts a delayed payload, `PublicationOriginEligibilityPort`
+checks the typed original owner and Fact `MemoryId` for a surviving origin and
+the absence of a hard-delete witness. It returns only eligible/ineligible; it
+does not expose Fact payload. The caller runs this check inside its existing
+unit-of-work transaction, under the shared lifecycle fence held from entry,
+and keeps that transaction through the payload write. Owner/source and custom
+physical erases take the exclusive fence before their owner, source, handle,
+or target locks, so revocation cannot pass between the check and the write.
+
+The migration backfills only a surviving outbox row plus a retained hot or
+cooled Fact that proves source identity. Both source columns NULL mean known
+source absence; a missing retained Fact, a malformed one-NULL cooled pair, a
+hard-delete witness, or an outbox row already pruned before this migration
+does not produce an origin. History already removed by retention cannot be
+reconstructed. Direct SQL or separately composed engines remain trusted-host
+residuals; lifecycle registration is not a SQL sandbox.
+
 ## Host-Only Ports
 
 ```rust
@@ -265,6 +307,36 @@ re-claimed while it was still in flight; the floor is a refusal rather than a
 silent clamp, because a caller that asked for 0 s asked for something that
 cannot work.
 
+### Publisher task health
+
+`BuiltProxima` and `RunningProxima` keep `spawn_publication_publisher` returning
+the ordinary abortable and joinable `JoinHandle<()>`. Their supervised variant
+returns a read-only health reader plus that same handle through `into_parts()`.
+Health keeps task, live connection, and latest drain-pass status separate. The
+connection sample comes from the publisher's actual async-nats client, even
+when no outbox rows are available. A pass is failed when it returns an error or
+reports one or more failed records; a later clean pass recovers the latest-pass
+state. Readiness requires a running task, a connected client, and a clean pass.
+Initial and terminal states are unready. The terminal guard clears its client
+slot on normal cancellation, abort, and unwind, so retaining the reader cannot
+keep the NATS client alive. This observation does not prove publish permission
+or deployment stream topology; only actual publication and deployment-owned
+topology checks establish those facts.
+
+`ReferenceConsumer::into_observed_parts` returns a read-only health reader and
+the consumer's existing fetch/ACK future. The compatibility `run` method uses
+that same loop. Health keeps task, live connection, and latest consume-pass
+status separate; the connection sample comes from the consumer's actual
+async-nats client, including while intake is waiting. A pass is failed when it
+returns an error or reports deferred or unacknowledged deliveries. Accepted
+and durably rejected outcomes are clean only when their ACK succeeds; a later
+clean pass recovers the latest-pass state. Readiness requires a running task,
+a connected client, and a clean pass. The terminal guard clears its client slot
+on cancellation, abort, unwind, and drop before first poll, so retaining the
+reader cannot keep the NATS client alive. This reports the latest observed
+pass; it does not impose a callback deadline or prove that the backlog is
+empty.
+
 ## Two Acknowledgements
 
 | Boundary | Completion condition | What it does NOT mean |
@@ -298,6 +370,15 @@ update, inspect or validate streams or consumers. A successful `PubAck` records
 broker acceptance; the deployment and consumer own the source → transform →
 partition → durable-intake path.
 
+Publisher and consumer clients can use separate validated reply-inbox
+namespaces through `PROXIMA_NATS_PUBLISHER_INBOX_PREFIX` and
+`PROXIMA_NATS_CONSUMER_INBOX_PREFIX`. Each is a nonempty dot-separated prefix
+whose tokens contain only ASCII letters, digits, `_` or `-`; an unset value
+preserves async-nats' `_INBOX` default. Configure matching role-specific NATS
+subscribe permissions for those prefixes. The option routes client replies; it
+does not establish broker permissions, and a server account that still grants
+both roles `_INBOX.>` does not provide isolation.
+
 The local fixture provisions a reproducible stream separately so tests can
 exercise the adapter without making the application a topology controller.
 Production deployments must provide equivalent provisioning, permissions,
@@ -308,6 +389,92 @@ stream-management rights must still connect, publish and record a `PubAck`.
 The deployment acceptance boundary is separate: publish a sentinel through
 the provisioned source → transform → partition → durable-consumer route and
 prove the consumer durably accepts or retains its outcome before ACK.
+
+### Retained-copy cleanup
+
+An embedding host may separately own `spawn_publication_copy_cleaner` even
+when Fact intake or publication is disabled. It scans the fixed
+`PROXIMA_FACTS` stream for the canonical `proxima.fact` source subjects and
+uses its own bounded API-only NATS role and `PROXIMA_PURGE_INBOX` reply
+namespace. Configure the cleaner against the **same Proxima database and cell**
+that captured the origins. The stream must be new, initially empty, dedicated
+to Proxima as its exclusive publisher, and preserve the source subjects. This
+is the trust premise that lets a verified, now-ineligible captured origin
+authorize deletion; it is not a general purge rule for imported, historical,
+transformed, or shared-producer streams.
+
+#### The origin stamp
+
+That premise is **enforced per message**, not merely documented. Deletion
+rests on an ABSENCE — no `publication_origin` row for this Fact — and an
+absence carries no scope: a Fact this database never held and a Fact whose
+origin erasure revoked look identical from the row alone. Every structural
+check the cleaner makes (`Nats-Msg-Id` against the `CloudEvents` id, the
+content type, the owner key round-trip, the derived subject) proves the
+message is canonical Proxima output, which every Proxima's output satisfies.
+None of them says *which* installation produced it.
+
+So migration 0012 mints a write-once identity in
+`proxima_core.installation`, the publisher stamps it on each message as the
+`Proxima-Origin-Scope` header, and the cleaner reads the expected value from
+the same database that answers eligibility — never from configuration, which
+could be made to agree with a foreign stream. Three outcomes:
+
+| Message | Cleaner |
+|---|---|
+| Stamped with this installation's identity | checked, and deleted if `Ineligible` |
+| Stamped by another installation | `ForeignOriginScope`: the **cycle fails**, nothing is deleted |
+| Unstamped | retained, counted as unknown, cycle unhealthy |
+
+The stamp is a header, deliberately not a `CloudEvents` attribute: the
+envelope bytes are the sealed artifact the outbox digest covers, and a
+republication must reproduce them exactly. Provenance of the transport
+belongs beside the bytes, not inside them.
+
+Unstamped is a *skip* while foreign is a *halt*, because the two say
+different things. A stream carrying events published before this release
+began stamping is the ordinary upgrade case and must not block cleaning of
+the stamped messages beside them — but those older copies can never be
+attributed, so they are retained forever and the cycle never reports clean
+until the stream is recreated. A foreign stamp is not a statement about one
+message: the stream is not this installation's, and continuing to scan it
+could only compound the error.
+
+**What the stamp does not catch.** It identifies an installation *lineage*.
+A restore or a clone carries the same identity, so a staging copy of a
+production database pointed at production's broker still passes — and a
+database rolled back beneath a live stream will have lost origin rows for
+messages it still considers its own. Both remain operator responsibilities;
+see the restore guidance below.
+
+The database erase commits without a broker request. Later finite cleaner
+slices recheck each canonical message against committed origin and hard-delete
+witness state, deleting only when storage returns `Ineligible`. A database or
+broker error retains the current scan position for retry; unknown message
+identity is retained, counted, and makes the completed cycle unhealthy. Each
+completed cycle starts again from the stream's first retained sequence so an
+erase or publication arriving behind the in-memory cursor is found later.
+The item limit is strict, while the time budget is checked between messages;
+a started GET, committed origin check, and DELETE can finish after that soft
+budget, with each request bounded by the configured timeout. These bounds do
+not promise a cleanup deadline.
+Health and logs contain fixed categories and aggregate counts, never payloads
+or Fact identities. The result means the broker no longer serves that message
+sequence; it does not prove physical media, snapshots, or backups were erased.
+
+This adapter does not sanitize dependency debug output. In the pinned
+`async-nats` 0.50.0 source, `jetstream/context.rs:1570–1573` logs the raw
+JetStream request response through a `DEBUG` event. The embedding host must
+keep the `async_nats` target at `INFO` or lower; enabling dependency `DEBUG` or
+`TRACE` can expose broker response content. Centauri will enforce that limit
+independently of `RUST_LOG`.
+
+Do not enable cleanup during a coordinated database/broker restore or stream
+recreation until both sides are known consistent, and never point a restored
+or cloned database's cleaner at the original's broker: the origin stamp
+cannot tell a copy of an installation from the installation. Provision and
+verify the fresh stream, dedicated producer policy, cleaner API permissions,
+and same-cell database binding before enabling this host task.
 
 ### The `type_token` rule
 

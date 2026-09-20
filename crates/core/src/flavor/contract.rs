@@ -774,6 +774,15 @@ impl KeyShape {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HostStateEraseDisposition {
+    /// The host lifecycle callback must remove rows for this scope.
+    Erase,
+    /// The table deliberately retains rows for this scope; receipts must
+    /// report zero deletions and scrubs for it.
+    Retain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EraseRule {
     /// Deleted through the selection set for its key.
     ByKey,
@@ -782,6 +791,14 @@ pub enum EraseRule {
     /// A constraint removes it; erase emits no statement.
     Cascade {
         via: DbConstraint,
+    },
+    /// The declared host-state lifecycle callback owns this table. The two
+    /// dispositions are explicit because a source erase may retain data that
+    /// a whole-owner erase removes (or vice versa).
+    HostState {
+        whole_owner: HostStateEraseDisposition,
+        source: HostStateEraseDisposition,
+        exact_fact: HostStateEraseDisposition,
     },
     Never {
         why: &'static str,
@@ -810,6 +827,9 @@ pub enum EraseLeg {
     Bespoke,
     /// A constraint removes it with its parent; erase emits no statement.
     Cascade,
+    /// Run by the startup-registered host lifecycle participant on the same
+    /// erase transaction. This is never handled by generic UUID-bound SQL.
+    HostState,
     /// A declared non-erase, with the reason the declaration gave.
     Never { why: &'static str },
     /// Nothing deletes it. Always a freeze error, never a runtime state.
@@ -833,6 +853,7 @@ impl EraseLeg {
     pub fn derive(surface: &Surface, bespoke: &[&'static str]) -> Self {
         match surface.erase {
             EraseRule::Cascade { .. } => Self::Cascade,
+            EraseRule::HostState { .. } => Self::HostState,
             EraseRule::Never { why } => Self::Never { why },
             EraseRule::ByKey | EraseRule::ByOwner => {
                 if bespoke.contains(&surface.table) {

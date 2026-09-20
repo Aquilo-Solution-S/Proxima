@@ -54,12 +54,19 @@ rest = ["proxima-mcp-server/rest"]
 testkit = ["dep:proxima-pg-testkit"]
 
 [dev-dependencies]
+async-nats = { workspace = true, features = ["nkeys"] }
 aws-config = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 futures = { workspace = true }
 proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../pg-testkit" }
+tokio = { workspace = true, features = ["io-util"] }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 time = { workspace = true }
 tower = { workspace = true, features = ["util"] }
+tracing-subscriber = { workspace = true }
+
+[[test]]
+name = "publication_supervision_pg"
+required-features = ["outbox-nats"]

@@ -57,6 +57,11 @@ adjectives, because a name is not the place to promise a check.
 | `erase_personal_source_scope` | one source object inside a personal `Owner` | the same, under the same drop proof |
 | `export_owner_bundle` | one personal or group `Owner` | a deterministic bundle of every surface the contracts declare exportable |
 
+The public scope operations above remain the authority boundary. A physical
+single-Fact or series erase is available only inside an already-authorized
+hard-delete path; its selected Fact IDs are passed to registered lifecycle
+callbacks and do not let those callbacks choose additional core rows.
+
 The preconditions are real and they live in the transaction, not the name.
 Group scopes take the membership lock and re-check the roster; personal
 scopes require `OwnerDropProofPort` to confirm the drop event. A source scope
@@ -66,8 +71,10 @@ half of one and are therefore untouched by it.
 Every owner is personal or group, so every row sits inside some owner's
 erase reach. An owner-to-owner transfer moves that reach rather than escaping
 it: the destination can erase the transferred rows and the source no longer
-can. See [Consumer Projector
-Guidance](reference/public-api.md#consumer-projector-guidance).
+can. A captured publication copy has separate immutable original-owner and
+source attribution until it is erased: a source erase can remove that copy
+after transfer while leaving the live Fact with its current owner. See
+[Consumer Projector Guidance](reference/public-api.md#consumer-projector-guidance).
 
 Hard deletion also appends a permanent, database-only witness for each erased
 Memory or Goal target: its `t` and closed kind. The witness has no owner or
@@ -145,6 +152,17 @@ is the host's obligation, not this verb's. `PROXIMA_OUTBOX_PUBLISHED_RETENTION_S
 is housekeeping, not compliance: it removes only records that were already
 delivered, and no horizon can reach an undelivered one.
 
+Migration `0012` adds the payload-free `publication_origin` index. It records
+the typed owner and optional source that originally published each Fact,
+separately from the outbox body. Whole-owner and source-scope erase revoke
+matching origins and remaining outbox rows by original owner/source, even
+after the Fact transfers or a published body is pruned. An exact physical
+Fact erase removes the origin and outbox row by `t` across original owners.
+The origin itself is never exported. Backfill requires both surviving outbox
+evidence and a retained hot/cooled Fact row; a row already pruned before this
+migration is unrecoverable. See [18 §Original publication attribution and
+erase](18-fact-outbox.md#original-publication-attribution-and-erase).
+
 Legs whose statement is not the generic shape — those that enqueue before
 deleting, span two selection sets, carry a refcount guard, or rewind a head —
 are named in one sorted exemption list beside the code, and a test asserts
@@ -196,23 +214,27 @@ not claim Fact grounding or reconstruct the erased target's owner. Public
 reads retain their existing redacted/missing-target behavior, and the internal
 witness does not introduce an `Unavailable` projection state.
 
-Memory and Goal admission take a distinct owner fence (and sourced Memory
-admission also shares its exact source fence) before first-use owner-row
-arbitration and before taking the sorted Memory handle/per-`t` lifecycle locks.
-Owner erase takes that owner fence
-exclusively; source-scope erase takes the owner fence shared and its source
-fence exclusively. The resulting order is owner → source → Memory handle →
-lifecycle `t` → rows. A bulk erase takes its scope fence first and only then
+Host-capable Fact units of work take the database-wide lifecycle fence shared
+from transaction entry, then their owner/source fences, before sorted Memory
+handle and per-`t` lifecycle locks. That shared fence covers an in-transaction
+publication-origin check and the host write that follows it. Every bulk
+owner/source erase takes the lifecycle fence exclusively first; owner erase
+then takes the owner fence exclusively, while source erase takes owner shared
+and source exclusively. The resulting erase order is lifecycle → owner →
+source → Memory handle → lifecycle `t` → rows. A bulk erase takes its scope
+fence next and only then
 selects, so the Memory and Goal scope it erases is exactly the scope in place
 when the fence was acquired; it locks the complete selected handle/`t` sets
 before deletion, witness, sidecar, or cold-purge work. An admission or
-transfer that commits before the fence is inside the erase; one that commits
-after it is a write that follows a completed erase. Either way the writer is
+transfer that commits before the fences is inside the erase; one that commits
+after them is a write that follows a completed erase. Either way the writer is
 whole — the erase never observes a partial one. Transfer exclusively fences
 both endpoints in sorted owner order before its complete sorted series
 handle/`t` locks and membership reread, so owner- and source-scope erase have
-defined boundaries. Per-entity hydration,
-forget, and single-entity erase retain their existing per-`t`/handle contract.
+defined boundaries. Custom single-Fact/series erase first takes the same
+lifecycle-exclusive fence, then its existing owner/scope/handle/target locks,
+and applies the exact-Fact callback and core deletion in one transaction.
+Per-entity hydration and forget retain their existing per-`t`/handle contract.
 A flavor-owned lifecycle scope narrower than a source is declared, and the
 substrate fences it the same way in one namespace
 (`proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`): a
@@ -222,7 +244,7 @@ its handle/`t` locks and reruns the declaration's liveness probe under it —
 shared, so concurrent writers into one scope do not serialize against each
 other, exclusive only for the erase they are being separated from. The fence
 is the Engine's, not the flavor's, so no caller can reach an admission path
-that skips it. That extends the order to owner → source → scope → Memory
+that skips it. That extends the erase order to lifecycle → owner → source → scope → Memory
 handle → lifecycle `t` → rows. A scope sweep therefore carries the same
 exact-snapshot claim as owner and source scope, and an admission that races it
 is refused as `NotFound` (`scope not registered: <kind>:<id>`) rather than

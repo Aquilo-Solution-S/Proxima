@@ -2977,13 +2977,16 @@ fn uncommitted_outcome(
 /// [`purge_cold_objects_after_commit`]. The cold delete cannot run here —
 /// a rollback after it would restore the `cooled` locator over destroyed
 /// bytes.
+#[allow(clippy::too_many_lines)] // the ordered hard-delete transaction keeps atomic DML sequencing visible
 pub async fn erase_memory(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
-    surfaces: &OwnerSurfaces,
+    context: &crate::PgHostStateEraseContext,
     owner: &Owner,
     t: Uuid,
 ) -> Result<ColdPurgePlan, StorageError> {
+    context.lock_before_physical_erase(tx).await?;
+    let surfaces = &context.surfaces;
     // Probe the series identity first. The handle lock is the first
     // serialization boundary; a missing target is not a successful no-op.
     let probed_handle = probe_memory_handle_for_owner(tx, t, owner.stored_owner_id())
@@ -3011,6 +3014,29 @@ pub async fn erase_memory(
     .await
     .map_err(map_err)?
     .flatten();
+    let is_fact: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM proxima_core.memory WHERE t = $1 AND owner_id = $2 AND kind = 'fact'
+             UNION ALL
+             SELECT 1 FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2 AND kind = 'fact'
+         )",
+    )
+    .bind(t)
+    .bind(owner.stored_owner_id())
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    crate::verbs::owner_erase::invoke_host_lifecycle_exact_erase(
+        tx,
+        context,
+        *owner,
+        if is_fact {
+            std::slice::from_ref(&t)
+        } else {
+            &[]
+        },
+    )
+    .await?;
     let pending: Vec<String> = sqlx::query_scalar(
         "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
          SELECT c.object_key, c.owner_id
@@ -3073,6 +3099,11 @@ pub async fn erase_memory(
     // memory would then walk past a record still holding the full typed
     // payload. The caller has already authorized the erase of this `t`; the
     // record is that `t`'s content whichever owner it was captured for.
+    sqlx::query("DELETE FROM proxima_core.publication_origin WHERE t = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
     sqlx::query("DELETE FROM proxima_core.publication_outbox WHERE t = $1")
         .bind(t)
         .execute(tx.as_mut())
@@ -3139,26 +3170,27 @@ pub async fn erase_memory(
 pub async fn erase_memory_series(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
-    surfaces: &OwnerSurfaces,
+    context: &crate::PgHostStateEraseContext,
     owner: &Owner,
     ts: &[Uuid],
 ) -> Result<(u64, ColdPurgePlan), StorageError> {
     if ts.is_empty() {
         return Ok((0, ColdPurgePlan::default()));
     }
+    context.lock_before_physical_erase(tx).await?;
     let owner_id = owner.stored_owner_id();
     // Capture handles and membership in one statement before waiting. The
     // membership is the generation witness: handles are reusable after a
     // complete erase, so a non-empty post-lock series disjoint from this
     // snapshot is a replacement, not a late version of the requested series.
     let before = snapshot_series_for_erase_tx(tx, owner_id, ts).await?;
-    erase_memory_series_after_snapshot(tx, sidecars, surfaces, owner, before).await
+    erase_memory_series_after_snapshot(tx, sidecars, context, owner, before).await
 }
 
 async fn erase_memory_series_after_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
-    surfaces: &OwnerSurfaces,
+    context: &crate::PgHostStateEraseContext,
     owner: &Owner,
     before: MemorySeriesSnapshot,
 ) -> Result<(u64, ColdPurgePlan), StorageError> {
@@ -3185,7 +3217,7 @@ async fn erase_memory_series_after_snapshot(
     let mut entries = Vec::new();
     let mut erased = 0_u64;
     for t in versions {
-        let plan = erase_memory(tx, sidecars, surfaces, owner, t).await?;
+        let plan = erase_memory(tx, sidecars, context, owner, t).await?;
         entries.extend_from_slice(plan.entries());
         erased += 1;
     }

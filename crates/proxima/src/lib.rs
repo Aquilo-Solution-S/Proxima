@@ -29,6 +29,74 @@
 //!   Flavor crates should avoid direct `proxima-core` / `proxima-storage-pg`
 //!   dependencies except backend-owned adapters explicitly outside the stable
 //!   SDK boundary.
+//!
+//! The host-only capability and its permit cannot be caller-constructed:
+//!
+//! ```compile_fail
+//! use proxima::HostStateMaintenanceAuthority;
+//! let _authority = HostStateMaintenanceAuthority::new();
+//! ```
+//!
+//! ```compile_fail
+//! fn clone_authority(authority: &proxima::HostStateMaintenanceAuthority) {
+//!     let _copy = Clone::clone(authority);
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use proxima::{
+//!     HostStateParticipantId, HostStateWriteOrigin, HostStateWritePermit, Owner, StateSurfaceName,
+//! };
+//! let _permit = HostStateWritePermit::new(
+//!     Owner::Personal(proxima::UserId::new(uuid::Uuid::nil())),
+//!     HostStateParticipantId::new("fixture"),
+//!     &[StateSurfaceName::new("fixture.state")],
+//!     HostStateWriteOrigin::Maintenance,
+//! );
+//! ```
+
+//! ```compile_fail
+//! use proxima::{HostStateWriteOrigin, HostStateWritePermit};
+//! fn overwrite_origin(permit: &mut HostStateWritePermit) {
+//!     permit.origin = HostStateWriteOrigin::Maintenance;
+//! }
+//! ```
+//!
+//! A host-state stamp cannot be widened into an ordinary owner write permit:
+//!
+//! ```compile_fail
+//! use proxima::HostStateWritePermit;
+//! fn widen(permit: HostStateWritePermit) -> proxima_core::storage_ports::OwnerWritePermit {
+//!     permit.into()
+//! }
+//! ```
+//!
+//! The maintenance unit intentionally has no cognitive write or read methods:
+//!
+//! ```compile_fail
+//! fn fact(unit: &mut proxima::HostStateUnitOfWork<'_>) {
+//!     let _ = unit.ingest_fact;
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! fn goal(unit: &mut proxima::HostStateUnitOfWork<'_>) {
+//!     let _ = unit.create_goal;
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! fn read_or_forget(unit: &mut proxima::HostStateUnitOfWork<'_>) {
+//!     let _ = unit.owned_series_head_memory_id;
+//!     let _ = unit.forget;
+//! }
+//! ```
+//!
+//! Flavor SDK imports cannot name the host-only authority:
+//!
+//! ```compile_fail
+//! use proxima::flavor::HostStateMaintenanceAuthority;
+//! ```
 
 mod app;
 #[cfg(feature = "auth-oidc")]
@@ -193,11 +261,23 @@ impl std::fmt::Debug for ProximaBuilder {
 pub struct EmbeddedProxima {
     pub engine: Arc<Engine>,
     pub system_authority: SystemAuthority,
+    host_state_maintenance_authority: Option<proxima_core::engine::HostStateMaintenanceAuthority>,
     delegation_runtime_authority: proxima_core::DelegationRuntimeAuthority,
     pub handle: EngineHandle,
     pool: PgPool,
     pub registry: Arc<proxima_core::FlavorRegistryFrozen>,
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
+    erase_context: proxima_storage_pg::PgHostStateEraseContext,
+    publication_origin_eligibility:
+        Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
+    /// This installation's minted identity, read once from the same
+    /// database that answers `publication_origin_eligibility`.
+    ///
+    /// Both halves of the retained-copy rule have to come from one place:
+    /// the publisher stamps this on every broker message and the cleaner
+    /// refuses any message not carrying it, so "no origin row" is only ever
+    /// read as a revocation over copies this database actually published.
+    origin_scope: proxima_core::storage_ports::publication::OriginScope,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Option<Owner>,
     /// The host-only drain over captured publication records.
@@ -221,9 +301,44 @@ pub struct EmbeddedProxima {
 }
 
 impl EmbeddedProxima {
+    /// The boot-frozen full owner-surface registry and validated lifecycle
+    /// callback for a host flavor that delegates physical erasure.
+    #[must_use]
+    pub fn host_state_erase_context_for_host(&self) -> proxima_storage_pg::PgHostStateEraseContext {
+        self.erase_context.clone()
+    }
+
+    /// This installation's minted identity, for a host wiring its own
+    /// publisher or cleaner rather than using the facade's spawners.
+    #[must_use]
+    pub const fn origin_scope_for_host(
+        &self,
+    ) -> proxima_core::storage_ports::publication::OriginScope {
+        self.origin_scope
+    }
+
+    /// Narrow host-only provenance check for intake and backlog re-offer.
+    /// The port reveals only eligible/ineligible for one typed owner/Fact
+    /// pair, never Fact contents or a general core read capability.
+    #[must_use]
+    pub fn publication_origin_eligibility_for_host(
+        &self,
+    ) -> Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort> {
+        self.publication_origin_eligibility.clone()
+    }
+
     #[must_use]
     pub const fn system_authority(&self) -> &SystemAuthority {
         &self.system_authority
+    }
+
+    /// Boot-held authority for the registered host-state participant.
+    /// Absent when the runtime booted without such a participant.
+    #[must_use]
+    pub const fn host_state_maintenance_authority(
+        &self,
+    ) -> Option<&proxima_core::engine::HostStateMaintenanceAuthority> {
+        self.host_state_maintenance_authority.as_ref()
     }
 
     /// Test-only backend pool access for integration fixtures.
@@ -463,8 +578,14 @@ impl ProximaBuilder {
         let pg_sidecars = compose_pg_sidecars(&pg, &registry, pg_sidecar_registers).await?;
         let pg = pg
             .with_sidecars(pg_sidecars.as_ref().clone())
-            .with_flavors(&registry)
+            .try_with_flavors(&registry)
+            .map_err(|error| EmbedError::Storage(error.to_string()))?
             .with_embedding_runtime_policy(embedding_runtime_policy);
+
+        let erase_context = pg
+            .host_state_erase_context()
+            .map_err(|error| EmbedError::Storage(error.to_string()))?;
+        let (publication_origin_eligibility, origin_scope) = publication_origin_ports(&pg).await?;
 
         let pool = pg.clone_pool_for_backend();
         let configured_bucket = config.s3.as_ref().map(|s3| s3.bucket.clone());
@@ -497,6 +618,9 @@ impl ProximaBuilder {
 
         let (engine, system_authority, delegation_runtime_authority) =
             engine.into_runtime_authorities();
+        let host_state_maintenance_authority = engine
+            .host_state_maintenance_authority(&system_authority)
+            .map_err(|error| EmbedError::Engine(error.to_string()))?;
         if let Some(store) = &blobs {
             store
                 .bind_system_authority(&system_authority)
@@ -512,11 +636,15 @@ impl ProximaBuilder {
         Ok(EmbeddedProxima {
             engine,
             system_authority,
+            host_state_maintenance_authority,
             delegation_runtime_authority,
             handle,
             pool,
             registry,
             pg_sidecars,
+            erase_context,
+            publication_origin_eligibility,
+            origin_scope,
             blobs,
             owner,
             #[cfg(feature = "outbox-nats")]
@@ -525,6 +653,35 @@ impl ProximaBuilder {
             outbox_retention,
         })
     }
+}
+
+/// The two halves of the retained-copy rule, taken from ONE database.
+///
+/// They are returned together because that is the invariant: the port
+/// answers "does an origin row still exist", the scope answers "is this
+/// message mine to ask that about", and a cleaner holding a port and a
+/// scope from different databases would read a foreign stream as entirely
+/// revoked. Deriving both here leaves no call site free to mix them.
+///
+/// An unreadable scope fails the boot. A publisher that cannot stamp
+/// produces events no cleaner is ever allowed to act on — retained forever,
+/// every cycle unhealthy — and entering that state silently is worse than
+/// not starting. Migration 0012 writes the row, so its absence means the
+/// schema was tampered with, not that a feature is switched off.
+async fn publication_origin_ports(
+    pg: &proxima_storage_pg::PgStorage,
+) -> Result<
+    (
+        Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
+        proxima_core::storage_ports::publication::OriginScope,
+    ),
+    EmbedError,
+> {
+    let scope = pg
+        .origin_scope()
+        .await
+        .map_err(|error| EmbedError::Storage(error.to_string()))?;
+    Ok((Arc::new(pg.clone()), scope))
 }
 
 /// Connect the Postgres storage backend and bring its schema to this

@@ -44,6 +44,13 @@ fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     )
 }
 
+fn erase_context(
+    surfaces: proxima_core::owner_inverse::OwnerSurfaces,
+) -> crate::PgHostStateEraseContext {
+    crate::PgHostStateEraseContext::for_surfaces_for_tests(surfaces)
+        .expect("these fixtures declare no host lifecycle tables")
+}
+
 /// The hydrate's registry-resolved embedding answer, same reason.
 fn non_embeddable_schemas() -> Vec<String> {
     proxima_core::FlavorRegistry::new()
@@ -576,7 +583,14 @@ async fn forget_hydrate_and_erase() {
             owner.stored_owner_id(),
         )
         .await?;
-        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
+        let plan = erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &erase_context(surfaces()),
+            &owner,
+            t,
+        )
+        .await?;
         tx.commit().await?;
         assert_eq!(
             plan.object_keys(),
@@ -645,7 +659,14 @@ async fn erase_announce_carries_the_series_handle() {
         assert_ne!(t, second.handle, "the erased t is not its own handle");
 
         let mut tx = pool.begin().await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
+        erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &erase_context(surfaces()),
+            &owner,
+            t,
+        )
+        .await?;
         tx.commit().await?;
 
         let announced: Uuid = sqlx::query_scalar(
@@ -872,7 +893,7 @@ async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
             let result = erase_memory_series(
                 &mut tx,
                 &core_pg_sidecars(),
-                &surfaces(),
+                &erase_context(surfaces()),
                 &erase_owner,
                 &[first_t],
             )
@@ -962,7 +983,7 @@ async fn series_erase_wins_hot_handle_and_append_retries_then_survives() {
         let (erased, _) = erase_memory_series(
             &mut erase_holder,
             &core_pg_sidecars(),
-            &surfaces(),
+            &erase_context(surfaces()),
             &owner,
             &[first_t],
         )
@@ -1048,7 +1069,7 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
             let result = erase_memory_series(
                 &mut tx,
                 &core_pg_sidecars(),
-                &surfaces(),
+                &erase_context(surfaces()),
                 &erase_owner,
                 &[first_t],
             )
@@ -1100,7 +1121,7 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
         let (erased, _) = erase_memory_series(
             &mut erase_holder,
             &core_pg_sidecars(),
-            &surfaces(),
+            &erase_context(surfaces()),
             &owner,
             &[first_t],
         )
@@ -1167,7 +1188,7 @@ async fn series_erase_does_not_cross_one_reused_handle_in_a_batch() {
         let (erased, plan) = erase_memory_series(
             &mut replacement_erase,
             &core_pg_sidecars(),
-            &surfaces(),
+            &erase_context(surfaces()),
             &owner,
             &[reused_t],
         )
@@ -1185,7 +1206,7 @@ async fn series_erase_does_not_cross_one_reused_handle_in_a_batch() {
         let err = erase_memory_series_after_snapshot(
             &mut waiting,
             &core_pg_sidecars(),
-            &surfaces(),
+            &erase_context(surfaces()),
             &owner,
             before,
         )
@@ -1255,7 +1276,7 @@ async fn non_head_erase_racing_append_preserves_the_greatest_head() {
             let plan = erase_memory(
                 &mut tx,
                 &core_pg_sidecars(),
-                &surfaces(),
+                &erase_context(surfaces()),
                 &erase_owner,
                 erase_t,
             )
@@ -2019,7 +2040,14 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
         ] {
             assert_eq!(erased_pin_target_kind(pool, t).await?, None);
             let mut tx = pool.begin().await?;
-            erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
+            erase_memory(
+                &mut tx,
+                &core_pg_sidecars(),
+                &erase_context(surfaces()),
+                &owner,
+                t,
+            )
+            .await?;
             tx.commit().await?;
             assert_eq!(
                 erased_pin_target_kind(pool, t).await?,
@@ -2048,8 +2076,14 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
         tx.commit().await?;
         assert_eq!(erased_pin_target_kind(pool, cooled_t).await?, None);
         let mut tx = pool.begin().await?;
-        let plan =
-            erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, cooled_t).await?;
+        let plan = erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &erase_context(surfaces()),
+            &owner,
+            cooled_t,
+        )
+        .await?;
         tx.commit().await?;
         assert_eq!(
             erased_pin_target_kind(pool, cooled_t).await?,
@@ -2124,7 +2158,14 @@ async fn exact_hydrate_restores_witnessed_sole_fact_origin() {
         cool_one(pool, &owner, &cold, abstraction_t, &abstraction_key).await?;
 
         let mut tx = pool.begin().await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, fact_t).await?;
+        erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &erase_context(surfaces()),
+            &owner,
+            fact_t,
+        )
+        .await?;
         tx.commit().await?;
         assert_eq!(
             erased_pin_target_kind(pool, fact_t).await?,
@@ -2640,7 +2681,14 @@ async fn exact_hydrate_restores_memory_and_goal_witness_refs() {
         cool_one(pool, &owner, &cold, source_t, &source_key).await?;
 
         let mut tx = pool.begin().await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, memory_t).await?;
+        erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &erase_context(surfaces()),
+            &owner,
+            memory_t,
+        )
+        .await?;
         tx.commit().await?;
         sqlx::query("DELETE FROM proxima_core.goal WHERE t = $1")
             .bind(goal_t)
@@ -2780,7 +2828,7 @@ async fn hydrate_rejects_unknown_and_wrong_kind_witnesses_atomically() {
         erase_memory(
             &mut tx,
             &core_pg_sidecars(),
-            &surfaces(),
+            &erase_context(surfaces()),
             &owner,
             abstraction_t,
         )
@@ -2847,7 +2895,7 @@ async fn hydrate_rejects_unknown_and_wrong_kind_witnesses_atomically() {
         erase_memory(
             &mut tx,
             &core_pg_sidecars(),
-            &surfaces(),
+            &erase_context(surfaces()),
             &owner,
             memory_ref_target_t,
         )
@@ -3169,7 +3217,14 @@ async fn transferred_cooled_source_hydrates_after_target_erase() {
         // still owned by the original owner. Hard erase leaves the exact
         // kind witness needed by the source's restoration seal.
         let mut tx = pool.begin().await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, target_t).await?;
+        erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &erase_context(surfaces()),
+            &owner,
+            target_t,
+        )
+        .await?;
         tx.commit().await?;
         assert_eq!(
             erased_pin_target_kind(pool, target_t).await?,
@@ -3330,7 +3385,14 @@ async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
         let target = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let target_t = target.memory_id.into_inner();
         let mut tx = pool.begin().await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, target_t).await?;
+        erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &erase_context(surfaces()),
+            &owner,
+            target_t,
+        )
+        .await?;
         tx.commit().await?;
         assert_eq!(
             erased_pin_target_kind(pool, target_t).await?,
@@ -3676,7 +3738,7 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
             let plan = erase_memory(
                 &mut erase_tx,
                 &core_pg_sidecars(),
-                &surfaces(),
+                &erase_context(surfaces()),
                 &erase_owner,
                 t,
             )
@@ -4483,7 +4545,7 @@ async fn citation_reuse_and_series_erase_share_one_lock_order() {
             let result = erase_memory_series(
                 &mut tx,
                 &core_pg_sidecars(),
-                &surfaces(),
+                &erase_context(surfaces()),
                 &erase_owner,
                 &[first_t],
             )
@@ -4744,7 +4806,14 @@ async fn a_rolled_back_erase_keeps_the_cold_object_and_its_locator() {
         tx.commit().await?;
 
         let mut tx = pool.begin().await?;
-        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
+        let plan = erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &erase_context(surfaces()),
+            &owner,
+            t,
+        )
+        .await?;
         assert_eq!(plan.object_keys(), std::slice::from_ref(&key));
         tx.rollback().await?;
 
@@ -4941,7 +5010,14 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         tx.commit().await?;
 
         let mut tx = pool.begin().await?;
-        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
+        let plan = erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &erase_context(surfaces()),
+            &owner,
+            t,
+        )
+        .await?;
         tx.commit().await?;
 
         let purged = purge_cold_objects_after_commit(pool, &FailDeleteCold, &plan).await;
@@ -5064,7 +5140,14 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
 
         // ── Erase is the verb that takes them. ──────────────────────────
         let mut tx = pool.begin().await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t1).await?;
+        erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &erase_context(surfaces()),
+            &owner,
+            t1,
+        )
+        .await?;
         tx.commit().await?;
         assert_eq!(
             receipts(t1).await?,
@@ -5345,7 +5428,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
         erase_memory(
             &mut erase_tx,
             &core_pg_sidecars(),
-            &surfaces(),
+            &erase_context(surfaces()),
             &owner,
             witness_target_t,
         )
@@ -5767,7 +5850,7 @@ async fn authorized_hydration_reports_witness_count_after_erase_race() {
             erase_memory(
                 &mut tx,
                 &core_pg_sidecars(),
-                &surfaces(),
+                &erase_context(surfaces()),
                 &erase_owner,
                 target_t,
             )

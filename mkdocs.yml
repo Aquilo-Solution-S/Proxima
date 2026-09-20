@@ -70,6 +70,7 @@ nav:
       - Edges: 16-edges.md
       - REST Surface: 17-rest-surface.md
       - Fact Outbox: 18-fact-outbox.md
+      - Host-State Maintenance: 19-host-state-maintenance.md
   - Kernel:
       - Lean Kernel: lean/README.md
       - Coverage: lean/COVERAGE.md

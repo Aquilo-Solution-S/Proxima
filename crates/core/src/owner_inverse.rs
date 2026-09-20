@@ -11,7 +11,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::flavor::{EraseLeg, ForgetLeg, KeyShape, SchemaRef, Surface, TransferLeg};
+use crate::flavor::{
+    CounterRule, EraseLeg, ExportRule, ForgetLeg, HostStateEraseDisposition, KeyShape, SchemaRef,
+    Surface, TransferLeg,
+};
+use crate::storage_ports::StateSurfaceName;
 use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 
 /// Every relation an owner-scoped erase or export has to answer for, read
@@ -27,13 +31,38 @@ use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OwnerSurfaces {
     surfaces: Vec<Surface>,
+    state_tables: Vec<&'static str>,
     legs: BTreeMap<&'static str, EraseLeg>,
     transfer_legs: BTreeMap<&'static str, TransferLeg>,
     forget_legs: BTreeMap<&'static str, ForgetLeg>,
+    host_lifecycle: Vec<HostStateLifecycleSurface>,
     /// Keyed by the rendered schema id, so the forget/hydrate lane looks a
     /// declaration up without rendering every `SchemaRef` on every call. The
     /// value is already in table order.
     cascaded_details: BTreeMap<String, Vec<CascadedDetail>>,
+}
+
+/// Frozen policy for one table handled by the registered host lifecycle
+/// callback. This is derived from the same `Surface` declaration as the
+/// generic erase/export paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostStateLifecycleSurface {
+    pub table: StateSurfaceName,
+    pub whole_owner_erase: HostStateEraseDisposition,
+    pub source_erase: HostStateEraseDisposition,
+    pub exact_fact_erase: HostStateEraseDisposition,
+    pub owner_export: ExportRule,
+    pub counter: CounterRule,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum OwnerSurfacesError {
+    #[error("host lifecycle table {table} is declared more than once")]
+    DuplicateHostLifecycleTable { table: &'static str },
+    #[error("host lifecycle table {table} also has a generic inverse declaration")]
+    HostLifecycleOverlapsGenericTable { table: &'static str },
+    #[error("host lifecycle table {table} is not declared in contract state_surfaces")]
+    HostLifecycleOutsideStateSurfaces { table: &'static str },
 }
 
 /// A contract-declared `MemoryT` detail relation whose rows are removed by the
@@ -58,12 +87,36 @@ impl OwnerSurfaces {
     /// the flavor that declared it are both in scope, because a bespoke leg
     /// is a per-flavor declaration and the flattened set has no flavor left
     /// in it. The erase then reads the answer instead of re-deriving one.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a host lifecycle table is duplicated, overlaps a generic
+    /// inverse surface, or is absent from the declaring contract's
+    /// `state_surfaces`. Boot paths should use [`Self::try_for_registry`].
     #[must_use]
     pub fn for_registry(registry: &crate::FlavorRegistryFrozen) -> Self {
+        Self::try_for_registry(registry)
+            .expect("frozen registry must have unique host lifecycle table declarations")
+    }
+
+    /// Fallible form used during storage boot, before the registry is exposed
+    /// to any owner erase/export route.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerSurfacesError`] for duplicate lifecycle declarations,
+    /// lifecycle/generic overlap, or a lifecycle surface not present in its
+    /// contract's `state_surfaces`.
+    pub fn try_for_registry(
+        registry: &crate::FlavorRegistryFrozen,
+    ) -> Result<Self, OwnerSurfacesError> {
         let mut surfaces = Vec::new();
         let mut legs = BTreeMap::new();
         let mut transfer_legs = BTreeMap::new();
         let mut forget_legs = BTreeMap::new();
+        let mut host_lifecycle = BTreeMap::new();
+        let mut generic_tables = std::collections::BTreeSet::new();
+        let mut state_tables = std::collections::BTreeSet::new();
         let mut cascaded_details: BTreeMap<String, Vec<CascadedDetail>> = BTreeMap::new();
         for contract in registry.contracts() {
             for schema in contract.schemas {
@@ -82,26 +135,74 @@ impl OwnerSurfaces {
                     }
                 }
             }
+            for surface in contract.state_surfaces {
+                state_tables.insert(surface.table);
+            }
             for surface in contract.all_surfaces() {
+                if let crate::flavor::EraseRule::HostState {
+                    whole_owner,
+                    source,
+                    exact_fact,
+                } = surface.erase
+                {
+                    if !contract
+                        .state_surfaces
+                        .iter()
+                        .any(|declared| declared.table == surface.table)
+                    {
+                        return Err(OwnerSurfacesError::HostLifecycleOutsideStateSurfaces {
+                            table: surface.table,
+                        });
+                    }
+                    if host_lifecycle
+                        .insert(
+                            surface.table,
+                            HostStateLifecycleSurface {
+                                table: StateSurfaceName::new(surface.table),
+                                whole_owner_erase: whole_owner,
+                                source_erase: source,
+                                exact_fact_erase: exact_fact,
+                                owner_export: surface.export,
+                                counter: surface.counter,
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err(OwnerSurfacesError::DuplicateHostLifecycleTable {
+                            table: surface.table,
+                        });
+                    }
+                } else {
+                    generic_tables.insert(surface.table);
+                }
                 legs.insert(surface.table, contract.erase_leg(&surface));
                 transfer_legs.insert(surface.table, contract.transfer_leg(&surface));
                 forget_legs.insert(surface.table, ForgetLeg::derive(&surface));
                 surfaces.push(surface);
             }
         }
+        if let Some(table) = host_lifecycle
+            .keys()
+            .find(|table| generic_tables.contains(**table))
+        {
+            return Err(OwnerSurfacesError::HostLifecycleOverlapsGenericTable { table });
+        }
         surfaces.sort_by_key(|surface| surface.table);
         surfaces.dedup_by_key(|surface| surface.table);
+        let host_lifecycle = host_lifecycle.into_values().collect();
         for details in cascaded_details.values_mut() {
             details.sort_by_key(|detail| detail.table);
             details.dedup_by_key(|detail| detail.table);
         }
-        Self {
+        Ok(Self {
             surfaces,
+            state_tables: state_tables.into_iter().collect(),
             legs,
             transfer_legs,
             forget_legs,
+            host_lifecycle,
             cascaded_details,
-        }
+        })
     }
 
     /// Build a set from surfaces given directly, with no bespoke legs.
@@ -112,8 +213,63 @@ impl OwnerSurfaces {
     /// [`Self::for_registry`]. Every surface here classifies against an
     /// EMPTY bespoke list, which is the honest answer: a surface no contract
     /// declares has no flavor to have exempted it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if host lifecycle declarations are duplicated or share a table
+    /// with a generic inverse surface.
     #[must_use]
-    pub fn from_surfaces(mut surfaces: Vec<Surface>) -> Self {
+    pub fn from_surfaces(surfaces: Vec<Surface>) -> Self {
+        Self::try_from_surfaces(surfaces)
+            .expect("test surfaces must have unique host lifecycle table declarations")
+    }
+
+    /// Fallible declaration-only constructor used by storage tests and
+    /// explicit registry-independent fixtures. Duplicate lifecycle tables
+    /// are rejected before ordinary surface deduplication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerSurfacesError`] for duplicate lifecycle declarations
+    /// or lifecycle/generic overlap.
+    pub fn try_from_surfaces(mut surfaces: Vec<Surface>) -> Result<Self, OwnerSurfacesError> {
+        let mut host_lifecycle = BTreeMap::new();
+        let mut generic_tables = std::collections::BTreeSet::new();
+        for surface in &surfaces {
+            if let crate::flavor::EraseRule::HostState {
+                whole_owner,
+                source,
+                exact_fact,
+            } = surface.erase
+            {
+                if host_lifecycle
+                    .insert(
+                        surface.table,
+                        HostStateLifecycleSurface {
+                            table: StateSurfaceName::new(surface.table),
+                            whole_owner_erase: whole_owner,
+                            source_erase: source,
+                            exact_fact_erase: exact_fact,
+                            owner_export: surface.export,
+                            counter: surface.counter,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(OwnerSurfacesError::DuplicateHostLifecycleTable {
+                        table: surface.table,
+                    });
+                }
+            } else {
+                generic_tables.insert(surface.table);
+            }
+        }
+        if let Some(table) = host_lifecycle
+            .keys()
+            .find(|table| generic_tables.contains(**table))
+        {
+            return Err(OwnerSurfacesError::HostLifecycleOverlapsGenericTable { table });
+        }
         surfaces.sort_by_key(|surface| surface.table);
         surfaces.dedup_by_key(|surface| surface.table);
         let legs = surfaces
@@ -128,19 +284,49 @@ impl OwnerSurfaces {
             .iter()
             .map(|surface| (surface.table, ForgetLeg::derive(surface)))
             .collect();
-        Self {
+        Ok(Self {
             surfaces,
+            state_tables: Vec::new(),
             legs,
             transfer_legs,
             forget_legs,
+            host_lifecycle: host_lifecycle.into_values().collect(),
             cascaded_details: BTreeMap::new(),
-        }
+        })
     }
 
     /// Every declared surface, ordered by table name.
     #[must_use]
     pub fn surfaces(&self) -> &[Surface] {
         &self.surfaces
+    }
+
+    /// Surfaces handled by generic UUID-bound inverse SQL. Explicitly
+    /// managed host lifecycle tables are excluded and must go through the
+    /// registered typed callback.
+    pub fn generic_surfaces(&self) -> impl Iterator<Item = &Surface> {
+        self.surfaces
+            .iter()
+            .filter(|surface| !self.is_host_lifecycle_table(surface.table))
+    }
+
+    #[must_use]
+    pub fn host_lifecycle_surfaces(&self) -> &[HostStateLifecycleSurface] {
+        &self.host_lifecycle
+    }
+
+    /// Whether any linked flavor explicitly declares this physical table as
+    /// a host-owned state surface.
+    #[must_use]
+    pub fn is_declared_state_surface(&self, table: &str) -> bool {
+        self.state_tables.binary_search(&table).is_ok()
+    }
+
+    #[must_use]
+    pub fn is_host_lifecycle_table(&self, table: &str) -> bool {
+        self.host_lifecycle
+            .binary_search_by_key(&table, |policy| policy.table.as_str())
+            .is_ok()
     }
 
     /// Which leg destroys `table`'s rows, as its declaring flavor resolved
@@ -332,7 +518,7 @@ pub struct OwnerExportRequest {
 /// Owner-scoped export bundle: one entry per declared exportable surface.
 ///
 /// The shape is DERIVED: `tables` has exactly the surfaces whose
-/// [`ExportRule`](crate::flavor::ExportRule) is `Rows` or `Allowlist`, and
+/// [`ExportRule`] is `Rows` or `Allowlist`, and
 /// `counts` is a projection of `tables`, so a new surface joins the bundle
 /// by declaring itself and nothing else. A typed field per table would put
 /// every new surface behind a hand edit here.
@@ -438,6 +624,14 @@ pub enum OwnerEraseOutcome {
     Completed {
         operation_id: uuid::Uuid,
         counts: OwnerEraseCounts,
+        /// Host lifecycle table rows physically deleted. Kept separate from
+        /// `host_state_scrubbed`, which are payload redactions on retained
+        /// rows and must not be reported as deletions.
+        #[serde(default)]
+        host_state_deleted: BTreeMap<String, u64>,
+        /// Host lifecycle payload rows scrubbed in place, keyed by table.
+        #[serde(default)]
+        host_state_scrubbed: BTreeMap<String, u64>,
         /// Postgres rows are deleted but one or more exact object-store keys
         /// still have a durable purge debt in `cold_purge_pending`. This is
         /// the ONE external-debt receipt: cold Memory objects and cited

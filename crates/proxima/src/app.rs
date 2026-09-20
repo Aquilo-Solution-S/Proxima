@@ -61,6 +61,7 @@ pub struct AppContext {
     pub(crate) pool: PgPool,
     pub(crate) pg_tuning: PgTuning,
     pub(crate) pg_sidecars: Arc<PgSidecarRegistryFrozen>,
+    pub(crate) host_state_erase_context: proxima_storage_pg::PgHostStateEraseContext,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Option<Owner>,
 }
@@ -106,6 +107,14 @@ impl AppContext {
     #[must_use]
     pub fn pg_sidecars_for_host(&self) -> PgSidecarRegistryFrozen {
         self.pg_sidecars.as_ref().clone()
+    }
+
+    /// The full boot-frozen registry and callback required by host flavors
+    /// that invoke physical memory erasure. The context is opaque and grants
+    /// no erase authority by itself.
+    #[must_use]
+    pub fn host_state_erase_context_for_host(&self) -> proxima_storage_pg::PgHostStateEraseContext {
+        self.host_state_erase_context.clone()
     }
 }
 
@@ -292,6 +301,11 @@ mod tests {
             pool: sqlx::PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new()),
             pg_tuning: proxima_storage_pg::PgTuning::default(),
             pg_sidecars: Arc::default(),
+            host_state_erase_context:
+                proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
+                    proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(Vec::new()),
+                )
+                .expect("empty fixture registry has no host lifecycle tables"),
             blobs: None,
             owner: None,
         }

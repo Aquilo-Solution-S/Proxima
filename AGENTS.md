@@ -37,6 +37,7 @@ explicit request.
 | `docs/15-deployment.md` | Deploying the Code-flavor MCP server: Docker, OIDC bearer auth, network exposure, tool-surface profiles |
 | `docs/17-rest-surface.md` | Current build/runtime-opt-in REST projection of the tool manifest: derived routes, HTTP status map, OpenAPI |
 | `docs/18-fact-outbox.md` | Transactional Fact publication outbox + NATS JetStream publisher: listen declaration, capture, CloudEvents contract, delivery state machine, host-only port |
+| `docs/19-host-state-maintenance.md` | Scoped host-state maintenance authority: boot-bound capability, participant/table scope, lifecycle callbacks, publication-origin erasure |
 
 ## Workspace layout
 

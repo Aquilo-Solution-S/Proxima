@@ -12,6 +12,75 @@ use std::fmt;
 use crate::Owner;
 use crate::storage::StorageError;
 
+/// Stable identity for the single host-state participant captured at boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HostStateParticipantId(&'static str);
+
+impl HostStateParticipantId {
+    /// Construct an identifier in a participant implementation.
+    #[must_use]
+    pub const fn new(value: &'static str) -> Self {
+        Self(value)
+    }
+
+    /// Identifier label used by diagnostics and registry matching.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+/// Typed name of a host-owned state surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StateSurfaceName(&'static str);
+
+impl StateSurfaceName {
+    /// Construct a name in a participant or command implementation.
+    #[must_use]
+    pub const fn new(value: &'static str) -> Self {
+        Self(value)
+    }
+
+    /// Surface label used by the frozen flavor registry.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+/// Immutable metadata captured from the participant registered at boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostStateParticipantDescriptor {
+    participant_id: HostStateParticipantId,
+    tables: &'static [StateSurfaceName],
+}
+
+impl HostStateParticipantDescriptor {
+    /// Build the descriptor returned by the registered participant.
+    #[must_use]
+    pub const fn new(
+        participant_id: HostStateParticipantId,
+        tables: &'static [StateSurfaceName],
+    ) -> Self {
+        Self {
+            participant_id,
+            tables,
+        }
+    }
+
+    /// Participant identity frozen for this engine boot.
+    #[must_use]
+    pub const fn participant_id(self) -> HostStateParticipantId {
+        self.participant_id
+    }
+
+    /// State surfaces frozen for this engine boot.
+    #[must_use]
+    pub const fn tables(self) -> &'static [StateSurfaceName] {
+        self.tables
+    }
+}
+
 /// Typed host-owned command executed inside a [`crate::engine::UnitOfWork`].
 ///
 /// `TABLES` must be declared on some linked flavor's
@@ -21,15 +90,16 @@ use crate::storage::StorageError;
 pub trait HostStateCommand: Send + 'static {
     /// Stable id of the startup-registered participant that understands
     /// this command.
-    const PARTICIPANT_ID: &'static str;
+    const PARTICIPANT_ID: HostStateParticipantId;
     /// Physical tables this command will read or write. Each name is a
     /// declared state surface, not a memory sidecar and not a kernel table.
-    const TABLES: &'static [&'static str];
+    const TABLES: &'static [StateSurfaceName];
     /// Typed business result carried by [`HostStateOutcome`].
     type Outcome: Send + 'static;
-    /// Destination owner. Authorized through the existing write gate
-    /// before dispatch; SQL stamps this owner from the resulting permit,
-    /// never from a caller-supplied column.
+    /// Destination owner. Ordinary units authorize it through the write
+    /// gate; maintenance units require their fixed, capability-scoped owner.
+    /// SQL stamps this owner from the resulting host-state permit, never
+    /// from a caller-supplied column.
     fn owner(&self) -> Owner;
 }
 
@@ -73,8 +143,8 @@ impl<T> HostStateOutcome<T> {
 ///
 /// Built only from a [`HostStateCommand`]. Core does not interpret `payload`.
 pub struct HostStateRequest {
-    participant_id: &'static str,
-    tables: &'static [&'static str],
+    participant_id: HostStateParticipantId,
+    tables: &'static [StateSurfaceName],
     payload: Box<dyn Any + Send>,
 }
 
@@ -103,13 +173,13 @@ impl HostStateRequest {
 
     /// Participant id declared by the command type.
     #[must_use]
-    pub const fn participant_id(&self) -> &'static str {
+    pub const fn participant_id(&self) -> HostStateParticipantId {
         self.participant_id
     }
 
     /// Tables the command declared it will touch.
     #[must_use]
-    pub const fn tables(&self) -> &'static [&'static str] {
+    pub const fn tables(&self) -> &'static [StateSurfaceName] {
         self.tables
     }
 
@@ -127,7 +197,8 @@ impl HostStateRequest {
         } = self;
         payload.downcast::<C>().map(|boxed| *boxed).map_err(|_| {
             StorageError::Internal(format!(
-                "host-state command type mismatch for participant {participant_id}"
+                "host-state command type mismatch for participant {}",
+                participant_id.as_str()
             ))
         })
     }
@@ -206,7 +277,11 @@ impl HostStateReply {
 
 #[cfg(test)]
 mod tests {
-    use super::{HostStateCommand, HostStateReply, HostStateReplyKind, HostStateRequest};
+    use super::{
+        HostStateCommand, HostStateParticipantId, HostStateReply, HostStateReplyKind,
+        HostStateRequest, StateSurfaceName,
+    };
+    use crate::storage_ports::HostStateWritePermit;
     use crate::{GroupId, OwnerRef};
     use uuid::Uuid;
 
@@ -215,8 +290,41 @@ mod tests {
     }
 
     impl HostStateCommand for Dummy {
-        const PARTICIPANT_ID: &'static str = "dummy";
-        const TABLES: &'static [&'static str] = &["dummy.table"];
+        const PARTICIPANT_ID: super::HostStateParticipantId =
+            super::HostStateParticipantId::new("dummy");
+        const TABLES: &'static [super::StateSurfaceName] =
+            &[super::StateSurfaceName::new("dummy.table")];
+        type Outcome = u8;
+
+        fn owner(&self) -> crate::Owner {
+            self.owner
+        }
+    }
+
+    struct OtherParticipant {
+        owner: crate::Owner,
+    }
+
+    impl HostStateCommand for OtherParticipant {
+        const PARTICIPANT_ID: HostStateParticipantId = HostStateParticipantId::new("other");
+        const TABLES: &'static [StateSurfaceName] = &[StateSurfaceName::new("dummy.table")];
+        type Outcome = u8;
+
+        fn owner(&self) -> crate::Owner {
+            self.owner
+        }
+    }
+
+    struct ExtraTable {
+        owner: crate::Owner,
+    }
+
+    impl HostStateCommand for ExtraTable {
+        const PARTICIPANT_ID: HostStateParticipantId = HostStateParticipantId::new("dummy");
+        const TABLES: &'static [StateSurfaceName] = &[
+            StateSurfaceName::new("dummy.table"),
+            StateSurfaceName::new("dummy.extra"),
+        ];
         type Outcome = u8;
 
         fn owner(&self) -> crate::Owner {
@@ -228,10 +336,27 @@ mod tests {
     fn request_round_trips_the_command() {
         let owner = OwnerRef::Group(GroupId::new(Uuid::nil()));
         let request = HostStateRequest::from_command(Dummy { owner });
-        assert_eq!(request.participant_id(), "dummy");
-        assert_eq!(request.tables(), &["dummy.table"]);
+        assert_eq!(request.participant_id().as_str(), "dummy");
+        assert_eq!(request.tables()[0].as_str(), "dummy.table");
         let command = request.downcast::<Dummy>().expect("command type");
         assert_eq!(command.owner(), owner);
+    }
+
+    #[test]
+    fn permit_rejects_requests_outside_its_stamped_participant_and_tables() {
+        let owner = OwnerRef::Group(GroupId::new(Uuid::nil()));
+        let permit = HostStateWritePermit::new(
+            owner,
+            Dummy::PARTICIPANT_ID,
+            Dummy::TABLES,
+            crate::storage_ports::HostStateWriteOrigin::Maintenance,
+        );
+
+        assert!(permit.matches_request(&HostStateRequest::from_command(Dummy { owner })));
+        assert!(
+            !permit.matches_request(&HostStateRequest::from_command(OtherParticipant { owner }))
+        );
+        assert!(!permit.matches_request(&HostStateRequest::from_command(ExtraTable { owner })));
     }
 
     #[test]
