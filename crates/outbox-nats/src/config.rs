@@ -14,7 +14,7 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use proxima_core::storage_ports::publication::{PublisherId, PublisherIdError};
+use proxima_core::storage_ports::publication::{OriginScope, PublisherId, PublisherIdError};
 
 /// Presence key for the whole block.
 pub const ENV_URL: &str = "PROXIMA_NATS_URL";
@@ -179,6 +179,16 @@ pub struct NatsPublisherConfig {
     /// deployment-owned and may rewrite it after publication.
     pub subject_prefix: String,
     pub publisher_id: PublisherId,
+    /// This installation's identity, stamped on every published message so
+    /// a retained-copy cleaner can tell a copy it may reason about from one
+    /// some other installation published.
+    ///
+    /// NOT read from the environment, and there is no default: the only
+    /// valid source is the database that also answers publication-origin
+    /// eligibility, so the runtime fills this in at boot. `None` publishes
+    /// unstamped — safe, because a cleaner retains what it cannot attribute
+    /// — but nothing on that stream will ever be cleaned.
+    pub origin_scope: Option<OriginScope>,
     pub batch: NonZeroU32,
     pub lease: Duration,
     pub poll_interval: Duration,
@@ -197,6 +207,7 @@ impl std::fmt::Debug for NatsPublisherConfig {
             .field("inbox_prefix", &self.inbox_prefix)
             .field("subject_prefix", &self.subject_prefix)
             .field("publisher_id", &self.publisher_id)
+            .field("origin_scope", &self.origin_scope)
             .field("batch", &self.batch)
             .field("lease", &self.lease)
             .field("poll_interval", &self.poll_interval)
@@ -223,6 +234,7 @@ impl NatsPublisherConfig {
             inbox_prefix: None,
             subject_prefix: DEFAULT_SUBJECT_PREFIX.to_owned(),
             publisher_id: default_publisher_id(&proxima_core::process_env)?,
+            origin_scope: None,
             batch: NonZeroU32::new(DEFAULT_BATCH).expect("64 is not zero"),
             lease: DEFAULT_LEASE,
             poll_interval: DEFAULT_POLL_INTERVAL,

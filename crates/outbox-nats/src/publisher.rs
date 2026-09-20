@@ -29,6 +29,22 @@ pub const HEADER_CONTENT_TYPE: &str = "Content-Type";
 /// Header naming the registered schema and its version, so a consumer can
 /// route without parsing the body.
 pub const HEADER_SCHEMA: &str = "Proxima-Schema";
+/// Header carrying the publishing installation's identity.
+///
+/// Deliberately a HEADER and not a `CloudEvents` extension attribute: the
+/// envelope bytes are the sealed artifact the outbox digest is taken over,
+/// and adding a field to them would make the stamp part of what a
+/// republication has to reproduce. This travels beside the bytes instead,
+/// which is the correct place for a fact about the transport rather than
+/// about the event.
+///
+/// A retained-copy cleaner reads an absent publication origin as a
+/// revocation. That inference is only sound over messages this installation
+/// published, and nothing else in the message says which installation that
+/// was — see [`OriginScope`].
+///
+/// [`OriginScope`]: proxima_core::storage_ports::publication::OriginScope
+pub const HEADER_ORIGIN_SCOPE: &str = "Proxima-Origin-Scope";
 /// The `CloudEvents` structured-mode content type.
 pub const CONTENT_TYPE_CLOUDEVENTS: &str = "application/cloudevents+json";
 
@@ -627,6 +643,13 @@ impl JetStreamPublisher {
             HEADER_SCHEMA,
             format!("{}/{}", record.schema_id, record.schema_version).as_str(),
         );
+        // Beside the bytes, never inside them. Absent when the host built
+        // this config without a database to read the identity from; the
+        // cleaner retains an unstamped message rather than guessing, so the
+        // cost of the omission is uncleaned copies, not deleted ones.
+        if let Some(scope) = &self.config.origin_scope {
+            headers.insert(HEADER_ORIGIN_SCOPE, scope.to_string().as_str());
+        }
         // The captured bytes, verbatim. Not the Fact reloaded, not the
         // payload re-rendered by today's flavor, not today's installation
         // identity: the digest beside them in the outbox is the witness

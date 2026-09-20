@@ -187,6 +187,7 @@ async fn source_erasure_removes_a_published_copy_after_a_finite_scan() {
             let mut cleaner = JetStreamCopyCleaner::connect(
                 cleaner_config.clone(),
                 std::sync::Arc::new(fixture.pg.clone()),
+                fixture.origin_scope(),
             )
             .await
             .expect("the limited cleaner credential binds to the canonical stream");
@@ -269,10 +270,13 @@ async fn source_erasure_removes_a_published_copy_after_a_finite_scan() {
                     .expect("pruning leaves the other original owner eligible"),
                 PublicationOriginEligibility::Eligible
             );
-            let mut cleaner =
-                JetStreamCopyCleaner::connect(cleaner_config.clone(), Arc::new(fixture.pg.clone()))
-                    .await
-                    .expect("the cleaner reconnects for a fresh full snapshot");
+            let mut cleaner = JetStreamCopyCleaner::connect(
+                cleaner_config.clone(),
+                Arc::new(fixture.pg.clone()),
+                fixture.origin_scope(),
+            )
+            .await
+            .expect("the cleaner reconnects for a fresh full snapshot");
             let report = complete_cycle(&mut cleaner, 1).await;
             assert!(report.cycle_complete);
             assert!(report.cycle_clean);
@@ -301,10 +305,13 @@ async fn source_erasure_removes_a_published_copy_after_a_finite_scan() {
             // transaction, and the next complete cycle must find revocation
             // behind the scanner's current position.
             let check_gate = Arc::new(AfterCheckBarrier::new(fixture.pg.clone()));
-            let mut cleaner =
-                JetStreamCopyCleaner::connect(cleaner_config.clone(), check_gate.clone())
-                    .await
-                    .expect("the cleaner binds before a gated origin check");
+            let mut cleaner = JetStreamCopyCleaner::connect(
+                cleaner_config.clone(),
+                check_gate.clone(),
+                fixture.origin_scope(),
+            )
+            .await
+            .expect("the cleaner binds before a gated origin check");
             let scan_task = tokio::spawn(async move {
                 let result = cleaner.scan_slice().await;
                 (cleaner, result)
@@ -444,10 +451,13 @@ async fn source_erasure_removes_a_published_copy_after_a_finite_scan() {
                     .expect("the unrelated original owner remains eligible"),
                 PublicationOriginEligibility::Eligible
             );
-            let mut cleaner =
-                JetStreamCopyCleaner::connect(cleaner_config.clone(), Arc::new(fixture.pg.clone()))
-                    .await
-                    .expect("the cleaner starts a new owner-erasure cycle");
+            let mut cleaner = JetStreamCopyCleaner::connect(
+                cleaner_config.clone(),
+                Arc::new(fixture.pg.clone()),
+                fixture.origin_scope(),
+            )
+            .await
+            .expect("the cleaner starts a new owner-erasure cycle");
             let report = complete_cycle(&mut cleaner, 1).await;
             assert!(report.cycle_complete);
             assert!(report.cycle_clean);
@@ -703,9 +713,13 @@ async fn source_erasure_removes_a_published_copy_after_a_finite_scan() {
                 fixture.pg.clone(),
                 reply_gate.clone(),
             ));
-            let mut cleaner = JetStreamCopyCleaner::connect(held_config, gated_eligibility.clone())
-                .await
-                .expect("the restricted cleaner connects through the reply proxy");
+            let mut cleaner = JetStreamCopyCleaner::connect(
+                held_config,
+                gated_eligibility.clone(),
+                fixture.origin_scope(),
+            )
+            .await
+            .expect("the restricted cleaner connects through the reply proxy");
             let scan_task = tokio::spawn(async move {
                 let result = cleaner.scan_slice().await;
                 (cleaner, result)
@@ -852,8 +866,170 @@ async fn source_erasure_removes_a_published_copy_after_a_finite_scan() {
                 &cleaner_config,
             )
             .await;
+            a_foreign_installations_copy_halts_the_cycle(
+                fixture,
+                unrelated_owner,
+                unrelated_bytes.clone(),
+                &publisher,
+                &stream,
+                &cleaner_config,
+            )
+            .await;
         })
         .await;
+}
+
+/// A copy stamped by a DIFFERENT installation stops the whole cycle, and a
+/// revoked copy behind it survives.
+///
+/// This is the deployment fault the stamp exists for: a cleaner pointed at
+/// a stream some other Proxima publishes to would find no origin row for
+/// any of it — because the rows are in that installation's database, not
+/// this one — and read the entire stream as revoked. Nothing in the message
+/// body distinguishes that from a genuine revocation, so the stamp is the
+/// only place it can be caught.
+///
+/// The retained message behind the foreign one is the real assertion. It IS
+/// ineligible here and would be deleted on any ordinary cycle; proving it
+/// survives proves the halt is a halt and not a skip.
+#[allow(clippy::too_many_lines)] // one real mixed-installation stream proves the halt
+async fn a_foreign_installations_copy_halts_the_cycle(
+    fixture: &Fixture,
+    group_owner: OwnerRef,
+    canonical_bytes: Vec<u8>,
+    publisher: &JetStreamPublisher,
+    stream: &jetstream::stream::Stream,
+    cleaner_config: &proxima_outbox_nats::JetStreamCopyCleanerConfig,
+) {
+    let admin = test_admin_client(&fixture.url).await;
+    let context = jetstream::new(admin.clone());
+    let event: serde_json::Value =
+        serde_json::from_slice(&canonical_bytes).expect("a canonical captured envelope parses");
+    let (kind, owner_id) = group_owner.columns();
+    let expected_subject = proxima_outbox_nats::subject_for(
+        COPY_CLEANER_SUBJECT_PREFIX,
+        kind.as_str(),
+        owner_id,
+        event["type"].as_str().expect("the event names its type"),
+    );
+
+    // Canonical in every structural respect. Only the stamp is another
+    // installation's, which is exactly the case no other check can see.
+    let foreign_payload = envelope_with_fresh_fact_id(&event);
+    let foreign_id = serde_json::from_slice::<serde_json::Value>(&foreign_payload)
+        .expect("the foreign event parses")["id"]
+        .as_str()
+        .expect("the foreign event id is a string")
+        .to_owned();
+    let foreign_scope =
+        proxima_core::storage_ports::publication::OriginScope::new(uuid::Uuid::now_v7());
+    assert_ne!(foreign_scope, fixture.origin_scope());
+    let foreign_sequence = stream
+        .get_info()
+        .await
+        .expect("stream info before the foreign copy")
+        .state
+        .last_sequence
+        + 1;
+    publish_raw_copy(
+        &context,
+        &expected_subject,
+        cleaner_headers(
+            &foreign_id,
+            proxima_outbox_nats::CONTENT_TYPE_CLOUDEVENTS,
+            foreign_scope,
+        ),
+        foreign_payload,
+    )
+    .await;
+
+    // Behind it: this installation's own copy, revoked for real.
+    let source = SourceId::new("cleaner/behind-foreign");
+    let captured = fixture
+        .capture_with_source_scope(
+            group_owner,
+            common::source(),
+            Some("cleaner/behind-foreign"),
+            "copy-cleaner-behind-foreign",
+            Some("copy-cleaner-behind-foreign"),
+        )
+        .await
+        .expect("a Fact behind the foreign copy is captured");
+    let drain = publisher
+        .drain_once()
+        .await
+        .expect("the copy behind the foreign one publishes");
+    assert_eq!(drain.published, 1);
+    let revoked_sequence = stream
+        .get_info()
+        .await
+        .expect("stream info after the revoked copy")
+        .state
+        .last_sequence;
+    let Owner::Group(group_id) = group_owner else {
+        panic!("the behind-foreign Fact has its Group owner");
+    };
+    assert!(matches!(
+        erase_group_source(
+            fixture,
+            group_id,
+            &source,
+            "the copy behind the foreign one is revoked",
+        )
+        .await,
+        OwnerEraseOutcome::Completed { .. }
+    ));
+    assert_eq!(
+        fixture
+            .pg
+            .check_committed(group_owner, captured.memory_id)
+            .await
+            .expect("the committed origin check succeeds"),
+        PublicationOriginEligibility::Ineligible,
+        "the copy behind the foreign one would be deleted by an ordinary cycle"
+    );
+
+    let mut cleaner = JetStreamCopyCleaner::connect(
+        cleaner_config.clone(),
+        Arc::new(fixture.pg.clone()),
+        fixture.origin_scope(),
+    )
+    .await
+    .expect("cleaner connects to the mixed-installation stream");
+    let mut failure = None;
+    for _ in 0..128 {
+        match tokio::time::timeout(Duration::from_secs(10), cleaner.scan_slice())
+            .await
+            .expect("one finite scan slice finishes")
+        {
+            Ok(slice) => assert!(
+                !slice.cycle_complete,
+                "a cycle carrying a foreign copy must not complete"
+            ),
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        failure,
+        Some(proxima_outbox_nats::CopyCleanerFailure::ForeignOriginScope)
+    );
+    assert!(
+        stream.get_raw_message(foreign_sequence).await.is_ok(),
+        "the foreign installation's copy is retained, never erased"
+    );
+    assert!(
+        stream.get_raw_message(revoked_sequence).await.is_ok(),
+        "the revoked copy behind the foreign one survives: the cycle stopped"
+    );
+
+    // Leave the shared stream clean for any later helper.
+    stream
+        .delete_message(foreign_sequence)
+        .await
+        .expect("the test removes its own synthetic foreign copy");
 }
 
 async fn provision_cleaner_stream(fixture: &Fixture) {
@@ -1540,6 +1716,7 @@ async fn wait_until(mut condition: impl FnMut() -> bool, what: &str) {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one real outage covers erase, reconnect, and the later sweep
 async fn broker_outage_does_not_delay_erase(
     fixture: &Fixture,
     group_owner: OwnerRef,
@@ -1591,6 +1768,7 @@ async fn broker_outage_does_not_delay_erase(
     let (health, task) = proxima_outbox_nats::spawn_supervised_copy_cleaner(
         unavailable_config,
         Arc::new(fixture.pg.clone()),
+        fixture.origin_scope(),
         cancel.clone(),
     );
     wait_until(
@@ -1632,10 +1810,13 @@ async fn broker_outage_does_not_delay_erase(
         proxima_outbox_nats::CopyCleanerConnectionState::NotObserved
     );
 
-    let mut cleaner =
-        JetStreamCopyCleaner::connect(cleaner_config.clone(), Arc::new(fixture.pg.clone()))
-            .await
-            .expect("real cleaner reconnects after the outage test");
+    let mut cleaner = JetStreamCopyCleaner::connect(
+        cleaner_config.clone(),
+        Arc::new(fixture.pg.clone()),
+        fixture.origin_scope(),
+    )
+    .await
+    .expect("real cleaner reconnects after the outage test");
     let report = complete_cycle(&mut cleaner, 1).await;
     assert!(report.cycle_complete);
     assert!(report.cycle_clean);
@@ -1771,6 +1952,7 @@ async fn real_sql_fault_retains_cursor(
             )
             .expect("SQL-fault bounds stay finite"),
         recording.clone(),
+        fixture.origin_scope(),
     )
     .await
     .expect("cleaner connects before the actual SQL fault");
@@ -2095,10 +2277,13 @@ async fn exact_fact_erasure_removes_only_its_copy(
         PublicationOriginEligibility::Eligible
     );
 
-    let mut cleaner =
-        JetStreamCopyCleaner::connect(cleaner_config.clone(), Arc::new(fixture.pg.clone()))
-            .await
-            .expect("cleaner binds after exact database erase");
+    let mut cleaner = JetStreamCopyCleaner::connect(
+        cleaner_config.clone(),
+        Arc::new(fixture.pg.clone()),
+        fixture.origin_scope(),
+    )
+    .await
+    .expect("cleaner binds after exact database erase");
     let report = complete_cycle(&mut cleaner, 128).await;
     assert!(report.cycle_complete);
     assert!(report.cycle_clean);
@@ -2144,10 +2329,13 @@ async fn recreated_cleaner_rechecks_from_first_retained(
             Duration::from_secs(1),
         )
         .expect("restart-boundary work is finite");
-    let mut before_erase =
-        JetStreamCopyCleaner::connect(one_item.clone(), Arc::new(fixture.pg.clone()))
-            .await
-            .expect("first cleaner process-local session connects");
+    let mut before_erase = JetStreamCopyCleaner::connect(
+        one_item.clone(),
+        Arc::new(fixture.pg.clone()),
+        fixture.origin_scope(),
+    )
+    .await
+    .expect("first cleaner process-local session connects");
     let first = before_erase
         .scan_slice()
         .await
@@ -2187,9 +2375,13 @@ async fn recreated_cleaner_rechecks_from_first_retained(
         PublicationOriginEligibility::Ineligible
     );
 
-    let mut restarted = JetStreamCopyCleaner::connect(one_item, Arc::new(fixture.pg.clone()))
-        .await
-        .expect("new cleaner session starts with no persisted cursor");
+    let mut restarted = JetStreamCopyCleaner::connect(
+        one_item,
+        Arc::new(fixture.pg.clone()),
+        fixture.origin_scope(),
+    )
+    .await
+    .expect("new cleaner session starts with no persisted cursor");
     let first_after_restart = restarted
         .scan_slice()
         .await
@@ -2232,6 +2424,7 @@ async fn sparse_snapshot_skips_deleted_sequence_holes(
             cleaner_headers(
                 &format!("cleaner-gap-{offset}"),
                 proxima_outbox_nats::CONTENT_TYPE_CLOUDEVENTS,
+                fixture.origin_scope(),
             ),
             b"test-only deleted sequence gap".to_vec(),
         )
@@ -2301,10 +2494,13 @@ async fn sparse_snapshot_skips_deleted_sequence_holes(
             .expect("the sparse-gap source erase has a committed verdict"),
         PublicationOriginEligibility::Ineligible
     );
-    let mut cleaner =
-        JetStreamCopyCleaner::connect(cleaner_config.clone(), Arc::new(fixture.pg.clone()))
-            .await
-            .expect("cleaner connects to the sparse stream");
+    let mut cleaner = JetStreamCopyCleaner::connect(
+        cleaner_config.clone(),
+        Arc::new(fixture.pg.clone()),
+        fixture.origin_scope(),
+    )
+    .await
+    .expect("cleaner connects to the sparse stream");
     let report = complete_cycle(&mut cleaner, 128).await;
     assert!(report.cycle_complete);
     assert!(report.cycle_clean);
@@ -2338,6 +2534,7 @@ async fn cleaner_recovers_after_idle_client_disconnect(fixture: &Fixture) {
     let (health, task) = proxima_outbox_nats::spawn_supervised_copy_cleaner(
         config,
         Arc::new(fixture.pg.clone()),
+        fixture.origin_scope(),
         cancel.clone(),
     );
     wait_until(
@@ -2412,6 +2609,7 @@ async fn malformed_copies_fail_health_without_starving_later_messages(
     let malformed_headers = cleaner_headers(
         &format!("{marker}_malformed"),
         proxima_outbox_nats::CONTENT_TYPE_CLOUDEVENTS,
+        fixture.origin_scope(),
     );
     sequence += 1;
     publish_raw_copy(
@@ -2431,6 +2629,7 @@ async fn malformed_copies_fail_health_without_starving_later_messages(
     let identity_headers = cleaner_headers(
         &format!("{mismatched_id}-{marker}"),
         proxima_outbox_nats::CONTENT_TYPE_CLOUDEVENTS,
+        fixture.origin_scope(),
     );
     sequence += 1;
     publish_raw_copy(
@@ -2451,7 +2650,11 @@ async fn malformed_copies_fail_health_without_starving_later_messages(
     publish_raw_copy(
         &context,
         &format!("{expected_subject}.{marker}"),
-        cleaner_headers(&subject_id, proxima_outbox_nats::CONTENT_TYPE_CLOUDEVENTS),
+        cleaner_headers(
+            &subject_id,
+            proxima_outbox_nats::CONTENT_TYPE_CLOUDEVENTS,
+            fixture.origin_scope(),
+        ),
         subject_payload,
     )
     .await;
@@ -2466,7 +2669,11 @@ async fn malformed_copies_fail_health_without_starving_later_messages(
     publish_raw_copy(
         &context,
         &expected_subject,
-        cleaner_headers(&content_id, &format!("application/octet-stream; {marker}")),
+        cleaner_headers(
+            &content_id,
+            &format!("application/octet-stream; {marker}"),
+            fixture.origin_scope(),
+        ),
         content_payload,
     )
     .await;
@@ -2526,6 +2733,7 @@ async fn malformed_copies_fail_health_without_starving_later_messages(
             )
             .expect("unknown-message bounds stay finite"),
         Arc::new(fixture.pg.clone()),
+        fixture.origin_scope(),
     )
     .await
     .expect("cleaner connects to unknown-message fixture stream");
@@ -2576,6 +2784,7 @@ async fn malformed_copies_fail_health_without_starving_later_messages(
     let (health, task) = proxima_outbox_nats::spawn_supervised_copy_cleaner(
         supervised_config.clone(),
         Arc::new(fixture.pg.clone()),
+        fixture.origin_scope(),
         cancel.clone(),
     );
     wait_until(
@@ -2606,6 +2815,7 @@ async fn malformed_copies_fail_health_without_starving_later_messages(
     let (abort_health, abort_task) = proxima_outbox_nats::spawn_supervised_copy_cleaner(
         supervised_config.clone(),
         Arc::new(fixture.pg.clone()),
+        fixture.origin_scope(),
         abort_cancel,
     );
     wait_until(
@@ -2632,6 +2842,7 @@ async fn malformed_copies_fail_health_without_starving_later_messages(
     let (panic_health, panic_task) = proxima_outbox_nats::spawn_supervised_copy_cleaner(
         supervised_config,
         Arc::new(PanicOriginEligibility),
+        fixture.origin_scope(),
         panic_cancel,
     );
     tokio::time::timeout(Duration::from_secs(5), panic_task)
@@ -2650,10 +2861,24 @@ async fn malformed_copies_fail_health_without_starving_later_messages(
     assert!(!format!("{panic_health:?}").contains(marker));
 }
 
-fn cleaner_headers(message_id: &str, content_type: &str) -> async_nats::HeaderMap {
+/// Headers for a synthetic copy, stamped as this installation's.
+///
+/// The stamp is what makes these fixtures test what they claim: an
+/// unstamped message is retained at the FIRST check, so a malformed
+/// subject or content type below would never be reached and the test would
+/// pass for the wrong reason.
+fn cleaner_headers(
+    message_id: &str,
+    content_type: &str,
+    scope: proxima_core::storage_ports::publication::OriginScope,
+) -> async_nats::HeaderMap {
     let mut headers = async_nats::HeaderMap::new();
     headers.insert(proxima_outbox_nats::HEADER_MSG_ID, message_id);
     headers.insert(proxima_outbox_nats::HEADER_CONTENT_TYPE, content_type);
+    headers.insert(
+        proxima_outbox_nats::HEADER_ORIGIN_SCOPE,
+        scope.to_string().as_str(),
+    );
     headers
 }
 

@@ -182,6 +182,11 @@ impl Fixture {
         config.lease = Duration::from_secs(2);
         config.publish_timeout = Duration::from_secs(5);
         config.poll_interval = Duration::from_millis(100);
+        config.origin_scope = Some(
+            pg.origin_scope()
+                .await
+                .expect("the migrated schema minted an installation identity"),
+        );
         let fixture = Self {
             pg,
             _db: db,
@@ -213,6 +218,11 @@ impl Fixture {
         config.lease = Duration::from_secs(2);
         config.publish_timeout = Duration::from_secs(5);
         config.poll_interval = Duration::from_millis(100);
+        config.origin_scope = Some(
+            pg.origin_scope()
+                .await
+                .expect("the migrated schema minted an installation identity"),
+        );
         Self {
             pg,
             _db: db,
@@ -248,6 +258,11 @@ impl Fixture {
         config.lease = Duration::from_secs(2);
         config.publish_timeout = Duration::from_secs(5);
         config.poll_interval = Duration::from_millis(100);
+        config.origin_scope = Some(
+            pg.origin_scope()
+                .await
+                .expect("the migrated schema minted an installation identity"),
+        );
         Self {
             pg,
             _db: db,
@@ -257,6 +272,15 @@ impl Fixture {
             url,
             created_stream: AtomicBool::new(false),
         }
+    }
+
+    /// This fixture database's minted installation identity — the value its
+    /// publisher stamps and its cleaner must be handed.
+    #[must_use]
+    pub fn origin_scope(&self) -> proxima_core::storage_ports::publication::OriginScope {
+        self.config
+            .origin_scope
+            .expect("every fixture constructor stamps the publisher config")
     }
 
     /// Mark the fixed stream owned by the inbox isolation test for guarded

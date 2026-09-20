@@ -18,8 +18,9 @@ use std::time::Duration;
 
 use proxima_core::publication::{PublicationError, PublicationLimits, PublicationPlan};
 use proxima_core::storage_ports::publication::{
-    AckOutcome, BrokerReceipt, ClaimToken, ClaimedPublication, PublicationOriginEligibility,
-    PublicationOriginEligibilityPort, PublicationOutboxPort, PublisherId, ReleaseOutcome,
+    AckOutcome, BrokerReceipt, ClaimToken, ClaimedPublication, OriginScope,
+    PublicationOriginEligibility, PublicationOriginEligibilityPort, PublicationOutboxPort,
+    PublisherId, ReleaseOutcome,
 };
 use proxima_core::{OwnerRefKind, SealedPublication, StorageError};
 use sqlx::{Postgres, Row, Transaction};
@@ -409,6 +410,37 @@ impl PublicationOriginEligibilityPort for PgStorage {
             PublicationOriginEligibility::Eligible
         } else {
             PublicationOriginEligibility::Ineligible
+        })
+    }
+}
+
+impl PgStorage {
+    /// Read this installation's minted identity.
+    ///
+    /// The value a publisher stamps on a broker message and a cleaner
+    /// checks that stamp against. Both must come from THIS database — the
+    /// same one that answers eligibility — or the check degenerates into
+    /// comparing a configuration value with itself.
+    ///
+    /// Read once at boot rather than per message: the row is written by
+    /// migration 0012 and a trigger refuses to change or remove it, so a
+    /// second read can only return the same answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the row is unreadable or absent. Absent
+    /// means the schema was tampered with — the migration seeds it — and
+    /// refusing to boot is better than publishing unstamped events that no
+    /// cleaner will ever be able to vouch for.
+    pub async fn origin_scope(&self) -> Result<OriginScope, StorageError> {
+        let id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT installation_id FROM proxima_core.installation WHERE singleton",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_err)?;
+        id.map(OriginScope::new).ok_or_else(|| {
+            internal("proxima_core.installation holds no row; the schema is incomplete")
         })
     }
 }

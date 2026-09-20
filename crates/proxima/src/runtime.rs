@@ -280,6 +280,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         #[cfg(feature = "outbox-nats")]
         let outbox_retention = booted.outbox_retention().clone();
         let publication_origin_eligibility = booted.publication_origin_eligibility_for_host();
+        #[cfg(feature = "outbox-nats")]
+        let origin_scope = booted.origin_scope_for_host();
         Ok(BuiltProxima {
             service,
             engine: booted.engine,
@@ -290,6 +292,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             registry: booted.registry,
             pg_sidecars: booted.pg_sidecars,
             publication_origin_eligibility,
+            #[cfg(feature = "outbox-nats")]
+            origin_scope,
             blobs: booted.blobs,
             owner: booted.owner,
             cancel,
@@ -302,7 +306,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             #[cfg(feature = "outbox-nats")]
             published_retention: config.published_retention,
             #[cfg(feature = "outbox-nats")]
-            nats: config.nats,
+            nats: config.nats.map(|mut nats| {
+                nats.origin_scope = Some(origin_scope);
+                nats
+            }),
         })
     }
 
@@ -323,6 +330,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         } = self.boot_common().await?;
         #[cfg(feature = "outbox-nats")]
         let publication_origin_eligibility = booted.publication_origin_eligibility_for_host();
+        #[cfg(feature = "outbox-nats")]
+        let origin_scope = booted.origin_scope_for_host();
 
         let (mcp_addr, server) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist) {
             if !config.expose_network {
@@ -389,6 +398,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             pg_sidecars: booted.pg_sidecars,
             #[cfg(feature = "outbox-nats")]
             publication_origin_eligibility,
+            #[cfg(feature = "outbox-nats")]
+            origin_scope,
             blobs: booted.blobs,
             owner: booted.owner,
             mcp_addr,
@@ -404,7 +415,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             #[cfg(feature = "outbox-nats")]
             published_retention: config.published_retention,
             #[cfg(feature = "outbox-nats")]
-            nats: config.nats,
+            nats: config.nats.map(|mut nats| {
+                nats.origin_scope = Some(origin_scope);
+                nats
+            }),
         })
     }
 
@@ -481,6 +495,12 @@ pub struct BuiltProxima {
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     publication_origin_eligibility:
         Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
+    /// This installation's identity, read at boot from the same database.
+    /// Stamped onto the publisher config below and handed to every cleaner
+    /// this runtime spawns, so neither can be pointed at a stream some
+    /// other installation published to.
+    #[cfg(feature = "outbox-nats")]
+    origin_scope: proxima_core::storage_ports::publication::OriginScope,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Option<Owner>,
     pub cancel: CancellationToken,
@@ -580,6 +600,7 @@ impl BuiltProxima {
         proxima_outbox_nats::spawn_supervised_copy_cleaner(
             config,
             self.publication_origin_eligibility.clone(),
+            self.origin_scope,
             cancel,
         )
     }
@@ -691,6 +712,12 @@ pub struct RunningProxima {
     #[cfg(feature = "outbox-nats")]
     publication_origin_eligibility:
         Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
+    /// This installation's identity, read at boot from the same database.
+    /// Stamped onto the publisher config below and handed to every cleaner
+    /// this runtime spawns, so neither can be pointed at a stream some
+    /// other installation published to.
+    #[cfg(feature = "outbox-nats")]
+    origin_scope: proxima_core::storage_ports::publication::OriginScope,
     /// Reclaim of DELIVERED records, held apart from the drain handle so
     /// that the loop able to publish is not the loop able to delete.
     #[cfg(feature = "outbox-nats")]
@@ -776,6 +803,7 @@ impl RunningProxima {
         proxima_outbox_nats::spawn_supervised_copy_cleaner(
             config,
             self.publication_origin_eligibility.clone(),
+            self.origin_scope,
             cancel,
         )
     }

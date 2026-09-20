@@ -61,3 +61,46 @@ SELECT o.t, o.owner_id, owner.kind, retained.source_id
        SELECT 1 FROM proxima_core.erased_pin_target erased
         WHERE erased.t = o.t
    );
+
+-- This installation's own identity, minted once, here.
+--
+-- Publication-origin eligibility is answered from the ABSENCE of a row
+-- above, and an absence carries no scope: "no origin row for this Fact"
+-- reads identically whether erasure revoked it or the Fact was never in
+-- this database. A retained-copy cleaner therefore cannot tell a revoked
+-- copy from a copy some other installation published, and would read a
+-- foreign stream as entirely revoked.
+--
+-- The publisher stamps this value on each broker message and the cleaner
+-- compares it against what it reads HERE, from the same database that
+-- answers the eligibility check, so the binding cannot be misconfigured
+-- into agreement. A restore or clone carries the value with it; this
+-- identifies an installation lineage, not a database instance.
+CREATE TABLE proxima_core.installation (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+    installation_id uuid NOT NULL DEFAULT gen_random_uuid()
+);
+
+COMMENT ON TABLE proxima_core.installation IS
+'Payload-free deployment identity, minted at install and never updated. Stamped on published broker messages so retained-copy cleanup can prove a message is this installation''s before reading an absent origin row as a revocation.';
+
+INSERT INTO proxima_core.installation (singleton) VALUES (true);
+
+-- Rotating the identity would orphan every message already stamped with
+-- the old one: the cleaner would read the whole stream as foreign and
+-- refuse to clean it. Dropping it would leave the publisher unable to
+-- stamp at all. The value is only ever minted, never changed or removed.
+CREATE FUNCTION proxima_core.enforce_installation_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION 'write-once: the installation identity cannot be changed or removed'
+        USING ERRCODE = '25006';
+END;
+$$;
+
+CREATE TRIGGER installation_identity_immutable
+    BEFORE UPDATE OR DELETE ON proxima_core.installation
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.enforce_installation_immutable();

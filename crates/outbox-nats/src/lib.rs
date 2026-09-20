@@ -56,7 +56,7 @@ pub use consumer::{
 };
 pub use publisher::{
     CONTENT_TYPE_CLOUDEVENTS, ContinueHook, DrainReport, DrainSummary, HEADER_CONTENT_TYPE,
-    HEADER_MSG_ID, HEADER_SCHEMA, HookAction, JetStreamPublisher, PublishHook,
+    HEADER_MSG_ID, HEADER_ORIGIN_SCOPE, HEADER_SCHEMA, HookAction, JetStreamPublisher, PublishHook,
     PublisherConnectionState, PublisherDrainState, PublisherError, PublisherHealth,
     PublisherHealthReader, PublisherTaskState, SupervisedPublisher, spawn_supervised,
 };

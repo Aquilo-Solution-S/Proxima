@@ -270,6 +270,14 @@ pub struct EmbeddedProxima {
     erase_context: proxima_storage_pg::PgHostStateEraseContext,
     publication_origin_eligibility:
         Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
+    /// This installation's minted identity, read once from the same
+    /// database that answers `publication_origin_eligibility`.
+    ///
+    /// Both halves of the retained-copy rule have to come from one place:
+    /// the publisher stamps this on every broker message and the cleaner
+    /// refuses any message not carrying it, so "no origin row" is only ever
+    /// read as a revocation over copies this database actually published.
+    origin_scope: proxima_core::storage_ports::publication::OriginScope,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Option<Owner>,
     /// The host-only drain over captured publication records.
@@ -298,6 +306,15 @@ impl EmbeddedProxima {
     #[must_use]
     pub fn host_state_erase_context_for_host(&self) -> proxima_storage_pg::PgHostStateEraseContext {
         self.erase_context.clone()
+    }
+
+    /// This installation's minted identity, for a host wiring its own
+    /// publisher or cleaner rather than using the facade's spawners.
+    #[must_use]
+    pub const fn origin_scope_for_host(
+        &self,
+    ) -> proxima_core::storage_ports::publication::OriginScope {
+        self.origin_scope
     }
 
     /// Narrow host-only provenance check for intake and backlog re-offer.
@@ -568,9 +585,7 @@ impl ProximaBuilder {
         let erase_context = pg
             .host_state_erase_context()
             .map_err(|error| EmbedError::Storage(error.to_string()))?;
-        let publication_origin_eligibility: Arc<
-            dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort,
-        > = Arc::new(pg.clone());
+        let (publication_origin_eligibility, origin_scope) = publication_origin_ports(&pg).await?;
 
         let pool = pg.clone_pool_for_backend();
         let configured_bucket = config.s3.as_ref().map(|s3| s3.bucket.clone());
@@ -629,6 +644,7 @@ impl ProximaBuilder {
             pg_sidecars,
             erase_context,
             publication_origin_eligibility,
+            origin_scope,
             blobs,
             owner,
             #[cfg(feature = "outbox-nats")]
@@ -637,6 +653,35 @@ impl ProximaBuilder {
             outbox_retention,
         })
     }
+}
+
+/// The two halves of the retained-copy rule, taken from ONE database.
+///
+/// They are returned together because that is the invariant: the port
+/// answers "does an origin row still exist", the scope answers "is this
+/// message mine to ask that about", and a cleaner holding a port and a
+/// scope from different databases would read a foreign stream as entirely
+/// revoked. Deriving both here leaves no call site free to mix them.
+///
+/// An unreadable scope fails the boot. A publisher that cannot stamp
+/// produces events no cleaner is ever allowed to act on — retained forever,
+/// every cycle unhealthy — and entering that state silently is worse than
+/// not starting. Migration 0012 writes the row, so its absence means the
+/// schema was tampered with, not that a feature is switched off.
+async fn publication_origin_ports(
+    pg: &proxima_storage_pg::PgStorage,
+) -> Result<
+    (
+        Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
+        proxima_core::storage_ports::publication::OriginScope,
+    ),
+    EmbedError,
+> {
+    let scope = pg
+        .origin_scope()
+        .await
+        .map_err(|error| EmbedError::Storage(error.to_string()))?;
+    Ok((Arc::new(pg.clone()), scope))
 }
 
 /// Connect the Postgres storage backend and bring its schema to this

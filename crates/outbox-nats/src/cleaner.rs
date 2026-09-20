@@ -15,14 +15,17 @@ use proxima_core::MemoryId;
 use proxima_core::mcp::{PrefixedUuidClass, format_prefixed_uuid, parse_prefixed_uuid};
 use proxima_core::owner::{OwnerRef, parse_external_key};
 use proxima_core::storage_ports::publication::{
-    PublicationOriginEligibility, PublicationOriginEligibilityPort,
+    OriginScope, PublicationOriginEligibility, PublicationOriginEligibilityPort,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{InboxPrefix, NatsAuth, redacted_url};
 use crate::consumer::CloudEventEnvelope;
-use crate::{CONTENT_TYPE_CLOUDEVENTS, HEADER_CONTENT_TYPE, HEADER_MSG_ID, connect_client};
+use crate::{
+    CONTENT_TYPE_CLOUDEVENTS, HEADER_CONTENT_TYPE, HEADER_MSG_ID, HEADER_ORIGIN_SCOPE,
+    connect_client,
+};
 
 /// The deployment-owned fresh, exclusive-Proxima-publisher stream.
 pub const COPY_CLEANER_STREAM: &str = "PROXIMA_FACTS";
@@ -171,6 +174,14 @@ pub enum CopyCleanerFailure {
     OriginCheck,
     Delete,
     RequestTimeout,
+    /// A message on this stream was published by a DIFFERENT Proxima
+    /// installation.
+    ///
+    /// A whole-cycle failure rather than a per-message skip, because it is
+    /// not a statement about one message: the stream is not this
+    /// installation's to clean, and every absent origin row on it would
+    /// read as a revocation. Scanning further can only compound that.
+    ForeignOriginScope,
 }
 
 /// Fixed operational state and aggregate counters; no payload or Fact
@@ -359,6 +370,7 @@ pub struct CopyCleanerSliceReport {
 pub struct JetStreamCopyCleaner {
     config: JetStreamCopyCleanerConfig,
     eligibility: Arc<dyn PublicationOriginEligibilityPort>,
+    origin_scope: OriginScope,
     client: async_nats::Client,
     stream: Stream,
     cycle_end: Option<u64>,
@@ -380,11 +392,17 @@ impl std::fmt::Debug for JetStreamCopyCleaner {
 impl JetStreamCopyCleaner {
     /// Connect using the cleaner credential and bind to the canonical stream.
     ///
+    /// `origin_scope` must be read from the SAME database that backs
+    /// `eligibility`. It is a parameter rather than a config field for
+    /// exactly that reason: an operator-supplied value could be made to
+    /// agree with a foreign stream, and agreement is the whole check.
+    ///
     /// # Errors
     /// Returns a fixed category and never includes broker text or credentials.
     pub async fn connect(
         config: JetStreamCopyCleanerConfig,
         eligibility: Arc<dyn PublicationOriginEligibilityPort>,
+        origin_scope: OriginScope,
     ) -> Result<Self, CopyCleanerConnectError> {
         let client = connect_client(
             &config.url,
@@ -402,6 +420,7 @@ impl JetStreamCopyCleaner {
         Ok(Self {
             config,
             eligibility,
+            origin_scope,
             client,
             stream,
             cycle_end: None,
@@ -483,18 +502,35 @@ impl JetStreamCopyCleaner {
             };
 
             report.examined = report.examined.saturating_add(1);
-            let Ok(identity) =
-                message_identity(message.subject.as_str(), &message.headers, &message.payload)
-            else {
-                report.unknown = report.unknown.saturating_add(1);
-                self.cycle_faulted = true;
-                tracing::warn!(
-                    failure_category = "unknown_message",
-                    unknown_count = report.unknown,
-                    "JetStream copy cleaner retained a noncanonical message"
-                );
-                self.advance(message.sequence);
-                continue;
+            let identity = match message_identity(
+                message.subject.as_str(),
+                &message.headers,
+                &message.payload,
+                self.origin_scope,
+            ) {
+                Ok(identity) => identity,
+                // Published by another installation. Not this cleaner's
+                // stream, so stop the cycle rather than skip the message:
+                // every origin row it would consult belongs to a different
+                // database, and "no row" there means nothing.
+                Err(MessageVerdict::ForeignScope) => {
+                    return Err(self.mark_failed(CopyCleanerFailure::ForeignOriginScope));
+                }
+                // Unattributable: noncanonical, or published before this
+                // installation began stamping. Both are retained and
+                // counted, and both fault the cycle so the health view
+                // never reports Clean over copies nothing vouched for.
+                Err(MessageVerdict::Unknown) => {
+                    report.unknown = report.unknown.saturating_add(1);
+                    self.cycle_faulted = true;
+                    tracing::warn!(
+                        failure_category = "unknown_message",
+                        unknown_count = report.unknown,
+                        "JetStream copy cleaner retained a noncanonical message"
+                    );
+                    self.advance(message.sequence);
+                    continue;
+                }
             };
 
             let eligibility = match self.check_eligibility(identity.owner, identity.fact).await {
@@ -644,31 +680,69 @@ struct MessageIdentity {
     owner: OwnerRef,
 }
 
+/// Why a message yielded no usable identity.
+///
+/// The two are not degrees of the same thing. [`Self::Unknown`] is a
+/// statement about ONE message and the next one may be fine;
+/// [`Self::ForeignScope`] is a statement about the STREAM, and the next
+/// message cannot be fine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MessageVerdict {
+    Unknown,
+    ForeignScope,
+}
+
+/// Prove a message is canonical Proxima output AND this installation's.
+///
+/// Everything below the scope check is structural: it establishes that
+/// some Proxima produced these bytes, which every Proxima's output
+/// satisfies. Only the stamp says WHICH one, and that is the half the
+/// deletion rule actually rests on — "no origin row" is a revocation only
+/// over messages this database published.
+///
+/// An unstamped message is [`MessageVerdict::Unknown`], not foreign. A
+/// stream carrying events from a release that published before stamping
+/// existed is the ordinary upgrade case, and it must not halt cleaning of
+/// the stamped messages beside them.
 fn message_identity(
     subject: &str,
     headers: &async_nats::HeaderMap,
     payload: &[u8],
-) -> Result<MessageIdentity, ()> {
-    let envelope: CloudEventEnvelope = serde_json::from_slice(payload).map_err(|_| ())?;
+    expected_scope: OriginScope,
+) -> Result<MessageIdentity, MessageVerdict> {
+    use MessageVerdict::Unknown;
+
+    let mut buffer = uuid::Uuid::encode_buffer();
+    let expected = expected_scope
+        .into_inner()
+        .as_hyphenated()
+        .encode_lower(&mut buffer);
+    match headers.get(HEADER_ORIGIN_SCOPE) {
+        None => return Err(Unknown),
+        Some(stamp) if stamp.as_str() == expected => {}
+        Some(_) => return Err(MessageVerdict::ForeignScope),
+    }
+    let envelope: CloudEventEnvelope = serde_json::from_slice(payload).map_err(|_| Unknown)?;
     if envelope.specversion != "1.0" || envelope.event_type.trim().is_empty() {
-        return Err(());
+        return Err(Unknown);
     }
-    let event_id = parse_prefixed_uuid(&envelope.id, PrefixedUuidClass::Fact).map_err(|_| ())?;
+    let event_id =
+        parse_prefixed_uuid(&envelope.id, PrefixedUuidClass::Fact).map_err(|_| Unknown)?;
     if envelope.id != format_prefixed_uuid(event_id, PrefixedUuidClass::Fact) {
-        return Err(());
+        return Err(Unknown);
     }
-    let message_id = headers.get(HEADER_MSG_ID).ok_or(())?.as_str();
+    let message_id = headers.get(HEADER_MSG_ID).ok_or(Unknown)?.as_str();
     if message_id != envelope.id {
-        return Err(());
+        return Err(Unknown);
     }
-    let content_type = headers.get(HEADER_CONTENT_TYPE).ok_or(())?.as_str();
+    let content_type = headers.get(HEADER_CONTENT_TYPE).ok_or(Unknown)?.as_str();
     if content_type != CONTENT_TYPE_CLOUDEVENTS {
-        return Err(());
+        return Err(Unknown);
     }
-    let raw_owner = envelope.proximaowner.as_deref().ok_or(())?;
-    let owner = parse_external_key(raw_owner).map_err(|_| ())?;
+    let raw_owner = envelope.proximaowner.as_deref().ok_or(Unknown)?;
+    let owner = parse_external_key(raw_owner).map_err(|_| Unknown)?;
     if owner.external_key() != raw_owner {
-        return Err(());
+        return Err(Unknown);
     }
     let (kind, owner_id) = owner.columns();
     let expected_subject = crate::subject_for(
@@ -678,7 +752,7 @@ fn message_identity(
         &envelope.event_type,
     );
     if subject != expected_subject {
-        return Err(());
+        return Err(Unknown);
     }
     Ok(MessageIdentity {
         fact: MemoryId::new(event_id),
@@ -688,10 +762,14 @@ fn message_identity(
 
 /// Start the independently owned cleaner and return its read-only health
 /// reader plus its ordinary join handle.
+///
+/// `origin_scope` must have been read from the database backing
+/// `eligibility`; see [`JetStreamCopyCleaner::connect`].
 #[must_use]
 pub fn spawn_supervised_copy_cleaner(
     config: JetStreamCopyCleanerConfig,
     eligibility: Arc<dyn PublicationOriginEligibilityPort>,
+    origin_scope: OriginScope,
     cancel: CancellationToken,
 ) -> (CopyCleanerHealthReader, JoinHandle<()>) {
     let inner = Arc::new(Mutex::new(CopyCleanerHealthInner::default()));
@@ -710,7 +788,13 @@ pub fn spawn_supervised_copy_cleaner(
                 if cancel.is_cancelled() {
                     break;
                 }
-                match JetStreamCopyCleaner::connect(config.clone(), eligibility.clone()).await {
+                match JetStreamCopyCleaner::connect(
+                    config.clone(),
+                    eligibility.clone(),
+                    origin_scope,
+                )
+                .await
+                {
                     Ok(cleaner) => {
                         guard.attach(cleaner.client.clone());
                         run_connected(cleaner, cancel.clone(), &guard).await;
@@ -822,8 +906,11 @@ mod tests {
         assert!(debug.contains("backup:4222"));
     }
 
-    #[test]
-    fn canonical_fact_id_and_original_owner_are_required() {
+    /// One canonical message, stamped by `scope`, and the subject it must
+    /// have been published on.
+    fn canonical_message(
+        scope: Option<OriginScope>,
+    ) -> (String, async_nats::HeaderMap, Vec<u8>, uuid::Uuid, OwnerRef) {
         let id = uuid::Uuid::now_v7();
         let owner = OwnerRef::Personal(proxima_core::UserId::new(uuid::Uuid::now_v7()));
         let event = serde_json::json!({
@@ -846,9 +933,19 @@ mod tests {
             format_prefixed_uuid(id, PrefixedUuidClass::Fact),
         );
         headers.insert(HEADER_CONTENT_TYPE, CONTENT_TYPE_CLOUDEVENTS);
+        if let Some(scope) = scope {
+            headers.insert(HEADER_ORIGIN_SCOPE, scope.to_string().as_str());
+        }
         let payload = serde_json::to_vec(&event).expect("the event serializes");
-        let identity =
-            message_identity(&subject, &headers, &payload).expect("canonical capture identity");
+        (subject, headers, payload, id, owner)
+    }
+
+    #[test]
+    fn canonical_fact_id_and_original_owner_are_required() {
+        let scope = OriginScope::new(uuid::Uuid::now_v7());
+        let (subject, headers, payload, id, owner) = canonical_message(Some(scope));
+        let identity = message_identity(&subject, &headers, &payload, scope)
+            .expect("canonical capture identity");
         assert_eq!(identity.fact, MemoryId::new(id));
         assert_eq!(identity.owner, owner);
 
@@ -856,15 +953,55 @@ mod tests {
             serde_json::from_slice(&payload).expect("the event parses");
         event["proximaowner"] = serde_json::Value::String("Personal:invalid".to_owned());
         let bad_owner_payload = serde_json::to_vec(&event).expect("the modified event serializes");
-        assert!(message_identity(&subject, &headers, &bad_owner_payload).is_err());
+        assert_eq!(
+            message_identity(&subject, &headers, &bad_owner_payload, scope).err(),
+            Some(MessageVerdict::Unknown)
+        );
+    }
+
+    /// The check the deletion rule rests on: a message is only this
+    /// installation's to reason about if it says so.
+    ///
+    /// All three messages below are canonical Proxima output and would have
+    /// passed every structural check. Nothing but the stamp separates the
+    /// one that may be deleted from the two that may not.
+    #[test]
+    fn only_a_message_this_installation_stamped_yields_an_identity() {
+        let scope = OriginScope::new(uuid::Uuid::now_v7());
+        let foreign = OriginScope::new(uuid::Uuid::now_v7());
+
+        let (subject, headers, payload, _, _) = canonical_message(Some(scope));
+        assert!(message_identity(&subject, &headers, &payload, scope).is_ok());
+
+        // Another installation's copy. Its origin rows live in a database
+        // this cleaner never queries, so an absent row here proves nothing
+        // — and the whole stream is suspect, not just this message.
+        let (subject, headers, payload, _, _) = canonical_message(Some(foreign));
+        assert_eq!(
+            message_identity(&subject, &headers, &payload, scope).err(),
+            Some(MessageVerdict::ForeignScope)
+        );
+
+        // Published before this installation stamped: the ordinary upgrade
+        // case. Unattributable, so retained — but a skip, not a halt, or a
+        // single pre-upgrade message would block cleaning forever.
+        let (subject, headers, payload, _, _) = canonical_message(None);
+        assert_eq!(
+            message_identity(&subject, &headers, &payload, scope).err(),
+            Some(MessageVerdict::Unknown)
+        );
     }
 
     #[tokio::test]
     async fn abort_before_first_poll_releases_the_cleaner_health_slot() {
         let config = JetStreamCopyCleanerConfig::new("nats://127.0.0.1:4222");
         let cancel = CancellationToken::new();
-        let (health, task) =
-            spawn_supervised_copy_cleaner(config, Arc::new(EligibleOrigin), cancel);
+        let (health, task) = spawn_supervised_copy_cleaner(
+            config,
+            Arc::new(EligibleOrigin),
+            OriginScope::new(uuid::Uuid::now_v7()),
+            cancel,
+        );
         assert_eq!(health.snapshot().task, CopyCleanerTaskState::Starting);
         task.abort();
         let aborted = task.await.expect_err("the unpolled task is aborted");

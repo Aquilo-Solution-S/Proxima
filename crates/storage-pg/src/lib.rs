@@ -2302,8 +2302,11 @@ mod tests {
             &[
                 "publication_origin",
                 "publication_origin_identity_immutable",
+                "proxima_core.installation",
+                "installation_identity_immutable",
             ],
-            "pin a published Fact's immutable original owner and source",
+            "pin a published Fact's immutable original owner and source, and mint \
+             the installation identity a retained copy is attributed to",
         );
         // The legacy range shrinks as the head advances: versions 7 through 12
         // are current additive migrations, so only 13..=21 remain retired by

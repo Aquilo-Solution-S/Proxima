@@ -403,6 +403,50 @@ is the trust premise that lets a verified, now-ineligible captured origin
 authorize deletion; it is not a general purge rule for imported, historical,
 transformed, or shared-producer streams.
 
+#### The origin stamp
+
+That premise is **enforced per message**, not merely documented. Deletion
+rests on an ABSENCE — no `publication_origin` row for this Fact — and an
+absence carries no scope: a Fact this database never held and a Fact whose
+origin erasure revoked look identical from the row alone. Every structural
+check the cleaner makes (`Nats-Msg-Id` against the `CloudEvents` id, the
+content type, the owner key round-trip, the derived subject) proves the
+message is canonical Proxima output, which every Proxima's output satisfies.
+None of them says *which* installation produced it.
+
+So migration 0012 mints a write-once identity in
+`proxima_core.installation`, the publisher stamps it on each message as the
+`Proxima-Origin-Scope` header, and the cleaner reads the expected value from
+the same database that answers eligibility — never from configuration, which
+could be made to agree with a foreign stream. Three outcomes:
+
+| Message | Cleaner |
+|---|---|
+| Stamped with this installation's identity | checked, and deleted if `Ineligible` |
+| Stamped by another installation | `ForeignOriginScope`: the **cycle fails**, nothing is deleted |
+| Unstamped | retained, counted as unknown, cycle unhealthy |
+
+The stamp is a header, deliberately not a `CloudEvents` attribute: the
+envelope bytes are the sealed artifact the outbox digest covers, and a
+republication must reproduce them exactly. Provenance of the transport
+belongs beside the bytes, not inside them.
+
+Unstamped is a *skip* while foreign is a *halt*, because the two say
+different things. A stream carrying events published before this release
+began stamping is the ordinary upgrade case and must not block cleaning of
+the stamped messages beside them — but those older copies can never be
+attributed, so they are retained forever and the cycle never reports clean
+until the stream is recreated. A foreign stamp is not a statement about one
+message: the stream is not this installation's, and continuing to scan it
+could only compound the error.
+
+**What the stamp does not catch.** It identifies an installation *lineage*.
+A restore or a clone carries the same identity, so a staging copy of a
+production database pointed at production's broker still passes — and a
+database rolled back beneath a live stream will have lost origin rows for
+messages it still considers its own. Both remain operator responsibilities;
+see the restore guidance below.
+
 The database erase commits without a broker request. Later finite cleaner
 slices recheck each canonical message against committed origin and hard-delete
 witness state, deleting only when storage returns `Ineligible`. A database or
@@ -426,9 +470,11 @@ keep the `async_nats` target at `INFO` or lower; enabling dependency `DEBUG` or
 independently of `RUST_LOG`.
 
 Do not enable cleanup during a coordinated database/broker restore or stream
-recreation until both sides are known consistent. Provision and verify the
-fresh stream, dedicated producer policy, cleaner API permissions, and same-cell
-database binding before enabling this host task.
+recreation until both sides are known consistent, and never point a restored
+or cloned database's cleaner at the original's broker: the origin stamp
+cannot tell a copy of an installation from the installation. Provision and
+verify the fresh stream, dedicated producer policy, cleaner API permissions,
+and same-cell database binding before enabling this host task.
 
 ### The `type_token` rule
 

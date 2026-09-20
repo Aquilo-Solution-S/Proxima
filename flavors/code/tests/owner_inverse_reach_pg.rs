@@ -117,6 +117,12 @@ const UNDECLARED_BUT_INTENTIONAL: &[(&str, &str)] = &[
         "The deployment's default lexical configuration — one row, an \
          operator setting, owned by nobody.",
     ),
+    (
+        "proxima_core.installation",
+        "This deployment's own identity — one row minted at install, write-once, \
+         identical for every owner and about none of them. Erasing it would \
+         orphan every broker message already stamped with it.",
+    ),
 ];
 
 #[tokio::test]

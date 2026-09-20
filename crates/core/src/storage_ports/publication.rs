@@ -123,6 +123,43 @@ pub enum PublisherIdError {
     TooLong { bytes: usize },
 }
 
+/// The identity of one Proxima installation, minted once by the schema.
+///
+/// This exists because [`PublicationOriginEligibility`] is answered from the
+/// ABSENCE of a row, and an absence carries no scope. "No origin row for
+/// this Fact" reads identically whether the row was revoked by erasure or
+/// was never in this database at all, so a cleaner pointed at a stream some
+/// other installation published to would read every message as revoked.
+///
+/// A publisher stamps this on the broker message; a cleaner compares it
+/// against the value it read from the same database that answers the
+/// eligibility check. That makes the binding a fact about the data rather
+/// than a deployment precondition an operator is trusted to have met.
+///
+/// It identifies an installation LINEAGE, not a database instance: a
+/// restore or a clone carries the same value, which is why pointing a copy
+/// at the original's broker remains an operator responsibility (docs/18).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OriginScope(Uuid);
+
+impl OriginScope {
+    #[must_use]
+    pub const fn new(id: Uuid) -> Self {
+        Self(id)
+    }
+
+    #[must_use]
+    pub const fn into_inner(self) -> Uuid {
+        self.0
+    }
+}
+
+impl std::fmt::Display for OriginScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.as_hyphenated())
+    }
+}
+
 /// The fencing token minted by one claim.
 ///
 /// A publisher that lost its lease and comes back holds a stale token; the
