@@ -76,6 +76,11 @@ jobs:
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The release-version check answers "is this version already cut?"
+          # from the tags. A clone without them reads as "first release ever"
+          # and would accept any number at all.
+          fetch-tags: true
       - name: install docs dependencies
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.docs == 'true' }}
         run: python3 -m pip install -r requirements-docs.txt
@@ -97,6 +102,13 @@ jobs:
         run: |
           shellcheck scripts/changelog.sh
           git cliff --offline --unreleased --output "${RUNNER_TEMP}/release-notes.md"
+      # Merging a bump to `proxima_core::RELEASE_VERSION` cuts that tag and
+      # publishes its notes (.github/workflows/release.yml). The PR is the
+      # last moment the number is still free to change.
+      - name: release version
+        run: |
+          python3 scripts/check-release-version.py --self-test
+          python3 scripts/check-release-version.py
       - name: architecture guardrails
         run: |
           python3 scripts/check-sql-policy.py --self-test
