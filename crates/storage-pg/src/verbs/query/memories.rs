@@ -338,6 +338,10 @@ fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64)
     // in the order the caller binds them.
     for (index, filter) in filters.iter().enumerate() {
         let placeholder = u32::try_from(index).unwrap_or(u32::MAX).saturating_add(2);
+        // SQL-POLICY: fixed-fragment — every arm of `MemoryFilter::predicate`
+        // is a literal; the only interpolations are a column picked between
+        // two literals by `heads_only` and this `u32` placeholder index. No
+        // caller-supplied text reaches the statement, only binds.
         sql.push_str(&filter.predicate(placeholder, heads_only));
     }
     let _ = write!(sql, " ORDER BY m.t DESC LIMIT {fetch_limit}");
