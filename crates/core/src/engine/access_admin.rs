@@ -39,7 +39,7 @@ impl Engine {
         first_admin: UserId,
     ) -> Result<(), ProtocolError> {
         let target = OwnerEraseTarget::GroupOwner { group_id: group };
-        if !self.erase_authority_grants(authz, &target).await {
+        if !self.erase_authority_grants(authz, &target).await? {
             return Err(ProtocolError::forbidden(
                 "owner-erase authority authorization required",
             ));

@@ -10,10 +10,12 @@ use proxima_code::mcp::{
     CodeEmitExecutionPlanTool, CodeEmitExecutionRequestTool, CodeEraseRepoTool,
     CodeIngestHeadSnapshotTool, CodeListReposTool, CodeOpenFileRevisionTool, CodeRegisterRepoTool,
     CodeRetryExecutionRequestTool, CodeSearchChunksTool, CodeSearchCommitsTool,
+    CodeWorkItemBundleTool,
 };
 use proxima_code::testkit::register_repo;
 use proxima_code::{
-    CodeChunkV1, CodeFlavorStore, CommitV1, ExecutionRequestV1, FileRevisionV1, FileState,
+    CodeChunkV1, CodeFlavorStore, CommitV1, ExecutionRequestV1, ExecutionResultV1, FileRevisionV1,
+    FileState,
 };
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError};
@@ -2346,6 +2348,95 @@ async fn ingest_execution_request_fixture(
     .bind("Prior execution request")
     .bind("Implement the prior request; this run is being retried.")
     .bind(request_key)
+    .execute(&mut *stamped)
+    .await?;
+    stamped.commit().await?;
+    Ok(memory_id)
+}
+
+/// A foreign owner cannot inject a result row into another owner's bundle.
+///
+/// `proxima_code.execution_result_v1` carries no `owner_id`, its FK reaches any
+/// `proxima_core.memory(t)`, and `ExecutionResultV1` declares no `references()`
+/// — its only fence is `CODE_REPO_SCOPE` on its OWN `repo_id`. So owner B can
+/// lawfully admit an `execution-result-v1` Fact under B's registered repo that
+/// names owner A's work item, and the sidecar accepts it. The bundle is what
+/// has to refuse: every sidecar hit is a CANDIDATE that must be admitted
+/// through `memory` before it is rendered as A's own result.
+#[tokio::test]
+async fn work_item_bundle_admits_results_before_rendering_them()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner_a = owner_fixture();
+    let owner_b = owner_fixture();
+    let registry = registry_for_mcp();
+    let pool = fixture.pg.pool_for_tests();
+
+    let repo_a = Uuid::now_v7();
+    let work_item = ingest_execution_request_fixture(pool, owner_a, repo_a, "bundle-authz").await?;
+
+    // Owner A's own result, under A's repo: admitted, and must survive.
+    let own = ingest_execution_result_fixture(pool, owner_a, repo_a, work_item, "A ran it").await?;
+
+    // Owner B's, under B's OWN repo — which is the whole of what the repo
+    // fence checks — but pointed at A's work item.
+    let repo_b = Uuid::now_v7();
+    let foreign =
+        ingest_execution_result_fixture(pool, owner_b, repo_b, work_item, "B injected").await?;
+
+    let shell_self = seed_perspective(&fixture.pg, &owner_a, "Shell author").await?;
+    let ctx = shell_ctx(
+        fixture.pg.clone(),
+        owner_a,
+        registry,
+        MemoryId::new(shell_self),
+    );
+    let args: <CodeWorkItemBundleTool as McpTool>::Args =
+        serde_json::from_value(json!({ "handle": format!("F:{work_item}") }))?;
+    let output = serde_json::to_value(CodeWorkItemBundleTool::call(ctx, args).await?)?;
+
+    let handles: Vec<String> = output["result_handles"]
+        .as_array()
+        .expect("result_handles array")
+        .iter()
+        .map(|row| row["handle"].as_str().expect("handle").to_string())
+        .collect();
+    assert!(
+        handles.contains(&format!("F:{own}")),
+        "owner A's own result must still render: {handles:?}"
+    );
+    assert!(
+        !handles.contains(&format!("F:{foreign}")),
+        "foreign-owner result leaked into the bundle: {handles:?}"
+    );
+    Ok(())
+}
+
+async fn ingest_execution_result_fixture(
+    pool: &PgPool,
+    owner: Owner,
+    repo_id: Uuid,
+    work_requested_memory_id: Uuid,
+    summary: &str,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    register_repo_row(pool, owner, repo_id).await?;
+    let mut stamped = pool.begin().await?;
+    let memory_id = fact_memory_in_tx(
+        &mut stamped,
+        owner,
+        ExecutionResultV1::SCHEMA_ID,
+        &["proxima_code.execution_result_v1"],
+    )
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_code.execution_result_v1
+            (t, work_requested_memory_id, repo_id, status, summary, artifact_refs, log_excerpt)
+         VALUES ($1, $2, $3, 'succeeded', $4, ARRAY[]::text[], NULL)",
+    )
+    .bind(memory_id)
+    .bind(work_requested_memory_id)
+    .bind(repo_id)
+    .bind(summary)
     .execute(&mut *stamped)
     .await?;
     stamped.commit().await?;
