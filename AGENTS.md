@@ -82,8 +82,10 @@ kernel, **the kernel wins** until renegotiated in writing. Check it with
 2. Work continues on short reviewed branches targeting `main`.
 3. CI validates only PRs targeting `main`, using GitHub's merge ref. Trust the
    successful required gate against up-to-date `main` once the PR merges.
-4. Tag a new `v*` from `main` after all required slices merge through that gate
-   (release notes are git-cliff-generated on the tag).
+4. A release is cut by MERGING, not by tagging: a PR that bumps
+   `proxima_core::RELEASE_VERSION` becomes `v${RELEASE_VERSION}` on merge, with
+   git-cliff notes. A merge that leaves the constant alone cuts nothing.
+   `scripts/check-release-version.py` validates the bump on the PR.
 
 ## Migration policy
 
