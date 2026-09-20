@@ -48,7 +48,7 @@ pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 pub use memory_authoring::{
     DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, MemoryTarget, SeriesHandle,
 };
-pub use pipeline::{MemoryPermit, PermitMode};
+pub use pipeline::{MemoryPermit, PermitMode, WritePermit};
 pub use read_verbs::{
     FactCitationReadRequest, FactsCitingObjectReadRequest, GetGraphReadRequest,
     GetGraphReadResponse, GetMemoriesReadRequest, GetMemoriesReadResponse, GetMemoryReadRequest,

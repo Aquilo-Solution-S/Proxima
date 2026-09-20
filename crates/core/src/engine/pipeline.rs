@@ -13,13 +13,18 @@ use super::Engine;
 /// Proof that one `(owner, relation)` authorization passed the pipeline. Carries
 /// the RESOLVED owner so check-site and use-site cannot diverge. Sealed: only
 /// this module's authorization gates can mint it.
+///
+/// Read-scoped, and only that. It used to carry an
+/// `Option<OwnerWritePermit>` as well, which every write-side caller had to
+/// unwrap back out with an `expect` — a proof the caller already held, laundered
+/// through a `None` case nothing could produce. The write half is
+/// [`WritePermit`], carried as itself by whoever was granted it.
 #[derive(Debug)]
 pub struct MemoryPermit {
     mode: PermitMode,
     owner: Owner,
     requested: Owner,
     relation: Relation,
-    owner_write: Option<OwnerWritePermit>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,12 +60,22 @@ impl WritePermit {
     pub const fn owner_write_permit(&self) -> &OwnerWritePermit {
         &self.owner_write
     }
-}
 
-impl From<WritePermit> for MemoryPermit {
-    fn from(permit: WritePermit) -> Self {
-        let owner = *permit.owner_write.owner();
-        Self::owner_scoped_with_write(permit.owner_write, owner, permit.relation)
+    /// Test-only write permit. The gates in this module remain the
+    /// production mint; see
+    /// [`crate::verbs::fact_ingest::AuthorizedFactWrite::new_for_tests`].
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn for_tests(owner_write: OwnerWritePermit, relation: Relation) -> Self {
+        Self {
+            relation,
+            owner_write,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expire_delegated_write_for_test(&mut self) {
+        self.owner_write.expire_delegated_for_test();
     }
 }
 
@@ -96,35 +111,7 @@ impl MemoryPermit {
             owner,
             requested,
             relation,
-            owner_write: None,
         }
-    }
-
-    fn owner_scoped_with_write(
-        owner_write: OwnerWritePermit,
-        requested: Owner,
-        relation: Relation,
-    ) -> Self {
-        let owner = *owner_write.owner();
-        Self {
-            mode: PermitMode::OwnerScoped,
-            owner,
-            requested,
-            relation,
-            owner_write: Some(owner_write),
-        }
-    }
-
-    /// Test-only owner-scoped write permit. The gates in this module remain
-    /// the production mint; see [`crate::verbs::fact_ingest::AuthorizedFactWrite::new_for_tests`].
-    #[cfg(any(test, feature = "test-fixtures"))]
-    #[must_use]
-    pub fn owner_scoped_with_write_for_tests(
-        owner_write: OwnerWritePermit,
-        relation: Relation,
-    ) -> Self {
-        let requested = *owner_write.owner();
-        Self::owner_scoped_with_write(owner_write, requested, relation)
     }
 
     #[must_use]
@@ -143,18 +130,6 @@ impl MemoryPermit {
     #[must_use]
     pub fn relation(&self) -> Relation {
         self.relation
-    }
-
-    #[must_use]
-    pub fn owner_write_permit(&self) -> Option<&OwnerWritePermit> {
-        self.owner_write.as_ref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn expire_delegated_write_for_test(&mut self) {
-        if let Some(owner_write) = &mut self.owner_write {
-            owner_write.expire_delegated_for_test();
-        }
     }
 }
 

@@ -12,7 +12,7 @@ use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
 use proxima_core::verbs::schema::{
-    MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
+    MemorySearchProjection, MemorySearchProjectionField, PayloadKind, RenderBands,
 };
 use proxima_core::{OwnerRef, SchemaId, SchemaVersion, SearchProjectionColumnKind, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
@@ -231,7 +231,7 @@ fn docs_projection() -> MemorySearchProjection {
             column: "lexical_language",
         },
         rank_weights: None,
-        bands: DOCS_BANDS,
+        render_bands: RenderBands::resolve(DOCS_BANDS).ok(),
         substring: SubstringArm::MemoryFirstNestedLoop,
         overfetch_k: 1_000,
         band_comparability: BandComparability::CoreBands,
