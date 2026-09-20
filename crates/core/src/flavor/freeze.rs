@@ -371,13 +371,15 @@ impl FlavorRegistry {
     /// the owner, and the check is here because the answer never depends on
     /// the request.
     ///
-    /// The owner export generates one statement per declared surface, and
-    /// that generator has exactly two shapes — filter the surface's own
-    /// declared `owner_column`, or join the home table of its key and filter
-    /// there. A
-    /// surface that declares `Rows` or `Allowlist` while carrying neither an
-    /// owner column nor a key with a home is a bundle leg nothing can emit,
-    /// and unrefused it would go missing from every bundle in silence.
+    /// The generic owner-export generator has exactly two shapes — filter
+    /// the surface's own declared `owner_column`, or join the home table of
+    /// its key and filter there. A generic surface that declares `Rows` or
+    /// `Allowlist` while carrying neither is a bundle leg nothing can emit.
+    /// An explicit `HostState` surface is different: its registered,
+    /// transaction-bound lifecycle callback owns the export query and can
+    /// join through its own authoritative owner relation. Storage validates
+    /// that callback's exact participant and managed table set at boot and
+    /// validates every returned table/row at export time.
     ///
     /// It is deliberately not a check on ERASE. An unreachable surface that
     /// declares `Excluded` is a stated non-export; one that cascades is
@@ -385,10 +387,13 @@ impl FlavorRegistry {
     fn validate_contract_surfaces(
         contract: &crate::flavor::contract::FlavorContract,
     ) -> Result<(), FlavorRegistryError> {
-        use crate::flavor::contract::ExportRule;
+        use crate::flavor::contract::{EraseRule, ExportRule};
 
         for surface in contract.all_surfaces() {
             if matches!(surface.export, ExportRule::Excluded { .. }) {
+                continue;
+            }
+            if matches!(surface.erase, EraseRule::HostState { .. }) {
                 continue;
             }
             if surface.owner_column.is_none() && surface.key.home().is_none() {
@@ -1744,6 +1749,81 @@ mod tests {
         &[],
     );
 
+    /// Host-managed ownerless exports are reached by the registered lifecycle
+    /// callback, which is checked against the exact declared table set by
+    /// storage at boot. The generic exporter has no owner join to spell.
+    static HOST_MANAGED_OWNERLESS_EXPORTS: FlavorContract = erase_fixture(
+        &[
+            Surface {
+                table: "test_flavor.host_rows",
+                key: KeyShape::Custom(&["thing_id"]),
+                owner_column: None,
+                transfer: TransferRule::RetainAtSource {
+                    why: "the callback resolves owner from execution",
+                },
+                erase: EraseRule::HostState {
+                    whole_owner: crate::flavor::contract::HostStateEraseDisposition::Erase,
+                    source: crate::flavor::contract::HostStateEraseDisposition::Retain,
+                    exact_fact: crate::flavor::contract::HostStateEraseDisposition::Retain,
+                },
+                export: ExportRule::Rows,
+                forget: ForgetRule::Keep {
+                    why: "a fixture, not a memory",
+                },
+                lexical_language_column: None,
+                counter: CounterRule::Uncounted {
+                    why: "a fixture contributes to no receipt",
+                },
+                completeness: None,
+            },
+            Surface {
+                table: "test_flavor.host_allowlist",
+                key: KeyShape::Custom(&["thing_id"]),
+                owner_column: None,
+                transfer: TransferRule::RetainAtSource {
+                    why: "the callback resolves owner from execution",
+                },
+                erase: EraseRule::HostState {
+                    whole_owner: crate::flavor::contract::HostStateEraseDisposition::Erase,
+                    source: crate::flavor::contract::HostStateEraseDisposition::Retain,
+                    exact_fact: crate::flavor::contract::HostStateEraseDisposition::Retain,
+                },
+                export: ExportRule::Allowlist(&["thing_id"]),
+                forget: ForgetRule::Keep {
+                    why: "a fixture, not a memory",
+                },
+                lexical_language_column: None,
+                counter: CounterRule::Uncounted {
+                    why: "a fixture contributes to no receipt",
+                },
+                completeness: None,
+            },
+        ],
+        &[],
+    );
+
+    static UNREACHABLE_ALLOWLIST_EXPORT_SURFACE: FlavorContract = erase_fixture(
+        &[Surface {
+            table: "test_flavor.thing_v1",
+            key: KeyShape::Custom(&["thing_id"]),
+            owner_column: None,
+            transfer: TransferRule::StaysOnKey,
+            erase: EraseRule::Never {
+                why: "the export rule is what this fixture is about",
+            },
+            export: ExportRule::Allowlist(&["thing_id"]),
+            forget: ForgetRule::Keep {
+                why: "a fixture, not a memory",
+            },
+            lexical_language_column: None,
+            counter: CounterRule::Uncounted {
+                why: "a fixture contributes to no receipt",
+            },
+            completeness: None,
+        }],
+        &[],
+    );
+
     /// A `PerRow` policy naming a column that is not the projection
     /// table's. The generator emits one language column per projection
     /// table and names it `lexical_language`; a second name is a
@@ -2771,6 +2851,23 @@ mod tests {
                 },
             ),
             (
+                "an allowlisted export has neither an owner column nor a key with a home",
+                |registry| {
+                    registry
+                        .contracts
+                        .push(&UNREACHABLE_ALLOWLIST_EXPORT_SURFACE);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::UnreachableExportSurface {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
                 "an embedding recipe names a unit the schema has no table to resolve it against",
                 |registry| {
                     register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
@@ -3035,6 +3132,23 @@ mod tests {
             unit.key_column, "t",
             "the unit carries the column the surface declares, for the drain to filter on"
         );
+
+        let mut lifecycle_owned_exports = FlavorRegistry::new();
+        lifecycle_owned_exports
+            .flavors
+            .push(crate::flavor::FlavorDescriptor {
+                flavor_id: FIXTURE_FLAVOR.to_owned(),
+                display_name: "Fixture".to_owned(),
+                package_version: "0.0.0".to_owned(),
+                author: None,
+                provenance: crate::flavor::FlavorProvenance::Builtin,
+            });
+        lifecycle_owned_exports
+            .contracts
+            .push(&HOST_MANAGED_OWNERLESS_EXPORTS);
+        if let Err(err) = lifecycle_owned_exports.try_freeze() {
+            panic!("host lifecycle can export its ownerless Rows and Allowlist surfaces: {err}");
+        }
     }
 
     // ── Declared lifecycle scopes ────────────────────────────────────
