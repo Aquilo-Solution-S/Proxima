@@ -25,6 +25,34 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_FILE = re.compile(r"^(?P<version>\d+)_[A-Za-z0-9][A-Za-z0-9_-]*\.sql$")
 
+# The release tag AGENTS.md and docs/how-to/migrations.md both specify:
+# `000N_v0XY_<what>.sql` for core, one dated `_v0XY_` file per flavor. Stated
+# in prose in two places and enforced in neither, it had already drifted — five
+# core files carry no tag, and `0006_v013_` predates `0011_v012_` by ten days,
+# so the filename stopped answering "which release shipped this schema change".
+RELEASE_TAGGED = re.compile(r"^\d+_v0\d{2}_[A-Za-z0-9][A-Za-z0-9_-]*\.sql$")
+
+# Applied migrations are never renamed: the name is what an operator correlates
+# with `_sqlx_migrations`, and the policy above exists precisely to stop files
+# moving under live databases. These predate the check and are grandfathered by
+# name; the point of the check is that the set cannot grow.
+UNTAGGED_GRANDFATHERED = frozenset(
+    {
+        "crates/storage-pg/migrations/0001_v008.sql",
+        "crates/storage-pg/migrations/0002_goal_evidence.sql",
+        "crates/storage-pg/migrations/0003_owner_transfer.sql",
+        "crates/storage-pg/migrations/0004_cold_object_v4.sql",
+        "crates/storage-pg/migrations/0005_erased_pin_targets.sql",
+        "crates/storage-pg/migrations/0007_upload_content_identity.sql",
+        "crates/storage-pg/migrations/0008_cold_integrity_digest.sql",
+        "crates/storage-pg/migrations/0009_declared_sidecar_presence.sql",
+        "crates/storage-pg/migrations/0010_purge_queue_backend.sql",
+        "flavors/code/migrations/20260818000020_v008_baseline.sql",
+        "flavors/code/migrations/20260824000020_v009_declaration_triggers.sql",
+        "flavors/code/migrations/20260901000020_declared_sidecar_presence.sql",
+    }
+)
+
 
 @dataclass(frozen=True)
 class VersionLane:
@@ -127,6 +155,11 @@ def collect(root: Path, lanes: list[VersionLane] = LANES) -> tuple[list[Migratio
             if match is None:
                 diagnostics.append(f"{rel}: migration filename must be <version>_<description>.sql")
                 continue
+            if not RELEASE_TAGGED.fullmatch(path.name) and str(rel) not in UNTAGGED_GRANDFATHERED:
+                diagnostics.append(
+                    f"{rel}: migration filename must name its release, "
+                    f"<version>_v0XY_<description>.sql (AGENTS.md, docs/how-to/migrations.md)"
+                )
             version = int(match.group("version"))
             item = MigrationVersion(lane.source, path, version, lane)
             versions.append(item)
@@ -178,7 +211,7 @@ def self_test() -> int:
         (
             "current lanes accept disjoint versions",
             {
-                "crates/storage-pg/migrations": ["0001_init.sql", "0008_v005.sql"],
+                "crates/storage-pg/migrations": ["0001_v008_init.sql", "0008_v005_thing.sql"],
                 "flavors/code/migrations": ["20260801000020_v007_baseline.sql"],
             },
             False,
@@ -186,10 +219,10 @@ def self_test() -> int:
         (
             "duplicate versions fail",
             {
-                "crates/storage-pg/migrations": ["0001_init.sql"],
+                "crates/storage-pg/migrations": ["0001_v008_init.sql"],
                 "flavors/code/migrations": [
-                    "20260801000020_a.sql",
-                    "20260801000020_b.sql",
+                    "20260801000020_v007_a.sql",
+                    "20260801000020_v007_b.sql",
                 ],
             },
             True,
@@ -197,11 +230,27 @@ def self_test() -> int:
         (
             "wrong suffix lane fails",
             {
-                "crates/storage-pg/migrations": ["0001_init.sql"],
+                "crates/storage-pg/migrations": ["0001_v008_init.sql"],
                 "flavors/code/migrations": [
-                    "20260612000010_baseline.sql",
+                    "20260612000010_v007_baseline.sql",
                     "20260801000020_v007_baseline.sql",
                 ],
+            },
+            True,
+        ),
+        (
+            "untagged core migration fails",
+            {
+                "crates/storage-pg/migrations": ["0001_v008_init.sql", "0013_purge_queue.sql"],
+                "flavors/code/migrations": ["20260801000020_v007_baseline.sql"],
+            },
+            True,
+        ),
+        (
+            "untagged flavor migration fails",
+            {
+                "crates/storage-pg/migrations": ["0001_v008_init.sql"],
+                "flavors/code/migrations": ["20260801000020_baseline.sql"],
             },
             True,
         ),

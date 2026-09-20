@@ -53,53 +53,83 @@ impl Engine {
         )
     }
 
+    /// Whether the authority port grants this erase.
+    ///
+    /// A port FAILURE is not a verdict. Collapsing it into `false` published a
+    /// denial the port never issued: the caller got `Unauthorized` — which
+    /// reads as permanent and nobody retries — and the audit row asserted an
+    /// authorization decision that was never actually made. An unreachable
+    /// port is `internal`, which is retryable and true.
+    ///
+    /// # Errors
+    ///
+    /// Returns internal when the authority port cannot answer.
     pub(in crate::engine) async fn erase_authority_grants(
         &self,
         authz: &AuthzContext,
         target: &OwnerEraseTarget,
-    ) -> bool {
+    ) -> Result<bool, ProtocolError> {
         if authz.auth_path() == AuthPath::Delegated {
-            return false;
+            return Ok(false);
         }
         if authz.auth_path() == AuthPath::System {
-            return true;
+            return Ok(true);
         }
         let Some(port) = &self.storage.owner_inverse.erase_authority else {
-            return false;
+            return Ok(false);
         };
-        port.may_erase_owner(authz, target).await.unwrap_or(false)
+        port.may_erase_owner(authz, target)
+            .await
+            .map_err(|e| ProtocolError::internal(format!("may_erase_owner: {e}")))
     }
 
+    /// Whether the authority port grants this export. Same seam, same rule as
+    /// [`Self::erase_authority_grants`]: a failure to ask is not a `no`.
+    ///
+    /// # Errors
+    ///
+    /// Returns internal when the authority port cannot answer.
     async fn export_authority_grants(
         &self,
         authz: &AuthzContext,
         target: &OwnerExportTarget,
-    ) -> bool {
+    ) -> Result<bool, ProtocolError> {
         if authz.auth_path() == AuthPath::Delegated {
-            return false;
+            return Ok(false);
         }
         if authz.auth_path() == AuthPath::System {
-            return true;
+            return Ok(true);
         }
         let Some(port) = &self.storage.owner_inverse.erase_authority else {
-            return false;
+            return Ok(false);
         };
-        port.may_export_owner(authz, target).await.unwrap_or(false)
+        port.may_export_owner(authz, target)
+            .await
+            .map_err(|e| ProtocolError::internal(format!("may_export_owner: {e}")))
     }
 
-    async fn operator_maintenance_authorized(&self, authz: &AuthzContext) -> bool {
+    /// Whether the authority port grants operator maintenance. Same seam, same
+    /// rule as [`Self::erase_authority_grants`].
+    ///
+    /// # Errors
+    ///
+    /// Returns internal when the authority port cannot answer.
+    async fn operator_maintenance_authorized(
+        &self,
+        authz: &AuthzContext,
+    ) -> Result<bool, ProtocolError> {
         if authz.auth_path() == AuthPath::Delegated {
-            return false;
+            return Ok(false);
         }
         if authz.auth_path() == AuthPath::System {
-            return true;
+            return Ok(true);
         }
         let Some(port) = &self.storage.owner_inverse.erase_authority else {
-            return false;
+            return Ok(false);
         };
         port.may_perform_operator_maintenance(authz)
             .await
-            .unwrap_or(false)
+            .map_err(|e| ProtocolError::internal(format!("may_perform_operator_maintenance: {e}")))
     }
 
     /// Owner-agnostic embedding ANN health signals.
@@ -114,7 +144,7 @@ impl Engine {
         &self,
         authz: &AuthzContext,
     ) -> Result<EmbeddingAnnObservability, ProtocolError> {
-        if !self.operator_maintenance_authorized(authz).await {
+        if !self.operator_maintenance_authorized(authz).await? {
             return Err(ProtocolError::forbidden(
                 "embedding ANN observability requires operator maintenance authorization",
             ));
@@ -143,7 +173,7 @@ impl Engine {
         &self,
         authz: &AuthzContext,
     ) -> Result<EmbeddingOrphanSweepOutcome, ProtocolError> {
-        if !self.operator_maintenance_authorized(authz).await {
+        if !self.operator_maintenance_authorized(authz).await? {
             return Err(ProtocolError::forbidden(
                 "embedding orphan sweep requires operator maintenance authorization",
             ));
@@ -169,7 +199,13 @@ impl Engine {
             .await
         {
             Ok(true) => Ok(true),
-            Ok(false) | Err(_) => Err(OwnerEraseRefusal::PersonalDropNotVerified),
+            // "the port says the owner still exists" and "the port could not
+            // be asked" are different facts, and the refusal enum already
+            // carries both. Reporting an outage as `PersonalDropNotVerified`
+            // hands the operator a receipt reading "the user is still there",
+            // so a lawful erase is dropped instead of retried.
+            Ok(false) => Err(OwnerEraseRefusal::PersonalDropNotVerified),
+            Err(_) => Err(OwnerEraseRefusal::DropProofPortUnavailable),
         }
     }
 
@@ -194,7 +230,7 @@ impl Engine {
         let audit = Self::erase_context(authz, target.clone());
         let operation_id = audit.operation_id();
 
-        if !self.erase_authority_grants(authz, &target).await {
+        if !self.erase_authority_grants(authz, &target).await? {
             return Ok(EraseAdmission::Refused(OwnerEraseOutcome::Unauthorized {
                 operation_id,
             }));
@@ -228,7 +264,7 @@ impl Engine {
         authz: &AuthzContext,
         target: OwnerExportTarget,
     ) -> Result<OwnerExportBundle, ProtocolError> {
-        if !self.export_authority_grants(authz, &target).await {
+        if !self.export_authority_grants(authz, &target).await? {
             return Err(ProtocolError::forbidden(
                 "owner export requires owner-erase authority",
             ));

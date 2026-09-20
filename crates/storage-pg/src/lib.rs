@@ -38,6 +38,7 @@ mod error;
 pub use error::map_err;
 pub use error::{MAX_TRANSACTION_ATTEMPTS, is_transient_conflict};
 pub mod integrity;
+mod pg_enums;
 mod pg_ident;
 mod pgvector;
 mod pool_config;

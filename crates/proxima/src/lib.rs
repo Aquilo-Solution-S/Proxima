@@ -747,29 +747,27 @@ async fn compose_pg_sidecars(
         .freeze_against(registry)
         .map_err(embed_storage_error)?;
     let pg_sidecars = Arc::new(pg_sidecars);
+    // The backend accessor, not `pool_for_tests`. This is a production boot
+    // path on every embed; a `#[doc(hidden)]` handle whose name says "tests"
+    // is not the contract it was reaching through.
+    let pool = pg.clone_pool_for_backend();
     // Re-run the projection generator against the composed contracts and
     // compare it with the catalog. The migration carries the generator's
     // output verbatim; this is the half that notices a deployment whose
     // schema and whose linked flavors disagree — a flavor added without
     // its migrations, or a migration hand-edited away from the generator.
-    proxima_storage_pg::projection::ensure_projection_schema(
-        pg.pool_for_tests(),
-        registry.contracts(),
-    )
-    .await
-    .map_err(embed_storage_error)?;
+    proxima_storage_pg::projection::ensure_projection_schema(&pool, registry.contracts())
+        .await
+        .map_err(embed_storage_error)?;
     // The same half, one layer down. The projection check asks whether
     // the tables a search reads exist; this asks whether the guard that
     // keeps every registered memory sidecar reachable by forget, erase
     // and export is installed on it. Both read the catalog and issue no
     // DDL, so both hold under `PROXIMA_SKIP_MIGRATIONS` in a split-role
     // deploy, where this process's role cannot create a trigger at all.
-    proxima_storage_pg::integrity::ensure_declaration_triggers(
-        pg.pool_for_tests(),
-        pg_sidecars.as_ref(),
-    )
-    .await
-    .map_err(embed_storage_error)?;
+    proxima_storage_pg::integrity::ensure_declaration_triggers(&pool, pg_sidecars.as_ref())
+        .await
+        .map_err(embed_storage_error)?;
     Ok(pg_sidecars)
 }
 

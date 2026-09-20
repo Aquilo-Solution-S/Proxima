@@ -37,8 +37,6 @@ use crate::verbs::schema::FlavorRegistryFrozen;
 
 pub use crate::storage_ports::{HostStateCommand, HostStateOutcome};
 pub use access_admin::GroupMemberPage;
-#[allow(unused_imports)]
-pub(in crate::engine) use access_sets::AccessSets;
 pub use goal_write::{
     GoalCreatePayloadWriteRequest, GoalDecomposeRequest, GoalMarkAchievedRequest,
     GoalModifyRequest, GoalTransitionRequest,

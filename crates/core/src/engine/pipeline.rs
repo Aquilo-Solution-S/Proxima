@@ -511,7 +511,6 @@ impl Engine {
     }
 }
 
-#[allow(dead_code)]
 fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
     ProtocolError::internal(format!("{context}: {err}"))
 }

@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::payloads::{
-    AcceptanceCriteriaV1, AcceptanceCriterionV1, CodeExecutionPlanV1, CodeWorkAssignmentV1,
-    ExecutionRequestV1, TestRequestV1,
+    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceSummaryV1, AcceptanceVerificationV1,
+    CodeExecutionPlanV1, CodeWorkAssignmentV1, ExecutionRequestV1, ExecutionResultV1,
+    TestRequestV1, TestResultV1,
 };
 
 use super::CodeToolCtxExt;
@@ -544,8 +545,14 @@ async fn load_results(
         .fetch_all(pool.pool())
         .await
         .map_err(map_storage)?;
+    // Tesla-valve admit. The sidecar carries no `owner_id` and its FK reaches
+    // any `proxima_core.memory(t)`, so a foreign owner can attach a result row
+    // to this work item. The sidecar hit is a CANDIDATE; `memory` decides
+    // whether it is this caller's to read, as every sibling loader here does.
+    let visible = authorized_result_ids(ctx, &rows, kind).await?;
     Ok(rows
         .into_iter()
+        .filter(|row| visible.contains(&MemoryId::new(row.memory_id)))
         .map(|row| ResultBundle {
             handle: ctx.format_fact_memory(MemoryId::new(row.memory_id)),
             status: row.status,
@@ -554,6 +561,33 @@ async fn load_results(
             log_excerpt: row.log_excerpt,
         })
         .collect())
+}
+
+/// The admit half of [`load_results`]: which candidate sidecar rows name a
+/// `memory` row this caller may read.
+async fn authorized_result_ids(
+    ctx: &ToolCtx,
+    rows: &[ResultSqlRow],
+    kind: WorkItemBundleKind,
+) -> Result<Vec<MemoryId>, ToolError> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let engine = super::engine(ctx)?;
+    let candidate_ts: Vec<Uuid> = rows.iter().map(|row| row.memory_id).collect();
+    let schema_id = match kind {
+        WorkItemBundleKind::Work => <ExecutionResultV1 as FactPayload>::schema_id(),
+        WorkItemBundleKind::Test => <TestResultV1 as FactPayload>::schema_id(),
+    };
+    proxima::flavor::authorized_memory_ids(
+        &engine,
+        ctx.authz(),
+        &candidate_ts,
+        EntityKind::Fact,
+        Some(schema_id),
+        candidate_ts.len(),
+    )
+    .await
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -580,6 +614,16 @@ async fn load_acceptance_verifications(
     .fetch_all(pool.pool())
     .await
     .map_err(map_storage)?;
+    // Tesla-valve admit, same ownerless sidecar as `load_results`.
+    let visible = authorized_verification_ids(ctx, &rows).await?;
+    let rows: Vec<AcceptanceVerificationSqlRow> = rows
+        .into_iter()
+        .filter(|row| visible.contains(&MemoryId::new(row.memory_id)))
+        .collect();
+    // The verifier is a separate Fact under its own owner. A readable
+    // verification whose verifier is not readable keeps the row and redacts
+    // the pointer — targets redact independently, they do not hide the source.
+    let visible_verifiers = authorized_verifier_ids(ctx, &rows).await?;
     Ok(rows
         .into_iter()
         .map(|row| AcceptanceVerificationBundle {
@@ -590,9 +634,57 @@ async fn load_acceptance_verifications(
             artifact_refs: row.artifact_refs,
             verifier_handle: row
                 .verifier_memory_id
+                .filter(|id| visible_verifiers.contains(&MemoryId::new(*id)))
                 .map(|id| ctx.format_fact_memory(MemoryId::new(id))),
         })
         .collect())
+}
+
+/// The admit half of [`load_acceptance_verifications`].
+async fn authorized_verification_ids(
+    ctx: &ToolCtx,
+    rows: &[AcceptanceVerificationSqlRow],
+) -> Result<Vec<MemoryId>, ToolError> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let engine = super::engine(ctx)?;
+    let candidate_ts: Vec<Uuid> = rows.iter().map(|row| row.memory_id).collect();
+    proxima::flavor::authorized_memory_ids(
+        &engine,
+        ctx.authz(),
+        &candidate_ts,
+        EntityKind::Fact,
+        Some(<AcceptanceVerificationV1 as FactPayload>::schema_id()),
+        candidate_ts.len(),
+    )
+    .await
+}
+
+/// Which verifier Facts named by already-admitted verification rows this
+/// caller may also read. Any schema: the verifier is whatever Fact recorded
+/// the act, and the pointer is redacted rather than trusted.
+async fn authorized_verifier_ids(
+    ctx: &ToolCtx,
+    rows: &[AcceptanceVerificationSqlRow],
+) -> Result<Vec<MemoryId>, ToolError> {
+    let candidate_ts: Vec<Uuid> = rows
+        .iter()
+        .filter_map(|row| row.verifier_memory_id)
+        .collect();
+    if candidate_ts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let engine = super::engine(ctx)?;
+    proxima::flavor::authorized_memory_ids(
+        &engine,
+        ctx.authz(),
+        &candidate_ts,
+        EntityKind::Fact,
+        None,
+        candidate_ts.len(),
+    )
+    .await
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -620,7 +712,21 @@ async fn load_acceptance_summaries(
     .fetch_all(pool.pool())
     .await
     .map_err(map_storage)?;
-    Ok(rows.into_iter().map(MemoryId::new).collect())
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Tesla-valve admit. `acceptance_summary_v1` is an Abstraction sidecar and
+    // is ownerless like the two above.
+    let engine = super::engine(ctx)?;
+    proxima::flavor::authorized_memory_ids(
+        &engine,
+        ctx.authz(),
+        &rows,
+        EntityKind::Abstraction,
+        Some(<AcceptanceSummaryV1 as AbstractionPayload>::schema_id()),
+        rows.len(),
+    )
+    .await
 }
 
 #[cfg(test)]

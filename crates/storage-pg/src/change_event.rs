@@ -2,22 +2,23 @@
 
 use proxima_core::{
     ChangeEvent, ChangeEventKind, EntityKind, EntityRef, GoalId, GroupId, MemoryId, OwnerRef,
-    SchemaId, SchemaVersion, StorageError, UserId,
+    OwnerRefKind, SchemaId, SchemaVersion, StorageError, UserId,
 };
 use uuid::Uuid;
 
 use crate::error::internal;
+use crate::pg_enums::{PgAnnounceEntity, PgAnnounceOp, PgPinTargetKind};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct AnnounceRow {
     seq: Uuid,
     owner_id: Uuid,
-    owner_kind: String,
-    op: String,
-    entity: String,
+    owner_kind: OwnerRefKind,
+    op: PgAnnounceOp,
+    entity: PgAnnounceEntity,
     handle: Uuid,
     t: Uuid,
-    memory_kind: Option<String>,
+    memory_kind: Option<PgPinTargetKind>,
     schema_id: Option<String>,
 }
 
@@ -26,12 +27,14 @@ struct AnnounceRow {
 const ANNOUNCE_BY_SEQ_SQL: &str = "
 SELECT a.seq,
        a.owner_id,
-       o.kind::text AS owner_kind,
-       a.op::text AS op,
-       a.entity::text AS entity,
+       o.kind AS owner_kind,
+       a.op AS op,
+       a.entity AS entity,
        a.handle,
        a.t,
-       COALESCE(m.kind::text, c.kind::text, e.kind::text) AS memory_kind,
+       COALESCE(m.kind::text::proxima_core.pin_target_kind,
+                c.kind::text::proxima_core.pin_target_kind,
+                e.kind) AS memory_kind,
        COALESCE(m.schema_id, gh.schema_id) AS schema_id
   FROM proxima_core.announce a
   JOIN proxima_core.owners o ON o.owner_id = a.owner_id
@@ -45,12 +48,14 @@ SELECT a.seq,
 const ANNOUNCE_BY_SEQS_SQL: &str = "
 SELECT a.seq,
        a.owner_id,
-       o.kind::text AS owner_kind,
-       a.op::text AS op,
-       a.entity::text AS entity,
+       o.kind AS owner_kind,
+       a.op AS op,
+       a.entity AS entity,
        a.handle,
        a.t,
-       COALESCE(m.kind::text, c.kind::text, e.kind::text) AS memory_kind,
+       COALESCE(m.kind::text::proxima_core.pin_target_kind,
+                c.kind::text::proxima_core.pin_target_kind,
+                e.kind) AS memory_kind,
        COALESCE(m.schema_id, gh.schema_id) AS schema_id
   FROM proxima_core.announce a
   JOIN proxima_core.owners o ON o.owner_id = a.owner_id
@@ -78,7 +83,7 @@ pub(crate) async fn hydrate_change_event(
         .fetch_optional(pool)
         .await
         .map_err(internal)?;
-    row.map(decode_announce_row).transpose()
+    Ok(row.map(decode_announce_row))
 }
 
 pub(crate) async fn hydrate_change_events_batch(
@@ -100,57 +105,60 @@ pub(crate) async fn hydrate_change_events_batch(
         .fetch_all(pool)
         .await
         .map_err(internal)?;
-    rows.into_iter().map(decode_announce_row).collect()
+    Ok(rows.into_iter().map(decode_announce_row).collect())
 }
 
-fn decode_announce_row(row: AnnounceRow) -> Result<ChangeEvent, StorageError> {
-    let owner = match row.owner_kind.as_str() {
-        "personal" => OwnerRef::Personal(UserId::new(row.owner_id)),
-        "group" => OwnerRef::Group(GroupId::new(row.owner_id)),
-        other => {
-            return Err(StorageError::Internal(format!(
-                "unknown owner kind {other} at seq {}",
-                row.seq
-            )));
-        }
+/// Infallible by construction: every closed vocabulary on the row is decoded
+/// as its Postgres enum, so an unrecognised label fails at the sqlx boundary
+/// where the row is read, not in a catch-all arm here that has to invent a
+/// meaning for it.
+fn decode_announce_row(row: AnnounceRow) -> ChangeEvent {
+    let owner = match row.owner_kind {
+        OwnerRefKind::Personal => OwnerRef::Personal(UserId::new(row.owner_id)),
+        OwnerRefKind::Group => OwnerRef::Group(GroupId::new(row.owner_id)),
     };
-    let entity_kind = match row.entity.as_str() {
-        "goal" => EntityKind::Goal,
-        _ => match row.memory_kind.as_deref() {
-            Some("abstraction") => EntityKind::Abstraction,
-            Some("perspective") => EntityKind::Perspective,
-            _ => EntityKind::Fact,
-        },
+    let entity_kind = match (row.entity, row.memory_kind) {
+        (PgAnnounceEntity::Goal, _) => EntityKind::Goal,
+        (PgAnnounceEntity::Memory, Some(kind)) => kind.into(),
+        // No surviving kind witness: `memory`, `cooled` and `erased_pin_target`
+        // all missed, so the row was hard-deleted under abandonment. The event
+        // still has to name a kind; `Fact` is the floor of the F/A/P layering
+        // and the only one that claims no derivation. Stated here rather than
+        // reached through a catch-all, because it IS a guess.
+        (PgAnnounceEntity::Memory, None) => EntityKind::Fact,
     };
-    let entity = match row.entity.as_str() {
-        "goal" => EntityRef::Goal(GoalId::new(row.handle)),
-        _ => EntityRef::Memory(MemoryId::new(row.t)),
+    let entity = match row.entity {
+        PgAnnounceEntity::Goal => EntityRef::Goal(GoalId::new(row.handle)),
+        PgAnnounceEntity::Memory => EntityRef::Memory(MemoryId::new(row.t)),
     };
     let schema_id = SchemaId::new(row.schema_id.unwrap_or_default());
     let schema_version = SchemaVersion::new(1);
-    let kind = match row.op.as_str() {
-        "forget" | "erase" => ChangeEventKind::EntityDelete {
+    // Exhaustive on purpose. A fifth `announce_op` must not be able to fall
+    // through to `EntityAppend` — that would announce a deletion as a write to
+    // every consumer of the pull-only change log.
+    let kind = match row.op {
+        PgAnnounceOp::Forget | PgAnnounceOp::Erase => ChangeEventKind::EntityDelete {
             entity_kind,
             entity,
             schema_id,
             schema_version,
         },
-        "transfer" => ChangeEventKind::EntityTransfer {
+        PgAnnounceOp::Transfer => ChangeEventKind::EntityTransfer {
             entity_kind,
             entity,
             schema_id,
             schema_version,
         },
-        _ => ChangeEventKind::EntityAppend {
+        PgAnnounceOp::Append => ChangeEventKind::EntityAppend {
             entity_kind,
             entity,
             schema_id,
             schema_version,
         },
     };
-    Ok(ChangeEvent {
+    ChangeEvent {
         seq: row.seq,
         owner,
         kind,
-    })
+    }
 }

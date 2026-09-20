@@ -72,6 +72,14 @@ pub enum RecallKind {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct RecallOutput {
     pub sketches: Vec<RecallSketch>,
+    /// The question leg ran lexical-only because the embedding client was
+    /// absent or its call failed.
+    ///
+    /// Declared rather than logged. A silent Hybrid→Lexical degrade reads to
+    /// the caller as "nothing is remembered about X" during what is actually a
+    /// provider outage; `core/search_memories` already reports this case on
+    /// the wire, and the two surfaces have to agree that it is declarable.
+    pub degraded_to_lexical: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema, Clone)]
@@ -142,10 +150,11 @@ async fn recall(ctx: McpToolCtx, args: RecallArgs) -> Result<RecallOutput, McpTo
     }
 
     let mut packet = Packet::new();
+    let mut degraded_to_lexical = false;
     collect_subjects(&ctx, engine, &subjects, &mut packet).await?;
     collect_cue_touch(&ctx, engine, space.owner, &subjects, &mut packet).await?;
     if let Some(query) = question {
-        collect_question(
+        degraded_to_lexical = collect_question(
             &ctx,
             engine,
             space.owner,
@@ -163,6 +172,7 @@ async fn recall(ctx: McpToolCtx, args: RecallArgs) -> Result<RecallOutput, McpTo
 
     Ok(RecallOutput {
         sketches: packet.finish(args.kind, limit),
+        degraded_to_lexical,
     })
 }
 
@@ -249,7 +259,7 @@ async fn collect_question(
     kind: Option<RecallKind>,
     limit: u32,
     packet: &mut Packet,
-) -> Result<(), McpToolError> {
+) -> Result<bool, McpToolError> {
     let query = crate::validate_search_query(query)?;
     let kind = match kind {
         Some(RecallKind::Fact) => Some(EntityKind::Fact),
@@ -257,6 +267,11 @@ async fn collect_question(
         Some(RecallKind::Perspective) => Some(EntityKind::Perspective),
         Some(RecallKind::Goal) | None => None,
     };
+    // Recall always intends Hybrid, so both ways of not getting it — no
+    // embed client configured, or a client whose call failed — are the same
+    // fact to the caller: the semantic leg did not run. `degraded` carries it
+    // to the wire instead of leaving it in a log line the caller cannot see.
+    let mut degraded = false;
     let (mode, query_embedding, embedding_model_id) = if engine.embed_client().is_some() {
         match embed_query(engine, query).await {
             Ok((embedding, model_id)) => (SearchMode::Hybrid, Some(embedding), Some(model_id)),
@@ -265,10 +280,12 @@ async fn collect_question(
                     error = %err,
                     "recall hybrid embedding unavailable; degrading to lexical"
                 );
+                degraded = true;
                 (SearchMode::Lexical, None, None)
             }
         }
     } else {
+        degraded = true;
         (SearchMode::Lexical, None, None)
     };
     let page = engine
@@ -312,7 +329,7 @@ async fn collect_question(
         );
         packet.set_meta(sketch.id, Some(owner), true);
     }
-    Ok(())
+    Ok(degraded)
 }
 
 async fn mark_perspective_heads(

@@ -3,6 +3,7 @@ use proxima_core::{EmbeddingJobClaim, EntityKind, MemoryId, Owner, OwnerRefKind,
 use sqlx::PgPool;
 
 use crate::error::map_err;
+use crate::pg_enums::PgMemoryKind;
 
 use super::ensure_nonnegative_limit;
 
@@ -35,10 +36,10 @@ const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
           WHERE j.job_id = claimed.job_id
             AND m.t = j.entity_id
             AND o.owner_id = j.owner_id
-        RETURNING o.kind::text AS owner_kind,
+        RETURNING o.kind AS owner_kind,
                   j.job_id,
                   j.owner_id,
-                  m.kind::text AS entity_kind,
+                  m.kind AS entity_kind,
                   j.entity_id,
                   j.model_id,
                   j.claim_token";
@@ -54,10 +55,10 @@ pub fn claim_embedding_jobs_sql_for_tests() -> &'static str {
 
 #[derive(sqlx::FromRow)]
 struct EmbeddingJobClaimRow {
-    owner_kind: String,
+    owner_kind: OwnerRefKind,
     job_id: uuid::Uuid,
     owner_id: uuid::Uuid,
-    entity_kind: String,
+    entity_kind: PgMemoryKind,
     entity_id: uuid::Uuid,
     model_id: String,
     claim_token: uuid::Uuid,
@@ -65,20 +66,10 @@ struct EmbeddingJobClaimRow {
 
 impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
     fn from(row: EmbeddingJobClaimRow) -> Self {
-        let owner_kind = match row.owner_kind.as_str() {
-            "group" => OwnerRefKind::Group,
-            _ => OwnerRefKind::Personal,
-        };
-        let entity_kind = match row.entity_kind.as_str() {
-            "abstraction" => EntityKind::Abstraction,
-            "perspective" => EntityKind::Perspective,
-            "goal" => EntityKind::Goal,
-            _ => EntityKind::Fact,
-        };
         Self {
             job_id: row.job_id,
-            owner: owner_kind.with_uuid(row.owner_id),
-            entity_kind,
+            owner: row.owner_kind.with_uuid(row.owner_id),
+            entity_kind: row.entity_kind.into(),
             entity_id: MemoryId::new(row.entity_id),
             model_id: row.model_id,
             claim_token: row.claim_token,
@@ -718,10 +709,10 @@ mod tests {
           WHERE j.job_id = claimed.job_id
             AND m.t = j.entity_id
             AND o.owner_id = j.owner_id
-        RETURNING o.kind::text AS owner_kind,
+        RETURNING o.kind AS owner_kind,
                   j.job_id,
                   j.owner_id,
-                  m.kind::text AS entity_kind,
+                  m.kind AS entity_kind,
                   j.entity_id,
                   j.model_id,
                   j.claim_token";

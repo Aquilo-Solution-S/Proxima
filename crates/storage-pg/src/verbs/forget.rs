@@ -1754,21 +1754,28 @@ async fn enqueue_embed_jobs(
     if rec.embed_models.is_empty() || non_embeddable_schemas.contains(&rec.schema_id) {
         return Ok(());
     }
+    // Named exhaustively, with no catch-all. `HotRow.kind` is a String because
+    // it round-trips through the versioned cold-record format, so the totality
+    // the `sqlx::Type` decodes get for free has to be written out here: a kind
+    // this function does not recognise must not be re-filed for embedding as a
+    // Fact, which is what a `_` arm on a DELETION path silently did.
     let kind = match rec.row.kind.as_str() {
+        "fact" => proxima_core::EntityKind::Fact,
         "abstraction" => proxima_core::EntityKind::Abstraction,
         "perspective" => proxima_core::EntityKind::Perspective,
-        _ => proxima_core::EntityKind::Fact,
+        other => {
+            return Err(StorageError::Internal(format!(
+                "unknown memory kind {other} on cold record {}",
+                rec.row.t
+            )));
+        }
     };
-    let owner_kind: String =
-        sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
+    let owner_kind: proxima_core::OwnerRefKind =
+        sqlx::query_scalar("SELECT kind FROM proxima_core.owners WHERE owner_id = $1")
             .bind(owner_id)
             .fetch_one(tx.as_mut())
             .await
             .map_err(map_err)?;
-    let owner_kind = match owner_kind.as_str() {
-        "group" => proxima_core::OwnerRefKind::Group,
-        _ => proxima_core::OwnerRefKind::Personal,
-    };
     for model_id in &rec.embed_models {
         crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
             tx,
