@@ -103,6 +103,41 @@ const REDACTED: &str = "<redacted>";
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct InboxPrefix(String);
 
+/// The inbox-prefix token rule, spelled `const` so a literal prefix can be
+/// proved valid at build time rather than unwrapped at startup.
+///
+/// `InboxPrefix::parse` is its only runtime caller, so the rule has exactly
+/// one definition: a `const` assertion beside a literal and a parse of an
+/// operator-supplied string cannot disagree about what a valid prefix is.
+///
+/// Byte-wise because `str::split` and `Iterator::all` are not `const`.
+#[must_use]
+pub const fn inbox_prefix_is_valid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    // Length of the token being read. A dot closes one, so a zero-length
+    // token at a dot or at the end is an empty token and refused.
+    let mut token_len = 0_usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'.' {
+            if token_len == 0 {
+                return false;
+            }
+            token_len = 0;
+        } else if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' {
+            token_len += 1;
+        } else {
+            return false;
+        }
+        i += 1;
+    }
+    token_len != 0
+}
+
 impl InboxPrefix {
     /// Construct a validated reply-inbox namespace.
     ///
@@ -114,15 +149,20 @@ impl InboxPrefix {
         Self::parse("inbox prefix", value.into())
     }
 
+    /// A prefix a `const` assertion has already proved valid.
+    ///
+    /// [`const_inbox_prefix!`](crate::const_inbox_prefix) is the only
+    /// intended caller: it emits the proof and this construction together,
+    /// so a literal prefix cannot reach here unproved.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_proved_const(value: &'static str) -> Self {
+        debug_assert!(inbox_prefix_is_valid(value));
+        Self(value.to_owned())
+    }
+
     fn parse(key: &'static str, value: String) -> Result<Self, ConfigError> {
-        if value.is_empty()
-            || value.split('.').any(|token| {
-                token.is_empty()
-                    || !token
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
-            })
-        {
+        if !inbox_prefix_is_valid(&value) {
             return Err(ConfigError::InvalidInboxPrefix { key });
         }
         Ok(Self(value))
@@ -724,6 +764,17 @@ mod tests {
             saturating.validate(),
             Err(ConfigError::IntervalTooLong { .. })
         ));
+    }
+
+    /// The rule has to answer in a `const` context, or it cannot gate a
+    /// build — which is the only reason it is spelled byte-wise.
+    #[test]
+    fn the_prefix_rule_is_const_evaluable() {
+        // `const` blocks, not runtime asserts: if the rule stopped answering
+        // at compile time these would not build, which is the property under
+        // test. A runtime `assert!` would still pass.
+        const { assert!(inbox_prefix_is_valid("_INBOX.cleaner")) }
+        const { assert!(!inbox_prefix_is_valid("a.*")) }
     }
 
     #[test]

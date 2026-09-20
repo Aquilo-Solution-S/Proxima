@@ -50,18 +50,8 @@ pub(crate) async fn query_memories(
         });
     }
 
-    let single_memory_stream = matches!(
-        req.entity_kind,
-        Some(EntityKind::Fact | EntityKind::Abstraction | EntityKind::Perspective)
-    );
-    let mut rows = fetch_memory_page(
-        pool,
-        req,
-        &owner_ids,
-        schema_id_filter.as_deref(),
-        single_memory_stream,
-    )
-    .await?;
+    let single_memory_stream = is_single_memory_stream(req);
+    let mut rows = fetch_memory_page(pool, req, &owner_ids).await?;
     let limit = usize::try_from(req.limit)
         .map_err(|_| StorageError::Internal("query limit does not fit usize".into()))?;
     let next_memory_cursor = if single_memory_stream && rows.len() > limit {
@@ -93,58 +83,117 @@ pub(crate) async fn query_memories(
     })
 }
 
-/// Read one page of memory rows for the request's filters. `single_memory_stream`
-/// asks for one row past the limit so the caller can tell a full page from an
-/// exhausted one.
+/// Read one page of memory rows for the request's filters.
+///
+/// The filter list is built once and then read twice — once to number the
+/// placeholders, once to bind them. That is the whole point: the SQL and the
+/// arguments are projections of one value, so "the query has N placeholders"
+/// and "N arguments were bound" cannot disagree. They used to be two lists
+/// grown from the same four predicates, each evaluated twice.
 async fn fetch_memory_page(
     pool: &PgPool,
     req: &QueryRequest,
     owner_ids: &[Uuid],
-    schema_id_filter: Option<&str>,
-    single_memory_stream: bool,
 ) -> Result<Vec<MemoryRowDb>, StorageError> {
-    let cursor_t = match &req.page.after {
-        Some(QueryCursor::Memory { memory_id, .. }) => Some(memory_id.into_inner()),
-        _ => None,
-    };
-    let fetch_limit = if single_memory_stream {
-        u64::from(req.limit) + 1
-    } else {
-        u64::from(req.limit)
-    };
-
-    let memory_ids: Vec<Uuid> = req.memory_ids.iter().map(|id| id.into_inner()).collect();
-    let kind_filter = match req.entity_kind {
-        Some(EntityKind::Fact) => Some("fact"),
-        Some(EntityKind::Abstraction) => Some("abstraction"),
-        Some(EntityKind::Perspective) => Some("perspective"),
-        Some(EntityKind::Goal) | None => None,
-    };
+    let filters = memory_filters(req);
     let sql = memory_page_sql(
         matches!(req.supersession, SupersessionStatus::HeadsOnly),
-        schema_id_filter.is_some(),
-        kind_filter.is_some(),
-        !memory_ids.is_empty(),
-        cursor_t.is_some(),
-        fetch_limit,
+        &filters,
+        page_fetch_limit(req),
     );
 
     // SQL-POLICY: fixed-fragment
     let mut q = sqlx::query_as::<_, MemoryRowDb>(sqlx::AssertSqlSafe(sql)).bind(owner_ids);
-    if let Some(sid) = schema_id_filter {
-        q = q.bind(sid.to_owned());
-    }
-    if let Some(kind) = kind_filter {
-        q = q.bind(kind);
-    }
-    if !memory_ids.is_empty() {
-        q = q.bind(memory_ids);
-    }
-    if let Some(t) = cursor_t {
-        q = q.bind(t);
+    for filter in filters {
+        q = match filter {
+            MemoryFilter::Schema(schema_id) => q.bind(schema_id),
+            MemoryFilter::Kind(kind) => q.bind(kind),
+            MemoryFilter::Ids(ids) => q.bind(ids),
+            MemoryFilter::Cursor(t) => q.bind(t),
+        };
     }
 
     q.fetch_all(pool).await.map_err(map_err)
+}
+
+/// An optional `WHERE` predicate together with the value it binds.
+///
+/// Keeping the two halves in one value is what removes the bookkeeping: a
+/// filter contributes a predicate and an argument or neither, and its
+/// placeholder number is simply its index in the list.
+enum MemoryFilter {
+    Schema(String),
+    Kind(&'static str),
+    Ids(Vec<Uuid>),
+    Cursor(Uuid),
+}
+
+impl MemoryFilter {
+    /// This filter's predicate at `placeholder`, which is its position in
+    /// the list the caller will bind in the same order.
+    ///
+    /// `heads_only` picks the column, not the shape: with the head join in
+    /// place the schema predicate has to hit `memory_head` for
+    /// `memory_head_owner_schema_idx` to be usable.
+    fn predicate(&self, placeholder: u32, heads_only: bool) -> String {
+        match self {
+            Self::Schema(_) => {
+                let column = if heads_only {
+                    "h.schema_id"
+                } else {
+                    "m.schema_id"
+                };
+                format!(" AND {column} = ${placeholder}")
+            }
+            Self::Kind(_) => format!(" AND m.kind::text = ${placeholder}"),
+            Self::Ids(_) => format!(" AND m.t = ANY(${placeholder}::uuid[])"),
+            Self::Cursor(_) => format!(" AND m.t < ${placeholder}"),
+        }
+    }
+}
+
+/// Every filter the request asks for, in bind order.
+///
+/// The single derivation of "what does this request filter on": the page
+/// query and [`memory_page_sql_for_tests`] both read it, so the test cannot
+/// assert against a shape production does not build.
+fn memory_filters(req: &QueryRequest) -> Vec<MemoryFilter> {
+    let mut filters = Vec::new();
+    if let Some(schema_id) = req.schema_id.as_ref() {
+        filters.push(MemoryFilter::Schema(schema_id.as_str().to_owned()));
+    }
+    match req.entity_kind {
+        Some(EntityKind::Fact) => filters.push(MemoryFilter::Kind("fact")),
+        Some(EntityKind::Abstraction) => filters.push(MemoryFilter::Kind("abstraction")),
+        Some(EntityKind::Perspective) => filters.push(MemoryFilter::Kind("perspective")),
+        Some(EntityKind::Goal) | None => {}
+    }
+    if !req.memory_ids.is_empty() {
+        filters.push(MemoryFilter::Ids(
+            req.memory_ids.iter().map(|id| id.into_inner()).collect(),
+        ));
+    }
+    if let Some(QueryCursor::Memory { memory_id, .. }) = &req.page.after {
+        filters.push(MemoryFilter::Cursor(memory_id.into_inner()));
+    }
+    filters
+}
+
+/// Whether this request reads one memory stream, and so can be told a full
+/// page from an exhausted one by fetching a row past the limit.
+fn is_single_memory_stream(req: &QueryRequest) -> bool {
+    matches!(
+        req.entity_kind,
+        Some(EntityKind::Fact | EntityKind::Abstraction | EntityKind::Perspective)
+    )
+}
+
+fn page_fetch_limit(req: &QueryRequest) -> u64 {
+    if is_single_memory_stream(req) {
+        u64::from(req.limit) + 1
+    } else {
+        u64::from(req.limit)
+    }
 }
 
 /// Resolve each row's schema, verify its sidecar stamp, and project the page
@@ -263,15 +312,7 @@ async fn load_row_payloads_batch(
     Ok(rows.into_iter().flatten().collect())
 }
 
-#[allow(clippy::fn_params_excessive_bools)]
-fn memory_page_sql(
-    heads_only: bool,
-    has_schema: bool,
-    has_kind: bool,
-    has_ids: bool,
-    has_cursor: bool,
-    fetch_limit: u64,
-) -> String {
+fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64) -> String {
     let from = if heads_only {
         "FROM proxima_core.memory_head h \
          JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t"
@@ -293,26 +334,15 @@ fn memory_page_sql(
          JOIN proxima_core.owners o ON o.owner_id = m.owner_id \
          WHERE {owner_pred}"
     );
-    let mut next = 2_u32;
-    if has_schema {
-        let schema_col = if heads_only {
-            "h.schema_id"
-        } else {
-            "m.schema_id"
-        };
-        let _ = write!(sql, " AND {schema_col} = ${next}");
-        next += 1;
-    }
-    if has_kind {
-        let _ = write!(sql, " AND m.kind::text = ${next}");
-        next += 1;
-    }
-    if has_ids {
-        let _ = write!(sql, " AND m.t = ANY(${next}::uuid[])");
-        next += 1;
-    }
-    if has_cursor {
-        let _ = write!(sql, " AND m.t < ${next}");
+    // `$1` is the owner array; the filters take the placeholders after it,
+    // in the order the caller binds them.
+    for (index, filter) in filters.iter().enumerate() {
+        let placeholder = u32::try_from(index).unwrap_or(u32::MAX).saturating_add(2);
+        // SQL-POLICY: fixed-fragment — every arm of `MemoryFilter::predicate`
+        // is a literal; the only interpolations are a column picked between
+        // two literals by `heads_only` and this `u32` placeholder index. No
+        // caller-supplied text reaches the statement, only binds.
+        sql.push_str(&filter.predicate(placeholder, heads_only));
     }
     let _ = write!(sql, " ORDER BY m.t DESC LIMIT {fetch_limit}");
     sql
@@ -358,8 +388,10 @@ fn validate_row_stamp(
     Ok(())
 }
 
-/// [`memory_page_sql`] with the request-derived inputs recomputed exactly
-/// as [`query_memories`] derives them.
+/// The page SQL [`query_memories`] would run for `req`.
+///
+/// It calls the same [`memory_filters`] and [`page_fetch_limit`] the page
+/// read calls, so this cannot describe a query production would not build.
 ///
 /// # Errors
 ///
@@ -367,22 +399,10 @@ fn validate_row_stamp(
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 #[doc(hidden)]
 pub fn memory_page_sql_for_tests(req: &QueryRequest) -> Result<String, StorageError> {
-    let single_memory_stream = matches!(
-        req.entity_kind,
-        Some(EntityKind::Fact | EntityKind::Abstraction | EntityKind::Perspective)
-    );
-    let fetch_limit = if single_memory_stream {
-        u64::from(req.limit) + 1
-    } else {
-        u64::from(req.limit)
-    };
     Ok(memory_page_sql(
         matches!(req.supersession, SupersessionStatus::HeadsOnly),
-        req.schema_id.is_some(),
-        req.entity_kind.is_some() && !matches!(req.entity_kind, Some(EntityKind::Goal)),
-        !req.memory_ids.is_empty(),
-        matches!(&req.page.after, Some(QueryCursor::Memory { .. })),
-        fetch_limit,
+        &memory_filters(req),
+        page_fetch_limit(req),
     ))
 }
 
@@ -475,9 +495,46 @@ mod tests {
         );
     }
 
+    /// The property the filter list exists to guarantee: every filter
+    /// contributes exactly one placeholder, numbered by its position after
+    /// `$1`, and nothing else does.
+    ///
+    /// `fetch_memory_page` binds the owner array and then the same list in
+    /// the same order, so this is also the statement that the argument count
+    /// matches — the two used to be separate hand-kept lists.
+    #[test]
+    fn every_filter_contributes_exactly_one_numbered_placeholder() {
+        use super::MemoryFilter;
+        let all = || {
+            vec![
+                MemoryFilter::Schema("s".to_owned()),
+                MemoryFilter::Kind("fact"),
+                MemoryFilter::Ids(Vec::new()),
+                MemoryFilter::Cursor(uuid::Uuid::nil()),
+            ]
+        };
+        for heads_only in [true, false] {
+            for take in 0..=4 {
+                let filters: Vec<MemoryFilter> = all().into_iter().take(take).collect();
+                let sql = super::memory_page_sql(heads_only, &filters, 10);
+                for n in 1..=take + 1 {
+                    assert!(
+                        sql.contains(&format!("${n}")),
+                        "placeholder ${n} missing with {take} filters: {sql}"
+                    );
+                }
+                assert!(
+                    !sql.contains(&format!("${}", take + 2)),
+                    "placeholder ${} emitted with only {take} filters: {sql}",
+                    take + 2
+                );
+            }
+        }
+    }
+
     #[test]
     fn heads_only_schema_predicates_use_head_columns() {
-        let sql = super::memory_page_sql(true, true, false, false, false, 10);
+        let sql = super::memory_page_sql(true, &[super::MemoryFilter::Schema("s".to_owned())], 10);
         assert!(
             sql.contains("h.owner_id = ANY($1::uuid[])"),
             "HeadsOnly owner filter must hit memory_head_owner_schema_idx: {sql}"
@@ -498,7 +555,7 @@ mod tests {
 
     #[test]
     fn include_superseded_schema_predicates_use_memory_columns() {
-        let sql = super::memory_page_sql(false, true, false, false, false, 10);
+        let sql = super::memory_page_sql(false, &[super::MemoryFilter::Schema("s".to_owned())], 10);
         assert!(
             sql.contains("m.owner_id = ANY($1::uuid[])"),
             "IncludeSuperseded owner filter stays on memory: {sql}"

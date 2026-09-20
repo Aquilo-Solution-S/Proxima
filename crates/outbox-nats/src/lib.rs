@@ -31,6 +31,28 @@
 //! [`PublicationOutboxPort`]: proxima_core::storage_ports::publication::PublicationOutboxPort
 //! [`ClaimedPublication::envelope`]: proxima_core::storage_ports::publication::ClaimedPublication::envelope
 
+/// Build an [`InboxPrefix`] from a literal, proving the token rule at build
+/// time.
+///
+/// The assertion and the construction are one expansion, so the prefix a
+/// binary ships cannot be invalid: an unparseable literal is a build error,
+/// not a startup panic. Mirrors what `proxima_flavor!` does for schema id
+/// prefixes.
+#[macro_export]
+macro_rules! const_inbox_prefix {
+    ($value:expr $(,)?) => {{
+        const _: () = ::std::assert!(
+            $crate::config::inbox_prefix_is_valid($value),
+            ::std::concat!(
+                "inbox prefix ",
+                ::std::stringify!($value),
+                " is not a dot-separated [A-Za-z0-9_-] token",
+            ),
+        );
+        $crate::config::InboxPrefix::from_proved_const($value)
+    }};
+}
+
 pub mod cleaner;
 pub mod config;
 pub mod consumer;
@@ -46,8 +68,8 @@ pub use cleaner::{
     spawn_supervised_copy_cleaner,
 };
 pub use config::{
-    ConfigError, InboxPrefix, NatsAuth, NatsConsumerConfig, NatsPublisherConfig, subject_for,
-    type_token,
+    ConfigError, InboxPrefix, NatsAuth, NatsConsumerConfig, NatsPublisherConfig,
+    inbox_prefix_is_valid, subject_for, type_token,
 };
 pub use consumer::{
     AckAction, AckAlwaysHook, AckHook, CloudEventEnvelope, ConsumeReport, ConsumerConnectionState,

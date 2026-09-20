@@ -838,7 +838,17 @@ def run_fixture(path: Path) -> int:
 # from `$7` onward. Without tags, only flavor #0's schemas participate.
 # Literal SQL cannot express it because the projection table is named by the
 # flavor's declaration, exactly as the ranked arm's is.
-EXPECTED_DYNAMIC_SQL_SITES = 118
+# 118 -> 119: `verbs/query/memories.rs::memory_page_sql` builds its predicate
+# tail by iterating `memory_filters(req)` instead of testing four booleans and
+# issuing four `write!`s. The list is read twice — once to number the
+# placeholders, once to bind them — so the statement and its arguments are two
+# projections of one value and cannot disagree about how many there are. That
+# is a `push_str` in a loop, a site kind this file did not previously hold
+# here; the four `write!`s it replaced were covered by the same
+# `fixed-fragment` proof. Every arm of `MemoryFilter::predicate` is a literal,
+# and its only interpolations are a column chosen between two literals and the
+# `u32` placeholder index.
+EXPECTED_DYNAMIC_SQL_SITES = 119
 
 
 def run_self_test() -> int:

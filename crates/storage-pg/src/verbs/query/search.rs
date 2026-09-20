@@ -42,17 +42,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use futures_util::future::try_join_all;
-use proxima_core::flavor::{
-    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability,
-    LanguagePolicy, SubstringArm,
-};
+use proxima_core::flavor::{BandComparability, LanguagePolicy, SubstringArm};
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{
     DEFAULT_HYBRID_SEMANTIC_WEIGHT, EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage,
     MemorySearchRequest, MemorySearchResult, SearchCursor, SearchMode, SearchOrder,
     SupersessionStatus, TagMatch, like_pattern,
 };
-use proxima_core::verbs::schema::{MemorySearchProjection, PayloadKind};
+use proxima_core::verbs::schema::{MemorySearchProjection, PayloadKind, RenderBands};
 use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
 use sqlx::PgPool;
 
@@ -274,9 +271,26 @@ fn semantic_overfetch(limit: u32, after: Option<SearchCursor>) -> u32 {
 /// registry error, not a query-build-time `StorageError` on a hot path.
 struct FlavorScan<'a> {
     schemas: Vec<&'a MemorySearchProjection>,
+    /// The windows this flavor's statements render, taken off the head.
+    ///
+    /// Held rather than looked up: [`Self::new`] is the only way to build a
+    /// scan and it refuses a head with no render bands, so every renderer
+    /// below reads a value freeze proved instead of resolving three names
+    /// by string on the query path.
+    bands: RenderBands,
 }
 
 impl<'a> FlavorScan<'a> {
+    /// A scan over schemas the selection has already admitted.
+    ///
+    /// `None` for an empty set or a head that declares no render bands —
+    /// both of which `core_search_flavors` filters out before it gets here,
+    /// which is what makes [`Self::bands`] total.
+    fn new(schemas: Vec<&'a MemorySearchProjection>) -> Option<Self> {
+        let bands = schemas.first()?.render_bands?;
+        Some(Self { schemas, bands })
+    }
+
     /// The schema whose declaration the flavor-wide statement renders.
     fn head(&self) -> &'a MemorySearchProjection {
         self.schemas[0]
@@ -306,7 +320,10 @@ fn core_search_flavors<'a>(
         if !is_core && !matches!(projection.band_comparability, BandComparability::CoreBands) {
             continue;
         }
-        if !projection.rank_source.is_projection() {
+        // The same admission as before, spelled as the value it proves: a
+        // projection-ranked schema is exactly one freeze resolved render
+        // bands for.
+        if projection.render_bands.is_none() {
             continue;
         }
         if !payload_kind_matches(req.kind, projection.kind) {
@@ -338,7 +355,7 @@ fn core_search_flavors<'a>(
     }
     by_flavor
         .into_values()
-        .map(|schemas| FlavorScan { schemas })
+        .filter_map(FlavorScan::new)
         .collect()
 }
 
@@ -464,7 +481,7 @@ async fn scan_one_flavor(
             .iter()
             .map(|projection| projection.schema_id.as_str())
             .collect();
-        let sql = substring_sql(&missing, req)?;
+        let sql = substring_sql(&missing, flavor.bands, req)?;
         // SQL-POLICY: PgIdent
         let rows: Vec<SubstringRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(like_pattern(&req.query))
@@ -485,28 +502,6 @@ async fn scan_one_flavor(
         }));
     }
     Ok(hits)
-}
-
-/// The band this schema declares under `name`.
-///
-/// A `&[Band]` is an unordered set with a `name` on each member, so the
-/// renderer looks its arms up by string. Freeze holds a
-/// `RankSource::Projection` flavor to declaring all three names, which is
-/// what keeps this `Err` unreachable in a frozen registry rather than a
-/// runtime hazard on a hot path.
-fn band(projection: &MemorySearchProjection, name: &str) -> Result<Band, StorageError> {
-    projection
-        .bands
-        .iter()
-        .copied()
-        .find(|band| band.name == name)
-        .ok_or_else(|| {
-            StorageError::Internal(format!(
-                "schema {} declares no band named {name:?}; the core renderer resolves its \
-                 arms by name and freeze should have refused this contract",
-                projection.schema_id
-            ))
-        })
 }
 
 /// The substring arm: at most ONE statement, over exactly the schemas the
@@ -530,6 +525,7 @@ fn band(projection: &MemorySearchProjection, name: &str) -> Result<Band, Storage
 /// searchable text is.
 fn substring_sql(
     schemas: &[&MemorySearchProjection],
+    bands: RenderBands,
     req: &MemorySearchRequest,
 ) -> Result<String, StorageError> {
     // One leg per sidecar TABLE. Two schemas sharing a sidecar (core's
@@ -544,7 +540,7 @@ fn substring_sql(
     let scanned: Vec<&MemorySearchProjection> = by_table.into_values().collect();
     let legs = scanned
         .iter()
-        .map(|projection| substring_leg_sql(projection, req))
+        .map(|projection| substring_leg_sql(projection, bands, req))
         .collect::<Result<Vec<_>, StorageError>>()?;
     // Every leg projects its memory id as `t` whatever its sidecar calls
     // the column, so the union's own ordering stays one spelling.
@@ -584,6 +580,7 @@ fn substring_sql(
 /// statement would be paid for and never read.
 fn substring_leg_sql(
     projection: &MemorySearchProjection,
+    bands: RenderBands,
     req: &MemorySearchRequest,
 ) -> Result<String, StorageError> {
     let table = PgIdent::table(&projection.sidecar_table)?;
@@ -602,7 +599,7 @@ fn substring_leg_sql(
     };
     // A flat band: the substring arm ranks nothing, it only admits — hence
     // zero width, and no `ts_rank` call to normalize.
-    let (floor, _) = band(projection, BAND_NAME_SUBSTRING)?.parts();
+    let (floor, _) = bands.substring.parts();
     // Same reason as the ranked arm's: this window is shared across the
     // missing schemas now, so a row admission will drop must not spend a
     // slot in it. See `admit_side_restriction`.
@@ -688,8 +685,8 @@ fn ranked_projection_sql(
     // across corpora; a band is, which is what makes a cross-flavor merge
     // meaningful — and a band whose normalization is undeclared is a window
     // two renderers can fill differently while claiming the same number.
-    let exact = band(head, BAND_NAME_EXACT)?;
-    let rescue_band = band(head, BAND_NAME_RESCUE)?;
+    let exact = flavor.bands.exact;
+    let rescue_band = flavor.bands.rescue;
     let (rescue_floor, rescue_width) = rescue_band.parts();
     let rescue_norm = rescue_band.normalization_arg();
     let rescue_score = if rescue {
@@ -1315,9 +1312,8 @@ pub fn ranked_projection_sql_for_tests(
     rescue: bool,
 ) -> Result<String, StorageError> {
     ranked_projection_sql(
-        &FlavorScan {
-            schemas: schemas.to_vec(),
-        },
+        &FlavorScan::new(schemas.to_vec())
+            .ok_or_else(|| StorageError::Internal("no render bands on head".into()))?,
         req,
         rescue,
     )
@@ -1334,7 +1330,11 @@ pub fn substring_sql_for_tests(
     schemas: &[&MemorySearchProjection],
     req: &MemorySearchRequest,
 ) -> Result<String, StorageError> {
-    substring_sql(schemas, req)
+    let bands = schemas
+        .first()
+        .and_then(|projection| projection.render_bands)
+        .ok_or_else(|| StorageError::Internal("fixture declares no render bands".into()))?;
+    substring_sql(schemas, bands, req)
 }
 
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
@@ -1426,7 +1426,7 @@ mod tests {
             "the ranked scan must run the exported builder"
         );
         assert!(
-            prod.contains("substring_sql(&missing, req)"),
+            prod.contains("substring_sql(&missing, flavor.bands, req)"),
             "the substring scan must run the exported builder"
         );
         assert!(
@@ -1502,9 +1502,8 @@ mod tests {
             .expect("core/agent-note-v1 is a search surface")
             .clone();
         let mut req = request_with_tags();
-        let flavor = super::FlavorScan {
-            schemas: vec![&note],
-        };
+        let flavor =
+            super::FlavorScan::new(vec![&note]).expect("fixture head declares render bands");
 
         let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
         assert!(ranked.contains("lexical_scrub($1)"), "$1 is the query");
@@ -1559,7 +1558,7 @@ mod tests {
             "the projection is the driving relation"
         );
 
-        let substring = super::substring_sql(&[&note], &req).expect("substring");
+        let substring = super::substring_sql_for_tests(&[&note], &req).expect("substring");
         assert!(substring.contains("LIKE $1 ESCAPE"), "$1 is the pattern");
         assert!(substring.contains("LIMIT $2"), "$2 is the overfetch budget");
         assert!(substring.contains("c.tags && $3::text[]"), "$3 is the tags");
@@ -1620,9 +1619,8 @@ mod tests {
             .expect("core/agent-note-v1 is a search surface")
             .clone();
         let mut req = request_with_tags();
-        let flavor = super::FlavorScan {
-            schemas: vec![&note],
-        };
+        let flavor =
+            super::FlavorScan::new(vec![&note]).expect("fixture head declares render bands");
 
         let tagged =
             super::semantic_search_sql(std::slice::from_ref(&flavor), &req).expect("semantic");
@@ -1732,12 +1730,8 @@ mod tests {
         let mut docs = note.clone();
         docs.projection_table = "proxima_docs.projection".into();
         let flavors = [
-            super::FlavorScan {
-                schemas: vec![&note],
-            },
-            super::FlavorScan {
-                schemas: vec![&docs],
-            },
+            super::FlavorScan::new(vec![&note]).expect("fixture head declares render bands"),
+            super::FlavorScan::new(vec![&docs]).expect("fixture head declares render bands"),
         ];
         let two = super::semantic_search_sql(&flavors, &req).expect("semantic");
         let core = two
@@ -1765,9 +1759,8 @@ mod tests {
         // The table name reaches the SQL only through `PgIdent`.
         let mut spliced = note.clone();
         spliced.projection_table = "proxima_docs.projection p; DROP TABLE x".into();
-        let hostile = [super::FlavorScan {
-            schemas: vec![&spliced],
-        }];
+        let hostile =
+            [super::FlavorScan::new(vec![&spliced]).expect("fixture head declares render bands")];
         assert!(
             super::semantic_search_sql(&hostile, &req).is_err(),
             "an invalid projection table identifier is refused, not spliced"
@@ -1810,7 +1803,8 @@ mod tests {
         );
         note.sidecar_key_column = RENAMED.to_owned();
 
-        let sql = super::substring_sql(&[&note], &request_with_tags()).expect("substring");
+        let sql =
+            super::substring_sql_for_tests(&[&note], &request_with_tags()).expect("substring");
         // Substituted into a shape rather than built with `format!`, so the
         // SQL-policy scanner does not read an expectation about a statement
         // as a statement being built.
@@ -1849,9 +1843,8 @@ mod tests {
             .expect("core/agent-note-v1 is a search surface")
             .clone();
         let mut req = request_with_tags();
-        let flavor = super::FlavorScan {
-            schemas: vec![&note],
-        };
+        let flavor =
+            super::FlavorScan::new(vec![&note]).expect("fixture head declares render bands");
 
         let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
         assert!(
@@ -1861,7 +1854,7 @@ mod tests {
             "HeadsOnly must reach the head through the memory row's handle, \
              not spend the window on superseded revisions"
         );
-        let substring = super::substring_sql(&[&note], &req).expect("substring");
+        let substring = super::substring_sql_for_tests(&[&note], &req).expect("substring");
         assert!(
             substring.contains("FROM proxima_core.memory_head hh")
                 && substring.contains("WHERE hh.handle = m.handle AND hh.t = m.t"),
@@ -1891,7 +1884,7 @@ mod tests {
             "…but the kind filter is independent of it: this request shape is \
              reachable and admit still applies the kind"
         );
-        let substring = super::substring_sql(&[&note], &req).expect("substring");
+        let substring = super::substring_sql_for_tests(&[&note], &req).expect("substring");
         assert!(
             !substring.contains("memory_head"),
             "IncludeSuperseded keeps the unfiltered window"
@@ -2071,10 +2064,15 @@ mod tests {
         );
         let req = request_with_tags();
         for projection in &projections {
-            let exact = super::band(projection, BAND_NAME_EXACT).expect("core declares `exact`");
-            let rescue = super::band(projection, BAND_NAME_RESCUE).expect("core declares `rescue`");
-            let substring =
-                super::band(projection, BAND_NAME_SUBSTRING).expect("core declares `substring`");
+            // Read off the resolved value, which is the one the renderer
+            // uses: asserting against a fresh lookup would test the lookup.
+            let super::RenderBands {
+                exact,
+                rescue,
+                substring,
+            } = projection
+                .render_bands
+                .expect("a projection-ranked core schema resolves its three arms");
 
             assert_eq!(exact.parts(), ("0.50".to_owned(), "0.50".to_owned()));
             assert_eq!(rescue.parts(), ("0.25".to_owned(), "0.20".to_owned()));
@@ -2096,9 +2094,8 @@ mod tests {
             );
 
             // …and what the RENDERER did with them.
-            let flavor = super::FlavorScan {
-                schemas: vec![projection],
-            };
+            let flavor = super::FlavorScan::new(vec![projection])
+                .expect("fixture head declares render bands");
             let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
             assert!(
                 ranked.contains("THEN 0.50 + LEAST(COALESCE(ts_rank_cd("),
@@ -2116,7 +2113,8 @@ mod tests {
                 ranked.contains(", 33), 0.0) * 100.0, 1.0) * 0.20"),
                 "…normalizes with the declared flag and fills the declared width"
             );
-            let substring_sql = super::substring_sql(&[projection], &req).expect("substring");
+            let substring_sql =
+                super::substring_sql_for_tests(&[projection], &req).expect("substring");
             assert!(
                 substring_sql.contains("0.25::real AS lexical_score"),
                 "the substring arm stamps the declared flat floor"
@@ -2128,7 +2126,7 @@ mod tests {
         // `exact` left the rescue floor, the rescue width and the substring
         // floor hardcodable with the whole workspace green.
         let mut moved = projections[0].clone();
-        moved.bands = Box::leak(Box::new([
+        moved.render_bands = super::RenderBands::resolve(&[
             Band {
                 name: BAND_NAME_EXACT,
                 floor: 0.10,
@@ -2147,10 +2145,10 @@ mod tests {
                 ceiling: 0.01,
                 normalization: TS_RANK_NORMALIZATION_NONE,
             },
-        ]));
-        let flavor = super::FlavorScan {
-            schemas: vec![&moved],
-        };
+        ])
+        .ok();
+        let flavor =
+            super::FlavorScan::new(vec![&moved]).expect("fixture head declares render bands");
         let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
         assert!(
             ranked.contains("THEN 0.10 + LEAST(COALESCE(ts_rank_cd("),
@@ -2177,7 +2175,7 @@ mod tests {
             !ranked.contains(", 33)"),
             "…including the normalization flags"
         );
-        let substring_sql = super::substring_sql(&[&moved], &req).expect("substring");
+        let substring_sql = super::substring_sql_for_tests(&[&moved], &req).expect("substring");
         assert!(
             substring_sql.contains("0.01::real AS lexical_score"),
             "the substring floor is READ as well"
