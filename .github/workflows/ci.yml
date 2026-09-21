@@ -94,7 +94,7 @@ jobs:
       - name: install git-cliff
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.release == 'true' }}
         # taiki-e/install-action@v2; same generator as the tag workflow.
-        uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af
+        uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908
         with:
           tool: git-cliff@2.13.1
       - name: release-note configuration
@@ -287,7 +287,7 @@ jobs:
             --versioning-configuration Status=Enabled
       - name: install nextest
         # taiki-e/install-action@nextest
-        uses: taiki-e/install-action@0c80bcf54d007ab0e714c95f3bcc43c387707535
+        uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af
       - name: build
         run: cargo build --workspace --all-targets --locked
       - name: test
