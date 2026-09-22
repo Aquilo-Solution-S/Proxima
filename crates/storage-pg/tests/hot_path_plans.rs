@@ -5,11 +5,11 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::llm::EMBEDDING_DIM;
+use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus,
     TagMatch,
 };
-use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{EdgeKind, OwnerRef, SchemaId, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};

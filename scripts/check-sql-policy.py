@@ -848,7 +848,7 @@ def run_fixture(path: Path) -> int:
 # `fixed-fragment` proof. Every arm of `MemoryFilter::predicate` is a literal,
 # and its only interpolations are a column chosen between two literals and the
 # `u32` placeholder index.
-EXPECTED_DYNAMIC_SQL_SITES = 119
+EXPECTED_DYNAMIC_SQL_SITES = 121
 
 
 def run_self_test() -> int:

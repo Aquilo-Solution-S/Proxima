@@ -114,11 +114,18 @@ async fn owned_head_column<'e, E>(
 where
     E: PgExecutor<'e>,
 {
-    head_column_builder(owner, schema_id, sidecar_table, key_column, columns, projection)?
-        .build_query_scalar()
-        .fetch_optional(executor)
-        .await
-        .map_err(map_err)
+    head_column_builder(
+        owner,
+        schema_id,
+        sidecar_table,
+        key_column,
+        columns,
+        projection,
+    )?
+    .build_query_scalar()
+    .fetch_optional(executor)
+    .await
+    .map_err(map_err)
 }
 
 /// Build the head lookup without running it.
@@ -133,6 +140,7 @@ fn head_column_builder(
     key_column: &str,
     columns: &[(&str, SidecarAtom)],
     projection: HeadProjection,
+    // SQL-POLICY: QueryBuilder-bound-values
 ) -> Result<QueryBuilder<Postgres>, StorageError> {
     if columns.is_empty() {
         return Err(StorageError::ConstraintViolation(
