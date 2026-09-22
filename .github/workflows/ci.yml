@@ -287,7 +287,7 @@ jobs:
             --versioning-configuration Status=Enabled
       - name: install nextest
         # taiki-e/install-action@nextest
-        uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af
+        uses: taiki-e/install-action@0c80bcf54d007ab0e714c95f3bcc43c387707535
       - name: build
         run: cargo build --workspace --all-targets --locked
       - name: test
