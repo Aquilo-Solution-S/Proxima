@@ -47,6 +47,8 @@ pub use search::{
     ranked_projection_sql_for_tests, search_admit_sql_for_tests, semantic_search_sql_for_tests,
     substring_sql_for_tests,
 };
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use series_handle::owned_head_handle_sql_for_tests;
 pub(crate) use series_handle::{owned_head_handle, owned_head_memory_id, push_atom};
 
 pub(crate) fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {

@@ -13,6 +13,19 @@ for core, one dated `_v0XY_` file per flavor — never several, never edited
 after the tag. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.15
+
+| Lane | Migration |
+|---|---|
+| Core | `0013_v015_agent_note_natural_key_index.sql`: btree on `proxima_core.agent_note_v1 (note_id)`, the natural key `core/agent-note-v1` declares |
+| Code flavor | No new migration |
+
+Index-only and additive. A v0.0.14 database upgrades in place; no reset.
+`CREATE INDEX` takes a brief `SHARE` lock on `agent_note_v1`, which blocks
+writes to that one table for the duration — trivial on any store small enough
+to have tolerated the missing index, and the reason for the index is that it
+was not staying small.
+
 ## v0.0.14
 
 No core or flavor migration ships in this release. Existing v0.0.13 databases

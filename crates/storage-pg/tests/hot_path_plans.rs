@@ -5,6 +5,7 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::llm::EMBEDDING_DIM;
+use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus,
     TagMatch,
@@ -16,8 +17,9 @@ use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_embeddings::claim_embedding_jobs_sql_for_tests;
 use proxima_storage_pg::verbs::query::{
     ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests, inbound_pin_sql_for_tests,
-    memory_page_sql_for_tests, ranked_projection_sql_for_tests, search_admit_sql_for_tests,
-    semantic_search_sql_for_tests, set_hnsw_search_sql_for_tests, substring_sql_for_tests,
+    memory_page_sql_for_tests, owned_head_handle_sql_for_tests, ranked_projection_sql_for_tests,
+    search_admit_sql_for_tests, semantic_search_sql_for_tests, set_hnsw_search_sql_for_tests,
+    substring_sql_for_tests,
 };
 use uuid::Uuid;
 
@@ -642,6 +644,53 @@ async fn hot_path_plans_use_expected_indexes() {
             .fetch_one(&mut *tx)
             .await?;
         assert_plan_names(&plan, "embedding_jobs_pending_claim_idx");
+
+        // The natural-key admit. `core/agent-note-v1` is the only core
+        // contract declaring `natural_key_columns`, and every admission of a
+        // note resolves its series through this statement before it writes.
+        // It is a WRITE-path read, which is why it never showed up here
+        // before: the file guards hot reads, and this one hides inside an
+        // ingest.
+        //
+        // Without `idx_agent_note_v1_nk` the sidecar is reachable only by its
+        // primary key, so the planner inverts the join — walk the owner's
+        // `memory`, probe `agent_note_v1` by `t`, filter `note_id` after the
+        // fact — and the cost of admitting one note grows with everything the
+        // owner has ever stored.
+        let note_key = Uuid::now_v7();
+        let nk_sql = owned_head_handle_sql_for_tests(
+            owner,
+            &projection.schema_id,
+            "proxima_core.agent_note_v1",
+            "t",
+            &[("note_id", SidecarAtom::Uuid(note_key))],
+        )?;
+        let nk_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {nk_sql}");
+        // SQL-POLICY: PgIdent — production series-handle builder
+        let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(nk_explain))
+            .bind(owner.stored_owner_id())
+            .bind(projection.schema_id.as_str())
+            .bind(note_key)
+            .fetch_one(&mut *tx)
+            .await?;
+        let nk_plan = plan.to_string();
+        assert_plan_names(&plan, "idx_agent_note_v1_nk");
+        // Naming the index is not enough: it has to carry `note_id` as the
+        // index condition. A plan that reaches the index and then filters is
+        // the same walk wearing a different name.
+        let nk_scan = scan_of(&plan, "agent_note_v1").unwrap_or_else(|| {
+            panic!("the natural-key admit must touch agent_note_v1; plan:\n{nk_plan}")
+        });
+        let cond = nk_scan
+            .get("Index Cond")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            cond.contains("note_id"),
+            "the natural key must be the index condition, not a post-filter; \
+             cond was `{cond}`, filter was `{}`; plan:\n{nk_plan}",
+            predicates(&nk_scan)
+        );
 
         tx.rollback().await?;
         Ok(())

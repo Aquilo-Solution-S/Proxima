@@ -114,6 +114,34 @@ async fn owned_head_column<'e, E>(
 where
     E: PgExecutor<'e>,
 {
+    head_column_builder(
+        owner,
+        schema_id,
+        sidecar_table,
+        key_column,
+        columns,
+        projection,
+    )?
+    .build_query_scalar()
+    .fetch_optional(executor)
+    .await
+    .map_err(map_err)
+}
+
+/// Build the head lookup without running it.
+///
+/// Split out so the plan guard EXPLAINs the shipped statement rather than a
+/// hand-restated copy of it: a second spelling agrees with this one only by
+/// coincidence, and the access path is the thing under test.
+fn head_column_builder(
+    owner: Owner,
+    schema_id: &SchemaId,
+    sidecar_table: &str,
+    key_column: &str,
+    columns: &[(&str, SidecarAtom)],
+    projection: HeadProjection,
+    // SQL-POLICY: QueryBuilder-bound-values
+) -> Result<QueryBuilder<Postgres>, StorageError> {
     if columns.is_empty() {
         return Err(StorageError::ConstraintViolation(
             "owned series-handle lookup requires at least one sidecar column".into(),
@@ -156,11 +184,34 @@ where
     // SQL-POLICY: fixed-fragment
     builder.push(" LIMIT 1");
 
-    builder
-        .build_query_scalar()
-        .fetch_optional(executor)
-        .await
-        .map_err(map_err)
+    Ok(builder)
+}
+
+/// The shipped head-lookup SQL, for the EXPLAIN plan guard.
+///
+/// # Errors
+///
+/// `ConstraintViolation` when a column identifier is invalid.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+pub fn owned_head_handle_sql_for_tests(
+    owner: Owner,
+    schema_id: &SchemaId,
+    sidecar_table: &str,
+    key_column: &str,
+    columns: &[(&str, SidecarAtom)],
+) -> Result<String, StorageError> {
+    Ok(head_column_builder(
+        owner,
+        schema_id,
+        sidecar_table,
+        key_column,
+        columns,
+        HeadProjection::Handle,
+    )?
+    .sql()
+    .as_str()
+    .to_owned())
 }
 
 /// Bind one [`SidecarAtom`] into a builder.
