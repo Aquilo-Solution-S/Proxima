@@ -2,7 +2,9 @@
 
 use super::records::{RepoIngestionRun, RepoRegistryError, RunStage, RunStatus, StageCounters};
 use super::rows::RunRow;
-use proxima_core::Owner;
+use proxima_core::{Owner, OwnerScope};
+use proxima_storage_pg::PgPlatformScope;
+use proxima_storage_pg::begin_compatible_owner_transaction;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -12,10 +14,11 @@ use uuid::Uuid;
 /// Returns `RepoRegistryError::Database` on database failures.
 pub async fn start_run(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<RepoIngestionRun, RepoRegistryError> {
-    let (run, _) = start_run_with_created(pool, owner, repo_id).await?;
+    let (run, _) = start_run_with_created(pool, owner_scope, owner, repo_id).await?;
     Ok(run)
 }
 
@@ -38,13 +41,14 @@ pub async fn start_run(
 /// failures.
 pub async fn start_run_with_created(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<(RepoIngestionRun, bool), RepoRegistryError> {
     let (kind, principal_id) = owner.columns();
     let new_run_id = Uuid::now_v7();
 
-    let mut tx = pool.begin().await?;
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     // Not a Memory admission — `repo_ingestion_runs` is a flavor state row
     // the Engine never sees — so this lane takes the declared scope fence
     // itself, shared, and asks the same liveness question under it.
@@ -74,15 +78,31 @@ pub async fn start_run_with_created(
     .bind(repo_id)
     .fetch_optional(&mut *tx)
     .await?;
-    tx.commit().await?;
-
     if let Some(row) = inserted {
+        tx.commit().await?;
         return Ok((row.into(), true));
     }
 
-    let run = get_active_run(pool, owner, repo_id)
-        .await?
-        .ok_or(RepoRegistryError::NotFound { repo_id })?;
+    let run = sqlx::query_as::<_, RunRow>(
+        "SELECT run_id, repo_id, status, stage,
+                commits_emitted, files_emitted, chunks_emitted, chunks_reused,
+                chunks_tombstoned, ast_edges_emitted, abstractions_emitted,
+                embeddings_landed, citations_emitted,
+                error_message, started_at, updated_at, finished_at
+           FROM proxima_code.repo_ingestion_runs
+          WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3
+            AND status IN ('queued', 'running')
+          ORDER BY started_at DESC
+          LIMIT 1",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(repo_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .map(Into::into)
+    .ok_or(RepoRegistryError::NotFound { repo_id })?;
+    tx.commit().await?;
     Ok((run, false))
 }
 
@@ -92,10 +112,12 @@ pub async fn start_run_with_created(
 /// Returns `RepoRegistryError::Database` on database failures.
 pub async fn get_active_run(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<Option<RepoIngestionRun>, RepoRegistryError> {
     let (kind, principal_id) = owner.columns();
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RunRow>(
         "SELECT run_id, repo_id, status, stage, \
                 commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
@@ -112,8 +134,9 @@ pub async fn get_active_run(
     .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(row.map(Into::into))
 }
 
@@ -123,8 +146,10 @@ pub async fn get_active_run(
 /// Returns `RepoRegistryError::Database` on database failures.
 pub async fn get_run(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     run_id: Uuid,
 ) -> Result<Option<RepoIngestionRun>, RepoRegistryError> {
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RunRow>(
         "SELECT run_id, repo_id, status, stage, \
                 commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
@@ -135,8 +160,9 @@ pub async fn get_run(
          WHERE run_id = $1",
     )
     .bind(run_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(row.map(Into::into))
 }
 
@@ -146,10 +172,12 @@ pub async fn get_run(
 /// Returns `RunNotFound`, `RunAlreadyTerminal`, or database errors.
 pub async fn advance_stage(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     run_id: Uuid,
     next_stage: RunStage,
     counters: &StageCounters,
 ) -> Result<RepoIngestionRun, RepoRegistryError> {
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RunRow>(
         "UPDATE proxima_code.repo_ingestion_runs SET \
             status = 'running', stage = $2, \
@@ -175,13 +203,14 @@ pub async fn advance_stage(
     .bind(i32_from_u32(counters.abstractions_emitted))
     .bind(i32_from_u32(counters.embeddings_landed))
     .bind(i32_from_u32(counters.citations_emitted))
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     if let Some(row) = row {
         Ok(row.into())
     } else {
-        terminal_or_not_found(pool, run_id).await
+        terminal_or_not_found(pool, owner_scope, run_id).await
     }
 }
 
@@ -193,8 +222,10 @@ pub async fn advance_stage(
 /// Returns `RepoRegistryError::Database` on database failures.
 pub async fn begin_run(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     run_id: Uuid,
 ) -> Result<Option<RepoIngestionRun>, RepoRegistryError> {
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RunRow>(
         "UPDATE proxima_code.repo_ingestion_runs SET \
             status = 'running', stage = 'facts', updated_at = now() \
@@ -206,8 +237,9 @@ pub async fn begin_run(
                     error_message, started_at, updated_at, finished_at",
     )
     .bind(run_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(row.map(Into::into))
 }
 
@@ -217,9 +249,11 @@ pub async fn begin_run(
 /// Returns `RunNotFound`, `RunAlreadyTerminal`, or database errors.
 pub async fn mark_succeeded(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     run_id: Uuid,
     counters: &StageCounters,
 ) -> Result<RepoIngestionRun, RepoRegistryError> {
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RunRow>(
         "UPDATE proxima_code.repo_ingestion_runs SET \
             status = 'succeeded', stage = 'done', \
@@ -244,13 +278,14 @@ pub async fn mark_succeeded(
     .bind(i32_from_u32(counters.abstractions_emitted))
     .bind(i32_from_u32(counters.embeddings_landed))
     .bind(i32_from_u32(counters.citations_emitted))
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     if let Some(row) = row {
         Ok(row.into())
     } else {
-        terminal_or_not_found(pool, run_id).await
+        terminal_or_not_found(pool, owner_scope, run_id).await
     }
 }
 
@@ -267,6 +302,24 @@ pub async fn mark_succeeded(
 /// # Errors
 /// Returns `RepoRegistryError::Database` on database failures.
 pub async fn sweep_orphaned_runs(pool: &PgPool) -> Result<u64, RepoRegistryError> {
+    sweep_orphaned_runs_with_platform(pool, None).await
+}
+
+pub async fn sweep_orphaned_runs_with_platform(
+    pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
+) -> Result<u64, RepoRegistryError> {
+    if let Some(platform) = platform {
+        let mut tx = platform.begin().await.map_err(RepoRegistryError::Storage)?;
+        let result = sqlx::query(
+            "UPDATE proxima_code.repo_ingestion_runs SET status = 'failed', error_message = 'orphaned run recovered' WHERE status = 'running' AND heartbeat_at < now() - interval '15 minutes'",
+        ).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(result.rows_affected());
+    }
+    let mut tx = proxima_storage_pg::begin_compatible_owner_transaction(pool, None)
+        .await
+        .map_err(RepoRegistryError::Storage)?;
     let result = sqlx::query(
         "UPDATE proxima_code.repo_ingestion_runs SET \
             status = 'failed', \
@@ -275,8 +328,9 @@ pub async fn sweep_orphaned_runs(pool: &PgPool) -> Result<u64, RepoRegistryError
             finished_at = now() \
           WHERE status IN ('queued', 'running')",
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(result.rows_affected())
 }
 
@@ -286,9 +340,11 @@ pub async fn sweep_orphaned_runs(pool: &PgPool) -> Result<u64, RepoRegistryError
 /// Returns `RunNotFound`, `RunAlreadyTerminal`, or database errors.
 pub async fn mark_failed(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     run_id: Uuid,
     error_message: &str,
 ) -> Result<RepoIngestionRun, RepoRegistryError> {
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RunRow>(
         "UPDATE proxima_code.repo_ingestion_runs SET \
             status = 'failed', error_message = $2, updated_at = now(), finished_at = now() \
@@ -301,21 +357,23 @@ pub async fn mark_failed(
     )
     .bind(run_id)
     .bind(error_message)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     if let Some(row) = row {
         Ok(row.into())
     } else {
-        terminal_or_not_found(pool, run_id).await
+        terminal_or_not_found(pool, owner_scope, run_id).await
     }
 }
 
 async fn terminal_or_not_found(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     run_id: Uuid,
 ) -> Result<RepoIngestionRun, RepoRegistryError> {
-    match get_run(pool, run_id).await? {
+    match get_run(pool, owner_scope, run_id).await? {
         Some(run) if matches!(run.status, RunStatus::Succeeded | RunStatus::Failed) => {
             Err(RepoRegistryError::RunAlreadyTerminal {
                 run_id,

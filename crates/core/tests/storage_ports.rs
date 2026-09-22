@@ -60,6 +60,7 @@ struct OperatorMcpCallReadFake;
 impl McpCallReadPort for OperatorMcpCallReadFake {
     async fn read_mcp_call_history(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         req: &McpCallHistoryRequest,
     ) -> Result<McpCallHistoryResponse, StorageError> {
         fake_error()
@@ -82,6 +83,7 @@ impl MemoryAuthoringPort for MemoryAuthoringFake {
 
     async fn load_memory_kinds(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         _owner: &Owner,
         _memory_ids: &[MemoryId],
     ) -> Result<Vec<MemoryKindRow>, StorageError> {
@@ -104,6 +106,7 @@ struct MemoryReadFake;
 impl MemoryReadPort for MemoryReadFake {
     async fn load_fact_text(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &Owner,
         memory_id: proxima_core::MemoryId,
     ) -> Result<Option<String>, StorageError> {
@@ -112,6 +115,7 @@ impl MemoryReadPort for MemoryReadFake {
 
     async fn load_memory_graph_payloads(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         _identities: &[MemoryGraphIdentity],
         _schemas: &[proxima_core::read_models::MemorySchemaSpec],
         _include_body: bool,
@@ -121,6 +125,7 @@ impl MemoryReadPort for MemoryReadFake {
 
     async fn load_sketches(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         _read_owners: &[OwnerRef],
         _memory_ids: &[MemoryId],
     ) -> Result<Vec<proxima_core::read_models::MemorySketch>, StorageError> {
@@ -129,6 +134,7 @@ impl MemoryReadPort for MemoryReadFake {
 
     async fn load_pin_nodes(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         _read_owners: &[OwnerRef],
         _memory_ids: &[MemoryId],
     ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
@@ -137,6 +143,7 @@ impl MemoryReadPort for MemoryReadFake {
 
     async fn load_visible_goal_ids(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         _read_owners: &[OwnerRef],
         _goal_ids: &[proxima_core::GoalId],
     ) -> Result<Vec<proxima_core::GoalId>, StorageError> {
@@ -145,6 +152,7 @@ impl MemoryReadPort for MemoryReadFake {
 
     async fn load_inbound_pin_nodes(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         _read_owners: &[OwnerRef],
         _query: proxima_core::InboundPinQuery<'_>,
     ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
@@ -153,6 +161,7 @@ impl MemoryReadPort for MemoryReadFake {
 
     async fn query_memories(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         _read_owners: &[proxima_core::OwnerRef],
         req: &proxima_core::verbs::query::QueryRequest,
         _schemas: &[proxima_core::read_models::MemorySchemaSpec],
@@ -162,6 +171,7 @@ impl MemoryReadPort for MemoryReadFake {
 
     async fn search_memories(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         req: &proxima_core::verbs::query::MemorySearchRequest,
         projections: &[proxima_core::verbs::schema::MemorySearchProjection],
     ) -> Result<proxima_core::verbs::query::MemorySearchPage, StorageError> {
@@ -170,6 +180,7 @@ impl MemoryReadPort for MemoryReadFake {
 
     async fn walk_memory_lineage(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         read_owners: &[OwnerRef],
         req: &proxima_core::verbs::query::MemoryLineageRequest,
     ) -> Result<proxima_core::verbs::query::MemoryLineageResponse, StorageError> {
@@ -178,6 +189,7 @@ impl MemoryReadPort for MemoryReadFake {
 
     async fn owned_series_handle(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         _owner: Owner,
         _schema_id: &proxima_core::SchemaId,
         _sidecar_table: &str,
@@ -194,6 +206,7 @@ struct MemoryInspectFake;
 impl MemoryInspectPort for MemoryInspectFake {
     async fn load_memory_by_id(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         memory_id: proxima_core::MemoryId,
         _schemas: &[proxima_core::read_models::MemorySchemaSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
@@ -202,6 +215,7 @@ impl MemoryInspectPort for MemoryInspectFake {
 
     async fn load_memories_by_ids(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         _read_owners: &[OwnerRef],
         _memory_ids: &[proxima_core::MemoryId],
         _schemas: &[proxima_core::read_models::MemorySchemaSpec],
@@ -217,6 +231,7 @@ struct EmbeddingTextFake;
 impl EmbeddingTextPort for EmbeddingTextFake {
     async fn load_embedding_text(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &Owner,
         entity_kind: EntityKind,
         memory_id: proxima_core::MemoryId,
@@ -227,6 +242,7 @@ impl EmbeddingTextPort for EmbeddingTextFake {
 
     async fn load_embedding_texts(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         _items: &[(Owner, EntityKind, proxima_core::MemoryId)],
         _non_embeddable_schemas: &[String],
     ) -> Result<Vec<Option<String>>, StorageError> {
@@ -235,6 +251,7 @@ impl EmbeddingTextPort for EmbeddingTextFake {
 
     async fn list_facts_missing_embedding(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &Owner,
         model_id: &str,
         limit: usize,
@@ -343,11 +360,19 @@ impl EmbeddingJobPort for EmbeddingJobFake {
         fake_error()
     }
 
-    async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError> {
+    async fn count_pending_embedding_jobs(
+        &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
+        owner: &Owner,
+    ) -> Result<u64, StorageError> {
         fake_error()
     }
 
-    async fn count_failed_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError> {
+    async fn count_failed_embedding_jobs(
+        &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
+        owner: &Owner,
+    ) -> Result<u64, StorageError> {
         fake_error()
     }
 }
@@ -443,6 +468,7 @@ struct GoalReadFake;
 impl GoalReadPort for GoalReadFake {
     async fn list_active_goals(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         read_owners: &[OwnerRef],
         self_perspective_memory_id: proxima_core::MemoryId,
         limit: usize,
@@ -452,6 +478,7 @@ impl GoalReadPort for GoalReadFake {
 
     async fn load_goal_wake_configs(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         read_owners: &[OwnerRef],
         goal_ids: &[proxima_core::GoalId],
     ) -> Result<Vec<proxima_core::read_models::GoalWakeConfigRow>, StorageError> {
@@ -460,6 +487,7 @@ impl GoalReadPort for GoalReadFake {
 
     async fn load_goal_evidence(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &OwnerRef,
         goal_id: proxima_core::GoalId,
     ) -> Result<Option<Vec<proxima_core::MemoryId>>, StorageError> {
@@ -474,6 +502,7 @@ struct ChangeEventFake;
 impl ChangeEventPort for ChangeEventFake {
     async fn change_history(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         read_owners: &[OwnerRef],
         req: &ChangeHistoryRequest,
     ) -> Result<ChangeHistoryResponse, StorageError> {
@@ -482,6 +511,7 @@ impl ChangeEventPort for ChangeEventFake {
 
     async fn list_change_events_after(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         read_owners: &[OwnerRef],
         after: uuid::Uuid,
         limit: usize,
@@ -491,6 +521,7 @@ impl ChangeEventPort for ChangeEventFake {
 
     async fn list_change_events_for_replay(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &Owner,
         after: uuid::Uuid,
         until: Option<uuid::Uuid>,
@@ -507,6 +538,7 @@ struct CitationFake;
 impl CitationPort for CitationFake {
     async fn facts_citing_object(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         read_owners: &[OwnerRef],
         cited_object_id: uuid::Uuid,
         _schemas: &[proxima_core::read_models::MemorySchemaSpec],
@@ -518,6 +550,7 @@ impl CitationPort for CitationFake {
 
     async fn citation_of_fact(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         read_owners: &[proxima_core::OwnerRef],
         fact_memory_id: proxima_core::MemoryId,
     ) -> Result<Option<proxima_core::verbs::query::FactCitationReadback>, StorageError> {
@@ -532,6 +565,7 @@ struct OwnerAccessReadFake;
 impl OwnerAccessReadPort for OwnerAccessReadFake {
     async fn resolve_membership(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         member: &OwnerRef,
     ) -> Result<Vec<MembershipRow>, StorageError> {
         fake_error()
@@ -539,13 +573,18 @@ impl OwnerAccessReadPort for OwnerAccessReadFake {
 
     async fn visible_home_owner(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         entity: EntityId,
         read_owners: &[OwnerRef],
     ) -> Result<Option<OwnerRef>, StorageError> {
         fake_error()
     }
 
-    async fn home_owner(&self, entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
+    async fn home_owner(
+        &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
+        entity: EntityId,
+    ) -> Result<Option<OwnerRef>, StorageError> {
         fake_error()
     }
 }
@@ -587,6 +626,7 @@ impl OwnerMembershipAdminPort for OwnerMembershipAdminFake {
 
     async fn list_group_members(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         group_id: GroupId,
     ) -> Result<Vec<(UserId, Relation)>, StorageError> {
         fake_error()
@@ -594,6 +634,7 @@ impl OwnerMembershipAdminPort for OwnerMembershipAdminFake {
 
     async fn list_group_members_page(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         _group_id: GroupId,
         _after: Option<(UserId, Relation)>,
         _limit: i64,
@@ -609,6 +650,7 @@ struct SourceCursorFake;
 impl SourceCursorPort for SourceCursorFake {
     async fn load_source_cursor(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &Owner,
         source: &str,
     ) -> Result<Option<Cursor>, StorageError> {
@@ -626,6 +668,7 @@ impl SourceCursorPort for SourceCursorFake {
 
     async fn source_cursor_age(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &Owner,
         source: &str,
     ) -> Result<Option<std::time::Duration>, StorageError> {
@@ -692,6 +735,7 @@ struct RegistryProjectionFake;
 impl RegistryProjectionPort for RegistryProjectionFake {
     async fn load_memory_batch_facts(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &Owner,
         memory_id: proxima_core::MemoryId,
         _schemas: &[proxima_core::read_models::MemorySchemaSpec],
@@ -701,6 +745,7 @@ impl RegistryProjectionPort for RegistryProjectionFake {
 
     async fn load_abstraction_heads(
         &self,
+        _owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &Owner,
         _schemas: &[proxima_core::read_models::MemorySchemaSpec],
         limit: usize,

@@ -26,6 +26,19 @@ writes to that one table for the duration — trivial on any store small enough
 to have tolerated the missing index, and the reason for the index is that it
 was not staying small.
 
+### Owner-RLS compatibility bridge
+
+v0.0.15 binds verified owner/platform scopes before enforcement. It recognizes
+one exact successor checksum from
+`crates/storage-pg/compatibility/0014_v016_owner_rls.sql` without applying that
+file. Unknown versions and changed checksums still refuse boot. The Code
+companion is `flavors/code/compatibility/20260922000020_v016_owner_rls.sql`.
+
+Activation requires every live host sharing the database to run the bridge,
+separate runtime/platform credentials, and both additive migrations. Promote
+these exact bytes into the migration directories for v0.0.16; changing them
+requires a new compatible predecessor. See [15 §Owner-RLS rollout](../15-deployment.md#owner-rls-rollout).
+
 ## v0.0.14
 
 No core or flavor migration ships in this release. Existing v0.0.13 databases
@@ -72,7 +85,8 @@ in order. Previously shipped migration bytes remain unchanged.
 
 `_sqlx_migrations` stores `(version, checksum)`.
 
-- Orphan row (version the binary does not embed): forgiven (`ignore_missing`).
+- SQLx ignores foreign-lane rows (`ignore_missing`). Core preflight still refuses
+  unknown core versions except the checksum-approved owner-RLS successor.
 - Checksum mismatch: fatal. Do not edit an applied file.
 
 ## Lanes

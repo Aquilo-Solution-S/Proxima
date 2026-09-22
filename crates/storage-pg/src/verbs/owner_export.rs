@@ -19,6 +19,7 @@ use sqlx::{Connection, Postgres, Transaction};
 /// names, ordered by the key it names.
 pub async fn export_owner_bundle(
     pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
     auth: &ExportAuthorization,
     surfaces: &OwnerSurfaces,
     lifecycle: Option<crate::RegisteredHostStateLifecycle>,
@@ -26,7 +27,16 @@ pub async fn export_owner_bundle(
     let owner = auth.audit().owner();
     let (_owner_kind, owner_id) = owner_binds(&owner);
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
-    let mut conn = pool.acquire().await.map_err(map_err)?.detach();
+    let mut conn = if let Some(scope) = platform {
+        scope.detached_connection().await?
+    } else {
+        crate::begin_compatible_owner_transaction(pool, None)
+            .await?
+            .rollback()
+            .await
+            .map_err(map_err)?;
+        pool.acquire().await.map_err(map_err)?.detach()
+    };
     // Session locks survive the following transaction and are released when
     // this detached connection is dropped. If cancellation/error interrupts
     // any later await, Drop closes the connection instead of returning a
@@ -35,6 +45,7 @@ pub async fn export_owner_bundle(
     crate::access::owner_columns::lock_owner_fence_exclusive_session(&mut conn, &owner).await?;
     let result = export_owner_bundle_snapshot(
         &mut conn,
+        platform,
         auth,
         owner,
         owner_id,
@@ -48,6 +59,7 @@ pub async fn export_owner_bundle(
 
 async fn export_owner_bundle_snapshot(
     conn: &mut sqlx::postgres::PgConnection,
+    platform: Option<&crate::PgPlatformScope>,
     auth: &ExportAuthorization,
     owner: proxima_core::OwnerRef,
     owner_id: uuid::Uuid,
@@ -59,6 +71,9 @@ async fn export_owner_bundle_snapshot(
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
+    if let Some(scope) = platform {
+        scope.bind_transaction(tx.as_mut()).await?;
+    }
     let mut tables: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for surface in surfaces.generic_surfaces() {
         let Some(sql) = export_statement(surface)? else {

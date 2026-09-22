@@ -5,14 +5,14 @@ use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{
     EntityKind, GoalRow, QueryCursor, QueryRequest, SupersessionStatus,
 };
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::error::map_err;
 
 use super::rows::{GoalRowDb, goal_row_from_db};
 
-pub(super) async fn query_goals(
-    pool: &PgPool,
+pub(super) async fn query_goals_on_connection(
+    connection: &mut PgConnection,
     req: &QueryRequest,
     owner_ids: &[uuid::Uuid],
     schema_id_filter: Option<&str>,
@@ -28,7 +28,6 @@ pub(super) async fn query_goals(
     };
     let single_goal_stream = matches!(req.entity_kind, Some(EntityKind::Goal));
     let sql = goal_page_sql(req, schema_id_filter.is_some());
-
     // SQL-POLICY: fixed-fragment
     let mut q = sqlx::query_as::<_, GoalRowDb>(sqlx::AssertSqlSafe(sql)).bind(owner_ids);
     if let Some(sid) = schema_id_filter {
@@ -46,7 +45,7 @@ pub(super) async fn query_goals(
     if let Some(goal_id) = cursor {
         q = q.bind(goal_id);
     }
-    let mut rows = q.fetch_all(pool).await.map_err(map_err)?;
+    let mut rows = q.fetch_all(&mut *connection).await.map_err(map_err)?;
     let limit = usize::try_from(req.limit)
         .map_err(|_| StorageError::Internal("query limit does not fit usize".into()))?;
     let next_cursor = if single_goal_stream && rows.len() > limit {
@@ -135,8 +134,8 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
 /// # Errors
 ///
 /// Returns `StorageError::Internal` on query failure.
-pub async fn active_goals_for_memory_targets(
-    pool: &PgPool,
+pub async fn active_goals_for_memory_targets_on_connection(
+    connection: &mut PgConnection,
     owner_id: uuid::Uuid,
     targets: &[uuid::Uuid],
 ) -> Result<Vec<ActiveGoalTargetRow>, StorageError> {
@@ -153,9 +152,22 @@ pub async fn active_goals_for_memory_targets(
     )
     .bind(owner_id)
     .bind(targets)
-    .fetch_all(pool)
+    .fetch_all(&mut *connection)
     .await
     .map_err(map_err)
+}
+
+/// Compatibility wrapper for callers that already own a pool.
+///
+/// # Errors
+/// Returns `StorageError` when acquiring a connection or executing the query fails.
+pub async fn active_goals_for_memory_targets(
+    pool: &PgPool,
+    owner_id: uuid::Uuid,
+    targets: &[uuid::Uuid],
+) -> Result<Vec<ActiveGoalTargetRow>, StorageError> {
+    let mut connection = pool.acquire().await.map_err(map_err)?;
+    active_goals_for_memory_targets_on_connection(&mut connection, owner_id, targets).await
 }
 
 /// One Active Goal head that names a work-item neighbour.

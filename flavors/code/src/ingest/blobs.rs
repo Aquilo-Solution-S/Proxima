@@ -200,7 +200,7 @@ pub async fn resolve_code_chunk_handles(
         }
     }
     let heads = store
-        .owned_chunk_series_heads(owner, first.repo_id, &first.file_path)
+        .owned_chunk_series_heads(store.owner_scope(), owner, first.repo_id, &first.file_path)
         .await
         .map_err(|err| IngestError::Storage(err.to_string()))?;
     assign_code_chunk_handles(&heads, payloads)

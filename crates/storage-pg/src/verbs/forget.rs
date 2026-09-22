@@ -906,6 +906,15 @@ pub async fn purge_cold_objects_after_commit(
     cold: &dyn ColdObjectStore,
     plan: &ColdPurgePlan,
 ) -> ColdPurgeOutcome {
+    purge_cold_objects_after_commit_with_platform(pool, None, cold, plan).await
+}
+
+pub(crate) async fn purge_cold_objects_after_commit_with_platform(
+    pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
+    cold: &dyn ColdObjectStore,
+    plan: &ColdPurgePlan,
+) -> ColdPurgeOutcome {
     let mut outcome = ColdPurgeOutcome {
         attempted: u64::try_from(plan.entries().len()).unwrap_or(u64::MAX),
         ..ColdPurgeOutcome::default()
@@ -926,7 +935,7 @@ pub async fn purge_cold_objects_after_commit(
             );
             continue;
         }
-        match purge_current_cold_debt(pool, cold, key).await {
+        match purge_current_cold_debt(pool, platform, cold, key).await {
             Ok(()) => outcome.purged = outcome.purged.saturating_add(1),
             Err(error) => {
                 outcome.failed = outcome.failed.saturating_add(1);
@@ -956,18 +965,21 @@ struct ColdPurgeVersion {
 
 async fn purge_current_cold_debt(
     pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
     cold: &dyn ColdObjectStore,
     object_key: &str,
 ) -> Result<(), StorageError> {
-    let Some(version) = sqlx::query_as::<_, ColdPurgeVersion>(
+    let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
+    let version = sqlx::query_as::<_, ColdPurgeVersion>(
         "SELECT backend, xmin::text AS row_xmin, ctid::text AS row_ctid
            FROM proxima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(object_key)
-    .fetch_optional(pool)
+    .fetch_optional(tx.as_mut())
     .await
-    .map_err(map_err)?
-    else {
+    .map_err(map_err)?;
+    tx.commit().await.map_err(map_err)?;
+    let Some(version) = version else {
         // Another drain already retired this entry. A stale plan no longer
         // authorizes deleting whatever may now occupy the same object key.
         return Ok(());
@@ -986,7 +998,7 @@ async fn purge_current_cold_debt(
         Ok(()) | Err(StorageError::NotFound) => {}
         Err(error) => return Err(error),
     }
-    if !clear_cold_purge_pending(pool, object_key, &version).await? {
+    if !clear_cold_purge_pending(pool, platform, object_key, &version).await? {
         return Err(StorageError::Unavailable(format!(
             "cold purge debt for {object_key} changed during deletion; leaving it for retry"
         )));
@@ -1001,9 +1013,11 @@ async fn purge_current_cold_debt(
 /// writes could leave set forever.
 async fn clear_cold_purge_pending(
     pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
     object_key: &str,
     version: &ColdPurgeVersion,
 ) -> Result<bool, StorageError> {
+    let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
     let deleted = sqlx::query(
         "DELETE FROM proxima_core.cold_purge_pending
           WHERE object_key = $1 AND backend = $2
@@ -1013,9 +1027,10 @@ async fn clear_cold_purge_pending(
     .bind(&version.backend)
     .bind(&version.row_xmin)
     .bind(&version.row_ctid)
-    .execute(pool)
+    .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
+    tx.commit().await.map_err(map_err)?;
     Ok(deleted.rows_affected() == 1)
 }
 
@@ -2074,7 +2089,28 @@ pub async fn forget_memory_oneshot(
     t: Uuid,
     expected_owner_id: Uuid,
 ) -> Result<(), StorageError> {
-    let mut tx = pool.begin().await.map_err(map_err)?;
+    let tx = crate::owner_scope::begin_compatible_owner_transaction(pool, None).await?;
+    forget_memory_oneshot_in_transaction(
+        tx,
+        sidecars,
+        surfaces,
+        cold,
+        object_key,
+        t,
+        expected_owner_id,
+    )
+    .await
+}
+
+pub(crate) async fn forget_memory_oneshot_in_transaction(
+    mut tx: Transaction<'static, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
+    cold: &dyn ColdObjectStore,
+    object_key: &str,
+    t: Uuid,
+    expected_owner_id: Uuid,
+) -> Result<(), StorageError> {
     let handle = probe_memory_handle_for_owner(&mut tx, t, expected_owner_id)
         .await?
         .ok_or(StorageError::NotFound)?;
@@ -2679,17 +2715,18 @@ pub(crate) async fn hydrate_one_in_tx(
 /// nothing. Otherwise the whole prepared footprint is locked in one union
 /// pass, re-read under that lock, and written from the records already held.
 pub(crate) async fn hydrate_memories_oneshot(
-    pool: &PgPool,
+    tx: Transaction<'static, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     surfaces: &OwnerSurfaces,
     cold: &dyn ColdObjectStore,
-    owner_id: Uuid,
+    permit: &proxima_core::storage_ports::OwnerWritePermit,
     memory_ids: &[proxima_core::MemoryId],
     non_embeddable_schemas: &[String],
 ) -> Result<MemoryHydrationBatchOutcome, StorageError> {
     validate_hydration_request(memory_ids)?;
+    let owner_id = permit.owner().stored_owner_id();
 
-    in_transaction(pool, |mut tx| async move {
+    in_transaction(tx, |mut tx| async move {
         let outcome = hydrate_planned_set(
             &mut tx,
             sidecars,

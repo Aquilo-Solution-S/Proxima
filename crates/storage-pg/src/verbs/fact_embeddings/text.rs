@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use proxima_core::verbs::schema::MemoryEmbedUnit;
 use proxima_core::{EntityKind, MemoryId, Owner, StorageError};
-use sqlx::{Executor, PgPool, Postgres, Transaction};
+use sqlx::{Executor, PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::map_err;
@@ -49,6 +49,26 @@ pub async fn load_embedding_text(
     Ok(texts.into_iter().next().flatten())
 }
 
+/// # Errors
+/// Returns storage errors from query execution or invalid stored data.
+pub async fn load_embedding_text_on_connection(
+    connection: &mut PgConnection,
+    owner: &Owner,
+    entity_kind: EntityKind,
+    memory_id: MemoryId,
+    non_embeddable_schemas: &[String],
+    units: &[MemoryEmbedUnit],
+) -> Result<Option<String>, StorageError> {
+    let texts = load_embedding_texts_on_connection(
+        connection,
+        &[(*owner, entity_kind, memory_id)],
+        non_embeddable_schemas,
+        units,
+    )
+    .await?;
+    Ok(texts.into_iter().next().flatten())
+}
+
 /// Owner-scoped embed text for many memories, aligned with `items`.
 ///
 /// One `memory` lookup for the id set, then one sidecar `embed_text`
@@ -68,6 +88,22 @@ pub async fn load_embedding_texts(
     non_embeddable_schemas: &[String],
     units: &[MemoryEmbedUnit],
 ) -> Result<Vec<Option<String>>, StorageError> {
+    let mut tx = pool.begin().await.map_err(map_err)?;
+    let result =
+        load_embedding_texts_on_connection(tx.as_mut(), items, non_embeddable_schemas, units)
+            .await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(result)
+}
+
+/// # Errors
+/// Returns storage errors from query execution or invalid stored data.
+pub async fn load_embedding_texts_on_connection(
+    pool: &mut PgConnection,
+    items: &[(Owner, EntityKind, MemoryId)],
+    non_embeddable_schemas: &[String],
+    units: &[MemoryEmbedUnit],
+) -> Result<Vec<Option<String>>, StorageError> {
     if items.is_empty() {
         return Ok(Vec::new());
     }
@@ -81,7 +117,7 @@ pub async fn load_embedding_texts(
           WHERE t = ANY($1::uuid[])",
     )
     .bind(&ids)
-    .fetch_all(pool)
+    .fetch_all(&mut *pool)
     .await
     .map_err(map_err)?;
     let mut schema_by_key = HashMap::with_capacity(rows.len());
@@ -130,7 +166,7 @@ pub async fn load_embedding_texts(
         // SQL-POLICY: PgIdent
         let texts: Vec<(Uuid, Option<String>)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(&member_ids)
-            .fetch_all(pool)
+            .fetch_all(&mut *pool)
             .await
             .map_err(map_err)?;
         let mut text_by_t = HashMap::with_capacity(texts.len());

@@ -7,9 +7,10 @@ use super::CitedBlobStore;
 use super::dto::{CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs};
 use super::guards::{ensure_owner_access, format_time, parse_opaque_identifier, presign_config};
 use super::keys::locator_was_minted_here;
-use super::rows::{find_held_blobs, load_blob_location};
+use super::rows::{find_held_blobs_on_connection, load_blob_location_on_connection};
 use crate::error::BlobError;
 use proxima_core::storage_ports::{CitedBlobHeld, MAX_HELD_BLOB_DIGESTS};
+use proxima_storage_pg::begin_compatible_owner_transaction;
 
 impl CitedBlobStore {
     /// Which of `content_hashes` this owner already holds.
@@ -48,7 +49,12 @@ impl CitedBlobStore {
         if content_hashes.is_empty() {
             return Ok(Vec::new());
         }
-        find_held_blobs(&self.pool, &owner, content_hashes).await
+        let mut tx = begin_compatible_owner_transaction(&self.pool, ctx.owner_scope())
+            .await
+            .map_err(|err| BlobError::State(err.to_string()))?;
+        let result = find_held_blobs_on_connection(tx.as_mut(), &owner, content_hashes).await?;
+        tx.commit().await.map_err(BlobError::Db)?;
+        Ok(result)
     }
     /// Produce a presigned read URL for a completed cited blob.
     ///
@@ -63,7 +69,11 @@ impl CitedBlobStore {
         let owner = req.owner();
         ensure_owner_access(ctx, &owner)?;
         let cited_object_id = parse_opaque_identifier(&req.cited_object_id)?;
-        let row = load_blob_location(&self.pool, &owner, cited_object_id).await?;
+        let mut tx = begin_compatible_owner_transaction(&self.pool, ctx.owner_scope())
+            .await
+            .map_err(|err| BlobError::State(err.to_string()))?;
+        let row = load_blob_location_on_connection(tx.as_mut(), &owner, cited_object_id).await?;
+        tx.commit().await.map_err(BlobError::Db)?;
         // The locator columns are client-writable: `core/uploaded-blob-v1`
         // is a registered cited-object schema, so an inline citation can
         // persist an arbitrary bucket/object_key row under the caller's own

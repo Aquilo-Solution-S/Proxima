@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 
 use proxima_core::{Owner, SchemaId, StorageError};
-use sqlx::PgPool;
+use sqlx::PgExecutor;
 use uuid::Uuid;
 
 use crate::error::map_err;
@@ -67,8 +67,8 @@ pub struct FileRevisionHeadRow {
 /// # Errors
 ///
 /// Returns `StorageError::Internal` on query failure.
-pub async fn owned_file_revision_heads(
-    pool: &PgPool,
+pub async fn owned_file_revision_heads<'e, E: PgExecutor<'e>>(
+    pool: E,
     owner: Owner,
     schema_id: &SchemaId,
     repo_id: Uuid,
@@ -93,8 +93,8 @@ pub async fn owned_file_revision_heads(
 /// # Errors
 ///
 /// Returns `StorageError::Internal` on query failure.
-pub async fn owned_present_file_revision_heads_except(
-    pool: &PgPool,
+pub async fn owned_present_file_revision_heads_except<'e, E: PgExecutor<'e>>(
+    pool: E,
     owner: Owner,
     schema_id: &SchemaId,
     repo_id: Uuid,
@@ -127,8 +127,8 @@ pub async fn owned_present_file_revision_heads_except(
 /// # Errors
 ///
 /// Returns `StorageError::Internal` on query failure.
-pub async fn readable_file_revision_head_ts(
-    pool: &PgPool,
+pub async fn readable_file_revision_head_ts<'e, E: PgExecutor<'e>>(
+    pool: E,
     owner: Owner,
     read_owners: &[Owner],
     schema_id: &SchemaId,
@@ -175,8 +175,8 @@ pub struct ChunkSeriesHead {
 ///
 /// Returns `StorageError::ConstraintViolation` when two heads share an
 /// index. Returns `StorageError::Internal` on query failure.
-pub async fn owned_chunk_series_heads(
-    pool: &PgPool,
+pub async fn owned_chunk_series_heads<'e, E: PgExecutor<'e>>(
+    pool: E,
     owner: Owner,
     schema_id: &SchemaId,
     repo_id: Uuid,
@@ -224,8 +224,8 @@ pub(crate) fn unique_chunk_series_heads(
 ///
 /// Returns `StorageError::ConstraintViolation` when two heads share an
 /// index. Returns `StorageError::Internal` on query failure.
-pub async fn owned_present_chunk_indexes(
-    pool: &PgPool,
+pub async fn owned_present_chunk_indexes<'e, E: PgExecutor<'e>>(
+    pool: E,
     owner: Owner,
     schema_id: &SchemaId,
     repo_id: Uuid,
@@ -244,8 +244,8 @@ pub async fn owned_present_chunk_indexes(
 /// # Errors
 ///
 /// Returns `StorageError::Internal` on query failure.
-pub async fn readable_chunk_head_ts_for_file(
-    pool: &PgPool,
+pub async fn readable_chunk_head_ts_for_file<'e, E: PgExecutor<'e>>(
+    pool: E,
     owner: Owner,
     read_owners: &[Owner],
     schema_id: &SchemaId,

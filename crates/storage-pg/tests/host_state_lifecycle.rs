@@ -1875,7 +1875,7 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_c
 
         let writer_pg = pg.clone();
         let writer =
-            tokio::spawn(async move { WriteSessionFactory::begin(writer_pg.as_ref()).await });
+            tokio::spawn(async move { WriteSessionFactory::begin(writer_pg.as_ref(), None).await });
         assert!(
             wait_for_advisory_waiters(pool, 1).await,
             "host-capable UoW waits at global entry fence"
@@ -1964,7 +1964,7 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_c
             &[2, 4, 6],
         )
         .await;
-        let mut session = WriteSessionFactory::begin(pg.as_ref()).await?;
+        let mut session = WriteSessionFactory::begin(pg.as_ref(), None).await?;
         session.advisory_xact_lock(55_019).await?;
         let reverse_gate = Arc::new(CallbackGate::default());
         lifecycle.set_erase_gate(Some(reverse_gate.clone()));
@@ -2253,7 +2253,7 @@ async fn cancelling_erase_during_core_delete_after_host_callback_dml_rolls_back_
 
         let session = tokio::time::timeout(
             Duration::from_secs(5),
-            WriteSessionFactory::begin(pg.as_ref()),
+            WriteSessionFactory::begin(pg.as_ref(), None),
         )
         .await??;
         session.commit().await?;

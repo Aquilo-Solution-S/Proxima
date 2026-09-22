@@ -67,8 +67,10 @@ pub trait PgMemoryPayload: Send + Sync + 'static {
         Box::pin(async move {
             let _ = kind;
             let mut payloads = Vec::new();
+            let mut ctx = ctx;
             for memory_id in memory_ids {
-                if let Some(payload) = Self::load_memory_payload(ctx, *memory_id).await? {
+                if let Some(payload) = Self::load_memory_payload(ctx.reborrow(), *memory_id).await?
+                {
                     payloads.push((*memory_id, payload));
                 }
             }

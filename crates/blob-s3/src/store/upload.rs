@@ -10,6 +10,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::storage_ports::CitedBlobStaged;
 use proxima_core::{AuthzContext, Owner, OwnerRef};
+use proxima_storage_pg::begin_compatible_owner_transaction;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -25,7 +26,8 @@ use super::guards::{
 };
 use super::keys::{canonical_object_key, pending_object_key};
 use super::rows::{
-    UploadStatus, load_staged_payload, load_upload, load_upload_for_update, mark_upload_expired,
+    UploadStatus, load_staged_payload_on_connection, load_upload_for_update,
+    load_upload_optional_on_connection, mark_upload_expired_on_connection,
 };
 use super::transitions::{
     AbortTransitionDecision, FinishTransitionDecision, StageLocatorDecision,
@@ -261,7 +263,45 @@ enum StageSource {
     Read(super::rows::UploadRow),
 }
 
+struct StageLocatorInput {
+    canonical_key: String,
+    etag: Option<String>,
+    streamed: super::digest::StreamedObject,
+}
+
 impl CitedBlobStore {
+    async fn load_upload_scoped(
+        &self,
+        scope: Option<&proxima_core::OwnerScope>,
+        owner: &Owner,
+        upload_id: Uuid,
+    ) -> Result<super::rows::UploadRow, BlobError> {
+        let mut tx = begin_compatible_owner_transaction(&self.pool, scope)
+            .await
+            .map_err(|err| BlobError::State(err.to_string()))?;
+        let row = load_upload_optional_on_connection(tx.as_mut(), owner, upload_id)
+            .await?
+            .ok_or_else(|| BlobError::State("upload not found for Owner".into()))?;
+        tx.commit().await.map_err(BlobError::Db)?;
+        Ok(row)
+    }
+
+    async fn load_staged_scoped(
+        &self,
+        scope: Option<&proxima_core::OwnerScope>,
+        owner: &Owner,
+        upload_id: Uuid,
+        blob_id: Uuid,
+    ) -> Result<CitedBlobStaged, BlobError> {
+        let mut tx = begin_compatible_owner_transaction(&self.pool, scope)
+            .await
+            .map_err(|err| BlobError::State(err.to_string()))?;
+        let result =
+            load_staged_payload_on_connection(tx.as_mut(), owner, upload_id, blob_id).await?;
+        tx.commit().await.map_err(BlobError::Db)?;
+        Ok(result)
+    }
+
     /// Prepare a presigned upload and record its pending row.
     ///
     /// # Errors
@@ -295,7 +335,9 @@ impl CitedBlobStore {
         // with transfer's exclusive source fence so the transfer cannot
         // pass its unresolved-publication check and then observe a row that
         // appeared concurrently.
-        let mut tx = self.pool.begin().await.map_err(BlobError::Db)?;
+        let mut tx = begin_compatible_owner_transaction(&self.pool, ctx.owner_scope())
+            .await
+            .map_err(|err| BlobError::State(err.to_string()))?;
         proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, &owner)
             .await
             .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
@@ -370,8 +412,13 @@ impl CitedBlobStore {
         let owner = req.owner();
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_opaque_identifier(&req.upload_id)?;
-        let row = load_upload(&self.pool, &owner, upload_id).await?;
-        if let Some(replay) = self.stage_entry_shortcut(&owner, upload_id, &row).await? {
+        let row = self
+            .load_upload_scoped(ctx.owner_scope(), &owner, upload_id)
+            .await?;
+        if let Some(replay) = self
+            .stage_entry_shortcut(ctx.owner_scope(), &owner, upload_id, &row)
+            .await?
+        {
             return Ok(replay);
         }
 
@@ -390,7 +437,7 @@ impl CitedBlobStore {
             Ok(result) => result,
             Err(ObjectReadError::Missing) if row.object_key == pending_key => {
                 let Some(source) = self
-                    .resolve_missing_pending(&owner, upload_id, &pending_key)
+                    .resolve_missing_pending(ctx.owner_scope(), &owner, upload_id, &pending_key)
                     .await?
                 else {
                     self.purge_pending_upload_best_effort(&row.bucket, upload_id)
@@ -401,7 +448,9 @@ impl CitedBlobStore {
                     StageSource::Replay { bucket, blob_id } => {
                         self.purge_pending_upload_best_effort(&bucket, upload_id)
                             .await;
-                        return load_staged_payload(&self.pool, &owner, upload_id, blob_id).await;
+                        return self
+                            .load_staged_scoped(ctx.owner_scope(), &owner, upload_id, blob_id)
+                            .await;
                     }
                     StageSource::Terminal { bucket, status } => {
                         // An expired row's transfer key is left to the bucket
@@ -450,8 +499,18 @@ impl CitedBlobStore {
             (source_object_key.clone(), source_etag)
         };
 
-        self.record_stage_locator(&owner, upload_id, &row, canonical_key, etag, &streamed)
-            .await
+        self.record_stage_locator(
+            ctx.owner_scope(),
+            &owner,
+            upload_id,
+            &row,
+            StageLocatorInput {
+                canonical_key,
+                etag,
+                streamed,
+            },
+        )
+        .await
     }
 
     /// The row states a stage can answer before it touches the object store.
@@ -459,22 +518,33 @@ impl CitedBlobStore {
     /// `Ok(None)` means the row is pending and unexpired, so staging proceeds.
     async fn stage_entry_shortcut(
         &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &OwnerRef,
         upload_id: Uuid,
         row: &super::rows::UploadRow,
     ) -> Result<Option<CitedBlobStaged>, BlobError> {
-        let status =
-            if row.status == UploadStatus::Pending && row.expires_at < OffsetDateTime::now_utc() {
-                // Finish or abort may have won since this snapshot. Use the
-                // status observed under the expiry helper's row lock.
-                mark_upload_expired(&self.pool, owner, upload_id).await?
-            } else {
-                row.status
-            };
+        let status = if row.status == UploadStatus::Pending
+            && row.expires_at < OffsetDateTime::now_utc()
+        {
+            // Finish or abort may have won since this snapshot. Use the
+            // status observed under the expiry helper's row lock.
+            {
+                let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+                    .await
+                    .map_err(|err| BlobError::State(err.to_string()))?;
+                let status = mark_upload_expired_on_connection(&mut tx, owner, upload_id).await?;
+                tx.commit().await.map_err(BlobError::Db)?;
+                status
+            }
+        } else {
+            row.status
+        };
         match status {
             UploadStatus::Completed => {
                 let blob_id = if row.status == UploadStatus::Pending && row.blob_id.is_none() {
-                    load_upload(&self.pool, owner, upload_id).await?.blob_id
+                    self.load_upload_scoped(owner_scope, owner, upload_id)
+                        .await?
+                        .blob_id
                 } else {
                     row.blob_id
                 };
@@ -489,7 +559,7 @@ impl CitedBlobStore {
                 // on bytes a client can recreate through its presigned URL.
                 self.purge_pending_upload_best_effort(&row.bucket, upload_id)
                     .await;
-                load_staged_payload(&self.pool, owner, upload_id, blob_id)
+                self.load_staged_scoped(owner_scope, owner, upload_id, blob_id)
                     .await
                     .map(Some)
             }
@@ -513,30 +583,30 @@ impl CitedBlobStore {
     /// before reporting its terminal status.
     async fn record_stage_locator(
         &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &OwnerRef,
         upload_id: Uuid,
         row: &super::rows::UploadRow,
-        canonical_key: String,
-        etag: Option<String>,
-        streamed: &super::digest::StreamedObject,
+        input: StageLocatorInput,
     ) -> Result<CitedBlobStaged, BlobError> {
         let staged = CitedBlobStaged {
             payload: UploadedBlobPayload {
-                content_hash: streamed.blake3,
+                content_hash: input.streamed.blake3,
                 bucket: row.bucket.clone(),
-                object_key: canonical_key,
-                sha256: streamed.sha256,
-                byte_len: streamed.byte_len,
+                object_key: input.canonical_key,
+                sha256: input.streamed.sha256,
+                byte_len: input.streamed.byte_len,
                 mime: row.mime.clone(),
                 filename: row.filename.clone(),
-                etag,
+                etag: input.etag,
                 uploaded_at: OffsetDateTime::now_utc(),
             },
             already_completed: None,
         };
-        let decision =
-            with_retried_tx(|| self.commit_stage_locator(owner, upload_id, row, &staged.payload))
-                .await?;
+        let decision = with_retried_tx(|| {
+            self.commit_stage_locator(owner_scope, owner, upload_id, row, &staged.payload)
+        })
+        .await?;
         match decision {
             StageLocatorDecision::Staged => {
                 self.purge_pending_upload_best_effort(&row.bucket, upload_id)
@@ -544,7 +614,8 @@ impl CitedBlobStore {
                 Ok(staged)
             }
             StageLocatorDecision::Replay(blob_id) => {
-                load_staged_payload(&self.pool, owner, upload_id, blob_id).await
+                self.load_staged_scoped(owner_scope, owner, upload_id, blob_id)
+                    .await
             }
             StageLocatorDecision::RepairTerminal(status) => {
                 self.purge_pending_upload_best_effort(&row.bucket, upload_id)
@@ -566,13 +637,16 @@ impl CitedBlobStore {
     /// identity.
     async fn commit_stage_locator(
         &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &OwnerRef,
         upload_id: Uuid,
         row: &super::rows::UploadRow,
         staged: &UploadedBlobPayload,
     ) -> Result<StageLocatorDecision, BlobError> {
         let canonical_key = &staged.object_key;
-        let mut tx = self.pool.begin().await.map_err(BlobError::Db)?;
+        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+            .await
+            .map_err(|err| BlobError::State(err.to_string()))?;
         proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
             .await
             .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
@@ -708,12 +782,13 @@ impl CitedBlobStore {
     /// `None` means the owner row is gone.
     async fn resolve_missing_pending(
         &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &OwnerRef,
         upload_id: Uuid,
         pending_key: &str,
     ) -> Result<Option<StageSource>, BlobError> {
         let Some(reloaded) =
-            super::rows::load_upload_optional(&self.pool, owner, upload_id).await?
+            super::rows::load_upload_optional(&self.pool, owner_scope, owner, upload_id).await?
         else {
             return Ok(None);
         };
@@ -840,7 +915,9 @@ impl CitedBlobStore {
     ) -> Result<(), BlobError> {
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_opaque_identifier(upload_id)?;
-        let bucket = with_retried_tx(|| self.commit_finish(&owner, upload_id, blob_id)).await?;
+        let bucket =
+            with_retried_tx(|| self.commit_finish(ctx.owner_scope(), &owner, upload_id, blob_id))
+                .await?;
 
         // The pending transfer copy is expendable only after the transition
         // decision has been resolved. Replays run this too, so provider
@@ -854,6 +931,7 @@ impl CitedBlobStore {
     /// whole. Returns the bucket whose pending copy is now expendable.
     async fn commit_finish(
         &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &OwnerRef,
         upload_id: Uuid,
         blob_id: Uuid,
@@ -864,7 +942,9 @@ impl CitedBlobStore {
         // transaction. Otherwise a committed Fact could be followed by a
         // transfer that moves the blob while this stale pending row is still
         // allowed to finish under the source owner.
-        let mut tx = self.pool.begin().await.map_err(BlobError::Db)?;
+        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+            .await
+            .map_err(|err| BlobError::State(err.to_string()))?;
         proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
             .await
             .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
@@ -973,10 +1053,11 @@ impl CitedBlobStore {
         let owner = req.owner();
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_opaque_identifier(&req.upload_id)?;
-        match with_retried_tx(|| self.commit_abort(&owner, upload_id)).await? {
+        match with_retried_tx(|| self.commit_abort(ctx.owner_scope(), &owner, upload_id)).await? {
             AbortCommit::Settled(outcome) => Ok(outcome),
             AbortCommit::CleanUpThenAborted => {
-                self.cleanup_aborted_upload(&owner, upload_id).await;
+                self.cleanup_aborted_upload(ctx.owner_scope(), &owner, upload_id)
+                    .await;
                 Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
             }
             AbortCommit::Decide(status, rows_affected) => {
@@ -987,7 +1068,8 @@ impl CitedBlobStore {
                 match abort_transition_decision(status, rows_affected)? {
                     AbortTransitionDecision::WonPending
                     | AbortTransitionDecision::AlreadyAborted => {
-                        self.cleanup_aborted_upload(&owner, upload_id).await;
+                        self.cleanup_aborted_upload(ctx.owner_scope(), &owner, upload_id)
+                            .await;
                         Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
                     }
                     AbortTransitionDecision::Completed => {
@@ -1005,6 +1087,7 @@ impl CitedBlobStore {
     /// whole. Provider cleanup happens after it returns, never inside it.
     async fn commit_abort(
         &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &OwnerRef,
         upload_id: Uuid,
     ) -> Result<AbortCommit, BlobError> {
@@ -1012,7 +1095,9 @@ impl CitedBlobStore {
         // The row lock is the exact status revalidation: an earlier pool read
         // must never authorize a pending->aborted write after another
         // transition published the upload.
-        let mut tx = self.pool.begin().await.map_err(BlobError::Db)?;
+        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+            .await
+            .map_err(|err| BlobError::State(err.to_string()))?;
         proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
             .await
             .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
@@ -1078,11 +1163,16 @@ impl CitedBlobStore {
     /// update wins the database race before provider cleanup; keeping this
     /// helper retryable closes the window where a provider failure after
     /// that update would strand either copy.
-    async fn cleanup_aborted_upload(&self, owner: &proxima_core::Owner, upload_id: Uuid) {
+    async fn cleanup_aborted_upload(
+        &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner: &proxima_core::Owner,
+        upload_id: Uuid,
+    ) {
         // Re-read after the status transition so a finish that overtook the
         // abort is never mistaken for an aborted row whose transfer copy is
         // ours to clean.
-        let row = match load_upload(&self.pool, owner, upload_id).await {
+        let row = match self.load_upload_scoped(owner_scope, owner, upload_id).await {
             Ok(row) => row,
             Err(error) => {
                 tracing::warn!(

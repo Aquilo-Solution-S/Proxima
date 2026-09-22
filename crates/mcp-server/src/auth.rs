@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use proxima_core::{
     AuthPath, Authenticator, AuthzContext, Credentials, GroupId, Owner, OwnerAccessPort, OwnerRef,
-    ToolScope,
+    ToolScope, authenticate,
 };
 
 const RESERVED_PXW_PREFIX: &str = "pxw_";
@@ -76,22 +76,19 @@ impl ResolvedAuth {
     /// `Ok(None)` and an error all fold nothing, so the map is exactly what
     /// it was and the one path refuses as it always did.
     async fn filled_from(self, port: Option<&dyn OwnerAccessPort>, group: GroupId) -> Option<Self> {
-        let (Some(port), Some(subject)) = (port, self.authz.subject()) else {
+        let (Some(port), Some(_subject)) = (port, self.authz.subject()) else {
             return Some(self);
         };
-        let role = port
-            .resolve_group_role(subject, group)
-            .await
-            .unwrap_or_else(|err| {
-                tracing::warn!(error = %err, "mcp edge: per-group access resolution failed");
-                None
-            });
-        match role {
-            Some(role) => Some(Self {
-                authz: self.authz.with_host_resolved_role(group, role)?,
-            }),
-            None => Some(self),
-        }
+        Some(Self {
+            authz: self
+                .authz
+                .with_authenticated_group_role(port, group)
+                .await
+                .or_else(|| {
+                    tracing::warn!("mcp edge: per-group access resolution failed");
+                    None
+                })?,
+        })
     }
 }
 
@@ -200,8 +197,7 @@ impl McpEdgeAuth {
 
     async fn resolve_host(&self, material: String) -> Option<ResolvedAuth> {
         let authenticator = self.host.as_ref()?;
-        let mut authz = authenticator
-            .authenticate(&Credentials::Bearer(material))
+        let mut authz = authenticate(authenticator.as_ref(), &Credentials::Bearer(material))
             .await
             .ok()?;
         if authz.auth_path() != AuthPath::HostBearer {
@@ -305,6 +301,10 @@ mod tests {
     async fn host_path_accepts_host_bearer_scoped_to_owner() {
         let owner = fake_owner();
         let authz = host_owner_context(owner);
+        assert!(
+            authz.owner_scope().is_none(),
+            "raw compatibility context is not sealed"
+        );
         let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
 
         let ctx = auth
@@ -313,6 +313,10 @@ mod tests {
             .expect("host resolves");
         assert_eq!(ctx.authz.auth_path(), AuthPath::HostBearer);
         assert_eq!(ctx.owner, owner);
+        assert!(
+            ctx.authz.owner_scope().is_some(),
+            "authenticated edge context is sealed"
+        );
     }
 
     #[tokio::test]
@@ -377,6 +381,51 @@ mod tests {
             .expect("host resolves");
         assert!(ctx.authz.can_access_owner(&owner));
         assert!(!ctx.authz.can_access_owner(&other));
+        assert!(
+            ctx.authz
+                .narrowed_to_owner(OwnerRef::Personal(subject))
+                .is_none(),
+            "a narrowed group witness cannot restore personal authority"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_principal_cannot_narrow_to_unauthorized_personal_or_group() {
+        let authorized = fake_group_owner();
+        let unauthorized_group = fake_group_owner();
+        let unauthorized_personal = fake_owner();
+        let subject = fake_user();
+        let authz = host_group_context(subject, authorized, Role::editor());
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
+
+        assert!(
+            auth.resolve("host-token", unauthorized_group)
+                .await
+                .is_none()
+        );
+        assert!(
+            auth.resolve("host-token", unauthorized_personal)
+                .await
+                .is_none()
+        );
+        let selected = auth
+            .resolve("host-token", authorized)
+            .await
+            .expect("authorized group narrows");
+        assert_eq!(selected.authz.subject(), Some(subject));
+        assert!(
+            selected
+                .authz
+                .clone()
+                .narrowed_to_owner(authorized)
+                .is_some()
+        );
+        assert!(
+            selected
+                .authz
+                .narrowed_to_owner(OwnerRef::Personal(subject))
+                .is_none()
+        );
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@ use proxima_core::{
     ChangeEvent, ChangeEventKind, EntityKind, EntityRef, GoalId, GroupId, MemoryId, OwnerRef,
     OwnerRefKind, SchemaId, SchemaVersion, StorageError, UserId,
 };
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::error::internal;
@@ -67,42 +68,42 @@ SELECT a.seq,
  ORDER BY a.seq DESC
 ";
 
-pub(crate) async fn hydrate_change_event(
-    pool: &sqlx::PgPool,
+pub(crate) async fn hydrate_change_event_on_connection(
+    connection: &mut PgConnection,
     read_owners: &[OwnerRef],
     seq: Uuid,
 ) -> Result<Option<ChangeEvent>, StorageError> {
-    let owner_ids: Vec<Uuid> = read_owners
+    let owners: Vec<Uuid> = read_owners
         .iter()
         .copied()
         .map(OwnerRef::stored_owner_id)
         .collect();
     let row = sqlx::query_as::<_, AnnounceRow>(ANNOUNCE_BY_SEQ_SQL)
         .bind(seq)
-        .bind(&owner_ids)
-        .fetch_optional(pool)
+        .bind(&owners)
+        .fetch_optional(&mut *connection)
         .await
         .map_err(internal)?;
     Ok(row.map(decode_announce_row))
 }
 
-pub(crate) async fn hydrate_change_events_batch(
-    pool: &sqlx::PgPool,
+pub(crate) async fn hydrate_change_events_batch_on_connection(
+    connection: &mut PgConnection,
     read_owners: &[OwnerRef],
     seqs: &[Uuid],
 ) -> Result<Vec<ChangeEvent>, StorageError> {
     if seqs.is_empty() {
         return Ok(Vec::new());
     }
-    let owner_ids: Vec<Uuid> = read_owners
+    let owners: Vec<Uuid> = read_owners
         .iter()
         .copied()
         .map(OwnerRef::stored_owner_id)
         .collect();
     let rows = sqlx::query_as::<_, AnnounceRow>(ANNOUNCE_BY_SEQS_SQL)
         .bind(seqs)
-        .bind(&owner_ids)
-        .fetch_all(pool)
+        .bind(&owners)
+        .fetch_all(&mut *connection)
         .await
         .map_err(internal)?;
     Ok(rows.into_iter().map(decode_announce_row).collect())

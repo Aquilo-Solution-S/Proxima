@@ -96,6 +96,7 @@ async fn register(
 ) -> Result<(), Box<dyn std::error::Error>> {
     register_repo(
         pool,
+        None,
         owner,
         repo_id,
         &format!("/tmp/proxima-repo-fence-{repo_id}"),

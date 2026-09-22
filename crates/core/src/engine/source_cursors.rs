@@ -34,7 +34,11 @@ impl Engine {
         self.storage
             .source_cursor
             .source_cursor
-            .load_source_cursor(permit.owner(), source)
+            .load_source_cursor(
+                permit.owner_write_permit().owner_scope(),
+                permit.owner(),
+                source,
+            )
             .await
             .map_err(|e| ProtocolError::internal(format!("load_source_cursor: {e}")))
     }
@@ -92,7 +96,7 @@ impl Engine {
         self.storage
             .source_cursor
             .source_cursor
-            .source_cursor_age(permit.owner(), source)
+            .source_cursor_age(authz.owner_scope(), permit.owner(), source)
             .await
             .map_err(|e| ProtocolError::internal(format!("source_cursor_age: {e}")))
     }

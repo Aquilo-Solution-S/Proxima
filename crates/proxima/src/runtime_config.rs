@@ -23,6 +23,7 @@ const DEFAULT_MCP_BIND: &str = "127.0.0.1:31415";
 #[derive(Default)]
 pub struct RuntimeBuilder {
     database_url: Option<String>,
+    platform_database_url: Option<String>,
     s3: Option<S3RuntimeConfig>,
     owner: Option<Owner>,
     mcp_enabled: bool,
@@ -56,6 +57,10 @@ impl std::fmt::Debug for RuntimeBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeBuilder")
             .field("has_database_url", &self.database_url.is_some())
+            .field(
+                "has_platform_database_url",
+                &self.platform_database_url.is_some(),
+            )
             .field("s3", &self.s3)
             .field("owner", &self.owner)
             .field("mcp_enabled", &self.mcp_enabled)
@@ -90,6 +95,7 @@ impl RuntimeBuilder {
     pub(crate) fn merge_over(self, base: Self) -> Self {
         Self {
             database_url: self.database_url.or(base.database_url),
+            platform_database_url: self.platform_database_url.or(base.platform_database_url),
             s3: self.s3.or(base.s3),
             owner: self.owner.or(base.owner),
             mcp_enabled: self.mcp_enabled || base.mcp_enabled,
@@ -123,6 +129,14 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn database_url(mut self, database_url: impl Into<String>) -> Self {
         self.database_url = Some(database_url.into());
+        self
+    }
+
+    /// Set the separate migration/platform connection string. Env equivalent:
+    /// `PROXIMA_PLATFORM_DATABASE_URL`.
+    #[must_use]
+    pub fn platform_database_url(mut self, url: impl Into<String>) -> Self {
+        self.platform_database_url = Some(url.into());
         self
     }
 
@@ -370,6 +384,9 @@ impl RuntimeBuilder {
         if self.database_url.is_none() {
             self.database_url = lookup("DATABASE_URL");
         }
+        if self.platform_database_url.is_none() {
+            self.platform_database_url = lookup("PROXIMA_PLATFORM_DATABASE_URL");
+        }
         if self.s3.is_none() {
             self.s3 = s3_from_lookup(&lookup)?;
         }
@@ -504,6 +521,7 @@ impl RuntimeBuilder {
         let publication = self.publication.unwrap_or_default();
         let config = RuntimeConfig {
             database_url,
+            platform_database_url: self.platform_database_url,
             s3: self.s3,
             owner,
             mcp,
@@ -543,6 +561,7 @@ impl RuntimeBuilder {
 #[derive(Clone)]
 pub struct RuntimeConfig {
     pub database_url: String,
+    pub platform_database_url: Option<String>,
     pub s3: Option<S3RuntimeConfig>,
     pub owner: Option<Owner>,
     pub mcp: Option<McpSettings>,
@@ -609,6 +628,10 @@ impl std::fmt::Debug for RuntimeConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeConfig")
             .field("database_url", &"<redacted>")
+            .field(
+                "platform_database_url",
+                &self.platform_database_url.as_ref().map(|_| "<redacted>"),
+            )
             .field("s3", &self.s3)
             .field("owner", &self.owner)
             .field("mcp", &self.mcp)
@@ -933,6 +956,7 @@ mod tests {
             #[cfg(feature = "outbox-nats")]
             nats: None,
             database_url: "postgres://localhost/proxima".to_string(),
+            platform_database_url: None,
             s3: None,
             owner: Some(company_owner(uuid::Uuid::now_v7())),
             mcp: mcp.map(|bind| McpSettings { bind }),

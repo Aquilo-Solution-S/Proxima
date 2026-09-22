@@ -444,7 +444,10 @@ impl Engine {
             }
         }
         for (owner, group) in groups {
-            let kinds = self.load_required_memory_kinds(&owner, &group).await?;
+            let scope = self.operation_authority(authority)?.authz().owner_scope();
+            let kinds = self
+                .load_required_memory_kinds(scope, &owner, &group)
+                .await?;
             resolved.extend(group.into_iter().zip(kinds));
         }
         unique
@@ -781,8 +784,12 @@ impl Engine {
                     "revision target must belong to the destination owner",
                 ));
             }
-            self.load_required_memory_kind(permit.owner(), prior)
-                .await?
+            self.load_required_memory_kind(
+                self.operation_authority(authority)?.authz().owner_scope(),
+                permit.owner(),
+                prior,
+            )
+            .await?
         };
         if prior_kind != kind {
             return Err(ProtocolError::invalid_argument(
@@ -906,15 +913,19 @@ impl Engine {
 
     pub(in crate::engine) async fn load_required_memory_kind(
         &self,
+        scope: Option<&crate::OwnerScope>,
         owner: &Owner,
         memory_id: MemoryId,
     ) -> Result<EntityKind, ProtocolError> {
-        let mut kinds = self.load_required_memory_kinds(owner, &[memory_id]).await?;
+        let mut kinds = self
+            .load_required_memory_kinds(scope, owner, &[memory_id])
+            .await?;
         Ok(kinds.remove(0))
     }
 
     pub(in crate::engine) async fn load_required_memory_kinds(
         &self,
+        scope: Option<&crate::OwnerScope>,
         owner: &Owner,
         memory_ids: &[MemoryId],
     ) -> Result<Vec<EntityKind>, ProtocolError> {
@@ -925,7 +936,7 @@ impl Engine {
             .storage()
             .memory_authoring
             .memory_authoring
-            .load_memory_kinds(owner, memory_ids)
+            .load_memory_kinds(scope, owner, memory_ids)
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))?;
         let by_id = rows
@@ -1169,7 +1180,7 @@ mod tests {
     async fn author_derived_ftoa_with_origins_passes_manifest_validation() {
         let engine = engine();
         let owner = owner();
-        let permit = OwnerWritePermit::new(owner, crate::access::AccessKind::Perspective);
+        let permit = OwnerWritePermit::new(owner, crate::access::AccessKind::Perspective, None);
         let origins = [EdgeEndpoint::memory(
             EntityKind::Fact,
             MemoryId::new(uuid::Uuid::now_v7()),
@@ -1193,7 +1204,7 @@ mod tests {
     async fn a_write_with_no_origins_carries_no_operator_manifest() {
         let engine = engine();
         let owner = owner();
-        let permit = OwnerWritePermit::new(owner, crate::access::AccessKind::Perspective);
+        let permit = OwnerWritePermit::new(owner, crate::access::AccessKind::Perspective, None);
         let mut req = request(owner, &[]);
         req.operator_kind = MemoryOperatorKind::AtoP;
         req.kind = EntityKind::Perspective;
@@ -1293,7 +1304,7 @@ mod tests {
                 recorder.clone(),
             ));
         let owner = owner();
-        let permit = OwnerWritePermit::new(owner, crate::access::AccessKind::Perspective);
+        let permit = OwnerWritePermit::new(owner, crate::access::AccessKind::Perspective, None);
         let prior = MemoryId::new(uuid::Uuid::now_v7());
         let origins = [
             EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(uuid::Uuid::now_v7())),
@@ -1404,6 +1415,7 @@ mod tests {
 
         async fn load_memory_kinds(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _owner: &Owner,
             _memory_ids: &[MemoryId],
         ) -> Result<Vec<crate::MemoryKindRow>, StorageError> {

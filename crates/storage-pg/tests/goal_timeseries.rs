@@ -230,7 +230,9 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         by_assignment.entity_kind = Some(EntityKind::Goal);
         by_assignment.goal_state = Some(GoalState::Active);
         by_assignment.assignment = Some(assignment.memory_id);
-        let assigned = pg.query_memories(&[owner], &by_assignment, &[]).await?;
+        let assigned = pg
+            .query_memories(None, &[owner], &by_assignment, &[])
+            .await?;
         assert_eq!(assigned.goals.len(), 1);
         assert_eq!(assigned.goals[0].id.into_inner(), created.t);
         assert_eq!(assigned.goals[0].assignment, Some(assignment.memory_id));
@@ -239,14 +241,14 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         let mut by_evidence = QueryRequest::readable();
         by_evidence.entity_kind = Some(EntityKind::Goal);
         by_evidence.evidence_contains = Some(evidence.memory_id);
-        let evidenced = pg.query_memories(&[owner], &by_evidence, &[]).await?;
+        let evidenced = pg.query_memories(None, &[owner], &by_evidence, &[]).await?;
         assert_eq!(evidenced.goals.len(), 1);
         assert_eq!(evidenced.goals[0].id.into_inner(), created.t);
 
         let mut miss = QueryRequest::readable();
         miss.entity_kind = Some(EntityKind::Goal);
         miss.assignment = Some(MemoryId::new(Uuid::now_v7()));
-        let empty = pg.query_memories(&[owner], &miss, &[]).await?;
+        let empty = pg.query_memories(None, &[owner], &miss, &[]).await?;
         assert!(empty.goals.is_empty());
         Ok(())
     }

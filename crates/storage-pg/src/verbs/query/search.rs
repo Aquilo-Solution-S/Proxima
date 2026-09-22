@@ -41,7 +41,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use futures_util::future::try_join_all;
+use crate::error::map_err;
+use crate::pg_ident::PgIdent;
+use crate::pgvector::set_hnsw_search_sql;
+use crate::projection::{projection_key_ident, sidecar_text_sql};
+use crate::tuning::PgTuning;
 use proxima_core::flavor::{BandComparability, LanguagePolicy, SubstringArm};
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{
@@ -51,15 +55,9 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::schema::{MemorySearchProjection, PayloadKind, RenderBands};
 use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
-use sqlx::PgPool;
+use sqlx::PgConnection;
 
-use crate::error::map_err;
-use crate::pg_ident::PgIdent;
-use crate::pgvector::set_hnsw_search_sql;
-use crate::projection::{projection_key_ident, sidecar_text_sql};
-use crate::tuning::PgTuning;
-
-use super::lineage::load_one_schema_snippets;
+use super::lineage::load_one_schema_snippets_on_connection;
 
 /// How far past the caller's `limit` one statement fetches before the merge
 /// trims. The CAP is declared — [`ProjectionSpec::overfetch_k`], a
@@ -141,8 +139,10 @@ struct EmbeddingScanRow {
     similarity_score: f32,
 }
 
-pub(crate) async fn search_memories(
-    pool: &PgPool,
+/// Request search on a caller-owned transaction connection. All candidate,
+/// admission, and snippet statements are serialized on that connection.
+pub(crate) async fn search_memories_on_connection(
+    connection: &mut PgConnection,
     req: &MemorySearchRequest,
     projections: &[MemorySearchProjection],
     tuning: &PgTuning,
@@ -160,66 +160,53 @@ pub(crate) async fn search_memories(
             "search cursor order does not match request order".into(),
         ));
     }
-
     let limit = req.limit.min(MAX_SEARCH_PAGE_LIMIT);
     let flavors = core_search_flavors(req, projections);
-
-    let mut hits: BTreeMap<uuid::Uuid, Hit> = BTreeMap::new();
+    let mut hits = BTreeMap::<uuid::Uuid, Hit>::new();
     match req.mode {
-        SearchMode::Lexical => {
-            merge_hits(
-                &mut hits,
-                scan_flavors(pool, req, &flavors, limit, true).await?,
-            );
-        }
-        SearchMode::Semantic => {
-            merge_hits(
-                &mut hits,
-                scan_embeddings(
-                    pool,
-                    req,
-                    &flavors,
-                    tuning,
-                    semantic_overfetch(limit, req.after),
-                )
-                .await?,
-            );
-        }
+        SearchMode::Lexical => merge_hits(
+            &mut hits,
+            scan_flavors_on_connection(connection, req, &flavors, limit, true).await?,
+        ),
+        SearchMode::Semantic => merge_hits(
+            &mut hits,
+            scan_embeddings_on_connection(
+                connection,
+                req,
+                &flavors,
+                tuning,
+                semantic_overfetch(limit, req.after),
+            )
+            .await?,
+        ),
         SearchMode::Hybrid => {
             if req.query_embedding.is_some() && req.embedding_model_id.is_some() {
-                let (lexical, semantic) = tokio::try_join!(
-                    scan_flavors(pool, req, &flavors, limit, false),
-                    scan_embeddings(
-                        pool,
+                merge_hits(
+                    &mut hits,
+                    scan_flavors_on_connection(connection, req, &flavors, limit, false).await?,
+                );
+                merge_hits(
+                    &mut hits,
+                    scan_embeddings_on_connection(
+                        connection,
                         req,
                         &flavors,
                         tuning,
-                        semantic_overfetch(limit, req.after)
-                    ),
-                )?;
-                merge_hits(&mut hits, lexical);
-                merge_hits(&mut hits, semantic);
+                        semantic_overfetch(limit, req.after),
+                    )
+                    .await?,
+                );
             } else {
                 merge_hits(
                     &mut hits,
-                    scan_flavors(pool, req, &flavors, limit, true).await?,
+                    scan_flavors_on_connection(connection, req, &flavors, limit, true).await?,
                 );
             }
         }
     }
-
-    let admitted = admit_hits(pool, req, &hits).await?;
+    let admitted = admit_hits_on_connection(connection, req, &hits).await?;
     let mut page = page_hits(req, limit, admitted);
-    // The snippet is fetched LAST, for the rows that made the page.
-    //
-    // It cannot ride the ranked statement: `{sidecar}` is a per-SCHEMA
-    // value, so one statement per flavor would need one `LEFT JOIN` per
-    // sidecar TABLE (four, for flavor #0's five projected schemas) and a
-    // `COALESCE` over as many snippet expressions — per-schema SQL in a
-    // statement whose whole point is that it has none. Hydrating after
-    // `page_hits` fetches at most `limit` rows instead of the whole
-    // candidate window.
-    hydrate_snippets(pool, projections, &mut page.results).await?;
+    hydrate_snippets_on_connection(connection, projections, &mut page.results).await?;
     Ok(page)
 }
 
@@ -388,25 +375,22 @@ fn merge_hits(into: &mut BTreeMap<uuid::Uuid, Hit>, rows: Vec<Hit>) {
 /// most one substring statement over the schemas that arm returned nothing
 /// for. A tag-scoped request that reaches a second flavor runs the same
 /// again against that flavor's shard.
-async fn scan_flavors(
-    pool: &PgPool,
+async fn scan_flavors_on_connection(
+    connection: &mut PgConnection,
     req: &MemorySearchRequest,
     flavors: &[FlavorScan<'_>],
     limit: u32,
     rescue: bool,
 ) -> Result<Vec<Hit>, StorageError> {
-    if flavors.is_empty() {
-        return Ok(Vec::new());
+    let mut hits = Vec::new();
+    for flavor in flavors {
+        hits.extend(scan_one_flavor_on_connection(connection, req, flavor, limit, rescue).await?);
     }
-    let jobs = flavors
-        .iter()
-        .map(|flavor| scan_one_flavor(pool, req, flavor, limit, rescue));
-    let batches = try_join_all(jobs).await?;
-    Ok(batches.into_iter().flatten().collect())
+    Ok(hits)
 }
 
-async fn scan_one_flavor(
-    pool: &PgPool,
+async fn scan_one_flavor_on_connection(
+    connection: &mut PgConnection,
     req: &MemorySearchRequest,
     flavor: &FlavorScan<'_>,
     limit: u32,
@@ -430,7 +414,6 @@ async fn scan_one_flavor(
     let overfetch = i64::from(overfetch(limit, flavor.head().overfetch_k, req.after));
     let tags = (!req.tags.is_empty()).then_some(req.tags.as_slice());
     let sql = ranked_projection_sql(flavor, req, rescue)?;
-
     // SQL-POLICY: PgIdent
     let rows: Vec<RankedRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&req.query)
@@ -441,10 +424,9 @@ async fn scan_one_flavor(
         .bind(recency_t)
         .bind(&owner_ids)
         .bind(&schema_ids)
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(map_err)?;
-
     let present: BTreeSet<&str> = rows.iter().map(|row| row.schema_id.as_str()).collect();
     let mut hits: Vec<Hit> = rows
         .iter()
@@ -454,33 +436,17 @@ async fn scan_one_flavor(
             similarity_score: 0.0,
         })
         .collect();
-
-    // Exact per-schema parity: the substring arm runs over the schemas the
-    // ranked arm returned NOTHING for, and only where the schema declares an
-    // arm. One extra statement at most.
-    //
-    // The window is flavor-global, and that direction is NOT harmless: a
-    // schema whose ranked hits all fell outside the flavor-global
-    // top-`overfetch` is reported missing and served by the substring arm
-    // instead — which stamps the FLAT substring floor, so a row the ranked
-    // arm would have scored 0.545455 comes back at 0.250000, and a
-    // lexeme-only match (`cartographies` stems onto a row that does not
-    // contain the substring) comes back not at all. `admit_side_restriction`
-    // is what keeps the window from being spent on rows admission is going
-    // to drop, which is the only way that starvation is reachable at default
-    // limits.
     let missing: Vec<&MemorySearchProjection> = flavor
         .schemas
         .iter()
         .copied()
-        .filter(|projection| !present.contains(projection.schema_id.as_str()))
-        .filter(|projection| projection.substring != SubstringArm::Off)
+        .filter(|projection| {
+            !present.contains(projection.schema_id.as_str())
+                && projection.substring != SubstringArm::Off
+        })
         .collect();
     if !missing.is_empty() {
-        let missing_ids: Vec<&str> = missing
-            .iter()
-            .map(|projection| projection.schema_id.as_str())
-            .collect();
+        let missing_ids: Vec<&str> = missing.iter().map(|p| p.schema_id.as_str()).collect();
         let sql = substring_sql(&missing, flavor.bands, req)?;
         // SQL-POLICY: PgIdent
         let rows: Vec<SubstringRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
@@ -492,7 +458,7 @@ async fn scan_one_flavor(
             .bind(recency_t)
             .bind(&owner_ids)
             .bind(&missing_ids)
-            .fetch_all(pool)
+            .fetch_all(&mut *connection)
             .await
             .map_err(map_err)?;
         hits.extend(rows.into_iter().map(|row| Hit {
@@ -874,8 +840,8 @@ fn admit_side_restriction(req: &MemorySearchRequest, memory_id: &str) -> String 
 /// entirely; here it comes back with an empty snippet. The
 /// `projection_memory_id_fkey` cascade makes that state unreachable, but
 /// the difference is real.
-async fn hydrate_snippets(
-    pool: &PgPool,
+async fn hydrate_snippets_on_connection(
+    connection: &mut PgConnection,
     projections: &[MemorySearchProjection],
     results: &mut [MemorySearchResult],
 ) -> Result<(), StorageError> {
@@ -889,17 +855,17 @@ async fn hydrate_snippets(
             .or_default()
             .push(result.memory_id.into_inner());
     }
-    let jobs = by_schema
-        .into_iter()
-        .filter_map(|(schema_id, ts)| {
-            projections
-                .iter()
-                .find(|projection| projection.schema_id.as_str() == schema_id)
-                .map(|projection| (projection, ts))
-        })
-        .map(|(projection, ts)| load_one_schema_snippets(pool, projection, ts));
-    let batches = try_join_all(jobs).await?;
-    let snippets: HashMap<uuid::Uuid, String> = batches.into_iter().flatten().collect();
+    let mut snippets = HashMap::<uuid::Uuid, String>::new();
+    for (schema_id, ts) in by_schema {
+        let Some(projection) = projections
+            .iter()
+            .find(|p| p.schema_id.as_str() == schema_id)
+        else {
+            continue;
+        };
+        let rows = load_one_schema_snippets_on_connection(connection, projection, ts).await?;
+        snippets.extend(rows);
+    }
     for result in results {
         if let Some(snippet) = snippets.get(&result.memory_id.into_inner()) {
             result.snippet.clone_from(snippet);
@@ -1097,8 +1063,8 @@ fn semantic_search_sql(
     ))
 }
 
-async fn scan_embeddings(
-    pool: &PgPool,
+async fn scan_embeddings_on_connection(
+    connection: &mut PgConnection,
     req: &MemorySearchRequest,
     flavors: &[FlavorScan<'_>],
     tuning: &PgTuning,
@@ -1119,8 +1085,6 @@ async fn scan_embeddings(
             "semantic search embedding length must be {EMBEDDING_DIM}"
         )));
     }
-    // No participating flavor has a projection table to probe: return
-    // nothing, not an unfiltered scan.
     if flavors.is_empty() {
         return Ok(Vec::new());
     }
@@ -1132,20 +1096,11 @@ async fn scan_embeddings(
         .collect();
     let schema_sets: Vec<Vec<&str>> = flavors
         .iter()
-        .map(|flavor| {
-            flavor
-                .schemas
-                .iter()
-                .map(|projection| projection.schema_id.as_str())
-                .collect()
-        })
+        .map(|f| f.schemas.iter().map(|p| p.schema_id.as_str()).collect())
         .collect();
     let sql = semantic_search_sql(flavors, req)?;
-
-    let mut tx = pool.begin().await.map_err(map_err)?;
-    // SQL-POLICY: fixed-fragment
     sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(tuning)))
-        .execute(&mut *tx)
+        .execute(&mut *connection)
         .await
         .map_err(map_err)?;
     // SQL-POLICY: PgIdent
@@ -1157,17 +1112,12 @@ async fn scan_embeddings(
         .bind(req.since)
         .bind(req.until);
     if !req.tags.is_empty() {
-        // `$7` is the tag array; schema sets start at `$8` in `flavors`
-        // order — the order `semantic_search_sql` numbered them.
         query = query.bind(&req.tags);
     }
-    // Untagged schema sets start at `$7`; tagged schema sets start at `$8`.
     for schema_ids in &schema_sets {
         query = query.bind(schema_ids);
     }
-    let rows: Vec<EmbeddingScanRow> = query.fetch_all(&mut *tx).await.map_err(map_err)?;
-    tx.commit().await.map_err(map_err)?;
-
+    let rows: Vec<EmbeddingScanRow> = query.fetch_all(&mut *connection).await.map_err(map_err)?;
     Ok(rows
         .into_iter()
         .map(|row| Hit {
@@ -1178,8 +1128,8 @@ async fn scan_embeddings(
         .collect())
 }
 
-async fn admit_hits(
-    pool: &PgPool,
+async fn admit_hits_on_connection(
+    connection: &mut PgConnection,
     req: &MemorySearchRequest,
     hits: &BTreeMap<uuid::Uuid, Hit>,
 ) -> Result<Vec<MemorySearchResult>, StorageError> {
@@ -1193,25 +1143,18 @@ async fn admit_hits(
         .map(OwnerRef::stored_owner_id)
         .collect();
     let hit_ts: Vec<uuid::Uuid> = hits.keys().copied().collect();
-    // The SAME author the candidate statements render from. Two copies of
-    // this match is how the kind filter came to be applied on one side and
-    // not the other.
-    let kind_filter = kind_literal(req.kind);
-    let schema_filter = req.schema_id.as_ref().map(SchemaId::as_str);
     let sql = search_admit_sql(matches!(req.supersession, SupersessionStatus::HeadsOnly));
-
-    // SQL-POLICY: fixed-fragment
+    // SQL-POLICY: PgIdent
     let rows: Vec<AdmitRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&hit_ts)
         .bind(&owner_ids)
-        .bind(kind_filter)
-        .bind(schema_filter)
+        .bind(kind_literal(req.kind))
+        .bind(req.schema_id.as_ref().map(SchemaId::as_str))
         .bind(req.since)
         .bind(req.until)
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(map_err)?;
-
     let semantic_weight = req
         .semantic_weight
         .unwrap_or(DEFAULT_HYBRID_SEMANTIC_WEIGHT)
@@ -1225,8 +1168,8 @@ async fn admit_hits(
                 SearchMode::Lexical => hit.lexical_score,
                 SearchMode::Semantic => hit.similarity_score,
                 SearchMode::Hybrid => {
-                    (semantic_weight * hit.similarity_score)
-                        + ((1.0 - semantic_weight) * hit.lexical_score)
+                    semantic_weight * hit.similarity_score
+                        + (1.0 - semantic_weight) * hit.lexical_score
                 }
             };
             Some(MemorySearchResult {
@@ -1234,7 +1177,6 @@ async fn admit_hits(
                 kind,
                 schema_id: SchemaId::new(row.schema_id),
                 created_at: row.created_at,
-                // Hydrated after paging, for the rows that survive it.
                 snippet: String::new(),
                 score,
                 lexical_score: hit.lexical_score,

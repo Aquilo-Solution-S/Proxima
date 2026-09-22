@@ -58,7 +58,7 @@ async fn citation_of_fact_is_blob_id_and_schema_only() {
         let written = pg.ingest_fact_atomic(&permit, &cited, None).await?;
 
         let readback = pg
-            .citation_of_fact(&[owner], written.memory_id)
+            .citation_of_fact(None, &[owner], written.memory_id)
             .await?
             .expect("cited fact");
         assert_eq!(readback.cited_object_id, blob_id);

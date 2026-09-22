@@ -7,6 +7,7 @@ use std::time::Duration;
 pub trait SourceCursorPort: Send + Sync {
     async fn load_source_cursor(
         &self,
+        _owner_scope: Option<&crate::OwnerScope>,
         owner: &Owner,
         source: &str,
     ) -> Result<Option<Cursor>, StorageError>;
@@ -20,6 +21,7 @@ pub trait SourceCursorPort: Send + Sync {
 
     async fn source_cursor_age(
         &self,
+        _owner_scope: Option<&crate::OwnerScope>,
         owner: &Owner,
         source: &str,
     ) -> Result<Option<Duration>, StorageError>;

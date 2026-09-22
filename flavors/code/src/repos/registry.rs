@@ -1,7 +1,8 @@
 use super::records::{RepoRecord, RepoRegistryError};
 use super::rows::RepoRow;
 use super::scope::RepoScope;
-use proxima_core::Owner;
+use proxima_core::{Owner, OwnerScope};
+use proxima_storage_pg::begin_compatible_owner_transaction;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -11,10 +12,12 @@ use uuid::Uuid;
 /// Returns `RepoRegistryError::Database` on database failures.
 pub async fn list_repos(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     owner: &Owner,
 ) -> Result<Vec<RepoRecord>, RepoRegistryError> {
     let (kind, principal_id) = owner.columns();
 
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let rows = sqlx::query_as::<_, RepoRow>(
         "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs \
          FROM proxima_code.repos \
@@ -24,8 +27,9 @@ pub async fn list_repos(
     )
     .bind(kind)
     .bind(principal_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok(rows.into_iter().map(Into::into).collect())
 }
@@ -39,6 +43,7 @@ pub async fn list_repos(
 /// Returns `RepoRegistryError::Database` on database failures.
 pub async fn list_repos_page(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     owner: &Owner,
     after: Option<(time::OffsetDateTime, Uuid)>,
     limit: i64,
@@ -47,6 +52,7 @@ pub async fn list_repos_page(
     let after_created_at = after.map(|(created_at, _)| created_at);
     let after_repo_id = after.map(|(_, repo_id)| repo_id);
 
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let rows = sqlx::query_as::<_, RepoRow>(
         "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs \
          FROM proxima_code.repos \
@@ -62,8 +68,9 @@ pub async fn list_repos_page(
     .bind(after_created_at)
     .bind(after_repo_id)
     .bind(limit)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok(rows.into_iter().map(Into::into).collect())
 }
@@ -76,6 +83,7 @@ pub async fn list_repos_page(
 /// for this owner; `RepoRegistryError::Database` on database failures.
 pub async fn register_repo(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     owner: &Owner,
     repo_id: Uuid,
     canonical_path: &str,
@@ -85,6 +93,7 @@ pub async fn register_repo(
     let (kind, principal_id) = owner.columns();
     let target_branch = detect_target_branch(canonical_path);
 
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RepoRow>(
         "INSERT INTO proxima_code.repos \
             (owner_kind, owner_id, \
@@ -103,10 +112,11 @@ pub async fn register_repo(
     .bind(target_branch)
     .bind(&scope.include)
     .bind(&scope.exclude)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
 
     if let Some(r) = row {
+        tx.commit().await?;
         return Ok(r.into());
     }
     // ON CONFLICT DO NOTHING ate the insert. Either the path is already
@@ -122,8 +132,9 @@ pub async fn register_repo(
     .bind(kind)
     .bind(principal_id)
     .bind(canonical_path)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     if exists {
         Err(RepoRegistryError::DuplicatePath {
             canonical_path: canonical_path.to_string(),
@@ -142,18 +153,19 @@ pub async fn register_repo(
 /// database failures.
 pub async fn set_repo_target_branch(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     owner: &Owner,
     repo_id: Uuid,
     target_branch: Option<&str>,
 ) -> Result<RepoRecord, RepoRegistryError> {
     let target_branch = target_branch.and_then(normalize_target_branch);
-    let record = get_repo(pool, owner, repo_id)
+    let record = get_repo(pool, owner_scope, owner, repo_id)
         .await?
         .ok_or(RepoRegistryError::NotFound { repo_id })?;
     if let Some(branch) = target_branch {
         verify_target_branch(repo_id, &record.canonical_path, branch)?;
     }
-    update_target_branch(pool, owner, repo_id, target_branch).await
+    update_target_branch(pool, owner_scope, owner, repo_id, target_branch).await
 }
 
 /// Replace a repo's ingest scope.
@@ -173,6 +185,7 @@ pub async fn set_repo_target_branch(
 /// oversized, `RepoRegistryError::Database` on database failures.
 pub async fn set_repo_scope(
     pool: &PgPool,
+    scope_witness: Option<&OwnerScope>,
     owner: &Owner,
     repo_id: Uuid,
     scope: &RepoScope,
@@ -181,6 +194,7 @@ pub async fn set_repo_scope(
         .compile()
         .map_err(|source| RepoRegistryError::InvalidScope { repo_id, source })?;
     let (kind, principal_id) = owner.columns();
+    let mut tx = begin_compatible_owner_transaction(pool, scope_witness).await?;
     let row = sqlx::query_as::<_, RepoRow>(
         "UPDATE proxima_code.repos \
             SET include_globs = $4, exclude_globs = $5 \
@@ -194,8 +208,9 @@ pub async fn set_repo_scope(
     .bind(repo_id)
     .bind(&scope.include)
     .bind(&scope.exclude)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
     row.map(Into::into)
         .ok_or(RepoRegistryError::NotFound { repo_id })
 }
@@ -206,11 +221,13 @@ pub async fn set_repo_scope(
 /// Returns `RepoRegistryError::Database` on database failures.
 pub async fn get_repo(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<Option<RepoRecord>, RepoRegistryError> {
     let (kind, principal_id) = owner.columns();
 
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RepoRow>(
         "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs \
          FROM proxima_code.repos \
@@ -221,19 +238,22 @@ pub async fn get_repo(
     .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok(row.map(Into::into))
 }
 
 async fn update_target_branch(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     owner: &Owner,
     repo_id: Uuid,
     target_branch: Option<&str>,
 ) -> Result<RepoRecord, RepoRegistryError> {
     let (kind, principal_id) = owner.columns();
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RepoRow>(
         "UPDATE proxima_code.repos \
          SET target_branch = $4 \
@@ -246,8 +266,9 @@ async fn update_target_branch(
     .bind(principal_id)
     .bind(repo_id)
     .bind(target_branch)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     row.map(Into::into)
         .ok_or(RepoRegistryError::NotFound { repo_id })
@@ -307,6 +328,7 @@ fn verify_target_branch(
 /// Returns `RepoRegistryError::Database` on database failures.
 pub async fn update_cursor(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     owner: &Owner,
     repo_id: Uuid,
     cursor_bytes: &[u8],
@@ -314,6 +336,7 @@ pub async fn update_cursor(
 ) -> Result<(), RepoRegistryError> {
     let (kind, principal_id) = owner.columns();
 
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     sqlx::query(
         "UPDATE proxima_code.repos \
          SET last_cursor = $3, last_polled_at = $4 \
@@ -326,8 +349,9 @@ pub async fn update_cursor(
     .bind(cursor_bytes)
     .bind(polled_at)
     .bind(repo_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok(())
 }

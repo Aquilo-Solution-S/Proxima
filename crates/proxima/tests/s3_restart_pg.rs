@@ -468,6 +468,7 @@ async fn boot(
     Ok(ProximaBuilder::new(
         EmbedConfig {
             database_url: db_url(database),
+            platform_database_url: None,
             s3,
         },
         owner,

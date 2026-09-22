@@ -175,6 +175,7 @@ async fn load_head_revision(
 ) -> Result<Option<(proxima_core::MemoryId, FileRevisionInfo)>, ToolError> {
     let revision_ids = pool
         .readable_file_revision_head_ts(
+            ctx.authz().owner_scope(),
             ctx.owner(),
             scope.read_owners,
             scope.repo_id,
@@ -224,6 +225,7 @@ async fn load_head_chunks(
 ) -> Result<Vec<ChunkSummary>, ToolError> {
     let chunk_ids = pool
         .readable_chunk_head_ts_for_file(
+            ctx.authz().owner_scope(),
             ctx.owner(),
             scope.read_owners,
             scope.repo_id,

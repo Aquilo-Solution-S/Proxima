@@ -4,7 +4,7 @@ use proxima_core::{
     EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingOrphanCounts,
     EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, StorageError,
 };
-use sqlx::PgPool;
+use sqlx::{Connection, PgConnection, PgPool};
 
 use crate::error::map_err;
 /// Session settings for the ANN leg of the recall canary: the HNSW search
@@ -59,6 +59,17 @@ struct EmbeddingOrphanSweepRow {
 /// Maps SQL failures through the shared mapper.
 pub(crate) async fn embedding_ann_observability(
     pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
+    stale_claim_timeout_seconds: i64,
+) -> Result<EmbeddingAnnObservability, StorageError> {
+    let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
+    let result =
+        embedding_ann_observability_on_connection(tx.as_mut(), stale_claim_timeout_seconds).await;
+    crate::owner_scope::finish_transaction(tx, result).await
+}
+
+async fn embedding_ann_observability_on_connection(
+    pool: &mut PgConnection,
     stale_claim_timeout_seconds: i64,
 ) -> Result<EmbeddingAnnObservability, StorageError> {
     let row = sqlx::query_as::<_, EmbeddingAnnObservabilityRow>(
@@ -137,11 +148,11 @@ pub(crate) async fn embedding_ann_observability(
              (SELECT count FROM orphan_jobs) AS orphan_jobs",
     )
     .bind(stale_claim_timeout_seconds)
-    .fetch_one(pool)
+    .fetch_one(&mut *pool)
     .await
     .map_err(map_err)?;
 
-    observability_from_row(&row, embedding_recall_canary(pool, 10).await?)
+    observability_from_row(&row, embedding_recall_canary(&mut *pool, 10).await?)
 }
 
 fn observability_from_row(
@@ -180,7 +191,7 @@ fn observability_from_row(
 }
 
 async fn embedding_recall_canary(
-    pool: &PgPool,
+    pool: &mut PgConnection,
     k: i64,
 ) -> Result<Option<EmbeddingRecallCanary>, StorageError> {
     let Some(sample) = sqlx::query_as::<_, RecallSampleRow>(
@@ -193,7 +204,7 @@ async fn embedding_recall_canary(
           ORDER BY emb.entity_id DESC
           LIMIT 1",
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *pool)
     .await
     .map_err(map_err)?
     else {
@@ -201,7 +212,7 @@ async fn embedding_recall_canary(
     };
 
     let exact_ids = current_embedding_ids_by_distance(
-        pool,
+        &mut *pool,
         sample.owner_id,
         &sample.model_id,
         &sample.vec,
@@ -210,7 +221,7 @@ async fn embedding_recall_canary(
     )
     .await?;
     let ann_ids = current_embedding_ids_by_distance(
-        pool,
+        &mut *pool,
         sample.owner_id,
         &sample.model_id,
         &sample.vec,
@@ -250,7 +261,7 @@ enum DistancePlan {
 }
 
 async fn current_embedding_ids_by_distance(
-    pool: &PgPool,
+    pool: &mut PgConnection,
     owner_id: uuid::Uuid,
     model_id: &str,
     vec: &str,
@@ -319,11 +330,9 @@ async fn current_embedding_ids_by_distance(
 /// Maps SQL failures through the shared mapper.
 pub(crate) async fn sweep_orphan_embedding_rows(
     pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
 ) -> Result<EmbeddingOrphanSweepOutcome, StorageError> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|err| StorageError::Internal(format!("begin embedding orphan sweep tx: {err}")))?;
+    let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
 
     let row = sqlx::query_as::<_, EmbeddingOrphanSweepRow>(
         "WITH source_entities AS MATERIALIZED (

@@ -2,10 +2,21 @@ pub use super::proof::EmbeddingWriteProof;
 
 use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::storage_ports::{OperatorMaintenanceProof, OwnerWritePermit};
-use crate::{EmbeddableEntityRef, EntityKind, Owner};
+use crate::{EmbeddableEntityRef, EntityKind, Owner, OwnerScope};
 
 #[async_trait::async_trait]
 pub trait EmbeddingTextPort: Send + Sync {
+    /// Host embedding drain, admitted by the engine's sealed maintenance proof.
+    async fn load_embedding_texts_for_host(
+        &self,
+        items: &[(Owner, EntityKind, crate::MemoryId)],
+        non_embeddable_schemas: &[String],
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<Vec<Option<String>>, StorageError> {
+        self.load_embedding_texts(None, items, non_embeddable_schemas)
+            .await
+    }
+
     /// The text to embed for one entity, or `None` when there is nothing
     /// to embed.
     ///
@@ -18,6 +29,7 @@ pub trait EmbeddingTextPort: Send + Sync {
     /// Empty slice = exclude nothing.
     async fn load_embedding_text(
         &self,
+        scope: Option<&OwnerScope>,
         owner: &Owner,
         entity_kind: EntityKind,
         memory_id: crate::MemoryId,
@@ -31,6 +43,7 @@ pub trait EmbeddingTextPort: Send + Sync {
     /// mismatch, excluded schema, or no `embed_text` column).
     async fn load_embedding_texts(
         &self,
+        scope: Option<&OwnerScope>,
         items: &[(Owner, EntityKind, crate::MemoryId)],
         non_embeddable_schemas: &[String],
     ) -> Result<Vec<Option<String>>, StorageError>;
@@ -44,6 +57,7 @@ pub trait EmbeddingTextPort: Send + Sync {
     /// empties. Empty slice = exclude nothing.
     async fn list_facts_missing_embedding(
         &self,
+        scope: Option<&OwnerScope>,
         owner: &Owner,
         model_id: &str,
         limit: usize,
@@ -210,13 +224,21 @@ pub trait EmbeddingJobPort: Send + Sync {
         non_embeddable_schemas: &[String],
     ) -> Result<u64, StorageError>;
 
-    async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError>;
+    async fn count_pending_embedding_jobs(
+        &self,
+        scope: Option<&OwnerScope>,
+        owner: &Owner,
+    ) -> Result<u64, StorageError>;
 
     /// Count the owner's embedding jobs in a terminal state — the retryable
     /// dead-end `reconcile` requeues plus the permanent rejections it never
     /// will. Surfaced on the readiness resource so an operator sees the
     /// backlog no drain is going to clear on its own.
-    async fn count_failed_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError>;
+    async fn count_failed_embedding_jobs(
+        &self,
+        scope: Option<&OwnerScope>,
+        owner: &Owner,
+    ) -> Result<u64, StorageError>;
 
     /// Owner-scoped pending+failed embedding job counts in one call. Both
     /// counts read the same `embedding_jobs` table and differ only in the
@@ -226,11 +248,12 @@ pub trait EmbeddingJobPort: Send + Sync {
     /// this with a single `count(*) FILTER (WHERE …)` query.
     async fn count_embedding_job_status(
         &self,
+        scope: Option<&OwnerScope>,
         owner: &Owner,
     ) -> Result<EmbeddingJobStatusCounts, StorageError> {
         let (pending, failed) = tokio::try_join!(
-            self.count_pending_embedding_jobs(owner),
-            self.count_failed_embedding_jobs(owner)
+            self.count_pending_embedding_jobs(scope, owner),
+            self.count_failed_embedding_jobs(scope, owner)
         )?;
         Ok(EmbeddingJobStatusCounts { pending, failed })
     }

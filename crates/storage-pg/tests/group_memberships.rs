@@ -27,12 +27,12 @@ async fn list_group_members_runs_against_v008_schema() {
         pg.add_group_member(&permit, group, editor, Relation::Editor, Uuid::now_v7())
             .await?;
 
-        let members = pg.list_group_members(group).await?;
+        let members = pg.list_group_members(None, group).await?;
         assert_eq!(members.len(), 2, "admin + editor");
         assert!(members.contains(&(admin, Relation::Admin)));
         assert!(members.contains(&(editor, Relation::Editor)));
 
-        let page = pg.list_group_members_page(group, None, 10).await?;
+        let page = pg.list_group_members_page(None, group, None, 10).await?;
         assert_eq!(page, members, "full list matches first page");
         Ok(())
     }

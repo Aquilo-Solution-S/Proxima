@@ -3,10 +3,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use proxima_core::read_models::ChangeEventForWake;
 use proxima_core::{Owner, OwnerRef, StorageError};
-use sqlx::PgPool;
 use sqlx::Row;
+use sqlx::{PgConnection, PgPool};
 
-use crate::change_event::{hydrate_change_event, hydrate_change_events_batch};
 use crate::error::map_err;
 
 /// Env var (milliseconds) enabling the commit-safety grace window on the
@@ -93,51 +92,56 @@ pub async fn list_change_events_after(
     after: uuid::Uuid,
     limit: usize,
 ) -> Result<Vec<ChangeEventForWake>, StorageError> {
+    let mut connection = pool.acquire().await.map_err(crate::error::map_err)?;
+    list_change_events_after_on_connection(&mut connection, read_owners, after, limit).await
+}
+
+/// # Errors
+/// Returns storage errors from query execution or invalid stored data.
+pub async fn list_change_events_after_on_connection(
+    connection: &mut PgConnection,
+    read_owners: &[OwnerRef],
+    after: uuid::Uuid,
+    limit: usize,
+) -> Result<Vec<ChangeEventForWake>, StorageError> {
     if read_owners.is_empty() {
         return Ok(Vec::new());
     }
-    let owner_ids: Vec<uuid::Uuid> = read_owners
+    let owners: Vec<uuid::Uuid> = read_owners
         .iter()
         .copied()
         .map(OwnerRef::stored_owner_id)
         .collect();
     let horizon = commit_horizon_seq(now_unix_ms(), configured_commit_grace()?);
-    let horizon_clause = if horizon.is_some() {
+    let clause = if horizon.is_some() {
         "AND seq < $4"
     } else {
         ""
     };
     let sql = format!(
-        "SELECT seq
-           FROM proxima_core.announce
-          WHERE owner_id = ANY($1::uuid[])
-            AND seq > $2
-            {horizon_clause}
-          ORDER BY seq ASC
-          LIMIT $3"
+        "SELECT seq FROM proxima_core.announce WHERE owner_id = ANY($1::uuid[]) AND seq > $2 {clause} ORDER BY seq ASC LIMIT $3"
     );
     // SQL-POLICY: fixed-fragment
-    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .bind(&owner_ids)
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(&owners)
         .bind(after)
         .bind(i64::try_from(limit).unwrap_or(i64::MAX));
-    if let Some(horizon) = horizon {
-        query = query.bind(horizon);
+    if let Some(h) = horizon {
+        q = q.bind(h);
     }
-    let rows = query.fetch_all(pool).await.map_err(map_err)?;
-
+    let rows = q.fetch_all(&mut *connection).await.map_err(map_err)?;
     let seqs: Vec<uuid::Uuid> = rows
         .iter()
         .map(|r| r.try_get("seq"))
         .collect::<Result<_, _>>()
         .map_err(map_err)?;
-
-    // `hydrate_change_events_batch` always returns `seq DESC`; wake
-    // consumers rely on the forward chronological order the query above
-    // already established (`ORDER BY seq ASC`), so restore it here.
-    let mut events = hydrate_change_events_batch(pool, read_owners, &seqs).await?;
-    events.sort_by_key(|event| event.seq);
-
+    let mut events = crate::change_event::hydrate_change_events_batch_on_connection(
+        connection,
+        read_owners,
+        &seqs,
+    )
+    .await?;
+    events.sort_by_key(|e| e.seq);
     Ok(events
         .into_iter()
         .map(|event| ChangeEventForWake { event })
@@ -156,28 +160,30 @@ pub async fn list_change_events_for_replay(
     until: Option<uuid::Uuid>,
     limit: usize,
 ) -> Result<Vec<ChangeEventForWake>, StorageError> {
-    let owner_id = owner.stored_owner_id();
-    let rows = sqlx::query(
-        "SELECT seq
-           FROM proxima_core.announce
-          WHERE owner_id = $1
-            AND seq > $2
-            AND ($3::uuid IS NULL OR seq <= $3)
-          ORDER BY seq ASC
-          LIMIT $4",
-    )
-    .bind(owner_id)
-    .bind(after)
-    .bind(until)
-    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)?;
+    let mut connection = pool.acquire().await.map_err(crate::error::map_err)?;
+    list_change_events_for_replay_on_connection(&mut connection, owner, after, until, limit).await
+}
 
+/// # Errors
+/// Returns storage errors from query execution or invalid stored data.
+pub async fn list_change_events_for_replay_on_connection(
+    connection: &mut PgConnection,
+    owner: &Owner,
+    after: uuid::Uuid,
+    until: Option<uuid::Uuid>,
+    limit: usize,
+) -> Result<Vec<ChangeEventForWake>, StorageError> {
+    let rows = sqlx::query("SELECT seq FROM proxima_core.announce WHERE owner_id = $1 AND seq > $2 AND ($3::uuid IS NULL OR seq <= $3) ORDER BY seq ASC LIMIT $4").bind(owner.stored_owner_id()).bind(after).bind(until).bind(i64::try_from(limit).unwrap_or(i64::MAX)).fetch_all(&mut *connection).await.map_err(map_err)?;
     let mut out = Vec::with_capacity(rows.len());
-    for r in rows {
-        let seq: uuid::Uuid = r.try_get("seq").map_err(map_err)?;
-        if let Some(event) = hydrate_change_event(pool, std::slice::from_ref(owner), seq).await? {
+    for row in rows {
+        let seq: uuid::Uuid = row.try_get("seq").map_err(map_err)?;
+        if let Some(event) = crate::change_event::hydrate_change_event_on_connection(
+            connection,
+            std::slice::from_ref(owner),
+            seq,
+        )
+        .await?
+        {
             out.push(ChangeEventForWake { event });
         }
     }

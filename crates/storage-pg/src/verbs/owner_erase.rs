@@ -60,8 +60,11 @@ impl<'a> SelectionScope<'a> {
 /// check to commit; a constraint declared NOT DEFERRABLE is unaffected and
 /// still checked per statement, which is why the delete order below is
 /// load-bearing rather than incidental.
-async fn begin_bulk_erase_tx(pool: &PgPool) -> Result<Tx<'_>, StorageError> {
-    let mut tx = pool.begin().await.map_err(map_err)?;
+async fn begin_bulk_erase_tx(
+    pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
+) -> Result<Tx<'static>, StorageError> {
+    let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
     // The database-wide lifecycle fence is the first lock in this
     // transaction. Bound that wait before taking it: the long-work
     // statement_timeout override below is for the erase body and must not
@@ -111,6 +114,7 @@ enum EraseAttempt {
 /// transaction, so a deadlocked attempt leaves nothing behind.
 async fn erase_with_retry<'a, F, Fut>(
     pool: &'a PgPool,
+    platform: Option<&crate::PgPlatformScope>,
     cold: &dyn ColdObjectStore,
     attempt: F,
 ) -> Result<OwnerEraseOutcome, StorageError>
@@ -121,23 +125,14 @@ where
     match with_bounded_retry(|| attempt(pool)).await? {
         EraseAttempt::Refused(outcome) => Ok(outcome),
         EraseAttempt::Completed(cold_purge, outcome) => {
-            Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
+            Ok(finalize_cold_purge(pool, platform, cold, &cold_purge, outcome).await)
         }
     }
 }
 
-pub async fn erase_group_owner(
-    pool: &PgPool,
-    cold: &dyn ColdObjectStore,
-    auth: &EraseAuthorization,
-    group_id: GroupId,
-    surfaces: &OwnerSurfaces,
-) -> Result<OwnerEraseOutcome, StorageError> {
-    erase_group_owner_with_lifecycle(pool, cold, auth, group_id, surfaces, None).await
-}
-
 pub(crate) async fn erase_group_owner_with_lifecycle(
     pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     group_id: GroupId,
@@ -146,10 +141,10 @@ pub(crate) async fn erase_group_owner_with_lifecycle(
 ) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
-    erase_with_retry(pool, cold, |pool| {
+    erase_with_retry(pool, platform, cold, |pool| {
         let lifecycle = lifecycle.clone();
         async move {
-            let mut tx = begin_bulk_erase_tx(pool).await?;
+            let mut tx = begin_bulk_erase_tx(pool, platform).await?;
             lock_group_membership_tx(&mut tx, group_id).await?;
             if group_member_count(&mut tx, group_id).await? > 0 {
                 return Ok(EraseAttempt::Refused(refused(
@@ -173,6 +168,7 @@ pub(crate) async fn erase_group_owner_with_lifecycle(
     .await
 }
 
+#[cfg(test)]
 pub async fn erase_personal_owner(
     pool: &PgPool,
     cold: &dyn ColdObjectStore,
@@ -180,11 +176,12 @@ pub async fn erase_personal_owner(
     user_id: UserId,
     surfaces: &OwnerSurfaces,
 ) -> Result<OwnerEraseOutcome, StorageError> {
-    erase_personal_owner_with_lifecycle(pool, cold, auth, user_id, surfaces, None).await
+    erase_personal_owner_with_lifecycle(pool, None, cold, auth, user_id, surfaces, None).await
 }
 
 pub(crate) async fn erase_personal_owner_with_lifecycle(
     pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     user_id: UserId,
@@ -193,10 +190,10 @@ pub(crate) async fn erase_personal_owner_with_lifecycle(
 ) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
-    erase_with_retry(pool, cold, |pool| {
+    erase_with_retry(pool, platform, cold, |pool| {
         let lifecycle = lifecycle.clone();
         async move {
-            let mut tx = begin_bulk_erase_tx(pool).await?;
+            let mut tx = begin_bulk_erase_tx(pool, platform).await?;
             let cold_purge = erase_selected(
                 &mut tx,
                 owner,
@@ -213,33 +210,26 @@ pub(crate) async fn erase_personal_owner_with_lifecycle(
     .await
 }
 
-pub async fn erase_group_source_scope(
-    pool: &PgPool,
-    cold: &dyn ColdObjectStore,
-    auth: &EraseAuthorization,
-    group_id: GroupId,
-    source_id: &SourceId,
-    surfaces: &OwnerSurfaces,
-) -> Result<OwnerEraseOutcome, StorageError> {
-    erase_group_source_scope_with_lifecycle(pool, cold, auth, group_id, source_id, surfaces, None)
-        .await
-}
-
 pub(crate) async fn erase_group_source_scope_with_lifecycle(
     pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
-    group_id: GroupId,
     source_id: &SourceId,
     surfaces: &OwnerSurfaces,
     lifecycle: Option<crate::RegisteredHostStateLifecycle>,
 ) -> Result<OwnerEraseOutcome, StorageError> {
-    let owner = OwnerRef::Group(group_id);
+    let owner = auth.audit().owner();
+    let OwnerRef::Group(group_id) = owner else {
+        return Err(StorageError::ConstraintViolation(
+            "group source erase requires group authorization".into(),
+        ));
+    };
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
-    erase_with_retry(pool, cold, |pool| {
+    erase_with_retry(pool, platform, cold, |pool| {
         let lifecycle = lifecycle.clone();
         async move {
-            let mut tx = begin_bulk_erase_tx(pool).await?;
+            let mut tx = begin_bulk_erase_tx(pool, platform).await?;
             lock_group_membership_tx(&mut tx, group_id).await?;
             if group_member_count(&mut tx, group_id).await? > 0 {
                 return Ok(EraseAttempt::Refused(refused(
@@ -263,33 +253,26 @@ pub(crate) async fn erase_group_source_scope_with_lifecycle(
     .await
 }
 
-pub async fn erase_personal_source_scope(
-    pool: &PgPool,
-    cold: &dyn ColdObjectStore,
-    auth: &EraseAuthorization,
-    user_id: UserId,
-    source_id: &SourceId,
-    surfaces: &OwnerSurfaces,
-) -> Result<OwnerEraseOutcome, StorageError> {
-    erase_personal_source_scope_with_lifecycle(pool, cold, auth, user_id, source_id, surfaces, None)
-        .await
-}
-
 pub(crate) async fn erase_personal_source_scope_with_lifecycle(
     pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
-    user_id: UserId,
     source_id: &SourceId,
     surfaces: &OwnerSurfaces,
     lifecycle: Option<crate::RegisteredHostStateLifecycle>,
 ) -> Result<OwnerEraseOutcome, StorageError> {
-    let owner = OwnerRef::Personal(user_id);
+    let owner = auth.audit().owner();
+    if !matches!(owner, OwnerRef::Personal(_)) {
+        return Err(StorageError::ConstraintViolation(
+            "personal source erase requires personal authorization".into(),
+        ));
+    }
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
-    erase_with_retry(pool, cold, |pool| {
+    erase_with_retry(pool, platform, cold, |pool| {
         let lifecycle = lifecycle.clone();
         async move {
-            let mut tx = begin_bulk_erase_tx(pool).await?;
+            let mut tx = begin_bulk_erase_tx(pool, platform).await?;
             let cold_purge = erase_selected(
                 &mut tx,
                 owner,
@@ -325,11 +308,14 @@ async fn complete(
 
 async fn finalize_cold_purge(
     pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
     cold: &dyn ColdObjectStore,
     plan: &ColdPurgePlan,
     outcome: OwnerEraseOutcome,
 ) -> OwnerEraseOutcome {
-    let purge = super::forget::purge_cold_objects_after_commit(pool, cold, plan).await;
+    let purge =
+        super::forget::purge_cold_objects_after_commit_with_platform(pool, platform, cold, plan)
+            .await;
     let OwnerEraseOutcome::Completed {
         operation_id,
         counts,
@@ -2053,10 +2039,12 @@ mod tests {
             .await
             .expect("hold the lifecycle fence shared");
 
-        let attempt =
-            tokio::time::timeout(Duration::from_secs(8), super::begin_bulk_erase_tx(pool))
-                .await
-                .expect("the first global fence wait is bounded by lock_timeout");
+        let attempt = tokio::time::timeout(
+            Duration::from_secs(8),
+            super::begin_bulk_erase_tx(pool, None),
+        )
+        .await
+        .expect("the first global fence wait is bounded by lock_timeout");
         assert!(
             matches!(attempt, Err(StorageError::Retryable(_))),
             "the waiter returns a retryable lock conflict, got {attempt:?}"
@@ -2064,7 +2052,7 @@ mod tests {
         drop(attempt);
 
         blocker.rollback().await.expect("release shared fence");
-        let tx = super::begin_bulk_erase_tx(pool)
+        let tx = super::begin_bulk_erase_tx(pool, None)
             .await
             .expect("a fresh attempt acquires the fence after release");
         tx.commit().await.expect("empty retry transaction commits");

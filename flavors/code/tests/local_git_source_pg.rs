@@ -43,6 +43,7 @@ async fn register_fixture_repo(
 ) {
     register_repo(
         pool,
+        None,
         owner,
         repo_id,
         &path.to_string_lossy(),

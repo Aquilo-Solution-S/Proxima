@@ -316,6 +316,7 @@ async fn hydrated_actor_payloads(
     let schemas = memory_schema_specs();
     let response = pg
         .query_memories(
+            None,
             &[owner],
             &QueryRequest {
                 memory_ids: vec![memory_id],
@@ -344,7 +345,7 @@ async fn assert_owner_pinned_payload_redacted(
     memory_id: MemoryId,
 ) -> Result<(), StorageError> {
     let snapshots = pg
-        .load_memories_by_ids(&[owner], &[memory_id], &memory_schema_specs())
+        .load_memories_by_ids(None, &[owner], &[memory_id], &memory_schema_specs())
         .await?;
     assert_eq!(
         snapshots.len(),
@@ -600,7 +601,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             "the hot sketch must follow its transferred Memory"
         );
         let dest_sketches =
-            MemoryReadPort::load_sketches(&pg, &[dest], &[written.memory_id]).await?;
+            MemoryReadPort::load_sketches(&pg, None, &[dest], &[written.memory_id]).await?;
         assert_eq!(
             dest_sketches.len(),
             1,
@@ -2716,7 +2717,7 @@ async fn transfer_writes_announce_rows_under_both_lanes() {
 
         // Hydrated rail, prior owner's lane: the transfer event is visible.
         let prior_lane = pg
-            .list_change_events_after(std::slice::from_ref(&owner), Uuid::nil(), 100)
+            .list_change_events_after(None, std::slice::from_ref(&owner), Uuid::nil(), 100)
             .await?;
         let departed = prior_lane
             .iter()
@@ -2732,7 +2733,7 @@ async fn transfer_writes_announce_rows_under_both_lanes() {
 
         // Destination lane: the arrival is visible under the new owner.
         let dest_lane = pg
-            .list_change_events_after(&[dest], Uuid::nil(), 100)
+            .list_change_events_after(None, &[dest], Uuid::nil(), 100)
             .await?;
         let arrived = dest_lane
             .iter()
@@ -2904,14 +2905,18 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
         assert_owner_pinned_payload_redacted(&pg, dest, written.memory_id).await?;
 
         // (b) The source still answers "what did my agents do".
-        let history = pg.read_mcp_call_history(&history_request(owner)).await?;
+        let history = pg
+            .read_mcp_call_history(None, &history_request(owner))
+            .await?;
         assert_eq!(
             history.calls.len(),
             1,
             "the source keeps its own call history after giving the memory away"
         );
         assert_eq!(history.calls[0].tool_name, "core_remember");
-        let destination_history = pg.read_mcp_call_history(&history_request(dest)).await?;
+        let destination_history = pg
+            .read_mcp_call_history(None, &history_request(dest))
+            .await?;
         assert!(
             destination_history.calls.is_empty(),
             "and the destination never inherits it"
@@ -3130,7 +3135,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
             vec![owner.stored_owner_id()],
             "the source's audit row outlives the Memory it describes"
         );
-        let history = pg.read_mcp_call_history(&history_request(owner)).await?;
+        let history = pg.read_mcp_call_history(None, &history_request(owner)).await?;
         assert_eq!(
             history.calls.len(),
             1,

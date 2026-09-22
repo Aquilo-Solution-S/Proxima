@@ -1,3 +1,4 @@
+use crate::OwnerScope;
 use crate::storage::StorageError;
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 
@@ -12,6 +13,7 @@ use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryRespon
 pub trait McpCallReadPort: Send + Sync {
     async fn read_mcp_call_history(
         &self,
+        owner_scope: Option<&OwnerScope>,
         req: &McpCallHistoryRequest,
     ) -> Result<McpCallHistoryResponse, StorageError>;
 }

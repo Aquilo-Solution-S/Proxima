@@ -2,7 +2,7 @@ use super::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAuthorship, GoalDraft, GoalId,
     GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalWakeConfigWrite, GoalWriteOutcome,
-    ModifyGoalAtomicRequest, Owner, PgConnection, PgPool, StorageError, SystemOrigin,
+    ModifyGoalAtomicRequest, Owner, PgConnection, StorageError, SystemOrigin,
     TransitionGoalAtomicRequest, internal, map_err,
 };
 
@@ -246,17 +246,6 @@ pub(super) async fn resolve_decompose_replay_set(
         children,
         idempotent_replay: true,
     }))
-}
-
-/// Pool-scoped public-boundary replay probe. Every arm below is exactly one
-/// statement, and one statement already observes one snapshot — including the
-/// decomposed child set — so this needs a connection, not a transaction.
-pub(crate) async fn resolve_goal_command_replay(
-    pool: &PgPool,
-    req: GoalReplayRequest<'_, '_>,
-) -> Result<Option<GoalReplayOutcome>, StorageError> {
-    let mut conn = pool.acquire().await.map_err(internal)?;
-    resolve_goal_command_replay_on(&mut conn, req).await
 }
 
 pub(crate) async fn resolve_goal_command_replay_on(

@@ -348,7 +348,7 @@ impl Engine {
                 .storage()
                 .read_verb
                 .goal_read
-                .load_goal_evidence(permit.owner(), req.prior_goal_id)
+                .load_goal_evidence(permit.owner_scope(), permit.owner(), req.prior_goal_id)
                 .await
                 .map_err(|err| super::errors::internal_storage_error("load_goal_evidence", &err))?;
             if let Some(ids) = carried {
@@ -524,7 +524,7 @@ impl Engine {
             .storage()
             .goal_command
             .owner_access_read
-            .home_owner(EntityId::Memory(memory_id))
+            .home_owner(authz.owner_scope(), EntityId::Memory(memory_id))
             .await
             .map_err(|err| ProtocolError::internal(format!("home_owner: {err}")))?
             .ok_or_else(|| ProtocolError::forbidden("entry not found"))?;
@@ -533,7 +533,7 @@ impl Engine {
         }
         self.authorize_write(authz, &home_owner, Relation::Editor)
             .await?;
-        self.require_perspective_kind(&home_owner, memory_id, "target_perspective")
+        self.require_perspective_kind(authz, &home_owner, memory_id, "target_perspective")
             .await?;
         Ok(memory_id)
     }
@@ -553,13 +553,13 @@ impl Engine {
             .storage()
             .goal_command
             .owner_access_read
-            .home_owner(EntityId::Memory(memory_id))
+            .home_owner(authz.owner_scope(), EntityId::Memory(memory_id))
             .await
             .map_err(|err| ProtocolError::internal(format!("home_owner: {err}")))?
             .ok_or_else(|| ProtocolError::forbidden("entry not found"))?;
         self.authorize_write(authz, &home_owner, Relation::Editor)
             .await?;
-        self.require_perspective_kind(&home_owner, memory_id, "author_self_perspective_id")
+        self.require_perspective_kind(authz, &home_owner, memory_id, "author_self_perspective_id")
             .await?;
         Ok(())
     }
@@ -601,7 +601,7 @@ impl Engine {
                 .authorize_entry_read(authz, EntityId::Memory(*memory_id))
                 .await?;
             let _kind = self
-                .load_required_memory_kind(permit.owner(), *memory_id)
+                .load_required_memory_kind(authz.owner_scope(), permit.owner(), *memory_id)
                 .await?;
         }
         Ok(())
@@ -633,7 +633,7 @@ impl Engine {
             .authorize_entry_read(authz, EntityId::Memory(memory_id))
             .await?;
         let kind = self
-            .load_required_memory_kind(permit.owner(), memory_id)
+            .load_required_memory_kind(authz.owner_scope(), permit.owner(), memory_id)
             .await?;
         if kind != expected {
             return Err(ProtocolError::invalid_argument(
@@ -646,11 +646,14 @@ impl Engine {
 
     async fn require_perspective_kind(
         &self,
+        authz: &AuthzContext,
         owner: &crate::Owner,
         memory_id: MemoryId,
         field: &'static str,
     ) -> Result<(), ProtocolError> {
-        let kind = self.load_required_memory_kind(owner, memory_id).await?;
+        let kind = self
+            .load_required_memory_kind(authz.owner_scope(), owner, memory_id)
+            .await?;
         if kind != EntityKind::Perspective {
             return Err(ProtocolError::invalid_argument(
                 field,

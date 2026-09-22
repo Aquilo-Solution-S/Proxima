@@ -287,6 +287,7 @@ async fn exercise_full_registry_erase(
     let repo_id = Uuid::now_v7();
     register_repo(
         &pool,
+        None,
         &owner,
         repo_id,
         &format!("/tmp/proxima-full-registry-{repo_id}"),

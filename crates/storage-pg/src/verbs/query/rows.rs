@@ -3,7 +3,7 @@ use proxima_core::verbs::query::{GoalRow, MemoryRow};
 use proxima_core::{
     GoalId, MemoryId, Owner, OwnerRefKind, SchemaId, SchemaVersion, SidecarPayload, StorageError,
 };
-use sqlx::PgPool;
+use sqlx::PgConnection;
 
 use crate::error::map_err;
 
@@ -102,15 +102,17 @@ pub(super) struct MemoryRowDb {
 /// events the requester may see (the same set `list_change_events_after`
 /// filters by); using `req.owner` here would leak whether/when a foreign
 /// owner has events.
-pub(crate) async fn read_seq_high_water(
-    pool: &PgPool,
+/// Connection-backed variant used by a caller that already established the
+/// request transaction. The pool wrapper above remains for compatibility.
+pub(crate) async fn read_seq_high_water_on_connection(
+    connection: &mut PgConnection,
     owner_ids: &[uuid::Uuid],
 ) -> Result<Option<uuid::Uuid>, StorageError> {
     let sql = read_seq_high_water_sql();
     // SQL-POLICY: fixed-fragment
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(owner_ids)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *connection)
         .await
         .map_err(map_err)?;
     Ok(row.map(|(v,)| v))

@@ -17,6 +17,10 @@ use sqlx::postgres::PgPoolOptions;
 #[derive(Clone)]
 pub struct PgOwnerAccessResolver {
     pool: PgPool,
+    platform: Option<crate::PgPlatformScope>,
+    platform_url: Option<String>,
+    platform_schemas: Vec<String>,
+    platform_lazy: std::sync::Arc<tokio::sync::OnceCell<crate::PgPlatformScope>>,
 }
 
 impl std::fmt::Debug for PgOwnerAccessResolver {
@@ -29,7 +33,19 @@ impl std::fmt::Debug for PgOwnerAccessResolver {
 impl PgOwnerAccessResolver {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            platform: None,
+            platform_url: None,
+            platform_schemas: Vec::new(),
+            platform_lazy: std::sync::Arc::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_platform_scope(mut self, platform: crate::PgPlatformScope) -> Self {
+        self.platform = Some(platform);
+        self
     }
 
     #[must_use]
@@ -52,17 +68,85 @@ impl PgOwnerAccessResolver {
         let pool = PgPoolOptions::new()
             .connect_lazy(database_url)
             .map_err(|err| StorageError::Unavailable(err.to_string()))?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            platform: None,
+            platform_url: None,
+            platform_schemas: Vec::new(),
+            platform_lazy: std::sync::Arc::default(),
+        })
+    }
+
+    /// Lazily validate and share a separate platform pool for identity resolution.
+    ///
+    /// # Errors
+    /// Returns a storage error for an invalid runtime connection string.
+    /// Platform connection and role errors are returned on the first lookup.
+    pub fn connect_lazy_platform(
+        runtime_url: &str,
+        platform_url: &str,
+        schemas: &[&str],
+    ) -> Result<Self, StorageError> {
+        let pool = PgPoolOptions::new()
+            .connect_lazy(runtime_url)
+            .map_err(|err| StorageError::Unavailable(err.to_string()))?;
+        Ok(Self {
+            pool,
+            platform: None,
+            platform_url: Some(platform_url.to_owned()),
+            platform_schemas: schemas.iter().map(|s| (*s).to_owned()).collect(),
+            platform_lazy: std::sync::Arc::default(),
+        })
+    }
+
+    async fn platform_scope_lazy(&self) -> Result<Option<crate::PgPlatformScope>, StorageError> {
+        if let Some(scope) = &self.platform {
+            return Ok(Some(scope.clone()));
+        }
+        let Some(url) = &self.platform_url else {
+            return Ok(None);
+        };
+        let scope = self
+            .platform_lazy
+            .get_or_try_init(|| async {
+                let pool = PgPoolOptions::new()
+                    .connect(url)
+                    .await
+                    .map_err(|err| StorageError::Unavailable(err.to_string()))?;
+                let schemas: Vec<&str> = self.platform_schemas.iter().map(String::as_str).collect();
+                crate::PgPlatformScope::new(pool, &schemas).await
+            })
+            .await?;
+        Ok(Some(scope.clone()))
     }
 }
 
 #[async_trait]
 impl OwnerAccessPort for PgOwnerAccessResolver {
     async fn resolve_roles_for_subject(&self, subject: UserId) -> Result<OwnerRoles, AccessError> {
-        let memberships =
-            owner_columns::resolve_membership(&self.pool, &OwnerRef::Personal(subject))
+        let platform_scope = self
+            .platform_scope_lazy()
+            .await
+            .map_err(|err| AccessError::Resolution(err.to_string()))?;
+        let memberships = if let Some(platform) = platform_scope.as_ref() {
+            let mut tx = platform
+                .begin()
                 .await
                 .map_err(|err| AccessError::Resolution(err.to_string()))?;
+            let result =
+                owner_columns::resolve_membership(tx.as_mut(), &OwnerRef::Personal(subject)).await;
+            tx.rollback().await.ok();
+            result
+        } else {
+            let mut tx = crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None)
+                .await
+                .map_err(|err| AccessError::Resolution(err.to_string()))?;
+            let result =
+                owner_columns::resolve_membership(tx.as_mut(), &OwnerRef::Personal(subject)).await;
+            tx.rollback().await.ok();
+            result
+        }
+        .map_err(|err| AccessError::Resolution(err.to_string()))?;
         OwnerRoles::for_subject(
             subject,
             memberships
@@ -83,9 +167,31 @@ impl OwnerAccessPort for PgOwnerAccessResolver {
         group: GroupId,
     ) -> Result<Option<Role>, AccessError> {
         let owner = OwnerRef::Group(group);
-        let relations = owner_columns::group_relations_for_member(&self.pool, group, subject)
+        let platform_scope = self
+            .platform_scope_lazy()
             .await
             .map_err(|err| AccessError::Resolution(err.to_string()))?;
+        let relations = if let Some(platform) = platform_scope.as_ref() {
+            let mut tx = platform
+                .begin()
+                .await
+                .map_err(|err| AccessError::Resolution(err.to_string()))?;
+            let result =
+                owner_columns::group_relations_for_member_on_connection(&mut tx, group, subject)
+                    .await;
+            tx.rollback().await.ok();
+            result
+        } else {
+            let mut tx = crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None)
+                .await
+                .map_err(|err| AccessError::Resolution(err.to_string()))?;
+            let result =
+                owner_columns::group_relations_for_member_on_connection(&mut tx, group, subject)
+                    .await;
+            tx.rollback().await.ok();
+            result
+        }
+        .map_err(|err| AccessError::Resolution(err.to_string()))?;
         let roles = OwnerRoles::for_subject(
             subject,
             relations
@@ -120,6 +226,22 @@ impl PgOwnerAccessResolver {
         let OwnerRef::Group(group) = owner else {
             return Ok(false);
         };
-        owner_columns::has_group_relation(&self.pool, group, subject, role).await
+        let platform_scope = self.platform_scope_lazy().await?;
+        if let Some(platform) = platform_scope.as_ref() {
+            let mut tx = platform.begin().await?;
+            let result =
+                owner_columns::has_group_relation_on_connection(&mut tx, group, subject, role)
+                    .await;
+            tx.rollback().await.ok();
+            result
+        } else {
+            let mut tx =
+                crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None).await?;
+            let result =
+                owner_columns::has_group_relation_on_connection(&mut tx, group, subject, role)
+                    .await;
+            tx.rollback().await.ok();
+            result
+        }
     }
 }

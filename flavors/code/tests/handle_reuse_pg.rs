@@ -66,6 +66,7 @@ async fn register_fixture_repo(
 ) -> Result<(), Box<dyn std::error::Error>> {
     register_repo(
         pg.pool_for_tests(),
+        None,
         owner,
         repo_id,
         &format!("/tmp/proxima-handle-reuse-{repo_id}"),

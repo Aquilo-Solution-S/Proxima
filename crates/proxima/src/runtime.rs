@@ -97,6 +97,13 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// Set the separate migration/platform database URL.
+    #[must_use]
+    pub fn platform_database_url(mut self, url: impl Into<String>) -> Self {
+        self.overlay = self.overlay.platform_database_url(url);
+        self
+    }
+
     #[must_use]
     pub fn s3(mut self, s3: S3RuntimeConfig) -> Self {
         self.overlay = self.overlay.s3(s3);
@@ -445,6 +452,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         let app_ctx = AppContext {
             engine: booted.engine.clone(),
             pool: booted.pool.clone(),
+            platform_scope: booted.platform_scope_for_host(),
             pg_tuning: config.pg_tuning,
             pg_sidecars: booted.pg_sidecars.clone(),
             host_state_erase_context: booted.host_state_erase_context_for_host(),
@@ -1203,8 +1211,18 @@ fn assemble_services<A: FlavorApp>(
         services.try_insert(owner_reconcile)?;
     }
     if let Some(authenticator) = authenticator {
-        let store = Arc::new(PgDelegationStore::new(app_ctx.pool.clone()));
-        let owner_access = Arc::new(PgOwnerAccessResolver::new(app_ctx.pool.clone()));
+        let store = Arc::new(match &app_ctx.platform_scope {
+            Some(scope) => {
+                PgDelegationStore::new(app_ctx.pool.clone()).with_platform_scope(scope.clone())
+            }
+            None => PgDelegationStore::new(app_ctx.pool.clone()),
+        });
+        let owner_access = Arc::new(match &app_ctx.platform_scope {
+            Some(scope) => {
+                PgOwnerAccessResolver::new(app_ctx.pool.clone()).with_platform_scope(scope.clone())
+            }
+            None => PgOwnerAccessResolver::new(app_ctx.pool.clone()),
+        });
         services.try_insert(DelegatedAuthorityService::new(
             store,
             owner_access,
@@ -1224,6 +1242,7 @@ async fn boot_app<A: FlavorApp + 'static>(
     let mut builder = ProximaBuilder::new_optional(
         EmbedConfig {
             database_url: config.database_url.clone(),
+            platform_database_url: config.platform_database_url.clone(),
             s3: config.s3.clone(),
         },
         config.owner,
@@ -1243,7 +1262,9 @@ async fn boot_app<A: FlavorApp + 'static>(
     if let Some(participant) = parts.host_state_participant.clone() {
         builder = builder.host_state_participant(participant);
     }
-    builder.boot().await.map_err(Into::into)
+    // Boot holds migration and role-census state. Keep that one-time future
+    // out of every caller's runtime construction state machine.
+    Box::pin(builder.boot()).await.map_err(Into::into)
 }
 
 fn build_router<A: FlavorApp>(
@@ -1262,9 +1283,15 @@ fn build_router<A: FlavorApp>(
         // carry can still be resolved one owner per request. A host serving
         // many parties through one forwarder subject cannot enumerate them
         // eagerly; without this the edge would refuse every such owner.
+        let owner_access = match &app_ctx.platform_scope {
+            Some(scope) => {
+                PgOwnerAccessResolver::new(app_ctx.pool.clone()).with_platform_scope(scope.clone())
+            }
+            None => PgOwnerAccessResolver::new(app_ctx.pool.clone()),
+        };
         edge_auth = edge_auth
             .with_host(authenticator)
-            .with_owner_access(Arc::new(PgOwnerAccessResolver::new(app_ctx.pool.clone())));
+            .with_owner_access(Arc::new(owner_access));
     }
     let edge_auth = Arc::new(edge_auth);
     let mcp_host =
@@ -1471,6 +1498,7 @@ mod tests {
                 .into_runtime_authorities();
         let registry = Arc::new(engine.registry().clone());
         let app_ctx = AppContext {
+            platform_scope: None,
             engine: Arc::new(engine),
             pool,
             pg_tuning: proxima_storage_pg::PgTuning::default(),
@@ -1527,6 +1555,7 @@ mod tests {
         let engine = Arc::new(engine);
         let registry = Arc::new(engine.registry().clone());
         let app_ctx = AppContext {
+            platform_scope: None,
             engine: engine.clone(),
             pool,
             pg_tuning: proxima_storage_pg::PgTuning::default(),
@@ -1588,6 +1617,7 @@ mod tests {
                 .into_runtime_authorities();
         let registry = Arc::new(engine.registry().clone());
         let app_ctx = AppContext {
+            platform_scope: None,
             engine: Arc::new(engine),
             pool,
             pg_tuning: proxima_storage_pg::PgTuning::default(),
@@ -1794,17 +1824,23 @@ mod tests {
             .allowed_origins(vec!["https://base.test".to_string()]);
         let env = RuntimeBuilder::default()
             .database_url("postgres://env/proxima")
+            .platform_database_url("postgres://env/platform")
             .allowed_origins(vec!["https://env.test".to_string()])
             .with_mcp()
             .authenticator(Arc::new(StubAuth { owner: owner() }));
         let overlay = RuntimeBuilder::default()
             .database_url("postgres://overlay/proxima")
+            .platform_database_url("postgres://overlay/platform")
             .tool_scope(ToolScope::All)
             .stream_max_lifetime(std::time::Duration::from_secs(12));
 
         let (config, _) = overlay.merge_over(env.merge_over(base)).resolve().unwrap();
 
         assert_eq!(config.database_url, "postgres://overlay/proxima");
+        assert_eq!(
+            config.platform_database_url.as_deref(),
+            Some("postgres://overlay/platform")
+        );
         assert_eq!(config.allowed_origins, ["https://env.test".to_string()]);
         assert!(config.mcp.is_some());
         assert_eq!(

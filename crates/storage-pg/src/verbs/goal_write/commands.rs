@@ -86,7 +86,8 @@ pub(crate) async fn create_goal_atomic_in_pool(
     req: &CreateGoalAtomicRequest<'_>,
     permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    let mut tx = pool.begin().await.map_err(internal)?;
+    let mut tx =
+        crate::owner_scope::begin_compatible_owner_transaction(pool, permit.owner_scope()).await?;
     let outcome = create_goal_in_tx(&mut tx, sidecars, req, permit).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
@@ -140,7 +141,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &TransitionGoalAtomicRequest<'_>,
-    _permit: &OwnerWritePermit,
+    permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
     // Constant-time command validation stays ahead of the replay probe: these
     // two rejections ran before every prior write, so no stored declaration can
@@ -158,7 +159,8 @@ pub(crate) async fn transition_goal_atomic_in_pool(
             "operator-authored Goal transition requires explicit Abstraction evidence".into(),
         ));
     }
-    let mut tx = pool.begin().await.map_err(internal)?;
+    let mut tx =
+        crate::owner_scope::begin_compatible_owner_transaction(pool, permit.owner_scope()).await?;
     let declaration = transition_replay_declaration(req);
     if let Some(replay) = resolve_goal_replay(
         tx.as_mut(),
@@ -225,7 +227,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &AchieveGoalAtomicRequest<'_>,
-    _permit: &OwnerWritePermit,
+    permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
     // See `transition_goal_atomic_in_pool`: an empty-evidence achievement was
     // never written, so no declaration can match one.
@@ -234,7 +236,8 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
             "achievement evidence must be nonempty".into(),
         ));
     }
-    let mut tx = pool.begin().await.map_err(internal)?;
+    let mut tx =
+        crate::owner_scope::begin_compatible_owner_transaction(pool, permit.owner_scope()).await?;
     let declaration = achieve_replay_declaration(req);
     if let Some(replay) = resolve_goal_replay(
         tx.as_mut(),
@@ -310,9 +313,10 @@ pub(crate) async fn modify_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &ModifyGoalAtomicRequest<'_>,
-    _permit: &OwnerWritePermit,
+    permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    let mut tx = pool.begin().await.map_err(internal)?;
+    let mut tx =
+        crate::owner_scope::begin_compatible_owner_transaction(pool, permit.owner_scope()).await?;
     let declaration = modify_replay_declaration(req)?;
     if let Some(replay) = resolve_goal_replay(
         tx.as_mut(),
@@ -396,9 +400,10 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &DecomposeGoalAtomicRequest<'_>,
-    _permit: &OwnerWritePermit,
+    permit: &OwnerWritePermit,
 ) -> Result<DecomposeGoalOutcome, StorageError> {
-    let mut tx = pool.begin().await.map_err(internal)?;
+    let mut tx =
+        crate::owner_scope::begin_compatible_owner_transaction(pool, permit.owner_scope()).await?;
     let declarations = decompose_replay_declarations(req)?;
     if let Some(replay) = resolve_decompose_replay_set(tx.as_mut(), req, &declarations).await? {
         tx.commit().await.map_err(map_err)?;

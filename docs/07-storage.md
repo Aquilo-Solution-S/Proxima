@@ -64,6 +64,38 @@ table each — own table, own single owner column, keyed to the parent. See
 
 Access uses server-resolved `OwnerRef` → roles. No org column.
 
+### Runtime owner binding
+
+The authenticated principal is resolved once by the host into an opaque
+`OwnerScope`. Only the storage layer may construct the transaction-local
+settings from that witness; the binding and every statement it guards share
+one transaction. `X-Proxima-Owner` may narrow the principal's authorized set;
+it never supplies identity. Flavor host SQL is part of the trusted computing
+base and receives no raw platform connection.
+
+Runtime roles are `NOBYPASSRLS`, are not table owners, and use `FORCE ROW
+LEVEL SECURITY`. `SET LOCAL row_security = off` succeeds, but a subsequent
+protected query is refused. Missing or empty scope returns zero rows; INSERT
+is refused and UPDATE/DELETE affect zero rows. Boot inventories every composed base and sidecar table from the
+catalog; a missing owner policy or FORCE RLS fails boot.
+
+The platform role is supplied separately for migrations and maintenance. It
+is validated as non-superuser, `NOBYPASSRLS`, and owner of the complete
+composed schema, then used through an explicit platform capability. A
+single-owner deployment follows the same transaction path; multiple owners
+use the same owner-scope shape with a set-valued UUID binding.
+
+Measured scope representation (PostgreSQL 18.4, 20,000 Memories, 100 owners,
+10,000 rows in the largest owner; nonowner `NOBYPASSRLS` runtime): scalar
+`SELECT current_setting(...)::uuid[]` InitPlans parse the owner arrays once.
+The eight-small-owner candidate measured 1.463 ms versus 80.919 ms for
+per-row parsing. Full policies measured 4.605 ms for that case; singleton
+small/large and eight-owner skewed cases measured 0.694/12.521/14.030 ms.
+Warm median of three runs after one initial run, default planner, 101-row
+head query. The full plan uses InitPlans, `memory_head_owner_kind_idx`, and
+`memory_t_key`. Synthetic evidence; deployment distributions require their
+own plans before considering a temporary owner relation.
+
 `transfer_to_owner` is an in-place series transfer: `UPDATE owner_id` on
 `memory_head` and every `t` on that handle. Same `(handle, t)`. Triggers
 allow that column only; all other memory fields stay append-only. Cooled

@@ -413,6 +413,7 @@ fn code_template_name() -> String {
 pub async fn register_fixture_repo(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) {
     proxima_code::testkit::register_repo(
         pool,
+        None,
         owner,
         repo_id,
         &format!("/tmp/proxima-code-fixture-{repo_id}"),

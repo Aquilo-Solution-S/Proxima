@@ -24,7 +24,7 @@
 use std::future::Future;
 
 use proxima_core::StorageError;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
 
@@ -57,7 +57,10 @@ pub(crate) enum TxOutcome<T> {
 /// duration, borrows it locally as it pleases, and the type system — not a
 /// convention — makes it hand the transaction back, so exactly one ending is
 /// awaited and it is awaited here.
-pub(crate) async fn in_transaction<T, F, Fut>(pool: &PgPool, body: F) -> Result<T, StorageError>
+pub(crate) async fn in_transaction<T, F, Fut>(
+    tx: Transaction<'static, Postgres>,
+    body: F,
+) -> Result<T, StorageError>
 where
     F: FnOnce(Transaction<'static, Postgres>) -> Fut,
     Fut: Future<
@@ -67,7 +70,6 @@ where
         ),
     >,
 {
-    let tx = pool.begin().await.map_err(map_err)?;
     let (tx, outcome) = body(tx).await;
     match outcome {
         // A deliberate abort's report claims nothing changed; prove it.

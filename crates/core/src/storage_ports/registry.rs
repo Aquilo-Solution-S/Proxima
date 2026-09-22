@@ -6,6 +6,7 @@ use crate::storage::StorageError;
 pub trait RegistryProjectionPort: Send + Sync {
     async fn load_memory_batch_facts(
         &self,
+        _owner_scope: Option<&crate::OwnerScope>,
         owner: &Owner,
         memory_id: crate::MemoryId,
         schemas: &[MemorySchemaSpec],
@@ -13,6 +14,7 @@ pub trait RegistryProjectionPort: Send + Sync {
 
     async fn load_abstraction_heads(
         &self,
+        _owner_scope: Option<&crate::OwnerScope>,
         owner: &Owner,
         schemas: &[MemorySchemaSpec],
         limit: usize,

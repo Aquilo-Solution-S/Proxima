@@ -10,7 +10,7 @@ use crate::storage_ports::{InboundPinQuery, MemoryReadHandle};
 use crate::verbs::query::{
     EdgeExistsRequest, EdgeExistsResponse, EdgeReadCursor, EdgeReadRequest, EdgeReadResponse,
 };
-use crate::{Edge, EdgeKind, EntityKind, EntityRef, GoalId, MemoryId, OwnerRef};
+use crate::{Edge, EdgeKind, EntityKind, EntityRef, GoalId, MemoryId, OwnerRef, OwnerScope};
 
 use super::errors::internal_storage_error;
 
@@ -73,6 +73,7 @@ fn entity_id(entity: Option<EntityRef>) -> Option<uuid::Uuid> {
 
 async fn resolve_visible_goal_refs(
     memory_read: &MemoryReadHandle,
+    owner_scope: Option<&OwnerScope>,
     read_owners: &[OwnerRef],
     nodes: &mut [PinNode],
 ) -> Result<(), ProtocolError> {
@@ -92,7 +93,7 @@ async fn resolve_visible_goal_refs(
         return Ok(());
     }
     let visible = memory_read
-        .load_visible_goal_ids(read_owners, &candidates)
+        .load_visible_goal_ids(owner_scope, read_owners, &candidates)
         .await
         .map_err(|err| internal_storage_error("load_visible_goal_ids", &err))?;
     for node in nodes {
@@ -184,6 +185,7 @@ fn project_hop_edge(hop: &PinHop, visible: &HashMap<MemoryId, EntityKind>) -> Ed
 
 async fn load_visible(
     memory_read: &MemoryReadHandle,
+    owner_scope: Option<&OwnerScope>,
     read_owners: &[OwnerRef],
     ids: &[MemoryId],
 ) -> Result<HashMap<MemoryId, EntityKind>, ProtocolError> {
@@ -191,7 +193,7 @@ async fn load_visible(
         return Ok(HashMap::new());
     }
     let nodes = memory_read
-        .load_pin_nodes(read_owners, ids)
+        .load_pin_nodes(owner_scope, read_owners, ids)
         .await
         .map_err(|err| internal_storage_error("load_pin_nodes", &err))?;
     Ok(nodes.into_iter().map(|node| (node.id, node.kind)).collect())
@@ -200,6 +202,7 @@ async fn load_visible(
 /// Source and/or inbound pin nodes, then project a newest-first page.
 pub(in crate::engine) async fn read_edges_from_nodes(
     memory_read: &MemoryReadHandle,
+    owner_scope: Option<&OwnerScope>,
     read_owners: &[OwnerRef],
     req: &EdgeReadRequest,
 ) -> Result<EdgeReadResponse, ProtocolError> {
@@ -218,14 +221,15 @@ pub(in crate::engine) async fn read_edges_from_nodes(
 
     let sources = if let Some(source) = source_id {
         let mut sources = memory_read
-            .load_pin_nodes(read_owners, &[source])
+            .load_pin_nodes(owner_scope, read_owners, &[source])
             .await
             .map_err(|err| internal_storage_error("load_pin_nodes", &err))?;
-        resolve_visible_goal_refs(memory_read, read_owners, &mut sources).await?;
+        resolve_visible_goal_refs(memory_read, owner_scope, read_owners, &mut sources).await?;
         sources
     } else if let Some(target) = target_id {
         load_incoming_sources(
             memory_read,
+            owner_scope,
             read_owners,
             MemoryId::new(target),
             req.filter
@@ -249,12 +253,13 @@ pub(in crate::engine) async fn read_edges_from_nodes(
         .collect();
     want.sort_unstable();
     want.dedup();
-    let visible = load_visible(memory_read, read_owners, &want).await?;
+    let visible = load_visible(memory_read, owner_scope, read_owners, &want).await?;
     Ok(page_hops(hops, req.cursor, req.limit, &visible))
 }
 
 pub(in crate::engine) async fn edge_exists_from_nodes(
     memory_read: &MemoryReadHandle,
+    owner_scope: Option<&OwnerScope>,
     read_owners: &[OwnerRef],
     req: &EdgeExistsRequest,
 ) -> Result<EdgeExistsResponse, ProtocolError> {
@@ -263,7 +268,7 @@ pub(in crate::engine) async fn edge_exists_from_nodes(
         limit: 1,
         cursor: None,
     };
-    let page = read_edges_from_nodes(memory_read, read_owners, &read).await?;
+    let page = read_edges_from_nodes(memory_read, owner_scope, read_owners, &read).await?;
     Ok(EdgeExistsResponse {
         exists: !page.edges.is_empty(),
     })
@@ -300,6 +305,7 @@ fn matching_hops(
 
 async fn load_incoming_sources(
     memory_read: &MemoryReadHandle,
+    owner_scope: Option<&OwnerScope>,
     read_owners: &[OwnerRef],
     target: MemoryId,
     target_filter: EntityRef,
@@ -313,10 +319,11 @@ async fn load_incoming_sources(
         && let Some(src) = memory_ref(Some(cursor.source))
     {
         let mut cursor_sources = memory_read
-            .load_pin_nodes(read_owners, &[src])
+            .load_pin_nodes(owner_scope, read_owners, &[src])
             .await
             .map_err(|err| internal_storage_error("load_pin_nodes", &err))?;
-        resolve_visible_goal_refs(memory_read, read_owners, &mut cursor_sources).await?;
+        resolve_visible_goal_refs(memory_read, owner_scope, read_owners, &mut cursor_sources)
+            .await?;
         sources.extend(cursor_sources);
         after = Some(src);
     }
@@ -324,6 +331,7 @@ async fn load_incoming_sources(
     loop {
         let page = memory_read
             .load_inbound_pin_nodes(
+                owner_scope,
                 read_owners,
                 InboundPinQuery {
                     targets: &targets,
@@ -341,7 +349,7 @@ async fn load_incoming_sources(
             .map_err(|err| internal_storage_error("load_inbound_pin_nodes", &err))?;
         let short = page.len() < usize::try_from(page_limit).unwrap_or(usize::MAX);
         let mut page = page;
-        resolve_visible_goal_refs(memory_read, read_owners, &mut page).await?;
+        resolve_visible_goal_refs(memory_read, owner_scope, read_owners, &mut page).await?;
         if let Some(last) = page.last() {
             after = Some(last.id);
         }
@@ -360,6 +368,7 @@ async fn load_incoming_sources(
 /// Not a complete star — `read_edges` incoming is the complete path.
 pub(in crate::engine) async fn neighbor_edges_from_nodes(
     memory_read: &MemoryReadHandle,
+    owner_scope: Option<&OwnerScope>,
     read_owners: &[OwnerRef],
     memory_ids: &[MemoryId],
     limit: usize,
@@ -368,13 +377,14 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
         return Ok(Vec::new());
     }
     let mut requested = memory_read
-        .load_pin_nodes(read_owners, memory_ids)
+        .load_pin_nodes(owner_scope, read_owners, memory_ids)
         .await
         .map_err(|err| internal_storage_error("load_pin_nodes", &err))?;
-    resolve_visible_goal_refs(memory_read, read_owners, &mut requested).await?;
+    resolve_visible_goal_refs(memory_read, owner_scope, read_owners, &mut requested).await?;
     let inbound_limit = u32::try_from(limit).unwrap_or(u32::MAX);
     let mut inbound = memory_read
         .load_inbound_pin_nodes(
+            owner_scope,
             read_owners,
             InboundPinQuery {
                 targets: memory_ids,
@@ -387,7 +397,7 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
         )
         .await
         .map_err(|err| internal_storage_error("load_inbound_pin_nodes", &err))?;
-    resolve_visible_goal_refs(memory_read, read_owners, &mut inbound).await?;
+    resolve_visible_goal_refs(memory_read, owner_scope, read_owners, &mut inbound).await?;
 
     let mut by_id: HashMap<MemoryId, PinNode> = HashMap::new();
     for node in requested.into_iter().chain(inbound) {
@@ -415,7 +425,7 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
         ids.dedup();
         ids
     };
-    let extra = load_visible(memory_read, read_owners, &missing).await?;
+    let extra = load_visible(memory_read, owner_scope, read_owners, &missing).await?;
     let mut visible: HashMap<MemoryId, EntityKind> =
         by_id.iter().map(|(id, node)| (*id, node.kind)).collect();
     visible.extend(extra);
@@ -564,6 +574,7 @@ mod tests {
     impl MemoryReadPort for FakePins {
         async fn load_fact_text(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _owner: &crate::Owner,
             _memory_id: MemoryId,
         ) -> Result<Option<String>, StorageError> {
@@ -572,6 +583,7 @@ mod tests {
 
         async fn load_memory_graph_payloads(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _identities: &[crate::storage::MemoryGraphIdentity],
             _schemas: &[crate::read_models::MemorySchemaSpec],
             _include_body: bool,
@@ -581,6 +593,7 @@ mod tests {
 
         async fn load_sketches(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _memory_ids: &[MemoryId],
         ) -> Result<Vec<crate::read_models::MemorySketch>, StorageError> {
@@ -589,6 +602,7 @@ mod tests {
 
         async fn load_pin_nodes(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             memory_ids: &[MemoryId],
         ) -> Result<Vec<PinNode>, StorageError> {
@@ -602,6 +616,7 @@ mod tests {
 
         async fn load_visible_goal_ids(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             goal_ids: &[crate::GoalId],
         ) -> Result<Vec<crate::GoalId>, StorageError> {
@@ -618,6 +633,7 @@ mod tests {
 
         async fn load_inbound_pin_nodes(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             query: InboundPinQuery<'_>,
         ) -> Result<Vec<PinNode>, StorageError> {
@@ -626,6 +642,7 @@ mod tests {
 
         async fn query_memories(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _req: &crate::verbs::query::QueryRequest,
             _schemas: &[crate::read_models::MemorySchemaSpec],
@@ -635,6 +652,7 @@ mod tests {
 
         async fn search_memories(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _req: &crate::verbs::query::MemorySearchRequest,
             _projections: &[crate::verbs::schema::MemorySearchProjection],
         ) -> Result<crate::verbs::query::MemorySearchPage, StorageError> {
@@ -643,6 +661,7 @@ mod tests {
 
         async fn walk_memory_lineage(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _req: &crate::verbs::query::MemoryLineageRequest,
         ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError> {
@@ -651,6 +670,7 @@ mod tests {
 
         async fn owned_series_handle(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _owner: crate::Owner,
             _schema_id: &crate::SchemaId,
             _sidecar_table: &str,
@@ -693,6 +713,7 @@ mod tests {
         loop {
             let page = read_edges_from_nodes(
                 &handle,
+                None,
                 &[owner],
                 &EdgeReadRequest {
                     filter: EdgeFilter {
@@ -732,14 +753,14 @@ mod tests {
                 limit,
                 cursor: None,
             };
-            let first = read_edges_from_nodes(&handle, &[owner], &req)
+            let first = read_edges_from_nodes(&handle, None, &[owner], &req)
                 .await
                 .expect("first page");
             assert_eq!(first.edges.len(), source_count - 1);
             req.cursor = Some(first.next_cursor.unwrap_or_else(|| {
                 panic!("limit={limit}: one further incoming edge requires a cursor")
             }));
-            let second = read_edges_from_nodes(&handle, &[owner], &req)
+            let second = read_edges_from_nodes(&handle, None, &[owner], &req)
                 .await
                 .expect("second page");
             assert_eq!(second.edges.len(), 1);
@@ -761,6 +782,7 @@ mod tests {
             let handle: crate::storage_ports::MemoryReadHandle = fake;
             let page = read_edges_from_nodes(
                 &handle,
+                None,
                 &[owner],
                 &EdgeReadRequest {
                     filter: EdgeFilter {
@@ -802,7 +824,7 @@ mod tests {
             };
             let mut seen = std::collections::HashSet::new();
             for index in 0..4 {
-                let page = read_edges_from_nodes(&handle, &[owner], &req)
+                let page = read_edges_from_nodes(&handle, None, &[owner], &req)
                     .await
                     .expect("mixed pin page");
                 assert_eq!(page.edges.len(), 1);
@@ -823,7 +845,7 @@ mod tests {
     async fn neighbor_sample_keeps_newest_heads() {
         let (owner, hub, fake) = hub_fixture(300);
         let handle: crate::storage_ports::MemoryReadHandle = fake.clone();
-        let edges = neighbor_edges_from_nodes(&handle, &[owner], &[hub], 200)
+        let edges = neighbor_edges_from_nodes(&handle, None, &[owner], &[hub], 200)
             .await
             .expect("neighbors");
         assert_eq!(edges.len(), 200);
@@ -937,7 +959,7 @@ mod tests {
             limit: 10,
             cursor: None,
         };
-        let page = read_edges_from_nodes(&handle, &[owner], &request)
+        let page = read_edges_from_nodes(&handle, None, &[owner], &request)
             .await
             .expect("Memory-only references");
         assert_eq!(page.edges.len(), 1);
@@ -951,6 +973,7 @@ mod tests {
         let (_, goal_source, goal, goal_handle, goal_probes) = probing_goal_ref_fixture();
         let goal_page = read_edges_from_nodes(
             &goal_handle,
+            None,
             &[owner],
             &EdgeReadRequest {
                 filter: EdgeFilter {
@@ -977,6 +1000,7 @@ mod tests {
         let (owner, source, _goal, handle) = goal_ref_fixture();
         let first_page = read_edges_from_nodes(
             &handle,
+            None,
             &[owner],
             &EdgeReadRequest {
                 filter: EdgeFilter {
@@ -997,6 +1021,7 @@ mod tests {
 
         let second_page = read_edges_from_nodes(
             &handle,
+            None,
             &[owner],
             &EdgeReadRequest {
                 filter: EdgeFilter {
@@ -1020,6 +1045,7 @@ mod tests {
         let (owner, _source, goal_target, handle) = goal_ref_fixture();
         let inbound = read_edges_from_nodes(
             &handle,
+            None,
             &[owner],
             &EdgeReadRequest {
                 filter: EdgeFilter {
@@ -1038,6 +1064,7 @@ mod tests {
 
         let exists = super::edge_exists_from_nodes(
             &handle,
+            None,
             &[owner],
             &crate::verbs::query::EdgeExistsRequest {
                 filter: EdgeFilter {
@@ -1055,7 +1082,7 @@ mod tests {
     #[tokio::test]
     async fn neighbor_edges_project_visible_goal_targets() {
         let (owner, source, _goal, handle) = goal_ref_fixture();
-        let neighbors = neighbor_edges_from_nodes(&handle, &[owner], &[source], 10)
+        let neighbors = neighbor_edges_from_nodes(&handle, None, &[owner], &[source], 10)
             .await
             .expect("neighbor Goal reference");
         assert_eq!(neighbors.len(), 2);

@@ -574,7 +574,13 @@ impl Engine {
         }
         for (owner, declared) in &deferred_kinds {
             let memory_ids: Vec<MemoryId> = declared.iter().map(|(id, _)| *id).collect();
-            let stored = self.load_required_memory_kinds(owner, &memory_ids).await?;
+            let stored = self
+                .load_required_memory_kinds(
+                    self.operation_authority(authority)?.authz().owner_scope(),
+                    owner,
+                    &memory_ids,
+                )
+                .await?;
             for ((_, target_kind), actual) in declared.iter().zip(stored) {
                 if actual != *target_kind {
                     return Err(ProtocolError::invalid_argument(
@@ -1042,13 +1048,15 @@ impl Engine {
             .storage
             .ingest
             .embedding_text
-            .load_embedding_text(
-                owner,
-                entity_kind,
-                memory_id,
+            .load_embedding_texts_for_host(
+                &[(*owner, entity_kind, memory_id)],
                 self.registry().non_embeddable_schema_ids(),
+                crate::storage_ports::OperatorMaintenanceProof::new(),
             )
             .await?
+            .into_iter()
+            .next()
+            .flatten()
         else {
             return Ok(EmbedStep::NothingToEmbed);
         };
@@ -1197,7 +1205,11 @@ impl Engine {
                 .storage
                 .ingest
                 .embedding_text
-                .load_embedding_texts(&items, self.registry().non_embeddable_schema_ids())
+                .load_embedding_texts_for_host(
+                    &items,
+                    self.registry().non_embeddable_schema_ids(),
+                    crate::storage_ports::OperatorMaintenanceProof::new(),
+                )
                 .await?;
             let mut batch: Vec<(EmbeddingJobClaim, String)> = Vec::with_capacity(claims.len());
             for (claim, text) in claims.into_iter().zip(texts) {

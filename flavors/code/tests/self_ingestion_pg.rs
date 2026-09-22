@@ -151,6 +151,7 @@ async fn self_ingestion_streams_proxima_main() {
         // there is none — see `repo_fence_pg`.
         register_repo(
             pg.pool_for_tests(),
+            None,
             &owner,
             repo_id,
             &clone_path.to_string_lossy(),

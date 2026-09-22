@@ -15,6 +15,7 @@ use proxima_core::MemoryId;
 use proxima_core::mcp::cursor as wire_cursor;
 use proxima_core::verbs::query::like_pattern;
 use proxima_core::{Tool, ToolCtx, ToolError};
+use proxima_storage_pg::begin_compatible_owner_transaction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -527,14 +528,14 @@ async fn scan_lexical_candidates(
     let sidecar =
         scan.resolved
             .sidecar_scan(&distinctive, scan.candidate_limit, scan.read_owner_ids);
-    let gin = scan_chunk_sidecar(pool.pool(), scan.resolved.query, &sidecar).await?;
+    let gin = scan_chunk_sidecar(pool, scan.resolved.query, &sidecar).await?;
     // The substring arm is DECLARED, not blanket. A schema whose contract
     // says `SubstringArm::Off` contributes no statement and no rows; the
     // price for stopword-only and partial-word queries is then paid per
     // declaration, visibly, instead of being a mechanism nobody can turn
     // off.
     if gin.is_empty() && chunk_substring_arm_is_declared() {
-        scan_chunk_sidecar_like(pool.pool(), scan.resolved.query, &sidecar).await
+        scan_chunk_sidecar_like(pool, scan.resolved.query, &sidecar).await
     } else {
         Ok(gin)
     }
@@ -554,6 +555,7 @@ async fn scan_semantic_candidates(
         return Ok(Vec::new());
     };
     pool.nearest_code_chunk_candidates(
+        ctx.authz().owner_scope(),
         ctx.owner(),
         model_id,
         embedding,
@@ -873,6 +875,9 @@ async fn load_call_edges(
     chunk_ids: &[uuid::Uuid],
 ) -> Result<Vec<CallEdge>, ToolError> {
     let pool = code_store(ctx)?;
+    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+        .await
+        .map_err(ToolError::Storage)?;
     let pair_rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
         "SELECT caller_memory_id, callee_memory_id
            FROM proxima_code.code_chunk_call_v1
@@ -883,7 +888,7 @@ async fn load_call_edges(
     )
     .bind(chunk_ids)
     .bind(i64::try_from(MAX_CALL_EDGES).unwrap_or(i64::MAX))
-    .fetch_all(pool.pool())
+    .fetch_all(&mut *tx)
     .await
     .map_err(map_storage)?;
     let mut seen: HashSet<(uuid::Uuid, uuid::Uuid)> = HashSet::new();
@@ -915,9 +920,10 @@ async fn load_call_edges(
     )
     .bind(&sources)
     .bind(&targets)
-    .fetch_all(pool.pool())
+    .fetch_all(&mut *tx)
     .await
     .map_err(map_storage)?;
+    tx.commit().await.map_err(map_storage)?;
     let mut sites: HashMap<(uuid::Uuid, uuid::Uuid), Vec<CallSite>> = HashMap::new();
     for row in site_rows {
         sites
@@ -965,12 +971,15 @@ struct ChunkSidecarScan<'a> {
 /// path/text literal bonuses on the GIN hit set. `LIKE` is a separate
 /// scan, only when this GIN arm returns nothing.
 async fn scan_chunk_sidecar(
-    pool: &sqlx::PgPool,
+    pool: &crate::CodeFlavorStore,
     query: &str,
     scan: &ChunkSidecarScan<'_>,
 ) -> Result<Vec<ChunkCandidateRow>, ToolError> {
+    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+        .await
+        .map_err(ToolError::Storage)?;
     // SQL-POLICY: fixed-fragment
-    sqlx::query_as(sqlx::AssertSqlSafe(CHUNK_GIN_SQL.as_str()))
+    let rows = sqlx::query_as(sqlx::AssertSqlSafe(CHUNK_GIN_SQL.as_str()))
         .bind(query)
         .bind(scan.repo_id)
         .bind(scan.language)
@@ -979,9 +988,11 @@ async fn scan_chunk_sidecar(
         .bind(scan.candidate_limit)
         .bind(scan.distinctive)
         .bind(scan.read_owner_ids)
-        .fetch_all(pool)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(map_storage)
+        .map_err(map_storage)?;
+    tx.commit().await.map_err(map_storage)?;
+    Ok(rows)
 }
 
 /// The GIN arm, over `proxima_code.projection`.
@@ -1172,12 +1183,15 @@ fn chunk_substring_arm_is_declared() -> bool {
 }
 
 async fn scan_chunk_sidecar_like(
-    pool: &sqlx::PgPool,
+    pool: &crate::CodeFlavorStore,
     query: &str,
     scan: &ChunkSidecarScan<'_>,
 ) -> Result<Vec<ChunkCandidateRow>, ToolError> {
+    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+        .await
+        .map_err(ToolError::Storage)?;
     // SQL-POLICY: fixed-fragment
-    sqlx::query_as(sqlx::AssertSqlSafe(CHUNK_LIKE_SQL.as_str()))
+    let rows = sqlx::query_as(sqlx::AssertSqlSafe(CHUNK_LIKE_SQL.as_str()))
         .bind(query)
         .bind(scan.repo_id)
         .bind(scan.language)
@@ -1185,9 +1199,11 @@ async fn scan_chunk_sidecar_like(
         .bind(scan.chunk_type)
         .bind(scan.candidate_limit)
         .bind(scan.read_owner_ids)
-        .fetch_all(pool)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(map_storage)
+        .map_err(map_storage)?;
+    tx.commit().await.map_err(map_storage)?;
+    Ok(rows)
 }
 
 #[derive(Debug, sqlx::FromRow)]

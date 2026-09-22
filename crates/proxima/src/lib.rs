@@ -265,6 +265,7 @@ pub struct EmbeddedProxima {
     delegation_runtime_authority: proxima_core::DelegationRuntimeAuthority,
     pub handle: EngineHandle,
     pool: PgPool,
+    platform_scope: Option<proxima_storage_pg::PgPlatformScope>,
     pub registry: Arc<proxima_core::FlavorRegistryFrozen>,
     pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     erase_context: proxima_storage_pg::PgHostStateEraseContext,
@@ -315,6 +316,11 @@ impl EmbeddedProxima {
         &self,
     ) -> proxima_core::storage_ports::publication::OriginScope {
         self.origin_scope
+    }
+
+    #[must_use]
+    pub fn platform_scope_for_host(&self) -> Option<proxima_storage_pg::PgPlatformScope> {
+        self.platform_scope.clone()
     }
 
     /// Narrow host-only provenance check for intake and backlog re-offer.
@@ -564,6 +570,7 @@ impl ProximaBuilder {
 
         let mut pg = connect_and_migrate(
             &config.database_url,
+            config.platform_database_url.as_deref(),
             pg_pool_config,
             pg_tuning,
             migrators,
@@ -575,26 +582,21 @@ impl ProximaBuilder {
         }
 
         let registry = compose_registry(registers)?;
+        let pg = admit_owner_rls(pg, &registry, config.platform_database_url.as_deref()).await?;
         let pg_sidecars = compose_pg_sidecars(&pg, &registry, pg_sidecar_registers).await?;
         let pg = pg
             .with_sidecars(pg_sidecars.as_ref().clone())
             .try_with_flavors(&registry)
             .map_err(|error| EmbedError::Storage(error.to_string()))?
             .with_embedding_runtime_policy(embedding_runtime_policy);
-
         let erase_context = pg
             .host_state_erase_context()
             .map_err(|error| EmbedError::Storage(error.to_string()))?;
         let (publication_origin_eligibility, origin_scope) = publication_origin_ports(&pg).await?;
 
         let pool = pg.clone_pool_for_backend();
-        let configured_bucket = config.s3.as_ref().map(|s3| s3.bucket.clone());
-        let blobs = config
-            .s3
-            .map(|s3| CitedBlobStore::new(pool.clone(), s3))
-            .transpose()
-            .map_err(|error| EmbedError::Config(error.to_string()))?;
-        let pg = wire_cold_store(pg, blobs.as_ref(), configured_bucket.as_deref())?;
+        let platform_scope = pg.platform_scope_for_host();
+        let (pg, blobs) = compose_blob_stores(pg, config.s3)?;
 
         let engine = compose_engine(
             registry,
@@ -640,6 +642,7 @@ impl ProximaBuilder {
             delegation_runtime_authority,
             handle,
             pool,
+            platform_scope,
             registry,
             pg_sidecars,
             erase_context,
@@ -690,6 +693,7 @@ async fn publication_origin_ports(
 /// Unset pool policy or tuning falls back to the process environment.
 async fn connect_and_migrate(
     database_url: &str,
+    platform_database_url: Option<&str>,
     pg_pool_config: Option<proxima_storage_pg::PgPoolConfig>,
     pg_tuning: Option<proxima_storage_pg::PgTuning>,
     migrators: Vec<NamedMigrator>,
@@ -703,21 +707,26 @@ async fn connect_and_migrate(
         Some(tuning) => tuning,
         None => proxima_storage_pg::PgTuning::from_env().map_err(embed_storage_error)?,
     };
-    let pg = PgStorage::connect_with_config(database_url, pg_pool_config, pg_tuning)
-        .await
-        .map_err(embed_storage_error)?;
+    let migration_url = platform_database_url.unwrap_or(database_url);
+    let migration_pg =
+        PgStorage::connect_for_migrations_with_config(migration_url, pg_pool_config, pg_tuning)
+            .await
+            .map_err(embed_storage_error)?;
     if skip_migrations {
         // GitOps split-role deploy: schema is migrated out-of-band under a
         // DDL role; here we only run the preflight and issue no DDL.
-        preflight_without_migrations(&pg, migrators)
+        preflight_without_migrations(&migration_pg, migrators)
             .await
             .map_err(embed_migration_error)?;
     } else {
-        run_core_and_flavor_migrations(&pg, migrators)
+        run_core_and_flavor_migrations(&migration_pg, migrators)
             .await
             .map_err(embed_migration_error)?;
     }
-    Ok(pg)
+    drop(migration_pg);
+    PgStorage::connect_with_config(database_url, pg_pool_config, pg_tuning)
+        .await
+        .map_err(embed_storage_error)
 }
 
 /// Run every linked flavor's registration callback and freeze the result.
@@ -729,6 +738,62 @@ fn compose_registry(
         register(&mut registry).map_err(EmbedError::Registry)?;
     }
     registry.try_freeze().map_err(EmbedError::Registry)
+}
+
+async fn admit_owner_rls(
+    mut pg: PgStorage,
+    registry: &proxima_core::FlavorRegistryFrozen,
+    platform_database_url: Option<&str>,
+) -> Result<PgStorage, EmbedError> {
+    let schema_names = composed_schema_names(registry);
+    let schema_refs: Vec<&str> = schema_names.iter().map(String::as_str).collect();
+    let runtime_pool = pg.clone_pool_for_backend();
+    let enforcing = proxima_storage_pg::owner_rls_enforced(&runtime_pool, &schema_refs)
+        .await
+        .map_err(|error| EmbedError::Storage(error.to_string()))?;
+    if enforcing {
+        if platform_database_url.is_none() {
+            return Err(EmbedError::Storage(
+                "owner RLS requires PROXIMA_PLATFORM_DATABASE_URL".into(),
+            ));
+        }
+        proxima_storage_pg::assert_runtime_rls(&runtime_pool, &schema_refs)
+            .await
+            .map_err(|error| EmbedError::Storage(error.to_string()))?;
+    }
+    if let Some(platform_url) = platform_database_url {
+        let platform_pool = sqlx::PgPool::connect(platform_url)
+            .await
+            .map_err(|error| EmbedError::Storage(error.to_string()))?;
+        let platform = proxima_storage_pg::PgPlatformScope::new(platform_pool, &schema_refs)
+            .await
+            .map_err(|error| EmbedError::Storage(error.to_string()))?;
+        pg = pg.with_platform_scope(platform);
+    }
+    Ok(pg)
+}
+
+fn composed_schema_names(registry: &proxima_core::FlavorRegistryFrozen) -> Vec<String> {
+    let mut schemas = vec!["proxima_core".to_owned()];
+    for contract in registry.contracts() {
+        for surface in contract.all_surfaces() {
+            if let Some((schema, _)) = surface.table.split_once('.')
+                && !schemas.iter().any(|known| known == schema)
+            {
+                schemas.push(schema.to_owned());
+            }
+        }
+        for schema_contract in contract.schemas {
+            if let Some(table) = schema_contract.sidecar_table
+                && let Some((schema, _)) = table.split_once('.')
+                && !schemas.iter().any(|known| known == schema)
+            {
+                schemas.push(schema.to_owned());
+            }
+        }
+    }
+    schemas.sort();
+    schemas
 }
 
 /// Freeze the PG sidecar registry against the composed contracts, then
@@ -803,6 +868,26 @@ impl ColdObjectStore for UnconfiguredColdStore {
 
 /// Wire durable cold storage, or an unavailable adapter for database-only
 /// hosts. Cited uploads and cold storage must name the same backend.
+fn compose_blob_stores(
+    pg: PgStorage,
+    s3: Option<proxima_blob_s3::S3RuntimeConfig>,
+) -> Result<(PgStorage, Option<CitedBlobStore>), EmbedError> {
+    let configured_bucket = s3.as_ref().map(|s3| s3.bucket.clone());
+    let blobs = s3
+        .map(|s3| {
+            CitedBlobStore::new(pg.clone_pool_for_backend(), s3).map(|store| {
+                match pg.platform_scope_for_host() {
+                    Some(scope) => store.with_platform_scope(scope),
+                    None => store,
+                }
+            })
+        })
+        .transpose()
+        .map_err(|error| EmbedError::Config(error.to_string()))?;
+    let pg = wire_cold_store(pg, blobs.as_ref(), configured_bucket.as_deref())?;
+    Ok((pg, blobs))
+}
+
 fn wire_cold_store(
     pg: PgStorage,
     blobs: Option<&CitedBlobStore>,
@@ -934,6 +1019,7 @@ mod tests {
         let builder = super::ProximaBuilder::new(
             super::EmbedConfig {
                 database_url: "postgres://user:secret@localhost/proxima".to_string(),
+                platform_database_url: None,
                 s3: None,
             },
             owner,

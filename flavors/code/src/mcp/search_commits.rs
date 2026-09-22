@@ -1,8 +1,10 @@
 use std::sync::LazyLock;
 
+use proxima_core::OwnerScope;
 use proxima_core::flavor::{BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, SubstringArm};
 use proxima_core::verbs::query::like_pattern;
 use proxima_core::{Tool, ToolCtx, ToolError};
+use proxima_storage_pg::begin_compatible_owner_transaction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -151,6 +153,7 @@ async fn load_commit_matches(
 ) -> Result<(Vec<CommitMatch>, bool), ToolError> {
     let commit_rows = search_commit_rows(
         pool.pool(),
+        pool.owner_scope(),
         scan.query,
         scan.repo_id,
         scan.candidate_limit,
@@ -208,6 +211,7 @@ async fn load_summary_matches(
 ) -> Result<(Vec<SummaryMatch>, bool), ToolError> {
     let summary_rows = search_summary_rows(
         pool.pool(),
+        pool.owner_scope(),
         scan.query,
         scan.repo_id,
         scan.change_kind,
@@ -430,43 +434,53 @@ fn same_table_like_is_declared(schema_id: &str) -> bool {
 
 async fn search_commit_rows(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     query: &str,
     repo_id: Option<Uuid>,
     limit: i64,
     read_owner_ids: &[Uuid],
 ) -> Result<Vec<ScoredMemoryRow>, ToolError> {
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope)
+        .await
+        .map_err(ToolError::Storage)?;
     let gin: Vec<ScoredMemoryRow> = // SQL-POLICY: fixed-fragment
     sqlx::query_as(sqlx::AssertSqlSafe(COMMIT_SEARCH_SQL.as_str()))
         .bind(query)
         .bind(repo_id)
         .bind(limit)
         .bind(read_owner_ids)
-        .fetch_all(pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(map_storage)?;
-    if gin.is_empty() && same_table_like_is_declared(COMMIT_SCHEMA_ID) {
+    let result = if gin.is_empty() && same_table_like_is_declared(COMMIT_SCHEMA_ID) {
         // SQL-POLICY: fixed-fragment
         sqlx::query_as(sqlx::AssertSqlSafe(COMMIT_LIKE_SQL.as_str()))
             .bind(like_pattern(query))
             .bind(repo_id)
             .bind(limit)
             .bind(read_owner_ids)
-            .fetch_all(pool)
+            .fetch_all(&mut *tx)
             .await
             .map_err(map_storage)
     } else {
         Ok(gin)
-    }
+    };
+    tx.commit().await.map_err(map_storage)?;
+    result
 }
 
 async fn search_summary_rows(
     pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
     query: &str,
     repo_id: Option<Uuid>,
     change_kind: Option<&str>,
     limit: i64,
     read_owner_ids: &[Uuid],
 ) -> Result<Vec<ScoredMemoryRow>, ToolError> {
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope)
+        .await
+        .map_err(ToolError::Storage)?;
     let gin: Vec<ScoredMemoryRow> = // SQL-POLICY: fixed-fragment
     sqlx::query_as(sqlx::AssertSqlSafe(SUMMARY_SEARCH_SQL.as_str()))
         .bind(query)
@@ -474,10 +488,10 @@ async fn search_summary_rows(
         .bind(change_kind)
         .bind(limit)
         .bind(read_owner_ids)
-        .fetch_all(pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(map_storage)?;
-    if gin.is_empty() && same_table_like_is_declared(COMMIT_SUMMARY_SCHEMA_ID) {
+    let result = if gin.is_empty() && same_table_like_is_declared(COMMIT_SUMMARY_SCHEMA_ID) {
         // SQL-POLICY: fixed-fragment
         sqlx::query_as(sqlx::AssertSqlSafe(SUMMARY_LIKE_SQL.as_str()))
             .bind(like_pattern(query))
@@ -485,12 +499,14 @@ async fn search_summary_rows(
             .bind(change_kind)
             .bind(limit)
             .bind(read_owner_ids)
-            .fetch_all(pool)
+            .fetch_all(&mut *tx)
             .await
             .map_err(map_storage)
     } else {
         Ok(gin)
-    }
+    };
+    tx.commit().await.map_err(map_storage)?;
+    result
 }
 
 #[cfg(any(test, debug_assertions))]

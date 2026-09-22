@@ -7,12 +7,13 @@ use proxima_core::{EmbeddableEntityRef, EmbeddingJobClaim, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
+use crate::owner_scope::begin_compatible_owner_transaction;
+use crate::platform_scope::PgPlatformScope;
 
 use super::{
     claim_pending_embedding_jobs, complete_embedding_job, ensure_nonnegative_limit,
     fail_embedding_job, fail_embedding_job_permanently, insert_embedding_chunks,
-    insert_memory_embedding, load_embedding_texts, reclaim_stale_embedding_jobs,
-    release_embedding_jobs, renew_embedding_jobs,
+    insert_memory_embedding, reclaim_stale_embedding_jobs, renew_embedding_jobs,
 };
 
 pub use proxima_core::{
@@ -37,13 +38,21 @@ impl Drop for EmbeddingClaimHeartbeat {
 
 fn spawn_claim_heartbeat(
     pool: PgPool,
+    platform: Option<PgPlatformScope>,
     claims: Vec<EmbeddingJobClaim>,
     interval: std::time::Duration,
 ) -> EmbeddingClaimHeartbeat {
     let handle = tokio::spawn(async move {
         loop {
             tokio::time::sleep(interval).await;
-            if let Err(err) = renew_embedding_jobs(&pool, &claims).await {
+            let result = async {
+                let mut tx = begin_platform(&pool, platform.as_ref()).await?;
+                let count = renew_embedding_jobs(tx.as_mut(), &claims).await?;
+                tx.commit().await.map_err(map_err)?;
+                Ok::<_, StorageError>(count)
+            }
+            .await;
+            if let Err(err) = result {
                 tracing::warn!(error = %err, "inline embedding claim heartbeat failed");
             }
         }
@@ -132,12 +141,32 @@ pub async fn reconcile_embeddings(
     options: EmbeddingReconcileOptions<'_>,
     stale_claim_timeout_seconds: i64,
 ) -> Result<EmbeddingReconcileOutcome, StorageError> {
+    reconcile_embeddings_with_platform(pool, None, options, stale_claim_timeout_seconds).await
+}
+
+pub(crate) async fn reconcile_embeddings_with_platform(
+    pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
+    options: EmbeddingReconcileOptions<'_>,
+    stale_claim_timeout_seconds: i64,
+) -> Result<EmbeddingReconcileOutcome, StorageError> {
+    let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
+    let result =
+        reconcile_embeddings_on_connection(tx.as_mut(), options, stale_claim_timeout_seconds).await;
+    crate::owner_scope::finish_transaction(tx, result).await
+}
+
+async fn reconcile_embeddings_on_connection(
+    pool: &mut sqlx::PgConnection,
+    options: EmbeddingReconcileOptions<'_>,
+    stale_claim_timeout_seconds: i64,
+) -> Result<EmbeddingReconcileOutcome, StorageError> {
     let limit = resolve_reconcile_limit(options.limit)?;
     if limit == 0 {
         return Ok(EmbeddingReconcileOutcome::default());
     }
 
-    let reclaimed = reclaim_stale_embedding_jobs(pool, stale_claim_timeout_seconds).await?;
+    let reclaimed = reclaim_stale_embedding_jobs(&mut *pool, stale_claim_timeout_seconds).await?;
     if reclaimed > 0 {
         tracing::warn!(
             reclaimed,
@@ -158,7 +187,7 @@ pub async fn reconcile_embeddings(
         .bind(scope)
         .bind(since)
         .bind(options.non_embeddable_schemas)
-        .fetch_one(pool)
+        .fetch_one(&mut *pool)
         .await
         .map_err(map_err)?;
 
@@ -198,14 +227,35 @@ pub async fn drain_embedding_jobs_inline(
     units: &[MemoryEmbedUnit],
     policy: proxima_core::EmbeddingRuntimePolicy,
 ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
+    drain_embedding_jobs_inline_with_platform(pool, None, client, limit, units, policy).await
+}
+
+/// # Errors
+/// Returns storage errors from query execution or invalid stored data.
+pub async fn drain_embedding_jobs_inline_with_platform(
+    pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
+    client: &dyn EmbeddingClient,
+    limit: i64,
+    units: &[MemoryEmbedUnit],
+    policy: proxima_core::EmbeddingRuntimePolicy,
+) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
     let mut remaining = ensure_nonnegative_limit(limit)?;
     let batch_size = i64::try_from(policy.batch_size())
         .map_err(|_| StorageError::ConstraintViolation("embedding batch size too large".into()))?;
     let mut outcome = EmbeddingInlineDrainOutcome::default();
     while remaining > 0 {
-        let claims =
-            claim_pending_embedding_jobs(pool, client.model_id(), remaining.min(batch_size))
-                .await?;
+        let claims = {
+            let mut tx = begin_platform(pool, platform).await?;
+            let claimed = claim_pending_embedding_jobs(
+                tx.as_mut(),
+                client.model_id(),
+                remaining.min(batch_size),
+            )
+            .await?;
+            tx.commit().await.map_err(map_err)?;
+            claimed
+        };
         if claims.is_empty() {
             break;
         }
@@ -213,7 +263,7 @@ pub async fn drain_embedding_jobs_inline(
             StorageError::ConstraintViolation("claimed embedding job count too large".into())
         })?);
         let keep_draining =
-            drain_claimed_jobs(pool, client, claims, units, policy, &mut outcome).await?;
+            drain_claimed_jobs(pool, platform, client, claims, units, policy, &mut outcome).await?;
         if !keep_draining {
             break;
         }
@@ -226,6 +276,7 @@ pub async fn drain_embedding_jobs_inline(
 /// most once without caller-maintained exclusion state.
 async fn drain_claimed_jobs(
     pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
     client: &dyn EmbeddingClient,
     claims: Vec<EmbeddingJobClaim>,
     units: &[MemoryEmbedUnit],
@@ -234,6 +285,7 @@ async fn drain_claimed_jobs(
 ) -> Result<bool, StorageError> {
     let _heartbeat = spawn_claim_heartbeat(
         pool.clone(),
+        platform.cloned(),
         claims.clone(),
         policy.claim_heartbeat_interval(),
     );
@@ -241,12 +293,14 @@ async fn drain_claimed_jobs(
         .iter()
         .map(|claim| (claim.owner, claim.entity_kind, claim.entity_id))
         .collect();
-    let texts = load_embedding_texts(pool, &items, &[], units).await?;
+    let mut tx = begin_platform(pool, platform).await?;
+    let texts = super::load_embedding_texts_on_connection(tx.as_mut(), &items, &[], units).await?;
+    tx.commit().await.map_err(map_err)?;
     let mut batch = Vec::with_capacity(claims.len());
     for (claim, text) in claims.into_iter().zip(texts) {
         match text {
             Some(text) => batch.push((claim, text)),
-            None => complete_embedding_job(pool, &claim).await?,
+            None => complete_claim(pool, platform, &claim).await?,
         }
     }
     if batch.is_empty() {
@@ -268,15 +322,16 @@ async fn drain_claimed_jobs(
             );
             let claims: Vec<EmbeddingJobClaim> =
                 batch.into_iter().map(|(claim, _)| claim).collect();
-            release_embedding_jobs(pool, &claims, &error).await?;
+            release_claims(pool, platform, &claims, &error).await?;
             Ok(false)
         }
         Ok(vectors) => {
             for ((claim, _), vector) in batch.iter().zip(vectors) {
                 finish_claim(
                     pool,
+                    platform,
                     claim,
-                    store_claim_embedding(pool, client, claim, &vector).await,
+                    store_claim_embedding(pool, platform, client, claim, &vector).await,
                     outcome,
                 )
                 .await?;
@@ -284,7 +339,7 @@ async fn drain_claimed_jobs(
             Ok(true)
         }
         Err(LlmError::EmbedPermanent(_)) => {
-            drain_claims_individually(pool, client, batch, policy, outcome).await?;
+            drain_claims_individually(pool, platform, client, batch, policy, outcome).await?;
             Ok(true)
         }
         Err(err) => {
@@ -297,52 +352,70 @@ async fn drain_claimed_jobs(
                     jobs = batch.len(),
                     "transient inline embedding batch failure but provider answers; isolating inputs"
                 );
-                drain_claims_individually(pool, client, batch, policy, outcome).await?;
+                drain_claims_individually(pool, platform, client, batch, policy, outcome).await?;
                 return Ok(true);
             }
             let claims: Vec<EmbeddingJobClaim> =
                 batch.into_iter().map(|(claim, _)| claim).collect();
-            release_embedding_jobs(pool, &claims, &format!("embed memory text: {err}")).await?;
+            release_claims(
+                pool,
+                platform,
+                &claims,
+                &format!("embed memory text: {err}"),
+            )
+            .await?;
             Ok(false)
         }
     }
 }
 
+async fn begin_platform(
+    pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
+) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StorageError> {
+    match platform {
+        Some(scope) => scope.begin().await,
+        None => begin_compatible_owner_transaction(pool, None).await,
+    }
+}
+
 async fn drain_claims_individually(
     pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
     client: &dyn EmbeddingClient,
     batch: Vec<(EmbeddingJobClaim, String)>,
     policy: proxima_core::EmbeddingRuntimePolicy,
     outcome: &mut EmbeddingInlineDrainOutcome,
 ) -> Result<(), StorageError> {
     for (claim, text) in batch {
-        let result = embed_claim(pool, client, &claim, &text, policy).await;
-        finish_claim(pool, &claim, result, outcome).await?;
+        let result = embed_claim(pool, platform, client, &claim, &text, policy).await;
+        finish_claim(pool, platform, &claim, result, outcome).await?;
     }
     Ok(())
 }
 
 async fn finish_claim(
     pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
     claim: &EmbeddingJobClaim,
     result: Result<bool, EmbedClaimFailure>,
     outcome: &mut EmbeddingInlineDrainOutcome,
 ) -> Result<(), StorageError> {
     match result {
         Ok(true) => {
-            complete_embedding_job(pool, claim).await?;
+            complete_claim(pool, platform, claim).await?;
             outcome.embedded += 1;
         }
         Ok(false) => {
-            complete_embedding_job(pool, claim).await?;
+            complete_claim(pool, platform, claim).await?;
         }
         Err(EmbedClaimFailure::Permanent(message)) => {
             outcome.failed += 1;
-            fail_embedding_job_permanently(pool, claim, &message).await?;
+            fail_claim_permanently(pool, platform, claim, &message).await?;
         }
         Err(EmbedClaimFailure::Retryable(err)) => {
             outcome.failed += 1;
-            fail_embedding_job(pool, claim, &err.to_string()).await?;
+            fail_claim(pool, platform, claim, &err.to_string()).await?;
         }
     }
     Ok(())
@@ -354,6 +427,7 @@ async fn finish_claim(
 /// answered, it just answered in the wrong space.
 async fn store_claim_chunks(
     pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
     client: &dyn EmbeddingClient,
     claim: &EmbeddingJobClaim,
     vectors: &[Vec<f32>],
@@ -367,9 +441,7 @@ async fn store_claim_chunks(
         .into());
     }
     let chunks: Vec<&[f32]> = vectors.iter().map(Vec::as_slice).collect();
-    let mut tx = pool.begin().await.map_err(|err| {
-        StorageError::Internal(format!("begin chunked embedding upsert tx: {err}"))
-    })?;
+    let mut tx = begin_platform(pool, platform).await?;
     super::lock_embedding_job_claim_for_claim(&mut tx, claim, client.model_id()).await?;
     insert_embedding_chunks(
         &mut tx,
@@ -402,6 +474,7 @@ impl From<StorageError> for EmbedClaimFailure {
 
 async fn embed_claim(
     pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
     client: &dyn EmbeddingClient,
     claim: &EmbeddingJobClaim,
     text: &str,
@@ -432,7 +505,7 @@ async fn embed_claim(
                         total_bytes = text.len(),
                         "over-limit embedding input rescued as chunked embeddings"
                     );
-                    store_claim_chunks(pool, client, claim, &vectors).await?;
+                    store_claim_chunks(pool, platform, client, claim, &vectors).await?;
                     Ok(true)
                 }
                 // Rejected at every length by a live provider: genuinely invalid input, so
@@ -446,11 +519,12 @@ async fn embed_claim(
             };
         }
     };
-    store_claim_embedding(pool, client, claim, &embedding).await
+    store_claim_embedding(pool, platform, client, claim, &embedding).await
 }
 
 async fn store_claim_embedding(
     pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
     client: &dyn EmbeddingClient,
     claim: &EmbeddingJobClaim,
     embedding: &[f32],
@@ -464,9 +538,7 @@ async fn store_claim_embedding(
         .into());
     }
 
-    let mut tx = pool.begin().await.map_err(|err| {
-        StorageError::Internal(format!("begin memory embedding upsert tx: {err}"))
-    })?;
+    let mut tx = begin_platform(pool, platform).await?;
     super::lock_embedding_job_claim_for_claim(&mut tx, claim, client.model_id()).await?;
     insert_memory_embedding(
         &mut tx,
@@ -480,6 +552,49 @@ async fn store_claim_embedding(
     .await?;
     tx.commit().await.map_err(map_err)?;
     Ok(true)
+}
+
+async fn complete_claim(
+    pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
+    claim: &EmbeddingJobClaim,
+) -> Result<(), StorageError> {
+    let mut tx = begin_platform(pool, platform).await?;
+    complete_embedding_job(tx.as_mut(), claim).await?;
+    tx.commit().await.map_err(map_err)
+}
+
+async fn release_claims(
+    pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
+    claims: &[EmbeddingJobClaim],
+    error: &str,
+) -> Result<(), StorageError> {
+    let mut tx = begin_platform(pool, platform).await?;
+    super::release_embedding_jobs_on_connection(tx.as_mut(), claims, error).await?;
+    tx.commit().await.map_err(map_err)
+}
+
+async fn fail_claim(
+    pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
+    claim: &EmbeddingJobClaim,
+    error: &str,
+) -> Result<(), StorageError> {
+    let mut tx = begin_platform(pool, platform).await?;
+    fail_embedding_job(tx.as_mut(), claim, error).await?;
+    tx.commit().await.map_err(map_err)
+}
+
+async fn fail_claim_permanently(
+    pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
+    claim: &EmbeddingJobClaim,
+    error: &str,
+) -> Result<(), StorageError> {
+    let mut tx = begin_platform(pool, platform).await?;
+    fail_embedding_job_permanently(tx.as_mut(), claim, error).await?;
+    tx.commit().await.map_err(map_err)
 }
 
 #[cfg(test)]

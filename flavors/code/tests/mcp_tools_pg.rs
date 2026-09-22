@@ -1589,6 +1589,7 @@ async fn open_file_revision_accepts_unambiguous_repo_display_name()
     let repo_id = Uuid::now_v7();
     register_repo(
         fixture.pg.pool_for_tests(),
+        None,
         &owner,
         repo_id,
         "/tmp/proxima-mcp-display",
@@ -1742,6 +1743,7 @@ async fn emit_execution_request_grounds_and_attaches_acceptance_criteria()
     let repo_id = Uuid::now_v7();
     register_repo(
         fixture.pg.pool_for_tests(),
+        None,
         &owner,
         repo_id,
         "/tmp/proxima-criteria",
@@ -1950,6 +1952,7 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
     let repo_id = Uuid::now_v7();
     register_repo(
         fixture.pg.pool_for_tests(),
+        None,
         &owner,
         repo_id,
         "/tmp/proxima-plan-proof",

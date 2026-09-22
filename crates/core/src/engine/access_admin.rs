@@ -135,7 +135,7 @@ impl Engine {
             .storage()
             .access_admin
             .owner_membership_admin
-            .list_group_members(group)
+            .list_group_members(authz.owner_scope(), group)
             .await
             .map_err(|err| storage_error("list_group_members", &err))?
             .into_iter()
@@ -185,7 +185,7 @@ impl Engine {
             .storage()
             .access_admin
             .owner_membership_admin
-            .list_group_members_page(group, after, fetch)
+            .list_group_members_page(authz.owner_scope(), group, after, fetch)
             .await
             .map_err(|err| storage_error("list_group_members_page", &err))?;
         let has_more = members.len() > usize::try_from(limit).unwrap_or(usize::MAX);
@@ -267,12 +267,12 @@ impl Engine {
             .storage()
             .access_admin
             .owner_access_read
-            .visible_home_owner(entity, access.read_owners())
+            .visible_home_owner(authz.owner_scope(), entity, access.read_owners())
             .await
             .map_err(|err| storage_error("visible_home_owner", &err))?
             .ok_or_else(|| ProtocolError::not_found("entity not found"))?;
 
-        let permit = self
+        let mut permit = self
             .authorize_write(authz, &current_owner, Relation::Admin)
             .await?;
         if matches!(current_owner, OwnerRef::Group(_)) {
@@ -282,6 +282,8 @@ impl Engine {
         // manage on it. A transfer needs consent from both owners.
         self.authorize_transfer_destination(authz, &to_owner)
             .await?;
+
+        permit.authorize_transfer_to(to_owner);
 
         // Only now, with both sides authorized, is it safe to say that the
         // destination is where the entity already lives. Answering that
@@ -408,7 +410,7 @@ impl Engine {
             .storage()
             .access_admin
             .owner_access_read
-            .resolve_membership(&OwnerRef::Personal(subject))
+            .resolve_membership(authz.owner_scope(), &OwnerRef::Personal(subject))
             .await
             .map_err(|err| storage_error("resolve_membership", &err))?;
         let consents = memberships.iter().any(|row| {

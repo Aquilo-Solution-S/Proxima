@@ -139,6 +139,7 @@ impl Engine {
             &self.storage.read_verb,
             self.registry.search_projections(),
             &self.memory_schema_specs(),
+            authz.owner_scope(),
             std::slice::from_ref(read_permit.owner()),
             req,
         )
@@ -163,7 +164,14 @@ impl Engine {
         // `home_owner` / `visible_to_any` first.
         let read_owners = self.authorize_read(authz).await?;
         let schemas = self.memory_schema_specs();
-        get_memory_authorized(&self.storage.read_verb, &read_owners, &schemas, req).await
+        get_memory_authorized(
+            &self.storage.read_verb,
+            authz.owner_scope(),
+            &read_owners,
+            &schemas,
+            req,
+        )
+        .await
     }
 
     /// Batch single-memory read: snapshots for the subset of
@@ -186,7 +194,7 @@ impl Engine {
             .storage
             .read_verb
             .memory_inspect
-            .load_memories_by_ids(&read_owners, &req.memory_ids, &schemas)
+            .load_memories_by_ids(authz.owner_scope(), &read_owners, &req.memory_ids, &schemas)
             .await
             .map_err(|err| storage_error("load_memories_by_ids", &err))?;
         Ok(GetMemoriesReadResponse { memories })
@@ -206,7 +214,7 @@ impl Engine {
         self.storage
             .read_verb
             .memory_read
-            .load_sketches(&read_owners, memory_ids)
+            .load_sketches(authz.owner_scope(), &read_owners, memory_ids)
             .await
             .map_err(|err| storage_error("load_sketches", &err))
     }
@@ -226,7 +234,7 @@ impl Engine {
         self.storage
             .read_verb
             .memory_read
-            .load_pin_nodes(&read_owners, memory_ids)
+            .load_pin_nodes(authz.owner_scope(), &read_owners, memory_ids)
             .await
             .map_err(|err| storage_error("load_pin_nodes", &err))
     }
@@ -245,7 +253,7 @@ impl Engine {
         self.storage
             .read_verb
             .memory_read
-            .load_inbound_pin_nodes(&read_owners, query)
+            .load_inbound_pin_nodes(authz.owner_scope(), &read_owners, query)
             .await
             .map_err(|err| storage_error("load_inbound_pin_nodes", &err))
     }
@@ -264,7 +272,7 @@ impl Engine {
         let permit = self
             .authorize_request(authz, &req.owner, Relation::Admin)
             .await?;
-        get_graph_authorized(&self.storage.read_verb, permit.owner()).await
+        get_graph_authorized(&self.storage.read_verb, authz.owner_scope(), permit.owner()).await
     }
 
     /// Read-set-scoped forward change-event read plus edge endpoint-kind domain rows.
@@ -279,7 +287,13 @@ impl Engine {
         req: &ListChangeEventsReadRequest,
     ) -> Result<ListChangeEventsReadResponse, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
-        list_change_events_authorized(&self.storage.read_verb, &read_owners, req).await
+        list_change_events_authorized(
+            &self.storage.read_verb,
+            authz.owner_scope(),
+            &read_owners,
+            req,
+        )
+        .await
     }
 
     /// Wake-candidate admission read: armed Active Goal heads whose wake
@@ -314,6 +328,7 @@ impl Engine {
             .read_verb
             .memory_inspect
             .load_memories_by_ids(
+                authz.owner_scope(),
                 &read_owners,
                 &[req.trigger_fact_id],
                 &self.memory_schema_specs(),
@@ -334,18 +349,21 @@ impl Engine {
             .storage
             .read_verb
             .goal_wake_candidate
-            .list_goal_wake_candidates(&GoalWakeCandidateRequest {
-                actor_read_owners: access.read_owners(),
-                actor_write_owners: &actor_write_owners,
-                trigger_owner: snapshot.owner,
-                trigger_fact_id: req.trigger_fact_id,
-                trigger_schema_id: &snapshot.schema_id,
-                trigger_schema_version: snapshot.schema_version,
-                actor_tool_scope: authz.tool_scope(),
-                deployment_tool_scope: &self.deployment_tool_scope,
-                // One extra row proves has_more without changing the page.
-                limit: req.limit.min(MAX_WAKE_CANDIDATE_LIMIT).saturating_add(1),
-            })
+            .list_goal_wake_candidates(
+                authz.owner_scope(),
+                &GoalWakeCandidateRequest {
+                    actor_read_owners: access.read_owners(),
+                    actor_write_owners: &actor_write_owners,
+                    trigger_owner: snapshot.owner,
+                    trigger_fact_id: req.trigger_fact_id,
+                    trigger_schema_id: &snapshot.schema_id,
+                    trigger_schema_version: snapshot.schema_version,
+                    actor_tool_scope: authz.tool_scope(),
+                    deployment_tool_scope: &self.deployment_tool_scope,
+                    // One extra row proves has_more without changing the page.
+                    limit: req.limit.min(MAX_WAKE_CANDIDATE_LIMIT).saturating_add(1),
+                },
+            )
             .await
             .map_err(|err| storage_error("list_goal_wake_candidates", &err))?;
         let page_len = req.limit.min(MAX_WAKE_CANDIDATE_LIMIT);
@@ -380,7 +398,7 @@ impl Engine {
         self.storage
             .read_verb
             .goal_read
-            .load_goal_wake_configs(&read_owners, goal_ids)
+            .load_goal_wake_configs(authz.owner_scope(), &read_owners, goal_ids)
             .await
             .map_err(|err| storage_error("load_goal_wake_configs", &err))
     }
@@ -402,6 +420,7 @@ impl Engine {
             .read_verb
             .memory_inspect
             .load_memories_by_ids(
+                authz.owner_scope(),
                 &read_owners,
                 &[req.fact_memory_id],
                 &self.memory_schema_specs(),
@@ -411,8 +430,13 @@ impl Engine {
         if found.is_empty() {
             return Err(ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE));
         }
-        read_fact_citation_authorized(&self.storage.read_verb, &read_owners, req.fact_memory_id)
-            .await
+        read_fact_citation_authorized(
+            &self.storage.read_verb,
+            authz.owner_scope(),
+            &read_owners,
+            req.fact_memory_id,
+        )
+        .await
     }
 
     /// Read-set-scoped inverse citation read for a stateful Fact entity head.
@@ -434,7 +458,14 @@ impl Engine {
     ) -> Result<crate::verbs::query::FactCitationPage, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
         let schemas = self.memory_schema_specs();
-        facts_citing_object_authorized(&self.storage.read_verb, &read_owners, req, &schemas).await
+        facts_citing_object_authorized(
+            &self.storage.read_verb,
+            authz.owner_scope(),
+            &read_owners,
+            req,
+            &schemas,
+        )
+        .await
     }
 
     /// The registry's memory-bearing schemas, as the read verbs want them.
@@ -511,6 +542,7 @@ pub(in crate::engine) async fn search_authorized(
     ports: &ReadVerbStoragePorts,
     search_projections: &[MemorySearchProjection],
     schemas: &[MemorySchemaSpec],
+    owner_scope: Option<&crate::OwnerScope>,
     read_owners: &[OwnerRef],
     req: &SearchReadRequest,
 ) -> Result<SearchReadResponse, ProtocolError> {
@@ -518,7 +550,7 @@ pub(in crate::engine) async fn search_authorized(
     effective.read_owners = read_owners.to_vec();
     let page = ports
         .memory_read
-        .search_memories(&effective, search_projections)
+        .search_memories(owner_scope, &effective, search_projections)
         .await
         .map_err(|err| storage_error("search_memories", &err))?;
     let memories = page.results;
@@ -540,13 +572,14 @@ pub(in crate::engine) async fn search_authorized(
     } else {
         ports
             .memory_read
-            .load_memory_graph_payloads(&identities, schemas, req.include_body)
+            .load_memory_graph_payloads(owner_scope, &identities, schemas, req.include_body)
             .await
             .map_err(|err| storage_error("load_memory_graph_payloads", &err))?
     };
     let neighbor_edges = if req.include_neighbor_edges {
         super::pin_read::neighbor_edges_from_nodes(
             &ports.memory_read,
+            owner_scope,
             read_owners,
             &memory_ids,
             NEIGHBOR_EDGE_LIMIT,
@@ -566,13 +599,14 @@ pub(in crate::engine) async fn search_authorized(
 
 pub(in crate::engine) async fn get_memory_authorized(
     ports: &ReadVerbStoragePorts,
+    owner_scope: Option<&crate::OwnerScope>,
     read_owners: &[OwnerRef],
     schemas: &[MemorySchemaSpec],
     req: &GetMemoryReadRequest,
 ) -> Result<GetMemoryReadResponse, ProtocolError> {
     let mut found = ports
         .memory_inspect
-        .load_memories_by_ids(read_owners, &[req.memory_id], schemas)
+        .load_memories_by_ids(owner_scope, read_owners, &[req.memory_id], schemas)
         .await
         .map_err(|err| storage_error("load_memories_by_ids", &err))?;
     let Some(memory) = found.pop() else {
@@ -581,6 +615,7 @@ pub(in crate::engine) async fn get_memory_authorized(
     let neighbor_edges = if req.include_neighbor_edges {
         super::pin_read::neighbor_edges_from_nodes(
             &ports.memory_read,
+            owner_scope,
             read_owners,
             &[req.memory_id],
             NEIGHBOR_EDGE_LIMIT,
@@ -597,11 +632,12 @@ pub(in crate::engine) async fn get_memory_authorized(
 
 pub(in crate::engine) async fn get_graph_authorized(
     ports: &ReadVerbStoragePorts,
+    owner_scope: Option<&crate::OwnerScope>,
     owner: &OwnerRef,
 ) -> Result<GetGraphReadResponse, ProtocolError> {
     let job_status = ports
         .embedding_job
-        .count_embedding_job_status(owner)
+        .count_embedding_job_status(owner_scope, owner)
         .await
         .map_err(|err| storage_error("count_embedding_job_status", &err))?;
     Ok(GetGraphReadResponse {
@@ -612,12 +648,13 @@ pub(in crate::engine) async fn get_graph_authorized(
 
 pub(in crate::engine) async fn list_change_events_authorized(
     ports: &ReadVerbStoragePorts,
+    owner_scope: Option<&crate::OwnerScope>,
     read_owners: &[OwnerRef],
     req: &ListChangeEventsReadRequest,
 ) -> Result<ListChangeEventsReadResponse, ProtocolError> {
     let events = ports
         .change_event
-        .list_change_events_after(read_owners, req.after, req.limit)
+        .list_change_events_after(owner_scope, read_owners, req.after, req.limit)
         .await
         .map_err(|err| storage_error("list_change_events_after", &err))?;
     Ok(ListChangeEventsReadResponse { events })
@@ -625,18 +662,20 @@ pub(in crate::engine) async fn list_change_events_authorized(
 
 pub(in crate::engine) async fn read_fact_citation_authorized(
     ports: &ReadVerbStoragePorts,
+    owner_scope: Option<&crate::OwnerScope>,
     read_owners: &[OwnerRef],
     fact_memory_id: MemoryId,
 ) -> Result<Option<FactCitationReadback>, ProtocolError> {
     ports
         .citation
-        .citation_of_fact(read_owners, fact_memory_id)
+        .citation_of_fact(owner_scope, read_owners, fact_memory_id)
         .await
         .map_err(|err| storage_error("citation_of_fact", &err))
 }
 
 pub(in crate::engine) async fn facts_citing_object_authorized(
     ports: &ReadVerbStoragePorts,
+    owner_scope: Option<&crate::OwnerScope>,
     read_owners: &[OwnerRef],
     req: &FactsCitingObjectReadRequest,
     schemas: &[MemorySchemaSpec],
@@ -644,6 +683,7 @@ pub(in crate::engine) async fn facts_citing_object_authorized(
     ports
         .citation
         .facts_citing_object(
+            owner_scope,
             read_owners,
             req.cited_object_id,
             schemas,

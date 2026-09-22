@@ -885,7 +885,7 @@ async fn an_uncommitted_write_session_leaves_no_visible_record() {
         PublicationLimits::default(),
     ));
     {
-        let mut session = pg.begin().await.expect("session begins");
+        let mut session = pg.begin(None).await.expect("session begins");
         session
             .ingest_fact_with_typed_sidecar(&authorized, None)
             .await
@@ -919,7 +919,7 @@ async fn a_late_commit_is_claimed_on_the_next_pass_not_stepped_over() {
         &slow,
         PublicationLimits::default(),
     ));
-    let mut session_a = pg.begin().await.expect("session A begins");
+    let mut session_a = pg.begin(None).await.expect("session A begins");
     let a_outcome = session_a
         .ingest_fact_with_typed_sidecar(&slow_witness, None)
         .await

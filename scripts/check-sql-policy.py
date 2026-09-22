@@ -848,7 +848,10 @@ def run_fixture(path: Path) -> int:
 # `fixed-fragment` proof. Every arm of `MemoryFilter::predicate` is a literal,
 # and its only interpolations are a column chosen between two literals and the
 # `u32` placeholder index.
-EXPECTED_DYNAMIC_SQL_SITES = 121
+# 121 -> 136: owner-RLS regression fixtures add fifteen audited sites for
+# generated, quoted role/schema identifiers and isolated negative-control SQL.
+# Production adds no dynamic execution sites; catalog filter values are bound.
+EXPECTED_DYNAMIC_SQL_SITES = 136
 
 
 def run_self_test() -> int:

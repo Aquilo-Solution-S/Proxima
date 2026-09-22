@@ -20,7 +20,7 @@ use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, MemoryGraphIdentity, MemoryGraphPayloadRow,
     MemoryHydrationBatchOutcome, MemoryKindRow, StorageError,
 };
-use crate::{GoalId, MemoryId, Owner, OwnerRef};
+use crate::{GoalId, MemoryId, Owner, OwnerRef, OwnerScope};
 
 /// Node writes that also assert index rows.
 ///
@@ -48,6 +48,7 @@ pub trait MemoryAuthoringPort: Send + Sync {
 
     async fn load_memory_kinds(
         &self,
+        owner_scope: Option<&OwnerScope>,
         owner: &Owner,
         memory_ids: &[MemoryId],
     ) -> Result<Vec<MemoryKindRow>, StorageError>;
@@ -82,12 +83,14 @@ pub trait MemoryAuthoringPort: Send + Sync {
 pub trait MemoryReadPort: Send + Sync {
     async fn load_fact_text(
         &self,
+        owner_scope: Option<&OwnerScope>,
         owner: &Owner,
         memory_id: crate::MemoryId,
     ) -> Result<Option<String>, StorageError>;
 
     async fn load_memory_graph_payloads(
         &self,
+        owner_scope: Option<&OwnerScope>,
         identities: &[MemoryGraphIdentity],
         schemas: &[MemorySchemaSpec],
         include_body: bool,
@@ -98,12 +101,14 @@ pub trait MemoryReadPort: Send + Sync {
     /// Owner-scoped persisted one-liners. Missing/unreadable ids are absent.
     async fn load_sketches(
         &self,
+        owner_scope: Option<&OwnerScope>,
         read_owners: &[OwnerRef],
         memory_ids: &[MemoryId],
     ) -> Result<Vec<crate::read_models::MemorySketch>, StorageError>;
 
     async fn load_pin_nodes(
         &self,
+        owner_scope: Option<&OwnerScope>,
         read_owners: &[OwnerRef],
         memory_ids: &[MemoryId],
     ) -> Result<Vec<PinNode>, StorageError>;
@@ -113,6 +118,7 @@ pub trait MemoryReadPort: Send + Sync {
     /// callers can redact them without probing one target at a time.
     async fn load_visible_goal_ids(
         &self,
+        owner_scope: Option<&OwnerScope>,
         read_owners: &[OwnerRef],
         goal_ids: &[GoalId],
     ) -> Result<Vec<GoalId>, StorageError>;
@@ -122,12 +128,14 @@ pub trait MemoryReadPort: Send + Sync {
     /// `limit == 0` is a constraint violation.
     async fn load_inbound_pin_nodes(
         &self,
+        owner_scope: Option<&OwnerScope>,
         read_owners: &[OwnerRef],
         query: InboundPinQuery<'_>,
     ) -> Result<Vec<PinNode>, StorageError>;
 
     async fn query_memories(
         &self,
+        owner_scope: Option<&OwnerScope>,
         read_owners: &[OwnerRef],
         req: &crate::verbs::query::QueryRequest,
         schemas: &[MemorySchemaSpec],
@@ -135,12 +143,14 @@ pub trait MemoryReadPort: Send + Sync {
 
     async fn search_memories(
         &self,
+        owner_scope: Option<&OwnerScope>,
         req: &crate::verbs::query::MemorySearchRequest,
         projections: &[crate::verbs::schema::MemorySearchProjection],
     ) -> Result<crate::verbs::query::MemorySearchPage, StorageError>;
 
     async fn walk_memory_lineage(
         &self,
+        owner_scope: Option<&OwnerScope>,
         read_owners: &[OwnerRef],
         req: &crate::verbs::query::MemoryLineageRequest,
     ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError>;
@@ -149,6 +159,7 @@ pub trait MemoryReadPort: Send + Sync {
     /// Owner-only. A miss after an owner-to-owner transfer is expected.
     async fn owned_series_handle(
         &self,
+        owner_scope: Option<&OwnerScope>,
         owner: Owner,
         schema_id: &crate::SchemaId,
         sidecar_table: &str,
@@ -160,6 +171,7 @@ pub trait MemoryReadPort: Send + Sync {
 pub trait MemoryInspectPort: Send + Sync {
     async fn load_memory_by_id(
         &self,
+        owner_scope: Option<&OwnerScope>,
         memory_id: crate::MemoryId,
         schemas: &[MemorySchemaSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError>;
@@ -170,6 +182,7 @@ pub trait MemoryInspectPort: Send + Sync {
     /// absent from the result; order is unspecified.
     async fn load_memories_by_ids(
         &self,
+        owner_scope: Option<&OwnerScope>,
         read_owners: &[OwnerRef],
         memory_ids: &[crate::MemoryId],
         schemas: &[MemorySchemaSpec],
@@ -184,6 +197,7 @@ pub trait CitationPort: Send + Sync {
     /// `next_cursor` by over-fetching one row past `limit`.
     async fn facts_citing_object(
         &self,
+        owner_scope: Option<&OwnerScope>,
         read_owners: &[OwnerRef],
         cited_object_id: uuid::Uuid,
         schemas: &[MemorySchemaSpec],
@@ -193,6 +207,7 @@ pub trait CitationPort: Send + Sync {
 
     async fn citation_of_fact(
         &self,
+        owner_scope: Option<&OwnerScope>,
         read_owners: &[OwnerRef],
         fact_memory_id: crate::MemoryId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;

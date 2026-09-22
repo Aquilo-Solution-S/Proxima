@@ -164,6 +164,7 @@ impl FlavorApp for ProximaMcpApp {
                 ctx.pg_tuning_for_host(),
                 ctx.pg_sidecars_for_host(),
                 ctx.host_state_erase_context_for_host(),
+                ctx.platform_scope_for_host(),
             ))?;
             Ok(services)
         }
@@ -609,10 +610,23 @@ fn build_app(
     let registered_ids = registered_tool_ids()?;
     let registered_ids: Vec<&str> = registered_ids.iter().map(String::as_str).collect();
     let tool_scope = tool_scope_from_env(&lookup, &registered_ids)?;
-    let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(
-        proxima_storage_pg::PgOwnerAccessResolver::connect_lazy(&config.database_url)
+    let platform_url = lookup("PROXIMA_PLATFORM_DATABASE_URL");
+    let owner_access: Arc<dyn OwnerAccessPort> = if let Some(platform_url) = platform_url.as_deref()
+    {
+        Arc::new(
+            proxima_storage_pg::PgOwnerAccessResolver::connect_lazy_platform(
+                &config.database_url,
+                platform_url,
+                &["proxima_core"],
+            )
             .map_err(|err| CliError::Runtime(ProximaError::Storage(err.to_string())))?,
-    );
+        )
+    } else {
+        Arc::new(
+            proxima_storage_pg::PgOwnerAccessResolver::connect_lazy(&config.database_url)
+                .map_err(|err| CliError::Runtime(ProximaError::Storage(err.to_string())))?,
+        )
+    };
     let oidc = oidc_from_env(&lookup, owner_access)?;
     let embedding_policy = embedding_runtime_policy_from_lookup(&lookup)?;
     let mut app = Proxima::<ProximaMcpApp>::app()
@@ -620,6 +634,9 @@ fn build_app(
         .database_url(config.database_url)
         .tool_scope(tool_scope)
         .embedding_runtime_policy(embedding_policy);
+    if let Some(platform_url) = platform_url {
+        app = app.platform_database_url(platform_url);
+    }
     if let Some(bind) = config.bind {
         app = app.mcp_bind(bind);
     }

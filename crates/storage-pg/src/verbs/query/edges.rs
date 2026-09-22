@@ -4,7 +4,7 @@ use proxima_core::{
     Edge, EdgeKind, EntityKind, GoalId, MemoryId, OwnerRef, PinNode, StorageError,
     project_window_edges,
 };
-use sqlx::PgPool;
+use sqlx::PgConnection;
 
 use crate::error::map_err;
 
@@ -37,8 +37,8 @@ impl PinNodeRow {
 
 /// Resolve readable Goal ids in a batch. Unreadable or unknown ids are left
 /// in the raw reference carrier so the engine can redact them.
-pub(crate) async fn load_visible_goal_ids(
-    pool: &PgPool,
+pub(crate) async fn load_visible_goal_ids_on_connection(
+    connection: &mut PgConnection,
     read_owners: &[OwnerRef],
     goal_ids: &[GoalId],
 ) -> Result<Vec<GoalId>, StorageError> {
@@ -48,22 +48,19 @@ pub(crate) async fn load_visible_goal_ids(
     let ids: Vec<uuid::Uuid> = goal_ids.iter().map(|id| id.into_inner()).collect();
     let owner_ids = owner_ids(read_owners);
     let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT t
-           FROM proxima_core.goal
-          WHERE t = ANY($1::uuid[])
-            AND owner_id = ANY($2::uuid[])",
+        "SELECT t FROM proxima_core.goal WHERE t = ANY($1::uuid[]) AND owner_id = ANY($2::uuid[])",
     )
     .bind(&ids)
     .bind(&owner_ids)
-    .fetch_all(pool)
+    .fetch_all(&mut *connection)
     .await
     .map_err(map_err)?;
     Ok(rows.into_iter().map(GoalId::new).collect())
 }
 
 /// Owner-scoped PK load of pin carriers.
-pub(crate) async fn load_pin_nodes(
-    pool: &PgPool,
+pub(crate) async fn load_pin_nodes_on_connection(
+    connection: &mut PgConnection,
     read_owners: &[OwnerRef],
     memory_ids: &[MemoryId],
 ) -> Result<Vec<PinNode>, StorageError> {
@@ -73,16 +70,9 @@ pub(crate) async fn load_pin_nodes(
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
     let owner_ids = owner_ids(read_owners);
     let rows: Vec<PinNodeRow> = sqlx::query_as(
-        "SELECT t, kind::text, schema_id, origins, refs, goal_refs
-           FROM proxima_core.memory
-          WHERE t = ANY($1::uuid[])
-            AND owner_id = ANY($2::uuid[])",
+        "SELECT t, kind::text, schema_id, origins, refs, goal_refs FROM proxima_core.memory WHERE t = ANY($1::uuid[]) AND owner_id = ANY($2::uuid[])",
     )
-    .bind(&ids)
-    .bind(&owner_ids)
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)?;
+    .bind(&ids).bind(&owner_ids).fetch_all(&mut *connection).await.map_err(map_err)?;
     Ok(rows
         .into_iter()
         .filter_map(PinNodeRow::into_pin_node)
@@ -90,8 +80,8 @@ pub(crate) async fn load_pin_nodes(
 }
 
 /// Owner-scoped GIN page of rows that list any of `query.targets`.
-pub(crate) async fn load_inbound_pin_nodes(
-    pool: &PgPool,
+pub(crate) async fn load_inbound_pin_nodes_on_connection(
+    connection: &mut PgConnection,
     read_owners: &[OwnerRef],
     query: InboundPinQuery<'_>,
 ) -> Result<Vec<PinNode>, StorageError> {
@@ -105,16 +95,14 @@ pub(crate) async fn load_inbound_pin_nodes(
     }
     let ids: Vec<uuid::Uuid> = query.targets.iter().map(|id| id.into_inner()).collect();
     let owner_ids = owner_ids(read_owners);
-    let after = query.after.map(MemoryId::into_inner);
-    let limit = i64::from(query.limit);
     let sql = inbound_pin_sql(query.heads_only, query.kind, query.goal_targets);
-    // SQL-POLICY: fixed-fragment — from/kind arms are compile-time literals.
+    // SQL-POLICY: fixed-fragment
     let rows: Vec<PinNodeRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&ids)
         .bind(&owner_ids)
-        .bind(after)
-        .bind(limit)
-        .fetch_all(pool)
+        .bind(query.after.map(MemoryId::into_inner))
+        .bind(i64::from(query.limit))
+        .fetch_all(&mut *connection)
         .await
         .map_err(map_err)?;
     Ok(rows
