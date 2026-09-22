@@ -30,6 +30,13 @@ BEGIN
 END
 $owner_rls_role$;
 
+-- Ordered owner streams let head pagination stop after the visible page.
+-- Keep both shapes: a schema prefix cannot order a schema-free owner read.
+CREATE INDEX IF NOT EXISTS memory_head_owner_t_idx
+    ON proxima_core.memory_head (owner_id, t DESC) INCLUDE (handle, kind);
+CREATE INDEX IF NOT EXISTS memory_head_owner_schema_t_idx
+    ON proxima_core.memory_head (owner_id, schema_id, t DESC) INCLUDE (handle, kind);
+
 CREATE TABLE IF NOT EXISTS proxima_core.owner_rls_epoch (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
     epoch integer NOT NULL

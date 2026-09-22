@@ -21,6 +21,12 @@ struct SyntheticVerifier {
     roles: OwnerRoles,
 }
 
+#[path = "rls_guard_pg/memory_paging.rs"]
+mod memory_paging;
+
+#[path = "rls_guard_pg/paging_work.rs"]
+mod paging_work;
+
 #[async_trait]
 impl Authenticator for SyntheticVerifier {
     async fn authenticate(

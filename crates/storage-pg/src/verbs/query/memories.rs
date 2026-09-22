@@ -141,22 +141,18 @@ impl MemoryFilter {
     /// This filter's predicate at `placeholder`, which is its position in
     /// the list the caller will bind in the same order.
     ///
-    /// `heads_only` picks the column, not the shape: with the head join in
-    /// place the schema predicate has to hit `memory_head` for
-    /// `memory_head_owner_schema_idx` to be usable.
+    /// Head kind/schema are immutable and checked against every inserted
+    /// memory version. Filtering the ordered head stream avoids visiting
+    /// versions that cannot be in this page.
     fn predicate(&self, placeholder: u32, heads_only: bool) -> String {
+        let alias = if heads_only { "h" } else { "m" };
         match self {
-            Self::Schema(_) => {
-                let column = if heads_only {
-                    "h.schema_id"
-                } else {
-                    "m.schema_id"
-                };
-                format!(" AND {column} = ${placeholder}")
+            Self::Schema(_) => format!(" AND {alias}.schema_id = ${placeholder}"),
+            Self::Kind(_) => {
+                format!(" AND {alias}.kind = ${placeholder}::text::proxima_core.memory_kind")
             }
-            Self::Kind(_) => format!(" AND m.kind::text = ${placeholder}"),
-            Self::Ids(_) => format!(" AND m.t = ANY(${placeholder}::uuid[])"),
-            Self::Cursor(_) => format!(" AND m.t < ${placeholder}"),
+            Self::Ids(_) => format!(" AND {alias}.t = ANY(${placeholder}::uuid[])"),
+            Self::Cursor(_) => format!(" AND {alias}.t < ${placeholder}"),
         }
     }
 }
@@ -321,27 +317,60 @@ async fn load_row_payloads_batch_on_connection(
 }
 
 fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64) -> String {
-    let from = if heads_only {
-        "FROM proxima_core.memory_head h \
-         JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t"
-    } else {
-        "FROM proxima_core.memory m"
-    };
-    let owner_pred = if heads_only {
-        "h.owner_id = ANY($1::uuid[])"
-    } else {
-        "m.owner_id = ANY($1::uuid[])"
-    };
-    let mut sql = format!(
+    if heads_only {
+        return head_page_sql(filters, fetch_limit);
+    }
+    let mut sql = String::from(
         "SELECT m.t AS memory_id, m.handle, \
                 COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
                 o.kind::text::proxima_core.owner_kind AS owner_kind, \
                 m.owner_id, m.schema_id, m.sidecar_tables, \
                 m.kind::text AS kind, m.origins, m.refs, m.goal_refs \
-         {from} \
+         FROM proxima_core.memory m \
          JOIN proxima_core.owners o ON o.owner_id = m.owner_id \
-         WHERE {owner_pred}"
+         WHERE m.owner_id = ANY($1::uuid[])",
     );
+    append_memory_filters(&mut sql, filters, false);
+    let _ = write!(sql, " ORDER BY m.t DESC LIMIT {fetch_limit}");
+    sql
+}
+
+/// Top K of the union is contained in the union of each owner's top K.
+/// Owners' primary key deduplicates the requested set. Both RLS checks and
+/// every filter precede the per-owner limit; an invisible or missing memory
+/// never consumes a slot. No limit is applied to heads before that lookup.
+fn head_page_sql(filters: &[MemoryFilter], fetch_limit: u64) -> String {
+    let mut sql = String::from(
+        "SELECT page.*, o.kind::text::proxima_core.owner_kind AS owner_kind \
+         FROM proxima_core.owners o CROSS JOIN LATERAL ( \
+           SELECT m.t AS memory_id, m.handle, \
+                  COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
+                  m.owner_id, m.schema_id, m.sidecar_tables, \
+                  m.kind::text AS kind, m.origins, m.refs, m.goal_refs \
+           FROM (SELECT h.handle, h.t FROM proxima_core.memory_head h \
+                 WHERE h.owner_id = o.owner_id",
+    );
+    append_memory_filters(&mut sql, filters, true);
+    // Preserve the ordered head stream and one-row memory lookup as separate
+    // planner inputs. Without these barriers a pulled-up join can hydrate all
+    // matching versions before sorting. With no ordering index the head sort
+    // still happens before memory hydration (the pre-activation schema).
+    let _ = write!(
+        sql,
+        " ORDER BY h.t DESC OFFSET 0) h \
+           CROSS JOIN LATERAL ( \
+             SELECT m.* FROM proxima_core.memory m \
+             WHERE m.handle = h.handle AND m.t = h.t AND m.owner_id = o.owner_id \
+             OFFSET 0 \
+           ) m \
+           ORDER BY h.t DESC LIMIT {fetch_limit} \
+         ) page WHERE o.owner_id = ANY($1::uuid[]) \
+         ORDER BY page.memory_id DESC LIMIT {fetch_limit}"
+    );
+    sql
+}
+
+fn append_memory_filters(sql: &mut String, filters: &[MemoryFilter], heads_only: bool) {
     // `$1` is the owner array; the filters take the placeholders after it,
     // in the order the caller binds them.
     for (index, filter) in filters.iter().enumerate() {
@@ -352,8 +381,6 @@ fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64)
         // caller-supplied text reaches the statement, only binds.
         sql.push_str(&filter.predicate(placeholder, heads_only));
     }
-    let _ = write!(sql, " ORDER BY m.t DESC LIMIT {fetch_limit}");
-    sql
 }
 
 fn parse_memory_kind(kind: &str) -> Result<EntityKind, StorageError> {
@@ -603,12 +630,12 @@ mod tests {
     fn heads_only_schema_predicates_use_head_columns() {
         let sql = super::memory_page_sql(true, &[super::MemoryFilter::Schema("s".to_owned())], 10);
         assert!(
-            sql.contains("h.owner_id = ANY($1::uuid[])"),
-            "HeadsOnly owner filter must hit memory_head_owner_schema_idx: {sql}"
+            sql.contains("o.owner_id = ANY($1::uuid[])") && sql.contains("h.owner_id = o.owner_id"),
+            "HeadsOnly scans each requested owner once: {sql}"
         );
         assert!(
             sql.contains("h.schema_id = $2"),
-            "HeadsOnly schema filter must hit memory_head_owner_schema_idx: {sql}"
+            "HeadsOnly schema filter must constrain the ordered head scan: {sql}"
         );
         assert!(
             !sql.contains("m.owner_id = ANY"),
