@@ -851,7 +851,10 @@ def run_fixture(path: Path) -> int:
 # 121 -> 136: owner-RLS regression fixtures add fifteen audited sites for
 # generated, quoted role/schema identifiers and isolated negative-control SQL.
 # Production adds no dynamic execution sites; catalog filter values are bound.
-EXPECTED_DYNAMIC_SQL_SITES = 136
+# 136 -> 139: paging regression fixtures execute the production SQL builder
+# once for the semantic matrix and twice for results/EXPLAIN work bounds.
+# All predicates are closed fragments and all request values remain bound.
+EXPECTED_DYNAMIC_SQL_SITES = 139
 
 
 def run_self_test() -> int:

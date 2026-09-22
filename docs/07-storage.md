@@ -85,16 +85,47 @@ composed schema, then used through an explicit platform capability. A
 single-owner deployment follows the same transaction path; multiple owners
 use the same owner-scope shape with a set-valued UUID binding.
 
-Measured scope representation (PostgreSQL 18.4, 20,000 Memories, 100 owners,
-10,000 rows in the largest owner; nonowner `NOBYPASSRLS` runtime): scalar
-`SELECT current_setting(...)::uuid[]` InitPlans parse the owner arrays once.
-The eight-small-owner candidate measured 1.463 ms versus 80.919 ms for
-per-row parsing. Full policies measured 4.605 ms for that case; singleton
-small/large and eight-owner skewed cases measured 0.694/12.521/14.030 ms.
-Warm median of three runs after one initial run, default planner, 101-row
-head query. The full plan uses InitPlans, `memory_head_owner_kind_idx`, and
-`memory_t_key`. Synthetic evidence; deployment distributions require their
-own plans before considering a temporary owner relation.
+Head pages merge each requested owner's top `K` visible rows, ordered by the
+complete UUID `t`. `K = limit + 1` for one Memory kind, otherwise `limit`.
+Schema/kind/ID/cursor filters constrain the ordered head scan; the matching
+Memory lookup and its RLS policy run before either limit. Missing or invisible
+versions consume no page slots. The owner table deduplicates requested owners.
+An ordered subquery preserves head order before Memory hydration. The prepared
+v016 migration adds `(owner_id, t DESC)` and `(owner_id, schema_id, t DESC)`
+head indexes, both including `(handle, kind)`. On the previous schema the
+bridge sorts heads before hydration when the ordering indexes are absent.
+History reads retain their direct Memory query. Payloads and sidecars hydrate
+only the final page.
+
+Scope arrays use scalar `SELECT current_setting(...)::uuid[]` InitPlans.
+The initial eight-small-owner representation comparison measured 1.463 ms
+versus 80.919 ms for per-row parsing (20,000 Memories).
+
+Paged-query comparison: PostgreSQL 18.4, 100 owners, half the rows in the
+largest owner, complete RLS, nonowner `NOBYPASSRLS` runtime, 101-row page with
+schema filter. Warm median of three runs after one initial run, default planner:
+
+| Rows / requested owners | Previous query / existing indexes | Ordered query / staged indexes |
+|---|---:|---:|
+| 20,000 / large singleton | 11.480 ms | 0.272 ms |
+| 20,000 / eight, including largest | 12.215 ms | 1.390 ms |
+| 200,000 / large singleton | 56.742 ms | 0.320 ms |
+| 200,000 / eight, including largest | 63.874 ms | 1.617 ms |
+
+At 200,000 rows the new plans visit 101 heads and 101 Memories for one owner;
+eight owners visit 808 of each before the global limit. Schema-free and
+kind-filtered cases also stop at those counts. Eight prepared executions with
+varying owner arrays retained custom plans; the last eight-owner execution
+measured 1.167 ms with schema, 1.296 ms without. Exact ordered IDs matched.
+On the pre-activation schema without RLS or new indexes, the same rewrite
+measured 237.059 → 19.234 ms / 254.866 → 24.056 ms for the two 200,000-row cases.
+
+Freshly written heads can still take a bitmap scan and sort; Memory hydration
+remains page-sized in the dense-visible fixture. The regression gate checks
+that case, plus bounded head scans after `VACUUM ANALYZE`, with 20,000 newer
+non-head versions. Sparse visibility can require additional candidate lookups.
+Synthetic database execution evidence, not end-to-end or throughput guarantees;
+deployment distributions require their own plans.
 
 `transfer_to_owner` is an in-place series transfer: `UPDATE owner_id` on
 `memory_head` and every `t` on that handle. Same `(handle, t)`. Triggers

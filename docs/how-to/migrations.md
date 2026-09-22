@@ -33,6 +33,8 @@ one exact successor checksum from
 `crates/storage-pg/compatibility/0014_v016_owner_rls.sql` without applying that
 file. Unknown versions and changed checksums still refuse boot. The Code
 companion is `flavors/code/compatibility/20260922000020_v016_owner_rls.sql`.
+The prepared core migration also adds the two owner/head ordering indexes
+used by paginated reads (see [07 §Runtime owner binding](../07-storage.md#runtime-owner-binding)).
 
 Activation requires every live host sharing the database to run the bridge,
 separate runtime/platform credentials, and both additive migrations. Promote
