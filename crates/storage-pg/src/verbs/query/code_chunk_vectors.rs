@@ -18,7 +18,7 @@
 //! decides visibility. Owner scope is `embeddings.owner_id = $1`.
 
 use proxima_core::{Owner, StorageError};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::error::map_err;
 use crate::pgvector::set_hnsw_search_sql;
@@ -78,6 +78,33 @@ pub async fn nearest_code_chunk_candidates(
     filters: CodeChunkVectorFilters<'_>,
     limit: i64,
 ) -> Result<Vec<CodeChunkVectorCandidate>, StorageError> {
+    let mut tx = crate::begin_compatible_owner_transaction(pool, None).await?;
+    let result = nearest_code_chunk_candidates_on_connection(
+        tx.as_mut(),
+        tuning,
+        owner,
+        model_id,
+        query_embedding,
+        filters,
+        limit,
+    )
+    .await;
+    crate::owner_scope::finish_transaction(tx, result).await
+}
+
+/// Connection-backed variant. The caller owns the surrounding transaction;
+/// the HNSW setting and candidate scan therefore share its snapshot.
+/// # Errors
+/// Returns storage errors from query execution or invalid stored data.
+pub async fn nearest_code_chunk_candidates_on_connection(
+    connection: &mut PgConnection,
+    tuning: &PgTuning,
+    owner: Owner,
+    model_id: &str,
+    query_embedding: &[f32],
+    filters: CodeChunkVectorFilters<'_>,
+    limit: i64,
+) -> Result<Vec<CodeChunkVectorCandidate>, StorageError> {
     if limit <= 0 {
         return Ok(Vec::new());
     }
@@ -87,28 +114,21 @@ pub async fn nearest_code_chunk_candidates(
             proxima_core::llm::EMBEDDING_DIM
         )));
     }
-    let owner_id = owner.stored_owner_id();
-
-    // Content scan: embeddings ⋈ flavor sidecar. Owner lives on embeddings.
-    // Admit (memory_head / NK) happens after merge in search_chunks.
-    let query = sqlx::query_as::<_, CodeChunkVectorCandidate>(NEAREST_CODE_CHUNK_SQL)
-        .bind(owner_id)
+    sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(tuning)))
+        .execute(&mut *connection)
+        .await
+        .map_err(map_err)?;
+    sqlx::query_as::<_, CodeChunkVectorCandidate>(NEAREST_CODE_CHUNK_SQL)
+        .bind(owner.stored_owner_id())
         .bind(filters.repo_id)
         .bind(model_id)
         .bind(crate::pgvector::literal(query_embedding))
         .bind(filters.language)
         .bind(filters.chunk_type)
-        .bind(limit);
-
-    let mut tx = pool.begin().await.map_err(map_err)?;
-    // SQL-POLICY: fixed-fragment
-    sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(tuning)))
-        .execute(&mut *tx)
+        .bind(limit)
+        .fetch_all(&mut *connection)
         .await
-        .map_err(map_err)?;
-    let rows = query.fetch_all(&mut *tx).await.map_err(map_err)?;
-    tx.commit().await.map_err(map_err)?;
-    Ok(rows)
+        .map_err(map_err)
 }
 
 /// The structural filters a chunk search applies before ranking. Grouped

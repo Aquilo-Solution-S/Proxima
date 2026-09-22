@@ -56,4 +56,4 @@ pub(crate) use commands::{
     achieve_goal_atomic, create_goal_atomic, create_goal_in_tx, decompose_goal_atomic,
     modify_goal_atomic, transition_goal_atomic,
 };
-pub(crate) use replay::{resolve_goal_command_replay, resolve_goal_command_replay_on};
+pub(crate) use replay::resolve_goal_command_replay_on;

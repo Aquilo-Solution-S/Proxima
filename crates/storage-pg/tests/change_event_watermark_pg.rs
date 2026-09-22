@@ -109,7 +109,7 @@ impl Fixture {
     async fn poll_after(&self, high_water: Option<Uuid>) -> TestResult<Vec<Uuid>> {
         Ok(self
             .pg
-            .list_change_events_after(&[self.owner], high_water.unwrap_or(Uuid::nil()), 10)
+            .list_change_events_after(None, &[self.owner], high_water.unwrap_or(Uuid::nil()), 10)
             .await?
             .into_iter()
             .map(|row| row.event.seq)

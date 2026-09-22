@@ -436,6 +436,15 @@ impl DelegatedAuthorityService {
         role_ceiling: Role,
     ) -> Result<DelegationIssued, DelegatedAuthorityError> {
         let (subject, expires_at) = Self::validate_host_bearer(source)?;
+        let scope = source
+            .owner_scope()
+            .ok_or(DelegatedAuthorityError::HostBearerRequired)?;
+        if !scope
+            .role_for_owner(&owner)
+            .is_some_and(|role| role.dominates(role_ceiling))
+        {
+            return Err(DelegatedAuthorityError::RoleCeilingExceeded);
+        }
         let issued_at = SystemTime::now();
         if expires_at <= issued_at {
             return Err(DelegatedAuthorityError::Expired);
@@ -520,7 +529,12 @@ impl DelegatedAuthorityService {
         )
         .with_expires_at(Some(grant.expires_at()))
         .with_auth_epoch(grant.auth_epoch())
-        .with_tool_scope(grant.command().tool_scope());
+        .with_tool_scope(grant.command().tool_scope())
+        // The durable grant was issued from a verified bearer. Redemption
+        // rechecks identity epoch, expiry, current membership and ceiling above.
+        // Seal only after those checks; never reconstruct from a queued owner.
+        .seal_verified_scope()
+        .map_err(|_| DelegatedAuthorityError::MembershipRevoked)?;
         Ok(DelegatedPhase::new(
             authz,
             grant.expires_at(),
@@ -588,9 +602,17 @@ impl DelegatedAuthorityService {
         let subject = source
             .subject()
             .ok_or(DelegatedAuthorityError::MissingSubject)?;
+        let scope = source
+            .owner_scope()
+            .ok_or(DelegatedAuthorityError::HostBearerRequired)?;
         let expires_at = source
             .expires_at()
-            .ok_or(DelegatedAuthorityError::MissingBearerExpiry)?;
+            .ok_or(DelegatedAuthorityError::MissingBearerExpiry)?
+            .min(
+                scope
+                    .expires_at()
+                    .ok_or(DelegatedAuthorityError::MissingBearerExpiry)?,
+            );
         if expires_at <= SystemTime::now() {
             return Err(DelegatedAuthorityError::Expired);
         }
@@ -875,6 +897,8 @@ mod tests {
         )
         .with_expires_at(Some(expires_at))
         .with_tool_scope(scope)
+        .seal_verified_scope()
+        .expect("synthetic verified identity")
     }
 
     fn runtime(

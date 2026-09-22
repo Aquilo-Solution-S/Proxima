@@ -39,8 +39,44 @@ impl WriteSessionFactory for PgStorage {
             .map(|registered| registered.descriptor)
     }
 
-    async fn begin(&self) -> Result<Box<dyn WriteSession>, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(internal)?;
+    async fn begin(
+        &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
+    ) -> Result<Box<dyn WriteSession>, StorageError> {
+        let tx =
+            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        self.session_from_transaction(tx).await
+    }
+
+    async fn begin_host_state(
+        &self,
+        permit: &HostStateWritePermit,
+    ) -> Result<Box<dyn WriteSession>, StorageError> {
+        let descriptor = self.host_state_descriptor().ok_or_else(|| {
+            proxima_core::StorageError::ConstraintViolation(
+                "host-state participant is not registered".into(),
+            )
+        })?;
+        if !matches!(
+            permit.origin(),
+            proxima_core::storage_ports::HostStateWriteOrigin::Maintenance
+        ) || permit.participant_id() != descriptor.participant_id()
+            || permit.tables() != descriptor.tables()
+        {
+            return Err(proxima_core::StorageError::ConstraintViolation(
+                "host-state maintenance scope mismatch".into(),
+            ));
+        }
+        let tx = self.platform_transaction().await?;
+        self.session_from_transaction(tx).await
+    }
+}
+
+impl PgStorage {
+    async fn session_from_transaction(
+        &self,
+        mut tx: Transaction<'static, Postgres>,
+    ) -> Result<Box<dyn WriteSession>, StorageError> {
         if !self.surfaces.host_lifecycle_surfaces().is_empty() {
             // This global shared xact fence is the first lock in a host-capable
             // UoW, before a cognitive method can take owner/handle locks.

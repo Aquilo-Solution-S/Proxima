@@ -143,13 +143,13 @@ async fn perspective_evidence_is_rejected_in_tx() {
             )
             .await?;
         assert_eq!(
-            pg.load_goal_evidence(&owner, valid.goal_id).await?,
+            pg.load_goal_evidence(None, &owner, valid.goal_id).await?,
             Some(vec![fact.memory_id]),
             "Goal read must return its exact stored evidence vector"
         );
         let foreign = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         assert_eq!(
-            pg.load_goal_evidence(&foreign, valid.goal_id).await?,
+            pg.load_goal_evidence(None, &foreign, valid.goal_id).await?,
             None,
             "owner mismatch must collapse to None"
         );
@@ -193,7 +193,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
             )
             .await?;
         assert_eq!(
-            pg.load_goal_evidence(&owner, stale_goal.goal_id).await?,
+            pg.load_goal_evidence(None, &owner, stale_goal.goal_id).await?,
             Some(vec![fact.memory_id, orphan.memory_id]),
             "the carried vector must retain cooled or missing positions"
         );
@@ -328,7 +328,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
             )
             .await?;
         assert_eq!(
-            pg.load_goal_evidence(&owner, operator_goal.goal_id).await?,
+            pg.load_goal_evidence(None, &owner, operator_goal.goal_id).await?,
             Some(vec![abs.memory_id]),
             "operator A evidence must be admitted and persisted"
         );

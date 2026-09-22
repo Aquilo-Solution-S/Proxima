@@ -9,12 +9,23 @@
 //! What a host promises its users about retention, holds or erasure lives in
 //! the host.
 
+use crate::platform_scope::PgPlatformScope;
 use proxima_core::ColdObjectStore;
 use proxima_core::{Owner, OwnerRefKind, StorageError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::map_err;
+
+async fn begin_platform(
+    pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
+) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StorageError> {
+    match platform {
+        Some(scope) => scope.begin().await,
+        None => crate::owner_scope::begin_compatible_owner_transaction(pool, None).await,
+    }
+}
 
 /// Options for one `change_event` prune pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +77,7 @@ pub struct ColdPurgeRetryOutcome {
 /// Retry a stable, bounded batch of durable exact-key purge debts.
 pub(crate) async fn retry_cold_object_purges(
     pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
     cold: &dyn ColdObjectStore,
     options: ColdPurgeRetryOptions,
 ) -> Result<ColdPurgeRetryOutcome, StorageError> {
@@ -74,7 +86,8 @@ pub(crate) async fn retry_cold_object_purges(
             "cold purge retry batch_size must be positive".into(),
         ));
     }
-    refuse_foreign_backends(pool, cold.backend()).await?;
+    refuse_foreign_backends(pool, platform, cold.backend()).await?;
+    let mut tx = begin_platform(pool, platform).await?;
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT object_key, backend
            FROM proxima_core.cold_purge_pending
@@ -84,14 +97,15 @@ pub(crate) async fn retry_cold_object_purges(
     )
     .bind(options.batch_size)
     .bind(cold.backend())
-    .fetch_all(pool)
+    .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
+    tx.commit().await.map_err(map_err)?;
     let selected = u64::try_from(rows.len()).unwrap_or(u64::MAX);
     if options.dry_run {
         return Ok(ColdPurgeRetryOutcome {
             selected,
-            remaining: pending_cold_purge_count(pool).await?,
+            remaining: pending_cold_purge_count(pool, platform).await?,
             dry_run: true,
             ..ColdPurgeRetryOutcome::default()
         });
@@ -106,12 +120,15 @@ pub(crate) async fn retry_cold_object_purges(
             )
             .collect(),
     );
-    let purge = crate::verbs::forget::purge_cold_objects_after_commit(pool, cold, &plan).await;
+    let purge = crate::verbs::forget::purge_cold_objects_after_commit_with_platform(
+        pool, platform, cold, &plan,
+    )
+    .await;
     Ok(ColdPurgeRetryOutcome {
         selected,
         purged: purge.purged,
         failed: purge.failed,
-        remaining: pending_cold_purge_count(pool).await?,
+        remaining: pending_cold_purge_count(pool, platform).await?,
         dry_run: false,
     })
 }
@@ -129,11 +146,16 @@ pub(crate) async fn retry_cold_object_purges(
 ///
 /// A row with no recorded backend is not foreign: see
 /// [`proxima_core::UNRECORDED_BACKEND`].
-async fn refuse_foreign_backends(pool: &PgPool, store_backend: &str) -> Result<(), StorageError> {
+async fn refuse_foreign_backends(
+    pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
+    store_backend: &str,
+) -> Result<(), StorageError> {
     if store_backend == proxima_core::UNRECORDED_BACKEND {
         // A store that declares no identity cannot be the wrong one.
         return Ok(());
     }
+    let mut tx = begin_platform(pool, platform).await?;
     let foreign: Vec<(String, i64)> = sqlx::query_as(
         "SELECT backend, count(*)::bigint
            FROM proxima_core.cold_purge_pending
@@ -143,9 +165,10 @@ async fn refuse_foreign_backends(pool: &PgPool, store_backend: &str) -> Result<(
           LIMIT 4",
     )
     .bind(store_backend)
-    .fetch_all(pool)
+    .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
+    tx.commit().await.map_err(map_err)?;
     if foreign.is_empty() {
         return Ok(());
     }
@@ -161,17 +184,23 @@ async fn refuse_foreign_backends(pool: &PgPool, store_backend: &str) -> Result<(
     )))
 }
 
-async fn pending_cold_purge_count(pool: &PgPool) -> Result<u64, StorageError> {
+async fn pending_cold_purge_count(
+    pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
+) -> Result<u64, StorageError> {
+    let mut tx = begin_platform(pool, platform).await?;
     let count: i64 =
         sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cold_purge_pending")
-            .fetch_one(pool)
+            .fetch_one(tx.as_mut())
             .await
             .map_err(map_err)?;
+    tx.commit().await.map_err(map_err)?;
     Ok(count.unsigned_abs())
 }
 
 pub(crate) async fn prune_change_log(
     pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
     options: ChangeEventPruneOptions,
 ) -> Result<ChangeEventPruneOutcome, StorageError> {
     if options.older_than_seconds < 1 {
@@ -184,6 +213,7 @@ pub(crate) async fn prune_change_log(
             "change_event prune batch_size must be positive".into(),
         ));
     }
+    let mut tx = begin_platform(pool, platform).await?;
     let candidates: Vec<(OwnerRefKind, Uuid)> = sqlx::query_as(
         "SELECT DISTINCT o.kind, a.owner_id
            FROM proxima_core.announce a
@@ -193,9 +223,10 @@ pub(crate) async fn prune_change_log(
           ORDER BY o.kind, a.owner_id",
     )
     .bind(options.older_than_seconds)
-    .fetch_all(pool)
+    .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
+    tx.commit().await.map_err(map_err)?;
 
     let mut outcome = ChangeEventPruneOutcome {
         dry_run: options.dry_run,
@@ -203,7 +234,7 @@ pub(crate) async fn prune_change_log(
     };
     for (owner_kind, owner_id) in candidates {
         let owner = decode_owner(owner_kind, owner_id);
-        let owner_outcome = prune_owner(pool, owner, options).await?;
+        let owner_outcome = prune_owner(pool, platform, owner, options).await?;
         outcome.events_pruned += owner_outcome.events_pruned;
         outcome.owners.push(owner_outcome);
     }
@@ -212,13 +243,14 @@ pub(crate) async fn prune_change_log(
 
 async fn prune_owner(
     pool: &PgPool,
+    platform: Option<&PgPlatformScope>,
     owner: Owner,
     options: ChangeEventPruneOptions,
 ) -> Result<PruneOwnerOutcome, StorageError> {
     let (_owner_kind, owner_id) = owner.columns();
     let mut events_pruned: u64 = 0;
     loop {
-        let mut tx = pool.begin().await.map_err(map_err)?;
+        let mut tx = begin_platform(pool, platform).await?;
         if options.dry_run {
             let due: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM proxima_core.announce

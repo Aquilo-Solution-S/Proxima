@@ -9,6 +9,7 @@ use proxima_core::storage_ports::{
     MAX_RECONCILE_SAMPLE,
 };
 use proxima_core::{AuthzContext, OwnerRef, StorageError};
+use proxima_storage_pg::begin_compatible_owner_transaction;
 use sqlx::Row as _;
 
 use super::CitedBlobStore;
@@ -95,6 +96,15 @@ impl CitedBlobStore {
         let mut claimed: BTreeSet<String> = BTreeSet::new();
         let mut after = uuid::Uuid::nil();
         loop {
+            let mut tx = match &self.platform_scope {
+                Some(scope) => scope
+                    .begin()
+                    .await
+                    .map_err(|err| StorageError::Unavailable(err.to_string()))?,
+                None => begin_compatible_owner_transaction(&self.pool, None)
+                    .await
+                    .map_err(|err| StorageError::Unavailable(err.to_string()))?,
+            };
             let page = sqlx::query(
                 "SELECT blob_id AS cited_object_id, bucket, object_key, upload_id, \
                         mounted_from_upload_id, \
@@ -108,9 +118,12 @@ impl CitedBlobStore {
             )
             .bind(after)
             .bind(ROW_PAGE)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await
             .map_err(|e| StorageError::Unavailable(format!("read cited blob locators: {e}")))?;
+            tx.commit()
+                .await
+                .map_err(|err| StorageError::Unavailable(err.to_string()))?;
 
             if page.is_empty() {
                 break;
@@ -208,6 +221,9 @@ impl CitedBlobStore {
 
         let mut after = uuid::Uuid::nil();
         loop {
+            let mut tx = begin_compatible_owner_transaction(&self.pool, authz.owner_scope())
+                .await
+                .map_err(|err| StorageError::Unavailable(err.to_string()))?;
             let page = sqlx::query(
                 "SELECT u.blob_id AS cited_object_id, u.bucket, u.object_key, u.upload_id, \
                         u.mounted_from_upload_id, \
@@ -223,11 +239,14 @@ impl CitedBlobStore {
             .bind(owner.stored_owner_id())
             .bind(after)
             .bind(ROW_PAGE)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await
             .map_err(|e| {
                 StorageError::Unavailable(format!("read owner cited blob locators: {e}"))
             })?;
+            tx.commit()
+                .await
+                .map_err(|err| StorageError::Unavailable(err.to_string()))?;
 
             if page.is_empty() {
                 break;

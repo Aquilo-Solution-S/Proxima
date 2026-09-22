@@ -1,9 +1,9 @@
 use std::time::SystemTime;
 
-use crate::Owner;
 use crate::access::AccessKind;
 use crate::authz::DelegationRuntimeBinding;
 use crate::error::ProtocolError;
+use crate::{Owner, OwnerScope};
 
 struct DelegatedWriteGuard {
     runtime_binding: DelegationRuntimeBinding,
@@ -18,6 +18,8 @@ struct DelegatedWriteGuard {
 pub struct OwnerWritePermit {
     owner: Owner,
     access_kind: AccessKind,
+    owner_scope: Option<OwnerScope>,
+    transfer_destination: Option<crate::OwnerRef>,
     delegated: Option<DelegatedWriteGuard>,
     _private: (),
 }
@@ -123,14 +125,27 @@ impl OwnerWritePermit {
     #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
     pub const fn new_for_tests(owner: Owner, access_kind: AccessKind) -> Self {
-        Self::new(owner, access_kind)
-    }
-
-    #[must_use]
-    pub(crate) const fn new(owner: Owner, access_kind: AccessKind) -> Self {
         Self {
             owner,
             access_kind,
+            owner_scope: None,
+            transfer_destination: None,
+            delegated: None,
+            _private: (),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn new(
+        owner: Owner,
+        access_kind: AccessKind,
+        owner_scope: Option<OwnerScope>,
+    ) -> Self {
+        Self {
+            owner,
+            access_kind,
+            owner_scope,
+            transfer_destination: None,
             delegated: None,
             _private: (),
         }
@@ -142,10 +157,13 @@ impl OwnerWritePermit {
         access_kind: AccessKind,
         runtime_binding: DelegationRuntimeBinding,
         expires_at: SystemTime,
+        owner_scope: Option<OwnerScope>,
     ) -> Self {
         Self {
             owner,
             access_kind,
+            owner_scope,
+            transfer_destination: None,
             delegated: Some(DelegatedWriteGuard {
                 runtime_binding,
                 expires_at,
@@ -189,6 +207,24 @@ impl OwnerWritePermit {
     #[must_use]
     pub const fn access_kind(&self) -> AccessKind {
         self.access_kind
+    }
+
+    pub(crate) fn authorize_transfer_to(&mut self, destination: crate::OwnerRef) {
+        self.transfer_destination = Some(destination);
+    }
+
+    /// Destination independently consented by the engine's transfer gate.
+    #[must_use]
+    pub fn transfer_destination(&self) -> Option<crate::OwnerRef> {
+        self.transfer_destination
+    }
+
+    /// The authenticated owner scope stamped by engine admission, if this
+    /// permit came from a verified request context. Legacy and platform paths
+    /// deliberately carry `None` so an RLS backend can refuse them explicitly.
+    #[must_use]
+    pub fn owner_scope(&self) -> Option<&OwnerScope> {
+        self.owner_scope.as_ref()
     }
 }
 

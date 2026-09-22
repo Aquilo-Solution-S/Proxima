@@ -207,6 +207,7 @@ pub(crate) mod tests {
     impl McpCallReadPort for MembershipStorage {
         async fn read_mcp_call_history(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _req: &McpCallHistoryRequest,
         ) -> Result<McpCallHistoryResponse, StorageError> {
             Ok(McpCallHistoryResponse { calls: Vec::new() })
@@ -228,6 +229,7 @@ pub(crate) mod tests {
 
         async fn load_memory_kinds(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _owner: &Owner,
             memory_ids: &[MemoryId],
         ) -> Result<Vec<MemoryKindRow>, StorageError> {
@@ -264,6 +266,7 @@ pub(crate) mod tests {
     impl MemoryReadPort for MembershipStorage {
         async fn load_fact_text(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _owner: &Owner,
             _memory_id: MemoryId,
         ) -> Result<Option<String>, StorageError> {
@@ -272,6 +275,7 @@ pub(crate) mod tests {
 
         async fn query_memories(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _req: &verbs::query::QueryRequest,
             _schemas: &[crate::read_models::MemorySchemaSpec],
@@ -287,6 +291,7 @@ pub(crate) mod tests {
 
         async fn search_memories(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _req: &verbs::query::MemorySearchRequest,
             _projections: &[verbs::schema::MemorySearchProjection],
         ) -> Result<verbs::query::MemorySearchPage, StorageError> {
@@ -298,6 +303,7 @@ pub(crate) mod tests {
 
         async fn walk_memory_lineage(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _req: &verbs::query::MemoryLineageRequest,
         ) -> Result<verbs::query::MemoryLineageResponse, StorageError> {
@@ -311,6 +317,7 @@ pub(crate) mod tests {
 
         async fn load_memory_graph_payloads(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _identities: &[MemoryGraphIdentity],
             _schemas: &[crate::read_models::MemorySchemaSpec],
             _include_body: bool,
@@ -320,6 +327,7 @@ pub(crate) mod tests {
 
         async fn load_sketches(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _memory_ids: &[MemoryId],
         ) -> Result<Vec<crate::read_models::MemorySketch>, StorageError> {
@@ -328,6 +336,7 @@ pub(crate) mod tests {
 
         async fn load_pin_nodes(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _memory_ids: &[MemoryId],
         ) -> Result<Vec<crate::PinNode>, StorageError> {
@@ -336,6 +345,7 @@ pub(crate) mod tests {
 
         async fn load_visible_goal_ids(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _goal_ids: &[crate::GoalId],
         ) -> Result<Vec<crate::GoalId>, StorageError> {
@@ -344,6 +354,7 @@ pub(crate) mod tests {
 
         async fn load_inbound_pin_nodes(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _query: crate::InboundPinQuery<'_>,
         ) -> Result<Vec<crate::PinNode>, StorageError> {
@@ -352,6 +363,7 @@ pub(crate) mod tests {
 
         async fn owned_series_handle(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _owner: Owner,
             _schema_id: &crate::SchemaId,
             _sidecar_table: &str,
@@ -365,6 +377,7 @@ pub(crate) mod tests {
     impl MemoryInspectPort for MembershipStorage {
         async fn load_memory_by_id(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _memory_id: MemoryId,
             _schemas: &[crate::read_models::MemorySchemaSpec],
         ) -> Result<Option<MemorySnapshot>, StorageError> {
@@ -373,6 +386,7 @@ pub(crate) mod tests {
 
         async fn load_memories_by_ids(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _memory_ids: &[MemoryId],
             _schemas: &[crate::read_models::MemorySchemaSpec],
@@ -385,6 +399,7 @@ pub(crate) mod tests {
     impl EmbeddingTextPort for MembershipStorage {
         async fn load_embedding_text(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _owner: &Owner,
             _entity_kind: EntityKind,
             _memory_id: MemoryId,
@@ -395,6 +410,7 @@ pub(crate) mod tests {
 
         async fn load_embedding_texts(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             items: &[(Owner, EntityKind, MemoryId)],
             _non_embeddable_schemas: &[String],
         ) -> Result<Vec<Option<String>>, StorageError> {
@@ -403,6 +419,7 @@ pub(crate) mod tests {
 
         async fn list_facts_missing_embedding(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _owner: &Owner,
             _model_id: &str,
             _limit: usize,
@@ -524,11 +541,19 @@ pub(crate) mod tests {
             ))
         }
 
-        async fn count_pending_embedding_jobs(&self, _owner: &Owner) -> Result<u64, StorageError> {
+        async fn count_pending_embedding_jobs(
+            &self,
+            _scope: Option<&crate::OwnerScope>,
+            _owner: &Owner,
+        ) -> Result<u64, StorageError> {
             Ok(0)
         }
 
-        async fn count_failed_embedding_jobs(&self, _owner: &Owner) -> Result<u64, StorageError> {
+        async fn count_failed_embedding_jobs(
+            &self,
+            _scope: Option<&crate::OwnerScope>,
+            _owner: &Owner,
+        ) -> Result<u64, StorageError> {
             Ok(0)
         }
     }
@@ -688,6 +713,7 @@ pub(crate) mod tests {
     impl GoalReadPort for MembershipStorage {
         async fn list_active_goals(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _self_perspective_memory_id: MemoryId,
             _limit: usize,
@@ -697,6 +723,7 @@ pub(crate) mod tests {
 
         async fn load_goal_wake_configs(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _goal_ids: &[crate::GoalId],
         ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError> {
@@ -705,6 +732,7 @@ pub(crate) mod tests {
 
         async fn load_goal_evidence(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _owner: &OwnerRef,
             _goal_id: crate::GoalId,
         ) -> Result<Option<Vec<MemoryId>>, StorageError> {
@@ -716,6 +744,7 @@ pub(crate) mod tests {
     impl crate::storage_ports::GoalWakeCandidatePort for MembershipStorage {
         async fn list_goal_wake_candidates(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _req: &GoalWakeCandidateRequest<'_>,
         ) -> Result<Vec<GoalWakeCandidate>, StorageError> {
             Ok(Vec::new())
@@ -726,6 +755,7 @@ pub(crate) mod tests {
     impl ChangeEventPort for MembershipStorage {
         async fn change_history(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _req: &ChangeHistoryRequest,
         ) -> Result<ChangeHistoryResponse, StorageError> {
@@ -737,6 +767,7 @@ pub(crate) mod tests {
 
         async fn list_change_events_after(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _after: uuid::Uuid,
             _limit: usize,
@@ -749,6 +780,7 @@ pub(crate) mod tests {
     impl CitationPort for MembershipStorage {
         async fn facts_citing_object(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _cited_object_id: uuid::Uuid,
             _schemas: &[crate::read_models::MemorySchemaSpec],
@@ -764,6 +796,7 @@ pub(crate) mod tests {
 
         async fn citation_of_fact(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _fact_memory_id: MemoryId,
         ) -> Result<Option<verbs::query::FactCitationReadback>, StorageError> {
@@ -775,6 +808,7 @@ pub(crate) mod tests {
     impl OwnerAccessReadPort for MembershipStorage {
         async fn resolve_membership(
             &self,
+            _owner_scope: Option<&crate::OwnerScope>,
             member: &OwnerRef,
         ) -> Result<Vec<MembershipRow>, StorageError> {
             if member == &self.member {
@@ -789,6 +823,7 @@ pub(crate) mod tests {
 
         async fn visible_home_owner(
             &self,
+            _owner_scope: Option<&crate::OwnerScope>,
             entity: EntityId,
             _read_owners: &[OwnerRef],
         ) -> Result<Option<OwnerRef>, StorageError> {
@@ -803,7 +838,11 @@ pub(crate) mod tests {
             }
         }
 
-        async fn home_owner(&self, _entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
+        async fn home_owner(
+            &self,
+            _owner_scope: Option<&crate::OwnerScope>,
+            _entity: EntityId,
+        ) -> Result<Option<OwnerRef>, StorageError> {
             Ok(self.home_owner)
         }
     }
@@ -847,6 +886,7 @@ pub(crate) mod tests {
 
         async fn list_group_members(
             &self,
+            _owner_scope: Option<&crate::OwnerScope>,
             group_id: GroupId,
         ) -> Result<Vec<(UserId, Relation)>, StorageError> {
             if group_id == self.group
@@ -860,11 +900,12 @@ pub(crate) mod tests {
 
         async fn list_group_members_page(
             &self,
+            _owner_scope: Option<&crate::OwnerScope>,
             group_id: GroupId,
             _after: Option<(UserId, Relation)>,
             _limit: i64,
         ) -> Result<Vec<(UserId, Relation)>, StorageError> {
-            self.list_group_members(group_id).await
+            self.list_group_members(_owner_scope, group_id).await
         }
     }
 
@@ -887,6 +928,7 @@ pub(crate) mod tests {
     impl SourceCursorPort for MembershipStorage {
         async fn load_source_cursor(
             &self,
+            _owner_scope: Option<&crate::OwnerScope>,
             _owner: &Owner,
             _source: &str,
         ) -> Result<Option<Cursor>, StorageError> {
@@ -908,6 +950,7 @@ pub(crate) mod tests {
 
         async fn source_cursor_age(
             &self,
+            _owner_scope: Option<&crate::OwnerScope>,
             _owner: &Owner,
             _source: &str,
         ) -> Result<Option<std::time::Duration>, StorageError> {
@@ -980,6 +1023,7 @@ pub(crate) mod tests {
     impl RegistryProjectionPort for MembershipStorage {
         async fn load_memory_batch_facts(
             &self,
+            _owner_scope: Option<&crate::OwnerScope>,
             _owner: &Owner,
             _memory_id: MemoryId,
             _schemas: &[crate::read_models::MemorySchemaSpec],
@@ -989,6 +1033,7 @@ pub(crate) mod tests {
 
         async fn load_abstraction_heads(
             &self,
+            _owner_scope: Option<&crate::OwnerScope>,
             _owner: &Owner,
             _schemas: &[crate::read_models::MemorySchemaSpec],
             _limit: usize,
@@ -999,7 +1044,10 @@ pub(crate) mod tests {
 
     #[async_trait::async_trait]
     impl WriteSessionFactory for MembershipStorage {
-        async fn begin(&self) -> Result<Box<dyn WriteSession>, StorageError> {
+        async fn begin(
+            &self,
+            _scope: Option<&crate::OwnerScope>,
+        ) -> Result<Box<dyn WriteSession>, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))

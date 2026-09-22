@@ -1,6 +1,6 @@
 use proxima_core::storage_ports::{EmbeddingJobStatusCounts, OwnerWritePermit};
 use proxima_core::{EmbeddingJobClaim, EntityKind, MemoryId, Owner, OwnerRefKind, StorageError};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgExecutor, PgPool};
 
 use crate::error::map_err;
 use crate::pg_enums::PgMemoryKind;
@@ -85,8 +85,8 @@ impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
 /// Returns `ConstraintViolation` when `limit` is too large for
 /// Postgres `bigint`, otherwise maps SQL failures through the shared
 /// mapper.
-pub async fn list_facts_missing_embedding(
-    pool: &PgPool,
+pub async fn list_facts_missing_embedding<'e>(
+    pool: impl PgExecutor<'e>,
     owner: &Owner,
     model_id: &str,
     limit: usize,
@@ -106,8 +106,8 @@ pub async fn list_facts_missing_embedding(
     .await
 }
 
-async fn missing_embedding_ids(
-    pool: &PgPool,
+async fn missing_embedding_ids<'e>(
+    pool: impl PgExecutor<'e>,
     owner_id: uuid::Uuid,
     model_id: &str,
     limit: i64,
@@ -157,8 +157,8 @@ async fn missing_embedding_ids(
 ///
 /// Returns `ConstraintViolation` for negative limits, otherwise maps SQL
 /// failures through the shared mapper.
-pub async fn claim_pending_embedding_jobs(
-    pool: &PgPool,
+pub async fn claim_pending_embedding_jobs<'e, E: PgExecutor<'e>>(
+    pool: E,
     model_id: &str,
     limit: i64,
 ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
@@ -187,8 +187,8 @@ pub async fn claim_pending_embedding_jobs(
 ///
 /// Returns `Conflict` for a stale/non-processing claim; maps SQL failures
 /// through the shared mapper.
-pub async fn complete_embedding_job(
-    pool: &PgPool,
+pub async fn complete_embedding_job<'e, E: PgExecutor<'e>>(
+    pool: E,
     claim: &EmbeddingJobClaim,
 ) -> Result<(), StorageError> {
     let result = sqlx::query(
@@ -226,8 +226,8 @@ pub async fn complete_embedding_job(
 /// # Errors
 ///
 /// Maps SQL failures through the shared mapper.
-pub async fn renew_embedding_jobs(
-    pool: &PgPool,
+pub async fn renew_embedding_jobs<'e, E: PgExecutor<'e>>(
+    pool: E,
     claims: &[EmbeddingJobClaim],
 ) -> Result<u64, StorageError> {
     if claims.is_empty() {
@@ -272,8 +272,8 @@ pub async fn renew_embedding_jobs(
 ///
 /// Returns `Conflict` for a stale/non-processing claim; maps SQL failures
 /// through the shared mapper.
-pub async fn fail_embedding_job(
-    pool: &PgPool,
+pub async fn fail_embedding_job<'e, E: PgExecutor<'e>>(
+    pool: E,
     claim: &EmbeddingJobClaim,
     error: &str,
 ) -> Result<(), StorageError> {
@@ -319,8 +319,8 @@ pub async fn fail_embedding_job(
 ///
 /// Returns `Conflict` for a stale/non-processing claim; maps SQL failures
 /// through the shared mapper.
-pub async fn fail_embedding_job_permanently(
-    pool: &PgPool,
+pub async fn fail_embedding_job_permanently<'e, E: PgExecutor<'e>>(
+    pool: E,
     claim: &EmbeddingJobClaim,
     error: &str,
 ) -> Result<(), StorageError> {
@@ -370,6 +370,17 @@ pub async fn release_embedding_jobs(
     error: &str,
 ) -> Result<(), StorageError> {
     let mut tx = pool.begin().await.map_err(map_err)?;
+    release_embedding_jobs_on_connection(&mut tx, claims, error).await?;
+    tx.commit().await.map_err(map_err)
+}
+
+/// # Errors
+/// Returns storage errors from query execution or invalid stored data.
+pub async fn release_embedding_jobs_on_connection(
+    pool: &mut PgConnection,
+    claims: &[EmbeddingJobClaim],
+    error: &str,
+) -> Result<(), StorageError> {
     for claim in claims {
         let result = sqlx::query(
             "UPDATE proxima_core.embedding_jobs
@@ -390,7 +401,7 @@ pub async fn release_embedding_jobs(
         .bind(claim.owner.stored_owner_id())
         .bind(claim.entity_id.into_inner())
         .bind(&claim.model_id)
-        .execute(&mut *tx)
+        .execute(&mut *pool)
         .await
         .map_err(map_err)?;
         if result.rows_affected() == 0 {
@@ -399,7 +410,6 @@ pub async fn release_embedding_jobs(
             ));
         }
     }
-    tx.commit().await.map_err(map_err)?;
     Ok(())
 }
 
@@ -414,8 +424,8 @@ pub async fn release_embedding_jobs(
 ///
 /// Returns `ConstraintViolation` for a non-positive window, otherwise maps
 /// SQL failures through the shared mapper.
-pub async fn reclaim_stale_embedding_jobs(
-    pool: &PgPool,
+pub async fn reclaim_stale_embedding_jobs<'e, E: PgExecutor<'e>>(
+    pool: E,
     older_than_seconds: i64,
 ) -> Result<u64, StorageError> {
     if older_than_seconds < 1 {
@@ -456,6 +466,25 @@ pub async fn enqueue_missing_embedding_jobs(
     limit: i64,
     non_embeddable_schemas: &[String],
 ) -> Result<u64, StorageError> {
+    let mut tx = crate::begin_compatible_owner_transaction(pool, permit.owner_scope()).await?;
+    let result = enqueue_missing_embedding_jobs_on_connection(
+        tx.as_mut(),
+        permit,
+        model_id,
+        limit,
+        non_embeddable_schemas,
+    )
+    .await;
+    crate::owner_scope::finish_transaction(tx, result).await
+}
+
+async fn enqueue_missing_embedding_jobs_on_connection(
+    pool: &mut PgConnection,
+    permit: &OwnerWritePermit,
+    model_id: &str,
+    limit: i64,
+    non_embeddable_schemas: &[String],
+) -> Result<u64, StorageError> {
     let limit = ensure_nonnegative_limit(limit)?;
     if limit == 0 {
         return Ok(0);
@@ -464,7 +493,7 @@ pub async fn enqueue_missing_embedding_jobs(
     // Existing jobs are already accounted for, regardless of their status.
     // Exclude them before limiting so they cannot hide later missing work.
     let ids = missing_embedding_ids(
-        pool,
+        &mut *pool,
         owner_id,
         model_id,
         limit,
@@ -486,7 +515,7 @@ pub async fn enqueue_missing_embedding_jobs(
     .bind(owner_id)
     .bind(model_id)
     .bind(&entity_ids)
-    .execute(pool)
+    .execute(&mut *pool)
     .await
     .map_err(map_err)?;
     Ok(result.rows_affected())
@@ -497,8 +526,8 @@ pub async fn enqueue_missing_embedding_jobs(
 /// # Errors
 ///
 /// Maps SQL failures through the shared mapper.
-pub async fn count_pending_embedding_jobs(
-    pool: &PgPool,
+pub async fn count_pending_embedding_jobs<'e>(
+    pool: impl PgExecutor<'e>,
     owner: &Owner,
 ) -> Result<u64, StorageError> {
     let owner_id = owner.stored_owner_id();
@@ -522,8 +551,8 @@ pub async fn count_pending_embedding_jobs(
 /// # Errors
 ///
 /// Maps SQL failures through the shared mapper.
-pub async fn count_failed_embedding_jobs(
-    pool: &PgPool,
+pub async fn count_failed_embedding_jobs<'e>(
+    pool: impl PgExecutor<'e>,
     owner: &Owner,
 ) -> Result<u64, StorageError> {
     let owner_id = owner.stored_owner_id();
@@ -546,8 +575,8 @@ pub async fn count_failed_embedding_jobs(
 /// # Errors
 ///
 /// Maps SQL failures through the shared mapper.
-pub async fn count_embedding_job_status(
-    pool: &PgPool,
+pub async fn count_embedding_job_status<'e>(
+    pool: impl PgExecutor<'e>,
     owner: &Owner,
 ) -> Result<EmbeddingJobStatusCounts, StorageError> {
     let owner_id = owner.stored_owner_id();

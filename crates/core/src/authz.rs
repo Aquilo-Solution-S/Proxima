@@ -18,7 +18,8 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use tokio::time::{Instant, Interval, Sleep};
 
-use crate::access::{AccessKind, OwnerRoles, Role};
+use crate::OwnerScope;
+use crate::access::{AccessKind, OwnerAccessPort, OwnerRoles, Role};
 use crate::auth::{AuthError, Credentials};
 use crate::error::ProtocolError;
 use crate::publication::{PublicationExtensions, PublicationExtensionsError};
@@ -251,6 +252,7 @@ pub struct AuthzContext {
     capabilities: CapabilitySet,
     auth_path: AuthPath,
     owner_roles: Option<OwnerRoles>,
+    owner_scope: Option<OwnerScope>,
     /// `CloudEvents` extension attributes the HOST bound to this context.
     ///
     /// Deliberately NOT part of [`Identity`]: it is deployment-shaped
@@ -417,6 +419,35 @@ where
 }
 
 impl AuthzContext {
+    /// Authenticate credentials through the trusted host and seal its
+    /// server-resolved owner roles into an [`OwnerScope`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the host authentication error, or `InvalidCredentials` when
+    /// the host returned a context without server-resolved roles.
+    pub async fn authenticate(
+        authenticator: &dyn Authenticator,
+        credentials: &Credentials,
+    ) -> Result<Self, AuthError> {
+        let context = authenticator.authenticate(credentials).await?;
+        context.seal_verified_scope()
+    }
+
+    pub(crate) fn seal_verified_scope(mut self) -> Result<Self, AuthError> {
+        let roles = self
+            .owner_roles
+            .clone()
+            .ok_or(AuthError::InvalidCredentials)?;
+        self.owner_scope = Some(OwnerScope::from_verified_roles(roles, self.expires_at()));
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn owner_scope(&self) -> Option<&OwnerScope> {
+        self.owner_scope.as_ref()
+    }
+
     #[must_use]
     pub fn subject(&self) -> Option<UserId> {
         self.identity.subject
@@ -551,6 +582,7 @@ impl AuthzContext {
             capabilities: CapabilitySet::all(),
             auth_path,
             owner_roles: Some(owner_roles),
+            owner_scope: None,
             publication_extensions: PublicationExtensions::new(),
         }
     }
@@ -649,12 +681,15 @@ impl AuthzContext {
             .into_iter()
             .collect();
         self.owner_roles = Some(narrowed_roles);
+        if let Some(scope) = self.owner_scope.as_ref() {
+            self.owner_scope = Some(scope.narrow(owner)?);
+        }
         self.identity.accessible_principals = accessible_principals;
         Some(self)
     }
 
     /// The same context with one more host-resolved Group role in its map —
-    /// the entry an [`OwnerAccessPort`](crate::access::OwnerAccessPort)
+    /// the entry an [`OwnerAccessPort`]
     /// answered on demand instead of in the eager enumeration. There is
     /// still exactly one way to narrow: [`Self::narrowed_to_owner`] reads
     /// this map, so a role folded in here is narrowed on under the same
@@ -670,6 +705,9 @@ impl AuthzContext {
     /// caller-controlled payload would make the caller its own authorizer.
     #[must_use]
     pub fn with_host_resolved_role(mut self, group: GroupId, role: Role) -> Option<Self> {
+        if self.owner_scope.is_some() {
+            return None;
+        }
         let roles = self.owner_roles.take()?.with_group_role(group, role);
         self.identity.accessible_principals = roles
             .readable_owners(AccessKind::Goal)
@@ -677,6 +715,31 @@ impl AuthzContext {
             .collect();
         self.owner_roles = Some(roles);
         Some(self)
+    }
+
+    /// Resolve one missing group through the trusted host port while keeping
+    /// the authenticated subject private to this operation.
+    pub async fn with_authenticated_group_role(
+        &self,
+        port: &dyn OwnerAccessPort,
+        group: GroupId,
+    ) -> Option<Self> {
+        let scope = self.owner_scope.as_ref()?;
+        if scope.is_expired() {
+            return None;
+        }
+        let subject = self.subject()?;
+        let role = port.resolve_group_role(subject, group).await.ok()??;
+        let scope = scope.add_group_role(group, role)?;
+        let mut next = self.clone();
+        let roles = next.owner_roles.take()?.with_group_role(group, role);
+        next.identity.accessible_principals = roles
+            .readable_owners(AccessKind::Goal)
+            .into_iter()
+            .collect();
+        next.owner_roles = Some(roles);
+        next.owner_scope = Some(scope);
+        Some(next)
     }
 
     #[must_use]
@@ -745,6 +808,7 @@ impl AuthzContext {
             },
             auth_path: AuthPath::Denied,
             owner_roles: None,
+            owner_scope: None,
             publication_extensions: PublicationExtensions::new(),
         }
     }
@@ -767,6 +831,20 @@ pub trait Authenticator: Send + Sync {
     async fn current_auth_epoch(&self, _principal: &OwnerRef) -> u64 {
         0
     }
+}
+
+/// Authenticate through the host-owned verifier and mint the sole production
+/// [`OwnerScope`] witness from its server-resolved result.
+///
+/// # Errors
+///
+/// Returns the host authentication error, or `InvalidCredentials` when the
+/// host returned a context without server-resolved roles.
+pub async fn authenticate(
+    authenticator: &dyn Authenticator,
+    credentials: &Credentials,
+) -> Result<AuthzContext, AuthError> {
+    AuthzContext::authenticate(authenticator, credentials).await
 }
 
 /// Revalidation cadence for long-lived authenticated streams.
@@ -1010,6 +1088,67 @@ mod tests {
         assert!(ctx.may_write(&o, AccessKind::Fact));
         assert!(ctx.identity.can_access_principal(&o));
         assert!(ctx.identity.expires_at.is_none());
+        assert!(ctx.owner_scope().is_none());
+    }
+
+    struct VerifiedAuthenticator {
+        context: AuthzContext,
+    }
+
+    #[async_trait]
+    impl Authenticator for VerifiedAuthenticator {
+        async fn authenticate(&self, _creds: &Credentials) -> Result<AuthzContext, AuthError> {
+            Ok(self.context.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn only_core_authentication_seals_an_owner_scope() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let context = AuthzContext::for_subject_with_role(
+            subject,
+            [(group, Role::editor())],
+            AuthPath::HostBearer,
+        );
+        assert!(context.owner_scope().is_none());
+
+        let verified = authenticate(
+            &VerifiedAuthenticator { context },
+            &Credentials::Bearer("opaque".to_string()),
+        )
+        .await
+        .expect("the trusted authenticator succeeds");
+        let scope = verified.owner_scope().expect("authentication seals scope");
+        assert!(scope.may_write(&group, AccessKind::Fact));
+        assert!(
+            verified
+                .clone()
+                .with_host_resolved_role(GroupId::new(uuid::Uuid::now_v7()), Role::admin())
+                .is_none()
+        );
+        let narrowed = verified
+            .narrowed_to_owner(group)
+            .expect("authorized group remains selectable");
+        assert_eq!(
+            narrowed
+                .owner_scope()
+                .expect("scope survives")
+                .readable_owners(AccessKind::Fact),
+            vec![group]
+        );
+    }
+
+    #[tokio::test]
+    async fn authentication_rejects_a_context_without_server_resolved_roles() {
+        let result = authenticate(
+            &VerifiedAuthenticator {
+                context: AuthzContext::denied_for_owner(&owner()),
+            },
+            &Credentials::Bearer("opaque".to_string()),
+        )
+        .await;
+        assert_eq!(result, Err(AuthError::InvalidCredentials));
     }
 
     #[test]

@@ -204,6 +204,7 @@ async fn boots_engine_with_core_goal_tools_on_fresh_db() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let config = EmbedConfig {
             database_url: db_url,
+            platform_database_url: None,
             s3: None,
         };
         let owner = company_owner(Uuid::now_v7());
@@ -378,6 +379,7 @@ async fn pre_v004_database_surfaces_typed_reset_error_through_boot() {
 
         let config = EmbedConfig {
             database_url: db_url.clone(),
+            platform_database_url: None,
             s3: None,
         };
         let owner = company_owner(Uuid::now_v7());
@@ -637,6 +639,7 @@ async fn skip_migrations_boots_without_applying_ddl() {
         let owner = company_owner(Uuid::now_v7());
         let config = || EmbedConfig {
             database_url: db_url.clone(),
+            platform_database_url: None,
             s3: None,
         };
 
@@ -693,6 +696,7 @@ async fn boot_rejects_embedding_client_with_wrong_dim() {
         let owner = company_owner(Uuid::now_v7());
         let config = || EmbedConfig {
             database_url: db_url.clone(),
+            platform_database_url: None,
             s3: None,
         };
 

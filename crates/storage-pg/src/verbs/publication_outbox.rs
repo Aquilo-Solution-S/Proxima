@@ -274,14 +274,16 @@ impl PublicationOutboxPort for PgStorage {
                 MIN_CLAIM_LEASE.as_millis(),
             )));
         }
+        let mut tx = self.platform_transaction().await?;
         let rows = sqlx::query(CLAIM_SQL)
             .bind(i64::from(limit.get()))
             .bind(publisher.as_str())
             .bind(lease.as_secs_f64())
-            .fetch_all(&self.pool)
+            .fetch_all(tx.as_mut())
             .await
             .map_err(map_err)?;
-        rows.iter().map(claimed_from_row).collect()
+        let result = rows.iter().map(claimed_from_row).collect();
+        crate::owner_scope::finish_transaction(tx, result).await
     }
 
     async fn mark_published(
@@ -293,6 +295,7 @@ impl PublicationOutboxPort for PgStorage {
         let sequence = i64::try_from(receipt.sequence).map_err(|_| {
             StorageError::ConstraintViolation("broker sequence does not fit a bigint".into())
         })?;
+        let mut tx = self.platform_transaction().await?;
         let result = sqlx::query(
             "UPDATE proxima_core.publication_outbox
                 SET state = 'published',
@@ -310,19 +313,22 @@ impl PublicationOutboxPort for PgStorage {
         .bind(claim.into_inner())
         .bind(&receipt.stream)
         .bind(sequence)
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
-        if result.rows_affected() > 0 {
-            return Ok(AckOutcome::Published);
-        }
-        Ok(match current_state(&self.pool, id).await? {
-            Some(state) if state == "published" => AckOutcome::AlreadyPublished,
-            _ => AckOutcome::StaleClaim,
-        })
+        let outcome = if result.rows_affected() > 0 {
+            AckOutcome::Published
+        } else {
+            match current_state(tx.as_mut(), id).await? {
+                Some(state) if state == "published" => AckOutcome::AlreadyPublished,
+                _ => AckOutcome::StaleClaim,
+            }
+        };
+        crate::owner_scope::finish_transaction(tx, Ok(outcome)).await
     }
 
     async fn release(&self, id: Uuid, claim: ClaimToken) -> Result<ReleaseOutcome, StorageError> {
+        let mut tx = self.platform_transaction().await?;
         let result = sqlx::query(
             "UPDATE proxima_core.publication_outbox
                 SET state = 'pending',
@@ -335,26 +341,29 @@ impl PublicationOutboxPort for PgStorage {
         )
         .bind(id)
         .bind(claim.into_inner())
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
-        if result.rows_affected() > 0 {
-            return Ok(ReleaseOutcome::Released);
-        }
-        Ok(match current_state(&self.pool, id).await? {
-            Some(state) if state == "published" => ReleaseOutcome::AlreadyPublished,
-            _ => ReleaseOutcome::StaleClaim,
-        })
+        let outcome = if result.rows_affected() > 0 {
+            ReleaseOutcome::Released
+        } else {
+            match current_state(tx.as_mut(), id).await? {
+                Some(state) if state == "published" => ReleaseOutcome::AlreadyPublished,
+                _ => ReleaseOutcome::StaleClaim,
+            }
+        };
+        crate::owner_scope::finish_transaction(tx, Ok(outcome)).await
     }
 
     async fn pending_count(&self) -> Result<u64, StorageError> {
+        let mut tx = self.platform_transaction().await?;
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM proxima_core.publication_outbox WHERE state <> 'published'",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(tx.as_mut())
         .await
         .map_err(map_err)?;
-        Ok(count.try_into().unwrap_or(0))
+        crate::owner_scope::finish_transaction(tx, Ok(count.try_into().unwrap_or(0))).await
     }
 }
 
@@ -365,7 +374,7 @@ impl PublicationOriginEligibilityPort for PgStorage {
         original_owner: proxima_core::OwnerRef,
         fact_id: proxima_core::MemoryId,
     ) -> Result<PublicationOriginEligibility, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(map_err)?;
+        let mut tx = self.platform_transaction().await?;
         crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut tx).await?;
         let result = self
             .check_in_transaction(&mut tx, original_owner, fact_id)
@@ -433,15 +442,17 @@ impl PgStorage {
     /// refusing to boot is better than publishing unstamped events that no
     /// cleaner will ever be able to vouch for.
     pub async fn origin_scope(&self) -> Result<OriginScope, StorageError> {
+        let mut tx = self.platform_transaction().await?;
         let id: Option<Uuid> = sqlx::query_scalar(
             "SELECT installation_id FROM proxima_core.installation WHERE singleton",
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(tx.as_mut())
         .await
         .map_err(map_err)?;
-        id.map(OriginScope::new).ok_or_else(|| {
+        let result = id.map(OriginScope::new).ok_or_else(|| {
             internal("proxima_core.installation holds no row; the schema is incomplete")
-        })
+        });
+        crate::owner_scope::finish_transaction(tx, result).await
     }
 }
 
@@ -462,6 +473,7 @@ impl proxima_core::storage_ports::publication::PublicationRetentionPort for PgSt
         older_than: Duration,
         limit: NonZeroU32,
     ) -> Result<u64, StorageError> {
+        let mut tx = self.platform_transaction().await?;
         let deleted = sqlx::query(
             "DELETE FROM proxima_core.publication_outbox
               WHERE ctid IN (
@@ -475,20 +487,23 @@ impl proxima_core::storage_ports::publication::PublicationRetentionPort for PgSt
         )
         .bind(older_than.as_secs_f64())
         .bind(i64::from(limit.get()))
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await
         .map_err(map_err)?
         .rows_affected();
-        Ok(deleted)
+        crate::owner_scope::finish_transaction(tx, Ok(deleted)).await
     }
 }
 
 /// The record's delivery state, or `None` when no record with that `t`
 /// exists (compliance erasure destroyed it, or it never existed).
-async fn current_state(pool: &sqlx::PgPool, id: Uuid) -> Result<Option<String>, StorageError> {
+async fn current_state(
+    connection: &mut sqlx::PgConnection,
+    id: Uuid,
+) -> Result<Option<String>, StorageError> {
     sqlx::query_scalar("SELECT state::text FROM proxima_core.publication_outbox WHERE t = $1")
         .bind(id)
-        .fetch_optional(pool)
+        .fetch_optional(connection)
         .await
         .map_err(map_err)
 }

@@ -59,6 +59,7 @@ pub trait FlavorApp: FlavorBundle {
 pub struct AppContext {
     pub engine: Arc<Engine>,
     pub(crate) pool: PgPool,
+    pub(crate) platform_scope: Option<proxima_storage_pg::PgPlatformScope>,
     pub(crate) pg_tuning: PgTuning,
     pub(crate) pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub(crate) host_state_erase_context: proxima_storage_pg::PgHostStateEraseContext,
@@ -90,6 +91,11 @@ impl AppContext {
     #[must_use]
     pub fn pg_tuning_for_host(&self) -> PgTuning {
         self.pg_tuning
+    }
+
+    #[must_use]
+    pub fn platform_scope_for_host(&self) -> Option<proxima_storage_pg::PgPlatformScope> {
+        self.platform_scope.clone()
     }
 
     /// The sidecar registry this boot froze, for a flavor-owned store that
@@ -295,6 +301,7 @@ mod tests {
 
     fn context() -> AppContext {
         AppContext {
+            platform_scope: None,
             engine: Arc::new(proxima_core::Engine::new(
                 FlavorRegistry::new().freeze_or_panic_for_tests(),
             )),

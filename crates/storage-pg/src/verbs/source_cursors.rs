@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{Cursor, Owner, StorageError};
-use sqlx::PgPool;
 
 use crate::error::map_err;
 
@@ -11,8 +10,8 @@ use crate::error::map_err;
 /// # Errors
 ///
 /// Returns `StorageError::Internal` for SQL failures.
-pub(crate) async fn load_source_cursor(
-    pool: &PgPool,
+pub(crate) async fn load_source_cursor<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     owner: &Owner,
     source: &str,
 ) -> Result<Option<Cursor>, StorageError> {
@@ -30,7 +29,7 @@ pub(crate) async fn load_source_cursor(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(source)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(map_err)?;
     Ok(row.map(Cursor::from_bytes))
@@ -41,8 +40,8 @@ pub(crate) async fn load_source_cursor(
 /// # Errors
 ///
 /// Returns `StorageError::Internal` or `ConstraintViolation` for SQL failures.
-pub(crate) async fn store_source_cursor(
-    pool: &PgPool,
+pub(crate) async fn store_source_cursor<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     permit: &OwnerWritePermit,
     source: &str,
     cursor: &Cursor,
@@ -62,7 +61,7 @@ pub(crate) async fn store_source_cursor(
     .bind(owner_id)
     .bind(source)
     .bind(cursor.as_bytes())
-    .execute(pool)
+    .execute(executor)
     .await
     .map_err(map_err)?;
     Ok(())
@@ -73,8 +72,8 @@ pub(crate) async fn store_source_cursor(
 /// # Errors
 ///
 /// Returns `StorageError::Internal` for SQL failures or duration overflow.
-pub(crate) async fn source_cursor_age(
-    pool: &PgPool,
+pub(crate) async fn source_cursor_age<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     owner: &Owner,
     source: &str,
 ) -> Result<Option<Duration>, StorageError> {
@@ -89,7 +88,7 @@ pub(crate) async fn source_cursor_age(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(source)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(map_err)?;
     updated_at

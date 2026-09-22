@@ -15,7 +15,7 @@ use proxima_core::env_value;
 use proxima_core::storage_ports::StoragePorts;
 use sqlx::postgres::PgArguments;
 use sqlx::query::QueryScalar;
-use sqlx::{PgPool, Postgres};
+use sqlx::{PgConnection, PgPool, Postgres};
 use std::sync::Arc;
 pub use verbs::fact_embeddings::{
     EmbeddingInlineDrainOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
@@ -34,6 +34,7 @@ pub mod access;
 mod change_event;
 mod delegated_authority;
 mod error;
+mod owner_scope;
 #[doc(hidden)]
 pub use error::map_err;
 pub use error::{MAX_TRANSACTION_ATTEMPTS, is_transient_conflict};
@@ -41,9 +42,11 @@ pub mod integrity;
 mod pg_enums;
 mod pg_ident;
 mod pgvector;
+mod platform_scope;
 mod pool_config;
 mod ports;
 pub mod projection;
+mod rls_guard;
 pub mod sidecars;
 pub mod query {
     #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
@@ -51,9 +54,11 @@ pub mod query {
     pub use crate::verbs::query::{
         ActiveGoalTargetRow, ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters,
         FileRevisionHeadRow, MAX_SNAPSHOT_EDGES, active_goals_for_memory_targets,
-        nearest_code_chunk_candidates, owned_chunk_series_heads, owned_file_revision_heads,
-        owned_present_chunk_indexes, owned_present_file_revision_heads_except,
-        readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
+        active_goals_for_memory_targets_on_connection, nearest_code_chunk_candidates,
+        nearest_code_chunk_candidates_on_connection, owned_chunk_series_heads,
+        owned_file_revision_heads, owned_present_chunk_indexes,
+        owned_present_file_revision_heads_except, readable_chunk_head_ts_for_file,
+        readable_file_revision_head_ts,
     };
 }
 #[cfg(any(test, feature = "test-fixtures"))]
@@ -65,8 +70,11 @@ pub mod verbs;
 /// (see [`access::PgOwnerAccessResolver`]) for embedding hosts.
 pub use access::PgOwnerAccessResolver;
 pub use delegated_authority::PgDelegationStore;
+pub use owner_scope::{begin_compatible_owner_transaction, begin_owner_transaction};
+pub use platform_scope::{PgPlatformScope, begin_migration_transaction};
 pub use pool_config::PgPoolConfig;
 pub use ports::{PgHostStateLifecyclePort, PgHostStateParticipant};
+pub use rls_guard::{assert_runtime_rls, owner_rls_enforced};
 pub use sidecars::{
     PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, core_pg_sidecars,
     register_core_pg_sidecars,
@@ -98,6 +106,31 @@ pub fn core_migrator() -> sqlx::migrate::Migrator {
     migrator
 }
 
+// The bridge can coexist with this one audited successor. Recognition never
+// applies SQL: the serving release still runs only `core_migrator()`. Promotion
+// in v0.0.16 moves these identical bytes into that migrator and removes this
+// exception. Unknown versions and checksum drift remain refused.
+fn owner_rls_successor() -> sqlx::migrate::Migration {
+    sqlx::migrate::Migration::new(
+        14,
+        "v016 owner rls".into(),
+        sqlx::migrate::MigrationType::Simple,
+        sqlx::SqlStr::from_static(include_str!("../compatibility/0014_v016_owner_rls.sql")),
+        false,
+    )
+}
+
+fn compatible_core_checksums() -> std::collections::BTreeMap<i64, Vec<u8>> {
+    core_migrator()
+        .iter()
+        .map(|migration| (migration.version, migration.checksum.as_ref().to_vec()))
+        .chain(
+            std::iter::once(owner_rls_successor())
+                .map(|migration| (migration.version, migration.checksum.into_owned())),
+        )
+        .collect()
+}
+
 /// Fail closed, and legibly, before `SQLx` applies anything, when the
 /// database's core-lane ledger cannot be reconciled with the embedded
 /// migration set.
@@ -108,7 +141,8 @@ pub fn core_migrator() -> sqlx::migrate::Migrator {
 /// violated). Two invariants are enforced over every successful
 /// core-namespace ledger row (`version <= CORE_MIGRATION_VERSION_CEILING`):
 ///
-/// - **Every recorded version exists in the embedded set.** A version the
+/// - **Every recorded version exists in the embedded set or is the exact
+///   checksum-approved owner-RLS successor.** A version the
 ///   binary does not ship is a draft or retired migration — a dev-cycle lane
 ///   squashed under a fresh number. Applying
 ///   the squashed file over that schema would re-run its DDL, so this fails
@@ -165,10 +199,7 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
         .map_err(internal)?;
     }
 
-    let embedded: std::collections::BTreeMap<i64, Vec<u8>> = core_migrator()
-        .iter()
-        .map(|migration| (migration.version, migration.checksum.as_ref().to_vec()))
-        .collect();
+    let embedded = compatible_core_checksums();
 
     let mut unknown_versions = Vec::new();
     let mut amended_versions = Vec::new();
@@ -270,9 +301,21 @@ pub fn min_core_migration_version() -> i64 {
 /// Returns [`StorageError::Internal`] when the recorded core migration version
 /// or the structural markers for the current lane are absent.
 pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageError> {
+    let mut connection = pool.acquire().await.map_err(internal)?.detach();
+    let mut transaction = crate::begin_migration_transaction(&mut connection).await?;
+    let result = ensure_core_schema_current_on_connection(transaction.as_mut()).await;
+    if result.is_ok() {
+        transaction.commit().await.map_err(internal)?;
+    }
+    result
+}
+
+async fn ensure_core_schema_current_on_connection(
+    connection: &mut PgConnection,
+) -> Result<(), StorageError> {
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
-            .fetch_one(pool)
+            .fetch_one(&mut *connection)
             .await
             .map_err(internal)?;
 
@@ -282,7 +325,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
             "SELECT MAX(version) FROM public._sqlx_migrations WHERE success AND version <= $1",
         )
         .bind(CORE_MIGRATION_VERSION_CEILING)
-        .fetch_one(pool)
+        .fetch_one(&mut *connection)
         .await
         .map_err(internal)?;
         if max_version.unwrap_or(0) < min_required {
@@ -293,7 +336,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
         }
     }
 
-    ensure_core_schema_markers(pool).await
+    ensure_core_schema_markers_on_connection(connection).await
 }
 
 /// The structural half of [`ensure_core_schema_current`]: probe the schema
@@ -309,7 +352,19 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
 /// current lane is absent or has the wrong type, nullability, enum order, or
 /// processing-claim invariant.
 pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageError> {
-    ensure_lexical_language_stamps(pool).await?;
+    let mut connection = pool.acquire().await.map_err(internal)?.detach();
+    let mut transaction = crate::begin_migration_transaction(&mut connection).await?;
+    let result = ensure_core_schema_markers_on_connection(transaction.as_mut()).await;
+    if result.is_ok() {
+        transaction.commit().await.map_err(internal)?;
+    }
+    result
+}
+
+async fn ensure_core_schema_markers_on_connection(
+    connection: &mut PgConnection,
+) -> Result<(), StorageError> {
+    ensure_lexical_language_stamps(connection).await?;
     // These groups were one `CASE` whose first matching `WHEN` named the
     // broken marker. Both the order of the calls below and the branch order
     // inside each group are therefore load-bearing: the first group that
@@ -329,33 +384,41 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
     //   columns must keep the relation branch ahead of the column branches, so
     //   a missing relation reports as a missing relation rather than as a pile
     //   of missing columns.
-    probe_marker_group(pool, sqlx::query_scalar(CORE_RELATION_MARKERS)).await?;
-    probe_marker_group(pool, sqlx::query_scalar(GOAL_REPLAY_DECLARATION_MARKERS)).await?;
-    probe_marker_group(pool, sqlx::query_scalar(BLOB_UPLOAD_HASH_MARKERS)).await?;
-    probe_marker_group(pool, sqlx::query_scalar(SUPPORT_RELATION_MARKERS)).await?;
-    probe_marker_group(pool, sqlx::query_scalar(COLD_PURGE_PENDING_MARKERS)).await?;
-    probe_marker_group(pool, sqlx::query_scalar(COOLED_COLUMN_MARKERS)).await?;
-    probe_marker_group(pool, sqlx::query_scalar(ERASED_PIN_TARGET_MARKERS)).await?;
-    probe_marker_group(pool, sqlx::query_scalar(PIN_LIFECYCLE_FUNCTION_MARKERS)).await?;
+    probe_marker_group(connection, sqlx::query_scalar(CORE_RELATION_MARKERS)).await?;
     probe_marker_group(
-        pool,
+        connection,
+        sqlx::query_scalar(GOAL_REPLAY_DECLARATION_MARKERS),
+    )
+    .await?;
+    probe_marker_group(connection, sqlx::query_scalar(BLOB_UPLOAD_HASH_MARKERS)).await?;
+    probe_marker_group(connection, sqlx::query_scalar(SUPPORT_RELATION_MARKERS)).await?;
+    probe_marker_group(connection, sqlx::query_scalar(COLD_PURGE_PENDING_MARKERS)).await?;
+    probe_marker_group(connection, sqlx::query_scalar(COOLED_COLUMN_MARKERS)).await?;
+    probe_marker_group(connection, sqlx::query_scalar(ERASED_PIN_TARGET_MARKERS)).await?;
+    probe_marker_group(
+        connection,
+        sqlx::query_scalar(PIN_LIFECYCLE_FUNCTION_MARKERS),
+    )
+    .await?;
+    probe_marker_group(
+        connection,
         sqlx::query_scalar(PIN_LIFECYCLE_FUNCTION_BODY_MARKERS),
     )
     .await?;
-    probe_marker_group(pool, sqlx::query_scalar(TRIGGER_WIRING_MARKERS)).await?;
-    probe_marker_group(pool, sqlx::query_scalar(LEXICAL_CONFIG_MARKERS)).await?;
-    probe_marker_group(pool, sqlx::query_scalar(ENUM_ORDER_MARKERS)).await?;
-    probe_marker_group(pool, sqlx::query_scalar(EMBEDDING_JOB_MARKERS)).await?;
+    probe_marker_group(connection, sqlx::query_scalar(TRIGGER_WIRING_MARKERS)).await?;
+    probe_marker_group(connection, sqlx::query_scalar(LEXICAL_CONFIG_MARKERS)).await?;
+    probe_marker_group(connection, sqlx::query_scalar(ENUM_ORDER_MARKERS)).await?;
+    probe_marker_group(connection, sqlx::query_scalar(EMBEDDING_JOB_MARKERS)).await?;
     Ok(())
 }
 
 /// Run one themed marker group and report the first marker in it that is
 /// missing or wrong as the boot error callers expect.
 async fn probe_marker_group(
-    pool: &PgPool,
+    connection: &mut PgConnection,
     probe: QueryScalar<'static, Postgres, Option<String>, PgArguments>,
 ) -> Result<(), StorageError> {
-    let marker_error: Option<String> = probe.fetch_one(pool).await.map_err(internal)?;
+    let marker_error: Option<String> = probe.fetch_one(&mut *connection).await.map_err(internal)?;
     if let Some(marker_error) = marker_error {
         return Err(StorageError::Internal(format!(
             "database is missing or has an incorrect current schema marker: {marker_error}; apply migrations before boot"
@@ -1256,7 +1319,7 @@ const EMBEDDING_JOB_MARKERS: &str = r"SELECT CASE
 /// The expected set is flavor #0's declared `lexical_language_column`
 /// surfaces, and the check runs in both directions: a stamped column nobody
 /// declared fails as loudly as a declared stamp with no FK.
-async fn ensure_lexical_language_stamps(pool: &PgPool) -> Result<(), StorageError> {
+async fn ensure_lexical_language_stamps(connection: &mut PgConnection) -> Result<(), StorageError> {
     let mut declared: Vec<(String, String)> = proxima_core::FLAVOR_0
         .all_surfaces()
         .filter_map(|surface| {
@@ -1285,7 +1348,7 @@ async fn ensure_lexical_language_stamps(pool: &PgPool) -> Result<(), StorageErro
             AND ccu.table_name = 'lexical_languages'
             AND ccu.column_name = 'config'",
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *connection)
     .await
     .map_err(internal)?;
     // `lexical_default.config` references the same table but is the active
@@ -1413,6 +1476,7 @@ fn flavor_0_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
 #[derive(Clone)]
 pub struct PgStorage {
     pool: PgPool,
+    platform_scope: Option<PgPlatformScope>,
     sidecars: PgSidecarRegistryFrozen,
     /// The declared surfaces, resolved into legs once.
     ///
@@ -1690,6 +1754,12 @@ fn env_int_or<T: std::str::FromStr>(
         .map_err(|_| StorageError::Unavailable(format!("invalid integer {key}={value}")))
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PoolPurpose {
+    Runtime,
+    Migration,
+}
+
 impl PgStorage {
     /// Connect using `url`, build a tuned pool, and verify
     /// connectivity by acquiring one connection.
@@ -1733,6 +1803,28 @@ impl PgStorage {
         pool_config: PgPoolConfig,
         tuning: PgTuning,
     ) -> Result<Self, StorageError> {
+        Self::connect_for_purpose(url, pool_config, tuning, PoolPurpose::Runtime).await
+    }
+
+    /// Connect the separately configured schema-management lane.
+    ///
+    /// # Errors
+    /// Refuses unsafe migration authority after RLS activation and propagates
+    /// pool configuration and database errors.
+    pub async fn connect_for_migrations_with_config(
+        url: &str,
+        pool_config: PgPoolConfig,
+        tuning: PgTuning,
+    ) -> Result<Self, StorageError> {
+        Self::connect_for_purpose(url, pool_config, tuning, PoolPurpose::Migration).await
+    }
+
+    async fn connect_for_purpose(
+        url: &str,
+        pool_config: PgPoolConfig,
+        tuning: PgTuning,
+        purpose: PoolPurpose,
+    ) -> Result<Self, StorageError> {
         let pool_config = pool_config.validate()?;
         // A conservative per-statement timeout bounds
         // a runaway query (e.g. a pathological search) so it cannot pin a pool
@@ -1754,8 +1846,23 @@ impl PgStorage {
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 
+        if owner_rls_enforced(&pool, &["proxima_core"]).await? {
+            match purpose {
+                PoolPurpose::Runtime => assert_runtime_rls(&pool, &["proxima_core"]).await?,
+                PoolPurpose::Migration => {
+                    let mut connection = pool.acquire().await.map_err(map_err)?;
+                    begin_migration_transaction(&mut connection)
+                        .await?
+                        .rollback()
+                        .await
+                        .map_err(map_err)?;
+                }
+            }
+        }
+
         Ok(Self {
             pool,
+            platform_scope: None,
             sidecars: core_pg_sidecars(),
             surfaces: flavor_0_surfaces(),
             scopes: crate::access::scope_surfaces::ScopeSurfaces::default(),
@@ -1767,6 +1874,42 @@ impl PgStorage {
             cold: Arc::new(verbs::forget::MemoryColdStore::default()),
             host_state: None,
         })
+    }
+
+    /// Attach the separately validated platform database capability at boot.
+    #[must_use]
+    pub fn with_platform_scope(mut self, scope: PgPlatformScope) -> Self {
+        self.platform_scope = Some(scope);
+        self
+    }
+
+    /// Host-only platform capability for authority resolution and maintenance.
+    #[must_use]
+    pub fn platform_scope_for_host(&self) -> Option<PgPlatformScope> {
+        self.platform_scope.clone()
+    }
+
+    pub(crate) async fn platform_transaction(
+        &self,
+    ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StorageError> {
+        match &self.platform_scope {
+            Some(scope) => scope.begin().await,
+            None => begin_compatible_owner_transaction(&self.pool, None).await,
+        }
+    }
+
+    /// Fixed lifecycle algorithms need global referential evidence, but their
+    /// selected owner still comes from a verified, sealed write permit.
+    pub(crate) async fn owner_maintenance_transaction(
+        &self,
+        permit: &proxima_core::storage_ports::OwnerWritePermit,
+    ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StorageError> {
+        crate::platform_scope::begin_owner_lifecycle_transaction(
+            &self.pool,
+            self.platform_scope.as_ref(),
+            permit,
+        )
+        .await
     }
 
     /// Register the host-state participant that runs on each write session's
@@ -1972,8 +2115,9 @@ impl PgStorage {
         &self,
         options: EmbeddingReconcileOptions<'_>,
     ) -> Result<EmbeddingReconcileOutcome, StorageError> {
-        verbs::fact_embeddings::reconcile_embeddings(
+        verbs::fact_embeddings::reconcile_embeddings_with_platform(
             &self.pool,
+            self.platform_scope.as_ref(),
             options,
             self.embedding_runtime_policy.stale_claim_timeout_seconds(),
         )
@@ -1990,8 +2134,9 @@ impl PgStorage {
         client: &dyn proxima_core::llm::EmbeddingClient,
         limit: i64,
     ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
-        verbs::fact_embeddings::drain_embedding_jobs_inline(
+        verbs::fact_embeddings::drain_embedding_jobs_inline_with_platform(
             &self.pool,
+            self.platform_scope.as_ref(),
             client,
             limit,
             &self.embed_units,
@@ -2012,7 +2157,11 @@ impl PgStorage {
     pub async fn sweep_orphan_embedding_rows(
         &self,
     ) -> Result<proxima_core::EmbeddingOrphanSweepOutcome, StorageError> {
-        verbs::fact_embeddings::sweep_orphan_embedding_rows(&self.pool).await
+        verbs::fact_embeddings::sweep_orphan_embedding_rows(
+            &self.pool,
+            self.platform_scope.as_ref(),
+        )
+        .await
     }
 
     /// Owner-agnostic embedding ANN health signals (backlog, orphan counts,
@@ -2027,6 +2176,7 @@ impl PgStorage {
     ) -> Result<proxima_core::EmbeddingAnnObservability, StorageError> {
         verbs::fact_embeddings::embedding_ann_observability(
             &self.pool,
+            self.platform_scope.as_ref(),
             self.embedding_runtime_policy.stale_claim_timeout_seconds(),
         )
         .await
@@ -2109,7 +2259,8 @@ impl PgStorage {
         &self,
         options: ChangeEventPruneOptions,
     ) -> Result<ChangeEventPruneOutcome, StorageError> {
-        verbs::maintenance::prune_change_log(&self.pool, options).await
+        verbs::maintenance::prune_change_log(&self.pool, self.platform_scope.as_ref(), options)
+            .await
     }
 
     /// Retry a bounded batch of durable exact-key cold/object-store purge debts.
@@ -2124,7 +2275,13 @@ impl PgStorage {
         &self,
         options: ColdPurgeRetryOptions,
     ) -> Result<ColdPurgeRetryOutcome, StorageError> {
-        verbs::maintenance::retry_cold_object_purges(&self.pool, self.cold.as_ref(), options).await
+        verbs::maintenance::retry_cold_object_purges(
+            &self.pool,
+            self.platform_scope.as_ref(),
+            self.cold.as_ref(),
+            options,
+        )
+        .await
     }
 
     /// Apply all pending migrations under

@@ -53,6 +53,7 @@ impl From<PgAccessCeiling> for AccessCeiling {
 #[derive(Clone)]
 pub struct PgDelegationStore {
     pool: PgPool,
+    platform: Option<crate::PgPlatformScope>,
 }
 
 impl std::fmt::Debug for PgDelegationStore {
@@ -67,7 +68,16 @@ impl PgDelegationStore {
     #[doc(hidden)]
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            platform: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_platform_scope(mut self, platform: crate::PgPlatformScope) -> Self {
+        self.platform = Some(platform);
+        self
     }
 }
 
@@ -82,6 +92,11 @@ impl DelegationStorePort for PgDelegationStore {
         let auth_epoch = i64::try_from(grant.auth_epoch()).map_err(|_| {
             StorageError::ConstraintViolation("delegation auth epoch exceeds i64".into())
         })?;
+        let mut tx = if let Some(platform) = &self.platform {
+            platform.begin().await?
+        } else {
+            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None).await?
+        };
         sqlx::query(
             "INSERT INTO proxima_core.delegated_authority_grants
                 (delegation_id, subject_user_id, owner_kind, owner_id,
@@ -100,9 +115,10 @@ impl DelegationStorePort for PgDelegationStore {
         .bind(OffsetDateTime::from(grant.expires_at()))
         .bind(auth_epoch)
         .bind(OffsetDateTime::from(grant.issued_at()))
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(map_err)?;
+        tx.commit().await.map_err(map_err)?;
         Ok(())
     }
 
@@ -113,6 +129,11 @@ impl DelegationStorePort for PgDelegationStore {
         expected_owner: OwnerRef,
     ) -> Result<Option<DelegationGrant>, StorageError> {
         let (owner_kind, owner_id) = owner_binds(&expected_owner);
+        let mut tx = if let Some(platform) = &self.platform {
+            platform.begin().await?
+        } else {
+            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None).await?
+        };
         let row = sqlx::query(
             "SELECT delegation_id, subject_user_id, owner_kind, owner_id,
                     tool_name, action_name, read_ceiling, write_ceiling,
@@ -126,12 +147,15 @@ impl DelegationStorePort for PgDelegationStore {
         .bind(delegation_id.into_uuid())
         .bind(owner_kind)
         .bind(owner_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(map_err)?;
-        row.as_ref()
+        let result = row
+            .as_ref()
             .map(|row| decode_grant(permit, row))
-            .transpose()
+            .transpose();
+        tx.commit().await.map_err(map_err)?;
+        result
     }
 
     async fn revoke(
@@ -143,6 +167,11 @@ impl DelegationStorePort for PgDelegationStore {
         revoked_by: UserId,
     ) -> Result<bool, StorageError> {
         let (owner_kind, owner_id) = owner_binds(&expected_owner);
+        let mut tx = if let Some(platform) = &self.platform {
+            platform.begin().await?
+        } else {
+            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None).await?
+        };
         let result = sqlx::query(
             "UPDATE proxima_core.delegated_authority_grants
                 SET revoked_at = $2,
@@ -157,9 +186,10 @@ impl DelegationStorePort for PgDelegationStore {
         .bind(revoked_by.into_inner())
         .bind(owner_kind)
         .bind(owner_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(map_err)?;
+        tx.commit().await.map_err(map_err)?;
         Ok(result.rows_affected() == 1)
     }
 }

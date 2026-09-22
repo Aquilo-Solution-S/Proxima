@@ -66,7 +66,7 @@ struct CriterionPayloadRow {
 }
 
 async fn load_criteria_rows(
-    ctx: PgSidecarReadCtx<'_>,
+    mut ctx: PgSidecarReadCtx<'_>,
     table: &'static str,
     parent_column: &'static str,
     parent_id: MemoryId,
@@ -78,7 +78,10 @@ async fn load_criteria_rows(
           WHERE {parent_column} = $1
           ORDER BY criterion_index ASC"
     );
-    let rows: Vec<CriterionPayloadRow> = ctx.fetch_all_by_memory_id(&sql, parent_id).await?;
+    let rows: Vec<CriterionPayloadRow> = ctx
+        .reborrow()
+        .fetch_all_by_memory_id(&sql, parent_id)
+        .await?;
     Ok(rows
         .into_iter()
         .map(|row| AcceptanceCriterionV1 {
@@ -354,7 +357,7 @@ impl PgMemoryPayload for CodeChunkV1 {
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
     fn load_batch<'t>(
-        ctx: PgSidecarReadCtx<'t>,
+        mut ctx: PgSidecarReadCtx<'t>,
         kind: PayloadKind,
         memory_ids: &'t [MemoryId],
     ) -> PgMemoryPayloadBatchFuture<'t> {
@@ -363,6 +366,7 @@ impl PgMemoryPayload for CodeChunkV1 {
                 return Ok(Vec::new());
             }
             let rows: Vec<CodeChunkPayloadRow> = ctx
+                .reborrow()
                 .fetch_all_by_memory_ids(
                     "SELECT t, repo_id, file_path, chunk_index, text, language,
                             chunk_type, byte_range_start, byte_range_end,
@@ -376,6 +380,7 @@ impl PgMemoryPayload for CodeChunkV1 {
             // call list is part of the payload, so it must not turn a
             // search page into N round trips.
             let call_rows: Vec<CodeChunkCallRow> = ctx
+                .reborrow()
                 .fetch_all_by_memory_ids(
                     "SELECT caller_memory_id, callee_memory_id, byte_start, byte_end,
                             callee_name, is_dynamic
@@ -557,11 +562,12 @@ impl PgMemoryPayload for AcceptanceCriteriaV1 {
 
     // N+1 per work item; acceptable at this cardinality.
     fn load_memory_payload(
-        ctx: PgSidecarReadCtx<'_>,
+        mut ctx: PgSidecarReadCtx<'_>,
         memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async move {
             let work_item_memory_id: Option<uuid::Uuid> = ctx
+                .reborrow()
                 .fetch_optional_scalar_by_memory_id(
                     "SELECT work_item_memory_id
                        FROM proxima_code.acceptance_criteria_v1
@@ -636,11 +642,12 @@ impl PgMemoryPayload for TestRequestV1 {
 
     // N+1 per work item; acceptable at this cardinality.
     fn load_memory_payload(
-        ctx: PgSidecarReadCtx<'_>,
+        mut ctx: PgSidecarReadCtx<'_>,
         memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async move {
             let row: Option<(uuid::Uuid, String, String, String, Vec<uuid::Uuid>)> = ctx
+                .reborrow()
                 .fetch_optional_by_memory_id(
                     "SELECT repo_id, title, instructions, test_key, depends_on_memory_ids
                        FROM proxima_code.test_requested_v1
@@ -737,11 +744,12 @@ impl PgMemoryPayload for CodeExecutionPlanV1 {
 
     // N+1 per work item; acceptable at this cardinality.
     fn load_memory_payload(
-        ctx: PgSidecarReadCtx<'_>,
+        mut ctx: PgSidecarReadCtx<'_>,
         memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async move {
             let row: Option<(uuid::Uuid, String, uuid::Uuid, String, Vec<uuid::Uuid>)> = ctx
+                .reborrow()
                 .fetch_optional_by_memory_id(
                     "SELECT repo_id, plan_key, goal_activated_memory_id,
                             summary, evidence_memory_ids
@@ -756,6 +764,7 @@ impl PgMemoryPayload for CodeExecutionPlanV1 {
                 return Ok(None);
             };
             let item_rows: Vec<ExecutionPlanItemPayloadRow> = ctx
+                .reborrow()
                 .fetch_all_by_memory_id(
                     "SELECT item_key, kind, title, depends_on, request_key, request_memory_id
                        FROM proxima_code.execution_plan_item_v1

@@ -209,6 +209,7 @@ impl Tool for CodeRegisterRepoTool {
                         let pool = code_store(&ctx)?;
                         crate::repos::set_repo_scope(
                             pool.pool(),
+                            pool.owner_scope(),
                             &ctx.owner(),
                             repo.repo_id,
                             &scope,
@@ -244,6 +245,7 @@ impl Tool for CodeRegisterRepoTool {
             })?;
             let record = crate::repos::register_repo(
                 pool.pool(),
+                pool.owner_scope(),
                 &ctx.owner(),
                 repo_id,
                 &canonical_path,
@@ -282,10 +284,11 @@ impl Tool for CodeIngestHeadSnapshotTool {
         Box::pin(async move {
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
             let pool = code_store(&ctx)?;
-            let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo_id)
-                .await
-                .map_err(map_repo_registry)?
-                .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
+            let repo =
+                crate::repos::get_repo(pool.pool(), pool.owner_scope(), &ctx.owner(), repo_id)
+                    .await
+                    .map_err(map_repo_registry)?
+                    .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
 
             let source = crate::LocalGitSource::new(
                 repo.repo_id,
@@ -301,6 +304,7 @@ impl Tool for CodeIngestHeadSnapshotTool {
                 .map_err(|err| map_index_error(&err))?;
             crate::repos::update_cursor(
                 pool.pool(),
+                pool.owner_scope(),
                 &ctx.owner(),
                 repo.repo_id,
                 outcome.cursor.as_bytes(),
@@ -318,10 +322,11 @@ impl Tool for CodeIngestHeadSnapshotTool {
                 .await
                 .map_err(|err| ToolError::Other(err.to_string()))?;
 
-            let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo.repo_id)
-                .await
-                .map_err(map_repo_registry)?
-                .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
+            let repo =
+                crate::repos::get_repo(pool.pool(), pool.owner_scope(), &ctx.owner(), repo.repo_id)
+                    .await
+                    .map_err(map_repo_registry)?
+                    .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
 
             Ok(CodeIngestHeadSnapshotOutput {
                 repo: repo_item(&ctx, repo)?,
@@ -370,10 +375,15 @@ impl Tool for CodeListReposTool {
                 })
                 .transpose()?;
             let fetch = i64::from(limit).saturating_add(1);
-            let mut records =
-                crate::repos::list_repos_page(pool.pool(), &ctx.owner(), after, fetch)
-                    .await
-                    .map_err(map_repo_registry)?;
+            let mut records = crate::repos::list_repos_page(
+                pool.pool(),
+                pool.owner_scope(),
+                &ctx.owner(),
+                after,
+                fetch,
+            )
+            .await
+            .map_err(map_repo_registry)?;
             let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
             let has_more = records.len() > page_len;
             records.truncate(page_len);
@@ -428,7 +438,7 @@ async fn repo_by_path(
     canonical_path: &str,
 ) -> Result<Option<RepoRecord>, ToolError> {
     let pool = code_store(ctx)?;
-    let row = crate::repos::list_repos(pool.pool(), &ctx.owner())
+    let row = crate::repos::list_repos(pool.pool(), pool.owner_scope(), &ctx.owner())
         .await
         .map_err(map_repo_registry)?
         .into_iter()
@@ -450,6 +460,7 @@ async fn maybe_set_target_branch(
     let pool = code_store(ctx)?;
     crate::repos::set_repo_target_branch(
         pool.pool(),
+        pool.owner_scope(),
         &ctx.owner(),
         record.repo_id,
         Some(target_branch),
@@ -530,10 +541,15 @@ impl Tool for CodeEraseRepoTool {
         Box::pin(async move {
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
             let pool = code_store(&ctx)?;
-            let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo_id)
-                .await
-                .map_err(map_repo_registry)?
-                .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
+            let repo = crate::repos::get_repo(
+                pool.pool(),
+                ctx.authz().owner_scope(),
+                &ctx.owner(),
+                repo_id,
+            )
+            .await
+            .map_err(map_repo_registry)?
+            .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
 
             // Confirm against the stored path rather than the caller's, so a
             // handle typo cannot erase a different repository than the one

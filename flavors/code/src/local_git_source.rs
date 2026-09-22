@@ -181,7 +181,7 @@ impl<'a> CodeIngestContext<'a> {
         // Owner-only `memory_head` of each named `(repo, path)` series —
         // the same series stateful-Fact NK ingest advances.
         self.store
-            .owned_file_revision_heads(owner, repo_id, file_paths)
+            .owned_file_revision_heads(self.authz.owner_scope(), owner, repo_id, file_paths)
             .await
             .map_err(|err| read_error(&err))?
             .into_iter()
@@ -196,7 +196,12 @@ impl<'a> CodeIngestContext<'a> {
         keep_paths: &[String],
     ) -> Result<Vec<FileRevisionHead>, IngestError> {
         self.store
-            .owned_present_file_revision_heads_except(owner, repo_id, keep_paths)
+            .owned_present_file_revision_heads_except(
+                self.authz.owner_scope(),
+                owner,
+                repo_id,
+                keep_paths,
+            )
             .await
             .map_err(|err| read_error(&err))?
             .into_iter()
@@ -211,7 +216,7 @@ impl<'a> CodeIngestContext<'a> {
         file_path: &str,
     ) -> Result<Vec<proxima_storage_pg::query::ChunkSeriesHead>, IngestError> {
         self.store
-            .owned_chunk_series_heads(owner, repo_id, file_path)
+            .owned_chunk_series_heads(self.authz.owner_scope(), owner, repo_id, file_path)
             .await
             .map_err(|err| read_error(&err))
     }
@@ -282,12 +287,20 @@ impl LocalGitSource {
     /// scope, chosen precisely when there is no repository to scope. So the
     /// absence is typed, and the write paths that follow refuse it again
     /// under the repository fence.
-    async fn load_scope(&self, pool: &sqlx::PgPool) -> Result<(ScopeMatcher, String), IndexError> {
-        let record = crate::repos::get_repo(pool, &self.owner, self.repo_id)
-            .await?
-            .ok_or(crate::repos::RepoRegistryError::NotFound {
-                repo_id: self.repo_id,
-            })?;
+    async fn load_scope(
+        &self,
+        ctx: &CodeIngestContext<'_>,
+    ) -> Result<(ScopeMatcher, String), IndexError> {
+        let record = crate::repos::get_repo(
+            ctx.pool(),
+            ctx.authz.owner_scope(),
+            &self.owner,
+            self.repo_id,
+        )
+        .await?
+        .ok_or(crate::repos::RepoRegistryError::NotFound {
+            repo_id: self.repo_id,
+        })?;
         let fingerprint = record.scope.fingerprint();
         Ok((record.scope.compile()?, fingerprint))
     }
@@ -345,7 +358,7 @@ impl LocalGitSource {
     ) -> Result<(IndexReport, Cursor), IndexError> {
         let parsed = decode_cursor(cursor)?;
         let plan = self.walk_git(&parsed)?;
-        let (scope, scope_hash) = self.load_scope(ctx.pool()).await?;
+        let (scope, scope_hash) = self.load_scope(ctx).await?;
         let mut report = IndexReport::default();
         let commit_limit = max_commits.unwrap_or(usize::MAX);
         let selected_total = plan.commits.len().min(commit_limit);
@@ -418,10 +431,9 @@ impl LocalGitSource {
         ctx: &CodeIngestContext<'_>,
         cursor: &Cursor,
     ) -> Result<HeadSnapshotOutcome, IndexError> {
-        let pool = ctx.pool();
         let head_sha = git::head_sha(&self.repo_path)?;
         let head_tree_sha = git::tree_sha(&self.repo_path, "HEAD")?;
-        let (scope, scope_hash) = self.load_scope(pool).await?;
+        let (scope, scope_hash) = self.load_scope(ctx).await?;
         let parsed = decode_cursor(cursor)?;
         let same_tree = parsed.last_tree_sha.as_deref() == Some(head_tree_sha.as_str());
         let same_scope = parsed.last_scope_hash.as_deref() == Some(scope_hash.as_str());

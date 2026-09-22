@@ -1,6 +1,7 @@
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{EntityKind, GoalId, MemoryId, ToolCtx, ToolError};
+use proxima_storage_pg::begin_compatible_owner_transaction;
 use uuid::Uuid;
 
 use super::super::sql::{map_storage, owner_columns};
@@ -18,6 +19,9 @@ use super::super::{code_store, engine};
 pub(super) async fn validate_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<(), ToolError> {
     let (owner_kind, owner_id) = owner_columns(&ctx.owner());
     let pool = code_store(ctx)?;
+    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+        .await
+        .map_err(ToolError::Storage)?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(
              SELECT 1
@@ -30,9 +34,10 @@ pub(super) async fn validate_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<(), To
     .bind(owner_kind)
     .bind(owner_id)
     .bind(repo_id)
-    .fetch_one(pool.pool())
+    .fetch_one(&mut *tx)
     .await
     .map_err(map_storage)?;
+    tx.commit().await.map_err(map_storage)?;
     if !exists {
         return Err(ToolError::InvalidInput(format!(
             "repo not found for owner: {repo_id}"

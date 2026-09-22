@@ -27,7 +27,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 pub(crate) use super::memory_timeseries::ContentResolution;
 use crate::access::scope_surfaces::ScopeFenceTarget;
-use crate::error::{internal, map_err, with_bounded_retry};
+use crate::error::{map_err, with_bounded_retry};
 use crate::sidecars::PgSidecarRegistryFrozen;
 
 pub type FactIngestSidecarFuture<'t> =
@@ -199,7 +199,11 @@ pub(crate) async fn ingest_authorized_fact_atomic(
 ) -> Result<FactIngestOutcome, StorageError> {
     // Retry the whole transaction on transient deadlock/serialization.
     with_bounded_retry(move || async move {
-        let mut tx = pool.begin().await.map_err(internal)?;
+        let mut tx = crate::owner_scope::begin_compatible_owner_transaction(
+            pool,
+            authorized.owner_write_permit().owner_scope(),
+        )
+        .await?;
         let outcome = ingest_fact_command_in_tx(&mut tx, authorized, embedding_model_id).await?;
         tx.commit().await.map_err(map_err)?;
         Ok(outcome)

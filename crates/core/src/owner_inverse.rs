@@ -677,6 +677,17 @@ pub struct OwnerEraseContext {
 }
 
 impl OwnerEraseContext {
+    /// Concrete owner sealed into the erase target by engine authorization.
+    #[must_use]
+    pub const fn owner(&self) -> OwnerRef {
+        match &self.target {
+            OwnerEraseTarget::GroupOwner { group_id }
+            | OwnerEraseTarget::GroupSourceScope { group_id, .. } => OwnerRef::Group(*group_id),
+            OwnerEraseTarget::PersonalOwner { user_id, .. }
+            | OwnerEraseTarget::PersonalSourceScope { user_id, .. } => OwnerRef::Personal(*user_id),
+        }
+    }
+
     /// Create a new audit context.
     pub(crate) fn new(
         operation_id: uuid::Uuid,

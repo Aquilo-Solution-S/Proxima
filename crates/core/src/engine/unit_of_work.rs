@@ -417,13 +417,20 @@ impl UnitOfWork<'_> {
             ));
         }
         if self.session.is_none() {
-            let session = self
-                .engine
-                .storage()
-                .write_session
-                .begin()
-                .await
-                .map_err(|err| ProtocolError::internal(err.to_string()))?;
+            let factory = &self.engine.storage().write_session;
+            let session = match &self.authorization {
+                UnitAuthorization::Ordinary(authz) => factory.begin(authz.owner_scope()).await,
+                UnitAuthorization::HostState { owner, descriptor } => {
+                    let permit = HostStateWritePermit::new(
+                        *owner,
+                        descriptor.participant_id(),
+                        descriptor.tables(),
+                        HostStateWriteOrigin::Maintenance,
+                    );
+                    factory.begin_host_state(&permit).await
+                }
+            }
+            .map_err(|err| ProtocolError::internal(err.to_string()))?;
             self.session = Some(session);
         }
         self.session
@@ -1119,7 +1126,10 @@ mod tests {
             Some(DESCRIPTOR)
         }
 
-        async fn begin(&self) -> Result<Box<dyn WriteSession>, StorageError> {
+        async fn begin(
+            &self,
+            _scope: Option<&crate::OwnerScope>,
+        ) -> Result<Box<dyn WriteSession>, StorageError> {
             self.begin_calls.fetch_add(1, Ordering::SeqCst);
             Err(StorageError::Unavailable(
                 "the begin spy must not open a session".to_owned(),

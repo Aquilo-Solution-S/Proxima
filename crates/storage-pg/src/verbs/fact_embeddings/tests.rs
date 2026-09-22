@@ -979,7 +979,8 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let health =
-                embedding_ann_observability(pg.pool_for_tests(), stale_claim_seconds()).await?;
+                embedding_ann_observability(pg.pool_for_tests(), None, stale_claim_seconds())
+                    .await?;
             assert_eq!(health.embedding_rows, 0);
             assert_eq!(health.stale_processing_jobs, 0);
             assert!(health.recall_canary.is_none());
@@ -1015,7 +1016,8 @@ mod pg_tests {
             tx.commit().await?;
 
             let health =
-                embedding_ann_observability(pg.pool_for_tests(), stale_claim_seconds()).await?;
+                embedding_ann_observability(pg.pool_for_tests(), None, stale_claim_seconds())
+                    .await?;
             let canary = health
                 .recall_canary
                 .expect("one embedding head must produce a canary");
@@ -1940,7 +1942,7 @@ mod pg_tests {
             .execute(pool)
             .await?;
 
-            let health = embedding_ann_observability(pool, stale_claim_seconds()).await?;
+            let health = embedding_ann_observability(pool, None, stale_claim_seconds()).await?;
             assert_eq!(health.stale_processing_jobs, 1);
             assert_eq!(health.backlog.processing, 2);
 
@@ -2011,7 +2013,7 @@ mod pg_tests {
                 "heartbeat must retain the fencing token"
             );
             assert_eq!(
-                embedding_ann_observability(pool, stale_claim_seconds())
+                embedding_ann_observability(pool, None, stale_claim_seconds())
                     .await?
                     .stale_processing_jobs,
                 0

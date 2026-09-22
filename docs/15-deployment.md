@@ -460,6 +460,40 @@ Optional. Contract: [18](18-fact-outbox.md). Recipe:
 | erasure | `publication_outbox` is owner-scoped (`EraseRule::ByOwner`) and an owner erase destroys the owner's records; a single-memory erase deletes the record explicitly on `t`. There is no FK cascade from `memory` — `forget` would have destroyed undelivered events ([13](13-compliance.md#what-an-erase-destroys)). Rows already delivered to the broker are outside that reach — set the stream's retention to match the host's obligation |
 | delivered-record retention | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` reclaims database storage from records that are already published. Off by default; floor 60 s; it can never remove a `pending` or `claimed` record whatever its age |
 
+## Owner-RLS rollout
+
+Use two stages:
+
+1. Adopt the scope-aware compatibility release in **every live pack version**.
+   It binds authenticated scopes before enforcement; the platform DSN remains
+   optional while the database has no owner-RLS epoch.
+2. Provision distinct runtime and platform roles and configure both DSNs.
+   Apply the next release's additive enforcing migration only after step 1.
+   The compatibility and enforcing releases can then share the schema.
+   Boot refuses a missing policy, missing FORCE RLS, unsafe runtime role, or
+   missing `PROXIMA_PLATFORM_DATABASE_URL`.
+
+The role administrator must grant the configured platform role permission to
+declare the function-local scope setting:
+
+```sql
+GRANT SET ON PARAMETER app.proxima_scope TO platform_role;
+```
+
+This grant is for the platform role only. PostgreSQL requires it for
+`ALTER FUNCTION ... SET app.proxima_scope`; ordinary transaction-local runtime
+scope binding does not require this grant.
+
+`DATABASE_URL` is the serving role. `PROXIMA_PLATFORM_DATABASE_URL` is the
+validated migration/maintenance role. Credentials stay in host configuration;
+maintenance adapters receive the validated capability. The
+trusted binding is verified principal → opaque `OwnerScope` → storage-only
+transaction-local settings. `X-Proxima-Owner` narrows the authorized set and
+does not authenticate identity. Singleton deployments use the same path as
+multi-owner deployments. Both bind UUID arrays, parsed once per statement by
+a scalar subquery. Validate the memories query plan against the deployment's
+owner cardinalities and data distribution.
+
 ## SSE stream revocation
 
 The OIDC path carries no out-of-band revocation signal, so a live SSE stream is

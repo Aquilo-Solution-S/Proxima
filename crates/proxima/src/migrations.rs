@@ -280,7 +280,29 @@ async fn run_source_with_contention_retry(
 ) -> Result<(), MigrateError> {
     let mut attempt = 1;
     loop {
-        match source.migrator.run_direct(None, &mut *conn, false).await {
+        if source.migrator.iter().any(|migration| migration.no_tx) {
+            return Err(MigrateError::Execute(sqlx::Error::Protocol(
+                "platform-scoped migrations require transactional migration files".into(),
+            )));
+        }
+        let mut transaction = proxima_storage_pg::begin_migration_transaction(conn)
+            .await
+            .map_err(|error| MigrateError::Execute(sqlx::Error::Protocol(error.to_string())))?;
+        let result = source
+            .migrator
+            .run_direct(None, &mut *transaction, false)
+            .await;
+        let result = match result {
+            Ok(()) => transaction.commit().await.map_err(MigrateError::Execute),
+            Err(error) => {
+                transaction
+                    .rollback()
+                    .await
+                    .map_err(MigrateError::Execute)?;
+                Err(error)
+            }
+        };
+        match result {
             Err(err)
                 if attempt < CATALOG_CONTENTION_ATTEMPTS && is_shared_catalog_contention(&err) =>
             {

@@ -487,6 +487,12 @@ binds it to `Mcp-Session-Id`. Embedded hosts may still configure a boot
 owner for host-owned direct calls. There is no per-Owner
 inference/credential table.
 
+`PROXIMA_PLATFORM_DATABASE_URL` is an optional separate migration/maintenance
+DSN. It is validated before use and never exposed through flavor or request
+APIs. `DATABASE_URL` remains the serving/runtime DSN. Before the enforcing
+owner-RLS release, an unset platform DSN preserves the compatibility path; in
+the enforcing epoch boot requires it and fails closed.
+
 <a id="bootstrap"></a>
 ## Bootstrap
 
@@ -499,6 +505,12 @@ Boot sequence:
 4. The embedding client, if injected, is wired; otherwise semantic search
    is disabled.
 5. The MCP listener starts when a bind is configured.
+
+When owner RLS is detected, boot first inventories the composed catalog and
+checks every table's policy and FORCE RLS state, then attaches the validated
+platform capability before sidecar/catalog reads. Existing databases are
+upgraded additively; a compatibility release must precede enforcement because
+coexisting pack versions share one schema.
 
 <a id="deployment-shapes"></a>
 ## Deployment Shapes

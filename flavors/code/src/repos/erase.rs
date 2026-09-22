@@ -20,7 +20,7 @@
 //! `the_erase_names_no_table_the_contract_does_not_declare` fails on a table
 //! these statements name and the contract does not.
 
-use proxima_core::{Owner, StorageError};
+use proxima_core::{AccessKind, Owner, StorageError};
 use proxima_storage_pg::verbs::forget::{
     admissions_outside_owner, erase_memory_series, expand_series_for_erase,
     lock_admissions_for_erase,
@@ -445,9 +445,27 @@ async fn erase_repo_once(
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<RepoEraseReceipt, RepoRegistryError> {
+    if store.platform_scope().is_some() {
+        let scope = store.owner_scope().ok_or_else(|| {
+            RepoRegistryError::Storage(StorageError::ConstraintViolation(
+                "repository erase requires an authenticated owner scope".into(),
+            ))
+        })?;
+        if scope.is_expired() || !scope.may_write(owner, AccessKind::Fact) {
+            return Err(RepoRegistryError::Storage(
+                StorageError::ConstraintViolation(
+                    "repository erase owner scope does not authorize the bound owner".into(),
+                ),
+            ));
+        }
+    }
     let (kind, principal_id) = owner.columns();
     let pool: &PgPool = store.pool();
-    let mut tx = pool.begin().await?;
+    let mut tx = if let Some(platform) = store.platform_scope() {
+        platform.begin().await?
+    } else {
+        proxima_storage_pg::begin_compatible_owner_transaction(pool, None).await?
+    };
     // Configure bounded waits before the first advisory lock, including the
     // global host-lifecycle fence. SET LOCAL is transaction setup; it does
     // not inspect or mutate erase targets.

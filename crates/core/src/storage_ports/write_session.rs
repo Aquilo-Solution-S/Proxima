@@ -67,8 +67,20 @@ pub trait WriteSessionFactory: Send + Sync {
         None
     }
 
+    /// Open the host maintenance lane with a sealed participant/table permit.
+    /// Backends without platform storage retain their normal session behavior.
+    async fn begin_host_state(
+        &self,
+        _permit: &HostStateWritePermit,
+    ) -> Result<Box<dyn WriteSession>, StorageError> {
+        self.begin(None).await
+    }
+
     /// Begin a transaction. Drop without [`WriteSession::commit`] rolls back.
-    async fn begin(&self) -> Result<Box<dyn WriteSession>, StorageError>;
+    async fn begin(
+        &self,
+        owner_scope: Option<&crate::OwnerScope>,
+    ) -> Result<Box<dyn WriteSession>, StorageError>;
 }
 
 /// One transaction the Engine can attach several authorized writes to.

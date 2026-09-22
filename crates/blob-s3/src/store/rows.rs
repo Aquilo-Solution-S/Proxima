@@ -12,6 +12,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::error::BlobError;
+use proxima_storage_pg::begin_compatible_owner_transaction;
 
 #[derive(Debug, Clone)]
 pub(super) struct UploadRow {
@@ -70,18 +71,24 @@ pub(super) struct BlobReadRecord {
     pub(super) filename: String,
 }
 
-pub(super) async fn load_upload(
-    pool: &sqlx::PgPool,
-    owner: &Owner,
-    upload_id: Uuid,
-) -> Result<UploadRow, BlobError> {
-    load_upload_optional(pool, owner, upload_id)
-        .await?
-        .ok_or_else(|| BlobError::State("upload not found for Owner".into()))
-}
-
 pub(super) async fn load_upload_optional(
     pool: &sqlx::PgPool,
+    owner_scope: Option<&proxima_core::OwnerScope>,
+    owner: &Owner,
+    upload_id: Uuid,
+) -> Result<Option<UploadRow>, BlobError> {
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope)
+        .await
+        .map_err(|err| BlobError::State(err.to_string()))?;
+    let result = load_upload_optional_on_connection(tx.as_mut(), owner, upload_id).await;
+    if result.is_ok() {
+        tx.commit().await.map_err(BlobError::Db)?;
+    }
+    result
+}
+
+pub(super) async fn load_upload_optional_on_connection(
+    pool: &mut sqlx::PgConnection,
     owner: &Owner,
     upload_id: Uuid,
 ) -> Result<Option<UploadRow>, BlobError> {
@@ -95,7 +102,7 @@ pub(super) async fn load_upload_optional(
     )
     .bind(owner_id)
     .bind(upload_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *pool)
     .await
     .map_err(BlobError::Db)?;
 
@@ -169,42 +176,34 @@ pub(super) async fn load_upload_optional_for_update(
     }))
 }
 
-pub(super) async fn mark_upload_expired(
-    pool: &sqlx::PgPool,
+pub(super) async fn mark_upload_expired_on_connection(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     owner: &Owner,
     upload_id: Uuid,
 ) -> Result<UploadStatus, BlobError> {
-    let mut tx = pool.begin().await.map_err(BlobError::Db)?;
-    proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
+    proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(tx, owner)
         .await
         .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
-    // The caller's expiry observation may be stale. Re-read the owner and
-    // status under the same fence used by finish/abort and transfer, then
-    // expire only a still-pending row.
-    let row = load_upload_for_update(&mut tx, owner, upload_id).await?;
-    let status = if row.status == UploadStatus::Pending {
-        sqlx::query(
-            "UPDATE proxima_core.blob_uploads \
-                SET status = 'expired', error_message = 'upload expired' \
-              WHERE owner_id = $1 \
-                AND upload_id = $2 \
-                AND status = 'pending'",
-        )
-        .bind(owner.stored_owner_id())
-        .bind(upload_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(BlobError::Db)?;
-        UploadStatus::Expired
-    } else {
-        row.status
-    };
-    tx.commit().await.map_err(BlobError::Db)?;
-    Ok(status)
+    let row = load_upload_optional_for_update(tx, owner, upload_id)
+        .await?
+        .ok_or_else(|| BlobError::State("upload not found for Owner".into()))?;
+    if row.status != UploadStatus::Pending {
+        return Ok(row.status);
+    }
+    sqlx::query(
+        "UPDATE proxima_core.blob_uploads SET status = 'expired', error_message = 'upload expired'
+          WHERE owner_id = $1 AND upload_id = $2 AND status = 'pending'",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(upload_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(BlobError::Db)?;
+    Ok(UploadStatus::Expired)
 }
 
-pub(super) async fn load_staged_payload(
-    pool: &sqlx::PgPool,
+pub(super) async fn load_staged_payload_on_connection(
+    pool: &mut sqlx::PgConnection,
     owner: &Owner,
     upload_id: Uuid,
     blob_id: Uuid,
@@ -228,7 +227,7 @@ pub(super) async fn load_staged_payload(
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .bind(upload_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *pool)
     .await
     .map_err(BlobError::Db)?
     .ok_or_else(|| BlobError::State("cited object not found for Owner".into()))?;
@@ -263,8 +262,8 @@ fn hash32(bytes: &[u8], field: &str) -> Result<[u8; 32], BlobError> {
         .map_err(|_| BlobError::State(format!("stored {field} is not 32 bytes")))
 }
 
-pub(super) async fn find_held_blobs(
-    pool: &sqlx::PgPool,
+pub(super) async fn find_held_blobs_on_connection(
+    pool: &mut sqlx::PgConnection,
     owner: &Owner,
     content_hashes: &[[u8; 32]],
 ) -> Result<Vec<CitedBlobHeld>, BlobError> {
@@ -291,7 +290,7 @@ pub(super) async fn find_held_blobs(
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .bind(&digests)
-    .fetch_all(pool)
+    .fetch_all(&mut *pool)
     .await
     .map_err(BlobError::Db)?;
 
@@ -309,8 +308,8 @@ pub(super) async fn find_held_blobs(
         .collect()
 }
 
-pub(super) async fn load_blob_location(
-    pool: &sqlx::PgPool,
+pub(super) async fn load_blob_location_on_connection(
+    pool: &mut sqlx::PgConnection,
     owner: &Owner,
     blob_id: Uuid,
 ) -> Result<BlobLocation, BlobError> {
@@ -334,7 +333,7 @@ pub(super) async fn load_blob_location(
     .bind(blob_id)
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *pool)
     .await
     .map_err(BlobError::Db)?
     {
@@ -353,8 +352,8 @@ pub(super) async fn load_blob_location(
     Err(BlobError::State("cited object not found for Owner".into()))
 }
 
-pub(super) async fn load_blob_read_record(
-    pool: &sqlx::PgPool,
+pub(super) async fn load_blob_read_record_on_connection(
+    pool: &mut sqlx::PgConnection,
     owner: &Owner,
     blob_id: Uuid,
 ) -> Result<Option<BlobReadRecord>, BlobError> {
@@ -376,7 +375,7 @@ pub(super) async fn load_blob_read_record(
     .bind(blob_id)
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *pool)
     .await
     .map_err(BlobError::Db)?;
 

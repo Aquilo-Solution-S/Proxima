@@ -885,7 +885,7 @@ async fn run_identity(
         let projections = projections();
         let mut actual = Vec::new();
         for (name, req) in cases {
-            let page = pg.search_memories(&req, &projections).await?;
+            let page = pg.search_memories(None, &req, &projections).await?;
             actual.push((name, render(&page)));
         }
 
@@ -1163,7 +1163,7 @@ async fn a_superseded_backlog_does_not_starve_the_page() {
         let projections = projections();
         let mut actual = Vec::new();
         for (name, req) in starvation_cases() {
-            let page = pg.search_memories(&req, &projections).await?;
+            let page = pg.search_memories(None, &req, &projections).await?;
             actual.push((name, render(&page)));
         }
         for (name, lines) in &actual {
@@ -1404,7 +1404,7 @@ async fn a_kind_filter_does_not_starve_the_page() {
         let projections = projections();
         let mut actual = Vec::new();
         for (name, req) in kind_probe_cases() {
-            let page = pg.search_memories(&req, &projections).await?;
+            let page = pg.search_memories(None, &req, &projections).await?;
             actual.push((name, render(&page)));
         }
         for (name, lines) in &actual {

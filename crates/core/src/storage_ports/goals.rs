@@ -1,4 +1,5 @@
 use crate::OwnerRef;
+use crate::OwnerScope;
 use crate::read_models::{ActiveGoalSummary, GoalWakeCandidate, GoalWakeCandidateRequest};
 use crate::storage::StorageError;
 use crate::storage_ports::OwnerWritePermit;
@@ -57,6 +58,7 @@ pub trait GoalWritePort: Send + Sync {
 pub trait GoalReadPort: Send + Sync {
     async fn list_active_goals(
         &self,
+        owner_scope: Option<&OwnerScope>,
         read_owners: &[OwnerRef],
         self_perspective_memory_id: crate::MemoryId,
         limit: usize,
@@ -67,6 +69,7 @@ pub trait GoalReadPort: Send + Sync {
     /// the result — absence is data, not an error.
     async fn load_goal_wake_configs(
         &self,
+        owner_scope: Option<&OwnerScope>,
         read_owners: &[OwnerRef],
         goal_ids: &[crate::GoalId],
     ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError>;
@@ -78,6 +81,7 @@ pub trait GoalReadPort: Send + Sync {
     /// Memory rows and shortening the stored vector.
     async fn load_goal_evidence(
         &self,
+        owner_scope: Option<&OwnerScope>,
         owner: &OwnerRef,
         goal_id: crate::GoalId,
     ) -> Result<Option<Vec<crate::MemoryId>>, StorageError>;
@@ -87,6 +91,7 @@ pub trait GoalReadPort: Send + Sync {
 pub trait GoalWakeCandidatePort: Send + Sync {
     async fn list_goal_wake_candidates(
         &self,
+        owner_scope: Option<&OwnerScope>,
         req: &GoalWakeCandidateRequest<'_>,
     ) -> Result<Vec<GoalWakeCandidate>, StorageError>;
 }

@@ -15,6 +15,7 @@ use crate::EmbedError;
 #[derive(Clone)]
 pub struct EmbedConfig {
     pub database_url: String,
+    pub platform_database_url: Option<String>,
     pub s3: Option<S3RuntimeConfig>,
 }
 
@@ -22,6 +23,10 @@ impl std::fmt::Debug for EmbedConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EmbedConfig")
             .field("database_url", &"<redacted>")
+            .field(
+                "platform_database_url",
+                &self.platform_database_url.as_ref().map(|_| "<redacted>"),
+            )
             .field("s3", &self.s3)
             .finish()
     }
@@ -322,6 +327,7 @@ mod tests {
     fn embed_config_debug_redacts_database_url() {
         let config = EmbedConfig {
             database_url: "postgres://user:secret@localhost/proxima".to_string(),
+            platform_database_url: None,
             s3: None,
         };
         let debug = format!("{config:?}");

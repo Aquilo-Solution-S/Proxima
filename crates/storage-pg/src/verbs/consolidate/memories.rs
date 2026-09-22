@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use futures_util::future::try_join_all;
 use proxima_core::read_models::{
     AbstractionRow, FactRow, MemorySchemaSpec, MemorySnapshot, resolve_memory_schema,
 };
@@ -9,7 +8,7 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     EntityKind, MemoryId, Owner, OwnerRef, OwnerRefKind, SchemaId, SidecarPayload, StorageError,
 };
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::error::map_err;
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
@@ -40,6 +39,21 @@ pub async fn load_abstraction_heads(
     schemas: &[MemorySchemaSpec],
     limit: usize,
 ) -> Result<Vec<AbstractionRow>, StorageError> {
+    let mut tx = crate::begin_compatible_owner_transaction(pool, None).await?;
+    let result =
+        load_abstraction_heads_on_connection(tx.as_mut(), pg_sidecars, owner, schemas, limit).await;
+    crate::owner_scope::finish_transaction(tx, result).await
+}
+
+/// # Errors
+/// Returns storage errors from query execution or invalid stored data.
+pub async fn load_abstraction_heads_on_connection(
+    pool: &mut PgConnection,
+    pg_sidecars: &PgSidecarRegistryFrozen,
+    owner: &Owner,
+    schemas: &[MemorySchemaSpec],
+    limit: usize,
+) -> Result<Vec<AbstractionRow>, StorageError> {
     let mut rows_all = Vec::new();
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in schemas {
@@ -60,7 +74,7 @@ pub async fn load_abstraction_heads(
         .bind(owner.stored_owner_id())
         .bind(spec.schema_id.as_str())
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-        .fetch_all(pool)
+        .fetch_all(&mut *pool)
         .await
         .map_err(map_err)?;
         for (memory_id, sidecar_tables, created_at) in rows {
@@ -69,7 +83,8 @@ pub async fn load_abstraction_heads(
             rows_all.push((created_at, memory_id, id, spec.schema_id.clone()));
         }
     }
-    let mut payloads = load_memory_sidecar_payloads_batch(pool, pg_sidecars, ids_by_key).await?;
+    let mut payloads =
+        load_memory_sidecar_payloads_batch_on_connection(pool, pg_sidecars, ids_by_key).await?;
     rows_all.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     let mut out = Vec::new();
     for (_, _, memory_id, schema_id) in rows_all.into_iter().take(limit) {
@@ -107,17 +122,21 @@ pub async fn load_memory_by_id(
     memory_id: MemoryId,
     schemas: &[MemorySchemaSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
+    let mut connection = pool.acquire().await.map_err(crate::error::map_err)?;
+    load_memory_by_id_on_connection(&mut connection, pg_sidecars, memory_id, schemas).await
+}
+
+/// # Errors
+/// Returns storage errors from query execution or invalid stored data.
+pub async fn load_memory_by_id_on_connection(
+    connection: &mut PgConnection,
+    pg_sidecars: &PgSidecarRegistryFrozen,
+    memory_id: MemoryId,
+    schemas: &[MemorySchemaSpec],
+) -> Result<Option<MemorySnapshot>, StorageError> {
     let raw: Option<(String, String, OwnerRefKind, uuid::Uuid, Vec<String>)> = sqlx::query_as(
-        "SELECT m.kind::text, m.schema_id,
-                o.kind::text::proxima_core.owner_kind, m.owner_id, m.sidecar_tables
-           FROM proxima_core.memory m
-           JOIN proxima_core.owners o ON o.owner_id = m.owner_id
-          WHERE m.t = $1",
-    )
-    .bind(memory_id.into_inner())
-    .fetch_optional(pool)
-    .await
-    .map_err(map_err)?;
+        "SELECT m.kind::text, m.schema_id, o.kind::text::proxima_core.owner_kind, m.owner_id, m.sidecar_tables FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
+    ).bind(memory_id.into_inner()).fetch_optional(&mut *connection).await.map_err(map_err)?;
     let Some((kind_text, schema_id, owner_kind, owner_id, sidecar_tables)) = raw else {
         return Ok(None);
     };
@@ -131,7 +150,8 @@ pub async fn load_memory_by_id(
         owner: owner_from_kind(owner_kind, owner_id),
         sidecar_tables,
     }];
-    let mut snapshots = snapshots_from_rows(pool, pg_sidecars, &rows, schemas).await?;
+    let mut snapshots =
+        snapshots_from_rows_on_connection(connection, pg_sidecars, &rows, schemas).await?;
     Ok(snapshots.pop())
 }
 
@@ -146,6 +166,26 @@ pub async fn load_memories_by_ids(
     memory_ids: &[MemoryId],
     schemas: &[MemorySchemaSpec],
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
+    let mut connection = pool.acquire().await.map_err(crate::error::map_err)?;
+    load_memories_by_ids_on_connection(
+        &mut connection,
+        pg_sidecars,
+        read_owners,
+        memory_ids,
+        schemas,
+    )
+    .await
+}
+
+/// # Errors
+/// Returns storage errors from query execution or invalid stored data.
+pub async fn load_memories_by_ids_on_connection(
+    connection: &mut PgConnection,
+    pg_sidecars: &PgSidecarRegistryFrozen,
+    read_owners: &[proxima_core::OwnerRef],
+    memory_ids: &[MemoryId],
+    schemas: &[MemorySchemaSpec],
+) -> Result<Vec<MemorySnapshot>, StorageError> {
     if read_owners.is_empty() || memory_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -155,27 +195,9 @@ pub async fn load_memories_by_ids(
         .map(proxima_core::OwnerRef::stored_owner_id)
         .collect();
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
-    let raw: Vec<(
-        uuid::Uuid,
-        String,
-        String,
-        OwnerRefKind,
-        uuid::Uuid,
-        Vec<String>,
-    )> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, m.schema_id,
-                    o.kind::text::proxima_core.owner_kind, m.owner_id, m.sidecar_tables
-               FROM proxima_core.memory m
-               JOIN proxima_core.owners o ON o.owner_id = m.owner_id
-              WHERE m.owner_id = ANY($1::uuid[])
-                AND m.t = ANY($2::uuid[])
-              ORDER BY m.t",
-    )
-    .bind(&owner_ids)
-    .bind(&ids)
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)?;
+    let raw: Vec<(uuid::Uuid, String, String, OwnerRefKind, uuid::Uuid, Vec<String>)> = sqlx::query_as(
+        "SELECT m.t, m.kind::text, m.schema_id, o.kind::text::proxima_core.owner_kind, m.owner_id, m.sidecar_tables FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
+    ).bind(&owner_ids).bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
     let rows = raw
         .into_iter()
         .filter_map(
@@ -190,7 +212,7 @@ pub async fn load_memories_by_ids(
             },
         )
         .collect::<Vec<_>>();
-    snapshots_from_rows(pool, pg_sidecars, &rows, schemas).await
+    snapshots_from_rows_on_connection(connection, pg_sidecars, &rows, schemas).await
 }
 
 /// # Errors
@@ -204,6 +226,26 @@ pub async fn load_memory_graph_payloads(
     schemas: &[MemorySchemaSpec],
     include_body: bool,
 ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
+    let mut connection = pool.acquire().await.map_err(crate::error::map_err)?;
+    load_memory_graph_payloads_on_connection(
+        &mut connection,
+        pg_sidecars,
+        identities,
+        schemas,
+        include_body,
+    )
+    .await
+}
+
+/// # Errors
+/// Returns storage errors from query execution or invalid stored data.
+pub async fn load_memory_graph_payloads_on_connection(
+    connection: &mut PgConnection,
+    pg_sidecars: &PgSidecarRegistryFrozen,
+    identities: &[MemoryGraphIdentity],
+    schemas: &[MemorySchemaSpec],
+    include_body: bool,
+) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
     if identities.is_empty() {
         return Ok(Vec::new());
     }
@@ -211,28 +253,19 @@ pub async fn load_memory_graph_payloads(
         .iter()
         .map(|i| i.memory_id.into_inner())
         .collect();
-    let raw: Vec<(uuid::Uuid, String, String, Vec<String>)> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, m.schema_id, m.sidecar_tables
-           FROM proxima_core.memory m
-          WHERE m.t = ANY($1::uuid[])",
-    )
-    .bind(&ids)
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)?;
+    let raw: Vec<(uuid::Uuid, String, String, Vec<String>)> = sqlx::query_as("SELECT m.t, m.kind::text, m.schema_id, m.sidecar_tables FROM proxima_core.memory m WHERE m.t = ANY($1::uuid[])").bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
     let by_id = raw
         .into_iter()
-        .map(|(id, kind, schema_id, sidecar_tables)| {
+        .map(|(id, kind, schema_id, tables)| {
             let kind = parse_memory_kind(&kind).ok_or_else(|| {
                 StorageError::ConstraintViolation(format!("invalid memory kind for {id}"))
             })?;
-            Ok((id, (kind, schema_id, sidecar_tables)))
+            Ok((id, (kind, schema_id, tables)))
         })
         .collect::<Result<HashMap<_, _>, StorageError>>()?;
-    let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
+    let mut ids_by_key = HashMap::new();
     for identity in identities {
-        let Some((kind, schema_id, sidecar_tables)) = by_id.get(&identity.memory_id.into_inner())
-        else {
+        let Some((kind, schema_id, tables)) = by_id.get(&identity.memory_id.into_inner()) else {
             return Err(StorageError::ConstraintViolation(format!(
                 "admitted memory {:?} disappeared during graph hydration",
                 identity.memory_id
@@ -248,11 +281,13 @@ pub async fn load_memory_graph_payloads(
             &mut ids_by_key,
             pg_sidecars,
             resolve_memory_schema(schemas, *kind, &identity.schema_id)?,
-            sidecar_tables,
+            tables,
             identity.memory_id,
         )?;
     }
-    let payloads = load_memory_sidecar_payloads_batch(pool, pg_sidecars, ids_by_key).await?;
+    let payloads =
+        load_memory_sidecar_payloads_batch_on_connection(connection, pg_sidecars, ids_by_key)
+            .await?;
     for identity in identities {
         let spec = resolve_memory_schema(schemas, identity.kind, &identity.schema_id)?;
         if spec.sidecar_table.as_deref().is_some_and(|table| {
@@ -314,24 +349,16 @@ struct MemoryHydrationRow {
     sidecar_tables: Vec<String>,
 }
 
-async fn snapshots_from_rows(
-    pool: &PgPool,
+async fn snapshots_from_rows_on_connection(
+    connection: &mut PgConnection,
     pg_sidecars: &PgSidecarRegistryFrozen,
     rows: &[MemoryHydrationRow],
     schemas: &[MemorySchemaSpec],
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
-    let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
-    for row in rows {
-        let spec = resolve_memory_schema(schemas, row.kind, &SchemaId::new(row.schema_id.clone()))?;
-        validate_and_queue_payload(
-            &mut ids_by_key,
-            pg_sidecars,
-            spec,
-            &row.sidecar_tables,
-            MemoryId::new(row.memory_id),
-        )?;
-    }
-    let mut payloads = load_memory_sidecar_payloads_batch(pool, pg_sidecars, ids_by_key).await?;
+    let ids_by_key = snapshot_payload_keys(pg_sidecars, rows, schemas)?;
+    let mut payloads =
+        load_memory_sidecar_payloads_batch_on_connection(connection, pg_sidecars, ids_by_key)
+            .await?;
     let mut snapshots = Vec::with_capacity(rows.len());
     for row in rows {
         let id = MemoryId::new(row.memory_id);
@@ -355,6 +382,25 @@ async fn snapshots_from_rows(
         });
     }
     Ok(snapshots)
+}
+
+fn snapshot_payload_keys(
+    pg_sidecars: &PgSidecarRegistryFrozen,
+    rows: &[MemoryHydrationRow],
+    schemas: &[MemorySchemaSpec],
+) -> Result<HashMap<PgSidecarKey, Vec<MemoryId>>, StorageError> {
+    let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
+    for row in rows {
+        let spec = resolve_memory_schema(schemas, row.kind, &SchemaId::new(row.schema_id.clone()))?;
+        validate_and_queue_payload(
+            &mut ids_by_key,
+            pg_sidecars,
+            spec,
+            &row.sidecar_tables,
+            MemoryId::new(row.memory_id),
+        )?;
+    }
+    Ok(ids_by_key)
 }
 
 fn validate_and_queue_payload(
@@ -381,29 +427,29 @@ fn validate_and_queue_payload(
     Ok(())
 }
 
-async fn load_memory_sidecar_payloads_batch(
-    pool: &PgPool,
+async fn load_memory_sidecar_payloads_batch_on_connection(
+    connection: &mut PgConnection,
     pg_sidecars: &PgSidecarRegistryFrozen,
     ids_by_key: HashMap<PgSidecarKey, Vec<MemoryId>>,
 ) -> Result<HashMap<MemoryId, SidecarPayload>, StorageError> {
-    let batches = ids_by_key.into_iter().map(|(key, ids)| async move {
-        pg_sidecars
-            .load_memory_payloads_batch(PgSidecarReadCtx::from(pool), &key, &ids)
-            .await
-    });
-    let rows = try_join_all(batches).await?;
-    Ok(rows.into_iter().flatten().collect())
+    let mut result = HashMap::new();
+    for (key, ids) in ids_by_key {
+        let rows = pg_sidecars
+            .load_memory_payloads_batch(PgSidecarReadCtx::from(&mut *connection), &key, &ids)
+            .await?;
+        result.extend(rows);
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryHydrationRow, snapshots_from_rows};
+    use super::{MemoryHydrationRow, snapshot_payload_keys};
     use crate::sidecars::core_pg_sidecars;
     use proxima_core::read_models::MemorySchemaSpec;
     use proxima_core::{
         AgentNoteV1, EntityKind, FactPayload, OwnerRef, SchemaVersion, UploadV1, UserId,
     };
-    use sqlx::postgres::PgPoolOptions;
 
     fn fact_spec<P: FactPayload>() -> MemorySchemaSpec {
         MemorySchemaSpec {
@@ -414,11 +460,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn one_invalid_visible_row_fails_the_whole_snapshot_batch() {
-        let pool = PgPoolOptions::new()
-            .connect_lazy("postgres://unused:unused@127.0.0.1/unused")
-            .expect("lazy pool needs no server");
+    #[test]
+    fn one_invalid_visible_row_fails_the_whole_snapshot_batch() {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
         let rows = [
             MemoryHydrationRow {
@@ -438,8 +481,7 @@ mod tests {
         ];
         let schemas = [fact_spec::<UploadV1>(), fact_spec::<AgentNoteV1>()];
 
-        let err = snapshots_from_rows(&pool, &core_pg_sidecars(), &rows, &schemas)
-            .await
+        let err = snapshot_payload_keys(&core_pg_sidecars(), &rows, &schemas)
             .expect_err("a bad visible row must not become a partial batch");
         assert!(err.to_string().contains("invalid sidecar stamp"));
     }

@@ -4,13 +4,14 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use futures_util::future::try_join_all;
 use proxima_core::read_models::MemorySchemaSpec;
 use proxima_core::verbs::query::{
     EntityKind, MemoryRow, QueryCursor, QueryRequest, QueryResponse, SupersessionStatus,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{MemoryId, OwnerRef, SchemaId, SidecarPayload, StorageError};
+use sqlx::PgConnection;
+#[cfg(test)]
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -18,11 +19,25 @@ use crate::error::map_err;
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 use super::edges::query_edges;
-use super::goals::query_goals;
-use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water};
+use super::goals::query_goals_on_connection;
+use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water_on_connection};
 
-pub(crate) async fn query_memories(
+#[cfg(test)]
+async fn query_memories(
     pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
+    read_owners: &[OwnerRef],
+    req: &QueryRequest,
+    schemas: &[MemorySchemaSpec],
+) -> Result<QueryResponse, StorageError> {
+    let mut connection = pool.acquire().await.map_err(crate::error::map_err)?;
+    query_memories_on_connection(&mut connection, sidecars, read_owners, req, schemas).await
+}
+
+/// Transaction-backed query path. Every statement, including typed sidecar
+/// hydration, uses the caller's one borrowed connection.
+pub(crate) async fn query_memories_on_connection(
+    connection: &mut PgConnection,
     sidecars: &PgSidecarRegistryFrozen,
     read_owners: &[OwnerRef],
     req: &QueryRequest,
@@ -33,14 +48,12 @@ pub(crate) async fn query_memories(
         .copied()
         .map(proxima_core::OwnerRef::stored_owner_id)
         .collect();
-    // Do not advance the cursor over commits made while result rows and
-    // payloads are being read. These pool reads are not one snapshot;
-    // later events may appear both in the result and in the following poll.
-    let seq_high_water = read_seq_high_water(pool, &owner_ids).await?;
+    let seq_high_water = read_seq_high_water_on_connection(connection, &owner_ids).await?;
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
     if matches!(req.entity_kind, Some(EntityKind::Goal)) {
         let (goals, next_cursor) =
-            query_goals(pool, req, &owner_ids, schema_id_filter.as_deref()).await?;
+            query_goals_on_connection(connection, req, &owner_ids, schema_id_filter.as_deref())
+                .await?;
         return Ok(QueryResponse {
             memories: Vec::new(),
             goals,
@@ -49,9 +62,8 @@ pub(crate) async fn query_memories(
             seq_high_water,
         });
     }
-
     let single_memory_stream = is_single_memory_stream(req);
-    let mut rows = fetch_memory_page(pool, req, &owner_ids).await?;
+    let mut rows = fetch_memory_page_on_connection(connection, req, &owner_ids).await?;
     let limit = usize::try_from(req.limit)
         .map_err(|_| StorageError::Internal("query limit does not fit usize".into()))?;
     let next_memory_cursor = if single_memory_stream && rows.len() > limit {
@@ -63,14 +75,13 @@ pub(crate) async fn query_memories(
     } else {
         None
     };
-
-    let mut memories = project_memory_rows(pool, sidecars, req, schemas, rows).await?;
-    let (goals, next_goal_cursor) =
-        if req.entity_kind.is_none() || matches!(req.entity_kind, Some(EntityKind::Goal)) {
-            query_goals(pool, req, &owner_ids, schema_id_filter.as_deref()).await?
-        } else {
-            (Vec::new(), None)
-        };
+    let mut memories =
+        project_memory_rows_on_connection(connection, sidecars, req, schemas, rows).await?;
+    let (goals, next_goal_cursor) = if req.entity_kind.is_none() {
+        query_goals_on_connection(connection, req, &owner_ids, schema_id_filter.as_deref()).await?
+    } else {
+        (Vec::new(), None)
+    };
     let visible_goal_ids: Vec<Uuid> = goals.iter().map(|row| row.id.into_inner()).collect();
     demote_invisible_goal_refs(&mut memories, &visible_goal_ids);
     let edges = query_edges(req, &memories, &visible_goal_ids);
@@ -90,8 +101,8 @@ pub(crate) async fn query_memories(
 /// arguments are projections of one value, so "the query has N placeholders"
 /// and "N arguments were bound" cannot disagree. They used to be two lists
 /// grown from the same four predicates, each evaluated twice.
-async fn fetch_memory_page(
-    pool: &PgPool,
+async fn fetch_memory_page_on_connection(
+    connection: &mut PgConnection,
     req: &QueryRequest,
     owner_ids: &[Uuid],
 ) -> Result<Vec<MemoryRowDb>, StorageError> {
@@ -101,7 +112,6 @@ async fn fetch_memory_page(
         &filters,
         page_fetch_limit(req),
     );
-
     // SQL-POLICY: fixed-fragment
     let mut q = sqlx::query_as::<_, MemoryRowDb>(sqlx::AssertSqlSafe(sql)).bind(owner_ids);
     for filter in filters {
@@ -112,8 +122,7 @@ async fn fetch_memory_page(
             MemoryFilter::Cursor(t) => q.bind(t),
         };
     }
-
-    q.fetch_all(pool).await.map_err(map_err)
+    q.fetch_all(&mut *connection).await.map_err(map_err)
 }
 
 /// An optional `WHERE` predicate together with the value it binds.
@@ -198,8 +207,8 @@ fn page_fetch_limit(req: &QueryRequest) -> u64 {
 
 /// Resolve each row's schema, verify its sidecar stamp, and project the page
 /// into read-model rows.
-async fn project_memory_rows(
-    pool: &PgPool,
+async fn project_memory_rows_on_connection(
+    connection: &mut PgConnection,
     sidecars: &PgSidecarRegistryFrozen,
     req: &QueryRequest,
     schemas: &[MemorySchemaSpec],
@@ -221,10 +230,8 @@ async fn project_memory_rows(
         )?;
         schema_versions.insert(MemoryId::new(row.memory_id), spec.schema_version);
     }
-    // `include_payloads` controls projection, not integrity. A required
-    // primary sidecar that disappeared is corruption even when the caller
-    // asks only for identity fields, so every query verifies its presence.
-    let mut payloads = load_row_payloads_batch(pool, sidecars, schemas, &rows).await?;
+    let mut payloads =
+        load_row_payloads_batch_on_connection(connection, sidecars, schemas, &rows).await?;
     let mut memories = Vec::with_capacity(rows.len());
     for row in rows {
         let id = MemoryId::new(row.memory_id);
@@ -270,8 +277,8 @@ fn demote_invisible_goal_refs(memories: &mut [MemoryRow], visible_goal_ids: &[Uu
     }
 }
 
-async fn load_row_payloads_batch(
-    pool: &PgPool,
+async fn load_row_payloads_batch_on_connection(
+    connection: &mut PgConnection,
     sidecars: &PgSidecarRegistryFrozen,
     schemas: &[MemorySchemaSpec],
     rows: &[MemoryRowDb],
@@ -303,13 +310,14 @@ async fn load_row_payloads_batch(
                 .push(MemoryId::new(row.memory_id));
         }
     }
-    let batches = ids_by_key.into_iter().map(|(key, ids)| async move {
-        sidecars
-            .load_memory_payloads_batch(PgSidecarReadCtx::from(pool), &key, &ids)
-            .await
-    });
-    let rows = try_join_all(batches).await?;
-    Ok(rows.into_iter().flatten().collect())
+    let mut result = HashMap::new();
+    for (key, ids) in ids_by_key {
+        let rows = sidecars
+            .load_memory_payloads_batch(PgSidecarReadCtx::from(&mut *connection), &key, &ids)
+            .await?;
+        result.extend(rows);
+    }
+    Ok(result)
 }
 
 fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64) -> String {
@@ -386,6 +394,65 @@ fn validate_row_stamp(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod transaction_visibility_tests {
+    use super::{query_memories, query_memories_on_connection};
+    use crate::sidecars::core_pg_sidecars;
+    use crate::test_fixtures::fresh_pg;
+    use proxima_core::read_models::MemorySchemaSpec;
+    use proxima_core::verbs::query::QueryRequest;
+    use proxima_core::{EntityKind, OwnerRef, SchemaId, SchemaVersion, UserId};
+
+    #[tokio::test]
+    async fn connection_query_sees_uncommitted_memory_and_sidecar_but_pool_does_not()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, _db) = fresh_pg("proxima_query_scope").await;
+        let pool = pg.pool_for_tests();
+        let owner_id = uuid::Uuid::now_v7();
+        let handle = uuid::Uuid::now_v7();
+        let memory_id = uuid::Uuid::now_v7();
+        let note_id = uuid::Uuid::now_v7();
+        let owner = OwnerRef::Personal(UserId::new(owner_id));
+        let sidecars = core_pg_sidecars();
+        let schemas = [MemorySchemaSpec {
+            kind: EntityKind::Fact,
+            schema_id: SchemaId::new("core/agent-note-v1".into()),
+            schema_version: SchemaVersion::new(1),
+            sidecar_table: Some("proxima_core.agent_note_v1".into()),
+        }];
+        let req = QueryRequest::readable();
+
+        let mut tx = pool.begin().await?;
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t) VALUES ($1, 'fact', $2, $3, $4)")
+            .bind(handle).bind("core/agent-note-v1").bind(owner_id).bind(memory_id)
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, sidecar_tables) VALUES ($1, $2, 'fact', $3, $4, $5)")
+            .bind(handle).bind(memory_id).bind(owner_id).bind("core/agent-note-v1")
+            .bind(vec!["proxima_core.agent_note_v1"])
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags) VALUES ($1, $2, $3, $4, $5)")
+            .bind(memory_id).bind(note_id).bind("uncommitted").bind("visible on tx").bind(Vec::<String>::new())
+            .execute(&mut *tx).await?;
+
+        let scoped =
+            query_memories_on_connection(&mut tx, &sidecars, &[owner], &req, &schemas).await?;
+        assert_eq!(scoped.memories.len(), 1);
+        assert_eq!(scoped.memories[0].id.into_inner(), memory_id);
+        assert!(scoped.memories[0].payload.is_some());
+
+        let independent = query_memories(pool, &sidecars, &[owner], &req, &schemas).await?;
+        assert!(independent.memories.is_empty());
+        tx.rollback().await?;
+        let after = query_memories(pool, &sidecars, &[owner], &req, &schemas).await?;
+        assert!(after.memories.is_empty());
+        Ok(())
+    }
 }
 
 /// The page SQL [`query_memories`] would run for `req`.

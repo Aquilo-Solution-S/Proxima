@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use futures_util::future::try_join_all;
 use proxima_core::verbs::query::{
     EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
     MemoryLineageRequest, MemoryLineageResponse,
@@ -10,7 +9,7 @@ use proxima_core::{
     Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, MemoryId, OwnerRef, SchemaId,
     StorageError,
 };
-use sqlx::PgPool;
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::error::map_err;
@@ -68,8 +67,8 @@ pub fn descendant_hop_sql_for_tests() -> &'static str {
     DESCENDANT_HOP_SQL
 }
 
-pub(crate) async fn walk_memory_lineage(
-    pool: &PgPool,
+pub(crate) async fn walk_memory_lineage_on_connection(
+    connection: &mut PgConnection,
     read_owners: &[OwnerRef],
     req: &MemoryLineageRequest,
     projections: &[MemorySearchProjection],
@@ -82,15 +81,6 @@ pub(crate) async fn walk_memory_lineage(
             next_cursor: None,
         });
     }
-    walk_memory_lineage_timeseries(pool, read_owners, req, projections).await
-}
-
-async fn walk_memory_lineage_timeseries(
-    pool: &PgPool,
-    read_owners: &[OwnerRef],
-    req: &MemoryLineageRequest,
-    projections: &[MemorySearchProjection],
-) -> Result<MemoryLineageResponse, StorageError> {
     let owner_ids: Vec<Uuid> = read_owners
         .iter()
         .copied()
@@ -98,30 +88,25 @@ async fn walk_memory_lineage_timeseries(
         .collect();
     let start = req.start_memory_id.into_inner();
     let depth = req.depth.clamp(1, 8);
-    let limit = req.limit.min(200);
-    let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
-    let page_limit = page_len.saturating_add(1);
-    // Pins live on the source. Target existence/owner is not a walk
-    // filter: a foreign or missing origin redacts, it does not drop.
-    // The next source is admitted only when that row is in S_read.
-    let mut hops = walk_lineage_hops(
-        pool,
+    let page_len = usize::try_from(req.limit.min(200)).unwrap_or(usize::MAX);
+    let mut hops = walk_lineage_hops_on_connection(
+        connection,
         req.direction,
         start,
         &owner_ids,
         depth,
-        page_limit,
+        page_len.saturating_add(1),
         req.after,
     )
     .await?;
-
     let truncated = hops.len() > page_len;
     hops.truncate(page_len);
-    assemble_lineage_page(pool, &owner_ids, start, hops, truncated, projections).await
+    assemble_lineage_page_on_connection(connection, &owner_ids, start, hops, truncated, projections)
+        .await
 }
 
-async fn assemble_lineage_page(
-    pool: &PgPool,
+async fn assemble_lineage_page_on_connection(
+    connection: &mut PgConnection,
     owner_ids: &[Uuid],
     start: Uuid,
     hops: Vec<WalkHop>,
@@ -129,19 +114,9 @@ async fn assemble_lineage_page(
     projections: &[MemorySearchProjection],
 ) -> Result<MemoryLineageResponse, StorageError> {
     let mut node_ids = vec![start];
-    node_ids.extend(hops.iter().flat_map(|hop| [hop.src, hop.tgt]));
-    let node_rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, m.schema_id
-           FROM proxima_core.memory m
-          WHERE m.t = ANY($1::uuid[])
-            AND m.owner_id = ANY($2::uuid[])",
-    )
-    .bind(&node_ids)
-    .bind(owner_ids)
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)?;
-    if !node_rows.iter().any(|(id, _, _)| *id == start) {
+    node_ids.extend(hops.iter().flat_map(|h| [h.src, h.tgt]));
+    let rows: Vec<(Uuid, String, String)> = sqlx::query_as("SELECT m.t, m.kind::text, m.schema_id FROM proxima_core.memory m WHERE m.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])").bind(&node_ids).bind(owner_ids).fetch_all(&mut *connection).await.map_err(map_err)?;
+    if !rows.iter().any(|(id, _, _)| *id == start) {
         return Ok(MemoryLineageResponse {
             nodes: Vec::new(),
             edges: Vec::new(),
@@ -149,30 +124,30 @@ async fn assemble_lineage_page(
             next_cursor: None,
         });
     }
-    let snippet_keys: Vec<(Uuid, String)> = node_rows
+    let keys: Vec<(Uuid, String)> = rows
         .iter()
-        .map(|(id, _, schema_id)| (*id, schema_id.clone()))
+        .map(|(id, _, schema)| (*id, schema.clone()))
         .collect();
-    let mut snippets = load_lineage_snippets(pool, projections, &snippet_keys).await?;
-    let visible_kind: HashMap<Uuid, EntityKind> = node_rows
+    let mut snippets = load_lineage_snippets_on_connection(connection, projections, &keys).await?;
+    let visible: HashMap<Uuid, EntityKind> = rows
         .iter()
-        .filter_map(|(id, kind, _)| parse_kind(kind).map(|kind| (*id, kind)))
+        .filter_map(|(id, kind, _)| parse_kind(kind).map(|k| (*id, k)))
         .collect();
-    let nodes: Vec<MemoryLineageNode> = node_rows
+    let nodes = rows
         .into_iter()
-        .filter_map(|(id, kind, schema_id)| {
+        .filter_map(|(id, kind, schema)| {
             Some(MemoryLineageNode {
                 memory_id: MemoryId::new(id),
                 kind: parse_kind(&kind)?,
-                schema_id: SchemaId::new(schema_id),
+                schema_id: SchemaId::new(schema),
                 snippet: snippets.remove(&id).unwrap_or_default(),
                 distance: u8::from(id != start),
             })
         })
         .collect();
-    let edges: Vec<MemoryLineageEdge> = hops
+    let edges = hops
         .iter()
-        .filter_map(|hop| project_lineage_edge(hop, &visible_kind))
+        .filter_map(|h| project_lineage_edge(h, &visible))
         .collect();
     let next_cursor = truncated.then(|| {
         let last = hops.last().expect("truncated page is non-empty");
@@ -241,8 +216,8 @@ fn resume_point(after: Option<MemoryLineageCursor>) -> (u8, Option<(Uuid, Uuid)>
     }
 }
 
-async fn walk_lineage_hops(
-    pool: &PgPool,
+async fn walk_lineage_hops_on_connection(
+    connection: &mut PgConnection,
     direction: MemoryLineageDirection,
     start: Uuid,
     owner_ids: &[Uuid],
@@ -261,7 +236,7 @@ async fn walk_lineage_hops(
             return Ok(Vec::new());
         }
         frontier = take_unseen_frontier(
-            next_frontier(pool, direction, &frontier, owner_ids).await?,
+            next_frontier_on_connection(connection, direction, &frontier, owner_ids).await?,
             &mut seen,
         );
     }
@@ -269,20 +244,27 @@ async fn walk_lineage_hops(
     let mut dist = start_d;
     while dist <= depth && hops.len() < page_limit && !frontier.is_empty() {
         let remaining = i64::try_from(page_limit - hops.len()).unwrap_or(i64::MAX);
-        let after_pair = keyset.take();
-        let rows = hop_edges(pool, direction, &frontier, owner_ids, after_pair, remaining).await?;
-        hops.extend(rows.into_iter().map(|row| WalkHop {
-            src: row.src,
-            src_kind: row.src_kind,
-            tgt: row.tgt,
+        let rows = hop_edges_on_connection(
+            connection,
+            direction,
+            &frontier,
+            owner_ids,
+            keyset.take(),
+            remaining,
+        )
+        .await?;
+        hops.extend(rows.into_iter().map(|r| WalkHop {
+            src: r.src,
+            src_kind: r.src_kind,
+            tgt: r.tgt,
             dist,
-            created_at: row.created_at,
+            created_at: r.created_at,
         }));
         if hops.len() >= page_limit {
             break;
         }
         frontier = take_unseen_frontier(
-            next_frontier(pool, direction, &frontier, owner_ids).await?,
+            next_frontier_on_connection(connection, direction, &frontier, owner_ids).await?,
             &mut seen,
         );
         dist = dist.saturating_add(1);
@@ -294,8 +276,8 @@ fn take_unseen_frontier(next: Vec<Uuid>, seen: &mut HashSet<Uuid>) -> Vec<Uuid> 
     next.into_iter().filter(|id| seen.insert(*id)).collect()
 }
 
-async fn hop_edges(
-    pool: &PgPool,
+async fn hop_edges_on_connection(
+    connection: &mut PgConnection,
     direction: MemoryLineageDirection,
     frontier: &[Uuid],
     owner_ids: &[Uuid],
@@ -305,10 +287,7 @@ async fn hop_edges(
     if frontier.is_empty() || limit <= 0 {
         return Ok(Vec::new());
     }
-    let (after_src, after_tgt) = match after {
-        Some((src, tgt)) => (Some(src), Some(tgt)),
-        None => (None, None),
-    };
+    let (a, b) = after.map_or((None, None), |(a, b)| (Some(a), Some(b)));
     let query = match direction {
         MemoryLineageDirection::Ancestors => sqlx::query_as(ANCESTOR_HOP_SQL),
         MemoryLineageDirection::Descendants => sqlx::query_as(DESCENDANT_HOP_SQL),
@@ -316,16 +295,16 @@ async fn hop_edges(
     query
         .bind(frontier)
         .bind(owner_ids)
-        .bind(after_src)
-        .bind(after_tgt)
+        .bind(a)
+        .bind(b)
         .bind(limit)
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(map_err)
 }
 
-async fn next_frontier(
-    pool: &PgPool,
+async fn next_frontier_on_connection(
+    connection: &mut PgConnection,
     direction: MemoryLineageDirection,
     frontier: &[Uuid],
     owner_ids: &[Uuid],
@@ -340,7 +319,7 @@ async fn next_frontier(
     query
         .bind(frontier)
         .bind(owner_ids)
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(map_err)
 }
@@ -351,30 +330,22 @@ struct SnippetRow {
     snippet: Option<String>,
 }
 
-async fn load_lineage_snippets(
-    pool: &PgPool,
+async fn load_lineage_snippets_on_connection(
+    connection: &mut PgConnection,
     projections: &[MemorySearchProjection],
     rows: &[(Uuid, String)],
 ) -> Result<HashMap<Uuid, String>, StorageError> {
     let mut by_schema = BTreeMap::<&str, Vec<Uuid>>::new();
-    for (t, schema_id) in rows {
-        by_schema.entry(schema_id.as_str()).or_default().push(*t);
+    for (t, schema) in rows {
+        by_schema.entry(schema.as_str()).or_default().push(*t);
     }
-    let jobs: Vec<(&MemorySearchProjection, Vec<Uuid>)> = by_schema
-        .into_iter()
-        .filter_map(|(schema_id, ts)| {
-            let projection = projections
-                .iter()
-                .find(|projection| projection.schema_id.as_str() == schema_id)?;
-            Some((projection, ts))
-        })
-        .collect();
-    let batches = try_join_all(
-        jobs.into_iter()
-            .map(|(projection, ts)| load_one_schema_snippets(pool, projection, ts)),
-    )
-    .await?;
-    Ok(batches.into_iter().flatten().collect())
+    let mut result = HashMap::new();
+    for (schema, ts) in by_schema {
+        if let Some(p) = projections.iter().find(|p| p.schema_id.as_str() == schema) {
+            result.extend(load_one_schema_snippets_on_connection(connection, p, ts).await?);
+        }
+    }
+    Ok(result)
 }
 
 /// One primary-key lookup over one sidecar, rendering the declared snippet
@@ -384,8 +355,8 @@ async fn load_lineage_snippets(
 /// page the same way. A second copy of "group by schema, look the projection
 /// up, `c.t = ANY($1)`" would be a second place for the snippet expression to
 /// drift.
-pub(super) async fn load_one_schema_snippets(
-    pool: &PgPool,
+pub(super) async fn load_one_schema_snippets_on_connection(
+    connection: &mut PgConnection,
     projection: &MemorySearchProjection,
     ts: Vec<Uuid>,
 ) -> Result<Vec<(Uuid, String)>, StorageError> {
@@ -395,20 +366,16 @@ pub(super) async fn load_one_schema_snippets(
     let table = PgIdent::table(&projection.sidecar_table)?;
     let key = projection_key_ident(projection)?;
     let snippet = snippet_sql(projection)?;
-    // The lookup is by the sidecar's DECLARED memory-key column, aliased
-    // back to `t` so the row shape is one spelling across flavors.
     let sql = format!(
-        "SELECT c.{key} AS t, {snippet} AS snippet
-           FROM {table} c
-          WHERE c.{key} = ANY($1::uuid[])",
+        "SELECT c.{key} AS t, {snippet} AS snippet FROM {table} c WHERE c.{key} = ANY($1::uuid[])",
         table = table.as_str(),
         key = key.as_str(),
-        snippet = snippet,
+        snippet = snippet
     );
     // SQL-POLICY: PgIdent
     let rows: Vec<SnippetRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&ts)
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(map_err)?;
     Ok(rows

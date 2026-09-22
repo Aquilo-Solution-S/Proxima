@@ -34,9 +34,15 @@ pub(crate) const DESTRUCTIVE_NON_IDEMPOTENT: McpToolAnnotations = McpToolAnnotat
     .open_world(false);
 
 pub(crate) fn code_store(ctx: &ToolCtx) -> Result<Arc<CodeFlavorStore>, ToolError> {
-    ctx.service::<CodeFlavorStore>().ok_or_else(|| {
+    let store = ctx.service::<CodeFlavorStore>().ok_or_else(|| {
         ToolError::Other("code flavor requires a CodeFlavorStore tool service".into())
-    })
+    })?;
+    Ok(Arc::new(
+        store
+            .as_ref()
+            .clone()
+            .with_owner_scope(ctx.authz().owner_scope().cloned()),
+    ))
 }
 
 pub(crate) fn engine(ctx: &ToolCtx) -> Result<Arc<proxima_core::Engine>, ToolError> {

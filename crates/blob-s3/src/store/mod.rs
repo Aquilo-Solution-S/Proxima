@@ -48,6 +48,7 @@ use crate::config::{
 };
 use crate::error::BlobError;
 use proxima_core::authz::{SystemAuthority, SystemAuthorityBinding};
+use proxima_storage_pg::PgPlatformScope;
 
 /// Cited-blob transfer, verified-read, and reconcile backend over one
 /// Postgres pool and one S3 target. Construct once at boot; capabilities are
@@ -63,6 +64,7 @@ pub struct CitedBlobStore {
     /// A witness minted by an unrelated disposable Engine cannot authorize
     /// this store's global operations.
     system_authority: std::sync::Arc<std::sync::OnceLock<SystemAuthorityBinding>>,
+    platform_scope: Option<PgPlatformScope>,
 }
 
 impl CitedBlobStore {
@@ -87,7 +89,16 @@ impl CitedBlobStore {
             config,
             client: tokio::sync::OnceCell::new(),
             system_authority: std::sync::Arc::new(std::sync::OnceLock::new()),
+            platform_scope: None,
         })
+    }
+
+    /// Bind the host-owned platform transaction capability for maintenance
+    /// operations. Request paths continue to use their authenticated scope.
+    #[must_use]
+    pub fn with_platform_scope(mut self, scope: PgPlatformScope) -> Self {
+        self.platform_scope = Some(scope);
+        self
     }
 
     /// Internal facade boot seam. Bind host-wide operations to the same boot

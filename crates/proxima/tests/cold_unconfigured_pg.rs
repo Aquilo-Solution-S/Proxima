@@ -216,6 +216,7 @@ async fn boot(database: &str, owner: OwnerRef) -> TestResult<EmbeddedProxima> {
     Ok(ProximaBuilder::new(
         EmbedConfig {
             database_url: db_url(database),
+            platform_database_url: None,
             s3: None,
         },
         owner,

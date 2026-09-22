@@ -46,6 +46,10 @@ pub struct WritePermit {
 }
 
 impl WritePermit {
+    pub(in crate::engine) fn authorize_transfer_to(&mut self, destination: OwnerRef) {
+        self.owner_write.authorize_transfer_to(destination);
+    }
+
     #[must_use]
     pub fn owner(&self) -> &OwnerRef {
         self.owner_write.owner()
@@ -59,6 +63,11 @@ impl WritePermit {
     #[must_use]
     pub const fn owner_write_permit(&self) -> &OwnerWritePermit {
         &self.owner_write
+    }
+
+    #[must_use]
+    pub fn owner_scope(&self) -> Option<&crate::OwnerScope> {
+        self.owner_write.owner_scope()
     }
 
     /// Test-only write permit. The gates in this module remain the
@@ -302,9 +311,14 @@ impl Engine {
                 kind,
                 self.delegation_runtime_binding.clone(),
                 expires_at,
+                authz.owner_scope().cloned(),
             ))
         } else {
-            Ok(OwnerWritePermit::new(resolved, kind))
+            Ok(OwnerWritePermit::new(
+                resolved,
+                kind,
+                authz.owner_scope().cloned(),
+            ))
         }
     }
 
@@ -358,11 +372,13 @@ impl Engine {
         A: EngineAuthority + ?Sized,
     {
         let read = self.authorize_read(authority).await?;
+        let operation = self.operation_authority(authority)?;
+        let authz = operation.authz();
         let home = self
             .storage()
             .pipeline
             .owner_access_read
-            .visible_home_owner(entity, &read)
+            .visible_home_owner(authz.owner_scope(), entity, &read)
             .await
             .map_err(|err| storage_error("visible_home_owner", &err))?
             .ok_or_else(|| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;

@@ -4,6 +4,7 @@ use proxima_core::{
     PerspectivePayload,
 };
 use proxima_core::{Tool, ToolCtx, ToolError};
+use proxima_storage_pg::begin_compatible_owner_transaction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -285,6 +286,9 @@ async fn load_work_item(ctx: &ToolCtx, memory_id: MemoryId) -> Result<WorkItemRo
 async fn load_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<RepoBundle, ToolError> {
     let (owner_kind, owner_id) = owner_columns(&ctx.owner());
     let pool = code_store(ctx)?;
+    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+        .await
+        .map_err(ToolError::Storage)?;
     let row: Option<(String, String, Option<String>)> = sqlx::query_as(
         "SELECT display_name, canonical_path, target_branch
            FROM proxima_code.repos
@@ -295,9 +299,10 @@ async fn load_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<RepoBundle, ToolError
     .bind(owner_kind)
     .bind(owner_id)
     .bind(repo_id)
-    .fetch_optional(pool.pool())
+    .fetch_optional(&mut *tx)
     .await
     .map_err(map_storage)?;
+    tx.commit().await.map_err(map_storage)?;
     Ok(match row {
         Some((display_name, canonical_path, target_branch)) => RepoBundle {
             repo_id,
@@ -455,6 +460,9 @@ async fn load_target_perspectives(
         return Ok(Vec::new());
     }
     let pool = code_store(ctx)?;
+    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+        .await
+        .map_err(ToolError::Storage)?;
     let engine = super::engine(ctx)?;
     let assignments = proxima::flavor::authorized_memory_ids(
         &engine,
@@ -483,9 +491,10 @@ async fn load_target_perspectives(
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>(),
     )
-    .fetch_all(pool.pool())
+    .fetch_all(&mut *tx)
     .await
     .map_err(map_storage)?;
+    tx.commit().await.map_err(map_storage)?;
     proxima::flavor::authorized_memory_ids(
         &engine,
         ctx.authz(),
@@ -538,13 +547,17 @@ async fn load_results(
           ORDER BY t ASC"
     );
     let pool = code_store(ctx)?;
+    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+        .await
+        .map_err(ToolError::Storage)?;
     // SQL-POLICY: fixed-fragment — the only interpolation is `fk`, chosen
     // from a closed match above; `memory_id` is bound.
     let rows: Vec<ResultSqlRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(memory_id.into_inner())
-        .fetch_all(pool.pool())
+        .fetch_all(&mut *tx)
         .await
         .map_err(map_storage)?;
+    tx.commit().await.map_err(map_storage)?;
     // Tesla-valve admit. The sidecar carries no `owner_id` and its FK reaches
     // any `proxima_core.memory(t)`, so a foreign owner can attach a result row
     // to this work item. The sidecar hit is a CANDIDATE; `memory` decides
@@ -604,6 +617,9 @@ async fn load_acceptance_verifications(
     memory_id: MemoryId,
 ) -> Result<Vec<AcceptanceVerificationBundle>, ToolError> {
     let pool = code_store(ctx)?;
+    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+        .await
+        .map_err(ToolError::Storage)?;
     let rows: Vec<AcceptanceVerificationSqlRow> = sqlx::query_as(
         "SELECT t AS memory_id, criterion_key, status::text, summary, artifact_refs, verifier_memory_id
            FROM proxima_code.acceptance_verification_v1
@@ -611,9 +627,10 @@ async fn load_acceptance_verifications(
           ORDER BY t ASC",
     )
     .bind(memory_id.into_inner())
-    .fetch_all(pool.pool())
+    .fetch_all(&mut *tx)
     .await
     .map_err(map_storage)?;
+    tx.commit().await.map_err(map_storage)?;
     // Tesla-valve admit, same ownerless sidecar as `load_results`.
     let visible = authorized_verification_ids(ctx, &rows).await?;
     let rows: Vec<AcceptanceVerificationSqlRow> = rows
@@ -702,6 +719,9 @@ async fn load_acceptance_summaries(
     memory_id: MemoryId,
 ) -> Result<Vec<MemoryId>, ToolError> {
     let pool = code_store(ctx)?;
+    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+        .await
+        .map_err(ToolError::Storage)?;
     let rows: Vec<Uuid> = sqlx::query_scalar(
         "SELECT t
            FROM proxima_code.acceptance_summary_v1
@@ -709,9 +729,10 @@ async fn load_acceptance_summaries(
           ORDER BY t ASC",
     )
     .bind(memory_id.into_inner())
-    .fetch_all(pool.pool())
+    .fetch_all(&mut *tx)
     .await
     .map_err(map_storage)?;
+    tx.commit().await.map_err(map_storage)?;
     if rows.is_empty() {
         return Ok(Vec::new());
     }

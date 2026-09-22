@@ -1,6 +1,7 @@
 //! Lookup helpers for code MCP tools.
 
 use proxima_core::{Owner, OwnerRefKind, ToolCtx, ToolError};
+use proxima_storage_pg::begin_compatible_owner_transaction;
 
 use super::CodeToolCtxExt;
 use super::code_store;
@@ -32,6 +33,9 @@ pub async fn resolve_repo_identifier(
 
     let (owner_kind, owner_id) = owner_columns(&ctx.owner());
     let pool = code_store(ctx)?;
+    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+        .await
+        .map_err(ToolError::Storage)?;
     // The name arms are gated behind `claimed_id IS NULL`, so an id-shaped
     // identifier resolves only as an id and never falls through to a name
     // match.
@@ -55,9 +59,10 @@ pub async fn resolve_repo_identifier(
     .bind(owner_id)
     .bind(trimmed)
     .bind(claimed_id)
-    .fetch_all(pool.pool())
+    .fetch_all(&mut *tx)
     .await
     .map_err(map_storage)?;
+    tx.commit().await.map_err(map_storage)?;
 
     match rows.as_slice() {
         [row] => Ok(row.repo_id),

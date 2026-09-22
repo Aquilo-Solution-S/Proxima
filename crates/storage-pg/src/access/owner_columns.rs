@@ -6,7 +6,7 @@ use proxima_core::scope::ScopeKind;
 use proxima_core::{
     EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation, StorageError, UserId,
 };
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
 /// One cross-process boundary shared by every host-capable `UoW` and exclusive
 /// owner/source erasure. ASCII `proxhlcy` is a stable advisory-lock key.
@@ -83,7 +83,7 @@ async fn lock_owner_fences_session(
     Ok(())
 }
 
-use crate::error::{internal, map_err, with_bounded_retry};
+use crate::error::{map_err, with_bounded_retry};
 
 #[must_use]
 pub fn owner_binds(owner: &OwnerRef) -> (OwnerRefKind, uuid::Uuid) {
@@ -503,8 +503,8 @@ pub async fn ensure_owner_row(
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn resolve_membership(
-    pool: &PgPool,
+pub(crate) async fn resolve_membership<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     owner: &OwnerRef,
 ) -> Result<Vec<MembershipRow>, StorageError> {
     let OwnerRef::Personal(user) = owner else {
@@ -518,7 +518,7 @@ pub(crate) async fn resolve_membership(
           ORDER BY group_id, relation",
     )
     .bind(user.into_inner())
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await
     .map_err(map_err)?;
 
@@ -554,12 +554,16 @@ pub(crate) async fn lock_group_membership_tx(
 /// `Internal` on sqlx failure.
 pub(crate) async fn bootstrap_group_admin(
     pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
     group_id: GroupId,
     first_admin_user_id: UserId,
     _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
-        let mut tx = pool.begin().await.map_err(internal)?;
+        let mut tx = match platform {
+            Some(scope) => scope.begin().await?,
+            None => crate::owner_scope::begin_compatible_owner_transaction(pool, None).await?,
+        };
         lock_group_membership_tx(&mut tx, group_id).await?;
         let inserted = sqlx::query(
             "INSERT INTO proxima_core.group_memberships
@@ -597,13 +601,15 @@ pub(crate) async fn bootstrap_group_admin(
 /// Returns `Internal` on sqlx failure.
 pub(crate) async fn add_group_member(
     pool: &PgPool,
+    owner_scope: Option<&proxima_core::OwnerScope>,
     group_id: GroupId,
     member_user_id: UserId,
     relation: Relation,
     _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
-        let mut tx = pool.begin().await.map_err(internal)?;
+        let mut tx =
+            crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
         lock_group_membership_tx(&mut tx, group_id).await?;
         sqlx::query(
             "INSERT INTO proxima_core.group_memberships
@@ -628,11 +634,13 @@ pub(crate) async fn add_group_member(
 /// Returns `Internal` on sqlx failure.
 pub(crate) async fn remove_group_member(
     pool: &PgPool,
+    owner_scope: Option<&proxima_core::OwnerScope>,
     group_id: GroupId,
     member_user_id: UserId,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
-        let mut tx = pool.begin().await.map_err(internal)?;
+        let mut tx =
+            crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
         lock_group_membership_tx(&mut tx, group_id).await?;
         sqlx::query(
             "DELETE FROM proxima_core.group_memberships
@@ -657,27 +665,13 @@ pub(crate) async fn remove_group_member(
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn has_group_relation(
-    pool: &PgPool,
+pub(crate) async fn has_group_relation_on_connection(
+    conn: &mut PgConnection,
     group_id: GroupId,
     member_user_id: UserId,
     relation: Relation,
 ) -> Result<bool, StorageError> {
-    sqlx::query_scalar(
-        "SELECT EXISTS (
-             SELECT 1
-               FROM proxima_core.group_memberships
-              WHERE group_id = $1
-                AND member_user_id = $2
-                AND relation = $3
-         )",
-    )
-    .bind(group_id.into_inner())
-    .bind(member_user_id.into_inner())
-    .bind(relation)
-    .fetch_one(pool)
-    .await
-    .map_err(map_err)
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM proxima_core.group_memberships WHERE group_id = $1 AND member_user_id = $2 AND relation = $3)").bind(group_id.into_inner()).bind(member_user_id.into_inner()).bind(relation).fetch_one(&mut *conn).await.map_err(map_err)
 }
 
 /// Every relation `member_user_id` holds on `group_id`, in the order
@@ -690,30 +684,19 @@ pub(crate) async fn has_group_relation(
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn group_relations_for_member(
-    pool: &PgPool,
+pub(crate) async fn group_relations_for_member_on_connection(
+    conn: &mut PgConnection,
     group_id: GroupId,
     member_user_id: UserId,
 ) -> Result<Vec<Relation>, StorageError> {
-    sqlx::query_scalar(
-        "SELECT relation
-           FROM proxima_core.group_memberships
-          WHERE group_id = $1
-            AND member_user_id = $2
-          ORDER BY relation",
-    )
-    .bind(group_id.into_inner())
-    .bind(member_user_id.into_inner())
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)
+    sqlx::query_scalar("SELECT relation FROM proxima_core.group_memberships WHERE group_id = $1 AND member_user_id = $2 ORDER BY relation").bind(group_id.into_inner()).bind(member_user_id.into_inner()).fetch_all(&mut *conn).await.map_err(map_err)
 }
 
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn list_group_members(
-    pool: &PgPool,
+pub(crate) async fn list_group_members<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     group_id: GroupId,
 ) -> Result<Vec<(UserId, Relation)>, StorageError> {
     // Same total order as `list_group_members_page`. The table has no
@@ -725,7 +708,7 @@ pub(crate) async fn list_group_members(
           ORDER BY member_user_id, relation",
     )
     .bind(group_id.into_inner())
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await
     .map_err(map_err)?;
 
@@ -744,8 +727,8 @@ pub(crate) async fn list_group_members(
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn list_group_members_page(
-    pool: &PgPool,
+pub(crate) async fn list_group_members_page<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     group_id: GroupId,
     after: Option<(UserId, Relation)>,
     limit: i64,
@@ -766,7 +749,7 @@ pub(crate) async fn list_group_members_page(
     .bind(after_member)
     .bind(after_relation)
     .bind(limit)
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await
     .map_err(map_err)?;
 
@@ -782,8 +765,8 @@ pub(crate) async fn list_group_members_page(
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn visible_home_owner(
-    pool: &PgPool,
+pub(crate) async fn visible_home_owner<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     entity: EntityId,
     read_owners: &[OwnerRef],
 ) -> Result<Option<OwnerRef>, StorageError> {
@@ -821,7 +804,7 @@ pub(crate) async fn visible_home_owner(
             )
             .bind(memory_id.into_inner())
             .bind(&owner_ids)
-            .fetch_optional(pool)
+            .fetch_optional(executor)
             .await
         }
         EntityId::Goal(goal_id) => {
@@ -833,7 +816,7 @@ pub(crate) async fn visible_home_owner(
             )
             .bind(goal_id.into_inner())
             .bind(&owner_ids)
-            .fetch_optional(pool)
+            .fetch_optional(executor)
             .await
         }
     }
@@ -888,11 +871,13 @@ pub(crate) async fn visible_home_owner(
 /// violations.
 pub(crate) async fn transfer_to_owner(
     pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
+    permit: &proxima_core::storage_ports::OwnerWritePermit,
     surfaces: &OwnerSurfaces,
     entity: EntityId,
-    from_owner: OwnerRef,
     to_owner: OwnerRef,
 ) -> Result<bool, StorageError> {
+    let from_owner = *permit.owner();
     // The backstop, DRIVEN by the declaration rather than merely agreeing
     // with it: the entity picks the surface that speaks for its series, and
     // that surface's resolved leg decides. Re-declare `proxima_core.goal` as
@@ -914,7 +899,9 @@ pub(crate) async fn transfer_to_owner(
     }
     let from_id = from_owner.stored_owner_id();
     with_bounded_retry(move || async move {
-        let mut tx = pool.begin().await.map_err(internal)?;
+        let mut tx =
+            crate::platform_scope::begin_owner_lifecycle_transaction(pool, platform, permit)
+                .await?;
         // Transfers participate in the owner fence before probing, locking,
         // or re-homing any series row.  Both endpoints are acquired in the
         // same sorted order, so an owner erase cannot pass the transfer's
@@ -2007,8 +1994,8 @@ async fn transfer_content_for_handle(
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn home_owner(
-    pool: &PgPool,
+pub(crate) async fn home_owner<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     entity: EntityId,
 ) -> Result<Option<OwnerRef>, StorageError> {
     // The entity discriminant is authorization data, exactly as in
@@ -2024,7 +2011,7 @@ pub(crate) async fn home_owner(
               WHERE m.t = $1",
             )
             .bind(memory_id.into_inner())
-            .fetch_optional(pool)
+            .fetch_optional(executor)
             .await
         }
         EntityId::Goal(goal_id) => {
@@ -2035,7 +2022,7 @@ pub(crate) async fn home_owner(
               WHERE g.t = $1",
             )
             .bind(goal_id.into_inner())
-            .fetch_optional(pool)
+            .fetch_optional(executor)
             .await
         }
     }

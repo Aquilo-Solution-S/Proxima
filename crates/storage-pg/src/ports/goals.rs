@@ -20,7 +20,13 @@ impl GoalWritePort for PgStorage {
         permit: &OwnerWritePermit,
     ) -> Result<Option<GoalReplayOutcome>, StorageError> {
         validate_permit_owner(permit, &req.owner())?;
-        verbs::goal_write::resolve_goal_command_replay(&self.pool, req).await
+        let mut tx = crate::owner_scope::begin_compatible_owner_transaction(
+            &self.pool,
+            permit.owner_scope(),
+        )
+        .await?;
+        let result = verbs::goal_write::resolve_goal_command_replay_on(&mut tx, req).await;
+        crate::owner_scope::finish_transaction(tx, result).await
     }
 
     async fn create_goal_atomic(
@@ -73,33 +79,59 @@ impl GoalWritePort for PgStorage {
 impl GoalReadPort for PgStorage {
     async fn list_active_goals(
         &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
         read_owners: &[OwnerRef],
         self_perspective_memory_id: MemoryId,
         limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
-        verbs::active_goals::list_active_goals(
-            &self.pool,
-            read_owners,
-            self_perspective_memory_id,
-            limit,
-        )
-        .await
+        let mut tx =
+            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let result = async {
+            verbs::active_goals::list_active_goals_on_connection(
+                &mut tx,
+                read_owners,
+                self_perspective_memory_id,
+                limit,
+            )
+            .await
+        }
+        .await;
+        crate::owner_scope::finish_transaction(tx, result).await
     }
 
     async fn load_goal_wake_configs(
         &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
         read_owners: &[OwnerRef],
         goal_ids: &[proxima_core::GoalId],
     ) -> Result<Vec<proxima_core::read_models::GoalWakeConfigRow>, StorageError> {
-        verbs::goal_wake_candidates::load_goal_wake_configs(&self.pool, read_owners, goal_ids).await
+        let mut tx =
+            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let result = async {
+            verbs::goal_wake_candidates::load_goal_wake_configs_on_connection(
+                &mut tx,
+                read_owners,
+                goal_ids,
+            )
+            .await
+        }
+        .await;
+        crate::owner_scope::finish_transaction(tx, result).await
     }
 
     async fn load_goal_evidence(
         &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &OwnerRef,
         goal_id: proxima_core::GoalId,
     ) -> Result<Option<Vec<MemoryId>>, StorageError> {
-        verbs::goal_reads::load_goal_evidence(&self.pool, owner, goal_id).await
+        let mut tx =
+            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let result = async {
+            verbs::goal_reads::load_goal_evidence_on_connection(&mut tx, owner, goal_id).await
+        }
+        .await;
+        crate::owner_scope::finish_transaction(tx, result).await
     }
 }
 
@@ -107,8 +139,15 @@ impl GoalReadPort for PgStorage {
 impl GoalWakeCandidatePort for PgStorage {
     async fn list_goal_wake_candidates(
         &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
         req: &GoalWakeCandidateRequest<'_>,
     ) -> Result<Vec<GoalWakeCandidate>, StorageError> {
-        verbs::goal_wake_candidates::list_goal_wake_candidates(&self.pool, req).await
+        let mut tx =
+            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let result = async {
+            verbs::goal_wake_candidates::list_goal_wake_candidates_on_connection(&mut tx, req).await
+        }
+        .await;
+        crate::owner_scope::finish_transaction(tx, result).await
     }
 }

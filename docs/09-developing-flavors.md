@@ -67,7 +67,12 @@ Writes go through `proxima::Engine` (Host API). Do not depend on
 1. Pick one stable `flavor_id`.
 2. Define typed payload structs.
 3. Implement payload traits and schema-owned keys.
-4. Write sidecar SQL tables.
+4. Write sidecar SQL tables. In an owner-RLS schema every base/detail table
+   needs `proxima_owner_read`, `proxima_owner_write`, and the role-restricted
+   `proxima_platform` policy plus `ENABLE`/`FORCE ROW LEVEL SECURITY`.
+   Runtime reads/writes use the authenticated transaction; sidecar predicates
+   correlate to the parent owner and write-kind ceiling. Boot discovers tables
+   from the catalog and refuses an uncovered table (see 07 §Runtime owner binding).
 5. Implement PG sidecar insert/load traits.
 6. Register schemas/tools with `proxima_flavor!`.
 7. Wrap the flavor in `FlavorBundle`.

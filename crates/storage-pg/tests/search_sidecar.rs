@@ -373,7 +373,11 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
         .await?;
 
         let page = pg
-            .search_memories(&search_req(owner, "keyword needle"), &[note_projection()])
+            .search_memories(
+                None,
+                &search_req(owner, "keyword needle"),
+                &[note_projection()],
+            )
             .await?;
         assert_eq!(
             page.results.len(),
@@ -396,7 +400,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
         // substring band, from the one statement that runs over exactly
         // the schemas the ranked arm returned nothing for.
         let substring = pg
-            .search_memories(&search_req(owner, "eedle"), &[note_projection()])
+            .search_memories(None, &search_req(owner, "eedle"), &[note_projection()])
             .await?;
         assert_eq!(
             substring.results.len(),
@@ -422,7 +426,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
             ..note_projection()
         };
         let refused = pg
-            .search_memories(&search_req(owner, "eedle"), &[arm_off])
+            .search_memories(None, &search_req(owner, "eedle"), &[arm_off])
             .await?;
         assert!(
             refused.results.is_empty(),
@@ -431,6 +435,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
 
         let miss = pg
             .search_memories(
+                None,
                 &search_req(owner, "no-such-lexeme-xyzzy"),
                 &[note_projection()],
             )
@@ -442,7 +447,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
             ..note_projection()
         };
         let skipped = pg
-            .search_memories(&search_req(owner, "keyword needle"), &[flavor])
+            .search_memories(None, &search_req(owner, "keyword needle"), &[flavor])
             .await?;
         assert!(
             skipped.results.is_empty(),
@@ -482,7 +487,7 @@ async fn lexical_search_does_not_let_other_owner_fill_overfetch() {
         }
         let mut req = search_req(owner, "zebra");
         req.limit = 1;
-        let page = pg.search_memories(&req, &[note_projection()]).await?;
+        let page = pg.search_memories(None, &req, &[note_projection()]).await?;
         assert_eq!(
             page.results.len(),
             1,
@@ -606,7 +611,7 @@ async fn tagged_search_scans_flavor_sidecars() {
         let projection = docs_projection();
 
         let unscoped = pg
-            .search_memories(
+            .search_memories(None,
                 &search_req(owner, "Antriebswelle"),
                 std::slice::from_ref(&projection),
             )
@@ -619,7 +624,7 @@ async fn tagged_search_scans_flavor_sidecars() {
         let mut tagged = search_req(owner, "Antriebswelle");
         tagged.kind = Some(EntityKind::Abstraction);
         tagged.tags = vec!["proxima-docs".into()];
-        let page = pg.search_memories(&tagged, &[projection]).await?;
+        let page = pg.search_memories(None, &tagged, &[projection]).await?;
         assert_eq!(page.results.len(), 1, "tagged search must hit flavor text");
         assert_eq!(page.results[0].memory_id.into_inner(), t);
         Ok(())
@@ -661,7 +666,7 @@ async fn lexical_search_matches_german_via_lexical_languages() {
         assert!(registered, "insert must register the row language");
 
         let page = pg
-            .search_memories(&search_req(owner, "Katze"), &[note_projection()])
+            .search_memories(None, &search_req(owner, "Katze"), &[note_projection()])
             .await?;
         assert_eq!(
             page.results.len(),
@@ -711,7 +716,7 @@ async fn simple_rows_retain_stopwords_after_default_switch() {
         );
 
         let page = pg
-            .search_memories(&search_req(owner, "the"), &[note_projection()])
+            .search_memories(None, &search_req(owner, "the"), &[note_projection()])
             .await?;
         assert!(
             page.results
@@ -804,7 +809,7 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
         );
 
         let page = pg
-            .search_memories(&search_req(owner, "Katze"), &[note_projection()])
+            .search_memories(None, &search_req(owner, "Katze"), &[note_projection()])
             .await?;
         assert!(
             page.results
@@ -858,7 +863,9 @@ async fn semantic_search_respects_until() {
         query_vec[0] = 1.0;
         inside.query_embedding = Some(query_vec);
         inside.embedding_model_id = Some("test-embed".into());
-        let hit = pg.search_memories(&inside, &[note_projection()]).await?;
+        let hit = pg
+            .search_memories(None, &inside, &[note_projection()])
+            .await?;
         assert_eq!(hit.results.len(), 1);
         // Snippets are hydrated from the PAGE now, not carried by the
         // ranked statement, so a row that reached the page on similarity
@@ -872,7 +879,9 @@ async fn semantic_search_respects_until() {
 
         let mut too_old = inside.clone();
         too_old.until = Some(time::OffsetDateTime::UNIX_EPOCH);
-        let missed = pg.search_memories(&too_old, &[note_projection()]).await?;
+        let missed = pg
+            .search_memories(None, &too_old, &[note_projection()])
+            .await?;
         assert!(
             missed.results.is_empty(),
             "ANN hits older than until must not admit"
@@ -956,7 +965,9 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
         query_vec[0] = 1.0;
         semantic.query_embedding = Some(query_vec);
         semantic.embedding_model_id = Some("test-embed".into());
-        let untagged = pg.search_memories(&semantic, &[note_projection()]).await?;
+        let untagged = pg
+            .search_memories(None, &semantic, &[note_projection()])
+            .await?;
         assert_eq!(
             ids(&untagged),
             both,
@@ -964,7 +975,9 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
         );
 
         semantic.tags = vec!["bucket-0".into()];
-        let page = pg.search_memories(&semantic, &[note_projection()]).await?;
+        let page = pg
+            .search_memories(None, &semantic, &[note_projection()])
+            .await?;
         assert_eq!(
             ids(&page),
             vec![tagged_t],
@@ -973,14 +986,16 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
 
         let mut hybrid = semantic.clone();
         hybrid.mode = SearchMode::Hybrid;
-        let page = pg.search_memories(&hybrid, &[note_projection()]).await?;
+        let page = pg
+            .search_memories(None, &hybrid, &[note_projection()])
+            .await?;
         assert_eq!(
             ids(&page),
             vec![tagged_t],
             "…and so does hybrid, whose semantic arm used to leak untagged rows"
         );
 
-        let page = pg.search_memories(&semantic, &[]).await?;
+        let page = pg.search_memories(None, &semantic, &[]).await?;
         assert!(
             page.results.is_empty(),
             "a tagged request no flavor participates in returns nothing, \
@@ -1063,7 +1078,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         semantic.mode = SearchMode::Semantic;
         semantic.query_embedding = Some(query_vec.clone());
         semantic.embedding_model_id = Some("test-embed".into());
-        let page = pg.search_memories(&semantic, &projections).await?;
+        let page = pg.search_memories(None, &semantic, &projections).await?;
         assert_eq!(
             ids(&page),
             vec![core_t],
@@ -1072,7 +1087,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
 
         let mut hybrid = semantic.clone();
         hybrid.mode = SearchMode::Hybrid;
-        let page = pg.search_memories(&hybrid, &projections).await?;
+        let page = pg.search_memories(None, &hybrid, &projections).await?;
         assert_eq!(
             ids(&page),
             vec![core_t],
@@ -1082,7 +1097,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         let mut tagged = semantic.clone();
         tagged.limit = 8;
         tagged.tags = vec!["foreign".into()];
-        let page = pg.search_memories(&tagged, &projections).await?;
+        let page = pg.search_memories(None, &tagged, &projections).await?;
         assert!(
             !page.results.is_empty()
                 && page
@@ -1094,7 +1109,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
 
         tagged.tag_match = TagMatch::All;
         tagged.tags = vec!["foreign".into(), "shared".into()];
-        let page = pg.search_memories(&tagged, &projections).await?;
+        let page = pg.search_memories(None, &tagged, &projections).await?;
         assert_eq!(
             ids(&page),
             vec![foreign[0]],
@@ -1103,7 +1118,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
 
         tagged.tag_match = TagMatch::Any;
         tagged.tags = vec!["foreign".into(), "absent".into()];
-        let page = pg.search_memories(&tagged, &projections).await?;
+        let page = pg.search_memories(None, &tagged, &projections).await?;
         assert!(
             !page.results.is_empty()
                 && page
@@ -1114,7 +1129,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         );
 
         tagged.tags = vec!["absent".into()];
-        let page = pg.search_memories(&tagged, &projections).await?;
+        let page = pg.search_memories(None, &tagged, &projections).await?;
         assert!(
             page.results.is_empty(),
             "a tag with no participating projection rows must return empty"
@@ -1123,7 +1138,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         let mut hybrid = tagged;
         hybrid.tags = vec!["foreign".into()];
         hybrid.mode = SearchMode::Hybrid;
-        let page = pg.search_memories(&hybrid, &projections).await?;
+        let page = pg.search_memories(None, &hybrid, &projections).await?;
         assert!(
             !page.results.is_empty()
                 && page
@@ -1135,7 +1150,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
 
         let mut no_projection = semantic;
         no_projection.limit = 8;
-        let page = pg.search_memories(&no_projection, &[docs]).await?;
+        let page = pg.search_memories(None, &no_projection, &[docs]).await?;
         assert!(
             page.results.is_empty(),
             "untagged search with no participating core projection must be empty"
@@ -1200,14 +1215,16 @@ async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
         );
 
         let unbounded = pg
-            .search_memories(&search_req(owner, "atlas"), &[note_projection()])
+            .search_memories(None, &search_req(owner, "atlas"), &[note_projection()])
             .await?;
         assert_eq!(unbounded.results.len(), 3, "all three match the query");
 
         let mut windowed = search_req(owner, "atlas");
         windowed.since = Some(stamps[1]);
         windowed.until = Some(stamps[2]);
-        let page = pg.search_memories(&windowed, &[note_projection()]).await?;
+        let page = pg
+            .search_memories(None, &windowed, &[note_projection()])
+            .await?;
         let found: std::collections::BTreeSet<Uuid> = page
             .results
             .iter()
@@ -1231,7 +1248,9 @@ async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
         // predicate entirely cannot pass by returning everything.
         let mut early = search_req(owner, "atlas");
         early.until = Some(stamps[0]);
-        let page = pg.search_memories(&early, &[note_projection()]).await?;
+        let page = pg
+            .search_memories(None, &early, &[note_projection()])
+            .await?;
         assert_eq!(
             page.results
                 .iter()
@@ -1565,7 +1584,7 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
 
         let mut req = search_req(owner, "artograph");
         req.limit = 1;
-        let page = pg.search_memories(&req, &[note_projection()]).await?;
+        let page = pg.search_memories(None, &req, &[note_projection()]).await?;
         assert_eq!(
             page.results
                 .iter()
@@ -1587,7 +1606,7 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
         // restriction worked.
         req.supersession = SupersessionStatus::IncludeSuperseded;
         req.limit = 64;
-        let page = pg.search_memories(&req, &[note_projection()]).await?;
+        let page = pg.search_memories(None, &req, &[note_projection()]).await?;
         assert_eq!(
             page.results.len(),
             SUBSTRING_BACKLOG + 1,

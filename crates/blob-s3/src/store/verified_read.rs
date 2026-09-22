@@ -13,7 +13,8 @@ use uuid::Uuid;
 use super::CitedBlobStore;
 use super::guards::ensure_owner_access;
 use super::keys::locator_was_minted_here;
-use super::rows::{BlobReadRecord, load_blob_read_record};
+use super::rows::{BlobReadRecord, load_blob_read_record_on_connection};
+use proxima_storage_pg::begin_compatible_owner_transaction;
 
 fn within_ceiling(byte_len: u64, max_bytes: NonZeroU64) -> Result<(), CitedBlobReadError> {
     if byte_len > max_bytes.get() {
@@ -121,10 +122,16 @@ impl CitedBlobReadPort for CitedBlobStore {
         // the raw locator, so authorization after SQL would already be late.
         ensure_owner_access(authz, &owner).map_err(|_| CitedBlobReadError::AccessDenied)?;
 
-        let row = load_blob_read_record(&self.pool, &owner, cited_object_id)
+        let mut tx = begin_compatible_owner_transaction(&self.pool, authz.owner_scope())
+            .await
+            .map_err(|err| CitedBlobReadError::Unavailable(err.to_string()))?;
+        let row = load_blob_read_record_on_connection(tx.as_mut(), &owner, cited_object_id)
             .await
             .map_err(|err| CitedBlobReadError::Unavailable(err.to_string()))?
             .ok_or(CitedBlobReadError::NotFound)?;
+        tx.commit()
+            .await
+            .map_err(|err| CitedBlobReadError::Unavailable(err.to_string()))?;
         if !canonical_for_store(self, &row) {
             return Err(CitedBlobReadError::NotFound);
         }

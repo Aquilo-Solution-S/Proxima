@@ -93,14 +93,14 @@ fn assert_event_identities(
 async fn read_event_paths(fixture: &Fixture) -> TestResult<(Vec<ChangeEvent>, Vec<ChangeEvent>)> {
     let forward = fixture
         .pg
-        .list_change_events_after(&[fixture.owner], Uuid::nil(), 100)
+        .list_change_events_after(None, &[fixture.owner], Uuid::nil(), 100)
         .await?
         .into_iter()
         .map(|row| row.event)
         .collect::<Vec<_>>();
     let replay = fixture
         .pg
-        .list_change_events_for_replay(&fixture.owner, Uuid::nil(), None, 100)
+        .list_change_events_for_replay(None, &fixture.owner, Uuid::nil(), None, 100)
         .await?
         .into_iter()
         .map(|row| row.event)
@@ -306,7 +306,7 @@ async fn erase_after_transfer(
     }
     let destination_events = fixture
         .pg
-        .list_change_events_after(&[destination], Uuid::nil(), 100)
+        .list_change_events_after(None, &[destination], Uuid::nil(), 100)
         .await?;
     assert!(
         destination_events.is_empty(),

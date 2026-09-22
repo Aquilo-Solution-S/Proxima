@@ -22,6 +22,7 @@ async fn commit_ingest_does_not_run_wake_execution() {
         let repo_id = Uuid::now_v7();
         register_repo(
             pg.pool_for_tests(),
+            None,
             &owner,
             repo_id,
             "/tmp/commit-summary-e2e",

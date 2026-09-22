@@ -13,6 +13,7 @@ struct ReadOnlyFake;
 impl crate::MemoryReadPort for ReadOnlyFake {
     async fn load_fact_text(
         &self,
+        _scope: Option<&crate::OwnerScope>,
         _owner: &crate::Owner,
         _memory_id: crate::MemoryId,
     ) -> Result<Option<String>, StorageError> {
@@ -21,6 +22,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 
     async fn query_memories(
         &self,
+        _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
         _req: &crate::verbs::query::QueryRequest,
         _schemas: &[crate::read_models::MemorySchemaSpec],
@@ -36,6 +38,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 
     async fn search_memories(
         &self,
+        _scope: Option<&crate::OwnerScope>,
         _req: &crate::verbs::query::MemorySearchRequest,
         _projections: &[crate::verbs::schema::MemorySearchProjection],
     ) -> Result<crate::verbs::query::MemorySearchPage, StorageError> {
@@ -47,6 +50,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 
     async fn walk_memory_lineage(
         &self,
+        _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
         _req: &crate::verbs::query::MemoryLineageRequest,
     ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError> {
@@ -60,6 +64,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 
     async fn load_memory_graph_payloads(
         &self,
+        _scope: Option<&crate::OwnerScope>,
         _identities: &[crate::MemoryGraphIdentity],
         _schemas: &[crate::read_models::MemorySchemaSpec],
         _include_body: bool,
@@ -69,6 +74,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 
     async fn load_sketches(
         &self,
+        _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
         _memory_ids: &[crate::MemoryId],
     ) -> Result<Vec<crate::read_models::MemorySketch>, StorageError> {
@@ -77,6 +83,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 
     async fn load_pin_nodes(
         &self,
+        _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
         _memory_ids: &[crate::MemoryId],
     ) -> Result<Vec<crate::PinNode>, StorageError> {
@@ -85,6 +92,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 
     async fn load_visible_goal_ids(
         &self,
+        _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
         _goal_ids: &[crate::GoalId],
     ) -> Result<Vec<crate::GoalId>, StorageError> {
@@ -93,6 +101,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 
     async fn load_inbound_pin_nodes(
         &self,
+        _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
         _query: crate::InboundPinQuery<'_>,
     ) -> Result<Vec<crate::PinNode>, StorageError> {
@@ -101,6 +110,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 
     async fn owned_series_handle(
         &self,
+        _scope: Option<&crate::OwnerScope>,
         _owner: crate::Owner,
         _schema_id: &crate::SchemaId,
         _sidecar_table: &str,
@@ -168,6 +178,7 @@ impl GoalWritePort for GoalFake {
 impl OwnerAccessReadPort for GoalFake {
     async fn resolve_membership(
         &self,
+        _owner_scope: Option<&crate::OwnerScope>,
         _member: &OwnerRef,
     ) -> Result<Vec<crate::MembershipRow>, StorageError> {
         Ok(Vec::new())
@@ -175,13 +186,18 @@ impl OwnerAccessReadPort for GoalFake {
 
     async fn visible_home_owner(
         &self,
+        _owner_scope: Option<&crate::OwnerScope>,
         _entity: crate::EntityId,
         _read_owners: &[OwnerRef],
     ) -> Result<Option<OwnerRef>, StorageError> {
         Ok(None)
     }
 
-    async fn home_owner(&self, _entity: crate::EntityId) -> Result<Option<OwnerRef>, StorageError> {
+    async fn home_owner(
+        &self,
+        _owner_scope: Option<&crate::OwnerScope>,
+        _entity: crate::EntityId,
+    ) -> Result<Option<OwnerRef>, StorageError> {
         Ok(None)
     }
 }
@@ -197,7 +213,7 @@ async fn query_helper_accepts_only_query_read_handles() {
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
     let req = crate::verbs::query::QueryRequest::readable();
 
-    let response = super::query::query_authorized(&ports, &[], &[owner], &req)
+    let response = super::query::query_authorized(&ports, None, &[], &[owner], &req)
         .await
         .expect("query helper should compile against query ports only");
 
@@ -221,7 +237,7 @@ async fn read_verb_helper_accepts_only_read_verb_handles() {
         limit: 1,
     };
 
-    let response = super::read_verbs::list_change_events_authorized(&ports, &[owner], &req)
+    let response = super::read_verbs::list_change_events_authorized(&ports, None, &[owner], &req)
         .await
         .expect("read helper should compile against read-verb ports only");
 
@@ -248,8 +264,11 @@ async fn goal_helper_accepts_only_goal_command_handles() {
             author_self_perspective_id: None,
         },
     };
-    let permit =
-        crate::storage_ports::OwnerWritePermit::new(req.owner, crate::access::AccessKind::Goal);
+    let permit = crate::storage_ports::OwnerWritePermit::new(
+        req.owner,
+        crate::access::AccessKind::Goal,
+        None,
+    );
 
     let err = super::goal_write::transition_goal_authorized(&ports, &req, &permit)
         .await
@@ -268,6 +287,7 @@ mod storage_port_tests_support {
     impl crate::ChangeEventPort for ChangeEventFake {
         async fn change_history(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _req: &crate::verbs::change_history::ChangeHistoryRequest,
         ) -> Result<crate::verbs::change_history::ChangeHistoryResponse, StorageError> {
@@ -279,6 +299,7 @@ mod storage_port_tests_support {
 
         async fn list_change_events_after(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _after: uuid::Uuid,
             _limit: usize,
@@ -294,6 +315,7 @@ mod storage_port_tests_support {
     impl crate::storage_ports::GoalWakeCandidatePort for GoalWakeCandidateFake {
         async fn list_goal_wake_candidates(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _req: &crate::read_models::GoalWakeCandidateRequest<'_>,
         ) -> Result<Vec<crate::read_models::GoalWakeCandidate>, StorageError> {
             Ok(Vec::new())
@@ -307,6 +329,7 @@ mod storage_port_tests_support {
     impl crate::storage_ports::GoalReadPort for GoalReadFake {
         async fn list_active_goals(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[crate::OwnerRef],
             _self_perspective_memory_id: crate::MemoryId,
             _limit: usize,
@@ -316,6 +339,7 @@ mod storage_port_tests_support {
 
         async fn load_goal_wake_configs(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[crate::OwnerRef],
             _goal_ids: &[crate::GoalId],
         ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError> {
@@ -324,6 +348,7 @@ mod storage_port_tests_support {
 
         async fn load_goal_evidence(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _owner: &crate::OwnerRef,
             _goal_id: crate::GoalId,
         ) -> Result<Option<Vec<crate::MemoryId>>, StorageError> {
@@ -338,6 +363,7 @@ mod storage_port_tests_support {
     impl crate::McpCallReadPort for McpCallReadFake {
         async fn read_mcp_call_history(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _req: &crate::verbs::mcp_call_history::McpCallHistoryRequest,
         ) -> Result<crate::verbs::mcp_call_history::McpCallHistoryResponse, StorageError> {
             Ok(crate::verbs::mcp_call_history::McpCallHistoryResponse { calls: Vec::new() })
@@ -351,6 +377,7 @@ mod storage_port_tests_support {
     impl crate::MemoryInspectPort for MemoryInspectFake {
         async fn load_memory_by_id(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _memory_id: crate::MemoryId,
             _schemas: &[crate::read_models::MemorySchemaSpec],
         ) -> Result<Option<crate::read_models::MemorySnapshot>, StorageError> {
@@ -359,6 +386,7 @@ mod storage_port_tests_support {
 
         async fn load_memories_by_ids(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[crate::OwnerRef],
             _memory_ids: &[crate::MemoryId],
             _schemas: &[crate::read_models::MemorySchemaSpec],
@@ -437,6 +465,7 @@ mod storage_port_tests_support {
 
         async fn count_pending_embedding_jobs(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _owner: &crate::Owner,
         ) -> Result<u64, StorageError> {
             Ok(0)
@@ -444,6 +473,7 @@ mod storage_port_tests_support {
 
         async fn count_failed_embedding_jobs(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _owner: &crate::Owner,
         ) -> Result<u64, StorageError> {
             Ok(0)
@@ -499,6 +529,7 @@ mod storage_port_tests_support {
     impl crate::CitationPort for CitationFake {
         async fn facts_citing_object(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _cited_object_id: uuid::Uuid,
             _schemas: &[crate::read_models::MemorySchemaSpec],
@@ -514,6 +545,7 @@ mod storage_port_tests_support {
 
         async fn citation_of_fact(
             &self,
+            _scope: Option<&crate::OwnerScope>,
             _read_owners: &[OwnerRef],
             _fact_memory_id: crate::MemoryId,
         ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {

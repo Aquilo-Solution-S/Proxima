@@ -1,5 +1,6 @@
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
 use proxima_core::{EdgeEndpoint, EdgeKind, EntityKind, EntityRef, MemoryId, ToolCtx, ToolError};
+use proxima_storage_pg::begin_compatible_owner_transaction;
 use uuid::Uuid;
 
 use crate::payloads::ExecutionRequestV1;
@@ -73,6 +74,9 @@ pub(super) async fn find_execution_request_by_key(
     request_key: &str,
 ) -> Result<Option<MemoryId>, ToolError> {
     let pool = code_store(ctx)?;
+    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+        .await
+        .map_err(ToolError::Storage)?;
     let engine = engine(ctx)?;
     let candidates: Vec<Uuid> = sqlx::query_scalar(
         "SELECT t
@@ -84,9 +88,10 @@ pub(super) async fn find_execution_request_by_key(
     )
     .bind(repo_id)
     .bind(request_key)
-    .fetch_all(pool.pool())
+    .fetch_all(&mut *tx)
     .await
     .map_err(map_storage)?;
+    tx.commit().await.map_err(map_storage)?;
     Ok(
         proxima::flavor::authorized_fact_payloads::<ExecutionRequestV1>(
             &engine,

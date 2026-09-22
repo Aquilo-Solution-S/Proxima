@@ -6,16 +6,22 @@ use crate::{EntityId, GroupId, MembershipRow, OwnerRef, Relation, UserId};
 pub trait OwnerAccessReadPort: Send + Sync {
     async fn resolve_membership(
         &self,
+        _owner_scope: Option<&crate::OwnerScope>,
         member: &OwnerRef,
     ) -> Result<Vec<MembershipRow>, StorageError>;
 
     async fn visible_home_owner(
         &self,
+        _owner_scope: Option<&crate::OwnerScope>,
         entity: EntityId,
         read_owners: &[OwnerRef],
     ) -> Result<Option<OwnerRef>, StorageError>;
 
-    async fn home_owner(&self, entity: EntityId) -> Result<Option<OwnerRef>, StorageError>;
+    async fn home_owner(
+        &self,
+        _owner_scope: Option<&crate::OwnerScope>,
+        entity: EntityId,
+    ) -> Result<Option<OwnerRef>, StorageError>;
 }
 
 #[async_trait::async_trait]
@@ -93,6 +99,7 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
 
     async fn list_group_members(
         &self,
+        _owner_scope: Option<&crate::OwnerScope>,
         group_id: GroupId,
     ) -> Result<Vec<(UserId, Relation)>, StorageError>;
 
@@ -101,6 +108,7 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
     /// given. Callers over-fetch by one to detect further pages.
     async fn list_group_members_page(
         &self,
+        _owner_scope: Option<&crate::OwnerScope>,
         group_id: GroupId,
         after: Option<(UserId, Relation)>,
         limit: i64,

@@ -6,7 +6,7 @@ use proxima_core::verbs::fact_ingest::{
 };
 use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 
-use crate::error::{internal, with_bounded_retry};
+use crate::error::with_bounded_retry;
 use crate::{PgStorage, verbs};
 
 #[async_trait::async_trait]
@@ -53,7 +53,11 @@ impl FactIngestPort for PgStorage {
             let payloads = sidecar_payloads.to_vec();
             let content_payloads = payloads.clone();
             async move {
-                let mut tx = self.pool.begin().await.map_err(internal)?;
+                let mut tx = crate::owner_scope::begin_compatible_owner_transaction(
+                    &self.pool,
+                    authorized.owner_write_permit().owner_scope(),
+                )
+                .await?;
                 let tables = self.sidecars.tables_for_payloads(&payloads)?;
                 let scopes = self.scopes.targets_for_payloads(&payloads)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
@@ -112,7 +116,11 @@ impl FactIngestPort for PgStorage {
             let fact_sidecars = sidecars.writing(authorized.draft());
             let payloads = sidecar_payloads.to_vec();
             async move {
-                let mut tx = self.pool.begin().await.map_err(internal)?;
+                let mut tx = crate::owner_scope::begin_compatible_owner_transaction(
+                    &self.pool,
+                    authorized.owner_write_permit().owner_scope(),
+                )
+                .await?;
                 let tables = self.sidecars.tables_for_payloads(&payloads)?;
                 let scopes = self.scopes.targets_for_payloads(&payloads)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_citation_in_tx(
@@ -175,7 +183,11 @@ impl FactIngestPort for PgStorage {
             let fact_sidecars = sidecars.writing(authorized.draft());
             let payloads = sidecar_payloads.to_vec();
             async move {
-                let mut tx = self.pool.begin().await.map_err(internal)?;
+                let mut tx = crate::owner_scope::begin_compatible_owner_transaction(
+                    &self.pool,
+                    authorized.owner_write_permit().owner_scope(),
+                )
+                .await?;
                 let tables = self.sidecars.tables_for_payloads(&payloads)?;
                 let scopes = self.scopes.targets_for_payloads(&payloads)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_citation_ref_in_tx(
@@ -220,8 +232,15 @@ impl FactIngestPort for PgStorage {
 impl McpCallReadPort for PgStorage {
     async fn read_mcp_call_history(
         &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
         req: &McpCallHistoryRequest,
     ) -> Result<McpCallHistoryResponse, StorageError> {
-        verbs::mcp_call_history::read_mcp_call_history(&self.pool, req).await
+        let mut tx =
+            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let result = async {
+            verbs::mcp_call_history::read_mcp_call_history_on_connection(&mut tx, req).await
+        }
+        .await;
+        crate::owner_scope::finish_transaction(tx, result).await
     }
 }

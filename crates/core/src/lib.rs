@@ -6,7 +6,7 @@ extern crate self as proxima_core;
 ///
 /// Deliberately not `CARGO_PKG_VERSION`: workspace crates are `0.1.0` with
 /// `publish = false`. Releases are git tags; bump this when cutting one.
-pub const RELEASE_VERSION: &str = "0.0.14";
+pub const RELEASE_VERSION: &str = "0.0.15";
 
 pub mod access;
 pub mod auth;
@@ -33,6 +33,7 @@ pub mod net;
 pub mod operator_proofs;
 pub mod owner;
 pub mod owner_inverse;
+pub mod owner_scope;
 pub mod payload;
 pub mod payload_contract;
 pub mod protocol;
@@ -87,6 +88,7 @@ pub use owner_inverse::{
     OwnerEraseCounts, OwnerEraseOutcome, OwnerEraseRefusal, OwnerEraseRequest, OwnerEraseTarget,
     OwnerExportBundle, OwnerExportRequest, OwnerExportTarget,
 };
+pub use owner_scope::OwnerScope;
 pub use payload::*;
 pub use payload_contract::assert_no_serde_json_value_fields;
 pub use publication::{

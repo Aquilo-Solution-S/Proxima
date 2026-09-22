@@ -7,7 +7,9 @@ use sqlx::QueryBuilder;
 use crate::pg_ident::PgIdent;
 use crate::verbs::query::push_atom;
 
-use super::{FromRow, MemoryId, PgPool, PgRow, PgSidecarRegistryFrozen, Postgres, StorageError};
+use super::{
+    FromRow, MemoryId, PgConnection, PgPool, PgRow, PgSidecarRegistryFrozen, Postgres, StorageError,
+};
 
 /// Run one [`SidecarSessionRead`] against an open session transaction, scoped
 /// to `permit`'s owner.
@@ -41,6 +43,18 @@ use super::{FromRow, MemoryId, PgPool, PgRow, PgSidecarRegistryFrozen, Postgres,
 /// `Internal` on query failure.
 pub(crate) async fn read_own_sidecar_in_tx(
     tx: &mut sqlx::Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
+    permit: &OwnerWritePermit,
+    read: &SidecarSessionRead<'_>,
+) -> Result<Vec<serde_json::Value>, StorageError> {
+    read_own_sidecar_on_connection(tx, sidecars, surfaces, permit, read).await
+}
+
+/// Connection-backed form for callers that already own the surrounding
+/// request transaction. No transaction is started or committed here.
+pub(crate) async fn read_own_sidecar_on_connection(
+    connection: &mut PgConnection,
     sidecars: &PgSidecarRegistryFrozen,
     surfaces: &OwnerSurfaces,
     permit: &OwnerWritePermit,
@@ -99,7 +113,7 @@ pub(crate) async fn read_own_sidecar_in_tx(
 
     builder
         .build_query_scalar::<serde_json::Value>()
-        .fetch_all(&mut **tx)
+        .fetch_all(&mut *connection)
         .await
         .map_err(crate::error::map_err)
 }
@@ -131,22 +145,54 @@ fn session_read_owner_column<'a>(
     })
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct PgSidecarReadCtx<'a> {
-    pool: &'a PgPool,
+    executor: PgSidecarReadExecutor<'a>,
     allow_core_schema: bool,
+}
+
+#[derive(Debug)]
+enum PgSidecarReadExecutor<'a> {
+    Pool(&'a PgPool),
+    Connection(&'a mut PgConnection),
 }
 
 impl<'a> From<&'a PgPool> for PgSidecarReadCtx<'a> {
     fn from(pool: &'a PgPool) -> Self {
         Self {
-            pool,
+            executor: PgSidecarReadExecutor::Pool(pool),
+            allow_core_schema: false,
+        }
+    }
+}
+
+impl<'a> From<&'a mut PgConnection> for PgSidecarReadCtx<'a> {
+    fn from(connection: &'a mut PgConnection) -> Self {
+        Self {
+            executor: PgSidecarReadExecutor::Connection(connection),
             allow_core_schema: false,
         }
     }
 }
 
 impl PgSidecarReadCtx<'_> {
+    /// Reborrow the underlying executor for one sequential sidecar load.
+    ///
+    /// Pool-backed contexts remain copyable by construction; connection-backed
+    /// contexts deliberately reborrow the same connection so a batch cannot
+    /// fan out onto independent pooled sessions.
+    pub fn reborrow(&mut self) -> PgSidecarReadCtx<'_> {
+        PgSidecarReadCtx {
+            executor: match &mut self.executor {
+                PgSidecarReadExecutor::Pool(pool) => PgSidecarReadExecutor::Pool(pool),
+                PgSidecarReadExecutor::Connection(connection) => {
+                    PgSidecarReadExecutor::Connection(connection)
+                }
+            },
+            allow_core_schema: self.allow_core_schema,
+        }
+    }
+
     pub(super) fn for_registered_table(mut self, table: &str) -> Self {
         self.allow_core_schema = table.starts_with("proxima_core.");
         self
@@ -172,11 +218,12 @@ impl PgSidecarReadCtx<'_> {
         for<'r> T: FromRow<'r, PgRow> + Send + Unpin,
     {
         validate_sidecar_read_sql(sql, self.allow_core_schema)?;
-        sqlx::query_as(sqlx::AssertSqlSafe(sql))
-            .bind(memory_id.into_inner())
-            .fetch_optional(self.pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))
+        let query = sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(memory_id.into_inner());
+        match self.executor {
+            PgSidecarReadExecutor::Pool(pool) => query.fetch_optional(pool).await,
+            PgSidecarReadExecutor::Connection(connection) => query.fetch_optional(connection).await,
+        }
+        .map_err(|err| StorageError::Internal(err.to_string()))
     }
 
     /// Fetch sidecar rows using a backend-owned, memory-id-bound query.
@@ -193,11 +240,12 @@ impl PgSidecarReadCtx<'_> {
         for<'r> T: FromRow<'r, PgRow> + Send + Unpin,
     {
         validate_sidecar_read_sql(sql, self.allow_core_schema)?;
-        sqlx::query_as(sqlx::AssertSqlSafe(sql))
-            .bind(memory_id.into_inner())
-            .fetch_all(self.pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))
+        let query = sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(memory_id.into_inner());
+        match self.executor {
+            PgSidecarReadExecutor::Pool(pool) => query.fetch_all(pool).await,
+            PgSidecarReadExecutor::Connection(connection) => query.fetch_all(connection).await,
+        }
+        .map_err(|err| StorageError::Internal(err.to_string()))
     }
 
     /// Fetch owner-pinned sidecar rows.
@@ -224,11 +272,12 @@ impl PgSidecarReadCtx<'_> {
             .iter()
             .map(|memory_id| (*memory_id).into_inner())
             .collect::<Vec<_>>();
-        sqlx::query_as(sqlx::AssertSqlSafe(sql))
-            .bind(&raw_memory_ids)
-            .fetch_all(self.pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))
+        let query = sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(&raw_memory_ids);
+        match self.executor {
+            PgSidecarReadExecutor::Pool(pool) => query.fetch_all(pool).await,
+            PgSidecarReadExecutor::Connection(connection) => query.fetch_all(connection).await,
+        }
+        .map_err(|err| StorageError::Internal(err.to_string()))
     }
 
     /// Fetch sidecar rows using a backend-owned, `ANY($1)` memory-id query.
@@ -249,11 +298,12 @@ impl PgSidecarReadCtx<'_> {
             .iter()
             .map(|memory_id| (*memory_id).into_inner())
             .collect::<Vec<_>>();
-        sqlx::query_as(sqlx::AssertSqlSafe(sql))
-            .bind(&raw_memory_ids)
-            .fetch_all(self.pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))
+        let query = sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(&raw_memory_ids);
+        match self.executor {
+            PgSidecarReadExecutor::Pool(pool) => query.fetch_all(pool).await,
+            PgSidecarReadExecutor::Connection(connection) => query.fetch_all(connection).await,
+        }
+        .map_err(|err| StorageError::Internal(err.to_string()))
     }
 
     /// Fetch one scalar sidecar value using a backend-owned, memory-id-bound query.
@@ -270,11 +320,12 @@ impl PgSidecarReadCtx<'_> {
         for<'r> T: sqlx::Decode<'r, Postgres> + sqlx::Type<Postgres> + Send + Unpin,
     {
         validate_sidecar_read_sql(sql, self.allow_core_schema)?;
-        sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-            .bind(memory_id.into_inner())
-            .fetch_optional(self.pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))
+        let query = sqlx::query_scalar(sqlx::AssertSqlSafe(sql)).bind(memory_id.into_inner());
+        match self.executor {
+            PgSidecarReadExecutor::Pool(pool) => query.fetch_optional(pool).await,
+            PgSidecarReadExecutor::Connection(connection) => query.fetch_optional(connection).await,
+        }
+        .map_err(|err| StorageError::Internal(err.to_string()))
     }
 }
 

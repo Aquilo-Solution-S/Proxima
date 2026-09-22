@@ -121,6 +121,7 @@ async fn exercise_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::err
     let repo_path = format!("/tmp/proxima-erase-repo-{repo_id}");
     register_repo(
         pool,
+        None,
         &owner,
         repo_id,
         &repo_path,
@@ -130,6 +131,7 @@ async fn exercise_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::err
     .await?;
     register_repo(
         pool,
+        None,
         &owner,
         other_repo_id,
         &format!("/tmp/proxima-erase-repo-keep-{other_repo_id}"),
@@ -270,6 +272,7 @@ async fn assert_repo_rebuild_allowed(
 ) -> Result<(), Box<dyn std::error::Error>> {
     register_repo(
         pool,
+        None,
         owner,
         repo_id,
         repo_path,
@@ -564,6 +567,7 @@ async fn seed_work_item_fixture(
 ) -> Result<WorkItemFixture, Box<dyn std::error::Error>> {
     register_repo(
         pool,
+        None,
         owner,
         repo_id,
         &format!("/tmp/proxima-erase-work-item-{repo_id}"),
@@ -756,6 +760,7 @@ async fn exercise_cross_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
         seed_work_item_fixture(pool, &owner, erased_repo).await?;
     register_repo(
         pool,
+        None,
         &owner,
         other_repo,
         &format!("/tmp/proxima-erase-cross-{other_repo}"),
@@ -1184,6 +1189,7 @@ async fn seed_superseded_series(
     for (repo_id, label) in [(erased_repo, "erased"), (other_repo, "other")] {
         register_repo(
             pool,
+            None,
             &owner,
             repo_id,
             &format!("/tmp/proxima-erase-series-{repo_id}"),
@@ -1446,6 +1452,7 @@ async fn a_reference_from_another_owner_stops_the_erase_and_names_it() {
         let stranger_repo = Uuid::now_v7();
         register_repo(
             pool,
+            None,
             &stranger,
             stranger_repo,
             &format!("/tmp/proxima-erase-stranger-{stranger_repo}"),
