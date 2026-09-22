@@ -2210,24 +2210,27 @@ mod tests {
     }
 
     /// The v0.0.7 ALTER lane occupied versions 2..=21 and the squash to a
-    /// single v008 baseline retired all of them.
+    /// single v008 baseline retired all of them. Every additive migration
+    /// since reuses one of those retired numbers.
     ///
-    /// Versions 2 through 8 are current additive migrations which reuse
-    /// retired numbers. That is safe, and this is why: the tripwire for
-    /// a pre-v0.0.8 database is version 1's checksum, which is the legacy
-    /// `0001_init.sql` and can never match `0001_v008.sql`.
-    /// `ensure_core_ledger_compatible` compares it first and returns
-    /// `SchemaResetRequired` before any additive version is reached, so no
-    /// pre-v008 database can mistake a current migration for the legacy one it
-    /// recorded.
+    /// That is safe, and this is why: the tripwire for a pre-v0.0.8 database
+    /// is version 1's checksum, which is the legacy `0001_init.sql` and can
+    /// never match `0001_v008.sql`. `ensure_core_ledger_compatible` compares
+    /// it first and returns `SchemaResetRequired` before any additive version
+    /// is reached, so no pre-v008 database can mistake a current migration for
+    /// the legacy one it recorded. `pre_v008_database_fails_closed` holds that
+    /// against a real database; this test does not, and cannot.
     ///
-    /// Every reused number is asserted to carry its current migration,
-    /// not merely to be present, so the reuse stays a decision rather than an
-    /// accident.
+    /// What it does hold is content: every reused number carries ITS current
+    /// migration, not merely some migration, so the reuse stays a decision
+    /// rather than an accident. Which versions exist at all is
+    /// [`core_migrator_is_the_v008_baseline_plus_additive_migrations`], which
+    /// asserts the whole list by equality — a resurrected legacy file fails
+    /// there, and naming an upper bound here only added a line to delete
+    /// every time the head advanced.
     #[test]
-    fn no_legacy_alter_version_survives_the_v008_squash() {
+    fn reused_versions_carry_their_current_migration() {
         let migrator = super::core_migrator();
-        let versions: Vec<i64> = migrator.iter().map(|migration| migration.version).collect();
         let carries = |version: i64, needles: &[&str], must: &str| {
             let migration = migrator
                 .iter()
@@ -2315,15 +2318,6 @@ mod tests {
             &["idx_agent_note_v1_nk", "agent_note_v1"],
             "index the natural key `core/agent-note-v1` declares",
         );
-        // The legacy range shrinks as the head advances: versions 7 through 13
-        // are current additive migrations, so only 14..=21 remain retired by
-        // the v0.0.8 squash.
-        for dead in 14..=21 {
-            assert!(
-                !versions.contains(&dead),
-                "legacy version {dead} must be gone"
-            );
-        }
     }
 
     #[test]
