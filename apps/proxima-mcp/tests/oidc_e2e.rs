@@ -30,7 +30,7 @@ use proxima_core::{
     OwnerAccessPort, OwnerRef, Relation, Role, ToolScope, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
-use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
+use proxima_storage_pg::PgOwnerAccessResolver;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -86,6 +86,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         ..S3RuntimeConfig::from_env()?
     };
     let (database_url, created_db) = live_database_url().await?;
+    let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
 
     let subject = UserId::new(Uuid::now_v7());
     let owner: Owner = OwnerRef::Personal(subject);
@@ -94,7 +95,11 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     let mut subject_map = OidcSubjectMap::new();
     subject_map.insert(ISSUER, "operator-sub", subject)?;
     let owner_access: Arc<dyn OwnerAccessPort> =
-        Arc::new(PgOwnerAccessResolver::connect_lazy(&database_url)?);
+        Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
+            &runtime_url,
+            &platform_url,
+            common::schemas(),
+        )?);
     let authn = OidcAuthenticator::new(
         OidcAuthConfig {
             issuer: ISSUER.to_string(),
@@ -110,7 +115,8 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
 
     let running = Proxima::<ProximaMcpApp>::app()
         .tool_scope(ToolScope::All)
-        .database_url(database_url)
+        .database_url(runtime_url.clone())
+        .platform_database_url(platform_url.clone())
         .s3(s3)
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
@@ -400,6 +406,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
 async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
 -> Result<(), Box<dyn std::error::Error>> {
     let (database_url, created_db) = live_database_url().await?;
+    let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
 
     let subject = UserId::new(Uuid::now_v7());
     let owner: Owner = OwnerRef::Personal(subject);
@@ -408,7 +415,11 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     let mut subject_map = OidcSubjectMap::new();
     subject_map.insert(ISSUER, "rest-operator-sub", subject)?;
     let owner_access: Arc<dyn OwnerAccessPort> =
-        Arc::new(PgOwnerAccessResolver::connect_lazy(&database_url)?);
+        Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
+            &runtime_url,
+            &platform_url,
+            common::schemas(),
+        )?);
     let authn = OidcAuthenticator::new(
         OidcAuthConfig {
             issuer: ISSUER.to_string(),
@@ -430,7 +441,8 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
         .from_env()
         .rest_enabled(true)
         .tool_scope(ToolScope::Palette(allowed_tools.iter().cloned().collect()))
-        .database_url(database_url)
+        .database_url(runtime_url.clone())
+        .platform_database_url(platform_url.clone())
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.e2e.test".to_string(),
@@ -561,6 +573,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
 async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
 -> Result<(), Box<dyn std::error::Error>> {
     let (database_url, created_db) = live_database_url().await?;
+    let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
 
     let group_owner: Owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let subject = UserId::new(Uuid::now_v7());
@@ -569,7 +582,11 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
     let mut subject_map = OidcSubjectMap::new();
     subject_map.insert(ISSUER, "group-member-sub", subject)?;
     let owner_access: Arc<dyn OwnerAccessPort> =
-        Arc::new(PgOwnerAccessResolver::connect_lazy(&database_url)?);
+        Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
+            &runtime_url,
+            &platform_url,
+            common::schemas(),
+        )?);
 
     let authn = OidcAuthenticator::new(
         OidcAuthConfig {
@@ -586,7 +603,8 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
 
     let running = Proxima::<ProximaMcpApp>::app()
         .tool_scope(ToolScope::All)
-        .database_url(database_url.clone())
+        .database_url(runtime_url.clone())
+        .platform_database_url(platform_url.clone())
         .owner(group_owner)
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
@@ -603,13 +621,14 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
     let OwnerRef::Group(group_id) = group_owner else {
         unreachable!("group_owner is always Group")
     };
-    let storage = PgStorage::connect(&database_url).await?;
+    let storage = common::runtime_storage(&runtime_url, &platform_url).await?;
     let permit_engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
-    let permit_authz = AuthzContext::for_subject_with_role(
-        UserId::new(Uuid::now_v7()),
-        [(group_owner, Role::admin())],
-        AuthPath::HostBearer,
-    );
+    let permit_authz =
+        proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(group_owner, Role::admin())],
+            AuthPath::HostBearer,
+        ));
     let permit = permit_engine
         .authorize_owner_write(&permit_authz, &group_owner, AccessKind::Goal)
         .await?;

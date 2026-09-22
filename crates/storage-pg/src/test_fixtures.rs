@@ -1,7 +1,10 @@
 #[path = "test_fixtures/operator_proofs.rs"]
 pub mod operator_proofs;
 
+use proxima_core::StorageError;
 use proxima_storage_pg::{PgStorage, core_migrator};
+use sqlx::migrate::Migrator;
+use std::borrow::Cow;
 
 use proxima_pg_testkit::{
     DbGuard, FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template,
@@ -11,11 +14,42 @@ use proxima_pg_testkit::{
 #[must_use]
 pub fn core_template_name() -> String {
     let mut hash = FNV_OFFSET_BASIS;
-    for migration in core_migrator().iter() {
+    for migration in core_migrator_before_owner_rls().iter() {
         hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
         hash = fnv1a64_extend(hash, migration.checksum.as_ref());
     }
     format!("proxima_tmpl_core_{hash:016x}")
+}
+
+/// Core migration lane used by historical domain fixtures.
+///
+/// The owner-RLS migration is tested by the enforced boot fixtures. Keeping
+/// it out of this lane preserves the pre-activation schema for invariant tests;
+/// no production path calls this helper.
+#[must_use]
+pub fn core_migrator_before_owner_rls() -> Migrator {
+    let mut migrator = core_migrator();
+    migrator.migrations = Cow::Owned(
+        migrator
+            .iter()
+            .filter(|migration| migration.version < 14)
+            .cloned()
+            .collect(),
+    );
+    migrator
+}
+
+impl PgStorage {
+    /// Run the historical pre-owner-RLS core lane for domain fixtures.
+    ///
+    /// # Errors
+    /// Returns migration or database errors.
+    pub async fn run_before_owner_rls_migrations(&self) -> Result<(), StorageError> {
+        core_migrator_before_owner_rls()
+            .run(self.pool_for_tests())
+            .await
+            .map_err(|error| StorageError::Internal(error.to_string()))
+    }
 }
 
 /// Clone a fresh test database from the core migrated template.
@@ -30,7 +64,10 @@ pub fn core_template_name() -> String {
 pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
     let template = core_template_name();
     ensure_template(&template, |pool| async move {
-        core_migrator().run(&pool).await.map_err(sqlx::Error::from)
+        core_migrator_before_owner_rls()
+            .run(&pool)
+            .await
+            .map_err(sqlx::Error::from)
     })
     .await
     .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));

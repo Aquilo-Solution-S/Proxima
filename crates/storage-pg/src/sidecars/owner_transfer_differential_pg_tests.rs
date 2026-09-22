@@ -859,7 +859,7 @@ pub async fn fresh_db(prefix: &str) -> (String, String) {
 
 pub async fn boot(url: &str) -> Result<PgStorage, Box<dyn std::error::Error>> {
     let pg = PgStorage::connect(url).await?;
-    pg.run_migrations().await?;
+    pg.run_before_owner_rls_migrations().await?;
     Ok(pg)
 }
 

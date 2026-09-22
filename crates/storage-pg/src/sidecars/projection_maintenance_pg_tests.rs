@@ -150,7 +150,7 @@ where
     create_db(&db_name).await.expect("PG required for tests");
     let result = async {
         let pg = PgStorage::connect(&db_url(&db_name)).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         body(&pg).await
     }
     .await;

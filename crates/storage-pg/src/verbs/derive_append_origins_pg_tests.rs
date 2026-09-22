@@ -126,7 +126,7 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Perspective);
         let pool = pg.pool_for_tests();

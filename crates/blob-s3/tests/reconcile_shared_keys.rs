@@ -122,7 +122,7 @@ async fn reconcile_fixture(
     create_db(&database).await?;
     let result = async {
         let pg = PgStorage::connect(&db_url(&database)).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let expected = seed_rows(pg.pool_for_tests(), row_count, missing).await?;
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("http://{}", listener.local_addr()?);

@@ -33,6 +33,9 @@ const SQLSTATE_DATABASE_ACCESSED: &str = "55006";
 const SQLSTATE_UNDEFINED_DATABASE: &str = "3D000";
 /// Untracked leftovers (pre-harness leaks) older than this are swept at boot.
 const UNTRACKED_GRACE: time::Duration = time::Duration::minutes(5);
+const SPLIT_PLATFORM_ROLE: &str = "proxima_test_platform";
+const SPLIT_RUNTIME_ROLE: &str = "proxima_test_runtime";
+const SPLIT_ROLE_PASSWORD: &str = "proxima_test_fixture_password";
 pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 pub const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -249,6 +252,280 @@ pub async fn create_db(name: &str) -> Result<(), sqlx::Error> {
     }
     conn.close().await?;
     Ok(())
+}
+
+/// Provision the shared, non-escalating roles used by split-role PG tests and
+/// return URLs for the target database.
+///
+/// The roles are intentionally reusable across disposable databases. Their
+/// password is a local fixture value and must never be used outside tests.
+/// Existing Proxima objects are transferred to the platform role before the
+/// runtime grants are applied.
+///
+/// # Errors
+/// Returns admin, target-database, catalog, or role-attribute errors.
+#[expect(
+    clippy::too_many_lines,
+    reason = "isolated split-role fixture provisioning"
+)]
+pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::Error> {
+    let database = database.trim();
+    if database.is_empty() {
+        return Err(sqlx::Error::Protocol("database name is empty".into()));
+    }
+    let mut control = connect_admin().await?;
+    let lock_key = advisory_lock_key("_proxima_test.split_roles");
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(lock_key)
+        .execute(&mut control)
+        .await?;
+    let result = async {
+        for role in [SPLIT_PLATFORM_ROLE, SPLIT_RUNTIME_ROLE] {
+            let statement = format!(
+                "DO $$ BEGIN
+                   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {name}) THEN
+                     CREATE ROLE {role} LOGIN PASSWORD {password}
+                       NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+                   ELSE
+                     ALTER ROLE {role} LOGIN PASSWORD {password}
+                       NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+                   END IF;
+                 END $$",
+                name = sql_literal(role),
+                role = quoted_ident(role),
+                password = sql_literal(SPLIT_ROLE_PASSWORD),
+            );
+            // SQL-POLICY: fixed-fragment — generated role identifiers and a local fixture password.
+            sqlx::raw_sql(AssertSqlSafe(statement))
+                .execute(&mut control)
+                .await?;
+        }
+        // Neither fixture role may inherit membership from the other.
+        for (member, role) in [(SPLIT_RUNTIME_ROLE, SPLIT_PLATFORM_ROLE), (SPLIT_PLATFORM_ROLE, SPLIT_RUNTIME_ROLE)] {
+            let statement = format!(
+                "REVOKE {role} FROM {member}",
+                role = quoted_ident(role),
+                member = quoted_ident(member),
+            );
+            // SQL-POLICY: fixed-fragment — generated role identifiers only.
+            sqlx::raw_sql(AssertSqlSafe(statement))
+                .execute(&mut control)
+                .await?;
+        }
+        let statement = format!(
+            "GRANT CREATE ON DATABASE {} TO {}",
+            quoted_ident(database),
+            quoted_ident(SPLIT_PLATFORM_ROLE),
+        );
+        // SQL-POLICY: fixed-fragment — generated database and role identifiers only.
+        sqlx::raw_sql(AssertSqlSafe(statement))
+            .execute(&mut control)
+            .await?;
+        sqlx::query("SELECT pg_advisory_lock(90300014)")
+            .execute(&mut control)
+            .await?;
+        let scope_acl = format!(
+            "GRANT SET ON PARAMETER app.proxima_scope TO {}",
+            quoted_ident(SPLIT_PLATFORM_ROLE),
+        );
+        // SQL-POLICY: fixed-fragment — generated role identifier only.
+        sqlx::raw_sql(AssertSqlSafe(scope_acl))
+            .execute(&mut control)
+            .await?;
+        sqlx::query("SELECT pg_advisory_unlock(90300014)")
+            .execute(&mut control)
+            .await?;
+
+        let mut target = PgConnection::connect(&db_url(database)).await?;
+        // Several HTTP test binaries share one isolated database. Once its
+        // grants/defaults are prepared, never repeat ownership DDL alongside
+        // a host's migration transaction (SQLx's ledger lock has another order).
+        let prepared: bool = sqlx::query_scalar(
+            "SELECT to_regclass('_proxima_test.split_roles_ready') IS NOT NULL",
+        )
+        .fetch_one(&mut target)
+        .await?;
+        if prepared {
+            target.close().await?;
+            return Ok(());
+        }
+        for extension in ["vector", "btree_gin", "pg_trgm"] {
+            let statement = format!(
+                "CREATE EXTENSION IF NOT EXISTS {}",
+                quoted_ident(extension)
+            );
+            // SQL-POLICY: fixed-fragment — extension names are closed above.
+            sqlx::raw_sql(AssertSqlSafe(statement))
+                .execute(&mut target)
+                .await?;
+        }
+        let public_grants = format!(
+            "GRANT USAGE ON SCHEMA public TO {runtime}, {platform};
+             GRANT CREATE ON SCHEMA public TO {platform}",
+            runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
+            platform = quoted_ident(SPLIT_PLATFORM_ROLE),
+        );
+        // SQL-POLICY: fixed-fragment — generated role identifiers only.
+        sqlx::raw_sql(AssertSqlSafe(public_grants))
+            .execute(&mut target)
+            .await?;
+        let global_defaults = format!(
+            "ALTER DEFAULT PRIVILEGES FOR ROLE {platform}
+               GRANT USAGE ON SCHEMAS TO {runtime};
+             ALTER DEFAULT PRIVILEGES FOR ROLE {platform}
+               REVOKE CREATE ON SCHEMAS FROM PUBLIC;
+             ALTER DEFAULT PRIVILEGES FOR ROLE {platform}
+               GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {runtime};
+             ALTER DEFAULT PRIVILEGES FOR ROLE {platform}
+               GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {runtime}",
+            runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
+            platform = quoted_ident(SPLIT_PLATFORM_ROLE),
+        );
+        // SQL-POLICY: fixed-fragment — generated role identifiers only.
+        sqlx::raw_sql(AssertSqlSafe(global_defaults))
+            .execute(&mut target)
+            .await?;
+        let ledgers = format!(
+            "CREATE TABLE IF NOT EXISTS public._sqlx_migrations (
+                 version bigint PRIMARY KEY,
+                 description text NOT NULL,
+                 installed_on timestamptz NOT NULL DEFAULT now(),
+                 success boolean NOT NULL,
+                 checksum bytea NOT NULL,
+                 execution_time bigint NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS public._sqlx_migrations_proxima_code (
+                 version bigint PRIMARY KEY,
+                 description text NOT NULL,
+                 installed_on timestamptz NOT NULL DEFAULT now(),
+                 success boolean NOT NULL,
+                 checksum bytea NOT NULL,
+                 execution_time bigint NOT NULL
+             );
+             ALTER TABLE public._sqlx_migrations OWNER TO {platform};
+             ALTER TABLE public._sqlx_migrations_proxima_code OWNER TO {platform};
+             REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public._sqlx_migrations FROM {runtime};
+             REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public._sqlx_migrations_proxima_code FROM {runtime};
+             GRANT SELECT ON public._sqlx_migrations, public._sqlx_migrations_proxima_code TO {runtime}",
+            platform = quoted_ident(SPLIT_PLATFORM_ROLE),
+            runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
+        );
+        // SQL-POLICY: fixed-fragment — ledger names and role identifiers are closed fixture values.
+        sqlx::raw_sql(AssertSqlSafe(ledgers))
+            .execute(&mut target)
+            .await?;
+        let transfer = format!(
+            "DO $$ DECLARE r record; BEGIN
+               IF to_regnamespace('proxima_core') IS NOT NULL THEN
+                 ALTER SCHEMA proxima_core OWNER TO {platform_ident};
+               END IF;
+               IF to_regnamespace('proxima_code') IS NOT NULL THEN
+                 ALTER SCHEMA proxima_code OWNER TO {platform_ident};
+               END IF;
+               FOR r IN SELECT n.nspname, c.relname, c.relkind
+                   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE n.nspname IN ('proxima_core', 'proxima_code')
+                    AND c.relkind IN ('r','p','S') LOOP
+                 IF r.relkind = 'S' THEN
+                   EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I', r.nspname, r.relname, '{platform}');
+                 ELSE
+                   EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.nspname, r.relname, '{platform}');
+                 END IF;
+               END LOOP;
+               FOR r IN SELECT n.nspname, p.proname,
+                                pg_get_function_identity_arguments(p.oid) AS args
+                   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                  WHERE n.nspname IN ('proxima_core', 'proxima_code') LOOP
+                 EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO %I',
+                                r.nspname, r.proname, r.args, '{platform}');
+               END LOOP;
+               IF to_regclass('public._sqlx_migrations') IS NOT NULL THEN
+                 ALTER TABLE public._sqlx_migrations OWNER TO {platform_ident};
+               END IF;
+               IF to_regclass('public._sqlx_migrations_proxima_code') IS NOT NULL THEN
+                 ALTER TABLE public._sqlx_migrations_proxima_code OWNER TO {platform_ident};
+               END IF;
+             END $$",
+            platform = SPLIT_PLATFORM_ROLE,
+            platform_ident = quoted_ident(SPLIT_PLATFORM_ROLE),
+        );
+        // SQL-POLICY: fixed-fragment — schema names and role are closed fixture values.
+        sqlx::raw_sql(AssertSqlSafe(transfer))
+            .execute(&mut target)
+            .await?;
+        for schema in ["proxima_core", "proxima_code"] {
+            let statement = format!(
+                "DO $$ BEGIN
+                   IF to_regnamespace('{schema_name}') IS NOT NULL THEN
+                     EXECUTE 'GRANT USAGE ON SCHEMA {schema} TO {runtime}';
+                     EXECUTE 'REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC';
+                     EXECUTE 'REVOKE CREATE ON SCHEMA {schema} FROM {runtime}';
+                     EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {schema} TO {runtime}';
+                     EXECUTE 'GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA {schema} TO {runtime}';
+                     EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE {platform} IN SCHEMA {schema} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {runtime}';
+                     EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE {platform} IN SCHEMA {schema} GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {runtime}';
+                   END IF;
+                 END $$",
+                schema = quoted_ident(schema),
+                schema_name = schema,
+                runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
+                platform = quoted_ident(SPLIT_PLATFORM_ROLE),
+            );
+            // SQL-POLICY: fixed-fragment — schema and role identifiers are closed fixture values.
+            sqlx::raw_sql(AssertSqlSafe(statement))
+                .execute(&mut target)
+                .await?;
+        }
+        let attrs: (bool, bool, bool, bool, bool) = sqlx::query_as(
+            "SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolinherit
+               FROM pg_roles WHERE rolname = $1",
+        )
+        .bind(SPLIT_PLATFORM_ROLE)
+        .fetch_one(&mut target)
+        .await?;
+        let runtime_attrs: (bool, bool, bool, bool, bool) = sqlx::query_as(
+            "SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolinherit
+               FROM pg_roles WHERE rolname = $1",
+        )
+        .bind(SPLIT_RUNTIME_ROLE)
+        .fetch_one(&mut target)
+        .await?;
+        if attrs != (false, false, false, false, false)
+            || runtime_attrs != (false, false, false, false, false)
+        {
+            return Err(sqlx::Error::Protocol("split-role fixture attributes are unsafe".into()));
+        }
+        sqlx::raw_sql(AssertSqlSafe(
+            "CREATE SCHEMA IF NOT EXISTS _proxima_test;
+             CREATE TABLE _proxima_test.split_roles_ready (singleton boolean PRIMARY KEY);
+             INSERT INTO _proxima_test.split_roles_ready VALUES (true)".to_owned(),
+        ))
+        .execute(&mut target)
+        .await?;
+        target.close().await?;
+        Ok(())
+    }
+    .await;
+    let unlock = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(lock_key)
+        .execute(&mut control)
+        .await;
+    control.close().await?;
+    result?;
+    unlock?;
+    let mut runtime = db_url_from_admin(&admin_url(), database)
+        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+    runtime
+        .set_username(SPLIT_RUNTIME_ROLE)
+        .map_err(|()| sqlx::Error::Protocol("invalid runtime role".into()))?;
+    runtime
+        .set_password(Some(SPLIT_ROLE_PASSWORD))
+        .map_err(|()| sqlx::Error::Protocol("invalid fixture password".into()))?;
+    let mut platform = runtime.clone();
+    platform
+        .set_username(SPLIT_PLATFORM_ROLE)
+        .map_err(|()| sqlx::Error::Protocol("invalid platform role".into()))?;
+    Ok((runtime.to_string(), platform.to_string()))
 }
 
 /// Ensure a pre-migrated template database exists.
@@ -676,6 +953,10 @@ fn name_is_stale_clone(name: &str, older_than: OffsetDateTime) -> bool {
 
 fn quoted_ident(input: &str) -> String {
     format!("\"{}\"", input.replace('"', "\"\""))
+}
+
+fn sql_literal(input: &str) -> String {
+    format!("'{}'", input.replace('\'', "''"))
 }
 
 fn advisory_lock_key(input: &str) -> i64 {

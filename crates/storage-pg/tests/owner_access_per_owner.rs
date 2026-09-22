@@ -36,7 +36,7 @@ async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
     }
     let result = async {
         let pg = PgStorage::connect(&db_url(&db_name)).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .connect(&db_url(&db_name))

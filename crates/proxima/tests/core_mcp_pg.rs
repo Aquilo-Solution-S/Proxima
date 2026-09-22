@@ -14,7 +14,7 @@ use proxima_core::{
     FlavorRegistryFrozen, GroupId, MemoryId, Owner, OwnerRef, Relation, Role, SchemaId, UserId,
     all_core_resources, provider_safe_tool_name,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
@@ -222,9 +222,11 @@ mod embedding_failure_regressions {
         let name = unique_db_name("proxima_query_provider_overflow");
         create_db(&name).await.expect("PG fixture");
         let result: TestResult<Observed> = async {
+            let (runtime_url, platform_url) = split_role_urls(&name).await?;
             let owner = company_owner(Uuid::now_v7());
             let built = Proxima::<AgentMemoryApp>::app()
-                .database_url(db_url(&name))
+                .database_url(runtime_url)
+                .platform_database_url(platform_url)
                 .owner(owner)
                 .tool_scope(ToolScope::All)
                 .build()
@@ -470,7 +472,11 @@ fn host_authz(owner: &Owner, tool_scope: ToolScope) -> ResolvedAuthz {
             AuthPath::HostBearer,
         ),
     };
-    authz.with_tool_scope(tool_scope)
+    proxima_core::test_fixtures::authenticated_context(authz.with_tool_scope(tool_scope))
+}
+
+fn verified(authz: AuthzContext) -> AuthzContext {
+    proxima_core::test_fixtures::authenticated_context(authz)
 }
 
 fn space_authz(subject: OwnerRef, owners: Vec<Owner>, group_role: Role) -> ResolvedAuthz {
@@ -481,7 +487,11 @@ fn space_authz(subject: OwnerRef, owners: Vec<Owner>, group_role: Role) -> Resol
         .into_iter()
         .filter(|owner| matches!(owner, OwnerRef::Group(_)))
         .map(|owner| (owner, group_role));
-    AuthzContext::for_subject_with_role(user, roles, AuthPath::HostBearer)
+    verified(AuthzContext::for_subject_with_role(
+        user,
+        roles,
+        AuthPath::HostBearer,
+    ))
 }
 
 async fn seed_group_membership(
@@ -497,11 +507,11 @@ async fn seed_group_membership(
         panic!("group membership can only seed user members");
     };
     let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
-    let authz = AuthzContext::for_subject_with_role(
+    let authz = verified(AuthzContext::for_subject_with_role(
         UserId::new(Uuid::now_v7()),
         [(*space_owner, Role::admin())],
         AuthPath::HostBearer,
-    );
+    ));
     let permit = engine
         .authorize_owner_write(&authz, space_owner, proxima_core::AccessKind::Goal)
         .await
@@ -562,19 +572,19 @@ async fn read_test_model_resource(
 async fn core_memory_tools_route_by_explicit_space_grants() {
     let db_name = unique_db_name("proxima_core_memory_spaces_route");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let shared = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url.clone())
+            .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(personal)
             .tool_scope(ToolScope::All)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
-        let pg = PgStorage::connect(&db_url).await?;
+        let pg = PgStorage::connect(&runtime_url).await?;
         seed_group_membership(&pg, &shared, Relation::Viewer, &personal).await;
         let authz = space_authz(
             personal,
@@ -619,7 +629,6 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
         .await;
         assert!(denied.is_err(), "shared write must be denied");
 
-        drop(pg);
         built.shutdown();
         Ok(())
     }
@@ -633,13 +642,13 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
 async fn shared_space_include_body_uses_shared_owner() {
     let db_name = unique_db_name("proxima_core_memory_spaces_body");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let shared = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(personal)
             .tool_scope(ToolScope::All)
             .build()
@@ -725,13 +734,13 @@ async fn shared_space_include_body_uses_shared_owner() {
 async fn cross_space_derive_succeeds_when_sources_readable() {
     let db_name = unique_db_name("proxima_core_memory_spaces_derive");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let shared = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(personal)
             .tool_scope(ToolScope::All)
             .build()
@@ -853,12 +862,12 @@ fn assert_facade_projects_output_schema(registry: &FlavorRegistryFrozen, tool: &
 async fn facade_lists_and_dispatches_core_mcp_tools() {
     let db_name = unique_db_name("proxima_core_mcp");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
@@ -1002,12 +1011,13 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
 async fn facade_reads_core_resources_with_resource_scope() {
     let db_name = unique_db_name("proxima_core_resource_mcp");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
@@ -1075,12 +1085,13 @@ async fn facade_reads_core_resources_with_resource_scope() {
 async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic() {
     let db_name = unique_db_name("proxima_core_search_mcp");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .embed_client(test_embedding())
             .tool_scope(ToolScope::All)
@@ -1180,12 +1191,14 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
 async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
     let db_name = unique_db_name("proxima_core_recall_mcp");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
@@ -1228,7 +1241,7 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
         let stored_sketch: String =
             sqlx::query_scalar("SELECT text FROM proxima_core.sketch WHERE t = $1")
                 .bind(fact_t)
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(stored_sketch, "Cue fact");
 
@@ -1337,7 +1350,7 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
             .parse::<Uuid>()?;
         sqlx::query("DELETE FROM proxima_core.sketch WHERE t = $1")
             .bind(goal_t)
-            .execute(built.pool_for_tests())
+            .execute(&admin_pool)
             .await?;
         let without_goal = call_test_model_tool(
             &tools,
@@ -1405,12 +1418,14 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
 async fn facade_core_think_reaches_an_interpretations_subject_through_its_payload() {
     let db_name = unique_db_name("proxima_core_think_payload");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
@@ -1463,7 +1478,7 @@ async fn facade_core_think_reaches_an_interpretations_subject_through_its_payloa
             "SELECT cardinality(origins)::bigint FROM proxima_core.memory WHERE t = $1",
         )
         .bind(interpretation_t)
-        .fetch_one(built.pool_for_tests())
+        .fetch_one(&admin_pool)
         .await?;
         assert_eq!(
             origins, 0,
@@ -1474,7 +1489,7 @@ async fn facade_core_think_reaches_an_interpretations_subject_through_its_payloa
                FROM proxima_core.interpretation_v1 WHERE t = $1",
         )
         .bind(interpretation_t)
-        .fetch_one(built.pool_for_tests())
+        .fetch_one(&admin_pool)
         .await?;
         assert_eq!(subjects, 1, "the subject lives in the declared column");
 
@@ -1517,12 +1532,13 @@ async fn facade_core_think_reaches_an_interpretations_subject_through_its_payloa
 async fn facade_core_think_pages_ancestors_from_a_derivation() {
     let db_name = unique_db_name("proxima_core_think_mcp");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
@@ -1636,12 +1652,13 @@ async fn facade_core_think_pages_ancestors_from_a_derivation() {
 async fn facade_core_episode_commit_binds_only_listed_members() {
     let db_name = unique_db_name("proxima_core_episode_mcp");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
@@ -1704,16 +1721,18 @@ async fn facade_core_episode_commit_binds_only_listed_members() {
 async fn facade_core_episode_commit_binds_derive_stance_and_goal() {
     let db_name = unique_db_name("proxima_core_episode_dsg");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
             .await?;
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let tools = built.core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
@@ -1791,27 +1810,27 @@ async fn facade_core_episode_commit_binds_derive_stance_and_goal() {
         let derived_refs: Vec<Uuid> =
             sqlx::query_scalar("SELECT refs FROM proxima_core.memory WHERE t = $1")
                 .bind(derived_t)
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         let stance_refs: Vec<Uuid> =
             sqlx::query_scalar("SELECT refs FROM proxima_core.memory WHERE t = $1")
                 .bind(stance_t)
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         let unbound_refs: Vec<Uuid> =
             sqlx::query_scalar("SELECT refs FROM proxima_core.memory WHERE t = $1")
                 .bind(unbound_t)
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         let goal_act: Option<Uuid> =
             sqlx::query_scalar("SELECT write_act_t FROM proxima_core.goal WHERE t = $1")
                 .bind(goal_t)
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         let goal_evidence: Vec<Uuid> =
             sqlx::query_scalar("SELECT evidence_t FROM proxima_core.goal WHERE t = $1")
                 .bind(goal_t)
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         assert!(
             derived_refs.contains(&act_t),
@@ -1892,12 +1911,13 @@ fn trusted_host_authz(owner: &Owner, trusted_model_id: &str) -> ResolvedAuthz {
 async fn facade_core_episode_commit_refuses_nested_model_id_against_the_bound_identity() {
     let db_name = unique_db_name("proxima_core_episode_trusted");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
@@ -2005,12 +2025,13 @@ async fn facade_core_episode_commit_refuses_nested_model_id_against_the_bound_id
 async fn facade_core_episode_commit_bound_replay_fails() {
     let db_name = unique_db_name("proxima_core_episode_replay");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
@@ -2197,13 +2218,14 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
     // an EXPLICIT semantic search errors when embeddings are unavailable.
     let db_name = unique_db_name("proxima_core_search_degrade");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         // No .embed_client(...) — engine.embed_client() is None.
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
@@ -2284,19 +2306,20 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
 async fn facade_core_citation_readback_is_owner_scoped() {
     let db_name = unique_db_name("proxima_core_citation_mcp");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let other_owner = company_owner(Uuid::now_v7());
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(owner)
             .embed_client(test_embedding())
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        create_citation_sidecars(built.pool_for_tests()).await?;
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
+        create_citation_sidecars(&admin_pool).await?;
         let tools = built.core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
@@ -2332,7 +2355,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
               WHERE t = $1",
         )
         .bind(fact_id)
-        .fetch_one(built.pool_for_tests())
+        .fetch_one(&admin_pool)
         .await?;
 
         let citing = call_test_model_tool(
@@ -2433,16 +2456,17 @@ async fn ensure_fact_embedding_for_handle(
 async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member() {
     let db_name = unique_db_name("proxima_authorized_read_transfer");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let author = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(author);
         let group = GroupId::new(Uuid::now_v7());
         let group_owner = OwnerRef::Group(group);
         let member = UserId::new(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
@@ -2471,11 +2495,11 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
 
         // Admin on BOTH sides: the author's own personal owner (source) and
         // the destination group (receiving-side consent).
-        let transfer_authz = AuthzContext::for_subject_with_role(
+        let transfer_authz = verified(AuthzContext::for_subject_with_role(
             author,
             [(group_owner, Role::admin())],
             AuthPath::HostBearer,
-        );
+        ));
         built
             .engine
             .transfer_to_owner(
@@ -2487,7 +2511,7 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
         let transferred_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(memory_id)
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(
             transferred_owner,
@@ -2500,7 +2524,7 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
         )
         .bind(memory_id)
         .bind(owner.stored_owner_id())
-        .fetch_one(built.pool_for_tests())
+        .fetch_one(&admin_pool)
         .await?;
         assert_eq!(still_private, 0);
 
@@ -2508,11 +2532,11 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
         // of the author's other groups, no share, nothing — but a viewer of
         // the destination group. The request's owner scope is the caller's
         // OWN personal owner, so only the read-set union can surface the row.
-        let member_authz = AuthzContext::for_subject_with_role(
+        let member_authz = verified(AuthzContext::for_subject_with_role(
             member,
             [(group_owner, Role::viewer())],
             AuthPath::HostBearer,
-        );
+        ));
         let visible = proxima::flavor::authorized_memory_ids(
             &built.engine,
             &member_authz,
@@ -2531,7 +2555,7 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
         // The same caller without the group role sees nothing: the read set,
         // not the transfer, is what grants visibility.
         let stranger = UserId::new(Uuid::now_v7());
-        let stranger_authz = AuthzContext::for_subject(stranger, AuthPath::HostBearer);
+        let stranger_authz = verified(AuthzContext::for_subject(stranger, AuthPath::HostBearer));
         let hidden = proxima::flavor::authorized_memory_ids(
             &built.engine,
             &stranger_authz,
@@ -2563,12 +2587,14 @@ async fn core_forget_cools_a_remembered_fact() {
     }
     let db_name = unique_db_name("proxima_core_forget");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .s3(S3RuntimeConfig {
                 force_path_style: true,
                 ..S3RuntimeConfig::from_env()?
@@ -2620,20 +2646,20 @@ async fn core_forget_cools_a_remembered_fact() {
         let hot: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
                 .bind(t)
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(hot, 0, "forget must delete the hot row");
         let cooled: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
                 .bind(t)
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(cooled, 1, "forget must leave the cooled stub");
         let announce: String = sqlx::query_scalar(
             "SELECT op::text FROM proxima_core.announce WHERE t = $1 ORDER BY seq DESC LIMIT 1",
         )
         .bind(t)
-        .fetch_one(built.pool_for_tests())
+        .fetch_one(&admin_pool)
         .await?;
         assert_eq!(announce, "forget");
 
@@ -2659,11 +2685,12 @@ async fn core_forget_cools_a_remembered_fact() {
 async fn request_services_reject_duplicate_boot_type() {
     let db_name = unique_db_name("proxima_request_services");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<MarkApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
@@ -2701,25 +2728,26 @@ async fn request_services_reject_duplicate_boot_type() {
 async fn remember_lands_a_20k_body_and_replays_by_digest() {
     let db_name = unique_db_name("proxima_remember_long_body");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url.clone())
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(personal)
             .tool_scope(ToolScope::All)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
         let authz = host_authz(&personal, ToolScope::All);
-        let pg = PgStorage::connect(&db_url).await?;
         let note_count = || async {
             let count: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM proxima_core.memory
                   WHERE schema_id = 'core/agent-note-v1'",
             )
-            .fetch_one(pg.pool_for_tests())
+            .fetch_one(&admin_pool)
             .await?;
             Ok::<i64, Box<dyn std::error::Error>>(count)
         };
@@ -2785,7 +2813,6 @@ async fn remember_lands_a_20k_body_and_replays_by_digest() {
         assert_ne!(changed["handle"], first["handle"]);
         assert_eq!(note_count().await?, 2, "a deep body change is a new Fact");
 
-        drop(pg);
         built.shutdown();
         Ok(())
     }
@@ -2811,19 +2838,21 @@ async fn remember_lands_a_20k_body_and_replays_by_digest() {
 async fn the_language_argument_reaches_the_projection_and_changes_what_matches() {
     let db_name = unique_db_name("proxima_core_lexical_language");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(personal)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
         let tools = built.core_mcp_tools();
-        let authz = built.single_owner_authz().expect("single owner");
+        let authz = verified(built.single_owner_authz().expect("single owner"));
 
         let german = call_test_model_tool(
             &tools,
@@ -2857,7 +2886,7 @@ async fn the_language_argument_reaches_the_projection_and_changes_what_matches()
                JOIN proxima_core.agent_note_v1 n ON n.t = p.memory_id
               ORDER BY n.title",
         )
-        .fetch_all(built.pool_for_tests())
+        .fetch_all(&admin_pool)
         .await?;
         assert_eq!(
             stamped,

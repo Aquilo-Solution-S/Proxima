@@ -16,7 +16,7 @@ use proxima::{
     PgHostStateParticipant, Proxima, Role, ToolScope, company_owner,
 };
 use proxima_core::{AgentNoteV1, GroupId, Owner, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,25 +56,29 @@ fn note(title: &str) -> AgentNoteV1 {
 }
 
 fn admin_authz_for(owner: Owner) -> AuthzContext {
-    if matches!(owner, Owner::Personal(_)) {
-        return AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-    }
-    AuthzContext::for_subject_with_role(
-        UserId::new(Uuid::now_v7()),
-        [(owner, Role::admin())],
-        AuthPath::HostBearer,
-    )
-    .narrowed_to_owner(owner)
-    .expect("an admin on exactly this owner narrows to it")
+    let context = if matches!(owner, Owner::Personal(_)) {
+        AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+    } else {
+        AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            AuthPath::HostBearer,
+        )
+        .narrowed_to_owner(owner)
+        .expect("an admin on exactly this owner narrows to it")
+    };
+    proxima_core::test_fixtures::authenticated_context(context)
 }
 
 async fn boot_fixture(
     db_url: &str,
+    platform_url: &str,
     owner: Owner,
     participant: Option<Arc<dyn PgHostStateParticipant>>,
 ) -> Result<proxima::BuiltProxima, Box<dyn std::error::Error>> {
     let mut app = Proxima::<HostFixtureApp>::app()
         .database_url(db_url)
+        .platform_database_url(platform_url)
         .owner(owner)
         .allow_insecure_single_owner()
         .tool_scope(ToolScope::All);
@@ -92,6 +96,10 @@ async fn count_memory(
         .bind(memory_id.into_inner())
         .fetch_one(pool)
         .await
+}
+
+async fn admin_pool(database: &str) -> Result<PgPool, sqlx::Error> {
+    PgPool::connect(&db_url(database)).await
 }
 
 async fn count_execution(
@@ -277,13 +285,13 @@ async fn wait_for_erase_holding_owner_fence_and_waiting_on_test_lock(
 async fn create_commits_fact_and_host_row_together() {
     let db_name = unique_db_name("proxima_uow_hs_create");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant)).await?;
-        let other = PgPool::connect(&url).await?;
-        let authz = built.single_owner_authz().expect("single owner");
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
+        let other = PgPool::connect(&db_url(&db_name)).await?;
+        let authz = admin_authz_for(owner);
         let engine = built.engine();
 
         let mut uow = engine.unit_of_work(&authz).await?;
@@ -340,14 +348,14 @@ async fn create_commits_fact_and_host_row_together() {
 async fn finalize_is_conditional_and_already_applied_writes_no_duplicate() {
     let db_name = unique_db_name("proxima_uow_hs_fin");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant)).await?;
-        let authz = built.single_owner_authz().expect("single owner");
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
+        let authz = admin_authz_for(owner);
         let engine = built.engine();
-        let pool = built.pool_for_tests();
+        let pool = admin_pool(&db_name).await?;
 
         let mut create = engine.unit_of_work(&authz).await?;
         let invocation = create
@@ -424,14 +432,14 @@ async fn finalize_is_conditional_and_already_applied_writes_no_duplicate() {
         );
         second.commit().await?;
 
-        assert_eq!(count_memory(pool, invocation.memory_id).await?, 1);
-        assert_eq!(count_memory(pool, done.memory_id).await?, 1);
+        assert_eq!(count_memory(&pool, invocation.memory_id).await?, 1);
+        assert_eq!(count_memory(&pool, done.memory_id).await?, 1);
         let facts: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
-            .fetch_one(pool)
+            .fetch_one(&pool)
             .await?;
         assert_eq!(facts, 2, "already-applied must not append a second Fact");
         assert_eq!(
-            execution_status(pool, invocation.memory_id).await?,
+            execution_status(&pool, invocation.memory_id).await?,
             Some(("finalized".into(), 2))
         );
         built.shutdown();
@@ -446,13 +454,13 @@ async fn finalize_is_conditional_and_already_applied_writes_no_duplicate() {
 async fn drop_without_commit_rolls_fact_and_host_row_back() {
     let db_name = unique_db_name("proxima_uow_hs_drop");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant)).await?;
-        let other = PgPool::connect(&url).await?;
-        let authz = built.single_owner_authz().expect("single owner");
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
+        let other = PgPool::connect(&db_url(&db_name)).await?;
+        let authz = admin_authz_for(owner);
         let engine = built.engine();
 
         let memory_id;
@@ -486,13 +494,13 @@ async fn drop_without_commit_rolls_fact_and_host_row_back() {
 async fn injected_failures_leave_no_partial_commit() {
     let db_name = unique_db_name("proxima_uow_hs_fail");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant.clone())).await?;
-        let other = PgPool::connect(&url).await?;
-        let authz = built.single_owner_authz().expect("single owner");
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant.clone())).await?;
+        let other = PgPool::connect(&db_url(&db_name)).await?;
+        let authz = admin_authz_for(owner);
         let engine = built.engine();
 
         participant.arm_fail_before_sql();
@@ -601,13 +609,13 @@ async fn injected_failures_leave_no_partial_commit() {
 async fn unauthorized_unregistered_and_invalid_binding_refuse_before_mutation() {
     let db_name = unique_db_name("proxima_uow_hs_authz");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant)).await?;
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
         let engine = built.engine();
-        let other = PgPool::connect(&url).await?;
+        let other = PgPool::connect(&db_url(&db_name)).await?;
         let invocation = proxima_core::MemoryId::new(Uuid::now_v7());
 
         let denied = AuthzContext::denied_for_owner(&owner);
@@ -623,7 +631,7 @@ async fn unauthorized_unregistered_and_invalid_binding_refuse_before_mutation() 
         drop(unauthorized);
         assert_eq!(count_execution(&other, invocation).await?, 0);
 
-        let authz = built.single_owner_authz().expect("single owner");
+        let authz = admin_authz_for(owner);
         let mut invalid = engine.unit_of_work(&authz).await?;
         let err = invalid
             .apply_host_state(InvalidBindingCommand { owner })
@@ -653,8 +661,8 @@ async fn unauthorized_unregistered_and_invalid_binding_refuse_before_mutation() 
 
         built.shutdown();
 
-        let unregistered = boot_fixture(&url, owner, None).await?;
-        let authz = unregistered.single_owner_authz().expect("single owner");
+        let unregistered = boot_fixture(&url, &platform_url, owner, None).await?;
+        let authz = admin_authz_for(owner);
         let engine = unregistered.engine();
         let mut uow = engine.unit_of_work(&authz).await?;
         let err = uow
@@ -679,16 +687,16 @@ async fn unauthorized_unregistered_and_invalid_binding_refuse_before_mutation() 
 async fn concurrent_finalize_commits_exactly_one_transition() {
     let db_name = unique_db_name("proxima_uow_hs_conc");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let other_owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant)).await?;
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
         let authz = admin_authz_for(owner);
         let other_authz = admin_authz_for(other_owner);
         let engine = built.engine();
-        let pool = built.pool_for_tests();
+        let pool = admin_pool(&db_name).await?;
 
         let mut setup = engine.unit_of_work(&authz).await?;
         let invocation = setup
@@ -797,11 +805,11 @@ async fn concurrent_finalize_commits_exactly_one_transition() {
         assert!(left_won || right_won);
 
         let facts: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
-            .fetch_one(pool)
+            .fetch_one(&pool)
             .await?;
         assert_eq!(facts, 2, "setup Fact plus exactly one finalize Fact");
         assert_eq!(
-            execution_status(pool, invocation.memory_id).await?,
+            execution_status(&pool, invocation.memory_id).await?,
             Some(("finalized".into(), 2))
         );
 
@@ -818,7 +826,7 @@ async fn concurrent_finalize_commits_exactly_one_transition() {
         );
         steal.commit().await?;
         assert_eq!(
-            execution_status(pool, invocation.memory_id).await?,
+            execution_status(&pool, invocation.memory_id).await?,
             Some(("finalized".into(), 2))
         );
 
@@ -834,18 +842,19 @@ async fn concurrent_finalize_commits_exactly_one_transition() {
 async fn host_without_participant_still_ingests_facts() {
     let db_name = unique_db_name("proxima_uow_hs_compat");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(&url)
+            .platform_database_url(&platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
         assert!(built.host_state_maintenance_authority().is_none());
-        let authz = built.single_owner_authz().expect("single owner");
+        let authz = admin_authz_for(owner);
         let engine = built.engine();
         let mut uow = engine.unit_of_work(&authz).await?;
         let fact = uow
@@ -857,7 +866,7 @@ async fn host_without_participant_still_ingests_facts() {
             .await?;
         uow.commit().await?;
         assert_eq!(
-            count_memory(built.pool_for_tests(), fact.memory_id).await?,
+            count_memory(&admin_pool(&db_name).await?, fact.memory_id).await?,
             1
         );
         built.shutdown();
@@ -872,12 +881,12 @@ async fn host_without_participant_still_ingests_facts() {
 async fn refused_finalize_of_missing_row_writes_nothing() {
     let db_name = unique_db_name("proxima_uow_hs_refuse");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant)).await?;
-        let authz = built.single_owner_authz().expect("single owner");
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
+        let authz = admin_authz_for(owner);
         let missing = proxima_core::MemoryId::new(Uuid::now_v7());
         let engine = built.engine();
         let mut uow = engine.unit_of_work(&authz).await?;
@@ -895,7 +904,10 @@ async fn refused_finalize_of_missing_row_writes_nothing() {
             "{outcome:?}"
         );
         uow.commit().await?;
-        assert_eq!(count_execution(built.pool_for_tests(), missing).await?, 0);
+        assert_eq!(
+            count_execution(&admin_pool(&db_name).await?, missing).await?,
+            0
+        );
         built.shutdown();
         Ok(())
     }
@@ -908,13 +920,13 @@ async fn refused_finalize_of_missing_row_writes_nothing() {
 async fn cancelled_host_op_after_sql_cannot_commit() {
     let db_name = unique_db_name("proxima_uow_hs_cancel");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant.clone())).await?;
-        let other = PgPool::connect(&url).await?;
-        let authz = built.single_owner_authz().expect("single owner");
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant.clone())).await?;
+        let other = PgPool::connect(&db_url(&db_name)).await?;
+        let authz = admin_authz_for(owner);
         let engine = built.engine();
 
         participant.arm_hang_after_sql();
@@ -956,17 +968,17 @@ async fn cancelled_host_op_after_sql_cannot_commit() {
 async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_and_group() {
     let db_name = unique_db_name("proxima_uow_hs_authority");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let group = Owner::Group(GroupId::new(Uuid::now_v7()));
         let personal = Owner::Personal(UserId::new(Uuid::now_v7()));
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, group, Some(participant.clone())).await?;
+        let built = boot_fixture(&url, &platform_url, group, Some(participant.clone())).await?;
         let authority = built
             .host_state_maintenance_authority()
             .expect("registered participant mints host-only authority");
         let engine = built.engine();
-        let observer = PgPool::connect(&url).await?;
+        let observer = PgPool::connect(&db_url(&db_name)).await?;
 
         for (owner, key) in [
             (group, "host-authority-group"),
@@ -1082,14 +1094,15 @@ async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_
         drop(empty);
         assert_eq!(participant.callback_calls(), calls_before_rejections);
         assert_eq!(
-            count_execution(built.pool_for_tests(), empty_invocation).await?,
+            count_execution(&admin_pool(&db_name).await?, empty_invocation).await?,
             0
         );
 
         // A capability minted by one engine cannot be paired with another
         // boot, even when both engines captured identical metadata.
         let second_participant = Arc::new(HostFixtureParticipant::default());
-        let second = boot_fixture(&url, group, Some(second_participant.clone())).await?;
+        let second =
+            boot_fixture(&url, &platform_url, group, Some(second_participant.clone())).await?;
         let second_engine = second.engine();
         let error = second_engine
             .host_state_unit_of_work(authority, group)
@@ -1110,7 +1123,7 @@ async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_
 async fn frozen_descriptor_rejects_full_invalid_registration_and_cannot_widen_after_boot() {
     let db_name = unique_db_name("proxima_uow_hs_descriptor");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         for (participant, expected_message) in [
@@ -1127,14 +1140,14 @@ async fn frozen_descriptor_rejects_full_invalid_registration_and_cannot_widen_af
                 "no state surfaces",
             ),
         ] {
-            let error = boot_fixture(&url, owner, Some(participant))
+            let error = boot_fixture(&url, &platform_url, owner, Some(participant))
                 .await
                 .expect_err("invalid full participant registration must fail boot");
             assert!(error.to_string().contains(expected_message), "{error}");
         }
 
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant.clone())).await?;
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant.clone())).await?;
         assert_eq!(
             participant.metadata_reads(),
             2,
@@ -1185,19 +1198,21 @@ async fn frozen_descriptor_rejects_full_invalid_registration_and_cannot_widen_af
 async fn ordinary_group_editor_provenance_is_not_target_or_command_metadata() {
     let db_name = unique_db_name("proxima_uow_hs_origin");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let group = company_owner(Uuid::now_v7());
         let editor = UserId::new(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, group, Some(participant.clone())).await?;
-        let authz = AuthzContext::for_subject_with_role(
-            editor,
-            [(group, Role::editor())],
-            AuthPath::HostBearer,
-        )
-        .narrowed_to_owner(group)
-        .expect("group editor is narrowed to its target owner");
+        let built = boot_fixture(&url, &platform_url, group, Some(participant.clone())).await?;
+        let authz = proxima_core::test_fixtures::authenticated_context(
+            AuthzContext::for_subject_with_role(
+                editor,
+                [(group, Role::editor())],
+                AuthPath::HostBearer,
+            )
+            .narrowed_to_owner(group)
+            .expect("group editor is narrowed to its target owner"),
+        );
         assert_eq!(authz.principal(), Owner::Personal(editor));
         assert_ne!(authz.principal(), group);
 
@@ -1220,7 +1235,7 @@ async fn ordinary_group_editor_provenance_is_not_target_or_command_metadata() {
 
         let (target_kind, target_id) = group.columns();
         assert_eq!(
-            execution_provenance(built.pool_for_tests(), fact.memory_id).await?,
+            execution_provenance(&admin_pool(&db_name).await?, fact.memory_id).await?,
             Some((
                 target_kind.as_str().to_owned(),
                 target_id,
@@ -1245,11 +1260,11 @@ async fn ordinary_group_editor_provenance_is_not_target_or_command_metadata() {
 async fn subjectless_denied_ordinary_host_write_never_dispatches() {
     let db_name = unique_db_name("proxima_uow_hs_denied_origin");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant.clone())).await?;
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant.clone())).await?;
         let authz = AuthzContext::denied_for_owner(&owner);
         assert_eq!(authz.subject(), None);
         let engine = built.engine();
@@ -1266,7 +1281,7 @@ async fn subjectless_denied_ordinary_host_write_never_dispatches() {
         drop(unit);
         assert_eq!(participant.callback_calls(), 0);
         assert_eq!(
-            count_execution(built.pool_for_tests(), invocation_id).await?,
+            count_execution(&admin_pool(&db_name).await?, invocation_id).await?,
             0
         );
         built.shutdown();
@@ -1281,12 +1296,12 @@ async fn subjectless_denied_ordinary_host_write_never_dispatches() {
 async fn opaque_payload_owner_mismatch_is_checked_inside_participant_before_sql() {
     let db_name = unique_db_name("proxima_uow_hs_payload_owner");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let foreign = Owner::Personal(UserId::new(Uuid::now_v7()));
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant.clone())).await?;
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant.clone())).await?;
         let authority = built
             .host_state_maintenance_authority()
             .expect("host authority");
@@ -1309,7 +1324,7 @@ async fn opaque_payload_owner_mismatch_is_checked_inside_participant_before_sql(
         );
         drop(maintenance);
         assert_eq!(
-            count_execution(built.pool_for_tests(), invocation).await?,
+            count_execution(&admin_pool(&db_name).await?, invocation).await?,
             0
         );
         built.shutdown();
@@ -1324,12 +1339,12 @@ async fn opaque_payload_owner_mismatch_is_checked_inside_participant_before_sql(
 async fn deferred_fk_commit_failure_rolls_back_fact_and_host_state_rows() {
     let db_name = unique_db_name("proxima_uow_hs_deferred");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant)).await?;
-        let other = PgPool::connect(&url).await?;
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
+        let other = PgPool::connect(&db_url(&db_name)).await?;
         let authz = admin_authz_for(owner);
         let engine = built.engine();
         let mut unit = engine.unit_of_work(&authz).await?;
@@ -1378,13 +1393,13 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
 
     let db_name = unique_db_name("proxima_uow_hs_owner_fence");
     create_db(&db_name).await.expect("PG required");
-    let url = db_url(&db_name);
+    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = Owner::Group(GroupId::new(Uuid::now_v7()));
         let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, owner, Some(participant.clone())).await?;
+        let built = boot_fixture(&url, &platform_url, owner, Some(participant.clone())).await?;
         let engine = built.engine();
-        let pool = built.pool_for_tests();
+        let pool = admin_pool(&db_name).await?;
         let authz = admin_authz_for(owner);
 
         let mut setup = engine.unit_of_work(&authz).await?;
@@ -1433,10 +1448,10 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
                 .erase_group_owner(&erase_authz, GroupId::new(owner.stored_owner_id()))
                 .await
         });
-        wait_for_owner_fence_wait(pool, owner)
+        wait_for_owner_fence_wait(&pool, owner)
             .await
             .map_err(|error| std::io::Error::other(format!("erase fence wait: {error}")))?;
-        assert!(advisory_wait_reports_lock_event(pool, &owner_fence_label(owner)).await?);
+        assert!(advisory_wait_reports_lock_event(&pool, &owner_fence_label(owner)).await?);
         maintenance.abort();
         assert!(
             maintenance
@@ -1449,7 +1464,7 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
             erased,
             proxima::OwnerEraseOutcome::Completed { .. }
         ));
-        assert_eq!(count_execution(pool, fact.memory_id).await?, 0);
+        assert_eq!(count_execution(&pool, fact.memory_id).await?, 0);
 
         // Hold an independent test advisory lock inside a trigger. The real
         // erase path first acquires its exclusive owner fence, then waits in
@@ -1466,13 +1481,13 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
              LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(8719872200019); \
              RETURN OLD; END $$",
         )
-        .execute(pool)
+        .execute(&pool)
         .await?;
         sqlx::query(
             "CREATE TRIGGER block_execution_erase BEFORE DELETE ON host_fixture.execution \
              FOR EACH ROW EXECUTE FUNCTION host_fixture.block_execution_erase()",
         )
-        .execute(pool)
+        .execute(&pool)
         .await?;
 
         let mut setup_again = engine.unit_of_work(&authz).await?;
@@ -1498,10 +1513,10 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
                 .erase_group_owner(&erase_authz, GroupId::new(owner.stored_owner_id()))
                 .await
         });
-        wait_for_erase_holding_owner_fence_and_waiting_on_test_lock(pool, owner, trigger_key)
+        wait_for_erase_holding_owner_fence_and_waiting_on_test_lock(&pool, owner, trigger_key)
             .await
             .map_err(|error| std::io::Error::other(format!("erase trigger lock wait: {error}")))?;
-        assert!(advisory_integer_wait_reports_lock_event(pool, trigger_key).await?);
+        assert!(advisory_integer_wait_reports_lock_event(&pool, trigger_key).await?);
 
         let callback_count = participant.callback_calls();
         let waiting_engine = engine.clone();
@@ -1519,10 +1534,10 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
             unit.commit().await?;
             Ok::<_, proxima::ProtocolError>(result)
         });
-        wait_for_owner_fence_wait(pool, owner)
+        wait_for_owner_fence_wait(&pool, owner)
             .await
             .map_err(|error| std::io::Error::other(format!("maintenance fence wait: {error}")))?;
-        assert!(advisory_wait_reports_lock_event(pool, &owner_fence_label(owner)).await?);
+        assert!(advisory_wait_reports_lock_event(&pool, &owner_fence_label(owner)).await?);
         assert_eq!(
             participant.callback_calls(),
             callback_count,
@@ -1543,7 +1558,7 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
             after_erase,
             HostStateOutcome::Permitted(FixtureHostResult::Row(None))
         ));
-        assert_eq!(count_execution(pool, seeded_fact.memory_id).await?, 0);
+        assert_eq!(count_execution(&pool, seeded_fact.memory_id).await?, 0);
         built.shutdown();
         Ok(())
     }

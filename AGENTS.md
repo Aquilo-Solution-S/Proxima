@@ -98,6 +98,11 @@ kernel, **the kernel wins** until renegotiated in writing. Check it with
    side effect of editing an applied file.
 3. Enforced by the content hashes in `scripts/check-migration-ranges.py`
    (details: `docs/how-to/migrations.md`).
+4. **v0.0.15 coordinated cutover:** stop every older pack before owner-RLS
+   activation; older binaries cannot resume against the enforcing schema.
+   Keep the already-merged `0013_v015` index migration byte-for-byte and append
+   `0014_v015_owner_rls.sql`. This is the named exception to one core file per
+   release; it preserves existing migration checksums instead of rewriting 0013.
 
 Do not weaken the Lean guardrails: server-resolved `OwnerRef`,
 source-owned pins with target redaction, optional Memory/Goal sidecars,

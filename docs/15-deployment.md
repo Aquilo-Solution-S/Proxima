@@ -462,16 +462,27 @@ Optional. Contract: [18](18-fact-outbox.md). Recipe:
 
 ## Owner-RLS rollout
 
-Use two stages:
+v0.0.15 ships enforcement and paging indexes in the active core/Code migration
+sets. One release, with a coordinated stop/migrate/start cutover:
 
-1. Adopt the scope-aware compatibility release in **every live pack version**.
-   It binds authenticated scopes before enforcement; the platform DSN remains
-   optional while the database has no owner-RLS epoch.
-2. Provision distinct runtime and platform roles and configure both DSNs.
-   Apply the next release's additive enforcing migration only after step 1.
-   The compatibility and enforcing releases can then share the schema.
-   Boot refuses a missing policy, missing FORCE RLS, unsafe runtime role, or
-   missing `PROXIMA_PLATFORM_DATABASE_URL`.
+1. Stop **every older pack version** and maintenance worker sharing the database.
+2. As database administrator, preinstall `vector`, `btree_gin`, and `pg_trgm`.
+   Provision distinct `NOSUPERUSER NOBYPASSRLS` platform and runtime roles.
+   Transfer application schema/table/sequence/function and migration-ledger
+   ownership to the platform role. Grant runtime schema usage, DML, sequence
+   access and migration-ledger reads, including defaults for new objects;
+   runtime must have no ownership, DDL, TRUNCATE or role-escalation privileges.
+3. Configure `DATABASE_URL` for runtime and `PROXIMA_PLATFORM_DATABASE_URL` for
+   platform. Apply core plus every linked flavor's migrations through the
+   platform lane, or let the new host perform this step before serving.
+4. Start the new packs. Boot refuses a missing policy, missing FORCE RLS,
+   unsafe runtime/platform role, or absent platform credentials.
+
+Do not restart an older binary after activation. Rolling coexistence with the
+previous release is not supported for this cutover. A rollback needs a prepared
+database recovery plan or a forward fix; reverting only the application image
+is insufficient. External flavors must ship scope-aware storage code and owner
+policies for every sidecar before joining the cutover.
 
 The role administrator must grant the configured platform role permission to
 declare the function-local scope setting:

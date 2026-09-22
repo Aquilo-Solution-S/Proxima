@@ -1,6 +1,8 @@
 //! Apply core + flavor migrations to a fresh DB and verify the
 //! current `proxima_code` schema shape.
 
+mod common;
+
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 
@@ -13,8 +15,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?; // core
-        proxima_code::migrator().run(pg.pool_for_tests()).await?; // flavor
+        common::apply_current_migrations(&pg).await?;
 
         // Verify the flavor sidecar tables exist.
         for table in [
@@ -561,10 +562,9 @@ async fn a_v008_code_database_upgrades_to_head_in_place() {
         seed_applied_core(pool, only(&core_migrations, 1)).await?;
         seed_applied_code(pool, only(&flavor_migrations, 20_260_818_000_020)).await?;
 
-        pg.run_migrations().await.map_err(|err| {
+        common::apply_current_migrations(&pg).await.map_err(|err| {
             format!("a live v0.0.8 database must upgrade in place, not reset: {err}")
         })?;
-        flavor_migrations.run(pool).await?;
 
         let core_versions: Vec<i64> = sqlx::query_scalar(
             "SELECT version FROM public._sqlx_migrations
@@ -574,7 +574,7 @@ async fn a_v008_code_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             core_versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
             "core appends every migration after its baseline"
         );
 
@@ -586,7 +586,12 @@ async fn a_v008_code_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             flavor_versions,
-            vec![20_260_818_000_020, 20_260_824_000_020, 20_260_901_000_020],
+            vec![
+                20_260_818_000_020,
+                20_260_824_000_020,
+                20_260_901_000_020,
+                20_260_922_000_020
+            ],
             "the flavor appends its v0.0.9 rather than re-applying its baseline"
         );
 

@@ -16,7 +16,7 @@ use proxima_core::{
     OperatorId, SchemaId, SeriesHandle, SimpleTextGoalV1, Speaker, UtteranceV1,
 };
 use proxima_core::{ErrorCode, Role, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
 use uuid::Uuid;
 
 struct EmptyApp;
@@ -83,17 +83,21 @@ fn derived_abstraction(
 async fn unit_of_work_one_shot_and_rollback_and_lock() {
     let db_name = unique_db_name("proxima_uow");
     create_db(&db_name).await.expect("PG required");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let authz = built.single_owner_authz().expect("single owner");
+        let authz = proxima_core::test_fixtures::authenticated_context(
+            built.single_owner_authz().expect("single owner"),
+        );
         let engine = built.engine();
 
         let one = engine
@@ -124,7 +128,7 @@ async fn unit_of_work_one_shot_and_rollback_and_lock() {
         let rolled: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t <> $1")
                 .bind(one.memory_id.into_inner())
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(
             rolled, 0,
@@ -166,17 +170,21 @@ async fn unit_of_work_one_shot_and_rollback_and_lock() {
 async fn unit_of_work_citation_spec_lands_cited_object() {
     let db_name = unique_db_name("proxima_uow_cite");
     create_db(&db_name).await.expect("PG required");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let authz = built.single_owner_authz().expect("single owner");
+        let authz = proxima_core::test_fixtures::authenticated_context(
+            built.single_owner_authz().expect("single owner"),
+        );
         let engine = built.engine();
         let hash = [0x11u8; 32];
         let outcome = engine
@@ -197,7 +205,7 @@ async fn unit_of_work_citation_spec_lands_cited_object() {
         let blob_hash: Vec<u8> =
             sqlx::query_scalar("SELECT content_hash FROM proxima_core.blob WHERE blob_id = $1")
                 .bind(cited)
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(blob_hash, hash);
         built.shutdown();
@@ -212,17 +220,21 @@ async fn unit_of_work_citation_spec_lands_cited_object() {
 async fn unit_of_work_later_write_may_cite_earlier_uncommitted_fact() {
     let db_name = unique_db_name("proxima_uow_session");
     create_db(&db_name).await.expect("PG required");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let authz = built.single_owner_authz().expect("single owner");
+        let authz = proxima_core::test_fixtures::authenticated_context(
+            built.single_owner_authz().expect("single owner"),
+        );
         let engine = built.engine();
         let mut uow = engine.unit_of_work(&authz).await?;
         let first = uow
@@ -243,7 +255,7 @@ async fn unit_of_work_later_write_may_cite_earlier_uncommitted_fact() {
         let refs: Vec<Uuid> =
             sqlx::query_scalar("SELECT unnest(refs) FROM proxima_core.memory WHERE t = $1")
                 .bind(second.memory_id.into_inner())
-                .fetch_all(built.pool_for_tests())
+                .fetch_all(&admin_pool)
                 .await?;
         assert!(
             refs.contains(&first.memory_id.into_inner()),
@@ -261,17 +273,21 @@ async fn unit_of_work_later_write_may_cite_earlier_uncommitted_fact() {
 async fn unit_of_work_derive_memories_is_atomic() {
     let db_name = unique_db_name("proxima_uow_derived_all");
     create_db(&db_name).await.expect("PG required");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let authz = built.single_owner_authz().expect("single owner");
+        let authz = proxima_core::test_fixtures::authenticated_context(
+            built.single_owner_authz().expect("single owner"),
+        );
         let engine = built.engine();
         let source = engine
             .ingest_fact(
@@ -292,7 +308,7 @@ async fn unit_of_work_derive_memories_is_atomic() {
         let rolled: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t <> $1")
                 .bind(source.memory_id.into_inner())
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(rolled, 0, "drop without commit must roll the whole batch");
 
@@ -314,7 +330,7 @@ async fn unit_of_work_derive_memories_is_atomic() {
                 .map(|row| row.memory_id.into_inner())
                 .collect::<Vec<_>>(),
         )
-        .fetch_one(built.pool_for_tests())
+        .fetch_one(&admin_pool)
         .await?;
         assert_eq!(landed, 2);
 
@@ -346,13 +362,15 @@ fn mcp_call(tool: &str, actor: &str) -> McpCallLoggedV1 {
 }
 
 fn admin_authz_for(owner: proxima_core::Owner) -> AuthzContext {
-    AuthzContext::for_subject_with_role(
-        UserId::new(Uuid::now_v7()),
-        [(owner, Role::admin())],
-        AuthPath::HostBearer,
+    proxima_core::test_fixtures::authenticated_context(
+        AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            AuthPath::HostBearer,
+        )
+        .narrowed_to_owner(owner)
+        .expect("an admin on exactly this owner narrows to it"),
     )
-    .narrowed_to_owner(owner)
-    .expect("an admin on exactly this owner narrows to it")
 }
 
 fn typed_goal_request(
@@ -384,17 +402,21 @@ fn typed_goal_request(
 async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
     let db_name = unique_db_name("proxima_typed_goal");
     create_db(&db_name).await.expect("PG required");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let authz = built.single_owner_authz().expect("single owner");
+        let authz = proxima_core::test_fixtures::authenticated_context(
+            built.single_owner_authz().expect("single owner"),
+        );
         let engine = built.engine();
         let fact = engine
             .ingest_fact(
@@ -528,13 +550,13 @@ async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
             "SELECT count(*)::bigint FROM proxima_core.memory WHERE t = ANY($1)",
         )
         .bind(vec![pending_fact_id, pending_perspective_id])
-        .fetch_one(built.pool_for_tests())
+        .fetch_one(&admin_pool)
         .await?;
         assert_eq!(missing, 0, "dropped UoW must roll back pending memories");
         let missing_goal: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.goal WHERE t = $1")
                 .bind(pending_goal_id)
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(missing_goal, 0, "dropped UoW must roll back pending goals");
 
@@ -575,7 +597,7 @@ async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
         let topology: (Option<Uuid>, Vec<Uuid>) =
             sqlx::query_as("SELECT assignment_t, evidence_t FROM proxima_core.goal WHERE t = $1")
                 .bind(committed_goal.goal_id.into_inner())
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(
             topology.0,
@@ -596,21 +618,25 @@ async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
 async fn typed_goal_pending_foreign_perspective_rejects_cross_owner_assignment() {
     let db_name = unique_db_name("proxima_typed_goal_foreign_pending");
     create_db(&db_name).await.expect("PG required");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner_a = company_owner(Uuid::now_v7());
         let owner_b = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner_a)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let authz = AuthzContext::for_subject_with_role(
-            UserId::new(Uuid::now_v7()),
-            [(owner_a, Role::admin()), (owner_b, Role::admin())],
-            AuthPath::HostBearer,
+        let authz = proxima_core::test_fixtures::authenticated_context(
+            AuthzContext::for_subject_with_role(
+                UserId::new(Uuid::now_v7()),
+                [(owner_a, Role::admin()), (owner_b, Role::admin())],
+                AuthPath::HostBearer,
+            ),
         );
         let engine = built.engine();
         let mut uow = engine.unit_of_work(&authz).await?;
@@ -657,7 +683,7 @@ async fn typed_goal_pending_foreign_perspective_rejects_cross_owner_assignment()
             "SELECT count(*)::bigint FROM proxima_core.memory WHERE t = ANY($1)",
         )
         .bind(vec![foreign_fact_id, foreign_perspective_id])
-        .fetch_one(built.pool_for_tests())
+        .fetch_one(&admin_pool)
         .await?;
         assert_eq!(missing_memory, 0, "dropped UoW must roll back foreign rows");
         built.shutdown();
@@ -681,12 +707,13 @@ async fn typed_goal_pending_foreign_perspective_rejects_cross_owner_assignment()
 async fn unit_of_work_reads_its_own_sidecars_inside_the_transaction() {
     let db_name = unique_db_name("proxima_uow_read");
     create_db(&db_name).await.expect("PG required");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner_a = company_owner(Uuid::now_v7());
         let owner_b = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner_a)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)

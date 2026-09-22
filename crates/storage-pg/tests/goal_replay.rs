@@ -72,7 +72,7 @@ async fn fresh_pg() -> (String, PgStorage) {
         .await
         .expect("connect")
         .with_cold(Arc::new(MemoryColdStore::default()));
-    pg.run_migrations().await.expect("migrate");
+    pg.run_before_owner_rls_migrations().await.expect("migrate");
     (db_name, pg)
 }
 

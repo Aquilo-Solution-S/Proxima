@@ -255,7 +255,7 @@ async fn every_cited_enforcement_site_resolves() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         for site in ddl {
             let pool = pg.pool_for_tests();
             let (kind, relation, name, exists) = match site {
@@ -467,7 +467,7 @@ async fn transfer_is_announced_and_the_announce_surface_is_declared() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
 
         // `transfer` is one of the four announce ops, in the enum, in this
         // order. The guardrail asserts the order; this asserts the lane
@@ -556,7 +556,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
 
         let owner_id = Uuid::now_v7();
@@ -808,7 +808,7 @@ async fn every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let unenforced: Vec<(String, String)> = sqlx::query_as(
             "SELECT d.relation, d.name
                FROM unnest($1::text[], $2::text[]) AS d(relation, name)
@@ -864,7 +864,7 @@ async fn every_column_a_declaration_names_is_a_column_the_catalog_has() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
 
         // (schema-qualified table, column, what named it) — flattened so
         // one round trip answers for the whole contract.
@@ -983,7 +983,7 @@ async fn every_dedupe_key_is_a_uniqueness_the_schema_enforces() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         for (table, dedupe_key) in declared {
             let columns: Vec<String> = dedupe_key.iter().map(|c| (*c).to_owned()).collect();
             // Both a UNIQUE constraint and a bare unique index enforce the
@@ -1157,7 +1157,7 @@ async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let surfaces = pg.surfaces();
 

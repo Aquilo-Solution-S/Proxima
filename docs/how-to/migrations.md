@@ -17,29 +17,24 @@ after the tag. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 
 | Lane | Migration |
 |---|---|
-| Core | `0013_v015_agent_note_natural_key_index.sql`: btree on `proxima_core.agent_note_v1 (note_id)`, the natural key `core/agent-note-v1` declares |
-| Code flavor | No new migration |
+| Core | Existing `0013_v015_agent_note_natural_key_index.sql`, unchanged; new `0014_v015_owner_rls.sql` activates owner RLS and adds covering head-page indexes |
+| Code flavor | `20260922000020_v015_owner_rls.sql`: owner policies and FORCE RLS on every Code table |
 
-Index-only and additive. A v0.0.14 database upgrades in place; no reset.
-`CREATE INDEX` takes a brief `SHARE` lock on `agent_note_v1`, which blocks
-writes to that one table for the duration — trivial on any store small enough
-to have tolerated the missing index, and the reason for the index is that it
-was not staying small.
+**Coordinated cutover, not a rolling upgrade from v0.0.14.** Stop every old
+pack sharing the database before applying migrations; old binaries cannot
+resume after activation. Schema/data changes are additive; owner-scoped access
+and split runtime/platform credentials become mandatory.
 
-### Owner-RLS compatibility bridge
+The already-merged 0013 may have been applied independently. Its bytes and
+version remain unchanged. v0.0.15 is the named exception to the one-core-file
+rule: append 0014 instead of rewriting an existing checksum. Both core and
+Code activation now run through the ordinary composed migration runner in
+this release. There is no future-version checksum exception or second release
+needed for activation.
 
-v0.0.15 binds verified owner/platform scopes before enforcement. It recognizes
-one exact successor checksum from
-`crates/storage-pg/compatibility/0014_v016_owner_rls.sql` without applying that
-file. Unknown versions and changed checksums still refuse boot. The Code
-companion is `flavors/code/compatibility/20260922000020_v016_owner_rls.sql`.
-The prepared core migration also adds the two owner/head ordering indexes
-used by paginated reads (see [07 §Runtime owner binding](../07-storage.md#runtime-owner-binding)).
-
-Activation requires every live host sharing the database to run the bridge,
-separate runtime/platform credentials, and both additive migrations. Promote
-these exact bytes into the migration directories for v0.0.16; changing them
-requires a new compatible predecessor. See [15 §Owner-RLS rollout](../15-deployment.md#owner-rls-rollout).
+Migration authority is the nonsuperuser platform owner, with an administrator
+preparing extensions, ownership and grants first. See
+[15 §Owner-RLS rollout](../15-deployment.md#owner-rls-rollout).
 
 ## v0.0.14
 
@@ -87,8 +82,8 @@ in order. Previously shipped migration bytes remain unchanged.
 
 `_sqlx_migrations` stores `(version, checksum)`.
 
-- SQLx ignores foreign-lane rows (`ignore_missing`). Core preflight still refuses
-  unknown core versions except the checksum-approved owner-RLS successor.
+- SQLx ignores foreign-lane rows (`ignore_missing`). Core preflight requires
+  every recorded core version to match an embedded migration checksum.
 - Checksum mismatch: fatal. Do not edit an applied file.
 
 ## Lanes

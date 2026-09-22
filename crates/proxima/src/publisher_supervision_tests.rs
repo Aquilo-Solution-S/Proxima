@@ -18,6 +18,7 @@ use proxima_core::storage_ports::publication::{
     AckOutcome, BrokerReceipt, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
     ReleaseOutcome,
 };
+use proxima_core::test_fixtures::authenticated_context;
 use proxima_core::{FactPayload, Owner};
 use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
@@ -140,6 +141,11 @@ fn probe_migrator() -> Migrator {
             note text NOT NULL
         )"
         .to_owned(),
+        "ALTER TABLE publisher_supervision.probe_v1 ENABLE ROW LEVEL SECURITY".to_owned(),
+        "ALTER TABLE publisher_supervision.probe_v1 FORCE ROW LEVEL SECURITY".to_owned(),
+        "CREATE POLICY proxima_owner_read ON publisher_supervision.probe_v1 FOR SELECT TO PUBLIC USING (EXISTS (SELECT 1 FROM proxima_core.memory AS parent WHERE parent.t = probe_v1.t AND parent.owner_id = ANY(COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))))".to_owned(),
+        "CREATE POLICY proxima_owner_write ON publisher_supervision.probe_v1 FOR ALL TO PUBLIC USING (EXISTS (SELECT 1 FROM proxima_core.memory AS parent WHERE parent.t = probe_v1.t AND parent.owner_id = ANY(COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[])))) WITH CHECK (EXISTS (SELECT 1 FROM proxima_core.memory AS parent WHERE parent.t = probe_v1.t AND parent.owner_id = ANY(COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))))".to_owned(),
+        "CREATE POLICY proxima_platform ON publisher_supervision.probe_v1 FOR ALL TO CURRENT_USER USING (current_setting('app.proxima_scope', true) = 'platform') WITH CHECK (current_setting('app.proxima_scope', true) = 'platform')".to_owned(),
         "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id) VALUES
              ('publisher_supervision.probe_v1', 'publisher-supervision')"
             .to_owned(),
@@ -469,7 +475,7 @@ async fn capture(built: &super::BuiltProxima, owner: Owner, note: &str) -> Uuid 
     built
         .engine()
         .ingest_fact(
-            &built.single_owner_authz().expect("single owner authz"),
+            &authenticated_context(built.single_owner_authz().expect("single owner authz")),
             crate::FactWrite::new(owner, PublisherHealthProbeV1::SCHEMA_ID, &payload),
         )
         .await
@@ -489,6 +495,7 @@ struct TestWorld {
     built: super::BuiltProxima,
     owner: Owner,
     events: Arc<Mutex<Vec<String>>>,
+    platform_pool: sqlx::PgPool,
 }
 
 impl TestWorld {
@@ -502,7 +509,18 @@ impl TestWorld {
         let stream_name = format!("PS_{}", Uuid::now_v7().simple());
         let js = create_stream(url, &stream_name, &prefix).await;
         let owner = crate::company_owner(Uuid::now_v7());
-        let db_url = proxima_pg_testkit::db_url(&db_name);
+        let (db_url, platform_url) = proxima_pg_testkit::split_role_urls(&db_name)
+            .await
+            .expect("split fixture roles");
+        let platform_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&platform_url)
+            .await
+            .expect("platform pool");
+        sqlx::query("SELECT set_config('app.proxima_scope', 'platform', false)")
+            .execute(&platform_pool)
+            .await
+            .expect("platform scope");
         let mut values = vec![
             ("PROXIMA_PUBLICATION_SOURCE", HEALTH_SOURCE.to_owned()),
             ("PROXIMA_NATS_URL", url.to_owned()),
@@ -524,6 +542,7 @@ impl TestWorld {
             .from_lookup(lookup)
             .expect("runtime config")
             .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(owner)
             .tool_scope(crate::ToolScope::All)
             .allow_insecure_single_owner()
@@ -541,6 +560,7 @@ impl TestWorld {
             built,
             owner,
             events,
+            platform_pool,
         }
     }
 
@@ -566,12 +586,25 @@ async fn publisher_supervision_sidecar_fixture_captures_against_real_pg() {
     proxima_pg_testkit::create_db(&db_name)
         .await
         .expect("PG fixture database");
+    let (runtime_url, platform_url) = proxima_pg_testkit::split_role_urls(&db_name)
+        .await
+        .expect("split fixture roles");
+    let platform_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&platform_url)
+        .await
+        .expect("platform pool");
+    sqlx::query("SELECT set_config('app.proxima_scope', 'platform', false)")
+        .execute(&platform_pool)
+        .await
+        .expect("platform scope");
     let mut built = None;
     let outcome = std::panic::AssertUnwindSafe(async {
         let owner = crate::company_owner(Uuid::now_v7());
         built = Some(
             crate::Proxima::<PublisherHealthApp>::app()
-                .database_url(proxima_pg_testkit::db_url(&db_name))
+                .database_url(runtime_url)
+                .platform_database_url(platform_url)
                 .owner(owner)
                 .tool_scope(crate::ToolScope::All)
                 .allow_insecure_single_owner()
@@ -589,7 +622,7 @@ async fn publisher_supervision_sidecar_fixture_captures_against_real_pg() {
             "SELECT state::text FROM proxima_core.publication_outbox WHERE t = $1",
         )
         .bind(id)
-        .fetch_one(runtime.pool_for_tests())
+        .fetch_one(&platform_pool)
         .await
         .expect("captured outbox row");
         assert_eq!(state, "pending");
@@ -673,7 +706,7 @@ async fn real_claim_table_failure_recovers(
     config: &proxima_outbox_nats::NatsPublisherConfig,
 ) {
     sqlx::query("ALTER TABLE proxima_core.publication_outbox RENAME TO publication_outbox_hold")
-        .execute(world.built.pool_for_tests())
+        .execute(&world.platform_pool)
         .await
         .expect("isolate real claim-table failure");
     let cancel = CancellationToken::new();
@@ -691,7 +724,7 @@ async fn real_claim_table_failure_recovers(
     .catch_unwind()
     .await;
     sqlx::query("ALTER TABLE proxima_core.publication_outbox_hold RENAME TO publication_outbox")
-        .execute(world.built.pool_for_tests())
+        .execute(&world.platform_pool)
         .await
         .expect("restore isolated claim table");
     if let Err(payload) = failed {
@@ -808,8 +841,8 @@ async fn mixed_pass_stays_failed_until_recovery(
     update_max_message_size(&world.js, &world.stream_name, -1).await;
     release.notify_one();
     wait_for_health(&reader, proxima_outbox_nats::PublisherDrainState::Clean).await;
-    assert_published(world.built.pool_for_tests(), poison).await;
-    assert_published(world.built.pool_for_tests(), small).await;
+    assert_published(&world.platform_pool, poison).await;
+    assert_published(&world.platform_pool, small).await;
     cancel.cancel();
     task.join().await.expect("mixed publisher joins");
 }

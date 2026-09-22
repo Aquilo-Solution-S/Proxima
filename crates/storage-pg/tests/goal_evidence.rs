@@ -53,7 +53,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
         let pg = PgStorage::connect(&url)
             .await?
             .with_cold(Arc::new(MemoryColdStore::default()));
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let fact = pg.ingest_fact_atomic(&permit, &draft("fact"), None).await?;

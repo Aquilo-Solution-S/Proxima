@@ -34,7 +34,7 @@ impl Fixture {
         let name = format!("proxima_test_{}", Uuid::now_v7().simple());
         create_db(&name).await?;
         let pg = PgStorage::connect(&db_url(&name)).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let user = UserId::new(Uuid::now_v7());

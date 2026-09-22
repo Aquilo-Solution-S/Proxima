@@ -24,8 +24,12 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     EdgeTargetProjection, EntityKind, EntityRef, Role, SearchProjectionColumnKind, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{create_db, drop_db, split_role_urls, unique_db_name};
 use uuid::Uuid;
+
+fn authenticated(context: AuthzContext) -> AuthzContext {
+    proxima_core::test_fixtures::authenticated_context(context)
+}
 
 fn sdk_fact() -> FacadeFact {
     FacadeFact {
@@ -69,16 +73,18 @@ fn sdk_new_series() -> proxima::MemoryTarget {
 async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
     let db_name = unique_db_name("sdk_derived_identity");
     create_db(&db_name).await.expect("PG required");
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
-            .database_url(db_url(&db_name))
+            .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let authz = built.single_owner_authz().expect("one owner");
+        let authz = authenticated(built.single_owner_authz().expect("one owner"));
         let engine = built.engine();
         let fact = engine
             .ingest_fact(
@@ -220,16 +226,18 @@ async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
 async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
     let db_name = unique_db_name("sdk_derived_session");
     create_db(&db_name).await.expect("PG required");
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
-            .database_url(db_url(&db_name))
+            .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let authz = built.single_owner_authz().expect("one owner");
+        let authz = authenticated(built.single_owner_authz().expect("one owner"));
         let engine = built.engine();
         let mut uow = engine.unit_of_work(&authz).await?;
         let fact = uow
@@ -340,30 +348,34 @@ async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
 async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs() {
     let db_name = unique_db_name("sdk_derived_access");
     create_db(&db_name).await.expect("PG required");
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let foreign = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
-            .database_url(db_url(&db_name))
+            .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
         let engine = built.engine();
-        let local_authz = built.single_owner_authz().expect("one owner");
-        let foreign_authz = AuthzContext::for_subject_with_role(
-            UserId::new(Uuid::now_v7()),
-            [(foreign, Role::admin())],
-            AuthPath::HostBearer,
-        )
-        .narrowed_to_owner(foreign)
-        .expect("foreign write scope");
-        let both = AuthzContext::for_subject_with_role(
+        let local_authz = authenticated(built.single_owner_authz().expect("one owner"));
+        let foreign_authz = authenticated(
+            AuthzContext::for_subject_with_role(
+                UserId::new(Uuid::now_v7()),
+                [(foreign, Role::admin())],
+                AuthPath::HostBearer,
+            )
+            .narrowed_to_owner(foreign)
+            .expect("foreign write scope"),
+        );
+        let both = authenticated(AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(owner, Role::admin()), (foreign, Role::admin())],
             AuthPath::HostBearer,
-        );
+        ));
         let fact = engine
             .ingest_fact(
                 &foreign_authz,
@@ -519,22 +531,24 @@ async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
     use proxima::flavor::{FactWrite, SeriesHandle};
     let db_name = unique_db_name("sdk_fact_series");
     create_db(&db_name).await.expect("PG required");
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let foreign = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
-            .database_url(db_url(&db_name))
+            .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
         let engine = built.engine();
-        let authz = AuthzContext::for_subject_with_role(
+        let authz = authenticated(AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(owner, Role::admin()), (foreign, Role::admin())],
             AuthPath::HostBearer,
-        );
+        ));
         let first_payload = sdk_fact();
         let mut later_payload = first_payload.clone();
         later_payload.body = "Later observation".into();
@@ -600,7 +614,7 @@ async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
             [first.memory_id],
             "explicit destination preserves the caller's foreign read access"
         );
-        let local_only = built.single_owner_authz().expect("local context");
+        let local_only = authenticated(built.single_owner_authz().expect("local context"));
         let denied = engine
             .ingest_fact(
                 &local_only,
@@ -622,17 +636,19 @@ async fn typed_fact_concurrent_first_observations_share_a_natural_series() {
     use proxima::flavor::FactWrite;
     let db_name = unique_db_name("sdk_fact_concurrent");
     create_db(&db_name).await.expect("PG required");
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
-            .database_url(db_url(&db_name))
+            .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
         let engine = built.engine();
-        let authz = built.single_owner_authz().expect("one owner");
+        let authz = authenticated(built.single_owner_authz().expect("one owner"));
         for _ in 0..8 {
             let a = sdk_fact();
             let mut b = a.clone();
@@ -673,17 +689,19 @@ async fn typed_fact_concurrent_first_observations_share_a_natural_series() {
 async fn natural_key_selection_uses_the_authorized_payload() {
     let db_name = unique_db_name("sdk_nk_binding");
     create_db(&db_name).await.expect("PG required");
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
-            .database_url(db_url(&db_name))
+            .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
         let engine = built.engine();
-        let authz = built.single_owner_authz().expect("one owner");
+        let authz = authenticated(built.single_owner_authz().expect("one owner"));
         let original = sdk_fact();
         let draft = proxima::FactWriteCommand::from_payload(
             "sdk/binding",
@@ -801,7 +819,7 @@ impl FactPayload for FacadeFact {
     }
 
     fn sidecar_table() -> Option<&'static str> {
-        Some("public.facade_surface_fact_v1")
+        Some("facade_surface.fact_v1")
     }
 
     fn natural_key_columns() -> &'static [&'static str] {
@@ -818,7 +836,7 @@ impl PgMemorySidecar for FacadeFact {
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
-                "INSERT INTO public.facade_surface_fact_v1
+                "INSERT INTO facade_surface.fact_v1
                     (t, note_id, title, body, tags)
                  VALUES ($1, $2, $3, $4, $5)
                  ON CONFLICT (t) DO NOTHING",
@@ -839,7 +857,7 @@ impl PgMemorySidecar for FacadeFact {
 impl PgMemoryPayload for FacadeFact {
     // The column this table stores its memory `t` under, spelled by
     // every statement below. Freeze holds it equal to the contract
-    // `Surface`'s `KeyShape::MemoryT { column }` for public.facade_surface_fact_v1.
+    // `Surface`'s `KeyShape::MemoryT { column }` for facade_surface.fact_v1.
     const OWNER_PINNED: bool = false;
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
@@ -851,7 +869,7 @@ impl PgMemoryPayload for FacadeFact {
             let row: Option<(Uuid, String, String, Vec<String>)> = ctx
                 .fetch_optional_by_memory_id(
                     "SELECT note_id, title, body, tags
-                       FROM public.facade_surface_fact_v1
+                       FROM facade_surface.fact_v1
                       WHERE t = $1",
                     memory_id,
                 )
@@ -907,7 +925,7 @@ impl AbstractionPayload for FacadeAbstraction {
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "public.facade_surface_abstraction_v1"
+        "facade_surface.abstraction_v1"
     }
 
     fn references(&self) -> Vec<PayloadReference> {
@@ -928,7 +946,7 @@ impl PgMemorySidecar for FacadeAbstraction {
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
-                "INSERT INTO public.facade_surface_abstraction_v1
+                "INSERT INTO facade_surface.abstraction_v1
                     (t, title, body, source_count, observed_entity)
                  VALUES ($1, $2, $3, $4, $5)
                  ON CONFLICT (t) DO NOTHING",
@@ -949,7 +967,7 @@ impl PgMemorySidecar for FacadeAbstraction {
 impl PgMemoryPayload for FacadeAbstraction {
     // The column this table stores its memory `t` under, spelled by
     // every statement below. Freeze holds it equal to the contract
-    // `Surface`'s `KeyShape::MemoryT { column }` for public.facade_surface_abstraction_v1.
+    // `Surface`'s `KeyShape::MemoryT { column }` for facade_surface.abstraction_v1.
     const OWNER_PINNED: bool = false;
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
@@ -961,7 +979,7 @@ impl PgMemoryPayload for FacadeAbstraction {
             let row: Option<(String, String, i32, Uuid)> = ctx
                 .fetch_optional_by_memory_id(
                     "SELECT title, body, source_count, observed_entity
-                       FROM public.facade_surface_abstraction_v1
+                       FROM facade_surface.abstraction_v1
                       WHERE t = $1",
                     memory_id,
                 )
@@ -1014,7 +1032,7 @@ static FACADE_CONTRACT: FlavorContract = FlavorContract {
         SchemaContract {
             id: SchemaRef::new("facade-test", "fact", 2),
             kind: PayloadKind::Fact,
-            sidecar_table: Some("public.facade_surface_fact_v1"),
+            sidecar_table: Some("facade_surface.fact_v1"),
             search: SearchProjectionDecl::Projected {
                 fields: &[
                     WeightedField {
@@ -1038,7 +1056,7 @@ static FACADE_CONTRACT: FlavorContract = FlavorContract {
             },
             transfer: TransferRule::StaysOnKey,
             provenance: Provenance::None,
-            surfaces: &[facade_memory_surface("public.facade_surface_fact_v1")],
+            surfaces: &[facade_memory_surface("facade_surface.fact_v1")],
             natural_key_columns: &["note_id"],
         },
         SchemaContract {
@@ -1059,7 +1077,7 @@ static FACADE_CONTRACT: FlavorContract = FlavorContract {
         SchemaContract {
             id: SchemaRef::new("facade-test", "abstraction", 1),
             kind: PayloadKind::Abstraction,
-            sidecar_table: Some("public.facade_surface_abstraction_v1"),
+            sidecar_table: Some("facade_surface.abstraction_v1"),
             search: SearchProjectionDecl::None {
                 why: "the fixture's search proof belongs to its version-two Fact",
             },
@@ -1068,9 +1086,7 @@ static FACADE_CONTRACT: FlavorContract = FlavorContract {
             },
             transfer: TransferRule::StaysOnKey,
             provenance: Provenance::OriginEdges,
-            surfaces: &[facade_memory_surface(
-                "public.facade_surface_abstraction_v1",
-            )],
+            surfaces: &[facade_memory_surface("facade_surface.abstraction_v1")],
             natural_key_columns: &[],
         },
     ],
@@ -1193,21 +1209,22 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
 -> Result<(), Box<dyn std::error::Error>> {
     let db_name = unique_db_name("proxima_facade_surface");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
             .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let authz = AuthzContext::for_subject_with_role(
+        let authz = authenticated(AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(owner, Role::admin())],
             AuthPath::HostBearer,
-        );
+        ));
 
         let fact = FacadeFact {
             note_id: Uuid::now_v7(),
@@ -1221,13 +1238,15 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         // Narrowed to the one owner it writes for: the engine stamps the
         // write owner from resolved access, so the ingest must resolve
         // exactly one.
-        let write_authz = AuthzContext::for_subject_with_role(
-            UserId::new(Uuid::now_v7()),
-            [(owner, Role::admin())],
-            AuthPath::HostBearer,
-        )
-        .narrowed_to_owner(owner)
-        .expect("an admin on exactly this owner narrows to it");
+        let write_authz = authenticated(
+            AuthzContext::for_subject_with_role(
+                UserId::new(Uuid::now_v7()),
+                [(owner, Role::admin())],
+                AuthPath::HostBearer,
+            )
+            .narrowed_to_owner(owner)
+            .expect("an admin on exactly this owner narrows to it"),
+        );
         let fact_outcome = built
             .engine
             .ingest_fact(
@@ -1279,7 +1298,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         assert_eq!(batch.memories[0].text.as_deref(), Some(fact.body.as_str()));
 
         let sidecarless_memory_id = insert_raw_fact_admission(
-            built.pool_for_tests(),
+            &admin_pool(&db_name).await?,
             owner,
             FacadeSidecarlessFact::SCHEMA_ID,
             &[],
@@ -1356,7 +1375,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
 
         let foreign_owner = company_owner(Uuid::now_v7());
         let foreign_memory_id = insert_raw_fact_admission(
-            built.pool_for_tests(),
+            &admin_pool(&db_name).await?,
             foreign_owner,
             FacadeSidecarlessFact::SCHEMA_ID,
             &[],
@@ -1388,7 +1407,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         assert!(citation.is_none(), "the v2 visibility preflight succeeds");
 
         let graph_payloads = proxima_storage_pg::verbs::consolidate::load_memory_graph_payloads(
-            built.pool_for_tests(),
+            &admin_pool(&db_name).await?,
             built.pg_sidecars.as_ref(),
             &[MemoryGraphIdentity {
                 memory_id: fact_outcome.memory_id,
@@ -1437,7 +1456,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
               WHERE entity_id = $1",
         )
         .bind(derived_t.into_inner())
-        .fetch_one(built.pool_for_tests())
+        .fetch_one(&admin_pool(&db_name).await?)
         .await?;
         assert_eq!(
             embedding_rows, 0,
@@ -1547,45 +1566,43 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
 -> Result<(), Box<dyn std::error::Error>> {
     let db_name = unique_db_name("proxima_facade_sidecar_integrity");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
             .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let authz = AuthzContext::for_subject_with_role(
+        let authz = authenticated(AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(owner, Role::admin())],
             AuthPath::HostBearer,
-        );
+        ));
 
         let valid_with_extension = insert_raw_facade_fact(
-            built.pool_for_tests(),
+            &admin_pool(&db_name).await?,
             owner,
-            &[
-                "public.facade_surface_fact_v1",
-                "public.facade_surface_abstraction_v1",
-            ],
+            &["facade_surface.fact_v1", "facade_surface.abstraction_v1"],
             true,
         )
         .await?;
         let missing_stamp =
-            insert_raw_facade_fact(built.pool_for_tests(), owner, &[], false).await?;
+            insert_raw_facade_fact(&admin_pool(&db_name).await?, owner, &[], false).await?;
         let wrong_stamp = insert_raw_facade_fact(
-            built.pool_for_tests(),
+            &admin_pool(&db_name).await?,
             owner,
-            &["public.facade_surface_abstraction_v1"],
+            &["facade_surface.abstraction_v1"],
             false,
         )
         .await?;
         let missing_primary_row = insert_raw_facade_fact(
-            built.pool_for_tests(),
+            &admin_pool(&db_name).await?,
             owner,
-            &["public.facade_surface_fact_v1"],
+            &["facade_surface.fact_v1"],
             false,
         )
         .await?;
@@ -1657,18 +1674,18 @@ async fn insert_raw_facade_fact(
         // rows predate it. That IS the state this test needs the reader to
         // fail closed on.
         sqlx::query(
-            "ALTER TABLE public.facade_surface_fact_v1
-                 DISABLE TRIGGER facade_surface_fact_v1_declared_by_memory_on_delete",
+            "ALTER TABLE facade_surface.fact_v1
+                 DISABLE TRIGGER fact_v1_declared_by_memory_on_delete",
         )
         .execute(pool)
         .await?;
-        sqlx::query("DELETE FROM public.facade_surface_fact_v1 WHERE t = $1")
+        sqlx::query("DELETE FROM facade_surface.fact_v1 WHERE t = $1")
             .bind(memory_id.into_inner())
             .execute(pool)
             .await?;
         sqlx::query(
-            "ALTER TABLE public.facade_surface_fact_v1
-                 ENABLE TRIGGER facade_surface_fact_v1_declared_by_memory_on_delete",
+            "ALTER TABLE facade_surface.fact_v1
+                 ENABLE TRIGGER fact_v1_declared_by_memory_on_delete",
         )
         .execute(pool)
         .await?;
@@ -1725,9 +1742,9 @@ async fn insert_raw_fact_admission(
     .await?;
     for table in &stamped_tables {
         match table.as_str() {
-            "public.facade_surface_fact_v1" => {
+            "facade_surface.fact_v1" => {
                 sqlx::query(
-                    "INSERT INTO public.facade_surface_fact_v1 (t, note_id, title, body)
+                    "INSERT INTO facade_surface.fact_v1 (t, note_id, title, body)
                      VALUES ($1, $2, 'integrity fixture', 'payload present')",
                 )
                 .bind(t)
@@ -1735,9 +1752,9 @@ async fn insert_raw_fact_admission(
                 .execute(&mut *stamped)
                 .await?;
             }
-            "public.facade_surface_abstraction_v1" => {
+            "facade_surface.abstraction_v1" => {
                 sqlx::query(
-                    "INSERT INTO public.facade_surface_abstraction_v1
+                    "INSERT INTO facade_surface.abstraction_v1
                         (t, title, body, source_count, observed_entity)
                      VALUES ($1, 'integrity fixture', 'extension present', 1, $2)",
                 )
@@ -1783,7 +1800,7 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
 
     let mut statements = vec![
         "CREATE SCHEMA facade_surface".to_owned(),
-        "CREATE TABLE public.facade_surface_fact_v1 (
+        "CREATE TABLE facade_surface.fact_v1 (
             t uuid PRIMARY KEY,
             note_id uuid NOT NULL,
             title text NOT NULL,
@@ -1791,7 +1808,7 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
             tags text[] NOT NULL DEFAULT '{}'
         )"
         .to_owned(),
-        "CREATE TABLE public.facade_surface_abstraction_v1 (
+        "CREATE TABLE facade_surface.abstraction_v1 (
             t uuid PRIMARY KEY,
             title text NOT NULL,
             body text NOT NULL,
@@ -1803,8 +1820,8 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
         // to be a subset of `proxima_core.flavor_surface`, so a fixture that
         // stamps a sidecar has to declare it like any other.
         "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id) VALUES
-             ('public.facade_surface_fact_v1', 'facade-test'),
-             ('public.facade_surface_abstraction_v1', 'facade-test')"
+             ('facade_surface.fact_v1', 'facade-test'),
+             ('facade_surface.abstraction_v1', 'facade-test')"
             .to_owned(),
     ];
     statements.extend(
@@ -1819,6 +1836,24 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
             .expect("the facade test flavor's declaration triggers")
             .into_iter()
             .map(|artifact| artifact.forward),
+    );
+    statements.push(
+        "ALTER TABLE facade_surface.fact_v1 ENABLE ROW LEVEL SECURITY;\n\
+         ALTER TABLE facade_surface.fact_v1 FORCE ROW LEVEL SECURITY;\n\
+         ALTER TABLE facade_surface.abstraction_v1 ENABLE ROW LEVEL SECURITY;\n\
+         ALTER TABLE facade_surface.abstraction_v1 FORCE ROW LEVEL SECURITY;\n\
+         ALTER TABLE facade_surface.projection ENABLE ROW LEVEL SECURITY;\n\
+         ALTER TABLE facade_surface.projection FORCE ROW LEVEL SECURITY;\n\
+         CREATE POLICY proxima_owner_read ON facade_surface.fact_v1 FOR SELECT TO PUBLIC USING (EXISTS (SELECT 1 FROM proxima_core.memory AS m WHERE m.t = facade_surface.fact_v1.t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])));\n\
+         CREATE POLICY proxima_owner_write ON facade_surface.fact_v1 FOR ALL TO PUBLIC USING (EXISTS (SELECT 1 FROM proxima_core.memory AS m WHERE m.t = facade_surface.fact_v1.t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[]))) WITH CHECK (EXISTS (SELECT 1 FROM proxima_core.memory AS m WHERE m.t = facade_surface.fact_v1.t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])));\n\
+         CREATE POLICY proxima_platform ON facade_surface.fact_v1 FOR ALL TO CURRENT_USER USING (current_setting('app.proxima_scope', true) = 'platform') WITH CHECK (current_setting('app.proxima_scope', true) = 'platform');\n\
+         CREATE POLICY proxima_owner_read ON facade_surface.abstraction_v1 FOR SELECT TO PUBLIC USING (EXISTS (SELECT 1 FROM proxima_core.memory AS m WHERE m.t = facade_surface.abstraction_v1.t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.read_abstraction', true), '')::uuid[], '{}'::uuid[]))::uuid[])));\n\
+         CREATE POLICY proxima_owner_write ON facade_surface.abstraction_v1 FOR ALL TO PUBLIC USING (EXISTS (SELECT 1 FROM proxima_core.memory AS m WHERE m.t = facade_surface.abstraction_v1.t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_abstraction', true), '')::uuid[], '{}'::uuid[]))::uuid[]))) WITH CHECK (EXISTS (SELECT 1 FROM proxima_core.memory AS m WHERE m.t = facade_surface.abstraction_v1.t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_abstraction', true), '')::uuid[], '{}'::uuid[]))::uuid[])));\n\
+         CREATE POLICY proxima_platform ON facade_surface.abstraction_v1 FOR ALL TO CURRENT_USER USING (current_setting('app.proxima_scope', true) = 'platform') WITH CHECK (current_setting('app.proxima_scope', true) = 'platform');\n\
+         CREATE POLICY proxima_owner_read ON facade_surface.projection FOR SELECT TO PUBLIC USING (owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))::uuid[]));\n\
+         CREATE POLICY proxima_owner_write ON facade_surface.projection FOR ALL TO PUBLIC USING (owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])) WITH CHECK (owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[]));\n\
+         CREATE POLICY proxima_platform ON facade_surface.projection FOR ALL TO CURRENT_USER USING (current_setting('app.proxima_scope', true) = 'platform') WITH CHECK (current_setting('app.proxima_scope', true) = 'platform')"
+            .to_owned(),
     );
     statements.extend(
         sidecars
@@ -1844,12 +1879,17 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
 /// `00..=19`), so this fixture cannot collide with a first-party flavor.
 const FACADE_MIGRATION_VERSION: i64 = 20_260_824_000_010;
 
+async fn admin_pool(database: &str) -> Result<sqlx::PgPool, sqlx::Error> {
+    sqlx::PgPool::connect(&proxima_pg_testkit::db_url(database)).await
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
     use proxima::flavor::{FactWrite, ToolError, authorized_fact_payloads, authorized_memory_ids};
     let db_name = unique_db_name("sdk_read_scope");
     create_db(&db_name).await.expect("PG required");
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owners = [
             company_owner(Uuid::now_v7()),
@@ -1857,7 +1897,8 @@ async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
             company_owner(Uuid::now_v7()),
         ];
         let built = Proxima::<FacadeSurfaceApp>::app()
-            .database_url(db_url(&db_name))
+            .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(owners[0])
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
@@ -1866,11 +1907,11 @@ async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
         let engine = built.engine();
         let mut ids = Vec::new();
         for owner in owners {
-            let authz = AuthzContext::for_subject_with_role(
+            let authz = authenticated(AuthzContext::for_subject_with_role(
                 UserId::new(Uuid::now_v7()),
                 [(owner, Role::admin())],
                 AuthPath::HostBearer,
-            );
+            ));
             ids.push(
                 engine
                     .ingest_fact(&authz, FactWrite::new(owner, "sdk/read", &sdk_fact()))
@@ -1878,11 +1919,11 @@ async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
                     .memory_id,
             );
         }
-        let authz = AuthzContext::for_subject_with_role(
+        let authz = authenticated(AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(owners[0], Role::admin()), (owners[1], Role::admin())],
             AuthPath::HostBearer,
-        );
+        ));
         let mut legacy = serde_json::to_value(QueryRequest::readable())?;
         legacy["owner"] = serde_json::to_value(owners[2])?;
         legacy["read_owners"] = serde_json::to_value([owners[2]])?;

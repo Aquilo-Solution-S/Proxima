@@ -21,10 +21,33 @@ use proxima_core::mcp::{
     resolve_operator_label, tool_name_matches,
 };
 use proxima_core::protocol::resource as protocol_resource;
-use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices};
+use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, StorageError};
 use serde::Serialize;
 
 use crate::auth::McpAuthContext;
+
+fn composed_schema_names(registry: &FlavorRegistryFrozen) -> Vec<String> {
+    let mut schemas = vec!["proxima_core".to_owned()];
+    for contract in registry.contracts() {
+        for surface in contract.all_surfaces() {
+            if let Some((schema, _)) = surface.table.split_once('.')
+                && !schemas.iter().any(|known| known == schema)
+            {
+                schemas.push(schema.to_owned());
+            }
+        }
+        for schema_contract in contract.schemas {
+            if let Some(table) = schema_contract.sidecar_table
+                && let Some((schema, _)) = table.split_once('.')
+                && !schemas.iter().any(|known| known == schema)
+            {
+                schemas.push(schema.to_owned());
+            }
+        }
+    }
+    schemas.sort();
+    schemas
+}
 
 #[derive(Clone)]
 pub struct McpToolHost {
@@ -62,24 +85,41 @@ impl McpToolHost {
         self
     }
 
+    /// Connect a runtime role and a separately authorized migration/platform
+    /// role. A single DSN cannot serve both purposes once owner RLS is active.
+    ///
     /// # Errors
     ///
-    /// Returns storage or migration failures.
-    ///
-    /// Runs only the substrate migrations. Flavor sidecar migrations
-    /// (including core memory agent-note tables) are the
-    /// composing host's responsibility — run each linked flavor's
-    /// `migrator()` before serving tool calls.
-    pub async fn from_database_url(
-        database_url: &str,
+    /// Returns storage, migration, registry, or platform-admission failures.
+    pub async fn from_database_urls(
+        runtime_url: &str,
+        platform_url: &str,
         registry: FlavorRegistry,
     ) -> Result<Self, crate::McpServerError> {
-        let pg = proxima_storage_pg::PgStorage::connect(database_url).await?;
-        pg.run_migrations().await?;
+        let pool_config = proxima_storage_pg::PgPoolConfig::from_env()?;
+        let tuning = proxima_storage_pg::PgTuning::from_env()?;
+        let migration = proxima_storage_pg::PgStorage::connect_for_migrations_with_config(
+            platform_url,
+            pool_config,
+            tuning,
+        )
+        .await?;
+        migration.run_migrations().await?;
         let frozen = registry.try_freeze()?;
-        let engine = Arc::new(
-            Engine::new(frozen.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
-        );
+        let schema_names = composed_schema_names(&frozen);
+        let schema_refs: Vec<&str> = schema_names.iter().map(String::as_str).collect();
+        let platform_pool = sqlx::PgPool::connect(platform_url)
+            .await
+            .map_err(|error| StorageError::Unavailable(error.to_string()))?;
+        let platform =
+            proxima_storage_pg::PgPlatformScope::new(platform_pool, &schema_refs).await?;
+        let pg =
+            proxima_storage_pg::PgStorage::connect_with_config(runtime_url, pool_config, tuning)
+                .await?
+                .with_platform_scope(platform);
+        proxima_storage_pg::assert_runtime_rls(&pg.clone_pool_for_backend(), &schema_refs).await?;
+        let engine =
+            Arc::new(Engine::new(frozen.clone()).with_storage_ports(Arc::new(pg).storage_ports()));
         Ok(Self::from_engine(engine, FlavorServices::default()))
     }
 

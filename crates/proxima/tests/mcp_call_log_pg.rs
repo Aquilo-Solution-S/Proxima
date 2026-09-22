@@ -16,7 +16,7 @@ use proxima_core::{
     ColdObjectStore, Engine, McpCallLogInput, MemoryHydrationStatus, Owner, ProtocolError, Role,
     UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
 use proxima_storage_pg::core_pg_sidecars;
 use uuid::Uuid;
 
@@ -47,13 +47,15 @@ impl FlavorApp for EmptyApp {
 }
 
 fn admin_authz_for(owner: Owner) -> AuthzContext {
-    AuthzContext::for_subject_with_role(
-        UserId::new(Uuid::now_v7()),
-        [(owner, Role::admin())],
-        AuthPath::HostBearer,
+    proxima_core::test_fixtures::authenticated_context(
+        AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            AuthPath::HostBearer,
+        )
+        .narrowed_to_owner(owner)
+        .expect("an admin on exactly this owner narrows to it"),
     )
-    .narrowed_to_owner(owner)
-    .expect("an admin on exactly this owner narrows to it")
 }
 
 fn call(owner: &Owner, at: time::OffsetDateTime) -> McpCallLogInput {
@@ -115,11 +117,13 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
     }
     let db_name = unique_db_name("proxima_mcp_call_log");
     create_db(&db_name).await.expect("PG required");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .s3(S3RuntimeConfig {
                 force_path_style: true,
                 ..S3RuntimeConfig::from_env()?
@@ -149,7 +153,7 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
 
         // Because the admission row declares the sidecar it carries: this
         // stamp was `{}` on the path this replaced.
-        let stamp = sidecar_stamp(built.pool_for_tests(), first.fact_memory_id).await?;
+        let stamp = sidecar_stamp(&admin_pool, first.fact_memory_id).await?;
         assert!(
             stamp.iter().any(|table| table == LOGGED_TABLE),
             "the admission row declares the logged-call sidecar: {stamp:?}"
@@ -195,7 +199,7 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
             .hydrate_memory(&authz, owner, first.fact_memory_id)
             .await?;
         assert_eq!(hydrated.status, MemoryHydrationStatus::Hydrated);
-        let hydrated_stamp = sidecar_stamp(built.pool_for_tests(), first.fact_memory_id).await?;
+        let hydrated_stamp = sidecar_stamp(&admin_pool, first.fact_memory_id).await?;
         assert!(hydrated_stamp.iter().any(|table| table == LOGGED_TABLE));
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
@@ -204,7 +208,7 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
                   WHERE t = $1",
             )
             .bind(first.fact_memory_id.into_inner())
-            .fetch_one(built.pool_for_tests())
+            .fetch_one(&admin_pool)
             .await?,
             1,
             "hydration must not duplicate the retained audit row"
@@ -221,7 +225,7 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
 
         // Nothing this path wrote is undeclared or unprojected.
         core_pg_sidecars()
-            .integrity_check(built.pool_for_tests())
+            .integrity_check(&admin_pool)
             .await
             .map_err(|err| format!("logging left declaration drift: {err}"))?;
 

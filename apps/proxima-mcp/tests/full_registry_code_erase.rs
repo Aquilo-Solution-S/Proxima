@@ -3,6 +3,8 @@
 #![cfg(feature = "code")]
 #![allow(clippy::too_many_lines)]
 
+mod common;
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -13,7 +15,7 @@ use proxima::flavor::{
     Surface, TransferRule,
 };
 use proxima::{AppInfo, FlavorApp, Proxima};
-use proxima_code::testkit::{erase_repo, register_repo};
+use proxima_code::testkit::register_repo;
 use proxima_code::{CodeFlavorStore, CommitV1, RepoScope};
 use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
 use proxima_core::storage_ports::{
@@ -22,13 +24,13 @@ use proxima_core::storage_ports::{
     HostStateRequest, HostStateWritePermit, OwnerInversePort, StateSurfaceName,
 };
 use proxima_core::{
-    FactPayload, FlavorServiceError, FlavorServices, MemoryId, Owner, OwnerRef, SourceId,
-    StorageError, UserId,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload, FlavorServiceError,
+    FlavorServices, MemoryId, Owner, OwnerRef, OwnerRoles, SourceId, StorageError, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::{PgHostStateLifecyclePort, PgHostStateParticipant, PgStorage};
-use sqlx::{Postgres, Transaction};
+use sqlx::{AssertSqlSafe, Postgres, Transaction};
 use uuid::Uuid;
 
 const PARTICIPANT: HostStateParticipantId = HostStateParticipantId::new("code_erase_full_registry");
@@ -86,6 +88,18 @@ static FAIL_AFTER_DELETE_ONCE: AtomicBool = AtomicBool::new(false);
 static LAST_PHYSICAL_SELECTION: Mutex<Vec<MemoryId>> = Mutex::new(Vec::new());
 
 struct FullRegistryApp;
+
+struct TrustedOwnerAuth(OwnerRoles);
+
+#[async_trait]
+impl Authenticator for TrustedOwnerAuth {
+    async fn authenticate(&self, _: &Credentials) -> Result<AuthzContext, AuthError> {
+        Ok(AuthzContext::server_resolved(
+            self.0.clone(),
+            AuthPath::HostBearer,
+        ))
+    }
+}
 
 impl FlavorBundle for FullRegistryApp {
     fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
@@ -250,12 +264,14 @@ async fn exercise_full_registry_erase(
         .expect("selection slot")
         .clear();
 
-    let storage = PgStorage::connect(database_url).await?;
+    let (runtime_url, platform_url) = common::split_roles(database_url).await?;
+    let migration_storage = PgStorage::connect(&platform_url).await?;
     proxima::run_core_and_flavor_migrations(
-        &storage,
+        &migration_storage,
         <FullRegistryApp as FlavorBundle>::migrators(),
     )
     .await?;
+    let platform_pool = sqlx::PgPool::connect(&platform_url).await?;
     sqlx::query(
         "CREATE TABLE proxima_core.test_code_host_copy (
              fact_id uuid PRIMARY KEY,
@@ -263,13 +279,27 @@ async fn exercise_full_registry_erase(
              payload bytea NOT NULL
          )",
     )
-    .execute(storage.pool_for_tests())
+    .execute(&platform_pool)
     .await?;
-    drop(storage);
+    sqlx::raw_sql(AssertSqlSafe("ALTER TABLE proxima_core.test_code_host_copy ENABLE ROW LEVEL SECURITY; ALTER TABLE proxima_core.test_code_host_copy FORCE ROW LEVEL SECURITY; CREATE POLICY proxima_owner_read ON proxima_core.test_code_host_copy FOR SELECT TO PUBLIC USING (owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])); CREATE POLICY proxima_owner_write ON proxima_core.test_code_host_copy FOR ALL TO PUBLIC USING (owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])) WITH CHECK (owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])); CREATE POLICY proxima_platform ON proxima_core.test_code_host_copy FOR ALL TO CURRENT_USER USING (current_setting('app.proxima_scope', true) = 'platform') WITH CHECK (current_setting('app.proxima_scope', true) = 'platform')".to_owned()))
+        .execute(&platform_pool)
+        .await?;
+    platform_pool.close().await;
 
     let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let subject = match owner {
+        OwnerRef::Personal(subject) => subject,
+        OwnerRef::Group(_) => unreachable!("fixture owner is personal"),
+    };
+    let authz = proxima_core::authenticate(
+        &TrustedOwnerAuth(OwnerRoles::for_subject(subject, []).unwrap()),
+        &Credentials::Bearer("full-registry-test".into()),
+    )
+    .await?;
+    let owner_scope = authz.owner_scope().expect("verified owner scope").clone();
     let built = Proxima::<FullRegistryApp>::app()
-        .database_url(database_url)
+        .database_url(&runtime_url)
+        .platform_database_url(&platform_url)
         .owner(owner)
         .allow_insecure_single_owner()
         .tool_scope(proxima::ToolScope::All)
@@ -287,7 +317,7 @@ async fn exercise_full_registry_erase(
     let repo_id = Uuid::now_v7();
     register_repo(
         &pool,
-        None,
+        Some(&owner_scope),
         &owner,
         repo_id,
         &format!("/tmp/proxima-full-registry-{repo_id}"),
@@ -320,7 +350,8 @@ async fn exercise_full_registry_erase(
     // The host callback deletes its row and then fails. The production Code
     // erase must roll back that callback SQL together with its Fact inverse.
     FAIL_AFTER_DELETE_ONCE.store(true, Ordering::SeqCst);
-    let failed = erase_repo(&store, &owner, repo_id).await;
+    let failed =
+        proxima_code::testkit::erase_repo_with_scope(&store, &owner, repo_id, &owner_scope).await;
     assert!(
         failed.is_err(),
         "the injected callback failure must abort erase"
@@ -329,7 +360,8 @@ async fn exercise_full_registry_erase(
     assert_eq!(count_copy(&pool, fact_id).await?, 1);
     assert_eq!(CALLBACK_COUNT.load(Ordering::SeqCst), 1);
 
-    let erased = erase_repo(&store, &owner, repo_id).await?;
+    let erased =
+        proxima_code::testkit::erase_repo_with_scope(&store, &owner, repo_id, &owner_scope).await?;
     assert_eq!(erased.memories_deleted, 1);
     assert_eq!(CALLBACK_COUNT.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -350,7 +382,7 @@ async fn exercise_full_registry_erase(
     proxima::flavor::register_core_pg_sidecars(&mut sidecars);
     <FullRegistryApp as FlavorBundle>::register_pg_sidecars(&mut sidecars);
     let sidecars = sidecars.freeze_against(built.registry())?;
-    let source_storage = PgStorage::connect(database_url)
+    let source_storage = common::runtime_storage(&runtime_url, &platform_url)
         .await?
         .with_host_state_participant(Arc::new(Participant(Arc::new(Lifecycle))))
         .with_sidecars(sidecars)

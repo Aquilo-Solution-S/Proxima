@@ -890,7 +890,7 @@ pub async fn boot(url: &str) -> Result<PgStorage, Box<dyn std::error::Error>> {
     let pg = PgStorage::connect(url)
         .await?
         .with_cold(Arc::new(CorpusColdStore::default()));
-    pg.run_migrations().await?;
+    pg.run_before_owner_rls_migrations().await?;
     // The corpus writes its sidecar rows through the port, which routes each
     // payload by its own `(kind, schema_id, version)` through this registry.
     // Erase and export are unaffected: both are driven by `OwnerSurfaces`

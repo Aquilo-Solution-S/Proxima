@@ -352,7 +352,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
 
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -471,7 +471,7 @@ async fn lexical_search_does_not_let_other_owner_fill_overfetch() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -510,7 +510,7 @@ async fn tagged_search_scans_flavor_sidecars() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let owner_id = owner.stored_owner_id();
@@ -643,7 +643,7 @@ async fn lexical_search_matches_german_via_lexical_languages() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let t = seed_note_lang(
@@ -690,7 +690,7 @@ async fn simple_rows_retain_stopwords_after_default_switch() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
@@ -740,7 +740,7 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
@@ -833,7 +833,7 @@ async fn semantic_search_respects_until() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let t = seed_note(pool, owner, "Embedded", "semantic neighbour body").await?;
@@ -910,7 +910,7 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let tagged_t = seed_note_lang(
@@ -1024,7 +1024,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         sqlx::query(
@@ -1192,7 +1192,7 @@ async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
@@ -1275,7 +1275,7 @@ async fn lexical_language_forget_refuses_while_rows_reference_it() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let t = seed_note_lang(
@@ -1343,7 +1343,7 @@ async fn lexical_language_forget_refuses_null_and_the_default() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
 
         let err = sqlx::query("SELECT proxima_core.lexical_language_forget(NULL)")
@@ -1378,7 +1378,7 @@ async fn lexical_remember_trigger_registers_before_the_fk_check() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         sqlx::query(
@@ -1426,7 +1426,7 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         sqlx::query(
@@ -1517,7 +1517,7 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let owner_id = owner.stored_owner_id();

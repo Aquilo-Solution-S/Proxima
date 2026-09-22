@@ -34,7 +34,8 @@
 use proxima::flavor::FlavorBundle;
 use proxima::run_core_and_flavor_migrations;
 use proxima_storage_pg::{
-    CORE_MIGRATION_VERSION_CEILING, PgStorage, core_migrator, ensure_core_schema_markers,
+    CORE_MIGRATION_VERSION_CEILING, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning,
+    core_migrator, ensure_core_schema_markers,
 };
 
 const DATABASE_URL_FLAG: &str = "--database-url";
@@ -52,7 +53,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = resolve_database_url(&args)?;
     print_target(&url)?;
 
-    let pg = PgStorage::connect(&url).await?;
+    let pg = PgStorage::connect_for_migrations_with_config(
+        &url,
+        PgPoolConfig::from_env()?,
+        PgTuning::from_env()?,
+    )
+    .await?;
     if args.iter().any(|arg| arg == RESET_FLAG) {
         reset_local_dev_database(&pg, &url).await?;
     }
@@ -279,6 +285,38 @@ async fn stamp_squashed_lane(pg: &PgStorage) -> Result<(), Box<dyn std::error::E
         .into());
     }
 
+    // Stamping must never turn a pre-RLS schema into a falsely complete lane:
+    // the subsequent migration runner would see the ledger row and skip the
+    // owner-RLS activation.  Require the actual epoch marker and validate the
+    // migration-purpose role against every composed schema that already exists
+    // before touching either ledger.
+    let epoch_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('proxima_core.owner_rls_epoch') IS NOT NULL")
+            .fetch_one(&pool)
+            .await?;
+    if !epoch_exists {
+        return Err(
+            "refusing --stamp: owner-RLS activation epoch is absent; run the pending activation migration"
+                .into(),
+        );
+    }
+    let existing_schemas: Vec<String> = sqlx::query_scalar(
+        "SELECT schema_name::text
+           FROM information_schema.schemata
+          WHERE schema_name IN ('proxima_core', 'proxima_code')
+          ORDER BY schema_name",
+    )
+    .fetch_all(&pool)
+    .await?;
+    let schema_refs: Vec<&str> = existing_schemas.iter().map(String::as_str).collect();
+    PgPlatformScope::new(pool.clone(), &schema_refs)
+        .await
+        .map_err(|error| {
+            format!(
+                "refusing --stamp: migration-purpose platform role or owner-RLS policy census is invalid: {error}"
+            )
+        })?;
+
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
             .fetch_one(&pool)
@@ -338,7 +376,7 @@ async fn stamp_squashed_lane(pg: &PgStorage) -> Result<(), Box<dyn std::error::E
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+    use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
 
     // A date-shaped ledger row no compiled migrator recognizes — e.g. a
     // flavor lane retired before the version-namespace rules existed. The
@@ -351,9 +389,15 @@ mod tests {
         let db_name = unique_db_name("proxima_dev_migrate_reset");
         create_db(&db_name).await.expect("PG required for tests");
         let url = db_url(&db_name);
+        let (_, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
         let result: Result<(), Box<dyn std::error::Error>> = async {
-            let pg = PgStorage::connect(&url).await?;
+            let pg = PgStorage::connect_for_migrations_with_config(
+                &platform_url,
+                PgPoolConfig::from_env()?,
+                PgTuning::from_env()?,
+            )
+            .await?;
             sqlx::query("CREATE SCHEMA proxima_core")
                 .execute(pg.pool_for_tests())
                 .await?;
@@ -361,7 +405,7 @@ mod tests {
                 .execute(pg.pool_for_tests())
                 .await?;
             sqlx::query(
-                "CREATE TABLE public._sqlx_migrations (
+                "CREATE TABLE IF NOT EXISTS public._sqlx_migrations (
                     version bigint PRIMARY KEY,
                     description text NOT NULL,
                     installed_on timestamptz NOT NULL DEFAULT now(),
@@ -418,5 +462,71 @@ mod tests {
 
         let _ = drop_db(&db_name).await;
         result.expect("dev reset retired-row regression failed");
+    }
+
+    #[tokio::test]
+    async fn stamp_requires_owner_rls_epoch_and_preserves_ledger_on_refusal() {
+        let db_name = unique_db_name("proxima_dev_migrate_stamp");
+        create_db(&db_name).await.expect("PG required for tests");
+        let (_, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let pg = PgStorage::connect_for_migrations_with_config(
+                &platform_url,
+                PgPoolConfig::from_env()?,
+                PgTuning::from_env()?,
+            )
+            .await?;
+            proxima_storage_pg::test_fixtures::core_migrator_before_owner_rls()
+                .run(pg.pool_for_tests())
+                .await?;
+
+            let ledger = || async {
+                sqlx::query_as::<_, (i64, Vec<u8>)>(
+                    "SELECT version, checksum FROM public._sqlx_migrations ORDER BY version",
+                )
+                .fetch_all(pg.pool_for_tests())
+                .await
+            };
+            let before = ledger().await?;
+            let refusal = stamp_squashed_lane(&pg)
+                .await
+                .expect_err("pre-owner-RLS schema must not be stampable")
+                .to_string();
+            assert!(
+                refusal.contains("owner-RLS activation epoch is absent"),
+                "{refusal}"
+            );
+            assert_eq!(
+                ledger().await?,
+                before,
+                "refusal must leave the ledger unchanged"
+            );
+
+            run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
+            stamp_squashed_lane(&pg).await?;
+
+            let admin = sqlx::PgPool::connect(&db_url(&db_name)).await?;
+            sqlx::query("ALTER TABLE proxima_core.memory NO FORCE ROW LEVEL SECURITY")
+                .execute(&admin)
+                .await?;
+            let before_policy_refusal = ledger().await?;
+            let refusal = stamp_squashed_lane(&pg)
+                .await
+                .expect_err("missing FORCE RLS must refuse stamping")
+                .to_string();
+            assert!(
+                refusal.contains("platform role or owner-RLS policy census"),
+                "{refusal}"
+            );
+            assert_eq!(
+                ledger().await?,
+                before_policy_refusal,
+                "policy refusal must leave the ledger unchanged"
+            );
+            Ok(())
+        }
+        .await;
+        let _ = drop_db(&db_name).await;
+        result.expect("dev stamp owner-RLS regression failed");
     }
 }

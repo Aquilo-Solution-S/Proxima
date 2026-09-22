@@ -30,6 +30,7 @@ tokio = { workspace = true, features = ["io-util", "sync"] }
 [dev-dependencies]
 proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../pg-testkit" }
+proxima-storage-pg = { path = "../storage-pg", features = ["test-fixtures"] }
 # The transfer contract is "the client speaks HTTP to the presigned URL".
 # Without a client here no test ever dereferences one, and the only hop that
 # actually carries bytes goes unexecuted.

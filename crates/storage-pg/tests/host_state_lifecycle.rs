@@ -752,7 +752,7 @@ async fn fresh_pg(max_connections: u32) -> (String, Arc<PgStorage>, Arc<Lifecycl
         }))
         .try_with_flavors(&registry)
         .expect("managed descriptor and callback are exact");
-    pg.run_migrations().await.expect("migrate");
+    pg.run_before_owner_rls_migrations().await.expect("migrate");
     let pool = pg.pool_for_tests();
     sqlx::raw_sql(
         "CREATE TABLE proxima_core.test_host_lifecycle_facts (

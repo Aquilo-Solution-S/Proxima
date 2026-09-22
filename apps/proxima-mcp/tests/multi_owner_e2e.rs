@@ -42,6 +42,7 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
         eprintln!("skipping multi_owner_e2e: PROXIMA_TEST_DATABASE_URL not set");
         return Ok(());
     };
+    let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
 
     let subject_a = UserId::new(Uuid::now_v7());
     let subject_b = UserId::new(Uuid::now_v7());
@@ -50,7 +51,11 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     let owner_a = OwnerRef::Group(group_a);
     let owner_b = OwnerRef::Group(group_b);
     let owner_access: Arc<dyn OwnerAccessPort> =
-        Arc::new(PgOwnerAccessResolver::connect_lazy(&database_url)?);
+        Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
+            &runtime_url,
+            &platform_url,
+            common::schemas(),
+        )?);
 
     let (signing, resolver) = keypair();
     let mut subject_map = OidcSubjectMap::new();
@@ -71,7 +76,8 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
 
     let running = Proxima::<ProximaMcpApp>::app()
         .tool_scope(ToolScope::All)
-        .database_url(database_url.clone())
+        .database_url(runtime_url.clone())
+        .platform_database_url(platform_url.clone())
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.multi-owner.test".to_string(),
@@ -81,7 +87,7 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
         .run()
         .await?;
 
-    let storage = PgStorage::connect(&database_url).await?;
+    let storage = common::runtime_storage(&runtime_url, &platform_url).await?;
     grant_member(&storage, owner_a, group_a, subject_a, Relation::Admin).await?;
     grant_member(&storage, owner_b, group_b, subject_a, Relation::Viewer).await?;
     grant_member(&storage, owner_b, group_b, subject_b, Relation::Admin).await?;
@@ -218,6 +224,7 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
 async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrowing_edge()
 -> Result<(), Box<dyn std::error::Error>> {
     let (database_url, created_db) = live_database_url().await?;
+    let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
 
     let source_group = GroupId::new(Uuid::now_v7());
     let destination_group = GroupId::new(Uuid::now_v7());
@@ -230,7 +237,11 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
     let destination_side = UserId::new(Uuid::now_v7());
 
     let owner_access: Arc<dyn OwnerAccessPort> =
-        Arc::new(PgOwnerAccessResolver::connect_lazy(&database_url)?);
+        Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
+            &runtime_url,
+            &platform_url,
+            common::schemas(),
+        )?);
     let (signing, resolver) = keypair();
     let mut subject_map = OidcSubjectMap::new();
     subject_map.insert(ISSUER, "transfer-both-sides", both_sides)?;
@@ -254,7 +265,8 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
     // all — the first thing that must hold for the verb to be reachable.
     let running = Proxima::<ProximaMcpApp>::app()
         .tool_scope(ToolScope::All)
-        .database_url(database_url.clone())
+        .database_url(runtime_url.clone())
+        .platform_database_url(platform_url.clone())
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.multi-owner.test".to_string(),
@@ -267,7 +279,7 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
     let result: Result<(), Box<dyn std::error::Error>> = async {
         // Real membership rows, seeded after boot the way a production grant
         // lands. Nothing here fabricates an in-memory role.
-        let storage = PgStorage::connect(&database_url).await?;
+        let storage = common::runtime_storage(&runtime_url, &platform_url).await?;
         grant_member(&storage, source, source_group, both_sides, Relation::Admin).await?;
         grant_member(
             &storage,
@@ -506,11 +518,12 @@ async fn revoke_member(
 
 async fn membership_permit(owner: Owner) -> Result<OwnerWritePermit, Box<dyn std::error::Error>> {
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
-    let authz = AuthzContext::for_subject_with_role(
-        UserId::new(Uuid::now_v7()),
-        [(owner, Role::admin())],
-        AuthPath::HostBearer,
-    );
+    let authz =
+        proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            AuthPath::HostBearer,
+        ));
     Ok(engine
         .authorize_owner_write(&authz, &owner, AccessKind::Goal)
         .await?)

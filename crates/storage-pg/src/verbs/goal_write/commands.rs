@@ -697,7 +697,7 @@ mod lifecycle_lock_tests {
         let url = db_url(&db_name);
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect(&url).await?;
-            pg.run_migrations().await?;
+            pg.run_before_owner_rls_migrations().await?;
             let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
             let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
             let first = pg.ingest_fact_atomic(&permit, &fact(), None).await?;
@@ -800,7 +800,7 @@ mod lifecycle_lock_tests {
         let url = db_url(&db_name);
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect(&url).await?;
-            pg.run_migrations().await?;
+            pg.run_before_owner_rls_migrations().await?;
             let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
             let pool = pg.pool_for_tests();
 
@@ -865,7 +865,7 @@ mod lifecycle_lock_tests {
         let url = db_url(&db_name);
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect(&url).await?;
-            pg.run_migrations().await?;
+            pg.run_before_owner_rls_migrations().await?;
             let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
             let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
             let target = pg.ingest_fact_atomic(&permit, &fact(), None).await?;
@@ -947,7 +947,7 @@ mod lifecycle_lock_tests {
         let url = db_url(&db_name);
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect(&url).await?;
-            pg.run_migrations().await?;
+            pg.run_before_owner_rls_migrations().await?;
             let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
             let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
             let assignment = grounded_perspective(&pg, &permit).await?;

@@ -1,5 +1,35 @@
 #![allow(dead_code)]
 
+pub async fn split_roles(admin_url: &str) -> Result<(String, String), sqlx::Error> {
+    let options = admin_url.parse::<sqlx::postgres::PgConnectOptions>()?;
+    proxima_pg_testkit::split_role_urls(options.get_database().expect("fixture database")).await
+}
+
+pub fn schemas() -> &'static [&'static str] {
+    #[cfg(feature = "code")]
+    {
+        &["proxima_core", "proxima_code"]
+    }
+    #[cfg(not(feature = "code"))]
+    {
+        &["proxima_core"]
+    }
+}
+
+pub async fn runtime_storage(
+    runtime_url: &str,
+    platform_url: &str,
+) -> Result<proxima_storage_pg::PgStorage, Box<dyn std::error::Error>> {
+    let scope = proxima_storage_pg::PgPlatformScope::new(
+        sqlx::PgPool::connect(platform_url).await?,
+        schemas(),
+    )
+    .await?;
+    Ok(proxima_storage_pg::PgStorage::connect(runtime_url)
+        .await?
+        .with_platform_scope(scope))
+}
+
 // Each integration-test binary independently includes this module via
 // `mod common;`. Items unused by a particular binary would otherwise trip
 // `dead_code` even though another binary uses them.

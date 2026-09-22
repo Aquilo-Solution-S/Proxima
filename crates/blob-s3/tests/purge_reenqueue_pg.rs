@@ -84,7 +84,7 @@ async fn assert_reenqueue_survives(preserve_timestamp: bool) -> TestResult<()> {
     let database = unique_db_name("proxima_reenqueue_purge");
     create_db(&database).await?;
     let pg = PgStorage::connect(&db_url(&database)).await?;
-    pg.run_migrations().await?;
+    pg.run_before_owner_rls_migrations().await?;
     let config = S3RuntimeConfig {
         force_path_style: true,
         ..S3RuntimeConfig::from_env()?
