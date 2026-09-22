@@ -106,28 +106,10 @@ pub fn core_migrator() -> sqlx::migrate::Migrator {
     migrator
 }
 
-// The bridge can coexist with this one audited successor. Recognition never
-// applies SQL: the serving release still runs only `core_migrator()`. Promotion
-// in v0.0.16 moves these identical bytes into that migrator and removes this
-// exception. Unknown versions and checksum drift remain refused.
-fn owner_rls_successor() -> sqlx::migrate::Migration {
-    sqlx::migrate::Migration::new(
-        14,
-        "v016 owner rls".into(),
-        sqlx::migrate::MigrationType::Simple,
-        sqlx::SqlStr::from_static(include_str!("../compatibility/0014_v016_owner_rls.sql")),
-        false,
-    )
-}
-
-fn compatible_core_checksums() -> std::collections::BTreeMap<i64, Vec<u8>> {
+fn embedded_core_checksums() -> std::collections::BTreeMap<i64, Vec<u8>> {
     core_migrator()
         .iter()
         .map(|migration| (migration.version, migration.checksum.as_ref().to_vec()))
-        .chain(
-            std::iter::once(owner_rls_successor())
-                .map(|migration| (migration.version, migration.checksum.into_owned())),
-        )
         .collect()
 }
 
@@ -141,8 +123,7 @@ fn compatible_core_checksums() -> std::collections::BTreeMap<i64, Vec<u8>> {
 /// violated). Two invariants are enforced over every successful
 /// core-namespace ledger row (`version <= CORE_MIGRATION_VERSION_CEILING`):
 ///
-/// - **Every recorded version exists in the embedded set or is the exact
-///   checksum-approved owner-RLS successor.** A version the
+/// - **Every recorded version exists in the embedded set.** A version the
 ///   binary does not ship is a draft or retired migration — a dev-cycle lane
 ///   squashed under a fresh number. Applying
 ///   the squashed file over that schema would re-run its DDL, so this fails
@@ -199,7 +180,7 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
         .map_err(internal)?;
     }
 
-    let embedded = compatible_core_checksums();
+    let embedded = embedded_core_checksums();
 
     let mut unknown_versions = Vec::new();
     let mut amended_versions = Vec::new();
@@ -2314,7 +2295,15 @@ impl PgStorage {
             .execute(&mut *conn)
             .await
             .map_err(internal)?;
-        let migrated = core_migrator().run(&mut *conn).await.map_err(internal);
+        let migrated = async {
+            let mut transaction = begin_migration_transaction(&mut conn).await?;
+            core_migrator()
+                .run(transaction.as_mut())
+                .await
+                .map_err(internal)?;
+            transaction.commit().await.map_err(internal)
+        }
+        .await;
         conn.detach();
         migrated?;
         ensure_pgvector_runtime_compatible(&self.pool, &self.tuning).await?;
@@ -2353,7 +2342,7 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
              0003_v010_reference_integrity.sql, 0004_v011_goal_refs.sql, \
@@ -2362,7 +2351,7 @@ mod tests {
              0007_upload_content_identity.sql, 0008_cold_integrity_digest.sql, \
              0009_declared_sidecar_presence.sql, 0010_purge_queue_backend.sql \
              0011_v012_fact_outbox.sql, 0012_v013_publication_origin.sql and \
-             0013_v015_agent_note_natural_key_index.sql"
+             0013_v015_agent_note_natural_key_index.sql and 0014_v015_owner_rls.sql"
         );
     }
 

@@ -24,7 +24,7 @@ use proxima_core::flavor::{
 };
 use proxima_core::publication::{PublicationConfig, PublicationLimits, PublicationSource};
 use proxima_core::verbs::schema::PayloadKind;
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{create_db, drop_db, split_role_urls, unique_db_name};
 use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use uuid::Uuid;
@@ -142,6 +142,14 @@ fn probe_migrator() -> Migrator {
             .into_iter()
             .map(|artifact| artifact.forward),
     );
+    statements.push(
+        "ALTER TABLE pubtest.probe_v1 ENABLE ROW LEVEL SECURITY;\n\
+         ALTER TABLE pubtest.probe_v1 FORCE ROW LEVEL SECURITY;\n\
+         CREATE POLICY proxima_owner_read ON pubtest.probe_v1 FOR SELECT TO PUBLIC USING (EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])));\n\
+         CREATE POLICY proxima_owner_write ON pubtest.probe_v1 FOR ALL TO PUBLIC USING (EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))::uuid[]))) WITH CHECK (EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])));\n\
+         CREATE POLICY proxima_platform ON pubtest.probe_v1 FOR ALL TO CURRENT_USER USING (current_setting('app.proxima_scope', true) = 'platform') WITH CHECK (current_setting('app.proxima_scope', true) = 'platform')"
+            .to_owned(),
+    );
     statements.extend(
         sidecars
             .presence_trigger_artifacts("pubtest")
@@ -220,15 +228,20 @@ fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> +
     }
 }
 
+async fn admin_pool(database: &str) -> Result<sqlx::PgPool, sqlx::Error> {
+    sqlx::PgPool::connect(&proxima_pg_testkit::db_url(database)).await
+}
+
 #[tokio::test]
 async fn a_listenable_schema_without_a_bound_source_refuses_the_boot() {
     let db_name = unique_db_name("proxima_pub_boot");
     create_db(&db_name).await.expect("PG required");
-    let db_url = db_url(&db_name);
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let refused = Proxima::<ListenableApp>::app()
             .database_url(db_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(company_owner(Uuid::now_v7()))
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
@@ -245,6 +258,7 @@ async fn a_listenable_schema_without_a_bound_source_refuses_the_boot() {
         // The same deployment, with a source, boots.
         let built = Proxima::<ListenableApp>::app()
             .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(company_owner(Uuid::now_v7()))
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
@@ -264,7 +278,7 @@ async fn a_listenable_schema_without_a_bound_source_refuses_the_boot() {
 async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
     let db_name = unique_db_name("proxima_pub_env");
     create_db(&db_name).await.expect("PG required");
-    let db_url = db_url(&db_name);
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         // A malformed bound never reaches storage: `from_lookup` resolves
@@ -299,6 +313,7 @@ async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
                 ("PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES", "4096"),
             ]))?
             .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(company_owner(Uuid::now_v7()))
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
@@ -328,19 +343,22 @@ async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
 async fn an_unauthorized_listenable_write_captures_nothing() {
     let db_name = unique_db_name("proxima_pub_authz");
     create_db(&db_name).await.expect("PG required");
-    let db_url = db_url(&db_name);
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<ListenableApp>::app()
             .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .publication(PublicationConfig::new(source()))
             .build()
             .await?;
-        let authz = built.single_owner_authz().ok_or("single owner")?;
+        let authz = proxima_core::test_fixtures::authenticated_context(
+            built.single_owner_authz().ok_or("single owner")?,
+        );
         let engine = built.engine();
 
         // An owner this caller holds no grant on. The listenable schema,
@@ -364,11 +382,11 @@ async fn an_unauthorized_listenable_write_captures_nothing() {
 
         let captured: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.publication_outbox")
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool(&db_name).await?)
                 .await?;
         assert_eq!(captured, 0, "a denied write must capture no event");
         let memories: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
-            .fetch_one(built.pool_for_tests())
+            .fetch_one(&admin_pool(&db_name).await?)
             .await?;
         assert_eq!(memories, 0, "and admit no Fact");
 
@@ -383,11 +401,11 @@ async fn an_unauthorized_listenable_write_captures_nothing() {
             .await?;
         let captured: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.publication_outbox")
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool(&db_name).await?)
                 .await?;
         assert_eq!(captured, 1, "the authorized write is captured");
         let sidecars: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM pubtest.probe_v1")
-            .fetch_one(built.pool_for_tests())
+            .fetch_one(&admin_pool(&db_name).await?)
             .await?;
         assert_eq!(
             sidecars, 1,
@@ -404,11 +422,11 @@ async fn an_unauthorized_listenable_write_captures_nothing() {
         uow.commit().await?;
         let captured: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.publication_outbox")
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool(&db_name).await?)
                 .await?;
         assert_eq!(captured, 2, "the composed UoW Fact is captured");
         let sidecars: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM pubtest.probe_v1")
-            .fetch_one(built.pool_for_tests())
+            .fetch_one(&admin_pool(&db_name).await?)
             .await?;
         assert_eq!(sidecars, 2, "the composed UoW Fact keeps its sidecar");
 
@@ -425,12 +443,13 @@ async fn an_unauthorized_listenable_write_captures_nothing() {
 async fn the_configured_payload_ceiling_is_the_one_capture_enforces() {
     let db_name = unique_db_name("proxima_pub_limit");
     create_db(&db_name).await.expect("PG required");
-    let db_url = db_url(&db_name);
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<ListenableApp>::app()
             .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
@@ -442,7 +461,9 @@ async fn the_configured_payload_ceiling_is_the_one_capture_enforces() {
             )
             .build()
             .await?;
-        let authz = built.single_owner_authz().ok_or("single owner")?;
+        let authz = proxima_core::test_fixtures::authenticated_context(
+            built.single_owner_authz().ok_or("single owner")?,
+        );
         let engine = built.engine();
 
         // Under the ceiling: admitted, and its event is captured.
@@ -454,7 +475,7 @@ async fn the_configured_payload_ceiling_is_the_one_capture_enforces() {
             .await?;
         let captured: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.publication_outbox")
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool(&db_name).await?)
                 .await?;
         assert_eq!(captured, 1, "the small export is captured");
 
@@ -481,11 +502,11 @@ async fn the_configured_payload_ceiling_is_the_one_capture_enforces() {
 
         let after: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.publication_outbox")
-                .fetch_one(built.pool_for_tests())
+                .fetch_one(&admin_pool(&db_name).await?)
                 .await?;
         assert_eq!(after, 1, "the refused write captured nothing");
         let memories: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
-            .fetch_one(built.pool_for_tests())
+            .fetch_one(&admin_pool(&db_name).await?)
             .await?;
         assert_eq!(memories, 1, "and admitted no Fact");
 

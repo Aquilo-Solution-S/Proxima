@@ -11,7 +11,7 @@ use proxima_blob_s3::{CitedBlobUploadPrepareTs, S3RuntimeConfig};
 use proxima_core::error::{ErrorCode, ProtocolError};
 use proxima_core::storage_ports::CitedBlobService;
 use proxima_core::{AgentNoteV1, ColdObjectStore};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
 use proxima_storage_pg::{ColdPurgeRetryOptions, PgStorage};
 use uuid::Uuid;
 
@@ -111,16 +111,16 @@ async fn run_cold_reboot(database: &str, keep_s3: bool) -> TestResult<ColdEraseO
         .engine
         .ingest_fact(&authz, FactWrite::new(owner, "test/cold-s3-reboot", &note))
         .await?;
-    assert_eq!(corpus_counts(initial.pool_for_tests()).await?, (0, 1));
+    assert_eq!(corpus_counts(&admin_pool(database).await?).await?, (0, 1));
     initial
         .engine
         .forget_memory(&authz, owner, fact.memory_id)
         .await?;
-    assert_eq!(corpus_counts(initial.pool_for_tests()).await?, (0, 0));
+    assert_eq!(corpus_counts(&admin_pool(database).await?).await?, (0, 0));
     let cold_key: String =
         sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
             .bind(fact.memory_id.into_inner())
-            .fetch_one(initial.pool_for_tests())
+            .fetch_one(&admin_pool(database).await?)
             .await?;
     assert_eq!(cold_key, format!("cold/{}", fact.memory_id.into_inner()));
     let cold_bytes = initial
@@ -145,22 +145,29 @@ async fn run_cold_reboot(database: &str, keep_s3: bool) -> TestResult<ColdEraseO
         None
     } else {
         Some(
-            observe_unconfigured_hydration(&restarted, owner, fact.memory_id, &config, &cold_key)
-                .await?,
+            observe_unconfigured_hydration(
+                database,
+                &restarted,
+                owner,
+                fact.memory_id,
+                &config,
+                &cold_key,
+            )
+            .await?,
         )
     };
     let system = host_context(owner, AuthPath::System);
     let receipt = restarted.engine.erase_group_owner(&system, group).await?;
     let cooled: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.cooled")
-        .fetch_one(restarted.pool_for_tests())
+        .fetch_one(&admin_pool(database).await?)
         .await?;
     assert_eq!(cooled, 0);
-    assert_eq!(corpus_counts(restarted.pool_for_tests()).await?, (0, 0));
+    assert_eq!(corpus_counts(&admin_pool(database).await?).await?, (0, 0));
     let debt_backend: Option<String> = sqlx::query_scalar(
         "SELECT backend FROM proxima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(&cold_key)
-    .fetch_optional(restarted.pool_for_tests())
+    .fetch_optional(&admin_pool(database).await?)
     .await?;
     let versions_after_erase = object_versions(&config, &cold_key).await?;
     stop(restarted).await;
@@ -186,6 +193,7 @@ async fn run_cold_reboot(database: &str, keep_s3: bool) -> TestResult<ColdEraseO
 }
 
 async fn observe_unconfigured_hydration(
+    database: &str,
     boot: &EmbeddedProxima,
     owner: OwnerRef,
     memory_id: MemoryId,
@@ -196,10 +204,10 @@ async fn observe_unconfigured_hydration(
     let hydration = boot.engine.hydrate_memory(&authz, owner, memory_id).await;
     let cooled: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.cooled WHERE t = $1")
         .bind(memory_id.into_inner())
-        .fetch_one(boot.pool_for_tests())
+        .fetch_one(&admin_pool(database).await?)
         .await?;
     assert_eq!(cooled, 1, "failed retrieval must preserve the cold locator");
-    assert_eq!(corpus_counts(boot.pool_for_tests()).await?, (0, 0));
+    assert_eq!(corpus_counts(&admin_pool(database).await?).await?, (0, 0));
     assert_eq!(object_versions(config, cold_key).await?, 1);
     // Capture the classification now; assert it only after the erase-debt
     // assertion, so the baseline still reaches the original deletion defect.
@@ -278,7 +286,7 @@ async fn fresh_database_without_s3_still_erases_database_only_facts() -> TestRes
                 ),
             )
             .await?;
-        assert_eq!(corpus_counts(boot.pool_for_tests()).await?, (0, 1));
+        assert_eq!(corpus_counts(&admin_pool(&database).await?).await?, (0, 1));
         let system = host_context(owner, AuthPath::System);
         let receipt = boot.engine.erase_group_owner(&system, group).await?;
         assert!(matches!(
@@ -288,9 +296,9 @@ async fn fresh_database_without_s3_still_erases_database_only_facts() -> TestRes
                 ..
             }
         ));
-        assert_eq!(corpus_counts(boot.pool_for_tests()).await?, (0, 0));
+        assert_eq!(corpus_counts(&admin_pool(&database).await?).await?, (0, 0));
         let debt: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.cold_purge_pending")
-            .fetch_one(boot.pool_for_tests())
+            .fetch_one(&admin_pool(&database).await?)
             .await?;
         assert_eq!(debt, 0);
         stop(boot).await;
@@ -349,7 +357,7 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
         "SELECT status::text, blob_id FROM proxima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(&prepared.upload_id)?)
-    .fetch_one(initial.pool_for_tests())
+    .fetch_one(&admin_pool(database).await?)
     .await?;
     assert_eq!(
         status,
@@ -358,7 +366,7 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
             Uuid::parse_str(&completed.blob.cited_object_id)?
         )
     );
-    assert_eq!(corpus_counts(initial.pool_for_tests()).await?, (1, 1));
+    assert_eq!(corpus_counts(&admin_pool(database).await?).await?, (1, 1));
     assert_eq!(store.cold_store().get(&canonical).await?, BODY);
     assert_eq!(object_versions(&config, &canonical).await?, 1);
     drop(service);
@@ -370,16 +378,16 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
     assert_eq!(restarted.blobs.is_some(), keep_s3);
     let system = host_context(owner, AuthPath::System);
     let receipt = restarted.engine.erase_group_owner(&system, group).await?;
-    assert_eq!(corpus_counts(restarted.pool_for_tests()).await?, (0, 0));
+    assert_eq!(corpus_counts(&admin_pool(database).await?).await?, (0, 0));
     let uploads: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.blob_uploads")
-        .fetch_one(restarted.pool_for_tests())
+        .fetch_one(&admin_pool(database).await?)
         .await?;
     assert_eq!(uploads, 0);
     let canonical_debt: Option<String> = sqlx::query_scalar(
         "SELECT backend FROM proxima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(&canonical)
-    .fetch_optional(restarted.pool_for_tests())
+    .fetch_optional(&admin_pool(database).await?)
     .await?;
     let versions_after_erase = object_versions(&config, &canonical).await?;
     stop(restarted).await;
@@ -424,8 +432,15 @@ async fn recover_and_cleanup(
         );
     }
     if canonical_debt.is_some() {
-        let maintenance = PgStorage::connect(&db_url(database))
+        let (runtime_url, platform_url) = split_role_urls(database).await?;
+        let platform = proxima_storage_pg::PgPlatformScope::new(
+            sqlx::PgPool::connect(&platform_url).await?,
+            &["proxima_core"],
+        )
+        .await?;
+        let maintenance = PgStorage::connect(&runtime_url)
             .await?
+            .with_platform_scope(platform)
             .with_cold(Arc::new(cold.clone()));
         let retried = maintenance
             .retry_cold_object_purges(ColdPurgeRetryOptions {
@@ -446,7 +461,7 @@ async fn recover_and_cleanup(
             "SELECT count(*) FROM proxima_core.cold_purge_pending WHERE object_key = $1",
         )
         .bind(canonical)
-        .fetch_one(cleanup.pool_for_tests())
+        .fetch_one(&admin_pool(database).await?)
         .await?;
         assert_eq!(debt, 0);
         maintenance.pool_for_tests().close().await;
@@ -465,10 +480,11 @@ async fn boot(
     owner: OwnerRef,
     s3: Option<S3RuntimeConfig>,
 ) -> TestResult<EmbeddedProxima> {
+    let (runtime_url, platform_url) = split_role_urls(database).await?;
     Ok(ProximaBuilder::new(
         EmbedConfig {
-            database_url: db_url(database),
-            platform_database_url: None,
+            database_url: runtime_url,
+            platform_database_url: Some(platform_url),
             s3,
         },
         owner,
@@ -486,14 +502,24 @@ async fn stop(boot: EmbeddedProxima) {
 fn host_context(owner: OwnerRef, path: AuthPath) -> AuthzContext {
     // Group authority is an explicit trusted-host subject role. A bare
     // single_owner(group) intentionally grants no access.
-    AuthzContext::for_subject_with_role(UserId::new(Uuid::now_v7()), [(owner, Role::admin())], path)
+    proxima_core::test_fixtures::authenticated_context(
+        AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            path,
+        )
         .narrowed_to_owner(owner)
-        .expect("trusted host resolved this exact owner")
+        .expect("trusted host resolved this exact owner"),
+    )
 }
 
 async fn corpus_counts(pool: &sqlx::PgPool) -> TestResult<(i64, i64)> {
     Ok(sqlx::query_as("SELECT (SELECT count(*) FROM proxima_core.blob), (SELECT count(*) FROM proxima_core.memory)")
         .fetch_one(pool).await?)
+}
+
+async fn admin_pool(database: &str) -> TestResult<sqlx::PgPool> {
+    Ok(sqlx::PgPool::connect(&db_url(database)).await?)
 }
 
 /// Observe all versions and delete markers of this exact key using the same
@@ -601,7 +627,7 @@ async fn observe_missing_cold(database: &str) -> TestResult<MissingColdObservati
         .ok_or("configured S3 store")?
         .cold_store();
     let mut owned_keys = Vec::new();
-    let result = run_missing_cold(&host, owner, &config, &mut owned_keys).await;
+    let result = run_missing_cold(database, &host, owner, &config, &mut owned_keys).await;
     // Hydration currently retains its old object. Clean exactly these fresh
     // admissions, even if the observation failed, without relying on erasure.
     let mut cleanup: TestResult<()> = Ok(());
@@ -621,6 +647,7 @@ async fn observe_missing_cold(database: &str) -> TestResult<MissingColdObservati
 }
 
 async fn run_missing_cold(
+    database: &str,
     host: &EmbeddedProxima,
     owner: OwnerRef,
     config: &S3RuntimeConfig,
@@ -668,7 +695,7 @@ async fn run_missing_cold(
     )
     .bind(missing_id.into_inner())
     .bind(&missing_key)
-    .fetch_one(host.pool_for_tests())
+    .fetch_one(&admin_pool(database).await?)
     .await?;
     // A missing bucket is a backend/configuration fault, even though its HTTP
     // status is also 404. No bucket is created or deleted for this control.

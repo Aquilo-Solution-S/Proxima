@@ -101,7 +101,7 @@ async fn fresh_pg() -> (String, PgStorage) {
     let pg = PgStorage::connect(&db_url(&db_name))
         .await
         .expect("connect");
-    pg.run_migrations().await.expect("migrate");
+    pg.run_before_owner_rls_migrations().await.expect("migrate");
     (db_name, pg)
 }
 

@@ -98,7 +98,7 @@ async fn fresh_storage() -> (PgStorage, String) {
     let pg = PgStorage::connect(&url)
         .await
         .unwrap_or_else(|err| panic!("PG required for tests but unavailable: {err}"));
-    if let Err(err) = pg.run_migrations().await {
+    if let Err(err) = pg.run_before_owner_rls_migrations().await {
         let _ = drop_db(&db_name).await;
         panic!("migration failed: {err}");
     }

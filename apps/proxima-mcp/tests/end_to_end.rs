@@ -63,13 +63,18 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
         eprintln!("skipping oidc_host_auth_serves_tools_list: DATABASE_URL not set");
         return Ok(());
     };
+    let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
     let subject = UserId::new(Uuid::now_v7());
     let owner_key = OwnerRef::Personal(subject).external_key();
     let (signing, resolver) = keypair();
     let mut subject_map = OidcSubjectMap::new();
     subject_map.insert(ISSUER, "operator-sub", subject)?;
     let owner_access: Arc<dyn OwnerAccessPort> =
-        Arc::new(PgOwnerAccessResolver::connect_lazy(&database_url)?);
+        Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
+            &runtime_url,
+            &platform_url,
+            common::schemas(),
+        )?);
     let authn = OidcAuthenticator::new(
         OidcAuthConfig {
             issuer: ISSUER.to_string(),
@@ -85,7 +90,8 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
 
     let running = Proxima::<ProximaMcpApp>::app()
         .tool_scope(ToolScope::All)
-        .database_url(database_url)
+        .database_url(runtime_url.clone())
+        .platform_database_url(platform_url.clone())
         .owner(OwnerRef::Personal(subject))
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {

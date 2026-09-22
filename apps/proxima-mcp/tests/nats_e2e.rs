@@ -36,10 +36,12 @@ struct StubAuthenticator {
 #[async_trait::async_trait]
 impl Authenticator for StubAuthenticator {
     async fn authenticate(&self, _credentials: &Credentials) -> Result<AuthzContext, AuthError> {
-        Ok(AuthzContext::for_subject_with_role(
-            proxima_core::UserId::new(Uuid::now_v7()),
-            [(self.owner, Role::admin())],
-            AuthPath::HostBearer,
+        Ok(proxima_core::test_fixtures::authenticated_context(
+            AuthzContext::for_subject_with_role(
+                proxima_core::UserId::new(Uuid::now_v7()),
+                [(self.owner, Role::admin())],
+                AuthPath::HostBearer,
+            ),
         ))
     }
 }
@@ -105,6 +107,7 @@ async fn the_host_starts_the_publisher_from_the_nats_env_block()
     let Some(database_url) = require_env_or_skip("DATABASE_URL") else {
         return Ok(());
     };
+    let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
     let Some(nats_url) = require_env_or_skip("PROXIMA_TEST_NATS_URL") else {
         return Ok(());
     };
@@ -144,7 +147,8 @@ async fn the_host_starts_the_publisher_from_the_nats_env_block()
     let owner = company_owner(Uuid::now_v7());
     let running = Proxima::<ProximaMcpApp>::app()
         .from_lookup(lookup)?
-        .database_url(database_url)
+        .database_url(runtime_url.clone())
+        .platform_database_url(platform_url.clone())
         .owner(owner)
         .authenticator(Arc::new(StubAuthenticator { owner }))
         .resource_metadata(ResourceServerMetadata {
@@ -211,13 +215,15 @@ async fn without_a_broker_the_host_starts_no_publisher() -> Result<(), Box<dyn s
     let Some(database_url) = require_env_or_skip("DATABASE_URL") else {
         return Ok(());
     };
+    let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
     // No `PROXIMA_NATS_URL`: capture (if any schema were listenable) keeps
     // working and the outbox simply stays undrained. That is a safe steady
     // state, not a boot failure.
     let owner = company_owner(Uuid::now_v7());
     let running = Proxima::<ProximaMcpApp>::app()
         .from_lookup(|_: &str| None)?
-        .database_url(database_url)
+        .database_url(runtime_url.clone())
+        .platform_database_url(platform_url.clone())
         .owner(owner)
         .authenticator(Arc::new(StubAuthenticator { owner }))
         .resource_metadata(ResourceServerMetadata {

@@ -19,6 +19,9 @@ account anywhere: your Postgres, your OIDC issuer, your embedding model.
 # export PROXIMA_DEV_POSTGRES_PORT=55432
 # export PROXIMA_DEV_S3_PORT=59100
 docker compose -f docker-compose.dev.yml up -d --wait postgres
+# Replays role/extension preparation for existing volumes too; stop old hosts first.
+docker compose -f docker-compose.dev.yml exec -T postgres \
+  psql -U proxima -d proxima -v ON_ERROR_STOP=1 < scripts/pg-init.sql
 ```
 
 The project-scoped dev Compose file exposes pgvector Postgres at
@@ -87,7 +90,8 @@ issues a valid identity to anyone who can reach it.
 Paste the exports `dev-idp` printed, then:
 
 ```sh
-export DATABASE_URL="postgres://proxima:proxima@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
+export DATABASE_URL="postgres://proxima_runtime:proxima-runtime-dev@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
+export PROXIMA_PLATFORM_DATABASE_URL="postgres://proxima_platform:proxima-platform-dev@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
 export PROXIMA_TOOL_PROFILE=full
 cargo run -p proxima-mcp
 ```

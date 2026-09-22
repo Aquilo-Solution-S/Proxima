@@ -16,16 +16,18 @@ use proxima_pg_testkit::{
 use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, core_migrator, register_core_pg_sidecars,
 };
+use sqlx::migrate::Migrator;
+use std::borrow::Cow;
 use uuid::Uuid;
 
 pub async fn migrated_db() -> (String, PgStorage) {
     let template = code_template_name();
     ensure_template(&template, |pool| async move {
-        core_migrator()
+        core_migrator_before_owner_rls()
             .run(&pool)
             .await
             .map_err(sqlx::Error::from)?;
-        proxima_code::migrator()
+        pre_owner_rls_code_migrator()
             .run(&pool)
             .await
             .map_err(sqlx::Error::from)
@@ -46,6 +48,30 @@ pub async fn migrated_db() -> (String, PgStorage) {
     .with_sidecars(code_pg_sidecars())
     .with_flavors(&proxima_code::schema_registry());
     (db_name, pg)
+}
+
+fn core_migrator_before_owner_rls() -> Migrator {
+    let mut migrator = core_migrator();
+    migrator.migrations = Cow::Owned(
+        migrator
+            .iter()
+            .filter(|migration| migration.version < 14)
+            .cloned()
+            .collect(),
+    );
+    migrator
+}
+
+fn pre_owner_rls_code_migrator() -> Migrator {
+    let mut migrator = proxima_code::migrator();
+    migrator.migrations = Cow::Owned(
+        migrator
+            .iter()
+            .filter(|migration| migration.version < 20_260_922_000_020)
+            .cloned()
+            .collect(),
+    );
+    migrator
 }
 
 pub const TEST_CITED_BLOB_SCHEMA_ID: &str = "test/cited_blob";
@@ -388,11 +414,11 @@ impl TestDb {
 
 fn code_template_name() -> String {
     let mut hash = FNV_OFFSET_BASIS;
-    for migration in core_migrator().iter() {
+    for migration in core_migrator_before_owner_rls().iter() {
         hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
         hash = fnv1a64_extend(hash, migration.checksum.as_ref());
     }
-    for migration in proxima_code::migrator().iter() {
+    for migration in pre_owner_rls_code_migrator().iter() {
         hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
         hash = fnv1a64_extend(hash, migration.checksum.as_ref());
     }
@@ -453,4 +479,25 @@ pub async fn assert_no_declaration_drift(pg: &PgStorage) {
         .integrity_check(pg.pool_for_tests())
         .await
         .unwrap_or_else(|err| panic!("this flavor's ingest left declaration drift: {err}"));
+}
+
+/// Current production migrations, with the caller's admin pool retained only
+/// for independently seeding and checking fixture data.
+pub async fn apply_current_migrations(pg: &PgStorage) -> Result<(), Box<dyn std::error::Error>> {
+    let database: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+    let (_, platform_url) = proxima_pg_testkit::split_role_urls(&database).await?;
+    let platform = PgStorage::connect_for_migrations_with_config(
+        &platform_url,
+        proxima_storage_pg::PgPoolConfig::default(),
+        proxima_storage_pg::PgTuning::default(),
+    )
+    .await?;
+    proxima::run_core_and_flavor_migrations(
+        &platform,
+        <proxima_code::CodeFlavor as proxima::flavor::FlavorBundle>::migrators(),
+    )
+    .await?;
+    Ok(())
 }

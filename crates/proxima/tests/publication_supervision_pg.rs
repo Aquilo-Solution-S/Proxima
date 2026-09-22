@@ -18,6 +18,7 @@ use proxima_core::flavor::{
     SearchProjectionDecl, TransferRule,
 };
 use proxima_core::publication::{PublicationConfig, PublicationSource};
+use proxima_core::test_fixtures::authenticated_context;
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{AuthzContext, Engine, Owner, OwnerRefKind};
 use sqlx::SqlSafeStr;
@@ -136,6 +137,11 @@ fn probe_migrator() -> Migrator {
             note text NOT NULL
         )"
         .to_owned(),
+        "ALTER TABLE publisher_health.probe_v1 ENABLE ROW LEVEL SECURITY".to_owned(),
+        "ALTER TABLE publisher_health.probe_v1 FORCE ROW LEVEL SECURITY".to_owned(),
+        "CREATE POLICY proxima_owner_read ON publisher_health.probe_v1 FOR SELECT TO PUBLIC USING (EXISTS (SELECT 1 FROM proxima_core.memory AS parent WHERE parent.t = probe_v1.t AND parent.owner_id = ANY(COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))))".to_owned(),
+        "CREATE POLICY proxima_owner_write ON publisher_health.probe_v1 FOR ALL TO PUBLIC USING (EXISTS (SELECT 1 FROM proxima_core.memory AS parent WHERE parent.t = probe_v1.t AND parent.owner_id = ANY(COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[])))) WITH CHECK (EXISTS (SELECT 1 FROM proxima_core.memory AS parent WHERE parent.t = probe_v1.t AND parent.owner_id = ANY(COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))))".to_owned(),
+        "CREATE POLICY proxima_platform ON publisher_health.probe_v1 FOR ALL TO CURRENT_USER USING (current_setting('app.proxima_scope', true) = 'platform') WITH CHECK (current_setting('app.proxima_scope', true) = 'platform')".to_owned(),
         "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id) VALUES
              ('publisher_health.probe_v1', 'publisher-health')"
             .to_owned(),
@@ -478,7 +484,7 @@ async fn capture(engine: &Arc<Engine>, authz: &AuthzContext, owner: Owner, note:
     };
     engine
         .ingest_fact(
-            authz,
+            &authenticated_context(authz.clone()),
             proxima::FactWrite::new(owner, HealthProbeV1::SCHEMA_ID, &probe),
         )
         .await
@@ -545,6 +551,7 @@ struct PublisherTestContext<'a> {
     stream_name: &'a str,
     prefix: &'a str,
     nats_url: &'a str,
+    platform_pool: &'a sqlx::PgPool,
 }
 
 async fn exercise_built_supervised(
@@ -579,7 +586,7 @@ async fn exercise_built_supervised(
         "one publisher connection"
     );
     assert_delivered(
-        built.pool_for_tests(),
+        context.platform_pool,
         context.js,
         context.stream_name,
         first_t,
@@ -629,7 +636,7 @@ async fn exercise_built_legacy(
         .spawn_publication_publisher(cancel.clone())
         .expect("legacy publisher entry point remains configured");
     assert_delivered(
-        built.pool_for_tests(),
+        context.platform_pool,
         context.js,
         context.stream_name,
         t,
@@ -648,6 +655,7 @@ async fn exercise_built_legacy(
 async fn start_running_proxima(
     context: &PublisherTestContext<'_>,
     database_url: String,
+    platform_database_url: String,
     owner: Owner,
 ) -> proxima::host::RunningProxima {
     Proxima::<PublisherApp>::app()
@@ -657,6 +665,7 @@ async fn start_running_proxima(
         ))
         .expect("runtime config")
         .database_url(database_url)
+        .platform_database_url(platform_database_url)
         .owner(owner)
         .tool_scope(ToolScope::All)
         .allow_insecure_single_owner()
@@ -681,7 +690,7 @@ async fn exercise_running_legacy(
         .spawn_publication_publisher(cancel.clone())
         .expect("legacy running entry point remains configured");
     assert_delivered(
-        running.pool_for_tests(),
+        context.platform_pool,
         context.js,
         context.stream_name,
         t,
@@ -711,7 +720,7 @@ async fn exercise_running_supervised(
     let (reader, task) = supervised.into_parts();
     wait_ready(&reader).await;
     assert_delivered(
-        running.pool_for_tests(),
+        context.platform_pool,
         context.js,
         context.stream_name,
         t,
@@ -770,12 +779,25 @@ async fn publisher_health_sidecar_fixture_captures_against_real_pg() {
     proxima_pg_testkit::create_db(&db_name)
         .await
         .expect("PG fixture database");
+    let (runtime_url, platform_url) = proxima_pg_testkit::split_role_urls(&db_name)
+        .await
+        .expect("split fixture roles");
+    let platform_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&platform_url)
+        .await
+        .expect("platform pool");
+    sqlx::query("SELECT set_config('app.proxima_scope', 'platform', false)")
+        .execute(&platform_pool)
+        .await
+        .expect("platform scope");
     let mut built = None;
     let outcome = std::panic::AssertUnwindSafe(async {
         let owner = company_owner(Uuid::now_v7());
         built = Some(
             Proxima::<PublisherApp>::app()
-                .database_url(proxima_pg_testkit::db_url(&db_name))
+                .database_url(runtime_url)
+                .platform_database_url(platform_url)
                 .owner(owner)
                 .tool_scope(ToolScope::All)
                 .allow_insecure_single_owner()
@@ -794,7 +816,7 @@ async fn publisher_health_sidecar_fixture_captures_against_real_pg() {
             "SELECT state::text FROM proxima_core.publication_outbox WHERE t = $1",
         )
         .bind(id)
-        .fetch_one(runtime.pool_for_tests())
+        .fetch_one(&platform_pool)
         .await
         .expect("captured outbox row");
         assert_eq!(state, "pending");
@@ -825,24 +847,38 @@ async fn supervised_and_legacy_facades_publish_and_release_the_client() {
             let stream_name = format!("PH_{}", Uuid::now_v7().simple());
             let prefix = format!("publisher_health_{}", Uuid::now_v7().simple());
             let js = create_stream(&nats_url, &stream_name, &prefix).await;
+            let db_name = proxima_pg_testkit::unique_db_name("publisher_health");
+            proxima_pg_testkit::create_db(&db_name)
+                .await
+                .expect("PG fixture database");
+            let (database_url, platform_database_url) =
+                proxima_pg_testkit::split_role_urls(&db_name)
+                    .await
+                    .expect("split fixture roles");
+            let platform_pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&platform_database_url)
+                .await
+                .expect("platform pool");
+            sqlx::query("SELECT set_config('app.proxima_scope', 'platform', false)")
+                .execute(&platform_pool)
+                .await
+                .expect("platform scope");
             let context = PublisherTestContext {
                 proxy,
                 js: &js,
                 stream_name: &stream_name,
                 prefix: &prefix,
                 nats_url: &nats_url,
+                platform_pool: &platform_pool,
             };
-            let db_name = proxima_pg_testkit::unique_db_name("publisher_health");
-            proxima_pg_testkit::create_db(&db_name)
-                .await
-                .expect("PG fixture database");
-            let database_url = proxima_pg_testkit::db_url(&db_name);
             let first_owner = company_owner(Uuid::now_v7());
             let lookup = runtime_lookup(proxy.url(), prefix.clone());
             let built = Proxima::<PublisherApp>::app()
                 .from_lookup(lookup)
                 .expect("runtime config")
                 .database_url(database_url.clone())
+                .platform_database_url(platform_database_url.clone())
                 .owner(first_owner)
                 .tool_scope(ToolScope::All)
                 .allow_insecure_single_owner()
@@ -858,7 +894,9 @@ async fn supervised_and_legacy_facades_publish_and_release_the_client() {
             built.shutdown();
 
             let running_owner = company_owner(Uuid::now_v7());
-            let running = start_running_proxima(&context, database_url, running_owner).await;
+            let running =
+                start_running_proxima(&context, database_url, platform_database_url, running_owner)
+                    .await;
             exercise_running_legacy(&context, &running, running_owner).await;
             exercise_running_supervised(&context, &running, running_owner).await;
             running.shutdown().await;

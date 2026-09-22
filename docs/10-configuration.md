@@ -487,11 +487,10 @@ binds it to `Mcp-Session-Id`. Embedded hosts may still configure a boot
 owner for host-owned direct calls. There is no per-Owner
 inference/credential table.
 
-`PROXIMA_PLATFORM_DATABASE_URL` is an optional separate migration/maintenance
-DSN. It is validated before use and never exposed through flavor or request
-APIs. `DATABASE_URL` remains the serving/runtime DSN. Before the enforcing
-owner-RLS release, an unset platform DSN preserves the compatibility path; in
-the enforcing epoch boot requires it and fails closed.
+`PROXIMA_PLATFORM_DATABASE_URL` is the required separate migration/maintenance
+DSN for v0.0.15. It is validated before use and never exposed through flavor or
+request APIs. `DATABASE_URL` is the nonowner serving/runtime DSN. Provision both
+roles before the coordinated migration (see [15 §Owner-RLS rollout](15-deployment.md#owner-rls-rollout)).
 
 <a id="bootstrap"></a>
 ## Bootstrap

@@ -24,7 +24,7 @@ impl OwnerAccessReadPort for PgStorage {
                 ));
             }
         } else {
-            // Verify bridge compatibility before opening any platform authority.
+            // Refuse missing authority after activation before opening platform access.
             crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None)
                 .await?
                 .rollback()

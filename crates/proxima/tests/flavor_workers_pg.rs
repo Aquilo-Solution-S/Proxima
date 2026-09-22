@@ -14,9 +14,9 @@ use proxima::flavor::{
 use proxima::{AppInfo, FlavorApp, Proxima, ProximaError, ToolScope, company_owner};
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, Role, UserId,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, OwnerRoles, Role, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{create_db, drop_db, split_role_urls, unique_db_name};
 use tokio::time::{Duration, Instant, sleep, timeout};
 use uuid::Uuid;
 
@@ -82,11 +82,12 @@ impl FlavorApp for CountingWorkerApp {
 async fn run_spawns_flavor_workers_and_shutdown_joins_them() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let running = Proxima::<CountingWorkerApp>::app()
             .database_url(db_url)
+            .platform_database_url(platform_url)
             .owner(company_owner(Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .run()
@@ -187,11 +188,32 @@ impl Authenticator for TestAuthenticator {
     }
 }
 
+struct WorkerAuthenticator {
+    owner: Owner,
+}
+
+#[async_trait]
+impl Authenticator for WorkerAuthenticator {
+    async fn authenticate(&self, _: &Credentials) -> Result<AuthzContext, AuthError> {
+        Ok(AuthzContext::server_resolved(
+            OwnerRoles::for_subject(
+                match self.owner {
+                    Owner::Personal(user) => user,
+                    Owner::Group(_) => UserId::new(Uuid::now_v7()),
+                },
+                [(self.owner, Role::admin())],
+            )
+            .unwrap(),
+            AuthPath::System,
+        ))
+    }
+}
+
 #[tokio::test]
 async fn run_that_fails_to_bind_spawns_no_flavor_workers() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         // Holding this listener open makes the runtime's own bind on the
@@ -203,6 +225,7 @@ async fn run_that_fails_to_bind_spawns_no_flavor_workers() {
         let subject = UserId::new(Uuid::now_v7());
         let err = Proxima::<BindProbeApp>::app()
             .database_url(db_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
             .authenticator(Arc::new(TestAuthenticator { subject, owner }))
             .tool_scope(ToolScope::All)
@@ -265,11 +288,12 @@ impl FlavorBundle for BlobProbeApp {
                         // from, so it mints its own. `single_owner` is no
                         // use here: it denies for a group owner.
                         let owner = BLOB_PROBE_OWNER.get().copied().expect("owner set");
-                        let authz = AuthzContext::for_subject_with_role(
-                            UserId::new(Uuid::now_v7()),
-                            [(owner, Role::admin())],
-                            AuthPath::System,
-                        );
+                        let authz = proxima_core::authenticate(
+                            &WorkerAuthenticator { owner },
+                            &Credentials::Bearer("worker-test".into()),
+                        )
+                        .await
+                        .expect("worker owner witness");
                         match service.read_url(&authz, owner, Uuid::now_v7()).await {
                             Ok(_) => "unexpected presigned URL for a missing blob".to_string(),
                             Err(err) => err.to_string(),
@@ -297,7 +321,7 @@ impl FlavorApp for BlobProbeApp {
 async fn run_wires_the_cited_blob_service_into_the_worker_context() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -308,6 +332,7 @@ async fn run_wires_the_cited_blob_service_into_the_worker_context() {
         // its locator row from Postgres before it ever builds that client.
         let running = Proxima::<BlobProbeApp>::app()
             .database_url(db_url)
+            .platform_database_url(platform_url)
             .s3(S3RuntimeConfig {
                 bucket: "proxima-test-bucket".to_string(),
                 region: "us-east-1".to_string(),

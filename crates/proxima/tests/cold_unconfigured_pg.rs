@@ -7,7 +7,7 @@ use proxima::{
     UserId,
 };
 use proxima_core::{AgentNoteV1, ErrorCode, ProtocolError};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
 use uuid::Uuid;
 
 type TestResult<T> = Result<T, Box<dyn Error>>;
@@ -101,6 +101,7 @@ async fn forget_without_s3_preserves_content_across_restart() -> TestResult<()> 
 }
 
 async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
+    let admin_pool = sqlx::PgPool::connect(&db_url(database)).await?;
     let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let authz = host_context(owner, AuthPath::HostBearer);
     let initial = boot(database, owner).await?;
@@ -116,7 +117,7 @@ async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
     {
         return Err("fixture must first read the exact typed Fact through the engine".into());
     }
-    let lifecycle_before_forget = lifecycle(&initial, written.handle).await?;
+    let lifecycle_before_forget = lifecycle(&admin_pool, written.handle).await?;
     if lifecycle_before_forget.head.as_ref().map(|head| head.t)
         != Some(written.memory_id.into_inner())
         || lifecycle_before_forget.announcements.is_empty()
@@ -127,16 +128,16 @@ async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
         .engine
         .forget_memory(&authz, owner, written.memory_id)
         .await;
-    let rows_after_forget = rows(&initial, written.memory_id).await?;
+    let rows_after_forget = rows(&admin_pool, written.memory_id).await?;
     let readable_after_forget = read_note(&initial, &authz, written.memory_id).await?;
-    let lifecycle_after_forget = lifecycle(&initial, written.handle).await?;
+    let lifecycle_after_forget = lifecycle(&admin_pool, written.handle).await?;
     // Consume the entire first runtime and close its pool before composition
     // from scratch. No cold adapter or engine clone survives into the reboot.
     stop(initial).await;
 
     let restarted = boot(database, owner).await?;
-    let rows_after_restart = rows(&restarted, written.memory_id).await?;
-    let lifecycle_after_restart = lifecycle(&restarted, written.handle).await?;
+    let rows_after_restart = rows(&admin_pool, written.memory_id).await?;
+    let lifecycle_after_restart = lifecycle(&admin_pool, written.handle).await?;
     let hydration = restarted
         .engine
         .hydrate_memory(&authz, owner, written.memory_id)
@@ -187,7 +188,7 @@ async fn database_only_control(database: &str) -> TestResult<()> {
         .engine
         .erase_group_owner(&host_context(owner, AuthPath::System), group)
         .await?;
-    let after_erase = rows(&restarted, written.memory_id).await?;
+    let after_erase = rows(restarted.pool_for_tests(), written.memory_id).await?;
     let debt: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.cold_purge_pending")
         .fetch_one(restarted.pool_for_tests())
         .await?;
@@ -213,10 +214,11 @@ async fn database_only_control(database: &str) -> TestResult<()> {
 }
 
 async fn boot(database: &str, owner: OwnerRef) -> TestResult<EmbeddedProxima> {
+    let (runtime_url, platform_url) = split_role_urls(database).await?;
     Ok(ProximaBuilder::new(
         EmbedConfig {
-            database_url: db_url(database),
-            platform_database_url: None,
+            database_url: runtime_url,
+            platform_database_url: Some(platform_url),
             s3: None,
         },
         owner,
@@ -234,9 +236,13 @@ async fn stop(runtime: EmbeddedProxima) {
 fn host_context(owner: OwnerRef, path: AuthPath) -> AuthzContext {
     // This is the trusted host's resolved subject role, not a caller-chosen
     // group or the intentionally unauthorized single_owner(group) shortcut.
-    AuthzContext::for_subject_with_role(UserId::new(Uuid::now_v7()), [(owner, Role::admin())], path)
-        .narrowed_to_owner(owner)
-        .expect("trusted host resolved this exact owner")
+    proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
+        UserId::new(Uuid::now_v7()),
+        [(owner, Role::admin())],
+        path,
+    ))
+    .narrowed_to_owner(owner)
+    .expect("trusted host resolved this exact owner")
 }
 
 fn note(title: &str) -> AgentNoteV1 {
@@ -271,31 +277,31 @@ async fn read_note(
         .cloned())
 }
 
-async fn rows(runtime: &EmbeddedProxima, memory_id: MemoryId) -> TestResult<(i64, i64, i64)> {
+async fn rows(pool: &sqlx::PgPool, memory_id: MemoryId) -> TestResult<(i64, i64, i64)> {
     Ok(sqlx::query_as(
         "SELECT (SELECT count(*) FROM proxima_core.memory WHERE t = $1),
                 (SELECT count(*) FROM proxima_core.cooled WHERE t = $1),
                 (SELECT count(*) FROM proxima_core.agent_note_v1 WHERE t = $1)",
     )
     .bind(memory_id.into_inner())
-    .fetch_one(runtime.pool_for_tests())
+    .fetch_one(pool)
     .await?)
 }
 
-async fn lifecycle(runtime: &EmbeddedProxima, handle: Uuid) -> TestResult<LifecycleState> {
+async fn lifecycle(pool: &sqlx::PgPool, handle: Uuid) -> TestResult<LifecycleState> {
     let head = sqlx::query_as(
         "SELECT handle, kind::text, schema_id, owner_id, t
            FROM proxima_core.memory_head WHERE handle = $1",
     )
     .bind(handle)
-    .fetch_optional(runtime.pool_for_tests())
+    .fetch_optional(pool)
     .await?;
     let announcements = sqlx::query_as(
         "SELECT seq, owner_id, op::text, entity::text, handle, t
            FROM proxima_core.announce WHERE handle = $1 ORDER BY seq",
     )
     .bind(handle)
-    .fetch_all(runtime.pool_for_tests())
+    .fetch_all(pool)
     .await?;
     Ok(LifecycleState {
         head,

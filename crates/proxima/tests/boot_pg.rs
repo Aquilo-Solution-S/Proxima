@@ -14,14 +14,24 @@ use proxima_core::{
     FlavorRegistry, FlavorRegistryError, MemoryId, Owner, Role, SchemaId, SchemaVersion, ToolScope,
     UserId,
 };
-use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::{PgPoolConfig, PgSidecarKey, PgStorage};
+use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, split_role_urls, unique_db_name};
+use proxima_storage_pg::{PgPoolConfig, PgSidecarKey, PgStorage, PgTuning};
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use sqlx::{Connection, SqlSafeStr};
 use tokio::time::{Duration, Instant};
 use uuid::Uuid;
 
 struct GoalTestApp;
+
+fn host_context(owner: Owner, path: AuthPath) -> AuthzContext {
+    proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
+        UserId::new(Uuid::now_v7()),
+        [(owner, Role::admin())],
+        path,
+    ))
+    .narrowed_to_owner(owner)
+    .expect("trusted host resolved this exact owner")
+}
 
 #[derive(Debug)]
 struct TestAuthenticator {
@@ -184,10 +194,11 @@ fn current_user_schema_migrator() -> Migrator {
     }
 }
 
-async fn force_role_first_search_path(db_name: &str) -> Result<(), sqlx::Error> {
+async fn force_role_first_search_path(db_name: &str, role: &str) -> Result<(), sqlx::Error> {
     let mut conn = sqlx::PgConnection::connect(&admin_url()).await?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "ALTER ROLE CURRENT_USER IN DATABASE {} SET search_path = \"$user\", public",
+        "ALTER ROLE {} IN DATABASE {} SET search_path = \"$user\", public",
+        quoted_ident(role),
         quoted_ident(db_name)
     )))
     .execute(&mut conn)
@@ -199,12 +210,12 @@ async fn force_role_first_search_path(db_name: &str) -> Result<(), sqlx::Error> 
 async fn boots_engine_with_core_goal_tools_on_fresh_db() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let config = EmbedConfig {
-            database_url: db_url,
-            platform_database_url: None,
+            database_url: runtime_url,
+            platform_database_url: Some(platform_url),
             s3: None,
         };
         let owner = company_owner(Uuid::now_v7());
@@ -233,7 +244,7 @@ async fn boots_engine_with_core_goal_tools_on_fresh_db() {
 async fn programmatic_pool_config_reaches_runtime_pool_construction() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool_config = PgPoolConfig {
@@ -244,7 +255,8 @@ async fn programmatic_pool_config_reaches_runtime_pool_construction() {
             max_lifetime: Duration::from_secs(23),
         };
         let built = Proxima::<GoalTestApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url)
+            .platform_database_url(platform_url)
             .owner(company_owner(Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .allow_insecure_single_owner()
@@ -275,10 +287,15 @@ async fn programmatic_pool_config_reaches_runtime_pool_construction() {
 async fn migration_facade_runs_core_goal_schema_idempotently() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (_runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&db_url).await?;
+        let pg = PgStorage::connect_for_migrations_with_config(
+            &platform_url,
+            PgPoolConfig::from_env()?,
+            PgTuning::from_env()?,
+        )
+        .await?;
         for _ in 0..2 {
             let report = run_core_and_flavor_migrations(&pg, Vec::<NamedMigrator>::new()).await?;
             assert!(report.sources.contains(&"proxima-core"));
@@ -414,13 +431,18 @@ async fn pre_v004_database_surfaces_typed_reset_error_through_boot() {
 async fn migration_facade_keeps_tracking_public_when_flavor_creates_current_user_schema() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    force_role_first_search_path(&db_name)
+    let (_runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    force_role_first_search_path(&db_name, "proxima_test_platform")
         .await
         .expect("test role search_path should be configurable");
-    let db_url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&db_url).await?;
+        let pg = PgStorage::connect_for_migrations_with_config(
+            &platform_url,
+            PgPoolConfig::from_env()?,
+            PgTuning::from_env()?,
+        )
+        .await?;
         let report = run_core_and_flavor_migrations(
             &pg,
             [NamedMigrator::new(
@@ -433,7 +455,12 @@ async fn migration_facade_keeps_tracking_public_when_flavor_creates_current_user
         pg.pool_for_tests().close().await;
         drop(pg);
 
-        let pg = PgStorage::connect(&db_url).await?;
+        let pg = PgStorage::connect_for_migrations_with_config(
+            &platform_url,
+            PgPoolConfig::from_env()?,
+            PgTuning::from_env()?,
+        )
+        .await?;
         let report = run_core_and_flavor_migrations(
             &pg,
             [NamedMigrator::new(
@@ -465,13 +492,14 @@ async fn migration_facade_keeps_tracking_public_when_flavor_creates_current_user
 async fn facade_run_with_custom_auth_needs_no_separate_owner_access() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let subject = UserId::new(Uuid::now_v7());
         let running = Proxima::<GoalTestApp>::app()
-            .database_url(db_url.clone())
+            .database_url(runtime_url)
+            .platform_database_url(platform_url)
             .owner(owner)
             .authenticator(Arc::new(TestAuthenticator { subject, owner }))
             .tool_scope(ToolScope::All)
@@ -500,15 +528,16 @@ async fn facade_run_with_custom_auth_needs_no_separate_owner_access() {
 async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let model_id = "facade-drain-embed";
+        let inspection = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let built = Proxima::<GoalTestApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url)
+            .platform_database_url(platform_url)
             .owner(owner)
-            .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .embed_client(Arc::new(ConstantEmbedding::prefixed(
                 model_id,
@@ -527,7 +556,7 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
         );
 
         let payload = drain_note("facade worker drain fact");
-        let authz = built.single_owner_authz().expect("single owner authz");
+        let authz = host_context(owner, AuthPath::HostBearer);
         let outcome = built
             .engine
             .ingest_fact(
@@ -536,21 +565,22 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
             )
             .await?;
         assert_eq!(
-            count_fact_embeddings(built.pool_for_tests(), outcome.memory_id, model_id).await?,
+            count_fact_embeddings(&inspection, outcome.memory_id, model_id).await?,
             0
         );
         assert_eq!(
-            count_embedding_jobs(built.pool_for_tests(), outcome.memory_id, model_id).await?,
+            count_embedding_jobs(&inspection, outcome.memory_id, model_id).await?,
             1
         );
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let worker = built.spawn_embedding_worker(cancel.clone());
-        wait_for_embedding_drain(built.pool_for_tests(), outcome.memory_id, model_id).await?;
+        wait_for_embedding_drain(&inspection, outcome.memory_id, model_id).await?;
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(1), worker).await??;
 
         built.shutdown();
+        inspection.close().await;
         Ok(())
     }
     .await;
@@ -563,23 +593,24 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
 async fn startup_reconcile_heals_facts_ingested_without_embed_client() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let model_id = "startup-reconcile-embed";
+        let inspection = sqlx::PgPool::connect(&db_url(&db_name)).await?;
 
         // First boot has NO embedding client: fact ingest writes the memory
         // but enqueues no job — the gap the startup reconcile exists to heal.
         let degraded = Proxima::<GoalTestApp>::app()
-            .database_url(db_url.clone())
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
             .owner(owner)
-            .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .build()
             .await?;
         let payload = drain_note("fact written while embeddings were down");
-        let authz = degraded.single_owner_authz().expect("single owner authz");
+        let authz = host_context(owner, AuthPath::HostBearer);
         let outcome = degraded
             .engine
             .ingest_fact(
@@ -588,7 +619,7 @@ async fn startup_reconcile_heals_facts_ingested_without_embed_client() {
             )
             .await?;
         assert_eq!(
-            count_embedding_jobs(degraded.pool_for_tests(), outcome.memory_id, model_id).await?,
+            count_embedding_jobs(&inspection, outcome.memory_id, model_id).await?,
             0,
             "no embed client -> ingest must not enqueue a job"
         );
@@ -598,9 +629,9 @@ async fn startup_reconcile_heals_facts_ingested_without_embed_client() {
         // enqueue the missing job and the drain loop must embed it, without
         // any operator command.
         let healed = Proxima::<GoalTestApp>::app()
-            .database_url(db_url)
+            .database_url(runtime_url)
+            .platform_database_url(platform_url)
             .owner(owner)
-            .allow_insecure_single_owner()
             .tool_scope(ToolScope::All)
             .embed_client(Arc::new(ConstantEmbedding::prefixed(
                 model_id,
@@ -610,10 +641,11 @@ async fn startup_reconcile_heals_facts_ingested_without_embed_client() {
             .await?;
         let cancel = tokio_util::sync::CancellationToken::new();
         let worker = healed.spawn_embedding_worker(cancel.clone());
-        wait_for_embedding_drain(healed.pool_for_tests(), outcome.memory_id, model_id).await?;
+        wait_for_embedding_drain(&inspection, outcome.memory_id, model_id).await?;
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(1), worker).await??;
         healed.shutdown();
+        inspection.close().await;
         Ok(())
     }
     .await;
@@ -626,20 +658,25 @@ async fn startup_reconcile_heals_facts_ingested_without_embed_client() {
 async fn skip_migrations_boots_without_applying_ddl() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         // Migrate the core schema out-of-band, standing in for the DDL-role
         // init step of a split-role GitOps deploy.
-        let pg = PgStorage::connect(&db_url).await?;
+        let pg = PgStorage::connect_for_migrations_with_config(
+            &platform_url,
+            PgPoolConfig::from_env()?,
+            PgTuning::from_env()?,
+        )
+        .await?;
         run_core_and_flavor_migrations(&pg, Vec::<NamedMigrator>::new()).await?;
         pg.pool_for_tests().close().await;
         drop(pg);
 
         let owner = company_owner(Uuid::now_v7());
         let config = || EmbedConfig {
-            database_url: db_url.clone(),
-            platform_database_url: None,
+            database_url: runtime_url.clone(),
+            platform_database_url: Some(platform_url.clone()),
             s3: None,
         };
 
@@ -690,13 +727,13 @@ async fn skip_migrations_boots_without_applying_ddl() {
 async fn boot_rejects_embedding_client_with_wrong_dim() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let config = || EmbedConfig {
-            database_url: db_url.clone(),
-            platform_database_url: None,
+            database_url: runtime_url.clone(),
+            platform_database_url: Some(platform_url.clone()),
             s3: None,
         };
 
@@ -766,22 +803,68 @@ fn role_ddl_migrator(role_name: &str) -> Migrator {
 /// both INSERT the missing row and the loser gets a `23505` unique violation
 /// on the catalog's index. Both shapes are deterministic: the blocked
 /// statement fails the moment the holder commits.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixture covers two catalog race shapes with explicit setup and evidence"
+)]
 async fn assert_role_ddl_contention_retries_to_green(
     role_settings_pre_seeded: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let db_url = db_url(&db_name);
     let role_name = format!("proxima_test_role_{}", Uuid::now_v7().simple());
+    let role_password = "proxima_test_role_password";
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let mut admin = sqlx::PgConnection::connect(&admin_url()).await?;
         // SQL-POLICY: fixed-fragment — {role_name} is minted by this test from
         // Uuid::now_v7().simple() under a fixed [a-z_] prefix, so the spliced
         // identifier is [a-z0-9_] only and no caller value reaches the statement.
-        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE ROLE {role_name}")))
+        // SQL-POLICY: fixed-fragment — {role_name} is the test-minted closed
+        // identifier above and {role_password} is a fixed fixture secret.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE ROLE {role_name} LOGIN PASSWORD '{role_password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS"
+        )))
             .execute(&mut admin)
             .await?;
+        // SQL-POLICY: fixed-fragment — both identifiers are quoted; db_name is
+        // generated by unique_db_name and role_name is the closed fixture role.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "GRANT CREATE ON DATABASE {} TO {}",
+            quoted_ident(&db_name),
+            quoted_ident(&role_name),
+        )))
+        .execute(&mut admin)
+        .await?;
+        let mut target_admin = sqlx::PgConnection::connect(&db_url(&db_name)).await?;
+        sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
+            .execute(&mut target_admin)
+            .await?;
+        // SQL-POLICY: fixed-fragment — role_name is the generated, quoted
+        // fixture identifier; the target schema is the literal public schema.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "GRANT CREATE ON SCHEMA public TO {}",
+            quoted_ident(&role_name),
+        )))
+        .execute(&mut target_admin)
+        .await?;
+        target_admin.close().await?;
+        let mut acl_control = sqlx::PgConnection::connect(&admin_url()).await?;
+        sqlx::query("SELECT pg_advisory_lock(90300014)")
+            .execute(&mut acl_control)
+            .await?;
+        // SQL-POLICY: fixed-fragment — role_name is the generated, quoted
+        // fixture identifier; the parameter name is a closed literal.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "GRANT SET ON PARAMETER app.proxima_scope TO {}",
+            quoted_ident(&role_name),
+        )))
+        .execute(&mut admin)
+        .await?;
+        sqlx::query("SELECT pg_advisory_unlock(90300014)")
+            .execute(&mut acl_control)
+            .await?;
+        acl_control.close().await?;
         if role_settings_pre_seeded {
             // SQL-POLICY: fixed-fragment — same test-minted {role_name} as above.
             sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -802,7 +885,14 @@ async fn assert_role_ddl_contention_retries_to_green(
         .execute(tx.as_mut())
         .await?;
 
-        let pg = PgStorage::connect(&db_url).await?;
+        let fixture_admin_url = admin_url();
+        let authority = fixture_admin_url
+            .split_once("://")
+            .and_then(|(_, rest)| rest.split_once('@'))
+            .map(|(_, authority)| authority.split('/').next().unwrap_or(authority))
+            .ok_or("test admin URL must contain an authority")?;
+        let role_url = format!("postgres://{role_name}:{role_password}@{authority}/{db_name}");
+        let pg = PgStorage::connect(&role_url).await?;
         let migrator = role_ddl_migrator(&role_name);
         let run = tokio::spawn(async move {
             run_core_and_flavor_migrations(&pg, [NamedMigrator::new("role-ddl-flavor", migrator)])
@@ -817,6 +907,10 @@ async fn assert_role_ddl_contention_retries_to_green(
         let mut poll = sqlx::PgConnection::connect(&admin_url()).await?;
         let deadline = Instant::now() + Duration::from_mins(1);
         loop {
+            if run.is_finished() {
+                let outcome = run.await.expect("migration task must not panic");
+                panic!("migration finished before contention became visible: {outcome:?}");
+            }
             let blocked: bool = sqlx::query_scalar(
                 "SELECT EXISTS (
                      SELECT 1 FROM pg_stat_activity
@@ -860,16 +954,49 @@ async fn assert_role_ddl_contention_retries_to_green(
     }
     .await;
 
-    if let Ok(mut cleanup) = sqlx::PgConnection::connect(&admin_url()).await {
-        // SQL-POLICY: fixed-fragment — same test-minted {role_name} as above.
-        let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+    let database_cleanup = drop_db(&db_name).await;
+    let role_cleanup = async {
+        let mut cleanup = sqlx::PgConnection::connect(&admin_url()).await?;
+        sqlx::query("SELECT pg_advisory_lock(90300014)")
+            .execute(&mut cleanup)
+            .await?;
+        // SQL-POLICY: fixed-fragment — role_name is the generated, quoted
+        // fixture identifier; the parameter name is a closed literal.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "REVOKE SET ON PARAMETER app.proxima_scope FROM {}",
+            quoted_ident(&role_name),
+        )))
+        .execute(&mut cleanup)
+        .await?;
+        // SQL-POLICY: fixed-fragment — role_name is minted by this test and
+        // contains only the closed [a-z0-9_] identifier alphabet.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "DROP ROLE IF EXISTS {role_name}"
         )))
         .execute(&mut cleanup)
-        .await;
+        .await?;
+        sqlx::query("SELECT pg_advisory_unlock(90300014)")
+            .execute(&mut cleanup)
+            .await?;
+        let still_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)")
+                .bind(&role_name)
+                .fetch_one(&mut cleanup)
+                .await?;
+        cleanup.close().await?;
+        if still_exists {
+            return Err(sqlx::Error::Protocol(
+                "contention fixture role survived cleanup".into(),
+            ));
+        }
+        Ok::<(), sqlx::Error>(())
     }
-    let _ = drop_db(&db_name).await;
-    result
+    .await;
+    match (result, database_cleanup, role_cleanup) {
+        (Err(error), _, _) => Err(error),
+        (Ok(()), Err(error), _) | (Ok(()), Ok(()), Err(error)) => Err(error.into()),
+        (Ok(()), Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 #[tokio::test]

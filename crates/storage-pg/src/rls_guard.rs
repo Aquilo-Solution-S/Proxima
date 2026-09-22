@@ -287,8 +287,8 @@ pub async fn assert_runtime_rls(pool: &PgPool, schemas: &[&str]) -> Result<(), S
 }
 
 /// Detect whether the database has entered the owner-RLS epoch. This probe is
-/// deliberately separate from the strict runtime guard so pre-RLS databases
-/// retain the compatibility bridge.
+/// separate from the strict runtime guard so migration tooling can inspect
+/// a pre-activation schema before applying the enforcing migration.
 ///
 /// # Errors
 ///

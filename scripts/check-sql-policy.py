@@ -854,7 +854,12 @@ def run_fixture(path: Path) -> int:
 # 136 -> 139: paging regression fixtures execute the production SQL builder
 # once for the semantic matrix and twice for results/EXPLAIN work bounds.
 # All predicates are closed fragments and all request values remain bound.
-EXPECTED_DYNAMIC_SQL_SITES = 139
+# 139 -> 142: coordinated-cutover fixtures replace staged activation SQL with
+# the real migrators and provision a restricted role for catalog-contention
+# tests, including parameter-ACL cleanup. Net three new sites; all role/database
+# identifiers are fixture-generated
+# and quoted, with adjacent fixed-fragment proofs. No production site added.
+EXPECTED_DYNAMIC_SQL_SITES = 142
 
 
 def run_self_test() -> int:

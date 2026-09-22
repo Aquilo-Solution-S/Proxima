@@ -434,7 +434,7 @@ async fn fresh_owner_erase_pg() -> (String, PgStorage) {
     let pg = PgStorage::connect(&db_url(&db_name))
         .await
         .expect("connect");
-    pg.run_migrations().await.expect("migrate");
+    pg.run_before_owner_rls_migrations().await.expect("migrate");
     (db_name, pg)
 }
 
@@ -529,7 +529,7 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
 
         let user = UserId::new(Uuid::now_v7());
@@ -694,7 +694,7 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
@@ -781,7 +781,7 @@ async fn erase_personal_owner_destroys_wake_config() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
@@ -874,7 +874,7 @@ async fn erase_source_scope_keeps_all_wake_configs() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
@@ -950,7 +950,7 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(MemoryColdStore::default());
         let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
@@ -1006,7 +1006,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(RefusingDeleteCold::default());
         let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
@@ -1122,7 +1122,7 @@ async fn an_injected_deadlock_inside_owner_erase_is_retried() {
         let pg = PgStorage::connect(&url)
             .await?
             .with_cold(Arc::new(MemoryColdStore::default()));
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
@@ -1202,7 +1202,7 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(BucketNamedCold::new("wired-bucket"));
         let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -1291,7 +1291,7 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(MemoryColdStore::default());
         let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
@@ -1373,7 +1373,7 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         create_citation_sidecar_tables(pool).await?;
         let user = UserId::new(Uuid::now_v7());
@@ -1446,7 +1446,7 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
         // The cited-upload fixtures below explicitly name this bucket.
         let cold = Arc::new(BucketNamedCold::new("bucket"));
         let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         create_citation_sidecar_tables(pool).await?;
         let user = UserId::new(Uuid::now_v7());
@@ -1563,7 +1563,7 @@ async fn erase_group_owner_refuses_while_membership_rows_exist() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
 
         let group = GroupId::new(Uuid::now_v7());
@@ -1620,7 +1620,7 @@ async fn erase_group_owner_completes_when_abandoned() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
 
         let group = GroupId::new(Uuid::now_v7());
@@ -1699,7 +1699,7 @@ async fn erase_source_scope_rewinds_head_to_remaining_t() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
@@ -1763,7 +1763,7 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
@@ -1880,7 +1880,7 @@ async fn erasing_a_member_leaves_the_memberships_that_name_it() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
 
         let user = UserId::new(Uuid::now_v7());

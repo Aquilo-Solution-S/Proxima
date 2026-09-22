@@ -17,8 +17,7 @@ async fn commit_search_tsv_is_stored_and_indexed() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool_for_tests()).await?;
+        common::apply_current_migrations(&pg).await?;
 
         // The sidecars carry no vector any more; the projection does, once,
         // for the whole flavor.

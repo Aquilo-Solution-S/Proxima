@@ -39,13 +39,17 @@ Your machine, your Postgres, your embedding model. No hosted service.
 # export PROXIMA_DEV_POSTGRES_PORT=55432
 # export PROXIMA_DEV_S3_PORT=59100
 docker compose -f docker-compose.dev.yml up -d --wait postgres
+# Replays role/extension preparation for existing volumes too; stop old hosts first.
+docker compose -f docker-compose.dev.yml exec -T postgres \
+  psql -U proxima -d proxima -v ON_ERROR_STOP=1 < scripts/pg-init.sql
 
 # 2. A local OIDC issuer. One auth path: RS256 bearer vs JWKS.
 #    Local means a local issuer, not a bypass. Prints env + client config.
 cargo run -p proxima-dev-idp
 
 # 3. In another shell, paste what step 2 printed, then:
-export DATABASE_URL="postgres://proxima:proxima@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
+export DATABASE_URL="postgres://proxima_runtime:proxima-runtime-dev@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
+export PROXIMA_PLATFORM_DATABASE_URL="postgres://proxima_platform:proxima-platform-dev@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
 export PROXIMA_TOOL_PROFILE=full
 cargo run -p proxima-mcp
 ```

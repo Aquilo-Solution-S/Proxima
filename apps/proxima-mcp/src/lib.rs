@@ -323,6 +323,7 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
     })?;
     let built = Proxima::<BlobMaintenanceApp>::app()
         .database_url(config.database_url)
+        .platform_database_url(maintenance_platform_url()?)
         .s3(s3)
         .build()
         .await?;
@@ -373,14 +374,7 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
 async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     let model = maintenance_embedding_model(config.model, proxima_core::process_env)?;
     let embedding_policy = embedding_runtime_policy_from_lookup(&proxima_core::process_env)?;
-    let storage = PgStorage::connect(&config.database_url)
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?
-        .with_embedding_runtime_policy(embedding_policy);
-    storage
-        .run_migrations()
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    let storage = maintenance_storage(&config.database_url, embedding_policy).await?;
 
     let Some(_lock) = storage
         .try_embedding_maintenance_lock()
@@ -482,6 +476,50 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     Ok(())
 }
 
+async fn maintenance_storage(
+    database_url: &str,
+    embedding_policy: proxima_core::EmbeddingRuntimePolicy,
+) -> Result<PgStorage, CliError> {
+    let platform_url = maintenance_platform_url()?;
+    let config = proxima_storage_pg::PgPoolConfig::from_env()
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    let tuning = proxima_storage_pg::PgTuning::from_env()
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    let migration_pg = PgStorage::connect_for_migrations_with_config(&platform_url, config, tuning)
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    run_core_and_flavor_migrations(&migration_pg, ProximaMcpApp::migrators())
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    #[cfg(feature = "code")]
+    let schemas = ["proxima_core", "proxima_code"];
+    #[cfg(not(feature = "code"))]
+    let schemas = ["proxima_core"];
+    let platform_scope =
+        proxima_storage_pg::PgPlatformScope::new(migration_pg.clone_pool_for_backend(), &schemas)
+            .await
+            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    drop(migration_pg);
+    let storage = PgStorage::connect_with_config(database_url, config, tuning)
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?
+        .with_platform_scope(platform_scope)
+        .with_embedding_runtime_policy(embedding_policy);
+    proxima_storage_pg::assert_runtime_rls(&storage.clone_pool_for_backend(), &schemas)
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    Ok(storage)
+}
+
+fn maintenance_platform_url() -> Result<String, CliError> {
+    proxima_core::env_value(&proxima_core::process_env, "PROXIMA_PLATFORM_DATABASE_URL").ok_or_else(
+        || {
+            ProximaError::Config("PROXIMA_PLATFORM_DATABASE_URL is required for maintenance".into())
+                .into()
+        },
+    )
+}
+
 /// One storage-maintenance pass: the cold-object purge drain and/or
 /// change-log rotation, per the explicit action flags. Serialized across
 /// processes by its own Postgres advisory lock — an overlapping pass skips
@@ -498,12 +536,11 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
         })
         .transpose()?;
 
-    let storage = PgStorage::connect(&config.database_url)
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    run_core_and_flavor_migrations(&storage, ProximaMcpApp::migrators())
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    let storage = maintenance_storage(
+        &config.database_url,
+        embedding_runtime_policy_from_lookup(&proxima_core::process_env)?,
+    )
+    .await?;
 
     let storage = if let Some(s3) = s3 {
         let mut registry = FlavorRegistry::new();

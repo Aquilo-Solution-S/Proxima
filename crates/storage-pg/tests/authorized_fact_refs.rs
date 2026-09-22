@@ -198,7 +198,7 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
     let registry = registry();
     let result = async {
         let pg = PgStorage::connect(&db_url(&db_name)).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         sqlx::raw_sql(
             "CREATE SCHEMA test_refs;
              CREATE TABLE test_refs.referenced_fact_v1 (

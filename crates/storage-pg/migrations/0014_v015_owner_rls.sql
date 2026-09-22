@@ -1,5 +1,5 @@
--- Owner RLS activation. Apply only after every live host runs the v0.0.15 bridge.
--- This exact successor is checksum-approved by the bridge, but is not run by it.
+-- v0.0.15 owner-RLS cutover. Stop every older pack before applying.
+-- Run as the nonsuperuser platform owner; older binaries cannot resume afterward.
 
 DO $owner_rls_role$
 DECLARE

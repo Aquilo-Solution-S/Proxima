@@ -873,7 +873,7 @@ async fn run_identity(
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         seed(
             pg.pool_for_tests(),
             CI_NOTES_PER_OWNER,
@@ -1157,7 +1157,7 @@ async fn a_superseded_backlog_does_not_starve_the_page() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         seed_starvation(pg.pool_for_tests()).await?;
 
         let projections = projections();
@@ -1398,7 +1398,7 @@ async fn a_kind_filter_does_not_starve_the_page() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         seed_kind_probe(pg.pool_for_tests()).await?;
 
         let projections = projections();

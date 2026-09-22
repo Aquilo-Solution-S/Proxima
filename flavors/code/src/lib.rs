@@ -46,6 +46,8 @@ pub use repos::{
 #[cfg(any(test, debug_assertions))]
 #[doc(hidden)]
 pub mod testkit {
+    use crate::CodeFlavorStore;
+
     pub use crate::ingest::{
         append_code_slice, build_engine, build_engine_with, ingest_commit, ingest_file_revision,
     };
@@ -57,6 +59,23 @@ pub mod testkit {
         erase_footprint, erase_repo, get_repo, list_repos, reference_closure_sql, register_repo,
         set_repo_scope, set_repo_target_branch, update_cursor,
     };
+
+    /// Run repository erasure with the verified owner witness carried by the
+    /// test store. This keeps direct fixture calls on the same scoped path as
+    /// the production host request.
+    pub async fn erase_repo_with_scope(
+        store: &CodeFlavorStore,
+        owner: &proxima_core::Owner,
+        repo_id: uuid::Uuid,
+        scope: &proxima_core::OwnerScope,
+    ) -> Result<crate::repos::RepoEraseReceipt, crate::repos::RepoRegistryError> {
+        erase_repo(
+            &store.clone().with_owner_scope(Some(scope.clone())),
+            owner,
+            repo_id,
+        )
+        .await
+    }
 }
 
 proxima::flavor::proxima_flavor! {

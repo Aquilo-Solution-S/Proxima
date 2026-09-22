@@ -1,6 +1,5 @@
--- STAGED code-flavor companion for #9030.
--- This is a separate additive flavor migration because core and flavor
--- ledgers share one database while both pack versions may be live.
+-- v0.0.15 Code owner-RLS cutover, applied after the core migration.
+-- Stop every older pack sharing this schema before activation.
 
 DO $code_owner_rls$
 DECLARE

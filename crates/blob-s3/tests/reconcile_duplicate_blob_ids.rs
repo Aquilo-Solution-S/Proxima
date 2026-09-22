@@ -162,7 +162,7 @@ async fn observe_reports(
     client: &Client,
 ) -> TestResult<Observed> {
     let pg = PgStorage::connect(&db_url(database)).await?;
-    pg.run_migrations().await?;
+    pg.run_before_owner_rls_migrations().await?;
     let result: TestResult<_> = async {
         let store = CitedBlobStore::new(pg.pool_for_tests().clone(), config.clone())?;
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())

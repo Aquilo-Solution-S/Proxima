@@ -316,7 +316,7 @@ async fn hot_path_plans_use_expected_indexes() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let leaf = seed_note(pool, owner, "Needle title", "needle body").await?;

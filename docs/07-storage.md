@@ -90,10 +90,10 @@ complete UUID `t`. `K = limit + 1` for one Memory kind, otherwise `limit`.
 Schema/kind/ID/cursor filters constrain the ordered head scan; the matching
 Memory lookup and its RLS policy run before either limit. Missing or invisible
 versions consume no page slots. The owner table deduplicates requested owners.
-An ordered subquery preserves head order before Memory hydration. The prepared
-v016 migration adds `(owner_id, t DESC)` and `(owner_id, schema_id, t DESC)`
+An ordered subquery preserves head order before Memory hydration. The v015
+activation migration adds `(owner_id, t DESC)` and `(owner_id, schema_id, t DESC)`
 head indexes, both including `(handle, kind)`. On the previous schema the
-bridge sorts heads before hydration when the ordering indexes are absent.
+query sorts heads before hydration when the ordering indexes are absent.
 History reads retain their direct Memory query. Payloads and sidecars hydrate
 only the final page.
 
@@ -105,7 +105,7 @@ Paged-query comparison: PostgreSQL 18.4, 100 owners, half the rows in the
 largest owner, complete RLS, nonowner `NOBYPASSRLS` runtime, 101-row page with
 schema filter. Warm median of three runs after one initial run, default planner:
 
-| Rows / requested owners | Previous query / existing indexes | Ordered query / staged indexes |
+| Rows / requested owners | Previous query / existing indexes | Ordered query / activation indexes |
 |---|---:|---:|
 | 20,000 / large singleton | 11.480 ms | 0.272 ms |
 | 20,000 / eight, including largest | 12.215 ms | 1.390 ms |

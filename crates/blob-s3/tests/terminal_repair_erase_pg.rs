@@ -107,7 +107,7 @@ async fn terminal_locator_repair_preserves_owner_erase_debt() -> TestResult<()> 
 async fn run_race(database: &str) -> TestResult<Observation> {
     let mut tasks = AbortTasks(Vec::new());
     let pg = PgStorage::connect(&db_url(database)).await?;
-    pg.run_migrations().await?;
+    pg.run_before_owner_rls_migrations().await?;
     let pool = pg.pool_for_tests();
     let config = S3RuntimeConfig {
         force_path_style: true,

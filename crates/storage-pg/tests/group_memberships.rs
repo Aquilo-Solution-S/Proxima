@@ -15,7 +15,7 @@ async fn list_group_members_runs_against_v008_schema() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
 
         let group = GroupId::new(Uuid::now_v7());
         let admin = UserId::new(Uuid::now_v7());

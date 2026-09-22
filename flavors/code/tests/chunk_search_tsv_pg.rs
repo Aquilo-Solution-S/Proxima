@@ -6,6 +6,8 @@
 //! reference definition below, input by input, so any divergence in scoring
 //! is caught rather than inferred.
 
+mod common;
+
 use proxima_code::payloads::CODE_LEXICAL_LANGUAGE;
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
@@ -48,8 +50,7 @@ async fn code_chunk_sql_authority_matches_rust_ingest_constant() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool_for_tests()).await?;
+        common::apply_current_migrations(&pg).await?;
 
         let sql_language: String =
             sqlx::query_scalar("SELECT proxima_code.code_lexical_config()::text")
@@ -111,8 +112,7 @@ async fn the_generator_reproduces_the_reference_vector_expression() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool_for_tests()).await?;
+        common::apply_current_migrations(&pg).await?;
 
         // The contract is the authority on WHICH columns are projected, in
         // WHICH order — the arguments the vector is built from.
@@ -212,8 +212,7 @@ async fn code_chunk_search_tsv_shares_core_text_search_config() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool_for_tests()).await?;
+        common::apply_current_migrations(&pg).await?;
 
         // There is no GENERATED search vector left anywhere: every stored
         // vector in the database is a projection row, written by the
@@ -274,8 +273,7 @@ async fn code_chunk_search_tsv_is_stored_and_indexed() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool_for_tests()).await?;
+        common::apply_current_migrations(&pg).await?;
 
         // ONE composite GIN for the whole flavor, on the projection.
         let has_index: bool = sqlx::query_scalar(
@@ -338,8 +336,7 @@ async fn the_pinned_chunk_language_is_registered_and_matchable() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool_for_tests()).await?;
+        common::apply_current_migrations(&pg).await?;
 
         sqlx::query("SELECT proxima_core.set_lexical_config('german')")
             .execute(pg.pool_for_tests())

@@ -23,3 +23,4 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
 proxima-pg-testkit = { path = "../../crates/pg-testkit" }
+proxima-storage-pg = { path = "../../crates/storage-pg", features = ["test-fixtures"] }

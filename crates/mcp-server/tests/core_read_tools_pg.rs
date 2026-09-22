@@ -18,7 +18,7 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
-    pg.run_migrations().await?;
+    pg.run_before_owner_rls_migrations().await?;
 
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let source = insert_memory(&pg, &owner, "source lineage memory", &[]).await?;
@@ -121,7 +121,7 @@ async fn search_results_expose_structured_memory_id() -> Result<(), Box<dyn std:
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
-    pg.run_migrations().await?;
+    pg.run_before_owner_rls_migrations().await?;
 
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let memory_id = insert_memory(&pg, &owner, "structured search identity", &[]).await?;
@@ -172,7 +172,7 @@ async fn batch_memories_resource_error_classes_and_lineage_paging()
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
-    pg.run_migrations().await?;
+    pg.run_before_owner_rls_migrations().await?;
 
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let stranger = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
@@ -376,7 +376,7 @@ async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
-    pg.run_migrations().await?;
+    pg.run_before_owner_rls_migrations().await?;
 
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let trigger = insert_fact(&pg, &owner, "wake trigger fact").await?;
@@ -450,7 +450,7 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
-    pg.run_migrations().await?;
+    pg.run_before_owner_rls_migrations().await?;
 
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let trigger = insert_fact(&pg, &owner, "goal read trigger fact").await?;
@@ -551,7 +551,7 @@ async fn edge_resources_read_back_interpretation_references()
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
-    pg.run_migrations().await?;
+    pg.run_before_owner_rls_migrations().await?;
 
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let hub = insert_memory(&pg, &owner, "hub abstraction", &[]).await?;

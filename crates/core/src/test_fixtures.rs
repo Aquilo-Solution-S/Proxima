@@ -4,6 +4,34 @@ use async_trait::async_trait;
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::{Owner, OwnerRef, UserId};
 
+/// Model a successful verifier for a synthetic fixture principal.
+///
+/// # Panics
+/// The supplied fixture must already contain server-resolved owner roles.
+#[must_use]
+pub fn authenticated_context(context: crate::AuthzContext) -> crate::AuthzContext {
+    struct FixtureVerifier(proxima_core::AuthzContext);
+    #[async_trait]
+    impl proxima_core::Authenticator for FixtureVerifier {
+        async fn authenticate(
+            &self,
+            _: &proxima_core::Credentials,
+        ) -> Result<proxima_core::AuthzContext, proxima_core::AuthError> {
+            Ok(self.0.clone())
+        }
+    }
+    // This verifier does no I/O: exercise the public authentication seam
+    // without creating or blocking a Tokio runtime in synchronous fixtures.
+    let verifier = FixtureVerifier(context);
+    let credentials = proxima_core::Credentials::Bearer("synthetic-fixture".into());
+    let mut future = std::pin::pin!(proxima_core::authenticate(&verifier, &credentials));
+    let mut task = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::future::Future::poll(future.as_mut(), &mut task) {
+        std::task::Poll::Ready(result) => result.expect("fixture owner roles"),
+        std::task::Poll::Pending => panic!("fixture verifier must complete synchronously"),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ConstantEmbedding {
     model_id: String,

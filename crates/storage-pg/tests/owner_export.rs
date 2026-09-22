@@ -85,7 +85,7 @@ async fn export_edges_are_the_pins_already_on_memory() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -148,7 +148,7 @@ async fn export_carries_cooled_locators_and_sketches() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -299,7 +299,7 @@ async fn export_carries_registered_citation_sidecar_rows() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let pool = pg.pool_for_tests();
@@ -405,7 +405,7 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -506,7 +506,7 @@ async fn the_bundle_carries_every_exportable_surface_even_when_empty() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
+        pg.run_before_owner_rls_migrations().await?;
 
         let surfaces = contract_sidecar_tables();
         let expected: std::collections::BTreeSet<&str> = surfaces

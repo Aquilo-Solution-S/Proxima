@@ -54,6 +54,8 @@ rest = ["proxima-mcp-server/rest"]
 testkit = ["dep:proxima-pg-testkit"]
 
 [dev-dependencies]
+proxima-code = { path = "../../flavors/code" }
+proxima-storage-pg = { path = "../storage-pg", features = ["test-fixtures"] }
 async-nats = { workspace = true, features = ["nkeys"] }
 aws-config = { workspace = true }
 aws-sdk-s3 = { workspace = true }

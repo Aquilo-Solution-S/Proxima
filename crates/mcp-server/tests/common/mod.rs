@@ -1,7 +1,8 @@
 //! Shared test helpers for mcp-server integration tests.
 
 use proxima_mcp_server::owner_key;
-pub use proxima_pg_testkit::{db_url, drop_db};
+#[allow(unused_imports)]
+pub use proxima_pg_testkit::{db_url, drop_db, split_role_urls};
 use serde_json::json;
 
 use proxima_core::Owner;
@@ -146,8 +147,10 @@ pub async fn start_server(
     auth_store: std::sync::Arc<proxima_mcp_server::McpEdgeAuth>,
 ) -> Result<(ServeHandle, std::net::SocketAddr, String), Box<dyn std::error::Error>> {
     let db_name = create_db().await?;
-    let server = proxima_mcp_server::McpToolHost::from_database_url(
-        &db_url(&db_name),
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await?;
+    let server = proxima_mcp_server::McpToolHost::from_database_urls(
+        &runtime_url,
+        &platform_url,
         proxima_core::FlavorRegistry::new(),
     )
     .await?;

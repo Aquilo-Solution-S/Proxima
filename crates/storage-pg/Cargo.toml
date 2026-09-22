@@ -36,6 +36,7 @@ test-fixtures = ["dep:proxima-pg-testkit", "proxima-core/test-fixtures"]
 workspace = true
 
 [dev-dependencies]
+proxima-storage-pg = { path = ".", features = ["test-fixtures"] }
 proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../pg-testkit" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

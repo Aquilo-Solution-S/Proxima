@@ -6,6 +6,7 @@ use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::{PgPlatformScope, assert_runtime_rls, begin_owner_transaction};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::borrow::Cow;
 use std::str::FromStr;
 use std::sync::OnceLock;
 use tokio::sync::Mutex;
@@ -13,9 +14,9 @@ use tokio::time::{Duration, timeout};
 
 static DDL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-const STAGED_CORE_OWNER_RLS: &str = include_str!("../compatibility/0014_v016_owner_rls.sql");
+const STAGED_CORE_OWNER_RLS: &str = include_str!("../migrations/0014_v015_owner_rls.sql");
 const STAGED_CODE_OWNER_RLS: &str =
-    include_str!("../../../flavors/code/compatibility/20260922000020_v016_owner_rls.sql");
+    include_str!("../../../flavors/code/migrations/20260922000020_v015_owner_rls.sql");
 
 struct SyntheticVerifier {
     roles: OwnerRoles,
@@ -267,17 +268,24 @@ async fn apply_owner_rls_fixtures(pool: &PgPool) {
 
 #[expect(
     clippy::uninlined_format_args,
+    clippy::too_many_lines,
     reason = "full migrated RLS fixture owns all setup steps"
 )]
 async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String, String) {
     let database = unique_db_name("proxima_rls_full");
     create_db(&database).await.unwrap();
     let admin = PgPool::connect(&db_url(&database)).await.unwrap();
-    proxima_storage_pg::core_migrator()
+    proxima_storage_pg::test_fixtures::core_migrator_before_owner_rls()
         .run(&admin)
         .await
         .unwrap();
     let mut code = sqlx::migrate!("../../flavors/code/migrations");
+    code.migrations = Cow::Owned(
+        code.iter()
+            .filter(|migration| !migration.description.contains("owner rls"))
+            .cloned()
+            .collect(),
+    );
     code.dangerous_set_table_name("public._sqlx_migrations_proxima_code");
     code.run(&admin).await.unwrap();
     let suffix = uuid::Uuid::now_v7().simple().to_string();
@@ -766,7 +774,7 @@ async fn authenticated_witness_binds_and_clears_transaction_scope() {
     clippy::cast_possible_wrap,
     reason = "single end-to-end RLS acceptance scenario"
 )]
-async fn full_staged_policy_isolation_uses_authenticated_scope_and_platform_role() {
+async fn full_policy_isolation_uses_authenticated_scope_and_platform_role() {
     let (database, admin, runtime, platform, platform_role, runtime_role, password) =
         setup_full_schema().await;
     assert_runtime_rls(&runtime, &["proxima_core", "proxima_code"])
