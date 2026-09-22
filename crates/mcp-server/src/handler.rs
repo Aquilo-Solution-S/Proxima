@@ -23,7 +23,7 @@ use rmcp::model::{
     Implementation, InitializeRequestParams, InitializeResult, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
     ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
-    ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 
@@ -57,8 +57,8 @@ impl DynamicHandler {
 }
 
 impl ServerHandler for DynamicHandler {
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::default();
+    fn get_info(&self) -> ServerConfig {
+        let mut info = ServerConfig::default();
         info.capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_resources()
