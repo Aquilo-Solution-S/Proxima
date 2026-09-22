@@ -2196,7 +2196,7 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
              0003_v010_reference_integrity.sql, 0004_v011_goal_refs.sql, \
@@ -2204,7 +2204,8 @@ mod tests {
              0006_v013_goal_replay_declaration.sql, \
              0007_upload_content_identity.sql, 0008_cold_integrity_digest.sql, \
              0009_declared_sidecar_presence.sql, 0010_purge_queue_backend.sql \
-             0011_v012_fact_outbox.sql and 0012_v013_publication_origin.sql"
+             0011_v012_fact_outbox.sql, 0012_v013_publication_origin.sql and \
+             0013_v015_agent_note_natural_key_index.sql"
         );
     }
 
@@ -2309,10 +2310,15 @@ mod tests {
             "pin a published Fact's immutable original owner and source, and mint \
              the installation identity a retained copy is attributed to",
         );
-        // The legacy range shrinks as the head advances: versions 7 through 12
-        // are current additive migrations, so only 13..=21 remain retired by
+        carries(
+            13,
+            &["idx_agent_note_v1_nk", "agent_note_v1"],
+            "index the natural key `core/agent-note-v1` declares",
+        );
+        // The legacy range shrinks as the head advances: versions 7 through 13
+        // are current additive migrations, so only 14..=21 remain retired by
         // the v0.0.8 squash.
-        for dead in 13..=21 {
+        for dead in 14..=21 {
             assert!(
                 !versions.contains(&dead),
                 "legacy version {dead} must be gone"

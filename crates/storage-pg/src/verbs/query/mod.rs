@@ -48,6 +48,8 @@ pub use search::{
     substring_sql_for_tests,
 };
 pub(crate) use series_handle::{owned_head_handle, owned_head_memory_id, push_atom};
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use series_handle::owned_head_handle_sql_for_tests;
 
 pub(crate) fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {
     crate::access::owner_columns::owner_arrays(read_owners)
