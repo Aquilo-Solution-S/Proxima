@@ -462,20 +462,12 @@ mod storage_port_tests_support {
             Ok(0)
         }
 
-        async fn count_pending_embedding_jobs(
+        async fn count_embedding_job_status(
             &self,
             _scope: Option<&crate::OwnerScope>,
             _owner: &crate::Owner,
-        ) -> Result<u64, StorageError> {
-            Ok(0)
-        }
-
-        async fn count_failed_embedding_jobs(
-            &self,
-            _scope: Option<&crate::OwnerScope>,
-            _owner: &crate::Owner,
-        ) -> Result<u64, StorageError> {
-            Ok(0)
+        ) -> Result<crate::storage_ports::EmbeddingJobStatusCounts, StorageError> {
+            Ok(crate::storage_ports::EmbeddingJobStatusCounts::default())
         }
     }
 
@@ -527,6 +519,27 @@ mod storage_port_tests_support {
             _proof: crate::OperatorMaintenanceProof,
         ) -> Result<Vec<crate::Owner>, StorageError> {
             Ok(Vec::new())
+        }
+
+        async fn embedding_coverage(
+            &self,
+            _owner: &crate::Owner,
+            _spaces: &[crate::EmbeddingSpace],
+            _non_embeddable_schemas: &[String],
+            _proof: crate::OperatorMaintenanceProof,
+        ) -> Result<Vec<(crate::EmbeddingSpace, crate::EmbeddingSpaceCounts)>, StorageError>
+        {
+            Ok(Vec::new())
+        }
+
+        async fn purge_embedding_spaces(
+            &self,
+            _owner: &crate::Owner,
+            _keep: &[crate::EmbeddingSpace],
+            _limit: i64,
+            _proof: crate::OperatorMaintenanceProof,
+        ) -> Result<crate::EmbeddingPurgeOutcome, StorageError> {
+            Ok(crate::EmbeddingPurgeOutcome::default())
         }
     }
 

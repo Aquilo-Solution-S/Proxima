@@ -40,6 +40,7 @@ tokio = { workspace = true, features = ["fs", "process"] }
 proxima-mcp-server = { path = "../../crates/mcp-server" }
 proxima-core = { path = "../../crates/core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../../crates/pg-testkit" }
+proxima-storage-pg = { path = "../../crates/storage-pg", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "process"] }
 tokio-stream = { workspace = true }
 tempfile = "3"

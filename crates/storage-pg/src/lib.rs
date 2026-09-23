@@ -2394,6 +2394,24 @@ mod pgvector_tests {
 
 #[cfg(test)]
 mod tests {
+    /// Boot probes one lane index per supported width, and no other: a
+    /// width added to `EmbeddingDim` must be probed here as well.
+    #[test]
+    fn boot_probes_every_width_lane() {
+        let probe = "to_regclass('proxima_core.embeddings_hnsw_d";
+        for dim in proxima_core::EmbeddingDim::ALL {
+            assert!(
+                super::EMBEDDING_SPACE_MARKERS.contains(&format!("{probe}{}')", dim.width())),
+                "boot does not probe the {} lane",
+                dim.width()
+            );
+        }
+        assert_eq!(
+            super::EMBEDDING_SPACE_MARKERS.matches(probe).count(),
+            proxima_core::EmbeddingDim::ALL.len()
+        );
+    }
+
     #[test]
     fn core_migrator_is_the_v008_baseline_plus_additive_migrations() {
         let versions: Vec<i64> = super::core_migrator()

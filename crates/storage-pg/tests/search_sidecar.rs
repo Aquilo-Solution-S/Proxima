@@ -46,11 +46,12 @@ fn note_projection() -> MemorySearchProjection {
 }
 
 /// A query vector in the fixtures' 1024-wide `test-embed` space.
-fn test_semantic(vector: Vec<f32>) -> proxima_core::verbs::query::SemanticQuery {
-    proxima_core::verbs::query::SemanticQuery {
-        space: proxima_core::EmbeddingSpace::new("test-embed", proxima_core::EmbeddingDim::D1024),
+fn test_semantic(vector: Vec<f32>) -> proxima_core::SpaceVector {
+    proxima_core::SpaceVector::new(
+        proxima_core::EmbeddingSpace::new("test-embed", proxima_core::EmbeddingDim::D1024),
         vector,
-    }
+    )
+    .expect("1024-wide test vector")
 }
 
 fn search_req(owner: OwnerRef, query: &str) -> MemorySearchRequest {

@@ -435,21 +435,7 @@ pub(crate) mod tests {
             &self,
             _owner: &Owner,
             _entity: crate::EmbeddableEntityRef,
-            _space: &crate::EmbeddingSpace,
-            _vec: &[f32],
-            _proof: crate::storage_ports::EmbeddingWriteProof,
-        ) -> Result<crate::EmbeddingWriteOutcome, StorageError> {
-            Ok(crate::EmbeddingWriteOutcome {
-                embedding_version: 0,
-            })
-        }
-
-        async fn insert_embedding_chunks(
-            &self,
-            _owner: &Owner,
-            _entity: crate::EmbeddableEntityRef,
-            _space: &crate::EmbeddingSpace,
-            _chunks: &[&[f32]],
+            _vector: &crate::SpaceVector,
             _proof: crate::storage_ports::EmbeddingWriteProof,
         ) -> Result<crate::EmbeddingWriteOutcome, StorageError> {
             Ok(crate::EmbeddingWriteOutcome {
@@ -539,20 +525,12 @@ pub(crate) mod tests {
             ))
         }
 
-        async fn count_pending_embedding_jobs(
+        async fn count_embedding_job_status(
             &self,
             _scope: Option<&crate::OwnerScope>,
             _owner: &Owner,
-        ) -> Result<u64, StorageError> {
-            Ok(0)
-        }
-
-        async fn count_failed_embedding_jobs(
-            &self,
-            _scope: Option<&crate::OwnerScope>,
-            _owner: &Owner,
-        ) -> Result<u64, StorageError> {
-            Ok(0)
+        ) -> Result<crate::storage_ports::EmbeddingJobStatusCounts, StorageError> {
+            Ok(crate::storage_ports::EmbeddingJobStatusCounts::default())
         }
     }
 
@@ -594,6 +572,31 @@ pub(crate) mod tests {
             _limit: i64,
             _proof: crate::OperatorMaintenanceProof,
         ) -> Result<Vec<crate::Owner>, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects embedding maintenance".into(),
+            ))
+        }
+
+        async fn embedding_coverage(
+            &self,
+            _owner: &crate::Owner,
+            _spaces: &[crate::EmbeddingSpace],
+            _non_embeddable_schemas: &[String],
+            _proof: crate::OperatorMaintenanceProof,
+        ) -> Result<Vec<(crate::EmbeddingSpace, crate::EmbeddingSpaceCounts)>, StorageError>
+        {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects embedding maintenance".into(),
+            ))
+        }
+
+        async fn purge_embedding_spaces(
+            &self,
+            _owner: &crate::Owner,
+            _keep: &[crate::EmbeddingSpace],
+            _limit: i64,
+            _proof: crate::OperatorMaintenanceProof,
+        ) -> Result<crate::EmbeddingPurgeOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects embedding maintenance".into(),
             ))

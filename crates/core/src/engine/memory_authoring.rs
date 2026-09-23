@@ -16,32 +16,6 @@ use crate::{
 };
 use crate::{MemoryOutputInvocation, OperatorInvocationManifest, OutputEdgeManifest};
 
-/// Owned embedding so a prepared batch can outlive the client borrow
-/// used by [`DerivedEmbedding`].
-pub(super) enum PreparedEmbedding {
-    None,
-    Ready {
-        space: crate::EmbeddingSpace,
-        vector: Vec<f32>,
-    },
-    Deferred {
-        space: crate::EmbeddingSpace,
-    },
-}
-
-impl PreparedEmbedding {
-    pub(super) fn as_derived(&self) -> DerivedEmbedding<'_> {
-        match self {
-            Self::None => DerivedEmbedding::None,
-            Self::Ready { space, vector } => DerivedEmbedding::Ready {
-                space,
-                vector: vector.clone(),
-            },
-            Self::Deferred { space } => DerivedEmbedding::Deferred { space },
-        }
-    }
-}
-
 pub(super) struct PreparedDerived {
     pub(super) write_permit: super::pipeline::WritePermit,
     pub(super) owner: Owner,
@@ -54,7 +28,7 @@ pub(super) struct PreparedDerived {
     pub(super) sidecar_payload: SidecarPayload,
     pub(super) supersedes: Option<MemoryId>,
     pub(super) lexical_language: Option<String>,
-    pub(super) embedding: PreparedEmbedding,
+    pub(super) embedding: DerivedEmbedding,
     pub(super) queued_spaces: Vec<crate::EmbeddingSpace>,
     pub(super) origins: Vec<EdgeEndpoint>,
     pub(super) references: Vec<EdgeEndpoint>,
@@ -142,7 +116,7 @@ impl PreparedDerived {
             sidecar_payload: self.sidecar_payload.clone(),
             supersedes: self.supersedes,
             lexical_language: self.lexical_language.as_deref(),
-            embedding: self.embedding.as_derived(),
+            embedding: self.embedding.clone(),
             queued_spaces: &self.queued_spaces,
             origins: &self.origins,
             references: &self.references,
@@ -582,11 +556,7 @@ impl Engine {
             .await?;
         // Hydrated memories are queued for the spaces the Owner's route names
         // now; a route error refuses the hydrate like any other write.
-        let embedding_spaces = self
-            .embedding_route(&owner)
-            .await
-            .map_err(|err| super::ingest::embedding_route_refused(&owner, &err))?
-            .write_spaces();
+        let embedding_spaces = self.write_route(&owner).await?.write_spaces();
         let outcome = self
             .storage()
             .memory_authoring
@@ -832,39 +802,22 @@ impl Engine {
         schema_id: &str,
         text: &str,
         defer: bool,
-    ) -> Result<(PreparedEmbedding, Vec<crate::EmbeddingSpace>), ProtocolError> {
+    ) -> Result<(DerivedEmbedding, Vec<crate::EmbeddingSpace>), ProtocolError> {
         if !self.registry().schema_is_embeddable(schema_id) {
-            return Ok((PreparedEmbedding::None, Vec::new()));
+            return Ok((DerivedEmbedding::None, Vec::new()));
         }
-        let route = self
-            .embedding_route(owner)
-            .await
-            .map_err(|err| super::ingest::embedding_route_refused(owner, &err))?;
-        let queued = route
-            .next_client()
-            .map(|client| client.space().clone())
-            .into_iter()
-            .collect();
+        let route = self.write_route(owner).await?;
+        let queued = route.queued_spaces();
         let Some(client) = route.current_client() else {
-            return Ok((PreparedEmbedding::None, queued));
+            return Ok((DerivedEmbedding::None, queued));
         };
         if defer {
             let space = client.space().clone();
-            return Ok((PreparedEmbedding::Deferred { space }, queued));
+            return Ok((DerivedEmbedding::Deferred { space }, queued));
         }
-        let embedding = match resolve_derived_embedding(client, memory_id, text)
+        let embedding = resolve_derived_embedding(client, memory_id, text)
             .await
-            .map_err(map_derived_storage_error)?
-        {
-            DerivedEmbedding::None => PreparedEmbedding::None,
-            DerivedEmbedding::Ready { space, vector } => PreparedEmbedding::Ready {
-                space: space.clone(),
-                vector,
-            },
-            DerivedEmbedding::Deferred { space } => PreparedEmbedding::Deferred {
-                space: space.clone(),
-            },
-        };
+            .map_err(map_derived_storage_error)?;
         Ok((embedding, queued))
     }
 
@@ -907,12 +860,7 @@ impl Engine {
         references: &[EdgeEndpoint],
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         validate_operator_memory_invocation_request(&req)?;
-        // Bound outside the call: `DerivedEmbedding` borrows the client's
-        // space for the length of the storage request.
-        let route = self
-            .embedding_route(&req.owner)
-            .await
-            .map_err(|err| StorageError::Internal(format!("embedding route: {err}")))?;
+        let route = self.embedding_route(&req.owner).await?;
         let embeddable = self.registry().schema_is_embeddable(req.schema_id.as_str());
         let embedding = match route.current_client() {
             Some(client) if embeddable => {
@@ -920,12 +868,11 @@ impl Engine {
             }
             _ => DerivedEmbedding::None,
         };
-        let queued_spaces: Vec<crate::EmbeddingSpace> = route
-            .next_client()
-            .filter(|_| embeddable)
-            .map(|client| client.space().clone())
-            .into_iter()
-            .collect();
+        let queued_spaces = if embeddable {
+            route.queued_spaces()
+        } else {
+            Vec::new()
+        };
 
         let storage_req = AuthorDerivedRequest {
             memory_id: req.memory_id,
@@ -1022,18 +969,16 @@ impl Engine {
 /// client's declared `dim` (a misconfiguration, never the input's fault,
 /// so it is not deferrable), and `Internal` when the provider fails and
 /// does not answer a liveness probe.
-pub(in crate::engine) async fn resolve_derived_embedding<'client>(
-    bound: &'client crate::llm::BoundEmbeddingClient,
+pub(in crate::engine) async fn resolve_derived_embedding(
+    bound: &crate::llm::BoundEmbeddingClient,
     memory_id: MemoryId,
     text: &str,
-) -> Result<DerivedEmbedding<'client>, StorageError> {
+) -> Result<DerivedEmbedding, StorageError> {
     let client = bound.as_ref();
     let err = match client.embed(text).await {
         Ok(vector) => {
-            ensure_derived_embedding_dim(client, std::slice::from_ref(&vector))?;
             return Ok(DerivedEmbedding::Ready {
-                space: bound.space(),
-                vector,
+                vector: space_vector(bound, vector)?,
             });
         }
         Err(err) if crate::llm::embed_failure_blames_the_input(client, &err).await => err,
@@ -1051,16 +996,13 @@ pub(in crate::engine) async fn resolve_derived_embedding<'client>(
                     "embedding version needs at least one chunk".into(),
                 ));
             };
-            ensure_derived_embedding_dim(client, std::slice::from_ref(&vector))?;
+            let vector = space_vector(bound, vector)?;
             tracing::info!(
                 memory_id = ?memory_id,
                 text_bytes = text.len(),
                 "over-limit derived memory text embedded inline"
             );
-            Ok(DerivedEmbedding::Ready {
-                space: bound.space(),
-                vector,
-            })
+            Ok(DerivedEmbedding::Ready { vector })
         }
         Ok(None) => {
             tracing::warn!(
@@ -1071,7 +1013,7 @@ pub(in crate::engine) async fn resolve_derived_embedding<'client>(
                  writing the memory without a vector and enqueueing an embedding job"
             );
             Ok(DerivedEmbedding::Deferred {
-                space: bound.space(),
+                space: bound.space().clone(),
             })
         }
         Err(rescue_err) => {
@@ -1085,27 +1027,21 @@ pub(in crate::engine) async fn resolve_derived_embedding<'client>(
                  embedding job"
             );
             Ok(DerivedEmbedding::Deferred {
-                space: bound.space(),
+                space: bound.space().clone(),
             })
         }
     }
 }
 
-/// The inline write's dim check, shared by the whole-text and chunked arms
-/// and the same one the drain applies before its chunk insert.
-fn ensure_derived_embedding_dim(
-    client: &dyn crate::llm::EmbeddingClient,
-    vectors: &[Vec<f32>],
-) -> Result<(), StorageError> {
-    if vectors.is_empty() || vectors.iter().any(|vector| vector.len() != client.dim()) {
-        return Err(StorageError::ConstraintViolation(format!(
-            "embedding dim mismatch: client dim {} but got {} vector(s) of lens {:?}",
-            client.dim(),
-            vectors.len(),
-            vectors.iter().map(Vec::len).collect::<Vec<_>>(),
-        )));
-    }
-    Ok(())
+/// A vector the client returned, in its space. A width other than the one
+/// the client declared is a misconfiguration, never the input's fault.
+pub(in crate::engine) fn space_vector(
+    bound: &crate::llm::BoundEmbeddingClient,
+    vector: Vec<f32>,
+) -> Result<crate::SpaceVector, StorageError> {
+    bound
+        .vector(vector)
+        .map_err(|err| StorageError::ConstraintViolation(err.to_string()))
 }
 
 #[cfg(test)]

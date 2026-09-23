@@ -9,7 +9,7 @@ use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
 
-use super::ensure_nonnegative_limit;
+use super::{ensure_nonnegative_limit, nonnegative_count};
 
 /// The spaces an Owner's route names now, with the registry's per-schema
 /// veto: what a hydrate or a transfer queues a memory for.
@@ -113,17 +113,20 @@ pub(crate) async fn embedding_coverage(
     let rows = crate::owner_scope::finish_transaction(tx, result).await?;
     rows.into_iter()
         .map(|row| {
-            let space = EmbeddingSpace::new(row.model_id, crate::pgvector::stored_dim(row.dim)?);
+            let space = crate::pgvector::stored_space(row.model_id, row.dim)?;
             Ok((
                 space,
                 EmbeddingSpaceCounts {
-                    embeddable: count(row.embeddable)?,
-                    embedded: count(row.embedded)?,
-                    vectors: count(row.vectors)?,
-                    pending: count(row.pending)?,
-                    processing: count(row.processing)?,
-                    failed: count(row.failed)?,
-                    failed_permanent: count(row.failed_permanent)?,
+                    embeddable: nonnegative_count(row.embeddable, "embeddable")?,
+                    embedded: nonnegative_count(row.embedded, "embedded")?,
+                    vectors: nonnegative_count(row.vectors, "vector")?,
+                    pending: nonnegative_count(row.pending, "pending job")?,
+                    processing: nonnegative_count(row.processing, "processing job")?,
+                    failed: nonnegative_count(row.failed, "failed job")?,
+                    failed_permanent: nonnegative_count(
+                        row.failed_permanent,
+                        "failed permanent job",
+                    )?,
                 },
             ))
         })
@@ -257,9 +260,9 @@ pub(crate) async fn purge_series_embedding_spaces_in_tx(
         .await
         .map_err(map_err)?;
     Ok(EmbeddingPurgeOutcome {
-        vectors: count(vectors)?,
-        heads: count(heads)?,
-        jobs: count(jobs)?,
+        vectors: nonnegative_count(vectors, "purged vector")?,
+        heads: nonnegative_count(heads, "purged head")?,
+        jobs: nonnegative_count(jobs, "purged job")?,
     })
 }
 
@@ -281,9 +284,9 @@ async fn purge_in_tx(
         .await
         .map_err(map_err)?;
     Ok(EmbeddingPurgeOutcome {
-        vectors: count(vectors)?,
-        heads: count(heads)?,
-        jobs: count(jobs)?,
+        vectors: nonnegative_count(vectors, "purged vector")?,
+        heads: nonnegative_count(heads, "purged head")?,
+        jobs: nonnegative_count(jobs, "purged job")?,
     })
 }
 
@@ -339,8 +342,4 @@ fn space_columns(spaces: &[EmbeddingSpace]) -> (Vec<String>, Vec<i16>) {
             )
         })
         .unzip()
-}
-
-fn count(value: i64) -> Result<u64, StorageError> {
-    u64::try_from(value).map_err(|_| StorageError::Internal("row count is negative".into()))
 }

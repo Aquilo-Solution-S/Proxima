@@ -17,12 +17,11 @@
 //! exactly like the lexical candidates it is merged with. Nothing here
 //! decides visibility. Owner scope is `embeddings.owner_id = $1`.
 
-use proxima_core::verbs::query::SemanticQuery;
 use proxima_core::{Owner, StorageError};
 use sqlx::{PgConnection, PgPool};
 
 use crate::error::map_err;
-use crate::pgvector::{Lane, check_width, set_hnsw_search_sql};
+use crate::pgvector::{Lane, set_hnsw_search_sql};
 use crate::tuning::PgTuning;
 
 /// One vec per `(entity_id, model_id, dim, embedding_version)`. The head
@@ -85,7 +84,7 @@ pub async fn nearest_code_chunk_candidates(
     pool: &PgPool,
     tuning: &PgTuning,
     owner: Owner,
-    query: &SemanticQuery,
+    query: &proxima_core::SpaceVector,
     filters: CodeChunkVectorFilters<'_>,
     limit: i64,
 ) -> Result<Vec<CodeChunkVectorCandidate>, StorageError> {
@@ -110,30 +109,25 @@ pub async fn nearest_code_chunk_candidates_on_connection(
     connection: &mut PgConnection,
     tuning: &PgTuning,
     owner: Owner,
-    query: &SemanticQuery,
+    query: &proxima_core::SpaceVector,
     filters: CodeChunkVectorFilters<'_>,
     limit: i64,
 ) -> Result<Vec<CodeChunkVectorCandidate>, StorageError> {
     if limit <= 0 {
         return Ok(Vec::new());
     }
-    check_width(
-        query.space.dim(),
-        &query.vector,
-        "semantic chunk search embedding",
-    )?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(tuning)))
         .execute(&mut *connection)
         .await
         .map_err(map_err)?;
-    let sql = nearest_code_chunk_sql(Lane::of(query.space.dim()));
+    let sql = nearest_code_chunk_sql(Lane::of(query.space().dim()));
     // SQL-POLICY: fixed-fragment — the lane's compile-time predicate and
     // casts, chosen by a closed enum; every value is bound.
     sqlx::query_as::<_, CodeChunkVectorCandidate>(sqlx::AssertSqlSafe(sql))
         .bind(owner.stored_owner_id())
         .bind(filters.repo_id)
-        .bind(query.space.model_id())
-        .bind(crate::pgvector::literal(&query.vector))
+        .bind(query.space().model_id())
+        .bind(crate::pgvector::literal(query.values()))
         .bind(filters.language)
         .bind(filters.chunk_type)
         .bind(limit)

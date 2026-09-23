@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
-use crate::pgvector::{Lane, check_width, set_hnsw_search_sql};
+use crate::pgvector::{Lane, set_hnsw_search_sql};
 use crate::projection::{projection_key_ident, sidecar_text_sql};
 use crate::tuning::PgTuning;
 use proxima_core::flavor::{BandComparability, LanguagePolicy, SubstringArm};
@@ -1087,12 +1087,7 @@ async fn scan_embeddings_on_connection(
             "semantic search requires a query embedding".into(),
         ));
     };
-    check_width(
-        semantic.space.dim(),
-        &semantic.vector,
-        "semantic search embedding",
-    )?;
-    let lane = Lane::of(semantic.space.dim());
+    let lane = Lane::of(semantic.space().dim());
     if flavors.is_empty() {
         return Ok(Vec::new());
     }
@@ -1114,8 +1109,8 @@ async fn scan_embeddings_on_connection(
     // SQL-POLICY: PgIdent
     let mut query = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&owner_ids)
-        .bind(semantic.space.model_id())
-        .bind(crate::pgvector::literal(&semantic.vector))
+        .bind(semantic.space().model_id())
+        .bind(crate::pgvector::literal(semantic.values()))
         .bind(i64::from(overfetch))
         .bind(req.since)
         .bind(req.until);

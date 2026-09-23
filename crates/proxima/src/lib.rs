@@ -981,11 +981,9 @@ fn embedding_router_for(
         (Some(client), None) => {
             // Fail fast on a width no lane indexes: jobs would be claimed
             // and then rejected at insert, silently burning the queue.
-            let client = proxima_core::llm::BoundEmbeddingClient::bind(client)
+            let router = proxima_core::llm::SingleClientRouter::bind(client)
                 .map_err(|error| EmbedError::Config(error.to_string()))?;
-            Ok(Some(Arc::new(proxima_core::llm::SingleClientRouter::new(
-                client,
-            ))))
+            Ok(Some(Arc::new(router)))
         }
         (None, router) => Ok(router),
     }

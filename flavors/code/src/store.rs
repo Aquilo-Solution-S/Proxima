@@ -265,7 +265,7 @@ impl CodeFlavorStore {
         &self,
         owner_scope: Option<&OwnerScope>,
         owner: Owner,
-        query: &proxima_core::verbs::query::SemanticQuery,
+        query: &proxima_core::SpaceVector,
         filters: CodeChunkVectorFilters<'_>,
         limit: usize,
     ) -> Result<Vec<CodeChunkVectorCandidate>, ToolError> {

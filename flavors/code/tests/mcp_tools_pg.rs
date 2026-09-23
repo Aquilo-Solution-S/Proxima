@@ -2551,10 +2551,9 @@ fn engine_for_test(pg: PgStorage) -> Engine {
 
 /// Every Owner embedded by [`TopicEmbedding`].
 fn topic_router() -> Arc<proxima_core::llm::SingleClientRouter> {
-    Arc::new(proxima_core::llm::SingleClientRouter::new(
-        proxima_core::llm::BoundEmbeddingClient::bind(Arc::new(TopicEmbedding))
-            .expect("lane width"),
-    ))
+    Arc::new(
+        proxima_core::llm::SingleClientRouter::bind(Arc::new(TopicEmbedding)).expect("lane width"),
+    )
 }
 
 /// A deterministic stand-in for an embedding model.

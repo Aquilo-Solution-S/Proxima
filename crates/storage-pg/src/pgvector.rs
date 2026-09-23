@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use proxima_core::{EmbeddingDim, StorageError};
+use proxima_core::{EmbeddingDim, EmbeddingSpace, StorageError};
 
 use crate::tuning::{HnswIterativeScan, PgTuning};
 
@@ -105,20 +105,13 @@ pub(crate) fn stored_dim(dim: i16) -> Result<EmbeddingDim, StorageError> {
         .ok_or_else(|| StorageError::Internal(format!("stored embedding width {dim} has no lane")))
 }
 
-/// A vector's stored width, checked against the space it is written or
-/// searched in.
+/// The space a stored `(model_id, dim)` pair names.
 ///
 /// # Errors
 ///
-/// `StorageError::ConstraintViolation` when `vec` is not `dim` wide.
-pub(crate) fn check_width(dim: EmbeddingDim, vec: &[f32], what: &str) -> Result<i16, StorageError> {
-    if vec.len() != dim.width() {
-        return Err(StorageError::ConstraintViolation(format!(
-            "{what} length must be {dim}, got {}",
-            vec.len()
-        )));
-    }
-    Ok(Lane::of(dim).width)
+/// See [`stored_dim`].
+pub(crate) fn stored_space(model_id: String, dim: i16) -> Result<EmbeddingSpace, StorageError> {
+    Ok(EmbeddingSpace::new(model_id, stored_dim(dim)?))
 }
 
 #[must_use]
@@ -148,7 +141,8 @@ mod tests {
             let lane = Lane::of(dim);
             assert_eq!(usize::try_from(lane.width).ok(), Some(dim.width()));
             assert_eq!(Lane::from_stored(lane.width).ok(), Some(lane));
-            let kind = if dim.is_halfvec_indexed() {
+            // pgvector builds no HNSW index over `vector` wider than 2000.
+            let kind = if dim.width() > 2000 {
                 "halfvec"
             } else {
                 "vector"

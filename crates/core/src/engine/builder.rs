@@ -24,7 +24,7 @@ impl Engine {
             deployment_tool_scope: crate::authz::ToolScope::All,
             embedding_router: None,
             embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy::default(),
-            embedding_backoff: super::ingest::EmbeddingBackoff::default(),
+            embedding_backoff: super::embeddings::EmbeddingBackoff::default(),
             publication: crate::publication::PublicationConfig::default(),
             mcp_listen_addr: DEFAULT_MCP_LISTEN_ADDR,
             mcp_listener: None,
@@ -244,10 +244,10 @@ mod tests {
         .expect("valid policy");
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_embedding_runtime_policy(policy)
-            .with_embedding_router(Arc::new(crate::llm::SingleClientRouter::new(
-                crate::llm::BoundEmbeddingClient::bind(Arc::new(HangingCustomEmbedding))
+            .with_embedding_router(Arc::new(
+                crate::llm::SingleClientRouter::bind(Arc::new(HangingCustomEmbedding))
                     .expect("supported lane"),
-            )));
+            ));
 
         let owner = crate::Owner::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
         let route = engine.embedding_route(&owner).await.expect("route");

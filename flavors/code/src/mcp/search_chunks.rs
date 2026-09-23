@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 
 use proxima_core::MemoryId;
 use proxima_core::mcp::cursor as wire_cursor;
-use proxima_core::verbs::query::{SemanticQuery, like_pattern};
+use proxima_core::verbs::query::like_pattern;
 use proxima_core::{Tool, ToolCtx, ToolError};
 use proxima_storage_pg::begin_compatible_owner_transaction;
 use schemars::JsonSchema;
@@ -478,7 +478,7 @@ struct ChunkCandidateScan<'a> {
     read_owner_ids: &'a [Uuid],
     /// The query embedding and the space it was embedded in, `None` when
     /// the semantic arm does not run.
-    query_embedding: Option<&'a SemanticQuery>,
+    query_embedding: Option<&'a proxima_core::SpaceVector>,
 }
 
 /// Phases 1 and 2: scan both content arms, fuse their ranks, and admit the
@@ -700,14 +700,11 @@ async fn resolve_query_embedding(
     owner: &proxima_core::Owner,
     mode: ChunkSearchMode,
     query: &str,
-) -> Result<(ChunkSearchMode, Option<SemanticQuery>), ToolError> {
+) -> Result<(ChunkSearchMode, Option<proxima_core::SpaceVector>), ToolError> {
     if mode == ChunkSearchMode::Lexical {
         return Ok((ChunkSearchMode::Lexical, None));
     }
-    let route = engine.embedding_route(owner).await.unwrap_or_else(|err| {
-        tracing::warn!(error = %err, "chunk search embedding route refused");
-        proxima_core::llm::EmbeddingRoute::none()
-    });
+    let route = engine.search_route(owner).await;
     let Some(embed) = route.current_client() else {
         if mode == ChunkSearchMode::Semantic {
             return Err(ToolError::Unavailable(
@@ -716,14 +713,8 @@ async fn resolve_query_embedding(
         }
         return Ok((ChunkSearchMode::Lexical, None));
     };
-    match embed.embed(query).await {
-        Ok(vector) => Ok((
-            mode,
-            Some(SemanticQuery {
-                space: embed.space().clone(),
-                vector,
-            }),
-        )),
+    match embed.embed_vector(query).await {
+        Ok(vector) => Ok((mode, Some(vector))),
         Err(err) if mode == ChunkSearchMode::Semantic => {
             tracing::warn!(error = %err, "embedding provider failed");
             Err(ToolError::Unavailable(

@@ -8,7 +8,7 @@ mod test_fixtures;
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::ids::UserId;
-use proxima_core::llm::{BoundEmbeddingClient, EmbeddingDim, SingleClientRouter};
+use proxima_core::llm::{EmbeddingDim, SingleClientRouter};
 use proxima_core::owner::{Owner, OwnerRef};
 use proxima_core::verbs::change_history::ChangeHistoryRequest;
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
@@ -44,9 +44,10 @@ fn granted_no_access_authz(auth_path: AuthPath) -> ResolvedAuthz {
 }
 
 fn fixed_router() -> Arc<SingleClientRouter> {
-    let client = BoundEmbeddingClient::bind(Arc::new(ConstantEmbedding::zero("test-embedding")))
-        .expect("supported width");
-    Arc::new(SingleClientRouter::new(client))
+    Arc::new(
+        SingleClientRouter::bind(Arc::new(ConstantEmbedding::zero("test-embedding")))
+            .expect("supported width"),
+    )
 }
 
 #[test]

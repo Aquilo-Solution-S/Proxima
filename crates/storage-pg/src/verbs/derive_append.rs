@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
-    DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRefKind,
-    SchemaId, SchemaVersion, SidecarPayload, StorageError,
+    DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryId, MemoryOperatorKind, Owner, SchemaId,
+    SchemaVersion, SidecarPayload, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -43,7 +43,7 @@ pub(crate) struct DerivedDraft<'a> {
     /// Vector to write inline, embedding job to enqueue, or neither — see
     /// [`DerivedEmbedding`]. Whichever it is happens inside this write's
     /// transaction.
-    pub embedding: DerivedEmbedding<'a>,
+    pub embedding: DerivedEmbedding,
     /// Spaces queued beside `embedding` in this transaction — see
     /// [`proxima_core::AuthorDerivedRequest::queued_spaces`].
     pub queued_spaces: &'a [proxima_core::EmbeddingSpace],
@@ -249,32 +249,26 @@ async fn settle_derived_embedding(
 ) -> Result<(), StorageError> {
     let deferred = match &draft.embedding {
         DerivedEmbedding::None => None,
-        DerivedEmbedding::Ready { space, vector } => {
+        DerivedEmbedding::Ready { vector } => {
             crate::verbs::fact_embeddings::insert_memory_embedding(
                 tx,
                 &draft.owner,
                 draft.kind,
                 memory_id,
-                space,
                 vector,
             )
             .await?;
             None
         }
-        DerivedEmbedding::Deferred { space } => Some(*space),
+        DerivedEmbedding::Deferred { space } => Some(space),
     };
-    for space in deferred.into_iter().chain(draft.queued_spaces) {
-        crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
-            tx,
-            OwnerRefKind::of(&draft.owner),
-            Some(draft.owner.stored_owner_id()),
-            draft.kind,
-            memory_id.into_inner(),
-            space,
-        )
-        .await?;
-    }
-    Ok(())
+    crate::verbs::fact_embeddings::enqueue_embedding_jobs_in_tx(
+        tx,
+        draft.owner.stored_owner_id(),
+        memory_id.into_inner(),
+        deferred.into_iter().chain(draft.queued_spaces),
+    )
+    .await
 }
 
 async fn resolve_derived_content_id(

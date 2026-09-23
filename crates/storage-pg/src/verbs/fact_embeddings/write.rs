@@ -1,7 +1,7 @@
 use proxima_core::storage_ports::EmbeddingWriteProof;
 use proxima_core::{
     EmbeddableEntityRef, EmbeddingSpace, EmbeddingWriteOutcome, EntityKind, MemoryId, Owner,
-    StorageError,
+    SpaceVector, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -33,25 +33,20 @@ async fn lock_embedding_job_claim_fields(
     job_id: uuid::Uuid,
     claim_token: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    let dim = crate::pgvector::Lane::of(space.dim()).width;
-    let locked = sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT job_id
-           FROM proxima_core.embedding_jobs
-          WHERE job_id = $1
-            AND claim_token = $2
-            AND status = 'processing'
-            AND owner_id = $3
-            AND entity_id = $4
-            AND model_id = $5
-            AND dim = $6
-          FOR UPDATE",
+    let locked = super::jobs::bind_claim_fence(
+        sqlx::query(concat!(
+            "SELECT job_id FROM proxima_core.embedding_jobs WHERE ",
+            super::jobs::claim_fence!(),
+            " FOR UPDATE"
+        )),
+        super::jobs::ClaimFence {
+            job_id,
+            claim_token,
+            owner,
+            entity_id: entity.entity_id(),
+            space,
+        },
     )
-    .bind(job_id)
-    .bind(claim_token)
-    .bind(owner.stored_owner_id())
-    .bind(entity.entity_id())
-    .bind(space.model_id())
-    .bind(dim)
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -71,15 +66,13 @@ async fn lock_embedding_job_claim_fields(
 ///
 /// # Errors
 ///
-/// Returns `ConstraintViolation` when `vec.len()` is not the space's width,
-/// otherwise maps SQL failures through the shared mapper.
+/// Maps SQL failures through the shared mapper.
 pub(crate) async fn insert_memory_embedding(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     entity_kind: EntityKind,
     memory_id: MemoryId,
-    space: &EmbeddingSpace,
-    vec: &[f32],
+    vector: &SpaceVector,
 ) -> Result<EmbeddingWriteOutcome, StorageError> {
     insert_embedding(
         tx,
@@ -88,13 +81,14 @@ pub(crate) async fn insert_memory_embedding(
             kind: entity_kind,
             memory_id,
         },
-        space,
-        vec,
+        vector,
     )
     .await
 }
 
-/// Append one embedding row and advance the independent latest head.
+/// Append one embedding version and advance the independent latest head.
+/// A version is one vector: a chunk-rescued over-limit text stores its
+/// first chunk.
 ///
 /// Crate-private: this is a raw-owner write below the proof gate. External
 /// writers go through `EmbeddingWritePort`, which requires an
@@ -105,53 +99,16 @@ pub(crate) async fn insert_memory_embedding(
 ///
 /// # Errors
 ///
-/// Returns `ConstraintViolation` when the vector length is not the space's
-/// width, otherwise maps SQL failures through the shared mapper.
+/// Maps SQL failures through the shared mapper.
 pub(crate) async fn insert_embedding(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     entity: EmbeddableEntityRef,
-    space: &EmbeddingSpace,
-    vec: &[f32],
-) -> Result<EmbeddingWriteOutcome, StorageError> {
-    insert_embedding_chunks(tx, owner, entity, space, std::slice::from_ref(&vec)).await
-}
-
-/// Append one embedding *version* made of one or more chunk rows
-/// (`chunk_index` 0..n) and advance the independent latest head. Chunked
-/// versions represent one over-limit memory text split into provider-
-/// acceptable pieces: search max-aggregates chunk similarity per memory,
-/// so every part of the text stays semantically findable.
-///
-/// Crate-private: this is a raw-owner write below the proof gate. External
-/// writers go through `EmbeddingWritePort`, which requires an
-/// `EmbeddingWriteProof` only `proxima-core` can construct.
-///
-/// Returns version `0` when the entity is not eligible for embedding: a
-/// deleted or textless entity is a best-effort no-op, not an error.
-///
-/// # Errors
-///
-/// Returns `ConstraintViolation` when `chunks` is empty or any vector's
-/// length is not the space's width, otherwise maps SQL failures through the
-/// shared mapper.
-pub(crate) async fn insert_embedding_chunks(
-    tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
-    entity: EmbeddableEntityRef,
-    space: &EmbeddingSpace,
-    chunks: &[&[f32]],
+    vector: &SpaceVector,
 ) -> Result<EmbeddingWriteOutcome, StorageError> {
     let owner_id = owner.stored_owner_id();
-    let Some(first) = chunks.first() else {
-        return Err(StorageError::ConstraintViolation(
-            "embedding version needs at least one chunk".into(),
-        ));
-    };
-    let mut dim = 0;
-    for vec in chunks {
-        dim = crate::pgvector::check_width(space.dim(), vec, "embedding")?;
-    }
+    let space = vector.space();
+    let dim = crate::pgvector::Lane::of(space.dim()).width;
     let model_id = space.model_id();
 
     let entity_id = entity.entity_id();
@@ -182,8 +139,7 @@ pub(crate) async fn insert_embedding_chunks(
     .await
     .map_err(map_err)?;
 
-    // The embeddings table has no chunk_index: one vec per version.
-    let vec_literal = crate::pgvector::literal(first);
+    let vec_literal = crate::pgvector::literal(vector.values());
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_id, model_id, dim, embedding_version, vec, owner_id)

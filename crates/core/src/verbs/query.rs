@@ -199,18 +199,11 @@ pub struct MemorySearchRequest {
     /// `order`.
     #[serde(default)]
     pub after: Option<SearchCursor>,
-    /// The embedded query, for the semantic arm. Set by the engine/tool
+    /// The embedded query, for the semantic arm, which reads only its
+    /// space's vectors through its width's index. Set by the engine/tool
     /// layer; `None` runs lexical only.
     #[serde(skip)]
-    pub semantic: Option<SemanticQuery>,
-}
-
-/// A query vector and the space it was embedded in. The semantic arm reads
-/// only that space's vectors, through its width's index.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SemanticQuery {
-    pub space: crate::EmbeddingSpace,
-    pub vector: Vec<f32>,
+    pub semantic: Option<crate::SpaceVector>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

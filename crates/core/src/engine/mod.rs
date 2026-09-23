@@ -5,6 +5,7 @@
 mod access_admin;
 mod access_sets;
 mod builder;
+mod embeddings;
 mod errors;
 mod goal_write;
 mod ingest;
@@ -27,20 +28,19 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
-use crate::Owner;
 use crate::authz::{EngineAuthority, EngineOperationAuthority, context_for_engine_operation};
 use crate::error::ProtocolError;
-use crate::llm::{EmbeddingClient, EmbeddingRoute, EmbeddingRouteError, EmbeddingRouter};
+use crate::llm::EmbeddingRouter;
 use crate::storage_ports::{EngineStoragePorts, OwnerWritePermit};
 use crate::verbs::schema::FlavorRegistryFrozen;
 
 pub use crate::storage_ports::{HostStateCommand, HostStateOutcome};
 pub use access_admin::GroupMemberPage;
+pub use embeddings::EmbeddingDrainOutcome;
 pub use goal_write::{
     GoalCreatePayloadWriteRequest, GoalDecomposeRequest, GoalMarkAchievedRequest,
     GoalModifyRequest, GoalTransitionRequest,
 };
-pub use ingest::EmbeddingDrainOutcome;
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 pub use memory_authoring::{
     DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, MemoryTarget, SeriesHandle,
@@ -70,7 +70,7 @@ pub struct Engine {
     embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy,
     /// Owners whose route or provider failed recently; the drain skips
     /// their jobs until the delay passes.
-    embedding_backoff: ingest::EmbeddingBackoff,
+    embedding_backoff: embeddings::EmbeddingBackoff,
     /// Producer identity and capture bounds for listenable Fact schemas
     /// (docs/18). Default-constructed means "no source bound", which is
     /// correct for the overwhelming majority of deployments: nothing is
@@ -79,31 +79,6 @@ pub struct Engine {
     pub(crate) mcp_listen_addr: SocketAddr,
     pub(crate) mcp_listener: Option<Arc<dyn EngineMcpListener>>,
     pub(crate) mcp_url: Arc<RwLock<Option<String>>>,
-}
-
-#[derive(Debug)]
-struct RequestTimeoutEmbeddingClient {
-    inner: Arc<dyn EmbeddingClient>,
-    request_timeout: std::time::Duration,
-}
-
-#[async_trait::async_trait]
-impl EmbeddingClient for RequestTimeoutEmbeddingClient {
-    async fn embed(&self, text: &str) -> Result<Vec<f32>, crate::llm::LlmError> {
-        crate::llm::embed_with_timeout(self.inner.as_ref(), text, self.request_timeout).await
-    }
-
-    async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, crate::llm::LlmError> {
-        crate::llm::embed_many_with_timeout(self.inner.as_ref(), texts, self.request_timeout).await
-    }
-
-    fn model_id(&self) -> &str {
-        self.inner.model_id()
-    }
-
-    fn dim(&self) -> usize {
-        self.inner.dim()
-    }
 }
 
 /// Owns the background tasks spawned by [`Engine::start`]. The engine
@@ -146,32 +121,6 @@ impl Engine {
     #[must_use]
     pub fn embedding_router(&self) -> Option<&Arc<dyn EmbeddingRouter>> {
         self.embedding_router.as_ref()
-    }
-
-    /// The route for memories `owner` owns, every client behind the host's
-    /// request deadline. No router means [`EmbeddingRoute::none`].
-    ///
-    /// `owner` is the Owner of the data being written or searched, never
-    /// the caller: the engine embeds an Owner's texts and queries only
-    /// through this route.
-    ///
-    /// # Errors
-    ///
-    /// The router's [`EmbeddingRouteError`]; callers fail closed on it.
-    pub async fn embedding_route(
-        &self,
-        owner: &Owner,
-    ) -> Result<EmbeddingRoute, EmbeddingRouteError> {
-        let Some(router) = &self.embedding_router else {
-            return Ok(EmbeddingRoute::none());
-        };
-        let request_timeout = self.embedding_runtime_policy.request_timeout();
-        Ok(router.route(owner).await?.map_clients(|bound| {
-            bound.rewrap(Arc::new(RequestTimeoutEmbeddingClient {
-                inner: Arc::clone(bound.client()),
-                request_timeout,
-            }))
-        }))
     }
 
     #[must_use]
