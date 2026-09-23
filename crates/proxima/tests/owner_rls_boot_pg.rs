@@ -103,10 +103,17 @@ async fn setup() -> (String, PgPool, String, String, Owner, String, String) {
     create_db(&database).await.expect("create database");
     let admin = PgPool::connect(&db_url(&database)).await.expect("admin");
     exec(&admin, "CREATE EXTENSION IF NOT EXISTS pg_trgm").await;
-    proxima_storage_pg::test_fixtures::core_migrator_before_owner_rls()
-        .run(&admin)
-        .await
-        .expect("core migrations");
+    // Stage the v0.0.15 schema before its RLS activation, so boot applies
+    // 0014 and everything after it as the platform role, in release order.
+    let mut staged = proxima_storage_pg::core_migrator();
+    staged.migrations = std::borrow::Cow::Owned(
+        staged
+            .iter()
+            .filter(|migration| migration.version < 14)
+            .cloned()
+            .collect(),
+    );
+    staged.run(&admin).await.expect("core migrations");
 
     let suffix = uuid::Uuid::now_v7().simple().to_string();
     let platform = format!("owner_rls_platform_{suffix}");
@@ -535,7 +542,7 @@ async fn split_role_boot_refuses_unrelated_newer_ledger_version() {
     )
     .await
     .expect("initial automatic migration");
-    sqlx::query("INSERT INTO public._sqlx_migrations (version, description, success, checksum, execution_time) VALUES (15, 'unrelated', true, decode('00', 'hex'), 0)")
+    sqlx::query("INSERT INTO public._sqlx_migrations (version, description, success, checksum, execution_time) VALUES (9000, 'unrelated', true, decode('00', 'hex'), 0)")
         .execute(&admin).await.expect("insert unrelated ledger row");
     assert!(
         boot(runtime_url, Some(platform_url), owner, true)

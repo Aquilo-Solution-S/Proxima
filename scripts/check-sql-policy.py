@@ -862,7 +862,10 @@ def run_fixture(path: Path) -> int:
 # 142 -> 140: owner RLS no longer needs a parameter grant, so the fixture
 # GRANT/REVOKE SET ON PARAMETER sites are gone; the trigger-scope falsifier
 # adds two sites that execute one of three literal DELETEs.
-EXPECTED_DYNAMIC_SQL_SITES = 140
+# 140 -> 142: width lanes name each lane's partial-index expression and
+# predicate as closed-enum literals, so the code-chunk neighbour scan and the
+# recall canary became fixed-fragment builders.
+EXPECTED_DYNAMIC_SQL_SITES = 142
 
 
 def run_self_test() -> int:

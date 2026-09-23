@@ -113,11 +113,11 @@ export PROXIMA_EMBED_BASE_URL=http://127.0.0.1:11434/v1
 export PROXIMA_EMBED_MODEL=qwen3-embedding:0.6b
 ```
 
-The model must produce 1024-dimensional vectors — the width of the
-`vector(1024)` column that is the substrate's single embedding space.
-`qwen3-embedding:0.6b` and `mxbai-embed-large` are 1024 natively. For a
-nested-prefix (Matryoshka) model with a wider native width, set
-`PROXIMA_EMBED_MATRYOSHKA=true` so the request asks for 1024.
+The model must produce vectors `PROXIMA_EMBED_DIM` wide — 384, 768, 1024,
+1536, 2048 or 3072, default 1024. `qwen3-embedding:0.6b` and
+`mxbai-embed-large` are 1024 natively. For a nested-prefix (Matryoshka)
+model with a wider native width, set `PROXIMA_EMBED_MATRYOSHKA=true` so the
+request asks for `PROXIMA_EMBED_DIM`.
 
 Without an embedding endpoint the server starts in degraded mode:
 `proxima://graph.embeddings_client_configured` is `false`, lexical search

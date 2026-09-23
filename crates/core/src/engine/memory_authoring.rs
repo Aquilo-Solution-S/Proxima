@@ -20,19 +20,24 @@ use crate::{MemoryOutputInvocation, OperatorInvocationManifest, OutputEdgeManife
 /// used by [`DerivedEmbedding`].
 pub(super) enum PreparedEmbedding {
     None,
-    Ready { model_id: String, vector: Vec<f32> },
-    Deferred { model_id: String },
+    Ready {
+        space: crate::EmbeddingSpace,
+        vector: Vec<f32>,
+    },
+    Deferred {
+        space: crate::EmbeddingSpace,
+    },
 }
 
 impl PreparedEmbedding {
     pub(super) fn as_derived(&self) -> DerivedEmbedding<'_> {
         match self {
             Self::None => DerivedEmbedding::None,
-            Self::Ready { model_id, vector } => DerivedEmbedding::Ready {
-                model_id,
+            Self::Ready { space, vector } => DerivedEmbedding::Ready {
+                space,
                 vector: vector.clone(),
             },
-            Self::Deferred { model_id } => DerivedEmbedding::Deferred { model_id },
+            Self::Deferred { space } => DerivedEmbedding::Deferred { space },
         }
     }
 }
@@ -809,25 +814,25 @@ impl Engine {
     ) -> Result<PreparedEmbedding, StorageError> {
         let client = self.embed_client();
         let Some(client) = client
-            .as_deref()
+            .as_ref()
             .filter(|_| self.registry().schema_is_embeddable(schema_id))
         else {
             return Ok(PreparedEmbedding::None);
         };
         if defer {
             return Ok(PreparedEmbedding::Deferred {
-                model_id: client.model_id().to_owned(),
+                space: client.space().clone(),
             });
         }
         Ok(
             match resolve_derived_embedding(client, memory_id, text).await? {
                 DerivedEmbedding::None => PreparedEmbedding::None,
-                DerivedEmbedding::Ready { model_id, vector } => PreparedEmbedding::Ready {
-                    model_id: model_id.to_owned(),
+                DerivedEmbedding::Ready { space, vector } => PreparedEmbedding::Ready {
+                    space: space.clone(),
                     vector,
                 },
-                DerivedEmbedding::Deferred { model_id } => PreparedEmbedding::Deferred {
-                    model_id: model_id.to_owned(),
+                DerivedEmbedding::Deferred { space } => PreparedEmbedding::Deferred {
+                    space: space.clone(),
                 },
             },
         )
@@ -873,9 +878,9 @@ impl Engine {
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         validate_operator_memory_invocation_request(&req)?;
         // Bound outside the call: `DerivedEmbedding` borrows the client's
-        // model id for the length of the storage request.
+        // space for the length of the storage request.
         let client = self.embed_client();
-        let embedding = match client.as_deref() {
+        let embedding = match client.as_ref() {
             Some(client) if self.registry().schema_is_embeddable(req.schema_id.as_str()) => {
                 resolve_derived_embedding(client, req.memory_id, &req.text).await?
             }
@@ -977,15 +982,16 @@ impl Engine {
 /// so it is not deferrable), and `Internal` when the provider fails and
 /// does not answer a liveness probe.
 pub(in crate::engine) async fn resolve_derived_embedding<'client>(
-    client: &'client dyn crate::llm::EmbeddingClient,
+    bound: &'client crate::llm::BoundEmbeddingClient,
     memory_id: MemoryId,
     text: &str,
 ) -> Result<DerivedEmbedding<'client>, StorageError> {
+    let client = bound.as_ref();
     let err = match client.embed(text).await {
         Ok(vector) => {
             ensure_derived_embedding_dim(client, std::slice::from_ref(&vector))?;
             return Ok(DerivedEmbedding::Ready {
-                model_id: client.model_id(),
+                space: bound.space(),
                 vector,
             });
         }
@@ -1011,7 +1017,7 @@ pub(in crate::engine) async fn resolve_derived_embedding<'client>(
                 "over-limit derived memory text embedded inline"
             );
             Ok(DerivedEmbedding::Ready {
-                model_id: client.model_id(),
+                space: bound.space(),
                 vector,
             })
         }
@@ -1024,7 +1030,7 @@ pub(in crate::engine) async fn resolve_derived_embedding<'client>(
                  writing the memory without a vector and enqueueing an embedding job"
             );
             Ok(DerivedEmbedding::Deferred {
-                model_id: client.model_id(),
+                space: bound.space(),
             })
         }
         Err(rescue_err) => {
@@ -1038,7 +1044,7 @@ pub(in crate::engine) async fn resolve_derived_embedding<'client>(
                  embedding job"
             );
             Ok(DerivedEmbedding::Deferred {
-                model_id: client.model_id(),
+                space: bound.space(),
             })
         }
     }

@@ -53,10 +53,10 @@ pub trait PgFactSidecar: FactPayload + Sized {
 }
 
 /// How [`ingest_core`] settles the write's side effects: which embedding
-/// model to enqueue and how the draft's citation resolves to a `blob_id`.
+/// spaces to enqueue and how the draft's citation resolves to a `blob_id`.
 #[derive(Debug, Clone, Copy)]
 struct IngestCoreOptions<'a> {
-    embedding_model_id: Option<&'a str>,
+    embedding_spaces: &'a [proxima_core::EmbeddingSpace],
     citation_plan: CitationPlan<'a>,
 }
 
@@ -195,7 +195,7 @@ enum CitationPlan<'a> {
 pub(crate) async fn ingest_authorized_fact_atomic(
     pool: &PgPool,
     authorized: &AuthorizedFactWrite,
-    embedding_model_id: Option<&str>,
+    embedding_spaces: &[proxima_core::EmbeddingSpace],
 ) -> Result<FactIngestOutcome, StorageError> {
     // Retry the whole transaction on transient deadlock/serialization.
     with_bounded_retry(move || async move {
@@ -204,7 +204,7 @@ pub(crate) async fn ingest_authorized_fact_atomic(
             authorized.owner_write_permit().owner_scope(),
         )
         .await?;
-        let outcome = ingest_fact_command_in_tx(&mut tx, authorized, embedding_model_id).await?;
+        let outcome = ingest_fact_command_in_tx(&mut tx, authorized, embedding_spaces).await?;
         tx.commit().await.map_err(map_err)?;
         Ok(outcome)
     })
@@ -224,7 +224,7 @@ pub(crate) async fn ingest_authorized_fact_atomic(
 pub(crate) async fn ingest_fact_command_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedFactWrite,
-    embedding_model_id: Option<&str>,
+    embedding_spaces: &[proxima_core::EmbeddingSpace],
 ) -> Result<FactIngestOutcome, StorageError> {
     if !authorized.sidecar_payloads().is_empty() {
         return Err(StorageError::ConstraintViolation(
@@ -243,7 +243,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
         ));
     }
     let options = IngestCoreOptions {
-        embedding_model_id,
+        embedding_spaces,
         citation_plan: CitationPlan::DraftHint,
     };
     ingest_core(
@@ -286,7 +286,7 @@ pub(crate) async fn ingest_fact_with_citation_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitation,
-    embedding_model_id: Option<&str>,
+    embedding_spaces: &[proxima_core::EmbeddingSpace],
     input: FactAdmissionInput<'_>,
     fact_sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
@@ -299,7 +299,7 @@ where
     reject_unstamped_memory_tables(sidecars, input.sidecar_tables)?;
     let draft = authorized.draft();
     let options = IngestCoreOptions {
-        embedding_model_id,
+        embedding_spaces,
         citation_plan: CitationPlan::Inline {
             cited_object: authorized.cited_object(),
         },
@@ -338,7 +338,7 @@ pub(crate) async fn ingest_fact_with_citation_ref_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitationRef,
-    embedding_model_id: Option<&str>,
+    embedding_spaces: &[proxima_core::EmbeddingSpace],
     input: FactAdmissionInput<'_>,
     fact_sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
@@ -351,7 +351,7 @@ where
     reject_unstamped_memory_tables(sidecars, input.sidecar_tables)?;
     let draft = authorized.draft();
     let options = IngestCoreOptions {
-        embedding_model_id,
+        embedding_spaces,
         citation_plan: CitationPlan::ByRef {
             cited_object_id: authorized.cited_object_id(),
             expected_object_schema: authorized.expected_object_schema(),
@@ -527,7 +527,7 @@ async fn verify_cited_object_ref_in_tx(
 pub(crate) async fn ingest_fact_with_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedFactWrite,
-    embedding_model_id: Option<&str>,
+    embedding_spaces: &[proxima_core::EmbeddingSpace],
     input: FactAdmissionInput<'_>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
@@ -539,7 +539,7 @@ where
 {
     let draft = authorized.draft();
     let options = IngestCoreOptions {
-        embedding_model_id,
+        embedding_spaces,
         citation_plan: CitationPlan::DraftHint,
     };
     ingest_core(
@@ -644,14 +644,14 @@ where
             citation_object_for_t(tx, owner.stored_owner_id(), outcome.memory_id).await?;
     } else {
         outcome.cited_object_id = write.blob_id;
-        if let Some(model_id) = options.embedding_model_id {
+        for space in options.embedding_spaces {
             crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
                 tx,
                 crate::access::owner_columns::owner_binds(owner).0,
                 Some(owner.stored_owner_id()),
                 proxima_core::EntityKind::Fact,
                 outcome.memory_id.into_inner(),
-                model_id,
+                space,
             )
             .await?;
         }

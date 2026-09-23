@@ -683,7 +683,6 @@ impl GoalLifecycleFact {
 #[derive(Debug, Clone, Copy)]
 pub struct GoalAtomicContext<'a> {
     pub registry: &'a crate::FlavorRegistryFrozen,
-    pub embedding_model_id: Option<&'a str>,
     pub author_self_perspective_id: Option<MemoryId>,
 }
 

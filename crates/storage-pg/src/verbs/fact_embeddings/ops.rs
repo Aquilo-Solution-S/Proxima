@@ -39,6 +39,7 @@ struct EmbeddingAnnObservabilityRow {
 struct RecallSampleRow {
     owner_id: uuid::Uuid,
     model_id: String,
+    dim: i16,
     vec: String,
 }
 
@@ -120,7 +121,12 @@ async fn embedding_ann_observability_on_connection(
                  AS embedding_table_bytes,
              pg_total_relation_size('proxima_core.embeddings'::regclass)::bigint
                  AS embedding_total_relation_bytes,
-             pg_relation_size('proxima_core.idx_embeddings_vec_hnsw'::regclass)::bigint
+             (SELECT COALESCE(sum(pg_relation_size(i.indexrelid)), 0)::bigint
+                FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indexrelid
+                JOIN pg_am am ON am.oid = c.relam
+               WHERE i.indrelid = 'proxima_core.embeddings'::regclass
+                 AND am.amname = 'hnsw')
                  AS hnsw_index_bytes,
              (SELECT count(*)::bigint
                 FROM proxima_core.embedding_jobs
@@ -195,11 +201,12 @@ async fn embedding_recall_canary(
     k: i64,
 ) -> Result<Option<EmbeddingRecallCanary>, StorageError> {
     let Some(sample) = sqlx::query_as::<_, RecallSampleRow>(
-        "SELECT emb.owner_id, emb.model_id, emb.vec::text AS vec
+        "SELECT emb.owner_id, emb.model_id, emb.dim, emb.vec::text AS vec
            FROM proxima_core.embeddings emb
            JOIN proxima_core.embedding_heads head
              ON head.entity_id = emb.entity_id
             AND head.model_id = emb.model_id
+            AND head.dim = emb.dim
             AND head.embedding_version = emb.embedding_version
           ORDER BY emb.entity_id DESC
           LIMIT 1",
@@ -210,11 +217,13 @@ async fn embedding_recall_canary(
     else {
         return Ok(None);
     };
+    let lane = crate::pgvector::Lane::from_stored(sample.dim)?;
 
     let exact_ids = current_embedding_ids_by_distance(
         &mut *pool,
         sample.owner_id,
         &sample.model_id,
+        lane,
         &sample.vec,
         k,
         DistancePlan::Exact,
@@ -224,6 +233,7 @@ async fn embedding_recall_canary(
         &mut *pool,
         sample.owner_id,
         &sample.model_id,
+        lane,
         &sample.vec,
         k,
         DistancePlan::Ann,
@@ -246,6 +256,7 @@ async fn embedding_recall_canary(
 
     Ok(Some(EmbeddingRecallCanary {
         model_id: sample.model_id,
+        dim: crate::pgvector::stored_dim(sample.dim)?.width(),
         k: nonnegative_count(k, "recall canary k")?,
         exact_count,
         ann_count,
@@ -264,6 +275,7 @@ async fn current_embedding_ids_by_distance(
     pool: &mut PgConnection,
     owner_id: uuid::Uuid,
     model_id: &str,
+    lane: crate::pgvector::Lane,
     vec: &str,
     k: i64,
     plan: DistancePlan,
@@ -295,27 +307,35 @@ async fn current_embedding_ids_by_distance(
                 .map_err(map_err)?;
         }
     }
-    // One vec per (entity_id, model_id, embedding_version). The head join already
-    // picks the current version; there is nothing to DISTINCT ON.
-    let rows = sqlx::query_scalar::<_, uuid::Uuid>(
+    // One vec per (entity_id, model_id, dim, embedding_version). The head
+    // join already picks the current version; there is nothing to DISTINCT ON.
+    let sql = format!(
         "SELECT emb.entity_id
            FROM proxima_core.embeddings emb
            JOIN proxima_core.embedding_heads head
              ON head.entity_id = emb.entity_id
             AND head.model_id = emb.model_id
+            AND head.dim = emb.dim
             AND head.embedding_version = emb.embedding_version
           WHERE emb.model_id = $1
             AND emb.owner_id = $2
-          ORDER BY emb.vec <=> $3::vector, emb.entity_id
+            AND {predicate}
+          ORDER BY {vec} <=> $3{cast}, emb.entity_id
           LIMIT $4",
-    )
-    .bind(model_id)
-    .bind(owner_id)
-    .bind(vec)
-    .bind(k)
-    .fetch_all(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+        predicate = lane.predicate,
+        vec = lane.vec,
+        cast = lane.cast,
+    );
+    // SQL-POLICY: fixed-fragment — the lane's compile-time predicate and
+    // casts, chosen by a closed enum; every value is bound.
+    let rows = sqlx::query_scalar::<_, uuid::Uuid>(sqlx::AssertSqlSafe(sql))
+        .bind(model_id)
+        .bind(owner_id)
+        .bind(vec)
+        .bind(k)
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)?;
     tx.commit().await.map_err(map_err)?;
     Ok(rows)
 }

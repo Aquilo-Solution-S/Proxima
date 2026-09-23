@@ -43,11 +43,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
-use crate::pgvector::set_hnsw_search_sql;
+use crate::pgvector::{Lane, check_width, set_hnsw_search_sql};
 use crate::projection::{projection_key_ident, sidecar_text_sql};
 use crate::tuning::PgTuning;
 use proxima_core::flavor::{BandComparability, LanguagePolicy, SubstringArm};
-use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{
     DEFAULT_HYBRID_SEMANTIC_WEIGHT, EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage,
     MemorySearchRequest, MemorySearchResult, SearchCursor, SearchMode, SearchOrder,
@@ -66,32 +65,47 @@ use super::lineage::load_one_schema_snippets_on_connection;
 /// rather than of the shard.
 const REQUEST_OVERFETCH_FACTOR: u32 = 20;
 
-/// The semantic arm's fixed scan. `$1` is the owner set, `$2` the model id,
-/// `$3` the query vector, `$4` the candidate budget, `$5`/`$6` the
-/// `since`/`until` window. [`semantic_search_sql`] adds the participating
-/// flavor probes ahead of [`SEMANTIC_SEARCH_TAIL`].
-const SEMANTIC_SEARCH_SCAN: &str = "SELECT emb.entity_id AS t,
-                GREATEST(0.0, (1 - (emb.vec <=> $3::vector)))::real AS similarity_score
+/// The semantic arm's fixed scan for one width lane, without its tail.
+/// `$1` is the owner set, `$2` the model id, `$3` the query vector, `$4` the
+/// candidate budget, `$5`/`$6` the `since`/`until` window. The lane's
+/// predicate and casts are literals, so the planner proves the lane's
+/// partial HNSW index. [`semantic_search_sql`] adds the participating flavor
+/// probes ahead of [`semantic_search_tail`].
+fn semantic_search_scan(lane: Lane) -> String {
+    format!(
+        "SELECT emb.entity_id AS t,
+                GREATEST(0.0, (1 - ({vec} <=> $3{cast})))::real AS similarity_score
            FROM proxima_core.embeddings emb
            JOIN proxima_core.embedding_heads head
              ON head.entity_id = emb.entity_id
             AND head.model_id = emb.model_id
+            AND head.dim = emb.dim
             AND head.embedding_version = emb.embedding_version
           WHERE emb.owner_id = ANY($1::uuid[])
             AND emb.model_id = $2
+            AND {predicate}
             AND ($5::timestamptz IS NULL
                  OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') >= $5)
             AND ($6::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') <= $6)
-          ORDER BY emb.vec <=> $3::vector
-          LIMIT $4";
+                 OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') <= $6)",
+        vec = lane.vec,
+        cast = lane.cast,
+        predicate = lane.predicate,
+    )
+}
 
-/// The fixed scan's `ORDER BY` / `LIMIT`, spelled once. Projection probes
-/// must precede this tail so filtering happens before the HNSW candidate
-/// window is applied.
-const SEMANTIC_SEARCH_TAIL: &str = "
-          ORDER BY emb.vec <=> $3::vector
-          LIMIT $4";
+/// The scan's `ORDER BY` / `LIMIT`, spelled once. Projection probes must
+/// precede this tail so filtering happens before the HNSW candidate window
+/// is applied.
+fn semantic_search_tail(lane: Lane) -> String {
+    format!(
+        "
+          ORDER BY {vec} <=> $3{cast}
+          LIMIT $4",
+        vec = lane.vec,
+        cast = lane.cast,
+    )
+}
 
 /// The tagged semantic scan's tag-array bind…
 const SEMANTIC_TAGS_BIND: usize = 7;
@@ -180,7 +194,7 @@ pub(crate) async fn search_memories_on_connection(
             .await?,
         ),
         SearchMode::Hybrid => {
-            if req.query_embedding.is_some() && req.embedding_model_id.is_some() {
+            if req.semantic.is_some() {
                 merge_hits(
                     &mut hits,
                     scan_flavors_on_connection(connection, req, &flavors, limit, false).await?,
@@ -1011,12 +1025,10 @@ fn rank_tsquery_expr(multilingual: bool) -> &'static str {
 fn semantic_search_sql(
     flavors: &[FlavorScan<'_>],
     req: &MemorySearchRequest,
+    lane: Lane,
 ) -> Result<String, StorageError> {
-    let Some(scan) = SEMANTIC_SEARCH_SCAN.strip_suffix(SEMANTIC_SEARCH_TAIL) else {
-        return Err(StorageError::Internal(
-            "SEMANTIC_SEARCH_SCAN no longer ends with SEMANTIC_SEARCH_TAIL".into(),
-        ));
-    };
+    let scan = semantic_search_scan(lane);
+    let tail = semantic_search_tail(lane);
     let op = tag_operator(req.tag_match);
     let schema_bind_base = if req.tags.is_empty() {
         SEMANTIC_TAGS_BIND
@@ -1059,7 +1071,7 @@ fn semantic_search_sql(
     // SQL-POLICY: PgIdent
     Ok(format!(
         "{scan}
-            AND ({projection_pred}){admit_restriction}{SEMANTIC_SEARCH_TAIL}"
+            AND ({projection_pred}){admit_restriction}{tail}"
     ))
 }
 
@@ -1070,21 +1082,17 @@ async fn scan_embeddings_on_connection(
     tuning: &PgTuning,
     overfetch: u32,
 ) -> Result<Vec<Hit>, StorageError> {
-    let Some(query_embedding) = req.query_embedding.as_ref() else {
+    let Some(semantic) = req.semantic.as_ref() else {
         return Err(StorageError::ConstraintViolation(
-            "semantic search requires query_embedding".into(),
+            "semantic search requires a query embedding".into(),
         ));
     };
-    let Some(model_id) = req.embedding_model_id.as_ref() else {
-        return Err(StorageError::ConstraintViolation(
-            "semantic search requires embedding_model_id".into(),
-        ));
-    };
-    if query_embedding.len() != EMBEDDING_DIM {
-        return Err(StorageError::ConstraintViolation(format!(
-            "semantic search embedding length must be {EMBEDDING_DIM}"
-        )));
-    }
+    check_width(
+        semantic.space.dim(),
+        &semantic.vector,
+        "semantic search embedding",
+    )?;
+    let lane = Lane::of(semantic.space.dim());
     if flavors.is_empty() {
         return Ok(Vec::new());
     }
@@ -1098,7 +1106,7 @@ async fn scan_embeddings_on_connection(
         .iter()
         .map(|f| f.schemas.iter().map(|p| p.schema_id.as_str()).collect())
         .collect();
-    let sql = semantic_search_sql(flavors, req)?;
+    let sql = semantic_search_sql(flavors, req, lane)?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(tuning)))
         .execute(&mut *connection)
         .await
@@ -1106,8 +1114,8 @@ async fn scan_embeddings_on_connection(
     // SQL-POLICY: PgIdent
     let mut query = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&owner_ids)
-        .bind(model_id)
-        .bind(crate::pgvector::literal(query_embedding))
+        .bind(semantic.space.model_id())
+        .bind(crate::pgvector::literal(&semantic.vector))
         .bind(i64::from(overfetch))
         .bind(req.since)
         .bind(req.until);
@@ -1284,9 +1292,10 @@ pub fn substring_sql_for_tests(
 pub fn semantic_search_sql_for_tests(
     req: &MemorySearchRequest,
     projections: &[MemorySearchProjection],
+    dim: proxima_core::EmbeddingDim,
 ) -> Result<String, StorageError> {
     let flavors = core_search_flavors(req, projections);
-    semantic_search_sql(&flavors, req)
+    semantic_search_sql(&flavors, req, Lane::of(dim))
 }
 
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
@@ -1307,6 +1316,9 @@ fn parse_kind(kind: &str) -> Option<EntityKind> {
 
 #[cfg(test)]
 mod tests {
+    /// The default width's lane, which every pre-lane golden was written in.
+    const D1024: super::Lane = super::Lane::of(proxima_core::EmbeddingDim::D1024);
+
     use super::{
         EntityKind, MemorySearchRequest, OwnerRef, SearchMode, SearchOrder, SupersessionStatus,
         TagMatch,
@@ -1372,7 +1384,7 @@ mod tests {
             "the substring scan must run the exported builder"
         );
         assert!(
-            prod.contains("semantic_search_sql(flavors, req)"),
+            prod.contains("semantic_search_sql(flavors, req, lane)"),
             "the semantic scan must run the builder for every request shape"
         );
         let admit = format!("{}{}", "search_admit_sql(matches!(", "");
@@ -1564,16 +1576,20 @@ mod tests {
         let flavor =
             super::FlavorScan::new(vec![&note]).expect("fixture head declares render bands");
 
-        let tagged =
-            super::semantic_search_sql(std::slice::from_ref(&flavor), &req).expect("semantic");
+        let tagged = super::semantic_search_sql(std::slice::from_ref(&flavor), &req, D1024)
+            .expect("semantic");
         assert!(
             tagged.contains("emb.owner_id = ANY($1::uuid[])"),
             "$1 is the owner set"
         );
         assert!(tagged.contains("emb.model_id = $2"), "$2 is the model id");
         assert!(
-            tagged.contains("ORDER BY emb.vec <=> $3::vector"),
-            "$3 is the query vector"
+            tagged.contains("ORDER BY emb.vec::vector(1024) <=> $3::vector(1024)"),
+            "$3 is the query vector, cast to the lane's index expression"
+        );
+        assert!(
+            tagged.contains("AND emb.dim = 1024") && tagged.contains("AND head.dim = emb.dim"),
+            "the lane predicate is a literal, and the head join carries the width"
         );
         assert!(tagged.contains("LIMIT $4"), "$4 is the candidate budget");
         assert!(
@@ -1617,21 +1633,20 @@ mod tests {
             "the tag predicate narrows the scan; it does not trim its window"
         );
         assert!(
-            super::SEMANTIC_SEARCH_SCAN.ends_with(super::SEMANTIC_SEARCH_TAIL)
-                && tagged.ends_with(super::SEMANTIC_SEARCH_TAIL),
+            tagged.ends_with(&super::semantic_search_tail(D1024)),
             "the semantic variant keeps the fixed scan tail"
         );
 
         req.tag_match = TagMatch::All;
-        let all =
-            super::semantic_search_sql(std::slice::from_ref(&flavor), &req).expect("semantic");
+        let all = super::semantic_search_sql(std::slice::from_ref(&flavor), &req, D1024)
+            .expect("semantic");
         assert!(all.contains("p.tag @> $7::text[]"), "`All` is `@>`");
 
         // Without tags: the same participating-schema probe remains, with
         // schemas moving into the first post-fixed-fragment bind `$7`.
         req.tags.clear();
-        let untagged =
-            super::semantic_search_sql(std::slice::from_ref(&flavor), &req).expect("semantic");
+        let untagged = super::semantic_search_sql(std::slice::from_ref(&flavor), &req, D1024)
+            .expect("semantic");
         assert!(untagged.contains("p.schema_id = ANY($7::text[])"));
         assert!(!untagged.contains("p.tag") && !untagged.contains("$8"));
     }
@@ -1640,17 +1655,20 @@ mod tests {
     fn the_semantic_arm_empty_participating_set_is_a_valid_empty_query() {
         let mut req = request_with_tags();
         req.tags.clear();
-        let sql = super::semantic_search_sql(&[], &req).expect("empty semantic query");
+        let sql = super::semantic_search_sql(&[], &req, D1024).expect("empty semantic query");
         assert!(sql.contains("AND (FALSE)"));
-        assert!(sql.ends_with(super::SEMANTIC_SEARCH_TAIL));
+        assert!(sql.ends_with(&super::semantic_search_tail(D1024)));
         assert!(!sql.contains("FROM proxima_core.projection"));
 
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         let mut excluded = req;
         excluded.schema_id = Some(proxima_core::SchemaId::new("does-not-exist".into()));
-        let wrapped =
-            super::semantic_search_sql_for_tests(&excluded, registry.search_projections())
-                .expect("empty participating set");
+        let wrapped = super::semantic_search_sql_for_tests(
+            &excluded,
+            registry.search_projections(),
+            proxima_core::EmbeddingDim::D1024,
+        )
+        .expect("empty participating set");
         assert!(wrapped.contains("AND (FALSE)"));
     }
 
@@ -1675,7 +1693,7 @@ mod tests {
             super::FlavorScan::new(vec![&note]).expect("fixture head declares render bands"),
             super::FlavorScan::new(vec![&docs]).expect("fixture head declares render bands"),
         ];
-        let two = super::semantic_search_sql(&flavors, &req).expect("semantic");
+        let two = super::semantic_search_sql(&flavors, &req, D1024).expect("semantic");
         let core = two
             .find("FROM proxima_core.projection p")
             .expect("core probe");
@@ -1704,20 +1722,20 @@ mod tests {
         let hostile =
             [super::FlavorScan::new(vec![&spliced]).expect("fixture head declares render bands")];
         assert!(
-            super::semantic_search_sql(&hostile, &req).is_err(),
+            super::semantic_search_sql(&hostile, &req, D1024).is_err(),
             "an invalid projection table identifier is refused, not spliced"
         );
 
         // Without tags the same per-flavor probes remain, with schema sets
         // starting at `$7`.
         req.tags.clear();
-        let untagged = super::semantic_search_sql(&flavors, &req).expect("semantic");
+        let untagged = super::semantic_search_sql(&flavors, &req, D1024).expect("semantic");
         assert!(untagged.contains("FROM proxima_core.projection p"));
         assert!(untagged.contains("p.schema_id = ANY($7::text[])"));
         assert!(untagged.contains("FROM proxima_docs.projection p"));
         assert!(untagged.contains("p.schema_id = ANY($8::text[])"));
         assert!(!untagged.contains("p.tag"));
-        assert!(super::semantic_search_sql(&hostile, &req).is_err());
+        assert!(super::semantic_search_sql(&hostile, &req, D1024).is_err());
     }
 
     /// The substring leg probes the sidecar on the column the CONTRACT
@@ -1963,8 +1981,7 @@ mod tests {
             min_score: None,
             semantic_weight: None,
             after: None,
-            query_embedding: None,
-            embedding_model_id: None,
+            semantic: None,
         }
     }
 

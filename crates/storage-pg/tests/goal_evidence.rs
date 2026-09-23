@@ -90,7 +90,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     write_act_t: None,
@@ -134,7 +133,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     write_act_t: None,
@@ -184,7 +182,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     write_act_t: None,
@@ -216,7 +213,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     request_id: IdempotencyKey::new("d7-stale-evidence-next")?,
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     evidence: None,
@@ -238,7 +234,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                 request_id: IdempotencyKey::new("d7-achieve-fact")?,
                 context: GoalAtomicContext {
                     registry: &registry,
-                    embedding_model_id: None,
                     author_self_perspective_id: None,
                 },
                 evidence: vec![GoalEvidenceRef::new(fact.memory_id)],
@@ -280,7 +275,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     write_act_t: None,
@@ -319,7 +313,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     write_act_t: None,
@@ -341,7 +334,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                 request_id: IdempotencyKey::new("d7-achieve-abstraction")?,
                 context: GoalAtomicContext {
                     registry: &registry,
-                    embedding_model_id: None,
                     author_self_perspective_id: None,
                 },
                 evidence: vec![GoalEvidenceRef::new(abs.memory_id)],
@@ -375,7 +367,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     write_act_t: None,
@@ -392,7 +383,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     request_id: IdempotencyKey::new("d7-achieve-perspective")?,
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     evidence: vec![GoalEvidenceRef::new(perspective.memory_id)],
@@ -430,7 +420,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     write_act_t: None,
@@ -446,7 +435,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     authorship: GoalAuthorship::User,
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     topology: GoalTopologyWrite::new(

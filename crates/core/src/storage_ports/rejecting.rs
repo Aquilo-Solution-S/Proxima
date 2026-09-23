@@ -48,7 +48,7 @@ impl FactIngestPort for RejectingStorage {
     async fn ingest_authorized_fact_atomic(
         &self,
         _authorized: &AuthorizedFactWrite,
-        _embedding_model_id: Option<&str>,
+        _embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -58,7 +58,7 @@ impl FactIngestPort for RejectingStorage {
     async fn ingest_fact_with_typed_sidecar(
         &self,
         _authorized: &AuthorizedFactWrite,
-        _embedding_model_id: Option<&str>,
+        _embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -68,7 +68,7 @@ impl FactIngestPort for RejectingStorage {
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         _authorized: &AuthorizedFactWithCitation,
-        _embedding_model_id: Option<&str>,
+        _embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -78,7 +78,7 @@ impl FactIngestPort for RejectingStorage {
     async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         _authorized: &AuthorizedFactWithCitationRef,
-        _embedding_model_id: Option<&str>,
+        _embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -289,7 +289,7 @@ impl EmbeddingTextPort for RejectingStorage {
         &self,
         _scope: Option<&crate::OwnerScope>,
         _owner: &Owner,
-        _model_id: &str,
+        _space: &crate::EmbeddingSpace,
         _limit: usize,
         _non_embeddable_schemas: &[String],
     ) -> Result<Vec<crate::MemoryId>, StorageError> {
@@ -303,8 +303,7 @@ impl EmbeddingWritePort for RejectingStorage {
         &self,
         _owner: &Owner,
         _entity: EmbeddableEntityRef,
-        _model_id: &str,
-        _dim: usize,
+        _space: &crate::EmbeddingSpace,
         _vec: &[f32],
         _proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
@@ -317,8 +316,7 @@ impl EmbeddingWritePort for RejectingStorage {
         &self,
         _owner: &Owner,
         _entity: EmbeddableEntityRef,
-        _model_id: &str,
-        _dim: usize,
+        _space: &crate::EmbeddingSpace,
         _chunks: &[&[f32]],
         _proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
@@ -332,7 +330,7 @@ impl EmbeddingWritePort for RejectingStorage {
 impl EmbeddingJobPort for RejectingStorage {
     async fn claim_pending_embedding_jobs(
         &self,
-        _model_id: &str,
+        _space: &crate::EmbeddingSpace,
         _limit: i64,
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
         Err(StorageError::Internal(
@@ -397,7 +395,7 @@ impl EmbeddingJobPort for RejectingStorage {
     async fn enqueue_missing_embedding_jobs(
         &self,
         _permit: &OwnerWritePermit,
-        _model_id: &str,
+        _space: &crate::EmbeddingSpace,
         _limit: i64,
         _non_embeddable_schemas: &[String],
     ) -> Result<u64, StorageError> {

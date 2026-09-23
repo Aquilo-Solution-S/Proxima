@@ -23,7 +23,7 @@ impl FactIngestPort for FactIngestFake {
     async fn ingest_authorized_fact_atomic(
         &self,
         _authorized: &AuthorizedFactWrite,
-        embedding_model_id: Option<&str>,
+        _embedding_spaces: &[proxima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
     }
@@ -31,7 +31,7 @@ impl FactIngestPort for FactIngestFake {
     async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
-        embedding_model_id: Option<&str>,
+        _embedding_spaces: &[proxima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
     }
@@ -39,7 +39,7 @@ impl FactIngestPort for FactIngestFake {
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        embedding_model_id: Option<&str>,
+        _embedding_spaces: &[proxima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
     }
@@ -47,7 +47,7 @@ impl FactIngestPort for FactIngestFake {
     async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &proxima_core::verbs::fact_ingest::AuthorizedFactWithCitationRef,
-        embedding_model_id: Option<&str>,
+        _embedding_spaces: &[proxima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
     }
@@ -253,7 +253,7 @@ impl EmbeddingTextPort for EmbeddingTextFake {
         &self,
         _owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &Owner,
-        model_id: &str,
+        _space: &proxima_core::EmbeddingSpace,
         limit: usize,
         _non_embeddable_schemas: &[String],
     ) -> Result<Vec<proxima_core::MemoryId>, StorageError> {
@@ -270,12 +270,11 @@ impl EmbeddingWritePort for EmbeddingWriteFake {
         &self,
         _owner: &Owner,
         _entity: proxima_core::EmbeddableEntityRef,
-        model_id: &str,
-        dim: usize,
+        space: &proxima_core::EmbeddingSpace,
         vec: &[f32],
         _proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<proxima_core::EmbeddingWriteOutcome, StorageError> {
-        let _ = (model_id, dim, vec);
+        let _ = (space, vec);
         fake_error()
     }
 
@@ -283,12 +282,11 @@ impl EmbeddingWritePort for EmbeddingWriteFake {
         &self,
         _owner: &Owner,
         _entity: proxima_core::EmbeddableEntityRef,
-        model_id: &str,
-        dim: usize,
+        space: &proxima_core::EmbeddingSpace,
         chunks: &[&[f32]],
         _proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<proxima_core::EmbeddingWriteOutcome, StorageError> {
-        let _ = (model_id, dim, chunks);
+        let _ = (space, chunks);
         fake_error()
     }
 }
@@ -300,7 +298,7 @@ struct EmbeddingJobFake;
 impl EmbeddingJobPort for EmbeddingJobFake {
     async fn claim_pending_embedding_jobs(
         &self,
-        model_id: &str,
+        _space: &proxima_core::EmbeddingSpace,
         limit: i64,
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
         fake_error()
@@ -353,7 +351,7 @@ impl EmbeddingJobPort for EmbeddingJobFake {
     async fn enqueue_missing_embedding_jobs(
         &self,
         _permit: &OwnerWritePermit,
-        model_id: &str,
+        _space: &proxima_core::EmbeddingSpace,
         limit: i64,
         _non_embeddable_schemas: &[String],
     ) -> Result<u64, StorageError> {

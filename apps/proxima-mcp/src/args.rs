@@ -77,7 +77,7 @@ Environment:
 
 Maintenance:
   maintain-embeddings      One self-healing pass: orphan sweep, reconcile
-                           enqueue, optional inline drain, health report.
+                           enqueue, health report.
                            Cron-safe (skips if another pass holds the lock)
   maintain-storage         One storage pass: retry the object-store purge
                            debts committed erases left, and/or rotate the
@@ -113,8 +113,9 @@ pub const MAINTAIN_USAGE: &str = "\
 Usage: proxima-mcp maintain-embeddings [OPTIONS]
 
 One embedding self-healing pass, in order: sweep orphaned embedding rows,
-enqueue jobs for memories that need the target model, optionally drain the
-queue inline, then print a health report (backlog, orphans, recall canary).
+enqueue jobs for memories that need the target space (model at
+PROXIMA_EMBED_DIM, default 1024), then print a health report (backlog,
+orphans, recall canary). The serving process drains the queue.
 Passes are serialized by a Postgres advisory lock; when another pass holds
 it, this run prints a skip notice and exits 0 — safe to fire from cron.
 
@@ -125,7 +126,6 @@ Optional:
   --include-stale          Also re-enqueue memories embedded only under another model
   --since <RFC3339>        Only scan memories created at/after the timestamp
   --limit <N>              Maximum memories to scan (omit for the full graph)
-  --drain                  Process queued jobs inline with the configured embedding client
   -h, --help               Print this message
 ";
 
@@ -207,7 +207,6 @@ pub struct MaintainConfig {
     pub model: Option<String>,
     pub scope: ReconcileScope,
     pub limit: Option<i64>,
-    pub drain: bool,
 }
 
 impl std::fmt::Debug for MaintainConfig {
@@ -217,7 +216,6 @@ impl std::fmt::Debug for MaintainConfig {
             .field("model", &self.model)
             .field("scope", &self.scope)
             .field("limit", &self.limit)
-            .field("drain", &self.drain)
             .finish()
     }
 }
@@ -320,13 +318,11 @@ pub fn parse_maintain_args<I: IntoIterator<Item = String>>(
     let mut model: Option<String> = None;
     let mut scope = ReconcileScope::MissingOnly;
     let mut limit: Option<i64> = None;
-    let mut drain = false;
 
     let mut iter = args.into_iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "-h" | "--help" => return Err(ArgsError::Help),
-            "--drain" => drain = true,
             "--missing-only" => scope = ReconcileScope::MissingOnly,
             "--include-stale" => scope = ReconcileScope::IncludeStale,
             f => {
@@ -368,7 +364,6 @@ pub fn parse_maintain_args<I: IntoIterator<Item = String>>(
         model,
         scope,
         limit,
-        drain,
     })
 }
 
@@ -581,14 +576,16 @@ mod tests {
             "--include-stale".into(),
             "--limit".into(),
             "50".into(),
-            "--drain".into(),
         ])
         .expect("valid args");
         assert_eq!(cfg.database_url, "postgres://x/y");
         assert_eq!(cfg.model.as_deref(), Some("custom-embed"));
         assert_eq!(cfg.scope, ReconcileScope::IncludeStale);
         assert_eq!(cfg.limit, Some(50));
-        assert!(cfg.drain);
+        assert!(
+            parse_maintain_args(["--drain".into()]).is_err(),
+            "the inline drain is gone; the serving process drains"
+        );
     }
 
     #[test]

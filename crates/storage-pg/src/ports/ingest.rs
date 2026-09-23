@@ -14,25 +14,21 @@ impl FactIngestPort for PgStorage {
     async fn ingest_authorized_fact_atomic(
         &self,
         authorized: &AuthorizedFactWrite,
-        embedding_model_id: Option<&str>,
+        embedding_spaces: &[proxima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         if !authorized.sidecar_payloads().is_empty() {
             return Err(StorageError::ConstraintViolation(
                 "typed Fact sidecars require the typed persistence path".into(),
             ));
         }
-        verbs::fact_ingest::ingest_authorized_fact_atomic(
-            &self.pool,
-            authorized,
-            embedding_model_id,
-        )
-        .await
+        verbs::fact_ingest::ingest_authorized_fact_atomic(&self.pool, authorized, embedding_spaces)
+            .await
     }
 
     async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
-        embedding_model_id: Option<&str>,
+        embedding_spaces: &[proxima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         let sidecar_payloads = authorized.sidecar_payloads();
         let natural_key = verbs::fact_ingest::fact_natural_key(
@@ -63,7 +59,7 @@ impl FactIngestPort for PgStorage {
                 let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
                     &mut tx,
                     authorized,
-                    embedding_model_id,
+                    embedding_spaces,
                     verbs::fact_ingest::FactAdmissionInput {
                         natural_key: natural_key.as_ref(),
                         sidecar_tables: &tables,
@@ -97,7 +93,7 @@ impl FactIngestPort for PgStorage {
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        embedding_model_id: Option<&str>,
+        embedding_spaces: &[proxima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         let sidecar_payloads = authorized.sidecar_payloads();
         let natural_key = verbs::fact_ingest::fact_natural_key(
@@ -127,7 +123,7 @@ impl FactIngestPort for PgStorage {
                     &mut tx,
                     &sidecars,
                     authorized,
-                    embedding_model_id,
+                    embedding_spaces,
                     verbs::fact_ingest::FactAdmissionInput {
                         natural_key: natural_key.as_ref(),
                         sidecar_tables: &tables,
@@ -163,7 +159,7 @@ impl FactIngestPort for PgStorage {
     async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitationRef,
-        embedding_model_id: Option<&str>,
+        embedding_spaces: &[proxima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         let sidecar_payloads = authorized.sidecar_payloads();
         let natural_key = verbs::fact_ingest::fact_natural_key(
@@ -194,7 +190,7 @@ impl FactIngestPort for PgStorage {
                     &mut tx,
                     &sidecars,
                     authorized,
-                    embedding_model_id,
+                    embedding_spaces,
                     verbs::fact_ingest::FactAdmissionInput {
                         natural_key: natural_key.as_ref(),
                         sidecar_tables: &tables,

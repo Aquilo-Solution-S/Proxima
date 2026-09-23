@@ -1,5 +1,7 @@
 use proxima_core::storage_ports::{EmbeddingJobStatusCounts, OwnerWritePermit};
-use proxima_core::{EmbeddingJobClaim, EntityKind, MemoryId, Owner, OwnerRefKind, StorageError};
+use proxima_core::{
+    EmbeddingJobClaim, EmbeddingSpace, EntityKind, MemoryId, Owner, OwnerRefKind, StorageError,
+};
 use sqlx::{PgConnection, PgExecutor, PgPool};
 
 use crate::error::map_err;
@@ -7,22 +9,23 @@ use crate::pg_enums::PgMemoryKind;
 
 use super::ensure_nonnegative_limit;
 
-/// Claim pending jobs for one model, ordered by `job_id`.
+/// Claim pending jobs for one embedding space, ordered by `job_id`.
 ///
 /// One arm: `status = 'pending'`. Rides
-/// `embedding_jobs_pending_claim_idx (model_id, job_id) WHERE status =
+/// `embedding_jobs_pending_claim_idx (model_id, dim, job_id) WHERE status =
 /// 'pending'`. Locked unclaimed rows release with the statement's
 /// transaction. `claimed_at` is what makes a crashed drainer's row
 /// recoverable ([`reclaim_stale_embedding_jobs`]); there is no
 /// `next_attempt_at` column. Each claim also gets a fencing token so a
 /// reclaimed worker cannot complete a successor's claim. The table's unique
-/// `(owner_id, entity_id, model_id)` key guarantees at most one job for an
-/// entity in this model; callers never need an invocation-sized exclusion
+/// `(owner_id, entity_id, model_id, dim)` key guarantees at most one job for
+/// an entity in this space; callers never need an invocation-sized exclusion
 /// list to prevent duplicate work.
 const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
              SELECT job_id
                FROM proxima_core.embedding_jobs
               WHERE model_id = $1
+                AND dim = $3
                 AND status = 'pending'
               ORDER BY job_id ASC
               FOR UPDATE SKIP LOCKED
@@ -42,6 +45,7 @@ const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
                   m.kind AS entity_kind,
                   j.entity_id,
                   j.model_id,
+                  j.dim,
                   j.claim_token";
 
 /// The claim statement, for EXPLAIN-based plan guards. Same cfg gate as
@@ -61,24 +65,27 @@ struct EmbeddingJobClaimRow {
     entity_kind: PgMemoryKind,
     entity_id: uuid::Uuid,
     model_id: String,
+    dim: i16,
     claim_token: uuid::Uuid,
 }
 
-impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
-    fn from(row: EmbeddingJobClaimRow) -> Self {
-        Self {
+impl TryFrom<EmbeddingJobClaimRow> for EmbeddingJobClaim {
+    type Error = StorageError;
+
+    fn try_from(row: EmbeddingJobClaimRow) -> Result<Self, StorageError> {
+        Ok(Self {
             job_id: row.job_id,
             owner: row.owner_kind.with_uuid(row.owner_id),
             entity_kind: row.entity_kind.into(),
             entity_id: MemoryId::new(row.entity_id),
-            model_id: row.model_id,
+            space: EmbeddingSpace::new(row.model_id, crate::pgvector::stored_dim(row.dim)?),
             claim_token: row.claim_token,
-        }
+        })
     }
 }
 
 /// Owner-scoped list of Facts with rendered text and no embedding row
-/// for `model_id`.
+/// in `space`.
 ///
 /// # Errors
 ///
@@ -88,28 +95,20 @@ impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
 pub async fn list_facts_missing_embedding<'e>(
     pool: impl PgExecutor<'e>,
     owner: &Owner,
-    model_id: &str,
+    space: &EmbeddingSpace,
     limit: usize,
     non_embeddable_schemas: &[String],
 ) -> Result<Vec<MemoryId>, StorageError> {
     let owner_id = owner.stored_owner_id();
     let limit = i64::try_from(limit)
         .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
-    missing_embedding_ids(
-        pool,
-        owner_id,
-        model_id,
-        limit,
-        non_embeddable_schemas,
-        false,
-    )
-    .await
+    missing_embedding_ids(pool, owner_id, space, limit, non_embeddable_schemas, false).await
 }
 
 async fn missing_embedding_ids<'e>(
     pool: impl PgExecutor<'e>,
     owner_id: uuid::Uuid,
-    model_id: &str,
+    space: &EmbeddingSpace,
     limit: i64,
     non_embeddable_schemas: &[String],
     exclude_existing_jobs: bool,
@@ -124,31 +123,33 @@ async fn missing_embedding_ids<'e>(
             AND NOT (m.schema_id = ANY($4::text[]))
             AND NOT EXISTS (
                 SELECT 1 FROM proxima_core.embedding_heads eh
-                 WHERE eh.entity_id = m.t AND eh.model_id = $2
+                 WHERE eh.entity_id = m.t AND eh.model_id = $2 AND eh.dim = $6
             )
             AND (NOT $5::boolean OR NOT EXISTS (
                 SELECT 1 FROM proxima_core.embedding_jobs j
                  WHERE j.owner_id = m.owner_id
                    AND j.entity_id = m.t
                    AND j.model_id = $2
+                   AND j.dim = $6
             ))
           ORDER BY m.t ASC
           LIMIT $3",
     )
     .bind(owner_id)
-    .bind(model_id)
+    .bind(space.model_id())
     .bind(limit)
     .bind(non_embeddable_schemas)
     .bind(exclude_existing_jobs)
+    .bind(crate::pgvector::Lane::of(space.dim()).width)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
     Ok(rows.into_iter().map(MemoryId::new).collect())
 }
 
-/// Atomically claim pending embedding jobs for one model.
+/// Atomically claim pending embedding jobs for one embedding space.
 ///
-/// Selects `status = 'pending'` rows for `$1`, `FOR UPDATE SKIP LOCKED`, then
+/// Selects `status = 'pending'` rows for the space, `FOR UPDATE SKIP LOCKED`, then
 /// sets `processing` and stamps `claimed_at`. There is no `next_attempt_at`
 /// column; a claim a drainer never finishes is recovered by
 /// [`reclaim_stale_embedding_jobs`].
@@ -159,7 +160,7 @@ async fn missing_embedding_ids<'e>(
 /// failures through the shared mapper.
 pub async fn claim_pending_embedding_jobs<'e, E: PgExecutor<'e>>(
     pool: E,
-    model_id: &str,
+    space: &EmbeddingSpace,
     limit: i64,
 ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
     let limit = ensure_nonnegative_limit(limit)?;
@@ -169,12 +170,13 @@ pub async fn claim_pending_embedding_jobs<'e, E: PgExecutor<'e>>(
     // SQL-POLICY: fixed-fragment — the compile-time claim constant above;
     // every value is bound.
     let rows = sqlx::query_as::<_, EmbeddingJobClaimRow>(CLAIM_EMBEDDING_JOBS_SQL)
-        .bind(model_id)
+        .bind(space.model_id())
         .bind(limit)
+        .bind(crate::pgvector::Lane::of(space.dim()).width)
         .fetch_all(pool)
         .await
         .map_err(map_err)?;
-    Ok(rows.into_iter().map(EmbeddingJobClaim::from).collect())
+    rows.into_iter().map(EmbeddingJobClaim::try_from).collect()
 }
 
 /// Delete a completed embedding job, fenced by the claim token and owner.
@@ -198,13 +200,15 @@ pub async fn complete_embedding_job<'e, E: PgExecutor<'e>>(
             AND status = 'processing'
             AND owner_id = $3
             AND entity_id = $4
-            AND model_id = $5",
+            AND model_id = $5
+            AND dim = $6",
     )
     .bind(claim.job_id)
     .bind(claim.claim_token)
     .bind(claim.owner.stored_owner_id())
     .bind(claim.entity_id.into_inner())
-    .bind(&claim.model_id)
+    .bind(claim.space.model_id())
+    .bind(crate::pgvector::Lane::of(claim.space.dim()).width)
     .execute(pool)
     .await
     .map_err(map_err)?;
@@ -288,14 +292,16 @@ pub async fn fail_embedding_job<'e, E: PgExecutor<'e>>(
             AND status = 'processing'
             AND owner_id = $4
             AND entity_id = $5
-            AND model_id = $6",
+            AND model_id = $6
+            AND dim = $7",
     )
     .bind(claim.job_id)
     .bind(claim.claim_token)
     .bind(error)
     .bind(claim.owner.stored_owner_id())
     .bind(claim.entity_id.into_inner())
-    .bind(&claim.model_id)
+    .bind(claim.space.model_id())
+    .bind(crate::pgvector::Lane::of(claim.space.dim()).width)
     .execute(pool)
     .await
     .map_err(map_err)?;
@@ -335,14 +341,16 @@ pub async fn fail_embedding_job_permanently<'e, E: PgExecutor<'e>>(
             AND status = 'processing'
             AND owner_id = $4
             AND entity_id = $5
-            AND model_id = $6",
+            AND model_id = $6
+            AND dim = $7",
     )
     .bind(claim.job_id)
     .bind(claim.claim_token)
     .bind(error)
     .bind(claim.owner.stored_owner_id())
     .bind(claim.entity_id.into_inner())
-    .bind(&claim.model_id)
+    .bind(claim.space.model_id())
+    .bind(crate::pgvector::Lane::of(claim.space.dim()).width)
     .execute(pool)
     .await
     .map_err(map_err)?;
@@ -393,14 +401,16 @@ pub async fn release_embedding_jobs_on_connection(
                 AND status = 'processing'
                 AND owner_id = $4
                 AND entity_id = $5
-                AND model_id = $6",
+                AND model_id = $6
+                AND dim = $7",
         )
         .bind(claim.job_id)
         .bind(claim.claim_token)
         .bind(error)
         .bind(claim.owner.stored_owner_id())
         .bind(claim.entity_id.into_inner())
-        .bind(&claim.model_id)
+        .bind(claim.space.model_id())
+        .bind(crate::pgvector::Lane::of(claim.space.dim()).width)
         .execute(&mut *pool)
         .await
         .map_err(map_err)?;
@@ -462,7 +472,7 @@ pub async fn reclaim_stale_embedding_jobs<'e, E: PgExecutor<'e>>(
 pub async fn enqueue_missing_embedding_jobs(
     pool: &PgPool,
     permit: &OwnerWritePermit,
-    model_id: &str,
+    space: &EmbeddingSpace,
     limit: i64,
     non_embeddable_schemas: &[String],
 ) -> Result<u64, StorageError> {
@@ -470,7 +480,7 @@ pub async fn enqueue_missing_embedding_jobs(
     let result = enqueue_missing_embedding_jobs_on_connection(
         tx.as_mut(),
         permit,
-        model_id,
+        space,
         limit,
         non_embeddable_schemas,
     )
@@ -481,7 +491,7 @@ pub async fn enqueue_missing_embedding_jobs(
 async fn enqueue_missing_embedding_jobs_on_connection(
     pool: &mut PgConnection,
     permit: &OwnerWritePermit,
-    model_id: &str,
+    space: &EmbeddingSpace,
     limit: i64,
     non_embeddable_schemas: &[String],
 ) -> Result<u64, StorageError> {
@@ -495,7 +505,7 @@ async fn enqueue_missing_embedding_jobs_on_connection(
     let ids = missing_embedding_ids(
         &mut *pool,
         owner_id,
-        model_id,
+        space,
         limit,
         non_embeddable_schemas,
         true,
@@ -506,15 +516,16 @@ async fn enqueue_missing_embedding_jobs_on_connection(
     }
     let entity_ids: Vec<uuid::Uuid> = ids.into_iter().map(MemoryId::into_inner).collect();
     let result = sqlx::query(
-        "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, owner_id)
-         SELECT t, $2, $1
+        "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
+         SELECT t, $2, $4, $1
            FROM unnest($3::uuid[]) AS t
-         ON CONFLICT (owner_id, entity_id, model_id)
+         ON CONFLICT (owner_id, entity_id, model_id, dim)
          DO NOTHING",
     )
     .bind(owner_id)
-    .bind(model_id)
+    .bind(space.model_id())
     .bind(&entity_ids)
+    .bind(crate::pgvector::Lane::of(space.dim()).width)
     .execute(&mut *pool)
     .await
     .map_err(map_err)?;
@@ -601,11 +612,12 @@ pub async fn count_embedding_job_status<'e>(
 /// Enqueue one durable embedding job in the caller's transaction, so the
 /// job row and the memory row land together or not at all.
 ///
-/// Idempotent on the table's natural key `(owner_id, entity_id, model_id)`,
-/// which is why a replayed write and a re-enqueued deferral are both free.
+/// Idempotent on the table's natural key `(owner_id, entity_id, model_id,
+/// dim)`, which is why a replayed write and a re-enqueued deferral are both
+/// free.
 ///
 /// `entity_kind` is accepted and not stored: the row is keyed by
-/// `(owner_id, entity_id, model_id)` and records no kind at all, so an
+/// `(owner_id, entity_id, model_id, dim)` and records no kind at all, so an
 /// `Abstraction` or `Perspective` job needs no schema change. The
 /// parameter keeps the caller's kind in the signature where a future
 /// kind-scoped drain would need it.
@@ -619,7 +631,7 @@ pub(crate) async fn enqueue_embedding_job_in_tx(
     owner_id: Option<uuid::Uuid>,
     entity_kind: EntityKind,
     entity_id: uuid::Uuid,
-    model_id: &str,
+    space: &EmbeddingSpace,
 ) -> Result<(), StorageError> {
     let Some(owner_id) = owner_id else {
         return Ok(());
@@ -627,13 +639,14 @@ pub(crate) async fn enqueue_embedding_job_in_tx(
     let _ = (owner_kind, entity_kind);
     sqlx::query(
         "INSERT INTO proxima_core.embedding_jobs
-            (entity_id, model_id, owner_id)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (owner_id, entity_id, model_id)
+            (entity_id, model_id, dim, owner_id)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (owner_id, entity_id, model_id, dim)
          DO NOTHING",
     )
     .bind(entity_id)
-    .bind(model_id)
+    .bind(space.model_id())
+    .bind(crate::pgvector::Lane::of(space.dim()).width)
     .bind(owner_id)
     .execute(&mut **tx)
     .await
@@ -688,13 +701,13 @@ mod tests {
 
     #[test]
     fn claim_needs_no_growing_entity_exclusion_parameter() {
-        let migration = include_str!("../../../migrations/0001_v008.sql");
+        let migration = include_str!("../../../migrations/0015_v016_embedding_spaces.sql");
         assert!(
-            migration.contains("UNIQUE (owner_id, entity_id, model_id)"),
-            "the DB must admit at most one job per entity and model"
+            migration.contains("UNIQUE (owner_id, entity_id, model_id, dim)"),
+            "the DB must admit at most one job per entity and space"
         );
         assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("ANY("));
-        assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("$3"));
+        assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("$4"));
     }
 
     #[test]
@@ -704,10 +717,10 @@ mod tests {
             owner: Owner::Personal(proxima_core::UserId::new(uuid::Uuid::from_u128(1))),
             entity_kind: EntityKind::Fact,
             entity_id: MemoryId::new(uuid::Uuid::from_u128(3)),
-            model_id: "model".into(),
+            space: EmbeddingSpace::new("model", proxima_core::EmbeddingDim::D768),
             claim_token: uuid::Uuid::from_u128(4),
         };
-        assert_eq!(claim.model_id, "model");
+        assert_eq!(claim.space.model_id(), "model");
 
         let migration = include_str!("../../../migrations/0001_v008.sql");
         let job_table = migration
@@ -725,6 +738,7 @@ mod tests {
              SELECT job_id
                FROM proxima_core.embedding_jobs
               WHERE model_id = $1
+                AND dim = $3
                 AND status = 'pending'
               ORDER BY job_id ASC
               FOR UPDATE SKIP LOCKED
@@ -744,5 +758,6 @@ mod tests {
                   m.kind AS entity_kind,
                   j.entity_id,
                   j.model_id,
+                  j.dim,
                   j.claim_token";
 }

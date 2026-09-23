@@ -1,12 +1,14 @@
 //! Capability types for embedding clients.
 //!
-//! - [`EmbedCaps`] is live: `dim` must match the vector column;
+//! - [`EmbedCaps`] is live: `dim` must be a supported
+//!   [`crate::llm::EmbeddingDim`] width;
 //!   `matryoshka` / `max_input_chars` are host-injected client flags.
 
 use std::num::NonZeroU32;
 
-/// Embedding capability axes. `dim` is the vector size — boot-time
-/// mismatch against the storage migration's vector column is fatal.
+/// Embedding capability axes. `dim` is the vector size — a width that is
+/// not an [`crate::llm::EmbeddingDim`] fails when the client is bound
+/// ([`crate::llm::BoundEmbeddingClient::bind`]), i.e. at boot.
 /// `matryoshka` indicates whether the model produces nested-prefix
 /// embeddings (caller may truncate without re-embedding).
 #[derive(

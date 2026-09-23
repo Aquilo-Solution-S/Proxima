@@ -724,9 +724,15 @@ async fn connect_and_migrate(
             .map_err(embed_migration_error)?;
     }
     drop(migration_pg);
-    PgStorage::connect_with_config(database_url, pg_pool_config, pg_tuning)
+    let pg = PgStorage::connect_with_config(database_url, pg_pool_config, pg_tuning)
         .await
-        .map_err(embed_storage_error)
+        .map_err(embed_storage_error)?;
+    // Semantic search sends pgvector 0.8 session settings (iterative scan);
+    // refuse an older or refusing extension at boot, not on every search.
+    pg.ensure_pgvector_compatible()
+        .await
+        .map_err(embed_storage_error)?;
+    Ok(pg)
 }
 
 /// Run every linked flavor's registration callback and freeze the result.
@@ -941,20 +947,10 @@ fn compose_engine(
         engine = engine.with_deployment_tool_scope(scope);
     }
     if let Some(client) = embed_client {
-        // Fail fast on a dimension mismatch. The `embeddings.embedding`
-        // column is a fixed-width `vector(EMBEDDING_DIM)`; a client of a
-        // different dim (e.g. a 3072-d model) would let every job be
-        // claimed and then rejected at insert, silently burning the queue.
-        let dim = client.dim();
-        if dim != proxima_core::llm::EMBEDDING_DIM {
-            return Err(EmbedError::Config(format!(
-                "embedding client reports dim {dim}, but the vector column is fixed at {} \
-                 (proxima_core::llm::EMBEDDING_DIM); a mismatched model fails every \
-                 embedding job — configure a {}-dimensional embedding model",
-                proxima_core::llm::EMBEDDING_DIM,
-                proxima_core::llm::EMBEDDING_DIM,
-            )));
-        }
+        // Fail fast on a width no lane indexes: jobs would be claimed and
+        // then rejected at insert, silently burning the queue.
+        let client = proxima_core::llm::BoundEmbeddingClient::bind(client)
+            .map_err(|error| EmbedError::Config(error.to_string()))?;
         engine = engine.with_embed(client);
     }
     Ok(engine)

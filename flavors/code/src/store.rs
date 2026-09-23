@@ -265,8 +265,7 @@ impl CodeFlavorStore {
         &self,
         owner_scope: Option<&OwnerScope>,
         owner: Owner,
-        model_id: &str,
-        query_embedding: &[f32],
+        query: &proxima_core::verbs::query::SemanticQuery,
         filters: CodeChunkVectorFilters<'_>,
         limit: usize,
     ) -> Result<Vec<CodeChunkVectorCandidate>, ToolError> {
@@ -277,8 +276,7 @@ impl CodeFlavorStore {
             &mut tx,
             &self.tuning,
             owner,
-            model_id,
-            query_embedding,
+            query,
             filters,
             i64::try_from(limit).unwrap_or(i64::MAX),
         )

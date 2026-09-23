@@ -106,7 +106,7 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
             Vec::new(),
         )
         .with_sidecar_payloads_for_tests(vec![derived_payload]);
-        let derived = pg.ingest_fact_with_typed_sidecar(&authorized, None).await?;
+        let derived = pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await?;
 
         let mut q = QueryRequest::readable();
         q.include_payloads = false;

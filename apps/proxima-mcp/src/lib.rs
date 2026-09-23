@@ -22,7 +22,7 @@ use proxima::{
 use proxima_core::protocol::profile as protocol_profile;
 use proxima_core::{
     FlavorRegistry, FlavorRegistryError, OwnerAccessPort, ToolScope, all_core_actions,
-    all_core_resources, llm::EmbeddingClient,
+    all_core_resources,
 };
 use proxima_llm_openai_compat::OpenAiCompatEmbeddingClient;
 use proxima_storage_pg::{
@@ -34,6 +34,7 @@ const PROXIMA_EMBED_MODEL: &str = "PROXIMA_EMBED_MODEL";
 const PROXIMA_EMBED_BASE_URL: &str = "PROXIMA_EMBED_BASE_URL";
 const PROXIMA_EMBED_API_KEY: &str = "PROXIMA_EMBED_API_KEY";
 const PROXIMA_EMBED_MATRYOSHKA: &str = "PROXIMA_EMBED_MATRYOSHKA";
+const PROXIMA_EMBED_DIM: &str = "PROXIMA_EMBED_DIM";
 const PROXIMA_EMBED_MAX_INPUT_CHARS: &str = "PROXIMA_EMBED_MAX_INPUT_CHARS";
 const PROXIMA_TOOL_PROFILE: &str = "PROXIMA_TOOL_PROFILE";
 const PROXIMA_TOOL_ALLOW: &str = "PROXIMA_TOOL_ALLOW";
@@ -368,11 +369,11 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
 }
 
 /// One embedding self-healing pass: orphan sweep, reconcile enqueue,
-/// optional inline drain, health report. Serialized across processes by a
+/// health report. Serialized across processes by a
 /// Postgres advisory lock — an overlapping pass skips with exit 0 so cron
 /// overlap is harmless by construction, not by scheduling discipline.
 async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
-    let model = maintenance_embedding_model(config.model, proxima_core::process_env)?;
+    let space = maintenance_embedding_space(config.model, proxima_core::process_env)?;
     let embedding_policy = embedding_runtime_policy_from_lookup(&proxima_core::process_env)?;
     let storage = maintenance_storage(&config.database_url, embedding_policy).await?;
 
@@ -406,7 +407,7 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     let non_embeddable = core_registry.non_embeddable_schema_ids();
     let outcome = storage
         .reconcile_embeddings(EmbeddingReconcileOptions {
-            model_id: &model,
+            space: &space,
             scope: reconcile_scope(config.scope),
             // Omitted `--limit` is the operator full pass. Process boot
             // never takes this path; it uses EMBEDDING_RECONCILE_DEFAULT_LIMIT.
@@ -422,29 +423,6 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
         outcome.skipped,
         non_embeddable.join(", ")
     );
-
-    if config.drain {
-        let client = embedding_client_from_env(proxima_core::process_env, embedding_policy)?
-            .ok_or_else(|| {
-                CliError::Runtime(ProximaError::Config(
-                    "maintain-embeddings --drain requires PROXIMA_EMBED_BASE_URL and \
-                 PROXIMA_EMBED_MODEL; PROXIMA_EMBED_API_KEY is optional"
-                        .into(),
-                ))
-            })?;
-        if client.model_id() != model {
-            return Err(CliError::Runtime(ProximaError::Config(format!(
-                "maintain-embeddings --drain model mismatch: queued model {model:?}, embedding client model {:?}",
-                client.model_id()
-            ))));
-        }
-        let limit = config.limit.unwrap_or(i64::MAX);
-        let drain = storage
-            .drain_embedding_jobs_inline(&client, limit)
-            .await
-            .map_err(|err| ProximaError::Storage(err.to_string()))?;
-        println!("drain: embedded={} failed={}", drain.embedded, drain.failed);
-    }
 
     let health = storage
         .embedding_ann_observability()
@@ -821,11 +799,11 @@ fn oidc_from_env(
 /// Any OpenAI-compatible `/embeddings` endpoint. Base URL and model are
 /// explicit; hosted endpoints may also set `PROXIMA_EMBED_API_KEY`.
 ///
-/// Whatever the model, it must land in the substrate's single embedding
-/// space: `proxima_core::llm::EMBEDDING_DIM` (1024), which is the width of
-/// the `vector(1024)` column. Set `PROXIMA_EMBED_MATRYOSHKA=true` for a
-/// nested-prefix model (qwen3-embedding, text-embedding-3-*) so the request
-/// asks for 1024 rather than the model's native width.
+/// The model's vectors must be `PROXIMA_EMBED_DIM` wide (default 1024), and
+/// that width must be one the store indexes (see
+/// [`proxima_core::llm::EmbeddingDim`]). Set `PROXIMA_EMBED_MATRYOSHKA=true`
+/// for a nested-prefix model (qwen3-embedding, text-embedding-3-*) so the
+/// request asks for that width rather than the model's native one.
 ///
 /// `PROXIMA_EMBED_MAX_INPUT_CHARS` bounds what is *sent*. Unset by default,
 /// because a provider that rejects over-long input cleanly needs no help;
@@ -840,12 +818,14 @@ fn embedding_client_from_env(
     let base_url = lookup_non_empty(&lookup, PROXIMA_EMBED_BASE_URL);
     let model = embedding_model_from_env(&lookup);
     let matryoshka_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_MATRYOSHKA).is_some();
+    let dim_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_DIM).is_some();
     let max_input_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_MAX_INPUT_CHARS).is_some();
 
     if base_url.is_none()
         && model.is_none()
         && api_key.is_none()
         && !matryoshka_is_set
+        && !dim_is_set
         && !max_input_is_set
     {
         return Ok(None);
@@ -863,9 +843,9 @@ fn embedding_client_from_env(
     })?;
 
     let matryoshka = parse_bool_env(&lookup, PROXIMA_EMBED_MATRYOSHKA)?;
-    let dim = u32::try_from(proxima_core::llm::EMBEDDING_DIM).map_err(|_| {
+    let dim = u32::try_from(embedding_dim_from_env(&lookup)?.width()).map_err(|_| {
         CliError::Runtime(ProximaError::Config(
-            "EMBEDDING_DIM does not fit u32".into(),
+            "embedding width does not fit u32".into(),
         ))
     })?;
 
@@ -923,17 +903,38 @@ fn embedding_model_from_env(lookup: impl Fn(&str) -> Option<String>) -> Option<S
     lookup_non_empty(&lookup, PROXIMA_EMBED_MODEL)
 }
 
-fn maintenance_embedding_model(
+/// `PROXIMA_EMBED_DIM`, or 1024 when unset.
+fn embedding_dim_from_env(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<proxima_core::llm::EmbeddingDim, CliError> {
+    let Some(raw) = lookup_non_empty(lookup, PROXIMA_EMBED_DIM) else {
+        return Ok(proxima_core::llm::EmbeddingDim::D1024);
+    };
+    let width = raw.parse::<usize>().map_err(|_| {
+        CliError::Runtime(ProximaError::Config(format!(
+            "{PROXIMA_EMBED_DIM} must be an integer, got {raw:?}"
+        )))
+    })?;
+    proxima_core::llm::EmbeddingDim::try_from(width).map_err(|err| {
+        CliError::Runtime(ProximaError::Config(format!("{PROXIMA_EMBED_DIM}: {err}")))
+    })
+}
+
+/// The space a maintenance pass reconciles: `--model` or
+/// `PROXIMA_EMBED_MODEL`, at `PROXIMA_EMBED_DIM`.
+fn maintenance_embedding_space(
     explicit: Option<String>,
     lookup: impl Fn(&str) -> Option<String>,
-) -> Result<String, CliError> {
-    explicit
+) -> Result<proxima_core::EmbeddingSpace, CliError> {
+    let dim = embedding_dim_from_env(&lookup)?;
+    let model = explicit
         .or_else(|| embedding_model_from_env(lookup))
         .ok_or_else(|| {
             CliError::Runtime(ProximaError::Config(
                 "maintain-embeddings requires --model or PROXIMA_EMBED_MODEL".into(),
             ))
-        })
+        })?;
+    Ok(proxima_core::EmbeddingSpace::new(model, dim))
 }
 
 fn lookup_non_empty(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
@@ -1412,7 +1413,7 @@ mod tests {
         .expect("explicit endpoint and model enable the client");
 
         assert_eq!(client.model_id(), "hosted-embed");
-        assert_eq!(client.dim(), proxima_core::llm::EMBEDDING_DIM);
+        assert_eq!(client.dim(), 1024, "an unset PROXIMA_EMBED_DIM is 1024");
     }
 
     #[test]
@@ -1455,7 +1456,7 @@ mod tests {
         .expect("an explicit base URL and model enable embeddings");
 
         assert_eq!(client.model_id(), "qwen3-embedding:0.6b");
-        assert_eq!(client.dim(), proxima_core::llm::EMBEDDING_DIM);
+        assert_eq!(client.dim(), 1024, "an unset PROXIMA_EMBED_DIM is 1024");
     }
 
     #[test]
@@ -1478,6 +1479,7 @@ mod tests {
             (PROXIMA_EMBED_MODEL, "hosted-embed", PROXIMA_EMBED_BASE_URL),
             (PROXIMA_EMBED_API_KEY, "secret", PROXIMA_EMBED_BASE_URL),
             (PROXIMA_EMBED_MATRYOSHKA, "false", PROXIMA_EMBED_BASE_URL),
+            (PROXIMA_EMBED_DIM, "768", PROXIMA_EMBED_BASE_URL),
             (
                 PROXIMA_EMBED_MAX_INPUT_CHARS,
                 "4095",
@@ -1625,23 +1627,54 @@ mod tests {
     }
 
     #[test]
-    fn maintenance_model_is_explicit_or_from_generic_env() {
+    fn maintenance_space_is_explicit_or_from_generic_env() {
         assert_eq!(
-            maintenance_embedding_model(Some("flag-model".into()), |_| {
-                Some("env-model".into())
+            maintenance_embedding_space(Some("flag-model".into()), |key| {
+                (key == PROXIMA_EMBED_MODEL).then(|| "env-model".into())
             })
+            .map(|space| space.model_id().to_owned())
             .expect("explicit model wins"),
             "flag-model"
         );
+        let space = maintenance_embedding_space(None, |key| match key {
+            PROXIMA_EMBED_MODEL => Some("env-model".into()),
+            PROXIMA_EMBED_DIM => Some("768".into()),
+            _ => None,
+        })
+        .expect("generic env model is accepted");
         assert_eq!(
-            maintenance_embedding_model(None, |key| {
-                (key == PROXIMA_EMBED_MODEL).then(|| "env-model".into())
-            })
-            .expect("generic env model is accepted"),
-            "env-model"
+            space,
+            proxima_core::EmbeddingSpace::new("env-model", proxima_core::llm::EmbeddingDim::D768)
         );
-        let err = maintenance_embedding_model(None, |_| None)
+        let err = maintenance_embedding_space(None, |_| None)
             .expect_err("there is no provider-specific default");
         assert!(err.to_string().contains(PROXIMA_EMBED_MODEL), "{err}");
+    }
+
+    /// The configured width is requested from the provider and must be a
+    /// width the store indexes; anything else is refused at boot, not at
+    /// the first insert.
+    #[test]
+    fn embed_dim_selects_a_lane_and_refuses_the_rest() {
+        let with_dim = |dim: &'static str| {
+            move |key: &str| match key {
+                PROXIMA_EMBED_MODEL => Some("hosted-embed".to_string()),
+                PROXIMA_EMBED_BASE_URL => Some("https://embeddings.example/v1".to_string()),
+                PROXIMA_EMBED_DIM => Some(dim.to_string()),
+                _ => None,
+            }
+        };
+        for (raw, width) in [("768", 768), ("3072", 3072)] {
+            let client =
+                embedding_client_from_env(with_dim(raw), EmbeddingRuntimePolicy::default())
+                    .expect("a lane width is accepted")
+                    .expect("configured");
+            assert_eq!(client.dim(), width);
+        }
+        for raw in ["512", "wide"] {
+            let err = embedding_client_from_env(with_dim(raw), EmbeddingRuntimePolicy::default())
+                .expect_err("a width with no lane is refused");
+            assert!(err.to_string().contains(PROXIMA_EMBED_DIM), "{raw}: {err}");
+        }
     }
 }

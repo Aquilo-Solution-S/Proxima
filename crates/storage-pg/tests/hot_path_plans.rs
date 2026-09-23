@@ -4,7 +4,7 @@
 //! has to pick the shipped index. Not a cost/latency bench.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::llm::EMBEDDING_DIM;
+use proxima_core::EmbeddingDim;
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus,
@@ -53,16 +53,19 @@ fn search_req(owner: OwnerRef) -> MemorySearchRequest {
         min_score: None,
         semantic_weight: None,
         after: None,
-        query_embedding: None,
-        embedding_model_id: None,
+        semantic: None,
     }
 }
 
 fn embed_literal() -> String {
+    embed_literal_of(EmbeddingDim::D1024)
+}
+
+fn embed_literal_of(dim: EmbeddingDim) -> String {
     format!(
         "[{}]",
         std::iter::once("1")
-            .chain(std::iter::repeat_n("0", EMBEDDING_DIM - 1))
+            .chain(std::iter::repeat_n("0", dim.width() - 1))
             .collect::<Vec<_>>()
             .join(",")
     )
@@ -323,8 +326,8 @@ async fn hot_path_plans_use_expected_indexes() {
         let child = seed_derived(pool, owner, leaf).await?;
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
-                (entity_id, model_id, embedding_version, vec, owner_id)
-             VALUES ($1, 'test-embed', 1, $2::vector, $3)",
+                (entity_id, model_id, dim, embedding_version, vec, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
         )
         .bind(leaf)
         .bind(embed_literal())
@@ -333,16 +336,16 @@ async fn hot_path_plans_use_expected_indexes() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.embedding_heads
-                (entity_id, model_id, embedding_version, owner_id)
-             VALUES ($1, 'test-embed', 1, $2)",
+                (entity_id, model_id, dim, embedding_version, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $2)",
         )
         .bind(leaf)
         .bind(owner.stored_owner_id())
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, owner_id, status)
-             VALUES ($1, 'test-embed', $2, 'pending')",
+            "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id, status)
+             VALUES ($1, 'test-embed', 1024, $2, 'pending')",
         )
         .bind(leaf)
         .bind(owner.stored_owner_id())
@@ -531,20 +534,31 @@ async fn hot_path_plans_use_expected_indexes() {
         )))
         .execute(&mut *tx)
         .await?;
-        let semantic = semantic_search_sql_for_tests(&req, std::slice::from_ref(&projection))?;
-        let semantic_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {semantic}");
-        // SQL-POLICY: PgIdent — production semantic builder
-        let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(semantic_explain))
-            .bind(&owner_ids)
-            .bind("test-embed")
-            .bind(embed_literal())
-            .bind(20_i64)
-            .bind(None::<time::OffsetDateTime>)
-            .bind(None::<time::OffsetDateTime>)
-            .bind(&schema_ids)
-            .fetch_one(&mut *tx)
-            .await?;
-        assert_plan_names(&plan, "idx_embeddings_vec_hnsw");
+        // Every width lane is served by its own partial HNSW index: the
+        // statement spells the lane's expression and a literal `dim = N`,
+        // so the planner proves the index predicate under any plan.
+        let mut plan = serde_json::Value::Null;
+        for dim in EmbeddingDim::ALL {
+            let semantic =
+                semantic_search_sql_for_tests(&req, std::slice::from_ref(&projection), dim)?;
+            let semantic_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {semantic}");
+            // SQL-POLICY: PgIdent — production semantic builder
+            let lane_plan: serde_json::Value =
+                sqlx::query_scalar(sqlx::AssertSqlSafe(semantic_explain))
+                    .bind(&owner_ids)
+                    .bind("test-embed")
+                    .bind(embed_literal_of(dim))
+                    .bind(20_i64)
+                    .bind(None::<time::OffsetDateTime>)
+                    .bind(None::<time::OffsetDateTime>)
+                    .bind(&schema_ids)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            assert_plan_names(&lane_plan, &format!("embeddings_hnsw_d{}", dim.width()));
+            if dim == EmbeddingDim::D1024 {
+                plan = lane_plan;
+            }
+        }
         let projection_scan = scan_of(&plan, "projection")
             .unwrap_or_else(|| panic!("semantic candidates must probe participating schemas; plan:\n{plan}"));
         assert!(
@@ -641,6 +655,7 @@ async fn hot_path_plans_use_expected_indexes() {
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(claim_explain))
             .bind("test-embed")
             .bind(32_i64)
+            .bind(1024_i16)
             .fetch_one(&mut *tx)
             .await?;
         assert_plan_names(&plan, "embedding_jobs_pending_claim_idx");

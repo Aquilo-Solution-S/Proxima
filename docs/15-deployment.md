@@ -113,8 +113,9 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow. Owner erase is not exposed as an MCP action. |
 | `PROXIMA_EMBED_BASE_URL` | when enabled | `https://embeddings.example/v1` | OpenAI-compatible `/embeddings` base. Required with `PROXIMA_EMBED_MODEL` when embeddings are enabled; plaintext `http://` is accepted for loopback only. |
 | `PROXIMA_EMBED_API_KEY` | no | `sk-...` | Bearer for a hosted embedding endpoint. Omit for a local one. |
-| `PROXIMA_EMBED_MODEL` | when enabled | `provider-embedding-model` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` when embeddings are enabled; must return 1024-dim vectors. |
-| `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Request 1024 dimensions from a nested-prefix model wider than 1024. |
+| `PROXIMA_EMBED_MODEL` | when enabled | `provider-embedding-model` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` when embeddings are enabled; must return `PROXIMA_EMBED_DIM`-wide vectors. |
+| `PROXIMA_EMBED_DIM` | no | `768` | Vector width: 384, 768, 1024, 1536, 2048 or 3072. Default `1024`; any other value fails boot. |
+| `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Request `PROXIMA_EMBED_DIM` dimensions from a nested-prefix model wider than that. |
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | `16384` | Longest input, in characters, that will be *sent*. Unset ⇒ no client-side bound. Over-cap input is refused without a request and split into chunked embeddings instead. Minimum `4095`; below that the split cannot satisfy the cap and boot fails. Set it for a provider that dies on over-long input rather than rejecting it (a local Ollama does) — see docs/10 §Bounding embedding input. |
 | `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | no | `120` | Complete provider-request timeout; range `1..=3600`. Enforced at the generic client boundary and by the shipped HTTP adapter. |
 | `PROXIMA_EMBED_BATCH_SIZE` | no | `32` | Texts per provider call; range `1..=1024`. |
@@ -325,8 +326,9 @@ Runtime search:
 
 | Item | Runtime value |
 |---|---|
-| vector type | `vector(1024)`. Any embedding model must return 1024 dimensions — see `PROXIMA_EMBED_MATRYOSHKA` for nested-prefix models wider than that |
-| ANN index | shared `idx_embeddings_vec_hnsw` |
+| vector type | untyped `vector` plus a `dim` column; a CHECK holds `dim` to 384, 768, 1024, 1536, 2048 or 3072 and to the vector's real width. The model must return `PROXIMA_EMBED_DIM` dimensions — see `PROXIMA_EMBED_MATRYOSHKA` for nested-prefix models wider than that |
+| ANN index | one partial HNSW index per width, `embeddings_hnsw_d{N}`; 2048 and 3072 are indexed as `halfvec` |
+| extension | pgvector `>= 0.8.0`, checked by migration 0015 and again at boot |
 | provider batching | `PROXIMA_EMBED_BATCH_SIZE`; host policy, not a core provider assumption |
 | durable claims | heartbeat during all provider calls; reconcile and observability use `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` |
 | semantic-search GUCs | `SET LOCAL hnsw.ef_search = 100`; `SET LOCAL hnsw.iterative_scan = relaxed_order`; `SET LOCAL hnsw.max_scan_tuples = 20000` |

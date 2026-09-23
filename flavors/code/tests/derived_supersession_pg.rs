@@ -6,12 +6,14 @@ use async_trait::async_trait;
 use common::{TestDb, test_owner};
 use proxima_code::testkit::build_engine;
 use proxima_code::{CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1};
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
+use proxima_core::llm::{BoundEmbeddingClient, EmbeddingClient, EmbeddingDim, LlmError};
 use proxima_core::{
     AuthPath, AuthzContext, DerivationIdentity, DerivedMemory, MemoryId, MemoryTarget, OperatorId,
     SeriesHandle,
 };
 use uuid::Uuid;
+
+const EMBEDDING_DIM: usize = EmbeddingDim::D1024.width();
 
 #[derive(Debug)]
 struct ConstantEmbedding;
@@ -38,7 +40,8 @@ impl EmbeddingClient for ConstantEmbedding {
 async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     let db = TestDb::fresh().await;
     let owner = test_owner();
-    let engine = build_engine(db.pg.clone()).with_embed(Arc::new(ConstantEmbedding));
+    let engine = build_engine(db.pg.clone())
+        .with_embed(BoundEmbeddingClient::bind(Arc::new(ConstantEmbedding)).expect("lane width"));
 
     let repo_id = Uuid::now_v7();
     common::register_fixture_repo(db.pg.pool_for_tests(), &owner, repo_id).await;

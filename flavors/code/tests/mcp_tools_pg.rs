@@ -31,7 +31,7 @@ use uuid::Uuid;
 mod embedding_failure_regressions {
     use super::*;
     use proxima::host::{EmbedCaps, OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
-    use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
+    use proxima_core::llm::{BoundEmbeddingClient, EmbeddingClient, EmbeddingDim, LlmError};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -39,6 +39,7 @@ mod embedding_failure_regressions {
 
     type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
     const DEADLINE: Duration = Duration::from_secs(10);
+    const EMBEDDING_DIM: usize = EmbeddingDim::D1024.width();
 
     struct OverflowEndpoint {
         client: Arc<OpenAiCompatEmbeddingClient>,
@@ -146,7 +147,11 @@ mod embedding_failure_regressions {
         let engine = context.engine.as_ref().ok_or("engine")?.clone();
         let endpoint = overflow_endpoint().await?;
         let adapter = endpoint.client.embed("response control").await;
-        engine.set_embed_client(Some(endpoint.client.clone())).await;
+        engine
+            .set_embed_client(Some(
+                BoundEmbeddingClient::bind(endpoint.client.clone()).expect("lane width"),
+            ))
+            .await;
         let mut calls = [0; 4];
         calls[0] = endpoint.calls.load(Ordering::SeqCst);
 
@@ -171,7 +176,9 @@ mod embedding_failure_regressions {
         calls[3] = endpoint.calls.load(Ordering::SeqCst);
 
         engine
-            .set_embed_client(Some(Arc::new(TopicEmbedding)))
+            .set_embed_client(Some(
+                BoundEmbeddingClient::bind(Arc::new(TopicEmbedding)).expect("lane width"),
+            ))
             .await;
         let healthy = tokio::time::timeout(
             DEADLINE,
@@ -2562,7 +2569,7 @@ const TOPIC_MARKERS: [&str; 2] = ["halt_iteration", "stop going round again"];
 #[async_trait::async_trait]
 impl proxima_core::llm::EmbeddingClient for TopicEmbedding {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, proxima_core::llm::LlmError> {
-        let mut embedding = vec![0.0; proxima_core::llm::EMBEDDING_DIM];
+        let mut embedding = vec![0.0; proxima_core::llm::EmbeddingDim::D1024.width()];
         let on_topic = TOPIC_MARKERS.iter().any(|marker| text.contains(marker));
         embedding[usize::from(!on_topic)] = 1.0;
         Ok(embedding)
@@ -2573,7 +2580,7 @@ impl proxima_core::llm::EmbeddingClient for TopicEmbedding {
     }
 
     fn dim(&self) -> usize {
-        proxima_core::llm::EMBEDDING_DIM
+        proxima_core::llm::EmbeddingDim::D1024.width()
     }
 }
 
@@ -2582,7 +2589,12 @@ impl proxima_core::llm::EmbeddingClient for TopicEmbedding {
 fn embedding_ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
-    let engine = Arc::new(engine_for_test(pg).with_embed(Arc::new(TopicEmbedding)));
+    let engine = Arc::new(
+        engine_for_test(pg).with_embed(
+            proxima_core::llm::BoundEmbeddingClient::bind(Arc::new(TopicEmbedding))
+                .expect("lane width"),
+        ),
+    );
     McpToolCtx {
         owner,
         authz,
@@ -2641,7 +2653,10 @@ async fn ingest_topic_repo(
     // Ingest enqueues embedding_jobs when the engine has a client. Drain
     // claims those jobs; backfill is residue for heads written without a
     // model. Between ingest and this drain the repo is lexical-only.
-    let engine = engine_for_test(fixture.pg.clone()).with_embed(Arc::new(TopicEmbedding));
+    let engine = engine_for_test(fixture.pg.clone()).with_embed(
+        proxima_core::llm::BoundEmbeddingClient::bind(Arc::new(TopicEmbedding))
+            .expect("lane width"),
+    );
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let _ = engine
         .backfill_missing_embeddings(&authz, &owner, 1_000)

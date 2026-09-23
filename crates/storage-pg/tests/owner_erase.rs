@@ -541,8 +541,8 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         let t = written.memory_id.into_inner();
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
-                (entity_id, model_id, embedding_version, vec, owner_id)
-             VALUES ($1, 'test-embed', 1, $2::vector, $3)",
+                (entity_id, model_id, dim, embedding_version, vec, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
         )
         .bind(t)
         .bind(embed_literal())
@@ -551,8 +551,8 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.embedding_heads
-                (entity_id, model_id, embedding_version, owner_id)
-             VALUES ($1, 'test-embed', 1, $2)",
+                (entity_id, model_id, dim, embedding_version, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $2)",
         )
         .bind(t)
         .bind(owner.stored_owner_id())

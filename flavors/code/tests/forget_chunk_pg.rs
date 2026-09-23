@@ -35,7 +35,7 @@ fn cold_detail_offset(bytes: &[u8]) -> usize {
             *offset += 1;
         }
     }
-    assert_eq!(bytes[0], 7, "the test requires the v7 cold format");
+    assert_eq!(bytes[0], 8, "the test requires the v8 cold format");
     let mut offset = 1 + 16 + 16;
     skip_str(bytes, &mut offset);
     offset += 16;
@@ -60,6 +60,9 @@ fn cold_detail_offset(bytes: &[u8]) -> usize {
     for _ in 0..model_count {
         skip_str(bytes, &mut offset);
     }
+    // v8: one u16 width per embedded model.
+    let width_count = u16_at(bytes, &mut offset);
+    offset += width_count * 2;
     skip_opt_str(bytes, &mut offset);
     offset
 }

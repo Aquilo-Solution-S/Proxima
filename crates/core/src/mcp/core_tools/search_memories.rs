@@ -263,10 +263,7 @@ impl McpTool for SearchMemoriesTool {
                 .as_deref()
                 .map(|raw| decode_cursor(raw, &fingerprint))
                 .transpose()?;
-            let (query_embedding, embedding_model_id) = if matches!(
-                effective_mode,
-                SearchMode::Semantic | SearchMode::Hybrid
-            ) {
+            let semantic = if matches!(effective_mode, SearchMode::Semantic | SearchMode::Hybrid) {
                 let engine = ctx.require_engine()?;
                 // The embed client can vanish (or its call can fail) between
                 // the availability probe above and this point. A pure
@@ -274,7 +271,7 @@ impl McpTool for SearchMemoriesTool {
                 // with an actionable precondition. A Hybrid request degrades
                 // to lexical-only ranking and flags `degraded_to_lexical`.
                 match embed_query_for_search(engine, query).await {
-                    Ok((embedding, model_id)) => (Some(embedding), Some(model_id)),
+                    Ok(semantic) => Some(semantic),
                     Err(err) => {
                         if matches!(effective_mode, SearchMode::Hybrid) {
                             tracing::warn!(
@@ -283,14 +280,14 @@ impl McpTool for SearchMemoriesTool {
                             );
                             effective_mode = SearchMode::Lexical;
                             degraded_to_lexical = true;
-                            (None, None)
+                            None
                         } else {
                             return Err(McpToolError::Unavailable(err));
                         }
                     }
                 }
             } else {
-                (None, None)
+                None
             };
             let prepared = PreparedSearch {
                 query: query.to_string(),
@@ -298,8 +295,7 @@ impl McpTool for SearchMemoriesTool {
                 semantic_weight: weight_for_effective_mode(args.semantic_weight, effective_mode),
                 since,
                 until,
-                query_embedding,
-                embedding_model_id,
+                semantic,
                 body_max_chars: effective_body_max_chars(args.body_max_chars),
                 limit: args.limit.min(50),
                 after,
@@ -349,8 +345,7 @@ struct PreparedSearch {
     semantic_weight: Option<f32>,
     since: Option<time::OffsetDateTime>,
     until: Option<time::OffsetDateTime>,
-    query_embedding: Option<Vec<f32>>,
-    embedding_model_id: Option<String>,
+    semantic: Option<crate::verbs::query::SemanticQuery>,
     body_max_chars: usize,
     limit: u32,
     after: Option<SearchCursor>,
@@ -450,8 +445,7 @@ async fn search_one_space(
         min_score: args.min_score,
         semantic_weight: prepared.semantic_weight,
         after: prepared.after,
-        query_embedding: prepared.query_embedding.clone(),
-        embedding_model_id: prepared.embedding_model_id.clone(),
+        semantic: prepared.semantic.clone(),
     };
     let engine = ctx.require_engine()?;
     let response = engine
@@ -762,15 +756,18 @@ fn resolve_effective_search_mode(
 async fn embed_query_for_search(
     engine: &crate::Engine,
     query: &str,
-) -> Result<(Vec<f32>, String), String> {
+) -> Result<crate::verbs::query::SemanticQuery, String> {
     let embed = engine
         .embed_client()
         .ok_or_else(|| SEMANTIC_SEARCH_UNAVAILABLE.to_string())?;
-    let embedding = embed.embed(query).await.map_err(|err| {
+    let vector = embed.embed(query).await.map_err(|err| {
         tracing::warn!(error = %err, "embedding provider failed");
         "semantic search unavailable: embedding provider error".to_string()
     })?;
-    Ok((embedding, embed.model_id().to_string()))
+    Ok(crate::verbs::query::SemanticQuery {
+        space: embed.space().clone(),
+        vector,
+    })
 }
 
 /// Drop neighbor edges that no longer touch a surviving (post-truncation)

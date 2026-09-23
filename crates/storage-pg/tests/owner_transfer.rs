@@ -292,7 +292,7 @@ async fn ingest_mcp_call_fact(
         Vec::new(),
     )
     .with_sidecar_payloads_for_tests(payloads);
-    pg.ingest_fact_with_typed_sidecar(&authorized, None).await
+    pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await
 }
 
 /// A Fact carrying the mcp-call schema, for appending a second version to a
@@ -524,7 +524,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             Vec::new(),
         )
         .with_sidecar_payloads_for_tests(vec![note_payload("pub", "body")]);
-        let written = pg.ingest_fact_with_typed_sidecar(&authorized, None).await?;
+        let written = pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await?;
         let t = written.memory_id.into_inner();
         let witness_before: Option<String> = sqlx::query_scalar(
             "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
@@ -691,8 +691,8 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         // carry an embedding BEFORE it is forgotten, or the hydrate below
         // files no job at all and the owner assertion on it is vacuous.
         sqlx::query(
-            "INSERT INTO proxima_core.embeddings (entity_id, model_id, vec, owner_id)
-             VALUES ($1, 'transfer-hydrate-model',
+            "INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, vec, owner_id)
+             VALUES ($1, 'transfer-hydrate-model', 1024,
                      ('[' || array_to_string(array_fill(0::real, ARRAY[1024]), ',') || ']')::vector,
                      $2)",
         )

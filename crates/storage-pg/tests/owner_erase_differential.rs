@@ -393,7 +393,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
                     &[note("one"), call(TARGET_UPN)],
                 ),
             ),
-            None,
+            &[],
         )
         .await?;
     let handle = first.handle;
@@ -404,7 +404,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
                 draft(Some(("src-a", "k2")), Some(handle), Some(blob)),
                 &[note("two")],
             ),
-            None,
+            &[],
         )
         .await?;
     let third = pg
@@ -414,7 +414,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
                 draft(Some(("src-b", "k3")), None, None),
                 &[note("three"), call(TARGET_UPN)],
             ),
-            None,
+            &[],
         )
         .await?;
     let neighbour_memory = pg
@@ -428,7 +428,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
                     &[note("neighbour"), call(NEIGHBOUR_UPN)],
                 ),
             ),
-            None,
+            &[],
         )
         .await?;
 
@@ -552,8 +552,8 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     for t in [t1, t2, tn] {
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
-                 (entity_id, model_id, embedding_version, vec, owner_id)
-             VALUES ($1, 'test-embed', 1, $2::vector, $3)",
+                 (entity_id, model_id, dim, embedding_version, vec, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
         )
         .bind(t)
         .bind(embed_literal())
@@ -566,8 +566,8 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.embedding_heads
-                 (entity_id, model_id, embedding_version, owner_id)
-             VALUES ($1, 'test-embed', 1, $2)",
+                 (entity_id, model_id, dim, embedding_version, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $2)",
         )
         .bind(t)
         .bind(if t == tn {

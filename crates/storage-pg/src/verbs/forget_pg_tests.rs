@@ -305,7 +305,12 @@ fn encode_v5_without_sidecar_stamp(rec: &ColdRecord) -> Result<Vec<u8>, StorageE
         super::write_str(&mut out, table)?;
         super::write_str(&mut out, json)?;
     }
-    super::write_str_list(&mut out, &rec.embed_models)?;
+    let embed_models: Vec<String> = rec
+        .embed_spaces
+        .iter()
+        .map(|space| space.model_id().to_owned())
+        .collect();
+    super::write_str_list(&mut out, &embed_models)?;
     super::write_opt_str(&mut out, rec.sketch.as_deref())?;
     Ok(out)
 }
@@ -731,8 +736,8 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         assert_eq!(sidecar_tables_for(pool, t).await?, vec![AGENT_NOTE]);
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
-                (entity_id, model_id, embedding_version, vec, owner_id)
-             VALUES ($1, 'test-embed', 1, $3::vector, $2)",
+                (entity_id, model_id, dim, embedding_version, vec, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $3::vector, $2)",
         )
         .bind(t)
         .bind(owner.stored_owner_id())
@@ -1724,8 +1729,8 @@ async fn commit_forget_reputs_when_a_sidecar_row_lands_after_the_snapshot() {
 
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
-                (entity_id, model_id, embedding_version, vec, owner_id)
-             VALUES ($1, 'late-embed', 1, $3::vector, $2)",
+                (entity_id, model_id, dim, embedding_version, vec, owner_id)
+             VALUES ($1, 'late-embed', 1024, 1, $3::vector, $2)",
         )
         .bind(t)
         .bind(owner.stored_owner_id())
@@ -5909,8 +5914,8 @@ async fn cool_then_hydrate(
     let zeroes = format!("[{}]", vec!["0"; 1024].join(","));
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
-            (entity_id, model_id, embedding_version, vec, owner_id)
-         VALUES ($1, 'test-model', 1, $2::vector, $3)",
+            (entity_id, model_id, dim, embedding_version, vec, owner_id)
+         VALUES ($1, 'test-model', 1024, 1, $2::vector, $3)",
     )
     .bind(t)
     .bind(&zeroes)

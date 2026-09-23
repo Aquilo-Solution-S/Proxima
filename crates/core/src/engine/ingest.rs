@@ -1,12 +1,10 @@
-use std::sync::Arc;
-
 use super::Engine;
 use crate::SchemaVersion;
 use crate::access::Relation;
 use crate::authz::{AuthzContext, EngineAuthority};
 use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
-use crate::llm::{EmbeddingClient, LlmError};
+use crate::llm::LlmError;
 use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::storage_ports::EmbeddingJobHandle;
 
@@ -142,17 +140,12 @@ impl Engine {
             .authorize_fact_ingest(authority, Relation::Ingest, draft, &[])
             .await?;
         self.validate_write_permit(authorized.owner_write_permit())?;
-        let embedding_client = self.embed_client();
-        let requested = embedding_client.as_ref().map(|client| client.model_id());
-        // `embed_client().map(model_id)` asks "is there an embedder", which
-        // the schema's own declaration overrides — see `vector_model_for`.
-        let embedding_model_id =
-            self.vector_model_for(authorized.draft().schema_id.as_str(), requested);
+        let embedding_spaces = self.fact_embedding_spaces(authorized.draft().schema_id.as_str());
         let outcome = self
             .storage
             .ingest
             .fact_ingest
-            .ingest_authorized_fact_atomic(&authorized, embedding_model_id)
+            .ingest_authorized_fact_atomic(&authorized, &embedding_spaces)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -618,35 +611,36 @@ impl Engine {
         }
     }
 
-    /// The model a Fact of `schema_id` should be embedded under, given
-    /// what the caller asked for: the caller's answer, unless the schema's
-    /// recipe resolves to no embed unit.
+    /// The embedding spaces a new Fact of `schema_id` is queued for: the
+    /// installed client's space, unless the schema's recipe resolves to no
+    /// embed unit.
     ///
     /// APPLIED HERE, NOT AT THE CALL SITES, because every typed Fact
     /// write in the process funnels through one of the four verbs that
     /// persist one — `fact_ingest` above, plus the three below — and none
     /// of them should have to remember. Count them when adding a fifth:
     /// `fact_ingest` was missed for a release because it does not share
-    /// the `ingest_fact_*` name. A caller that computes
-    /// `embed_client().map(model_id)` — which is what the upload verb
-    /// does, and the obvious thing to write — is asking "is there an
-    /// embedder", a question the schema's own declaration overrides.
+    /// the `ingest_fact_*` name. Callers do not name a space at all: the
+    /// engine owns which client embeds, so no verb can queue a Fact for a
+    /// space the engine would not embed.
     ///
     /// Storage would be the lower boundary, and cannot host this: the
     /// answer lives in the flavor registry, which storage does not hold.
-    pub(in crate::engine) fn vector_model_for<'a>(
+    pub(in crate::engine) fn fact_embedding_spaces(
         &self,
         schema_id: &str,
-        requested: Option<&'a str>,
-    ) -> Option<&'a str> {
-        requested.filter(|_| self.registry().schema_is_embeddable(schema_id))
+    ) -> Vec<crate::EmbeddingSpace> {
+        if !self.registry().schema_is_embeddable(schema_id) {
+            return Vec::new();
+        }
+        self.embed_client()
+            .map(|client| client.space().clone())
+            .into_iter()
+            .collect()
     }
 
-    /// Persist an already-authorized typed-sidecar Fact ingest.
-    ///
-    /// `embedding_model_id` is a request, not an instruction: a schema
-    /// whose recipe resolves to no embed unit is written without a vector
-    /// whatever the caller passes.
+    /// Persist an already-authorized typed-sidecar Fact ingest, queued for
+    /// the engine's embedding space unless the schema declines a vector.
     ///
     /// # Errors
     ///
@@ -655,15 +649,13 @@ impl Engine {
     pub async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
-        embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
-        let embedding_model_id =
-            self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
+        let embedding_spaces = self.fact_embedding_spaces(authorized.draft().schema_id.as_str());
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_typed_sidecar(authorized, embedding_model_id)
+            .ingest_fact_with_typed_sidecar(authorized, &embedding_spaces)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -683,15 +675,13 @@ impl Engine {
     pub async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
-        let embedding_model_id =
-            self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
+        let embedding_spaces = self.fact_embedding_spaces(authorized.draft().schema_id.as_str());
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_citation_and_typed_sidecar(authorized, embedding_model_id)
+            .ingest_fact_with_citation_and_typed_sidecar(authorized, &embedding_spaces)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -713,15 +703,13 @@ impl Engine {
     pub async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitationRef,
-        embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
-        let embedding_model_id =
-            self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
+        let embedding_spaces = self.fact_embedding_spaces(authorized.draft().schema_id.as_str());
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_citation_ref_and_typed_sidecar(authorized, embedding_model_id)
+            .ingest_fact_with_citation_ref_and_typed_sidecar(authorized, &embedding_spaces)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -1036,7 +1024,7 @@ impl Engine {
 
     async fn embed_claimed_memory(
         &self,
-        client: &Arc<dyn EmbeddingClient>,
+        client: &crate::llm::BoundEmbeddingClient,
         owner: &Owner,
         entity_kind: EntityKind,
         memory_id: MemoryId,
@@ -1080,8 +1068,7 @@ impl Engine {
                     kind: entity_kind,
                     memory_id,
                 },
-                client.model_id(),
-                client.dim(),
+                client.space(),
                 &embedding,
                 crate::storage_ports::EmbeddingWriteProof::new(),
             )
@@ -1121,7 +1108,7 @@ impl Engine {
             .embedding_job
             .enqueue_missing_embedding_jobs(
                 permit.owner_write_permit(),
-                client.model_id(),
+                client.space(),
                 limit,
                 self.registry().non_embeddable_schema_ids(),
             )
@@ -1180,7 +1167,7 @@ impl Engine {
                 .storage
                 .ingest
                 .embedding_job
-                .claim_pending_embedding_jobs(client.model_id(), take)
+                .claim_pending_embedding_jobs(client.space(), take)
                 .await?;
             if claims.is_empty() {
                 break;
@@ -1279,7 +1266,7 @@ impl Engine {
     /// call, and the drain ends (`false`).
     async fn recover_transient_embedding_batch(
         &self,
-        client: &Arc<dyn EmbeddingClient>,
+        client: &crate::llm::BoundEmbeddingClient,
         batch: Vec<(EmbeddingJobClaim, String)>,
         outcome: &mut EmbeddingDrainOutcome,
         err: &LlmError,
@@ -1359,7 +1346,7 @@ impl Engine {
     /// instead. Returns whether the vector was stored.
     async fn store_claim_embedding(
         &self,
-        client: &Arc<dyn EmbeddingClient>,
+        client: &crate::llm::BoundEmbeddingClient,
         claim: &EmbeddingJobClaim,
         vector: &[f32],
     ) -> Result<bool, StorageError> {
@@ -1385,8 +1372,7 @@ impl Engine {
                     kind: claim.entity_kind,
                     memory_id: claim.entity_id,
                 },
-                client.model_id(),
-                client.dim(),
+                client.space(),
                 vector,
                 crate::storage_ports::EmbeddingWriteProof::for_claim(claim),
             )
@@ -1410,7 +1396,7 @@ impl Engine {
     /// most one attempt in this pass.
     async fn embed_claims_individually(
         &self,
-        client: &Arc<dyn EmbeddingClient>,
+        client: &crate::llm::BoundEmbeddingClient,
         batch: Vec<(EmbeddingJobClaim, String)>,
         outcome: &mut EmbeddingDrainOutcome,
     ) -> Result<(), StorageError> {
@@ -1480,7 +1466,7 @@ impl Engine {
     /// stored.
     async fn store_claim_embedding_chunks(
         &self,
-        client: &Arc<dyn EmbeddingClient>,
+        client: &crate::llm::BoundEmbeddingClient,
         claim: &EmbeddingJobClaim,
         vectors: &[Vec<f32>],
     ) -> Result<bool, StorageError> {
@@ -1508,8 +1494,7 @@ impl Engine {
                     kind: claim.entity_kind,
                     memory_id: claim.entity_id,
                 },
-                client.model_id(),
-                client.dim(),
+                client.space(),
                 &chunks,
                 crate::storage_ports::EmbeddingWriteProof::for_claim(claim),
             )
@@ -1547,7 +1532,7 @@ impl Engine {
             .embedding_maintenance
             .reconcile_embeddings(
                 crate::EmbeddingReconcileOptions {
-                    model_id: client.model_id(),
+                    space: client.space(),
                     scope,
                     limit: Some(limit.unwrap_or(crate::EMBEDDING_RECONCILE_DEFAULT_LIMIT)),
                     non_embeddable_schemas: self.registry().non_embeddable_schema_ids(),
@@ -1647,11 +1632,7 @@ impl Engine {
         let authorized = self
             .authorize_fact_ingest(&scoped, Relation::Ingest, draft, &sidecars)
             .await?;
-        let embed_client = self.embed_client();
-        let requested = embed_client.as_ref().map(|client| client.model_id());
-        let outcome = self
-            .ingest_fact_with_typed_sidecar(&authorized, requested)
-            .await?;
+        let outcome = self.ingest_fact_with_typed_sidecar(&authorized).await?;
         Ok(McpCallLogOutcome {
             receipt_id,
             fact_memory_id: outcome.memory_id,
@@ -1678,13 +1659,14 @@ impl std::fmt::Debug for SchemaIdDisplay<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::engine::access_sets::tests::MembershipStorage;
     use crate::error::ErrorCode;
     use crate::ids::UserId;
-    use crate::llm::{EMBEDDING_DIM, LlmError};
+    use crate::llm::{BoundEmbeddingClient, EmbeddingClient, EmbeddingDim, LlmError};
     use crate::{
         AuthPath, FactPayload, FlavorRegistry, GroupId, PayloadKeyBuilder, PayloadReference,
         ReferenceBinding, SchemaId,
@@ -1697,7 +1679,7 @@ mod tests {
     #[async_trait::async_trait]
     impl EmbeddingClient for TestEmbedding {
         async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-            Ok(vec![0.0; EMBEDDING_DIM])
+            Ok(vec![0.0; EmbeddingDim::D1024.width()])
         }
 
         fn model_id(&self) -> &'static str {
@@ -1705,7 +1687,7 @@ mod tests {
         }
 
         fn dim(&self) -> usize {
-            EMBEDDING_DIM
+            EmbeddingDim::D1024.width()
         }
     }
 
@@ -2267,7 +2249,8 @@ mod tests {
     #[tokio::test]
     async fn embed_claimed_memory_without_text_returns_nothing_to_embed() {
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
-        let client: Arc<dyn EmbeddingClient> = Arc::new(TestEmbedding);
+        let client = BoundEmbeddingClient::bind(Arc::new(TestEmbedding))
+            .expect("test embedding width is a supported lane");
 
         let step = engine
             .embed_claimed_memory(

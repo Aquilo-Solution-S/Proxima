@@ -8,7 +8,7 @@ mod test_fixtures;
 use proxima_core::engine::{EmbeddingClientReloader, Engine};
 use proxima_core::error::ErrorCode;
 use proxima_core::ids::UserId;
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient};
+use proxima_core::llm::{EmbeddingClient, EmbeddingDim};
 use proxima_core::owner::{Owner, OwnerRef};
 use proxima_core::verbs::change_history::ChangeHistoryRequest;
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
@@ -97,7 +97,7 @@ async fn reload_embedding_client_replaces_engine_slot() {
 
     assert!(outcome.active);
     assert_eq!(outcome.model_id.as_deref(), Some("test-embedding"));
-    assert_eq!(outcome.dim, Some(EMBEDDING_DIM));
+    assert_eq!(outcome.dim, Some(EmbeddingDim::D1024.width()));
     assert_eq!(
         engine.embed_client().expect("client installed").model_id(),
         "test-embedding"

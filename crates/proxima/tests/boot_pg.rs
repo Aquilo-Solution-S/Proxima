@@ -724,7 +724,7 @@ async fn skip_migrations_boots_without_applying_ddl() {
 }
 
 #[tokio::test]
-async fn boot_rejects_embedding_client_with_wrong_dim() {
+async fn boot_rejects_embedding_client_with_unsupported_width() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
@@ -737,35 +737,35 @@ async fn boot_rejects_embedding_client_with_wrong_dim() {
             s3: None,
         };
 
-        // Wrong dim (3072 vs the fixed vector(1024)) must fail fast at boot
-        // with Config, before any job is claimed against the column.
+        // A width no lane indexes must fail fast at boot with Config,
+        // before any job is claimed and then refused at insert.
         let err = ProximaBuilder::new(config(), owner)
-            .embed_client(Arc::new(FixedDimEmbedding::new("wrong-dim", 3072)))
+            .embed_client(Arc::new(FixedDimEmbedding::new("unlaned", 512)))
             .boot()
             .await
-            .expect_err("wrong embedding dim must be rejected at boot");
+            .expect_err("an unsupported embedding width must be rejected at boot");
         match err {
             EmbedError::Config(msg) => {
                 assert!(
-                    msg.contains("3072"),
-                    "message names the offending dim: {msg}"
+                    msg.contains("512"),
+                    "message names the offending width: {msg}"
                 );
                 assert!(
-                    msg.contains("dim"),
-                    "message explains a dim mismatch: {msg}"
+                    msg.contains("not supported"),
+                    "message explains the width is unsupported: {msg}"
                 );
             }
             other => panic!("expected EmbedError::Config, got {other:?}"),
         }
 
-        // Right dim (ConstantEmbedding is always EMBEDDING_DIM-wide) boots.
+        // A supported width other than the 1024 default boots.
         let booted = ProximaBuilder::new(config(), owner)
-            .embed_client(Arc::new(ConstantEmbedding::zero("right-dim")))
+            .embed_client(Arc::new(FixedDimEmbedding::new("lane-768", 768)))
             .boot()
             .await?;
         assert!(
             booted.engine.embed_client().is_some(),
-            "matching-dim client is wired into the engine"
+            "a supported-width client is wired into the engine"
         );
         booted.engine.stop(booted.handle);
         Ok(())
@@ -773,7 +773,7 @@ async fn boot_rejects_embedding_client_with_wrong_dim() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("embedding dim guard test failed");
+    result.expect("embedding width guard test failed");
 }
 
 fn role_ddl_migrator(role_name: &str) -> Migrator {

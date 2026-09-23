@@ -67,8 +67,8 @@ pub use proxima_core::llm;
 /// [`EmbedCaps`] is the second parameter of
 /// [`OpenAiCompatEmbeddingClient::new`], so without it on the facade that
 /// constructor is unspellable for a host depending on `proxima` alone. That
-/// rules out OpenAI-compatible endpoints needing `matryoshka` to return
-/// [`llm::EMBEDDING_DIM`] rather than its native width.
+/// rules out OpenAI-compatible endpoints needing `matryoshka` to return a
+/// supported [`llm::EmbeddingDim`] rather than their native width.
 pub use proxima_core::models::EmbedCaps;
 /// Owner erase surface. Note that [`OwnerEraseTarget`]'s
 /// variants take id newtypes rather than bare UUIDs and strings:
@@ -180,7 +180,7 @@ pub use proxima_core::verbs::query::{
     MAX_SEARCH_PAGE_LIMIT, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
     MemoryLineageRequest, MemoryLineageResponse, MemoryRow, MemorySearchPage, MemorySearchRequest,
     MemorySearchResult, QueryRequest, QueryResponse, SearchCursor, SearchMode, SearchOrder,
-    SupersessionStatus, TagMatch,
+    SemanticQuery, SupersessionStatus, TagMatch,
 };
 pub use proxima_core::verbs::schema::{PayloadKind, SchemaRequest, SchemaResponse};
 pub use proxima_core::{

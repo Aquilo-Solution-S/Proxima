@@ -159,7 +159,7 @@ impl WriteSession for PgWriteSession {
     async fn ingest_fact_with_typed_sidecar(
         &mut self,
         authorized: &AuthorizedFactWrite,
-        embedding_model_id: Option<&str>,
+        embedding_spaces: &[proxima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         let sidecar_payloads = authorized.sidecar_payloads();
         let fact_sidecars = self.sidecars.writing(authorized.draft());
@@ -182,7 +182,7 @@ impl WriteSession for PgWriteSession {
         let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
             &mut self.tx,
             authorized,
-            embedding_model_id,
+            embedding_spaces,
             verbs::fact_ingest::FactAdmissionInput {
                 natural_key: natural_key.as_ref(),
                 sidecar_tables: &tables,

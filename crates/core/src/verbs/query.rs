@@ -159,8 +159,8 @@ impl SearchCursor {
 }
 
 /// Owner-scoped memory search. Semantic modes require the engine/tool
-/// layer to populate the query embedding and active embedding-space
-/// metadata before dispatching to storage.
+/// layer to populate [`MemorySearchRequest::semantic`] before dispatching
+/// to storage.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemorySearchRequest {
     pub owner: OwnerRef,
@@ -199,10 +199,18 @@ pub struct MemorySearchRequest {
     /// `order`.
     #[serde(default)]
     pub after: Option<SearchCursor>,
+    /// The embedded query, for the semantic arm. Set by the engine/tool
+    /// layer; `None` runs lexical only.
     #[serde(skip)]
-    pub query_embedding: Option<Vec<f32>>,
-    #[serde(skip)]
-    pub embedding_model_id: Option<String>,
+    pub semantic: Option<SemanticQuery>,
+}
+
+/// A query vector and the space it was embedded in. The semantic arm reads
+/// only that space's vectors, through its width's index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemanticQuery {
+    pub space: crate::EmbeddingSpace,
+    pub vector: Vec<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

@@ -45,6 +45,14 @@ fn note_projection() -> MemorySearchProjection {
         .clone()
 }
 
+/// A query vector in the fixtures' 1024-wide `test-embed` space.
+fn test_semantic(vector: Vec<f32>) -> proxima_core::verbs::query::SemanticQuery {
+    proxima_core::verbs::query::SemanticQuery {
+        space: proxima_core::EmbeddingSpace::new("test-embed", proxima_core::EmbeddingDim::D1024),
+        vector,
+    }
+}
+
 fn search_req(owner: OwnerRef, query: &str) -> MemorySearchRequest {
     MemorySearchRequest {
         owner,
@@ -63,8 +71,7 @@ fn search_req(owner: OwnerRef, query: &str) -> MemorySearchRequest {
         min_score: None,
         semantic_weight: None,
         after: None,
-        query_embedding: None,
-        embedding_model_id: None,
+        semantic: None,
     }
 }
 
@@ -323,8 +330,8 @@ async fn seed_embedding(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
-            (entity_id, model_id, embedding_version, vec, owner_id)
-         VALUES ($1, 'test-embed', 1, $2::vector, $3)",
+            (entity_id, model_id, dim, embedding_version, vec, owner_id)
+         VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
     )
     .bind(t)
     .bind(vector)
@@ -333,8 +340,8 @@ async fn seed_embedding(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.embedding_heads
-            (entity_id, model_id, embedding_version, owner_id)
-         VALUES ($1, 'test-embed', 1, $2)",
+            (entity_id, model_id, dim, embedding_version, owner_id)
+         VALUES ($1, 'test-embed', 1024, 1, $2)",
     )
     .bind(t)
     .bind(owner.stored_owner_id())
@@ -839,8 +846,8 @@ async fn semantic_search_respects_until() {
         let t = seed_note(pool, owner, "Embedded", "semantic neighbour body").await?;
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
-                (entity_id, model_id, embedding_version, vec, owner_id)
-             VALUES ($1, 'test-embed', 1, $2::vector, $3)",
+                (entity_id, model_id, dim, embedding_version, vec, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
         )
         .bind(t)
         .bind(embed_literal())
@@ -849,8 +856,8 @@ async fn semantic_search_respects_until() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.embedding_heads
-                (entity_id, model_id, embedding_version, owner_id)
-             VALUES ($1, 'test-embed', 1, $2)",
+                (entity_id, model_id, dim, embedding_version, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $2)",
         )
         .bind(t)
         .bind(owner.stored_owner_id())
@@ -861,8 +868,7 @@ async fn semantic_search_respects_until() {
         inside.mode = SearchMode::Semantic;
         let mut query_vec = vec![0.0; 1024];
         query_vec[0] = 1.0;
-        inside.query_embedding = Some(query_vec);
-        inside.embedding_model_id = Some("test-embed".into());
+        inside.semantic = Some(test_semantic(query_vec));
         let hit = pg
             .search_memories(None, &inside, &[note_projection()])
             .await?;
@@ -926,8 +932,8 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
         for t in [tagged_t, plain_t] {
             sqlx::query(
                 "INSERT INTO proxima_core.embeddings
-                    (entity_id, model_id, embedding_version, vec, owner_id)
-                 VALUES ($1, 'test-embed', 1, $2::vector, $3)",
+                    (entity_id, model_id, dim, embedding_version, vec, owner_id)
+                 VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
             )
             .bind(t)
             .bind(embed_literal())
@@ -936,8 +942,8 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
             .await?;
             sqlx::query(
                 "INSERT INTO proxima_core.embedding_heads
-                    (entity_id, model_id, embedding_version, owner_id)
-                 VALUES ($1, 'test-embed', 1, $2)",
+                    (entity_id, model_id, dim, embedding_version, owner_id)
+                 VALUES ($1, 'test-embed', 1024, 1, $2)",
             )
             .bind(t)
             .bind(owner.stored_owner_id())
@@ -963,8 +969,7 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
         semantic.mode = SearchMode::Semantic;
         let mut query_vec = vec![0.0; 1024];
         query_vec[0] = 1.0;
-        semantic.query_embedding = Some(query_vec);
-        semantic.embedding_model_id = Some("test-embed".into());
+        semantic.semantic = Some(test_semantic(query_vec));
         let untagged = pg
             .search_memories(None, &semantic, &[note_projection()])
             .await?;
@@ -1076,8 +1081,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         semantic.kind = None;
         semantic.limit = 1;
         semantic.mode = SearchMode::Semantic;
-        semantic.query_embedding = Some(query_vec.clone());
-        semantic.embedding_model_id = Some("test-embed".into());
+        semantic.semantic = Some(test_semantic(query_vec.clone()));
         let page = pg.search_memories(None, &semantic, &projections).await?;
         assert_eq!(
             ids(&page),

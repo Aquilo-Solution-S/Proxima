@@ -161,7 +161,7 @@ pub(crate) mod tests {
         async fn ingest_authorized_fact_atomic(
             &self,
             _authorized: &AuthorizedFactWrite,
-            _embedding_model_id: Option<&str>,
+            _embedding_spaces: &[crate::EmbeddingSpace],
         ) -> Result<FactIngestOutcome, StorageError> {
             self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
             Err(StorageError::Internal(
@@ -172,7 +172,7 @@ pub(crate) mod tests {
         async fn ingest_fact_with_typed_sidecar(
             &self,
             _authorized: &AuthorizedFactWrite,
-            _embedding_model_id: Option<&str>,
+            _embedding_spaces: &[crate::EmbeddingSpace],
         ) -> Result<FactIngestOutcome, StorageError> {
             self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
             Err(StorageError::Internal(
@@ -183,7 +183,7 @@ pub(crate) mod tests {
         async fn ingest_fact_with_citation_and_typed_sidecar(
             &self,
             _authorized: &AuthorizedFactWithCitation,
-            _embedding_model_id: Option<&str>,
+            _embedding_spaces: &[crate::EmbeddingSpace],
         ) -> Result<FactIngestOutcome, StorageError> {
             self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
             Err(StorageError::Internal(
@@ -194,7 +194,7 @@ pub(crate) mod tests {
         async fn ingest_fact_with_citation_ref_and_typed_sidecar(
             &self,
             _authorized: &crate::verbs::fact_ingest::AuthorizedFactWithCitationRef,
-            _embedding_model_id: Option<&str>,
+            _embedding_spaces: &[crate::EmbeddingSpace],
         ) -> Result<FactIngestOutcome, StorageError> {
             self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
             Err(StorageError::Internal(
@@ -421,7 +421,7 @@ pub(crate) mod tests {
             &self,
             _scope: Option<&crate::OwnerScope>,
             _owner: &Owner,
-            _model_id: &str,
+            _space: &crate::EmbeddingSpace,
             _limit: usize,
             _non_embeddable_schemas: &[String],
         ) -> Result<Vec<MemoryId>, StorageError> {
@@ -435,8 +435,7 @@ pub(crate) mod tests {
             &self,
             _owner: &Owner,
             _entity: crate::EmbeddableEntityRef,
-            _model_id: &str,
-            _dim: usize,
+            _space: &crate::EmbeddingSpace,
             _vec: &[f32],
             _proof: crate::storage_ports::EmbeddingWriteProof,
         ) -> Result<crate::EmbeddingWriteOutcome, StorageError> {
@@ -449,8 +448,7 @@ pub(crate) mod tests {
             &self,
             _owner: &Owner,
             _entity: crate::EmbeddableEntityRef,
-            _model_id: &str,
-            _dim: usize,
+            _space: &crate::EmbeddingSpace,
             _chunks: &[&[f32]],
             _proof: crate::storage_ports::EmbeddingWriteProof,
         ) -> Result<crate::EmbeddingWriteOutcome, StorageError> {
@@ -464,7 +462,7 @@ pub(crate) mod tests {
     impl EmbeddingJobPort for MembershipStorage {
         async fn claim_pending_embedding_jobs(
             &self,
-            _model_id: &str,
+            _space: &crate::EmbeddingSpace,
             _limit: i64,
         ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
             Err(StorageError::Internal(
@@ -532,7 +530,7 @@ pub(crate) mod tests {
         async fn enqueue_missing_embedding_jobs(
             &self,
             _permit: &crate::storage_ports::OwnerWritePermit,
-            _model_id: &str,
+            _space: &crate::EmbeddingSpace,
             _limit: i64,
             _non_embeddable_schemas: &[String],
         ) -> Result<u64, StorageError> {

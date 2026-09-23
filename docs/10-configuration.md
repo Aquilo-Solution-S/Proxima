@@ -251,11 +251,15 @@ builder
 
 Proxima holds no embedding-model registry and no active-model singleton —
 those tables and their config tools were removed. The host wires its own
-provider (e.g. via `crates/llm-openai-compat`) and is responsible for
-keeping vector dimensions consistent: vector rows are shared
-infrastructure, so a binary uses one embedding space and changing it may
-require re-embedding. Re-embedding appends a new version and advances
-`embedding_heads`; prior vector rows are not updated. If no client is
+provider (e.g. via `crates/llm-openai-compat`). The client's model and
+width are its **embedding space**, `(model_id, dim)`; every vector, head and
+job is keyed by it, and search reads only the space its query was embedded
+in. The width must be one the store indexes — 384, 768, 1024, 1536, 2048 or
+3072 (`proxima_core::llm::EmbeddingDim`) — or boot refuses the client.
+Changing either half is a new space: its vectors are written beside the old
+ones, and search sees them once they are there. Re-embedding within one
+space appends a new version and advances `embedding_heads`; prior vector
+rows are not updated. If no client is
 injected, semantic search modes are unavailable; lexical paths still work.
 
 `apps/proxima-mcp` talks to any OpenAI-compatible `/embeddings` endpoint.
@@ -267,7 +271,8 @@ llama.cpp, LM Studio, vLLM) needs no credential:
 | `PROXIMA_EMBED_BASE_URL` | when embeddings enabled | - | OpenAI-compatible embeddings API base. Plaintext `http://` is accepted for loopback only. |
 | `PROXIMA_EMBED_MODEL` | when embeddings enabled | - | Model id sent to `/embeddings`. |
 | `PROXIMA_EMBED_API_KEY` | no | - | Bearer for a hosted endpoint. Omit for a local one. |
-| `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Send a `dimensions` parameter so a nested-prefix model returns 1024 rather than its native width. |
+| `PROXIMA_EMBED_DIM` | no | `1024` | Vector width, one of 384, 768, 1024, 1536, 2048, 3072. Any other value fails boot. |
+| `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Send a `dimensions` parameter so a nested-prefix model returns `PROXIMA_EMBED_DIM` rather than its native width. |
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | - | Longest input, in characters, that will be sent. Unset ⇒ no client-side bound. Minimum `4095`. |
 | `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | no | `120` | Complete provider-request timeout. Range `1..=3600`. Core bounds every installed-client future; the shipped adapter additionally applies it to connect, send, and response read. |
 | `PROXIMA_EMBED_BATCH_SIZE` | no | `32` | Texts per provider call. Range `1..=1024`. Custom clients remain usable because batching is host policy, not a core provider constant. |
@@ -280,8 +285,8 @@ window must cover the longest honest drain interval between successful claim
 renewals. The drainer renews every live batch claim on a separate heartbeat every
 third of this window, including during poison isolation and chunk rescue;
 claim-token fencing still rejects any old worker write after a real reclaim.
-Both the in-process worker and `maintain-embeddings --drain` claim at most one
-configured provider batch and use the same batch rejection/isolation path.
+The in-process worker claims at most one configured provider batch at a
+time.
 
 <a id="bounding-embedding-input"></a>
 ### Bounding embedding input
@@ -315,12 +320,12 @@ Characters, not tokens: no tokenizer is provider-independent. Pick the
 value from your model's context window with room to spare — for a runner
 loaded at 16k tokens, `16384` characters is comfortably conservative.
 
-The model must return **1024-dimensional** vectors — the width of the
-`vector(1024)` column that is the substrate's single embedding space.
-`qwen3-embedding:0.6b` and `mxbai-embed-large` are 1024 natively. A wider
-Matryoshka model needs
-`PROXIMA_EMBED_MATRYOSHKA=true`; a model that is natively narrower cannot
-be used without re-embedding into a different space.
+The model must return vectors exactly `PROXIMA_EMBED_DIM` wide (default
+1024). `qwen3-embedding:0.6b` and `mxbai-embed-large` are 1024 natively,
+`nomic-embed-text` is 768, `text-embedding-3-large` is 3072. A Matryoshka
+model can be asked for a narrower supported width with
+`PROXIMA_EMBED_MATRYOSHKA=true`. Widths above 2000 are indexed at half
+precision (`halfvec`); stored vectors keep full precision.
 
 Fully local example:
 
@@ -345,8 +350,10 @@ command.
 Recurring embedding maintenance stays outside the process — the substrate
 spawns no scheduler beyond the drain worker. One idempotent command runs
 a full self-healing pass (orphan-row sweep, reconcile enqueue for
-missing-head backfill / stale re-embedding, optional inline drain, health
-report with job backlog, orphan counts, and the ANN recall canary):
+missing-head backfill / stale re-embedding, health report with job backlog,
+orphan counts, and the ANN recall canary). It reconciles the space named by
+`--model` (or `PROXIMA_EMBED_MODEL`) at `PROXIMA_EMBED_DIM`; the serving
+process drains what it enqueues:
 
 ```sh
 proxima-mcp maintain-embeddings
@@ -399,10 +406,7 @@ succeeded and the news is bad.
 
 Passes are serialized by a Postgres advisory lock: an invocation that
 finds the lock held prints a skip notice and exits `0`, so overlapping
-cron fires are harmless by construction. `--drain` processes queued jobs
-inline with the configured embedding client and therefore requires the same
-`PROXIMA_EMBED_BASE_URL` + `PROXIMA_EMBED_MODEL` block; the API key remains
-optional.
+cron fires are harmless by construction.
 
 Storage maintenance follows the same doctrine — one idempotent,
 cron-safe command, serialized by its own advisory lock, with no

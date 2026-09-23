@@ -77,16 +77,8 @@ async fn fresh_pg() -> (String, PgStorage) {
 }
 
 fn context(registry: &proxima_core::FlavorRegistryFrozen) -> GoalAtomicContext<'_> {
-    context_with_model(registry, None)
-}
-
-fn context_with_model<'a>(
-    registry: &'a proxima_core::FlavorRegistryFrozen,
-    embedding_model_id: Option<&'a str>,
-) -> GoalAtomicContext<'a> {
     GoalAtomicContext {
         registry,
-        embedding_model_id,
         author_self_perspective_id: None,
     }
 }
@@ -283,7 +275,6 @@ async fn create_wake_replay_does_not_insert_second_wake_config() {
         };
         let context = GoalAtomicContext {
             registry: &registry,
-            embedding_model_id: None,
             author_self_perspective_id: None,
         };
         let first = pg
@@ -317,7 +308,6 @@ async fn create_wake_replay_does_not_insert_second_wake_config() {
                     draft,
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     write_act_t: None,
@@ -377,7 +367,6 @@ async fn achieve_replay_does_not_insert_second_close_fact() {
                     },
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     write_act_t: None,
@@ -396,7 +385,6 @@ async fn achieve_replay_does_not_insert_second_close_fact() {
                     request_id: IdempotencyKey::new("p5-achieve")?,
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     evidence: vec![GoalEvidenceRef::new(evidence.memory_id)],
@@ -430,7 +418,6 @@ async fn achieve_replay_does_not_insert_second_close_fact() {
                     request_id: IdempotencyKey::new("p5-achieve")?,
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
                     evidence: vec![GoalEvidenceRef::new(evidence.memory_id)],
@@ -498,7 +485,7 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                             "create wake",
                         )?),
                     )?,
-                    context: context_with_model(&registry, Some("replacement-embed-model")),
+                    context: context(&registry),
                     write_act_t: None,
                 },
                 &permit,
@@ -1072,7 +1059,6 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
                     draft: first_draft,
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: Some("model-a"),
                         author_self_perspective_id: Some(assignment.memory_id),
                     },
                     write_act_t: None,
@@ -1096,7 +1082,6 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
                     draft: replay_draft,
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: Some("model-b"),
                         author_self_perspective_id: None,
                     },
                     write_act_t: None,
@@ -1123,7 +1108,6 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
                     draft: category_changed_draft,
                     context: GoalAtomicContext {
                         registry: &registry,
-                        embedding_model_id: Some("model-c"),
                         author_self_perspective_id: None,
                     },
                     write_act_t: None,
@@ -1322,7 +1306,6 @@ async fn concurrent_terminal_create_mints_one_close_fact() {
                         draft,
                         context: GoalAtomicContext {
                             registry: &registry,
-                            embedding_model_id: None,
                             author_self_perspective_id: None,
                         },
                         write_act_t: None,
