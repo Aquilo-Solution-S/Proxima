@@ -370,8 +370,10 @@ down. A limit should never be discovered by killing a process.
 Refused input is not lost. The refusal is permanent rather than transient,
 which is what routes it into the bisecting rescue
 (`proxima_core::llm::embed_in_chunks`): the text is halved until the pieces
-fit and stored as one chunked embedding, with no request leaving the
-process until a piece is inside the bound.
+fit, with no request leaving the process until a piece is inside the bound.
+Storage keeps one vector per memory version, so the first piece's vector is
+stored: the memory is findable by its opening, and a passage only a later
+piece holds does not rank semantically.
 
 That coupling sets the **minimum of 4095 characters**
 (`proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS`) — the largest piece the
