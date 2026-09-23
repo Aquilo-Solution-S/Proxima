@@ -21,22 +21,23 @@ pub fn core_template_name() -> String {
     format!("proxima_tmpl_core_{hash:016x}")
 }
 
-/// `0014_v015_owner_rls.sql`.
-const OWNER_RLS_MIGRATION_VERSION: i64 = 14;
+/// `0014_v015_owner_rls.sql` and `0017_v016_metadata_write_scope.sql`, which
+/// narrows policies 0014 created. The enforced fixtures stage exactly these.
+pub const OWNER_RLS_MIGRATION_VERSIONS: [i64; 2] = [14, 17];
 
 /// Core migration lane used by historical domain fixtures.
 ///
-/// Every core migration except the owner-RLS activation (0014), which is
-/// tested by the enforced boot fixtures. Keeping it out of this lane preserves
-/// the pre-activation schema for invariant tests; later migrations still
-/// apply. No production path calls this helper.
+/// Every core migration except the owner-RLS policy files (0014, 0017), which
+/// are tested by the enforced boot fixtures. Keeping them out of this lane
+/// preserves the pre-activation schema for invariant tests; later migrations
+/// still apply. No production path calls this helper.
 #[must_use]
 pub fn core_migrator_before_owner_rls() -> Migrator {
     let mut migrator = core_migrator();
     migrator.migrations = Cow::Owned(
         migrator
             .iter()
-            .filter(|migration| migration.version != OWNER_RLS_MIGRATION_VERSION)
+            .filter(|migration| !OWNER_RLS_MIGRATION_VERSIONS.contains(&migration.version))
             .cloned()
             .collect(),
     );
