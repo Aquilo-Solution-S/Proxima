@@ -484,16 +484,10 @@ database recovery plan or a forward fix; reverting only the application image
 is insufficient. External flavors must ship scope-aware storage code and owner
 policies for every sidecar before joining the cutover.
 
-The role administrator must grant the configured platform role permission to
-declare the function-local scope setting:
-
-```sql
-GRANT SET ON PARAMETER app.proxima_scope TO platform_role;
-```
-
-This grant is for the platform role only. PostgreSQL requires it for
-`ALTER FUNCTION ... SET app.proxima_scope`; ordinary transaction-local runtime
-scope binding does not require this grant.
+No superuser step or parameter grant is required: `app.proxima_scope` is
+bound transaction-locally, both by the runtime and inside the platform-owned
+integrity triggers. A `SET ON PARAMETER app.proxima_scope` grant left from an
+earlier v0.0.15 install is unused and may be revoked.
 
 `DATABASE_URL` is the serving role. `PROXIMA_PLATFORM_DATABASE_URL` is the
 validated migration/maintenance role. Credentials stay in host configuration;

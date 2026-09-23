@@ -23,7 +23,6 @@ BEGIN
     EXECUTE format('GRANT CREATE ON DATABASE %I TO proxima_platform', current_database());
 END
 $roles$;
-GRANT SET ON PARAMETER app.proxima_scope TO proxima_platform;
 GRANT USAGE, CREATE ON SCHEMA public TO proxima_platform;
 GRANT USAGE ON SCHEMA public TO proxima_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE proxima_platform

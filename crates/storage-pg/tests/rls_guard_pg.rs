@@ -28,6 +28,9 @@ mod memory_paging;
 #[path = "rls_guard_pg/paging_work.rs"]
 mod paging_work;
 
+#[path = "rls_guard_pg/trigger_scope.rs"]
+mod trigger_scope;
+
 #[async_trait]
 impl Authenticator for SyntheticVerifier {
     async fn authenticate(
@@ -52,26 +55,6 @@ async fn execute(pool: &PgPool, statement: &str) {
         .execute(pool)
         .await
         .unwrap();
-}
-
-async fn parameter_acl(statement: String) {
-    // Advisory locks are database-local; all fixtures must lock the common
-    // control database before modifying the cluster-wide parameter ACL row.
-    let pool = PgPool::connect(&proxima_pg_testkit::admin_url())
-        .await
-        .unwrap();
-    let mut tx = pool.begin().await.unwrap();
-    sqlx::query("SELECT pg_advisory_xact_lock(90300014)")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    // SQL-POLICY: fixed-fragment
-    sqlx::query(sqlx::AssertSqlSafe(statement))
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    pool.close().await;
 }
 
 fn assert_rls_refusal(error: &sqlx::Error) {
@@ -353,11 +336,16 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
     )
     .await;
     let platform_connection = runtime_pool(&database, &platform, &password).await;
-    parameter_acl(format!(
-        "GRANT SET ON PARAMETER app.proxima_scope TO {}",
-        quoted_identifier(&platform)
-    ))
-    .await;
+    let scope_grant: bool =
+        sqlx::query_scalar("SELECT has_parameter_privilege($1, 'app.proxima_scope', 'SET')")
+            .bind(&platform)
+            .fetch_one(&admin)
+            .await
+            .unwrap();
+    assert!(
+        !scope_grant,
+        "owner RLS must apply without a parameter grant"
+    );
     apply_owner_rls_fixtures(&platform_connection).await;
     platform_connection.close().await;
     let platform_connection = runtime_pool(&database, &platform, &password).await;
@@ -379,11 +367,6 @@ async fn cleanup(database: &str, admin: PgPool, owner: &str, runtime: &str) {
     let control = PgPool::connect(&proxima_pg_testkit::admin_url())
         .await
         .unwrap();
-    parameter_acl(format!(
-        "REVOKE SET ON PARAMETER app.proxima_scope FROM {}",
-        quoted_identifier(owner)
-    ))
-    .await;
     execute(
         &control,
         // SQL-POLICY: fixed-fragment

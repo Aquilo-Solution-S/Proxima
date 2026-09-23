@@ -859,7 +859,10 @@ def run_fixture(path: Path) -> int:
 # tests, including parameter-ACL cleanup. Net three new sites; all role/database
 # identifiers are fixture-generated
 # and quoted, with adjacent fixed-fragment proofs. No production site added.
-EXPECTED_DYNAMIC_SQL_SITES = 142
+# 142 -> 140: owner RLS no longer needs a parameter grant, so the fixture
+# GRANT/REVOKE SET ON PARAMETER sites are gone; the trigger-scope falsifier
+# adds two sites that execute one of three literal DELETEs.
+EXPECTED_DYNAMIC_SQL_SITES = 140
 
 
 def run_self_test() -> int:

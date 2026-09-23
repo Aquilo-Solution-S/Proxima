@@ -13,10 +13,6 @@ BEGIN
     IF role_is_superuser OR role_bypasses_rls THEN
         RAISE EXCEPTION 'owner RLS migration role must be NOSUPERUSER NOBYPASSRLS';
     END IF;
-    IF NOT has_parameter_privilege(current_user, 'app.proxima_scope', 'SET') THEN
-        RAISE EXCEPTION 'owner RLS migration role lacks SET on app.proxima_scope'
-            USING HINT = 'GRANT SET ON PARAMETER app.proxima_scope TO the migration role';
-    END IF;
     IF EXISTS (
         SELECT 1
           FROM pg_class AS c
@@ -254,8 +250,595 @@ ALTER FUNCTION proxima_core.record_erased_pin_target(uuid, proxima_core.pin_targ
 
 -- Integrity triggers must see cross-owner targets and historical witnesses.
 -- These are the existing fixed trigger routines, never caller-facing SQL
--- helpers.  Function-local proconfig restores the request scope on return;
--- no platform setting escapes the statement/transaction that invoked it.
+-- helpers.  Bodies are 0005's (0001's for pins_have_grounding_support) plus
+-- the record_erased_pin_target scope bridge: save the caller's scope, bind
+-- platform transaction-locally, restore before every normal RETURN.  An error
+-- unwinds the binding with the aborting (sub)transaction.  No function-level
+-- SET app.proxima_scope: PostgreSQL requires a superuser-issued
+-- GRANT SET ON PARAMETER for that, which a nonsuperuser owner cannot declare.
+CREATE OR REPLACE FUNCTION proxima_core.assert_erased_pin_target_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, proxima_core
+AS $$
+DECLARE
+    previous_scope text := current_setting('app.proxima_scope', true);
+BEGIN
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    IF pg_trigger_depth() < 2
+       OR current_setting('proxima_core.erased_pin_target_writer', true)
+              IS DISTINCT FROM NEW.t::text
+    THEN
+        RAISE EXCEPTION
+            'erased_pin_target is written only by a target deletion trigger'
+            USING ERRCODE = '42501';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM proxima_core.memory m
+         WHERE m.t = NEW.t AND m.kind::text = NEW.kind::text
+        UNION ALL
+        SELECT 1 FROM proxima_core.cooled c
+         WHERE c.t = NEW.t AND c.kind::text = NEW.kind::text
+        UNION ALL
+        SELECT 1 FROM proxima_core.goal g
+         WHERE g.t = NEW.t AND NEW.kind = 'goal'
+    ) THEN
+        RAISE EXCEPTION
+            'erased_pin_target % must match the live row being deleted', NEW.t
+            USING ERRCODE = '23503';
+    END IF;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION proxima_core.memory_erase_witness()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, proxima_core
+AS $$
+DECLARE
+    previous_scope text := current_setting('app.proxima_scope', true);
+BEGIN
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM proxima_core.lock_pin_targets(ARRAY[OLD.t]);
+    -- Memory -> cooled is forget, not hard erase. Hydration's cooled row is
+    -- likewise present when it deletes the cooled half, so neither transition
+    -- manufactures a historical witness.
+    IF NOT EXISTS (SELECT 1 FROM proxima_core.cooled WHERE t = OLD.t) THEN
+        PERFORM proxima_core.record_erased_pin_target(
+            OLD.t, OLD.kind::text::proxima_core.pin_target_kind
+        );
+    END IF;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    RETURN OLD;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION proxima_core.cooled_erase_witness()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, proxima_core
+AS $$
+DECLARE
+    previous_scope text := current_setting('app.proxima_scope', true);
+BEGIN
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM proxima_core.lock_pin_targets(ARRAY[OLD.t]);
+    -- Cooled -> Memory is hydration, not hard erase.
+    IF NOT EXISTS (SELECT 1 FROM proxima_core.memory WHERE t = OLD.t) THEN
+        PERFORM proxima_core.record_erased_pin_target(
+            OLD.t, OLD.kind::text::proxima_core.pin_target_kind
+        );
+    END IF;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    RETURN OLD;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION proxima_core.goal_erase_witness()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, proxima_core
+AS $$
+DECLARE
+    previous_scope text := current_setting('app.proxima_scope', true);
+BEGIN
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM proxima_core.lock_pin_targets(ARRAY[OLD.t]);
+    PERFORM proxima_core.record_erased_pin_target(OLD.t, 'goal');
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    RETURN OLD;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION proxima_core.cooled_identity_seal()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, proxima_core
+AS $$
+DECLARE
+    previous_scope text := current_setting('app.proxima_scope', true);
+BEGIN
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM proxima_core.lock_pin_targets(ARRAY[NEW.t]);
+    IF EXISTS (SELECT 1 FROM proxima_core.erased_pin_target WHERE t = NEW.t)
+       OR EXISTS (SELECT 1 FROM proxima_core.goal WHERE t = NEW.t)
+    THEN
+        RAISE EXCEPTION 'cooled target % collides with a goal or erased target', NEW.t
+            USING ERRCODE = '23505';
+    END IF;
+
+    -- Let the column CHECK name malformed arrays. Legacy cooled rows may have
+    -- NULL declaration arrays; new rows carry all three arrays.
+    IF (NEW.origins IS NOT NULL AND array_position(NEW.origins, NULL) IS NOT NULL)
+       OR (NEW.refs IS NOT NULL AND array_position(NEW.refs, NULL) IS NOT NULL)
+       OR (NEW.goal_refs IS NOT NULL AND array_position(NEW.goal_refs, NULL) IS NOT NULL)
+    THEN
+        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+        RETURN NEW;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+          FROM proxima_core.memory m
+         WHERE m.t = NEW.t
+           AND m.handle = NEW.handle
+           AND m.owner_id = NEW.owner_id
+           AND m.kind = NEW.kind
+           AND m.blob_id IS NOT DISTINCT FROM NEW.blob_id
+           AND m.content_id IS NOT DISTINCT FROM NEW.content_id
+           AND m.source_id IS NOT DISTINCT FROM NEW.source_id
+           AND m.ingest_key IS NOT DISTINCT FROM NEW.ingest_key
+           AND m.origins IS NOT DISTINCT FROM NEW.origins
+           AND m.refs IS NOT DISTINCT FROM NEW.refs
+           AND m.goal_refs IS NOT DISTINCT FROM NEW.goal_refs
+    ) THEN
+        RAISE EXCEPTION 'cooled row % does not seal its hot Memory', NEW.t
+            USING ERRCODE = '23514';
+    END IF;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    RETURN NEW;
+END;
+$$;
+
+-- The SQL backstop follows the same set-first order as the Rust forget path:
+-- source and every hot non-Fact depender take the lifecycle advisory before
+-- any depender row lock used by the grounding check.
+CREATE OR REPLACE FUNCTION proxima_core.cooled_forget_grounding()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, proxima_core
+AS $$
+DECLARE
+    previous_scope text := current_setting('app.proxima_scope', true);
+    dependent_ids uuid[];
+BEGIN
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    IF NEW.kind = 'fact' THEN
+        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+        RETURN NEW;
+    END IF;
+    SELECT COALESCE(array_agg(m.t ORDER BY m.t), '{}'::uuid[])
+      INTO dependent_ids
+      FROM proxima_core.memory m
+     WHERE m.kind <> 'fact'
+       AND m.t <> NEW.t
+       AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t]);
+    PERFORM proxima_core.lock_pin_targets(ARRAY[NEW.t] || dependent_ids);
+    IF EXISTS (
+        SELECT 1
+          FROM proxima_core.memory m
+         WHERE m.kind <> 'fact'
+           AND m.t <> NEW.t
+           AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t])
+           AND NOT (m.t = ANY (dependent_ids))
+    ) THEN
+        RAISE EXCEPTION
+            'forget depender footprint grew after lifecycle lock acquisition'
+            USING ERRCODE = '40001';
+    END IF;
+    -- Lock dependers only after the complete lifecycle set is held.
+    PERFORM 1
+      FROM proxima_core.memory m
+     WHERE m.kind <> 'fact'
+       AND m.t <> NEW.t
+       AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t])
+     ORDER BY m.t
+     FOR UPDATE;
+    IF EXISTS (
+        SELECT 1
+          FROM proxima_core.memory m
+         WHERE m.kind <> 'fact'
+           AND m.t <> NEW.t
+           AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t])
+           AND NOT proxima_core.pins_have_grounding_support(
+                 m.origins || m.refs, NEW.t, NEW.kind
+               )
+    ) THEN
+        RAISE EXCEPTION 'forget would leave an ungrounded memory'
+            USING ERRCODE = '23514';
+    END IF;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    RETURN NEW;
+END;
+$$;
+
+-- Goal and wake declarations are also target admissions. Rust validates their
+-- live endpoint kinds; this database guard closes the witness hole when a
+-- caller reaches the tables without the engine.
+CREATE OR REPLACE FUNCTION proxima_core.goal_pin_target_checks()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, proxima_core
+AS $$
+DECLARE
+    previous_scope text := current_setting('app.proxima_scope', true);
+    pin uuid;
+BEGIN
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM proxima_core.lock_pin_targets(
+        array_remove(
+            ARRAY[NEW.t, NEW.close_fact_t, NEW.assignment_t, NEW.write_act_t],
+            NULL
+        ) || NEW.dependency_t || NEW.evidence_t
+    );
+    SELECT e.t INTO pin
+      FROM proxima_core.erased_pin_target e
+     WHERE e.t = ANY (
+         array_remove(
+             ARRAY[NEW.close_fact_t, NEW.assignment_t, NEW.write_act_t], NULL
+         ) || NEW.dependency_t || NEW.evidence_t
+     )
+     LIMIT 1;
+    IF FOUND THEN
+        RAISE EXCEPTION 'goal declaration names erased target %', pin
+            USING ERRCODE = '23503';
+    END IF;
+    IF EXISTS (SELECT 1 FROM proxima_core.erased_pin_target WHERE t = NEW.t)
+       OR EXISTS (SELECT 1 FROM proxima_core.memory WHERE t = NEW.t)
+       OR EXISTS (SELECT 1 FROM proxima_core.cooled WHERE t = NEW.t)
+    THEN
+        RAISE EXCEPTION 'goal t % collides with an existing entity', NEW.t
+            USING ERRCODE = '23505';
+    END IF;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION proxima_core.wake_pin_target_checks()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, proxima_core
+AS $$
+DECLARE
+    previous_scope text := current_setting('app.proxima_scope', true);
+    pin uuid;
+BEGIN
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM proxima_core.lock_pin_targets(
+        array_remove(ARRAY[NEW.trigger_t], NULL) || NEW.hard_memory_t
+    );
+    SELECT e.t INTO pin
+      FROM proxima_core.erased_pin_target e
+     WHERE e.t = ANY (
+         array_remove(ARRAY[NEW.trigger_t], NULL) || NEW.hard_memory_t
+     )
+     LIMIT 1;
+    IF FOUND THEN
+        RAISE EXCEPTION 'wake configuration names erased target %', pin
+            USING ERRCODE = '23503';
+    END IF;
+    IF NEW.trigger_t IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM proxima_core.memory WHERE t = NEW.trigger_t)
+    THEN
+        RAISE EXCEPTION 'wake trigger memory does not exist'
+            USING ERRCODE = '23503';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+          FROM unnest(NEW.hard_memory_t) AS h(t)
+         WHERE NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)
+    ) THEN
+        RAISE EXCEPTION 'wake hard context memory does not exist'
+            USING ERRCODE = '23503';
+    END IF;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    RETURN NEW;
+END;
+$$;
+
+-- Origins and references have different target vocabularies. Keep the
+-- existence checks set-based and lock hot targets before checking them: a
+-- concurrent erase must either wait for this admission or win before it, not
+-- disappear a target between the check and insertion of the source row.
+CREATE OR REPLACE FUNCTION proxima_core.memory_pin_checks()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, proxima_core
+AS $$
+DECLARE
+    previous_scope text := current_setting('app.proxima_scope', true);
+    pin uuid;
+    pin_handle uuid;
+    historical_restore boolean;
+BEGIN
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM proxima_core.lock_pin_targets(
+        ARRAY[NEW.t] || NEW.origins || NEW.refs || NEW.goal_refs
+    );
+
+    IF NEW.origins <> '{}' OR NEW.refs <> '{}' THEN
+        PERFORM 1
+          FROM proxima_core.memory
+         WHERE t = ANY (NEW.origins || NEW.refs)
+         ORDER BY t
+         FOR SHARE;
+    END IF;
+    IF NEW.goal_refs <> '{}' THEN
+        PERFORM 1
+          FROM proxima_core.goal
+         WHERE t = ANY (NEW.goal_refs)
+         ORDER BY t
+         FOR SHARE;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM proxima_core.goal WHERE t = NEW.t)
+       OR EXISTS (SELECT 1 FROM proxima_core.erased_pin_target WHERE t = NEW.t)
+    THEN
+        RAISE EXCEPTION 'memory t % is already a Goal or erased target', NEW.t
+            USING ERRCODE = '23505';
+    END IF;
+
+    SELECT EXISTS (
+        SELECT 1
+          FROM proxima_core.cooled c
+         WHERE c.t = NEW.t
+           AND c.handle = NEW.handle
+           AND c.owner_id = NEW.owner_id
+           AND c.kind = NEW.kind
+           AND c.source_id IS NOT DISTINCT FROM NEW.source_id
+           AND c.ingest_key IS NOT DISTINCT FROM NEW.ingest_key
+           AND c.blob_id IS NOT DISTINCT FROM NEW.blob_id
+           AND c.content_id IS NOT DISTINCT FROM NEW.content_id
+           AND c.origins IS NOT NULL
+           AND c.refs IS NOT NULL
+           AND c.goal_refs IS NOT NULL
+           AND c.origins = NEW.origins
+           AND c.refs = NEW.refs
+           AND c.goal_refs = NEW.goal_refs
+    ) INTO historical_restore;
+
+    -- A sealed cooled row may only be reinserted with the exact identity it
+    -- carried. This prevents a direct INSERT from laundering a new row
+    -- through a cooled identity.
+    IF EXISTS (
+        SELECT 1
+          FROM proxima_core.cooled c
+         WHERE c.t = NEW.t
+           AND NOT (
+               c.handle = NEW.handle
+               AND c.owner_id = NEW.owner_id
+               AND c.kind = NEW.kind
+               AND c.source_id IS NOT DISTINCT FROM NEW.source_id
+               AND c.ingest_key IS NOT DISTINCT FROM NEW.ingest_key
+               AND c.blob_id IS NOT DISTINCT FROM NEW.blob_id
+               AND c.content_id IS NOT DISTINCT FROM NEW.content_id
+           )
+    ) THEN
+        RAISE EXCEPTION 'memory insert % does not match its cooled identity seal', NEW.t
+            USING ERRCODE = '23514';
+    END IF;
+
+    -- Nullable arrays are legacy rows. A row with no declaration arrays is
+    -- history from before migration 0003; any partial declaration is malformed and must not
+    -- fall onto the live-target path, where it could launder a changed pin.
+    IF EXISTS (
+        SELECT 1
+          FROM proxima_core.cooled c
+         WHERE c.t = NEW.t
+           AND (
+               c.origins IS NOT NULL
+               OR c.refs IS NOT NULL
+               OR c.goal_refs IS NOT NULL
+           )
+           AND NOT (
+               c.origins IS NOT DISTINCT FROM NEW.origins
+               AND c.refs IS NOT DISTINCT FROM NEW.refs
+               AND c.goal_refs IS NOT DISTINCT FROM NEW.goal_refs
+           )
+    ) THEN
+        RAISE EXCEPTION 'memory insert % does not match its cooled restoration seal', NEW.t
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF NEW.kind = 'fact'
+       AND NEW.origins = '{}'
+       AND NEW.refs = '{}'
+       AND NEW.goal_refs = '{}'
+    THEN
+        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+        RETURN NEW;
+    END IF;
+
+    -- Goal references never provide F/A/P grounding. A historical restore is
+    -- the sole exception: its exact cooled seal already proves the original
+    -- admitted declaration and its erased witness preserves target kind.
+    IF NEW.kind <> 'fact' AND NOT historical_restore
+       AND NOT proxima_core.pins_have_grounding_support(
+             NEW.origins || NEW.refs, NULL, NULL
+           )
+    THEN
+        RAISE EXCEPTION 'non-fact must pin a hot memory or a cooled fact'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF NEW.origins = '{}' AND NEW.refs = '{}' AND NEW.goal_refs = '{}' THEN
+        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+        RETURN NEW;
+    END IF;
+
+    -- Origins are always Memory targets. A historical restore may use only a
+    -- matching non-Goal witness; a Goal witness must never satisfy layering.
+    SELECT p.id INTO pin
+      FROM unnest(NEW.origins) AS p(id)
+      LEFT JOIN proxima_core.memory m ON m.t = p.id
+      LEFT JOIN proxima_core.cooled c ON c.t = p.id
+     LEFT JOIN proxima_core.erased_pin_target e ON e.t = p.id
+     WHERE m.t IS NULL AND c.t IS NULL
+       AND (
+           e.t IS NULL
+           OR NOT (
+               historical_restore
+               AND e.kind IN ('fact', 'abstraction', 'perspective')
+           )
+       )
+     LIMIT 1;
+    IF FOUND THEN
+        RAISE EXCEPTION 'origin pin % does not exist as a Memory', pin
+            USING ERRCODE = '23503';
+    END IF;
+
+    -- `refs` carries only Memory targets after the 0004 split.
+    SELECT p.id INTO pin
+      FROM unnest(NEW.refs) AS p(id)
+      LEFT JOIN proxima_core.memory m ON m.t = p.id
+      LEFT JOIN proxima_core.cooled c ON c.t = p.id
+     LEFT JOIN proxima_core.erased_pin_target e ON e.t = p.id
+     WHERE m.t IS NULL AND c.t IS NULL
+       AND (
+           e.t IS NULL
+           OR NOT (
+               historical_restore
+               AND e.kind IN ('fact', 'abstraction', 'perspective')
+           )
+       )
+     LIMIT 1;
+    IF FOUND THEN
+        RAISE EXCEPTION 'reference pin % does not exist as a Memory', pin
+            USING ERRCODE = '23503';
+    END IF;
+
+    -- `goal_refs` carries only Goal targets, including a retained Goal
+    -- witness for an exact historical restore.
+    SELECT p.id INTO pin
+      FROM unnest(NEW.goal_refs) AS p(id)
+      LEFT JOIN proxima_core.goal g ON g.t = p.id
+      LEFT JOIN proxima_core.erased_pin_target e
+        ON e.t = p.id AND e.kind = 'goal'
+     WHERE g.t IS NULL
+       AND (e.t IS NULL OR NOT historical_restore)
+     LIMIT 1;
+    IF FOUND THEN
+        RAISE EXCEPTION 'goal reference pin % does not exist as a Goal', pin
+            USING ERRCODE = '23503';
+    END IF;
+
+    IF NOT historical_restore THEN
+        SELECT m.handle INTO pin_handle
+          FROM proxima_core.memory m
+          JOIN proxima_core.closed_handle c ON c.handle = m.handle
+         WHERE m.t = ANY (NEW.origins || NEW.refs)
+         LIMIT 1;
+        IF FOUND THEN
+            RAISE EXCEPTION 'closed_handle: no new pin to %', pin_handle
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
+
+    IF NEW.kind = 'abstraction' AND NEW.origins <> '{}' THEN
+        IF EXISTS (
+            SELECT 1
+              FROM unnest(NEW.origins) AS o(id)
+             WHERE NOT EXISTS (
+                       SELECT 1 FROM proxima_core.memory m
+                        WHERE m.t = o.id AND m.kind IN ('fact', 'abstraction')
+                   )
+               AND NOT EXISTS (
+                       SELECT 1 FROM proxima_core.cooled c
+                        WHERE c.t = o.id AND c.kind IN ('fact', 'abstraction')
+                   )
+               AND NOT (historical_restore AND EXISTS (
+                       SELECT 1 FROM proxima_core.erased_pin_target e
+                        WHERE e.t = o.id AND e.kind IN ('fact', 'abstraction')
+                   ))
+        ) THEN
+            RAISE EXCEPTION 'abstraction origins must be fact or abstraction t'
+                USING ERRCODE = '23514';
+        END IF;
+    ELSIF NEW.kind = 'perspective' AND NEW.origins <> '{}' THEN
+        IF EXISTS (
+            SELECT 1
+              FROM unnest(NEW.origins) AS o(id)
+             WHERE NOT EXISTS (
+                       SELECT 1 FROM proxima_core.memory m
+                        WHERE m.t = o.id AND m.kind = 'abstraction'
+                   )
+               AND NOT EXISTS (
+                       SELECT 1 FROM proxima_core.cooled c
+                        WHERE c.t = o.id AND c.kind = 'abstraction'
+                   )
+               AND NOT (historical_restore AND EXISTS (
+                       SELECT 1 FROM proxima_core.erased_pin_target e
+                        WHERE e.t = o.id AND e.kind = 'abstraction'
+                   ))
+        ) THEN
+            RAISE EXCEPTION 'perspective origins must be abstraction t'
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    RETURN NEW;
+END;
+$$;
+
+-- Was LANGUAGE sql; the scope bridge needs PL/pgSQL.  Same VOLATILE query.
+CREATE OR REPLACE FUNCTION proxima_core.pins_have_grounding_support(
+    pins uuid[],
+    cooling uuid,
+    cooling_kind proxima_core.memory_kind
+)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog, proxima_core
+AS $$
+DECLARE
+    previous_scope text := current_setting('app.proxima_scope', true);
+    supported boolean;
+BEGIN
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    SELECT EXISTS (
+        SELECT 1
+          FROM unnest(pins) AS p(id)
+         WHERE CASE
+                 WHEN cooling IS NOT NULL AND p.id = cooling THEN
+                   cooling_kind = 'fact'
+                 ELSE
+                   EXISTS (SELECT 1 FROM proxima_core.memory h WHERE h.t = p.id)
+                   OR EXISTS (
+                        SELECT 1 FROM proxima_core.cooled c
+                         WHERE c.t = p.id AND c.kind = 'fact'
+                   )
+               END
+    ) INTO supported;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    RETURN supported;
+END;
+$$;
+
 DO $rls_trigger_bridge$
 DECLARE
     routine text;
@@ -275,9 +858,6 @@ BEGIN
     FOREACH routine IN ARRAY routines
     LOOP
         EXECUTE format('ALTER FUNCTION %s OWNER TO CURRENT_USER', routine);
-        EXECUTE format('ALTER FUNCTION %s SECURITY DEFINER', routine);
-        EXECUTE format('ALTER FUNCTION %s SET search_path = pg_catalog, proxima_core', routine);
-        EXECUTE format('ALTER FUNCTION %s SET app.proxima_scope = ''platform''', routine);
         EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', routine);
     END LOOP;
 END

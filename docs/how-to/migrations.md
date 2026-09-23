@@ -36,6 +36,12 @@ Migration authority is the nonsuperuser platform owner, with an administrator
 preparing extensions, ownership and grants first. See
 [15 §Owner-RLS rollout](../15-deployment.md#owner-rls-rollout).
 
+0014 was corrected in place after the v0.0.15 tag: the tagged file refused to
+run without a superuser-issued `GRANT SET ON PARAMETER app.proxima_scope`, so a
+database without that grant never recorded it. A database that did record the
+tagged 0014 fails the ledger checksum check at boot; restore it to before the
+cutover and re-run the migration.
+
 ## v0.0.14
 
 No core or flavor migration ships in this release. Existing v0.0.13 databases
