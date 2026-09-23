@@ -13,8 +13,9 @@ use proxima_pg_testkit::{
     DbGuard, FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template,
     fnv1a64_extend,
 };
+use proxima_storage_pg::test_fixtures::core_migrator_before_owner_rls;
 use proxima_storage_pg::{
-    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, core_migrator, register_core_pg_sidecars,
+    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
 };
 use sqlx::migrate::Migrator;
 use std::borrow::Cow;
@@ -48,18 +49,6 @@ pub async fn migrated_db() -> (String, PgStorage) {
     .with_sidecars(code_pg_sidecars())
     .with_flavors(&proxima_code::schema_registry());
     (db_name, pg)
-}
-
-fn core_migrator_before_owner_rls() -> Migrator {
-    let mut migrator = core_migrator();
-    migrator.migrations = Cow::Owned(
-        migrator
-            .iter()
-            .filter(|migration| migration.version != 14)
-            .cloned()
-            .collect(),
-    );
-    migrator
 }
 
 fn pre_owner_rls_code_migrator() -> Migrator {

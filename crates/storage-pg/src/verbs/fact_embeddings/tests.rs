@@ -21,15 +21,15 @@ mod pg_tests {
     use uuid::Uuid;
 
     use proxima_core::EmbeddableEntityRef;
-    use proxima_core::EmbeddingSpace;
     use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
-    use proxima_core::llm::{BoundEmbeddingClient, EmbeddingDim, SingleClientRouter};
     use proxima_core::llm::{
         CHUNKED_EMBED_MIN_BYTES, EMBED_LIVENESS_PROBE, MIN_EMBED_INPUT_CAP_CHARS,
     };
+    use proxima_core::llm::{EmbeddingDim, SingleClientRouter};
     use proxima_core::{
         AgentDerivationV1, DerivationIdentity, DerivedMemory, MemoryId, OperatorId, SeriesHandle,
     };
+    use proxima_core::{EmbeddingSpace, SpaceVector};
 
     use super::super::{
         EmbeddingReconcileOptions, EmbeddingReconcileScope, claim_pending_embedding_jobs,
@@ -56,13 +56,13 @@ mod pg_tests {
     static STUB_SPACE: std::sync::LazyLock<EmbeddingSpace> =
         std::sync::LazyLock::new(|| EmbeddingSpace::new("stub-fact-embed", EmbeddingDim::D1024));
 
-    fn bound(client: impl EmbeddingClient + 'static) -> BoundEmbeddingClient {
-        BoundEmbeddingClient::bind(Arc::new(client)).expect("stub clients embed in a lane")
+    fn stub_vector(values: Vec<f32>) -> SpaceVector {
+        SpaceVector::new(STUB_SPACE.clone(), values).expect("1024-wide test vector")
     }
 
     /// Every Owner routed to `client`.
     fn routed(client: impl EmbeddingClient + 'static) -> Arc<SingleClientRouter> {
-        Arc::new(SingleClientRouter::new(bound(client)))
+        Arc::new(SingleClientRouter::bind(Arc::new(client)).expect("stub clients embed in a lane"))
     }
 
     fn stale_claim_seconds() -> i64 {
@@ -326,8 +326,8 @@ mod pg_tests {
                 kind: claim.entity_kind,
                 memory_id: claim.entity_id,
             },
-            &claim.space,
-            &padded_embedding(prefix),
+            &SpaceVector::new(claim.space.clone(), padded_embedding(prefix))
+                .expect("1024-wide test vector"),
             EmbeddingWriteProof::for_claim_for_tests(claim),
         )
         .await
@@ -436,8 +436,7 @@ mod pg_tests {
                         &owner_a,
                         EntityKind::Fact,
                         memory_id,
-                        &STUB_SPACE,
-                        &first_vec,
+                        &stub_vector(first_vec.clone()),
                     )
                     .await?;
                     tx.commit().await.map_err(|err| {
@@ -454,8 +453,7 @@ mod pg_tests {
                         &owner_b,
                         EntityKind::Fact,
                         memory_id,
-                        &STUB_SPACE,
-                        &second_vec,
+                        &stub_vector(second_vec.clone()),
                     )
                     .await?;
                     tx.commit().await.map_err(|err| {
@@ -507,8 +505,7 @@ mod pg_tests {
                 &mut tx,
                 &owner,
                 EmbeddableEntityRef::Goal(goal_id),
-                &STUB_SPACE,
-                &padded_embedding([0.25, 0.5, 0.75]),
+                &stub_vector(padded_embedding([0.25, 0.5, 0.75])),
             )
             .await?;
             tx.commit().await?;
@@ -600,8 +597,7 @@ mod pg_tests {
                 &owner,
                 EntityKind::Fact,
                 outcome.memory_id,
-                &STUB_SPACE,
-                &embedding,
+                &stub_vector(embedding.clone()),
             )
             .await?;
             tx.commit().await?;
@@ -929,8 +925,7 @@ mod pg_tests {
                 &owner,
                 EntityKind::Fact,
                 outcome.memory_id,
-                &STUB_SPACE,
-                &padded_embedding([0.1, 0.2, 0.3]),
+                &stub_vector(padded_embedding([0.1, 0.2, 0.3])),
             )
             .await?;
             tx.commit().await?;
@@ -977,8 +972,7 @@ mod pg_tests {
                 &owner,
                 EntityKind::Fact,
                 present.memory_id,
-                &STUB_SPACE,
-                &padded_embedding([0.2, 0.3, 0.4]),
+                &stub_vector(padded_embedding([0.2, 0.3, 0.4])),
             )
             .await?;
             tx.commit().await?;
@@ -1552,10 +1546,10 @@ mod pg_tests {
                 Engine::new(registry)
                     .with_storage_ports(Arc::new(configured_pg).storage_ports())
                     .with_embedding_runtime_policy(policy)
-                    .with_embedding_router(Arc::new(SingleClientRouter::new(
-                        BoundEmbeddingClient::bind(client.clone())
+                    .with_embedding_router(Arc::new(
+                        SingleClientRouter::bind(client.clone())
                             .expect("stub clients embed in a lane"),
-                    ))),
+                    )),
             );
             let drain = {
                 let engine = engine.clone();

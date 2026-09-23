@@ -270,23 +270,10 @@ impl EmbeddingWritePort for EmbeddingWriteFake {
         &self,
         _owner: &Owner,
         _entity: proxima_core::EmbeddableEntityRef,
-        space: &proxima_core::EmbeddingSpace,
-        vec: &[f32],
+        vector: &proxima_core::SpaceVector,
         _proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<proxima_core::EmbeddingWriteOutcome, StorageError> {
-        let _ = (space, vec);
-        fake_error()
-    }
-
-    async fn insert_embedding_chunks(
-        &self,
-        _owner: &Owner,
-        _entity: proxima_core::EmbeddableEntityRef,
-        space: &proxima_core::EmbeddingSpace,
-        chunks: &[&[f32]],
-        _proof: proxima_core::storage_ports::EmbeddingWriteProof,
-    ) -> Result<proxima_core::EmbeddingWriteOutcome, StorageError> {
-        let _ = (space, chunks);
+        let _ = vector;
         fake_error()
     }
 }
@@ -358,19 +345,11 @@ impl EmbeddingJobPort for EmbeddingJobFake {
         fake_error()
     }
 
-    async fn count_pending_embedding_jobs(
+    async fn count_embedding_job_status(
         &self,
-        _owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &Owner,
-    ) -> Result<u64, StorageError> {
-        fake_error()
-    }
-
-    async fn count_failed_embedding_jobs(
-        &self,
-        _owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &Owner,
-    ) -> Result<u64, StorageError> {
+        _scope: Option<&proxima_core::OwnerScope>,
+        _owner: &Owner,
+    ) -> Result<proxima_core::storage_ports::EmbeddingJobStatusCounts, StorageError> {
         fake_error()
     }
 }
@@ -411,6 +390,34 @@ impl EmbeddingMaintenancePort for EmbeddingJobFake {
         proof: OperatorMaintenanceProof,
     ) -> Result<Vec<proxima_core::Owner>, StorageError> {
         let _ = (after, limit, proof);
+        fake_error()
+    }
+
+    async fn embedding_coverage(
+        &self,
+        owner: &proxima_core::Owner,
+        spaces: &[proxima_core::EmbeddingSpace],
+        non_embeddable_schemas: &[String],
+        proof: OperatorMaintenanceProof,
+    ) -> Result<
+        Vec<(
+            proxima_core::EmbeddingSpace,
+            proxima_core::EmbeddingSpaceCounts,
+        )>,
+        StorageError,
+    > {
+        let _ = (owner, spaces, non_embeddable_schemas, proof);
+        fake_error()
+    }
+
+    async fn purge_embedding_spaces(
+        &self,
+        owner: &proxima_core::Owner,
+        keep: &[proxima_core::EmbeddingSpace],
+        limit: i64,
+        proof: OperatorMaintenanceProof,
+    ) -> Result<proxima_core::EmbeddingPurgeOutcome, StorageError> {
+        let _ = (owner, keep, limit, proof);
         fake_error()
     }
 }

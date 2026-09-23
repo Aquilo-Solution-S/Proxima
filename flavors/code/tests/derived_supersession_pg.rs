@@ -2,39 +2,26 @@ mod common;
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use common::{TestDb, test_owner};
 use proxima_code::testkit::build_engine;
 use proxima_code::{CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1};
-use proxima_core::llm::{
-    BoundEmbeddingClient, EmbeddingClient, EmbeddingDim, LlmError, SingleClientRouter,
-};
+use proxima_core::llm::SingleClientRouter;
+use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     AuthPath, AuthzContext, DerivationIdentity, DerivedMemory, MemoryId, MemoryTarget, OperatorId,
     SeriesHandle,
 };
 use uuid::Uuid;
 
-const EMBEDDING_DIM: usize = EmbeddingDim::D1024.width();
-
-#[derive(Debug)]
-struct ConstantEmbedding;
-
-#[async_trait]
-impl EmbeddingClient for ConstantEmbedding {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        let mut embedding = vec![0.0; EMBEDDING_DIM];
-        embedding[0] = 1.0;
-        Ok(embedding)
-    }
-
-    fn model_id(&self) -> &'static str {
-        "test-code-embed"
-    }
-
-    fn dim(&self) -> usize {
-        EMBEDDING_DIM
-    }
+/// Every Owner routed to one constant 1024-wide client.
+fn code_router() -> Arc<SingleClientRouter> {
+    Arc::new(
+        SingleClientRouter::bind(Arc::new(ConstantEmbedding::prefixed(
+            "test-code-embed",
+            &[1.0],
+        )))
+        .expect("lane width"),
+    )
 }
 
 #[tokio::test]
@@ -42,10 +29,7 @@ impl EmbeddingClient for ConstantEmbedding {
 async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     let db = TestDb::fresh().await;
     let owner = test_owner();
-    let engine =
-        build_engine(db.pg.clone()).with_embedding_router(Arc::new(SingleClientRouter::new(
-            BoundEmbeddingClient::bind(Arc::new(ConstantEmbedding)).expect("lane width"),
-        )));
+    let engine = build_engine(db.pg.clone()).with_embedding_router(code_router());
 
     let repo_id = Uuid::now_v7();
     common::register_fixture_repo(db.pg.pool_for_tests(), &owner, repo_id).await;

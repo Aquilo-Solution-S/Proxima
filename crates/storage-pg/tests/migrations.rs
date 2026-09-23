@@ -2047,7 +2047,7 @@ async fn embedding_spaces_migration_upgrades_1024_rows_in_place() {
         .await?;
         assert_eq!(
             lanes,
-            [384, 768, 1024, 1536, 2048, 3072].map(|w| format!("embeddings_hnsw_d{w}")),
+            proxima_core::EmbeddingDim::ALL.map(|dim| format!("embeddings_hnsw_d{}", dim.width())),
         );
         let nearest: Uuid = sqlx::query_scalar(
             "SELECT emb.entity_id FROM proxima_core.embeddings emb

@@ -306,11 +306,7 @@ impl Engine {
 
         // The moved memory is embedded under the destination's route; a
         // route error refuses the transfer like any other write.
-        let embedding_spaces = self
-            .embedding_route(&to_owner)
-            .await
-            .map_err(|err| super::ingest::embedding_route_refused(&to_owner, &err))?
-            .write_spaces();
+        let embedding_spaces = self.write_route(&to_owner).await?.write_spaces();
         let transferred = self
             .storage()
             .access_admin

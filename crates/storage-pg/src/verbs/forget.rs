@@ -668,12 +668,7 @@ async fn load_embed_spaces(
     .await
     .map_err(map_err)?;
     rows.into_iter()
-        .map(|(model_id, dim)| {
-            Ok(proxima_core::EmbeddingSpace::new(
-                model_id,
-                crate::pgvector::stored_dim(dim)?,
-            ))
-        })
+        .map(|(model_id, dim)| crate::pgvector::stored_space(model_id, dim))
         .collect()
 }
 
@@ -1809,9 +1804,8 @@ async fn restore_cascaded_details(
 /// rewrites `cooled.owner_id` and leaves the bytes alone, so the two diverge
 /// permanently for any series that changed hands while cold. Filing the
 /// embedding job under the dumped owner would hand the giver a job for a
-/// memory it no longer has — and, if the giver was since erased, the `owners`
-/// lookup below is a `fetch_one` against a row that is gone, which fails the
-/// whole hydrate.
+/// memory it no longer has — and, if the giver was since erased, the job's
+/// foreign key to `owners` fails the whole hydrate.
 ///
 /// `embeddings` are the spaces the hydrating Owner's route names now, not
 /// the cold record's `embed_spaces`: that list names the spaces the row HAD
@@ -1832,35 +1826,22 @@ async fn enqueue_embed_jobs(
     // the `sqlx::Type` decodes get for free has to be written out here: a kind
     // this function does not recognise must not be re-filed for embedding as a
     // Fact, which is what a `_` arm on a DELETION path silently did.
-    let kind = match rec.row.kind.as_str() {
-        "fact" => proxima_core::EntityKind::Fact,
-        "abstraction" => proxima_core::EntityKind::Abstraction,
-        "perspective" => proxima_core::EntityKind::Perspective,
+    match rec.row.kind.as_str() {
+        "fact" | "abstraction" | "perspective" => {}
         other => {
             return Err(StorageError::Internal(format!(
                 "unknown memory kind {other} on cold record {}",
                 rec.row.t
             )));
         }
-    };
-    let owner_kind: proxima_core::OwnerRefKind =
-        sqlx::query_scalar("SELECT kind FROM proxima_core.owners WHERE owner_id = $1")
-            .bind(owner_id)
-            .fetch_one(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-    for space in embeddings.spaces {
-        crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
-            tx,
-            owner_kind,
-            Some(owner_id),
-            kind,
-            rec.row.t,
-            space,
-        )
-        .await?;
     }
-    Ok(())
+    crate::verbs::fact_embeddings::enqueue_embedding_jobs_in_tx(
+        tx,
+        owner_id,
+        rec.row.t,
+        embeddings.spaces,
+    )
+    .await
 }
 
 /// Every row one forgotten `t` takes with it, from two iteration sources

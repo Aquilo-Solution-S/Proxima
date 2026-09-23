@@ -16,13 +16,12 @@ mod write;
 
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use jobs::claim_embedding_jobs_sql_for_tests;
-pub(crate) use jobs::enqueue_embedding_job_in_tx;
+pub(crate) use jobs::enqueue_embedding_jobs_in_tx;
 pub use jobs::{
     claim_pending_embedding_jobs, complete_embedding_job, count_embedding_job_status,
-    count_failed_embedding_jobs, count_pending_embedding_jobs, enqueue_missing_embedding_jobs,
-    fail_embedding_job, fail_embedding_job_permanently, list_facts_missing_embedding,
-    reclaim_stale_embedding_jobs, release_embedding_jobs, release_embedding_jobs_on_connection,
-    renew_embedding_jobs,
+    enqueue_missing_embedding_jobs, fail_embedding_job, fail_embedding_job_permanently,
+    list_facts_missing_embedding, reclaim_stale_embedding_jobs, release_embedding_jobs,
+    release_embedding_jobs_on_connection, renew_embedding_jobs,
 };
 pub(crate) use ops::{embedding_ann_observability, sweep_orphan_embedding_rows};
 pub use reconcile::{
@@ -33,9 +32,7 @@ pub use text::{
     load_embedding_text, load_embedding_text_on_connection, load_embedding_texts,
     load_embedding_texts_on_connection, load_fact_text, load_fact_text_in_tx,
 };
-pub(crate) use write::{
-    insert_embedding, insert_embedding_chunks, insert_memory_embedding, lock_embedding_job_claim,
-};
+pub(crate) use write::{insert_embedding, insert_memory_embedding, lock_embedding_job_claim};
 
 fn ensure_nonnegative_limit(limit: i64) -> Result<i64, StorageError> {
     if limit < 0 {

@@ -180,7 +180,7 @@ pub use proxima_core::verbs::query::{
     MAX_SEARCH_PAGE_LIMIT, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
     MemoryLineageRequest, MemoryLineageResponse, MemoryRow, MemorySearchPage, MemorySearchRequest,
     MemorySearchResult, QueryRequest, QueryResponse, SearchCursor, SearchMode, SearchOrder,
-    SemanticQuery, SupersessionStatus, TagMatch,
+    SupersessionStatus, TagMatch,
 };
 pub use proxima_core::verbs::schema::{PayloadKind, SchemaRequest, SchemaResponse};
 pub use proxima_core::{

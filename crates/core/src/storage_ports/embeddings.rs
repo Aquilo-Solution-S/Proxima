@@ -67,31 +67,14 @@ pub trait EmbeddingTextPort: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait EmbeddingWritePort: Send + Sync {
-    /// Write one embedding row for an entity in `space`; `vec` must be
-    /// `space.dim()` wide. Public callers cannot forge
-    /// `EmbeddingWriteProof`; route through engine embedding-write APIs
-    /// instead.
+    /// Write one embedding version for an entity in `vector`'s space.
+    /// Public callers cannot forge `EmbeddingWriteProof`; route through
+    /// engine embedding-write APIs instead.
     async fn insert_embedding(
         &self,
         owner: &Owner,
         entity: EmbeddableEntityRef,
-        space: &EmbeddingSpace,
-        vec: &[f32],
-        proof: EmbeddingWriteProof,
-    ) -> Result<EmbeddingWriteOutcome, StorageError>;
-
-    /// Write one embedding *version* made of ordered chunk rows
-    /// (`chunk_index` 0..n) for an over-limit entity text, advancing the
-    /// head once. Search max-aggregates chunk similarity per memory, so
-    /// chunking keeps the whole text semantically findable. Public
-    /// callers cannot forge `EmbeddingWriteProof`; route through engine
-    /// embedding-write APIs instead.
-    async fn insert_embedding_chunks(
-        &self,
-        owner: &Owner,
-        entity: EmbeddableEntityRef,
-        space: &EmbeddingSpace,
-        chunks: &[&[f32]],
+        vector: &crate::SpaceVector,
         proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError>;
 }
@@ -227,43 +210,19 @@ pub trait EmbeddingJobPort: Send + Sync {
         non_embeddable_schemas: &[String],
     ) -> Result<u64, StorageError>;
 
-    async fn count_pending_embedding_jobs(
-        &self,
-        scope: Option<&OwnerScope>,
-        owner: &Owner,
-    ) -> Result<u64, StorageError>;
-
-    /// Count the owner's embedding jobs in a terminal state — the retryable
-    /// dead-end `reconcile` requeues plus the permanent rejections it never
-    /// will. Surfaced on the readiness resource so an operator sees the
-    /// backlog no drain is going to clear on its own.
-    async fn count_failed_embedding_jobs(
-        &self,
-        scope: Option<&OwnerScope>,
-        owner: &Owner,
-    ) -> Result<u64, StorageError>;
-
-    /// Owner-scoped pending+failed embedding job counts in one call. Both
-    /// counts read the same `embedding_jobs` table and differ only in the
-    /// status predicate, so `get_graph_authorized` merges them instead of two
-    /// serial round trips. The default falls back to the two independent
-    /// calls above (run concurrently); the Postgres storage backend overrides
-    /// this with a single `count(*) FILTER (WHERE …)` query.
+    /// The owner's embedding jobs not yet embedded (`pending`, `processing`)
+    /// and in a terminal state (`failed`, `failed_permanent`) — the backlog
+    /// no drain clears on its own — in one read, surfaced on the readiness
+    /// resource.
     async fn count_embedding_job_status(
         &self,
         scope: Option<&OwnerScope>,
         owner: &Owner,
-    ) -> Result<EmbeddingJobStatusCounts, StorageError> {
-        let (pending, failed) = tokio::try_join!(
-            self.count_pending_embedding_jobs(scope, owner),
-            self.count_failed_embedding_jobs(scope, owner)
-        )?;
-        Ok(EmbeddingJobStatusCounts { pending, failed })
-    }
+    ) -> Result<EmbeddingJobStatusCounts, StorageError>;
 }
 
-/// Owner-scoped pending+failed embedding job counts, merged into a single
-/// read. See [`EmbeddingJobPort::count_embedding_job_status`].
+/// Owner-scoped pending and failed embedding job counts. See
+/// [`EmbeddingJobPort::count_embedding_job_status`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EmbeddingJobStatusCounts {
     pub pending: u64,
@@ -357,13 +316,6 @@ pub struct EmbeddingPurgeOutcome {
     pub jobs: u64,
 }
 
-impl EmbeddingPurgeOutcome {
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.vectors == 0 && self.heads == 0 && self.jobs == 0
-    }
-}
-
 impl std::ops::AddAssign for EmbeddingPurgeOutcome {
     fn add_assign(&mut self, other: Self) {
         self.vectors += other.vectors;
@@ -409,28 +361,20 @@ pub trait EmbeddingMaintenancePort: Send + Sync {
     /// each of `spaces`, ordered by space.
     async fn embedding_coverage(
         &self,
-        _owner: &crate::Owner,
-        _spaces: &[EmbeddingSpace],
-        _non_embeddable_schemas: &[String],
-        _proof: OperatorMaintenanceProof,
-    ) -> Result<Vec<(EmbeddingSpace, EmbeddingSpaceCounts)>, StorageError> {
-        Err(StorageError::Internal(
-            "storage backend does not implement embedding coverage".into(),
-        ))
-    }
+        owner: &crate::Owner,
+        spaces: &[EmbeddingSpace],
+        non_embeddable_schemas: &[String],
+        proof: OperatorMaintenanceProof,
+    ) -> Result<Vec<(EmbeddingSpace, EmbeddingSpaceCounts)>, StorageError>;
 
     /// Delete up to `limit` rows per table of `owner`'s vectors, heads and
     /// jobs in spaces outside `keep`. A `processing` job stays: its drain
     /// completes it as stale, and deleting it would fail that drain.
     async fn purge_embedding_spaces(
         &self,
-        _owner: &crate::Owner,
-        _keep: &[EmbeddingSpace],
-        _limit: i64,
-        _proof: OperatorMaintenanceProof,
-    ) -> Result<EmbeddingPurgeOutcome, StorageError> {
-        Err(StorageError::Internal(
-            "storage backend does not implement embedding purge".into(),
-        ))
-    }
+        owner: &crate::Owner,
+        keep: &[EmbeddingSpace],
+        limit: i64,
+        proof: OperatorMaintenanceProof,
+    ) -> Result<EmbeddingPurgeOutcome, StorageError>;
 }

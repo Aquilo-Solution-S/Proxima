@@ -644,17 +644,13 @@ where
             citation_object_for_t(tx, owner.stored_owner_id(), outcome.memory_id).await?;
     } else {
         outcome.cited_object_id = write.blob_id;
-        for space in options.embedding_spaces {
-            crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
-                tx,
-                crate::access::owner_columns::owner_binds(owner).0,
-                Some(owner.stored_owner_id()),
-                proxima_core::EntityKind::Fact,
-                outcome.memory_id.into_inner(),
-                space,
-            )
-            .await?;
-        }
+        crate::verbs::fact_embeddings::enqueue_embedding_jobs_in_tx(
+            tx,
+            owner.stored_owner_id(),
+            outcome.memory_id.into_inner(),
+            options.embedding_spaces,
+        )
+        .await?;
     }
     Ok(outcome)
 }

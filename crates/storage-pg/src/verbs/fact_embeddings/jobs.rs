@@ -1,13 +1,13 @@
 use proxima_core::storage_ports::{EmbeddingJobStatusCounts, OwnerWritePermit};
 use proxima_core::{
-    EmbeddingJobClaim, EmbeddingSpace, EntityKind, MemoryId, Owner, OwnerRefKind, StorageError,
+    EmbeddingJobClaim, EmbeddingSpace, MemoryId, Owner, OwnerRefKind, StorageError,
 };
 use sqlx::{PgConnection, PgExecutor, PgPool};
 
 use crate::error::map_err;
 use crate::pg_enums::PgMemoryKind;
 
-use super::ensure_nonnegative_limit;
+use super::{ensure_nonnegative_limit, nonnegative_count};
 
 /// Claim pending jobs across every embedding space, ordered by `job_id`.
 ///
@@ -77,7 +77,7 @@ impl TryFrom<EmbeddingJobClaimRow> for EmbeddingJobClaim {
             owner: row.owner_kind.with_uuid(row.owner_id),
             entity_kind: row.entity_kind.into(),
             entity_id: MemoryId::new(row.entity_id),
-            space: EmbeddingSpace::new(row.model_id, crate::pgvector::stored_dim(row.dim)?),
+            space: crate::pgvector::stored_space(row.model_id, row.dim)?,
             claim_token: row.claim_token,
         })
     }
@@ -185,11 +185,118 @@ pub async fn claim_pending_embedding_jobs<'e, E: PgExecutor<'e>>(
     rows.into_iter().map(EmbeddingJobClaim::try_from).collect()
 }
 
-/// Delete a completed embedding job, fenced by the claim token and owner.
-///
-/// Provider work runs outside a transaction, so the Memory may transfer after
-/// claim. The original owner predicate makes that move invalidate the claim;
-/// otherwise the source worker could delete the destination's rehomed job.
+/// The predicate every claimed job's transition carries: the claim's token
+/// while the job is still `processing`, under the Owner, memory and space it
+/// was claimed for. A successor claim, or a transfer of the memory while the
+/// provider worked outside any transaction, leaves the statement touching
+/// nothing, so a reclaimed drainer cannot settle another drainer's job.
+/// Binds `$1..$6` through [`bind_claim_fence`].
+macro_rules! claim_fence {
+    () => {
+        "job_id = $1
+            AND claim_token = $2
+            AND status = 'processing'
+            AND owner_id = $3
+            AND entity_id = $4
+            AND model_id = $5
+            AND dim = $6"
+    };
+}
+pub(super) use claim_fence;
+
+type PgQuery<'q> = sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>;
+
+/// The values [`claim_fence`] matches.
+#[derive(Clone, Copy)]
+pub(super) struct ClaimFence<'a> {
+    pub(super) job_id: uuid::Uuid,
+    pub(super) claim_token: uuid::Uuid,
+    pub(super) owner: &'a Owner,
+    pub(super) entity_id: uuid::Uuid,
+    pub(super) space: &'a EmbeddingSpace,
+}
+
+impl<'a> From<&'a EmbeddingJobClaim> for ClaimFence<'a> {
+    fn from(claim: &'a EmbeddingJobClaim) -> Self {
+        Self {
+            job_id: claim.job_id,
+            claim_token: claim.claim_token,
+            owner: &claim.owner,
+            entity_id: claim.entity_id.into_inner(),
+            space: &claim.space,
+        }
+    }
+}
+
+/// Bind `fence` to the placeholders of [`claim_fence`].
+pub(super) fn bind_claim_fence<'q>(query: PgQuery<'q>, fence: ClaimFence<'q>) -> PgQuery<'q> {
+    query
+        .bind(fence.job_id)
+        .bind(fence.claim_token)
+        .bind(fence.owner.stored_owner_id())
+        .bind(fence.entity_id)
+        .bind(fence.space.model_id())
+        .bind(crate::pgvector::Lane::of(fence.space.dim()).width)
+}
+
+/// A fenced statement that matched nothing: the claim was lost.
+fn claim_held(rows_affected: u64) -> Result<(), StorageError> {
+    if rows_affected == 0 {
+        return Err(StorageError::Conflict(
+            "embedding job claim is stale or no longer processing".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// How a claimed job leaves `processing` without a vector.
+#[derive(Debug, Clone, Copy)]
+enum ClaimExit {
+    /// Attempted and failed for a retryable cause.
+    Failed,
+    /// The provider rejects the input for a permanent cause.
+    FailedPermanent,
+    /// Claimed but not attempted: claimable again at once.
+    Released,
+}
+
+impl ClaimExit {
+    const fn status(self) -> &'static str {
+        match self {
+            Self::Failed => "failed",
+            Self::FailedPermanent => "failed_permanent",
+            Self::Released => "pending",
+        }
+    }
+}
+
+async fn exit_claim<'e, E: PgExecutor<'e>>(
+    pool: E,
+    claim: &EmbeddingJobClaim,
+    exit: ClaimExit,
+    error: &str,
+) -> Result<(), StorageError> {
+    let result = bind_claim_fence(
+        sqlx::query(concat!(
+            "UPDATE proxima_core.embedding_jobs
+                SET status = $7::proxima_core.embedding_job_status,
+                    claimed_at = NULL,
+                    claim_token = NULL,
+                    last_error = $8
+              WHERE ",
+            claim_fence!()
+        )),
+        claim.into(),
+    )
+    .bind(exit.status())
+    .bind(error)
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    claim_held(result.rows_affected())
+}
+
+/// Delete a completed embedding job, fenced by its claim.
 ///
 /// # Errors
 ///
@@ -199,31 +306,17 @@ pub async fn complete_embedding_job<'e, E: PgExecutor<'e>>(
     pool: E,
     claim: &EmbeddingJobClaim,
 ) -> Result<(), StorageError> {
-    let result = sqlx::query(
-        "DELETE FROM proxima_core.embedding_jobs
-          WHERE job_id = $1
-            AND claim_token = $2
-            AND status = 'processing'
-            AND owner_id = $3
-            AND entity_id = $4
-            AND model_id = $5
-            AND dim = $6",
+    let result = bind_claim_fence(
+        sqlx::query(concat!(
+            "DELETE FROM proxima_core.embedding_jobs WHERE ",
+            claim_fence!()
+        )),
+        claim.into(),
     )
-    .bind(claim.job_id)
-    .bind(claim.claim_token)
-    .bind(claim.owner.stored_owner_id())
-    .bind(claim.entity_id.into_inner())
-    .bind(claim.space.model_id())
-    .bind(crate::pgvector::Lane::of(claim.space.dim()).width)
     .execute(pool)
     .await
     .map_err(map_err)?;
-    if result.rows_affected() == 0 {
-        return Err(StorageError::Conflict(
-            "embedding job claim is stale or no longer processing".into(),
-        ));
-    }
-    Ok(())
+    claim_held(result.rows_affected())
 }
 
 /// Refresh the lease timestamp for token- and owner-matching processing claims.
@@ -287,36 +380,7 @@ pub async fn fail_embedding_job<'e, E: PgExecutor<'e>>(
     claim: &EmbeddingJobClaim,
     error: &str,
 ) -> Result<(), StorageError> {
-    let result = sqlx::query(
-        "UPDATE proxima_core.embedding_jobs
-            SET status = 'failed',
-                claimed_at = NULL,
-                claim_token = NULL,
-                last_error = $3
-          WHERE job_id = $1
-            AND claim_token = $2
-            AND status = 'processing'
-            AND owner_id = $4
-            AND entity_id = $5
-            AND model_id = $6
-            AND dim = $7",
-    )
-    .bind(claim.job_id)
-    .bind(claim.claim_token)
-    .bind(error)
-    .bind(claim.owner.stored_owner_id())
-    .bind(claim.entity_id.into_inner())
-    .bind(claim.space.model_id())
-    .bind(crate::pgvector::Lane::of(claim.space.dim()).width)
-    .execute(pool)
-    .await
-    .map_err(map_err)?;
-    if result.rows_affected() == 0 {
-        return Err(StorageError::Conflict(
-            "embedding job claim is stale or no longer processing".into(),
-        ));
-    }
-    Ok(())
+    exit_claim(pool, claim, ClaimExit::Failed, error).await
 }
 
 /// Terminally fail a job whose input the provider rejects for a permanent
@@ -336,36 +400,7 @@ pub async fn fail_embedding_job_permanently<'e, E: PgExecutor<'e>>(
     claim: &EmbeddingJobClaim,
     error: &str,
 ) -> Result<(), StorageError> {
-    let result = sqlx::query(
-        "UPDATE proxima_core.embedding_jobs
-            SET status = 'failed_permanent',
-                claimed_at = NULL,
-                claim_token = NULL,
-                last_error = $3
-          WHERE job_id = $1
-            AND claim_token = $2
-            AND status = 'processing'
-            AND owner_id = $4
-            AND entity_id = $5
-            AND model_id = $6
-            AND dim = $7",
-    )
-    .bind(claim.job_id)
-    .bind(claim.claim_token)
-    .bind(error)
-    .bind(claim.owner.stored_owner_id())
-    .bind(claim.entity_id.into_inner())
-    .bind(claim.space.model_id())
-    .bind(crate::pgvector::Lane::of(claim.space.dim()).width)
-    .execute(pool)
-    .await
-    .map_err(map_err)?;
-    if result.rows_affected() == 0 {
-        return Err(StorageError::Conflict(
-            "embedding job claim is stale or no longer processing".into(),
-        ));
-    }
-    Ok(())
+    exit_claim(pool, claim, ClaimExit::FailedPermanent, error).await
 }
 
 /// Return claimed-but-unattempted jobs to `pending`.
@@ -396,35 +431,7 @@ pub async fn release_embedding_jobs_on_connection(
     error: &str,
 ) -> Result<(), StorageError> {
     for claim in claims {
-        let result = sqlx::query(
-            "UPDATE proxima_core.embedding_jobs
-                SET status = 'pending',
-                    claimed_at = NULL,
-                    claim_token = NULL,
-                    last_error = $3
-              WHERE job_id = $1
-                AND claim_token = $2
-                AND status = 'processing'
-                AND owner_id = $4
-                AND entity_id = $5
-                AND model_id = $6
-                AND dim = $7",
-        )
-        .bind(claim.job_id)
-        .bind(claim.claim_token)
-        .bind(error)
-        .bind(claim.owner.stored_owner_id())
-        .bind(claim.entity_id.into_inner())
-        .bind(claim.space.model_id())
-        .bind(crate::pgvector::Lane::of(claim.space.dim()).width)
-        .execute(&mut *pool)
-        .await
-        .map_err(map_err)?;
-        if result.rows_affected() == 0 {
-            return Err(StorageError::Conflict(
-                "embedding job claim is stale or no longer processing".into(),
-            ));
-        }
+        exit_claim(&mut *pool, claim, ClaimExit::Released, error).await?;
     }
     Ok(())
 }
@@ -538,55 +545,6 @@ async fn enqueue_missing_embedding_jobs_on_connection(
     Ok(result.rows_affected())
 }
 
-/// Owner-scoped count of embedding jobs not yet embedded.
-///
-/// # Errors
-///
-/// Maps SQL failures through the shared mapper.
-pub async fn count_pending_embedding_jobs<'e>(
-    pool: impl PgExecutor<'e>,
-    owner: &Owner,
-) -> Result<u64, StorageError> {
-    let owner_id = owner.stored_owner_id();
-    let row: (i64,) = sqlx::query_as(
-        "SELECT count(*)
-           FROM proxima_core.embedding_jobs
-          WHERE owner_id = $1
-            AND status IN ('pending', 'processing')",
-    )
-    .bind(owner_id)
-    .fetch_one(pool)
-    .await
-    .map_err(map_err)?;
-    u64::try_from(row.0)
-        .map_err(|_| StorageError::Internal("pending embedding job count is negative".into()))
-}
-
-/// Owner-scoped count of embedding jobs in a terminal state — both the
-/// requeueable `failed` and the permanently rejected `failed_permanent`.
-///
-/// # Errors
-///
-/// Maps SQL failures through the shared mapper.
-pub async fn count_failed_embedding_jobs<'e>(
-    pool: impl PgExecutor<'e>,
-    owner: &Owner,
-) -> Result<u64, StorageError> {
-    let owner_id = owner.stored_owner_id();
-    let row: (i64,) = sqlx::query_as(
-        "SELECT count(*)
-           FROM proxima_core.embedding_jobs
-          WHERE owner_id = $1
-            AND status IN ('failed', 'failed_permanent')",
-    )
-    .bind(owner_id)
-    .fetch_one(pool)
-    .await
-    .map_err(map_err)?;
-    u64::try_from(row.0)
-        .map_err(|_| StorageError::Internal("failed embedding job count is negative".into()))
-}
-
 /// Owner-scoped pending+failed embedding job counts in one round trip.
 ///
 /// # Errors
@@ -608,51 +566,51 @@ pub async fn count_embedding_job_status<'e>(
     .fetch_one(pool)
     .await
     .map_err(map_err)?;
-    let pending = u64::try_from(row.0)
-        .map_err(|_| StorageError::Internal("pending embedding job count is negative".into()))?;
-    let failed = u64::try_from(row.1)
-        .map_err(|_| StorageError::Internal("failed embedding job count is negative".into()))?;
-    Ok(EmbeddingJobStatusCounts { pending, failed })
+    Ok(EmbeddingJobStatusCounts {
+        pending: nonnegative_count(row.0, "pending embedding job")?,
+        failed: nonnegative_count(row.1, "failed embedding job")?,
+    })
 }
 
-/// Enqueue one durable embedding job in the caller's transaction, so the
-/// job row and the memory row land together or not at all.
+/// Enqueue `entity_id`'s durable embedding jobs, one per space, in the
+/// caller's transaction, so the job rows and the memory row land together or
+/// not at all.
 ///
 /// Idempotent on the table's natural key `(owner_id, entity_id, model_id,
 /// dim)`, which is why a replayed write and a re-enqueued deferral are both
-/// free.
-///
-/// `entity_kind` is accepted and not stored: the row is keyed by
-/// `(owner_id, entity_id, model_id, dim)` and records no kind at all, so an
-/// `Abstraction` or `Perspective` job needs no schema change. The
-/// parameter keeps the caller's kind in the signature where a future
-/// kind-scoped drain would need it.
+/// free. The row records no memory kind, so every kind queues the same way.
 ///
 /// # Errors
 ///
 /// Maps SQL failures through the shared mapper.
-pub(crate) async fn enqueue_embedding_job_in_tx(
+pub(crate) async fn enqueue_embedding_jobs_in_tx<'s>(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    owner_kind: OwnerRefKind,
-    owner_id: Option<uuid::Uuid>,
-    entity_kind: EntityKind,
+    owner_id: uuid::Uuid,
     entity_id: uuid::Uuid,
-    space: &EmbeddingSpace,
+    spaces: impl IntoIterator<Item = &'s EmbeddingSpace>,
 ) -> Result<(), StorageError> {
-    let Some(owner_id) = owner_id else {
+    let (model_ids, dims): (Vec<&str>, Vec<i16>) = spaces
+        .into_iter()
+        .map(|space| {
+            (
+                space.model_id(),
+                crate::pgvector::Lane::of(space.dim()).width,
+            )
+        })
+        .unzip();
+    if model_ids.is_empty() {
         return Ok(());
-    };
-    let _ = (owner_kind, entity_kind);
+    }
     sqlx::query(
-        "INSERT INTO proxima_core.embedding_jobs
-            (entity_id, model_id, dim, owner_id)
-         VALUES ($1, $2, $3, $4)
+        "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
+         SELECT $1, space.model_id, space.dim, $4
+           FROM unnest($2::text[], $3::smallint[]) AS space(model_id, dim)
          ON CONFLICT (owner_id, entity_id, model_id, dim)
          DO NOTHING",
     )
     .bind(entity_id)
-    .bind(space.model_id())
-    .bind(crate::pgvector::Lane::of(space.dim()).width)
+    .bind(&model_ids)
+    .bind(&dims)
     .bind(owner_id)
     .execute(&mut **tx)
     .await
@@ -721,7 +679,7 @@ mod tests {
         let claim = EmbeddingJobClaim {
             job_id: uuid::Uuid::from_u128(2),
             owner: Owner::Personal(proxima_core::UserId::new(uuid::Uuid::from_u128(1))),
-            entity_kind: EntityKind::Fact,
+            entity_kind: proxima_core::EntityKind::Fact,
             entity_id: MemoryId::new(uuid::Uuid::from_u128(3)),
             space: EmbeddingSpace::new("model", proxima_core::EmbeddingDim::D768),
             claim_token: uuid::Uuid::from_u128(4),

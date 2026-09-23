@@ -272,10 +272,7 @@ async fn collect_question(
     // fact to the caller: the semantic leg did not run. `degraded` carries it
     // to the wire instead of leaving it in a log line the caller cannot see.
     let mut degraded = false;
-    let route = engine.embedding_route(&owner).await.unwrap_or_else(|err| {
-        tracing::warn!(error = %err, "recall embedding route refused; degrading to lexical");
-        crate::llm::EmbeddingRoute::none()
-    });
+    let route = engine.search_route(&owner).await;
     let (mode, semantic) = if let Some(embed) = route.current_client() {
         match embed_query(embed, query).await {
             Ok(semantic) => (SearchMode::Hybrid, Some(semantic)),
@@ -558,14 +555,10 @@ fn require_cue(question: Option<&str>, subjects: &[String]) -> Result<(), McpToo
 async fn embed_query(
     embed: &crate::llm::BoundEmbeddingClient,
     query: &str,
-) -> Result<crate::verbs::query::SemanticQuery, String> {
-    let vector = embed.embed(query).await.map_err(|err| {
+) -> Result<crate::SpaceVector, String> {
+    embed.embed_vector(query).await.map_err(|err| {
         tracing::warn!(error = %err, "embedding provider failed");
         "embedding provider error".to_string()
-    })?;
-    Ok(crate::verbs::query::SemanticQuery {
-        space: embed.space().clone(),
-        vector,
     })
 }
 

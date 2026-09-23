@@ -295,7 +295,7 @@ fn host_api_can_build_a_search_read_request() {
             min_score: None,
             semantic_weight: Some(proxima::DEFAULT_HYBRID_SEMANTIC_WEIGHT),
             after: None,
-            semantic: None::<proxima::SemanticQuery>,
+            semantic: None::<proxima::llm::SpaceVector>,
         },
         include_body: false,
         include_neighbor_edges: false,

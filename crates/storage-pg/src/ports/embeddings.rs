@@ -97,33 +97,20 @@ impl EmbeddingWritePort for PgStorage {
         &self,
         owner: &Owner,
         entity: EmbeddableEntityRef,
-        space: &EmbeddingSpace,
-        vec: &[f32],
+        vector: &proxima_core::SpaceVector,
         proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
         let mut tx = self.platform_transaction().await?;
-        verbs::fact_embeddings::lock_embedding_job_claim(&mut tx, owner, entity, space, proof)
-            .await?;
+        verbs::fact_embeddings::lock_embedding_job_claim(
+            &mut tx,
+            owner,
+            entity,
+            vector.space(),
+            proof,
+        )
+        .await?;
         let outcome =
-            verbs::fact_embeddings::insert_embedding(&mut tx, owner, entity, space, vec).await?;
-        tx.commit().await.map_err(crate::error::map_err)?;
-        Ok(outcome)
-    }
-
-    async fn insert_embedding_chunks(
-        &self,
-        owner: &Owner,
-        entity: EmbeddableEntityRef,
-        space: &EmbeddingSpace,
-        chunks: &[&[f32]],
-        proof: proxima_core::storage_ports::EmbeddingWriteProof,
-    ) -> Result<EmbeddingWriteOutcome, StorageError> {
-        let mut tx = self.platform_transaction().await?;
-        verbs::fact_embeddings::lock_embedding_job_claim(&mut tx, owner, entity, space, proof)
-            .await?;
-        let outcome =
-            verbs::fact_embeddings::insert_embedding_chunks(&mut tx, owner, entity, space, chunks)
-                .await?;
+            verbs::fact_embeddings::insert_embedding(&mut tx, owner, entity, vector).await?;
         tx.commit().await.map_err(crate::error::map_err)?;
         Ok(outcome)
     }
@@ -218,30 +205,6 @@ impl EmbeddingJobPort for PgStorage {
             non_embeddable_schemas,
         )
         .await
-    }
-
-    async fn count_pending_embedding_jobs(
-        &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &Owner,
-    ) -> Result<u64, StorageError> {
-        let mut tx = crate::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
-        let result =
-            verbs::fact_embeddings::count_pending_embedding_jobs(tx.as_mut(), owner).await?;
-        tx.commit().await.map_err(crate::error::map_err)?;
-        Ok(result)
-    }
-
-    async fn count_failed_embedding_jobs(
-        &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &Owner,
-    ) -> Result<u64, StorageError> {
-        let mut tx = crate::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
-        let result =
-            verbs::fact_embeddings::count_failed_embedding_jobs(tx.as_mut(), owner).await?;
-        tx.commit().await.map_err(crate::error::map_err)?;
-        Ok(result)
     }
 
     async fn count_embedding_job_status(

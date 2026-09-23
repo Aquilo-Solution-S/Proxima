@@ -457,7 +457,7 @@ fn no_scope(_value: &dyn Any) -> Option<ScopeRef> {
 /// silent version of the third case that made an unembeddable derived text a
 /// permanently failing write.
 #[derive(Debug, Clone, PartialEq)]
-pub enum DerivedEmbedding<'a> {
+pub enum DerivedEmbedding {
     /// No embedding client is configured. Storage writes no vector and
     /// enqueues nothing; a later `reconcile_embeddings` is what covers
     /// these rows.
@@ -466,10 +466,7 @@ pub enum DerivedEmbedding<'a> {
     /// the same transaction as the row. An over-limit refusal whose
     /// bisection then covered every piece also lands here: one vec per
     /// version, so the first piece is what is stored.
-    Ready {
-        space: &'a crate::EmbeddingSpace,
-        vector: Vec<f32>,
-    },
+    Ready { vector: crate::SpaceVector },
     /// The client could not embed this text at any length, or the chunked
     /// rescue itself failed, while the provider is up — so the input, not
     /// the provider, is what failed. Storage writes no vector and enqueues
@@ -478,10 +475,10 @@ pub enum DerivedEmbedding<'a> {
     /// picks the memory up. Losing the whole write, and every model call
     /// upstream of it, is not the right answer to an input one provider
     /// call refused.
-    Deferred { space: &'a crate::EmbeddingSpace },
+    Deferred { space: crate::EmbeddingSpace },
 }
 
-impl DerivedEmbedding<'_> {
+impl DerivedEmbedding {
     /// Whether storage is expected to enqueue an embedding job instead of
     /// writing a vector.
     #[must_use]
@@ -514,7 +511,7 @@ pub struct AuthorDerivedRequest<'a> {
     /// `None` applies the database default. Storage verifies the name
     /// against the catalog inside the write transaction.
     pub lexical_language: Option<&'a str>,
-    pub embedding: DerivedEmbedding<'a>,
+    pub embedding: DerivedEmbedding,
     /// Further spaces this memory is queued for, in the same transaction
     /// as the row: the `next` space of an Owner moving to another model.
     /// They never make the write deferred — search reads the `embedding`

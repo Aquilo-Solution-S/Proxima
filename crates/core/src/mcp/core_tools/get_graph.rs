@@ -67,9 +67,10 @@ pub async fn get_graph(
     // Routed only after the read is authorized; a route the host refuses
     // reports the same as no route.
     let embeddings_client_configured = engine
-        .embedding_route(&ctx.owner)
+        .search_route(&ctx.owner)
         .await
-        .is_ok_and(|route| route.current_client().is_some());
+        .current_client()
+        .is_some();
 
     let schemas = ctx
         .registry

@@ -701,13 +701,14 @@ async fn a_failure_after_the_capture_takes_the_captured_record_with_it() {
     // owner nobody registered, its foreign key to `owners` fails — the
     // shape a late failure takes in production.
     let stranger = Uuid::now_v7();
-    let err = crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
+    let err = crate::verbs::fact_embeddings::enqueue_embedding_jobs_in_tx(
         &mut tx,
-        proxima_core::OwnerRefKind::Personal,
-        Some(stranger),
-        proxima_core::EntityKind::Fact,
+        stranger,
         t,
-        &proxima_core::EmbeddingSpace::new("probe/model", proxima_core::EmbeddingDim::D1024),
+        [&proxima_core::EmbeddingSpace::new(
+            "probe/model",
+            proxima_core::EmbeddingDim::D1024,
+        )],
     )
     .await
     .expect_err("an unregistered owner cannot own an embedding job");
