@@ -4,7 +4,7 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::{
     EmbeddableEntityRef, EmbeddingAnnObservability, EmbeddingJobClaim, EmbeddingOrphanSweepOutcome,
-    EmbeddingWriteOutcome, MemoryId, Owner, StorageError,
+    EmbeddingSpace, EmbeddingWriteOutcome, MemoryId, Owner, StorageError,
 };
 
 use crate::{PgStorage, verbs};
@@ -74,7 +74,7 @@ impl EmbeddingTextPort for PgStorage {
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &Owner,
-        model_id: &str,
+        space: &EmbeddingSpace,
         limit: usize,
         non_embeddable_schemas: &[String],
     ) -> Result<Vec<MemoryId>, StorageError> {
@@ -82,7 +82,7 @@ impl EmbeddingTextPort for PgStorage {
         let result = verbs::fact_embeddings::list_facts_missing_embedding(
             tx.as_mut(),
             owner,
-            model_id,
+            space,
             limit,
             non_embeddable_schemas,
         )
@@ -97,17 +97,15 @@ impl EmbeddingWritePort for PgStorage {
         &self,
         owner: &Owner,
         entity: EmbeddableEntityRef,
-        model_id: &str,
-        dim: usize,
+        space: &EmbeddingSpace,
         vec: &[f32],
         proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
         let mut tx = self.platform_transaction().await?;
-        verbs::fact_embeddings::lock_embedding_job_claim(&mut tx, owner, entity, model_id, proof)
+        verbs::fact_embeddings::lock_embedding_job_claim(&mut tx, owner, entity, space, proof)
             .await?;
         let outcome =
-            verbs::fact_embeddings::insert_embedding(&mut tx, owner, entity, model_id, dim, vec)
-                .await?;
+            verbs::fact_embeddings::insert_embedding(&mut tx, owner, entity, space, vec).await?;
         tx.commit().await.map_err(crate::error::map_err)?;
         Ok(outcome)
     }
@@ -116,18 +114,16 @@ impl EmbeddingWritePort for PgStorage {
         &self,
         owner: &Owner,
         entity: EmbeddableEntityRef,
-        model_id: &str,
-        dim: usize,
+        space: &EmbeddingSpace,
         chunks: &[&[f32]],
         proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
         let mut tx = self.platform_transaction().await?;
-        verbs::fact_embeddings::lock_embedding_job_claim(&mut tx, owner, entity, model_id, proof)
+        verbs::fact_embeddings::lock_embedding_job_claim(&mut tx, owner, entity, space, proof)
             .await?;
-        let outcome = verbs::fact_embeddings::insert_embedding_chunks(
-            &mut tx, owner, entity, model_id, dim, chunks,
-        )
-        .await?;
+        let outcome =
+            verbs::fact_embeddings::insert_embedding_chunks(&mut tx, owner, entity, space, chunks)
+                .await?;
         tx.commit().await.map_err(crate::error::map_err)?;
         Ok(outcome)
     }
@@ -137,13 +133,12 @@ impl EmbeddingWritePort for PgStorage {
 impl EmbeddingJobPort for PgStorage {
     async fn claim_pending_embedding_jobs(
         &self,
-        model_id: &str,
+        space: &EmbeddingSpace,
         limit: i64,
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
         let mut tx = self.platform_transaction().await?;
         let rows =
-            verbs::fact_embeddings::claim_pending_embedding_jobs(tx.as_mut(), model_id, limit)
-                .await?;
+            verbs::fact_embeddings::claim_pending_embedding_jobs(tx.as_mut(), space, limit).await?;
         tx.commit().await.map_err(crate::error::map_err)?;
         Ok(rows)
     }
@@ -210,14 +205,14 @@ impl EmbeddingJobPort for PgStorage {
     async fn enqueue_missing_embedding_jobs(
         &self,
         permit: &OwnerWritePermit,
-        model_id: &str,
+        space: &EmbeddingSpace,
         limit: i64,
         non_embeddable_schemas: &[String],
     ) -> Result<u64, StorageError> {
         verbs::fact_embeddings::enqueue_missing_embedding_jobs(
             &self.pool,
             permit,
-            model_id,
+            space,
             limit,
             non_embeddable_schemas,
         )

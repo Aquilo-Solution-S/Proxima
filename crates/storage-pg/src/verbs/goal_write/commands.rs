@@ -979,7 +979,6 @@ mod lifecycle_lock_tests {
                 None,
                 GoalAtomicContext {
                     registry: &registry,
-                    embedding_model_id: None,
                     author_self_perspective_id: None,
                 },
                 WakeWrite::Explicit(None),

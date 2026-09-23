@@ -457,8 +457,7 @@ fn request(read_owners: Vec<OwnerRef>, query: &str, order: SearchOrder) -> Memor
         min_score: None,
         semantic_weight: None,
         after: None,
-        query_embedding: None,
-        embedding_model_id: None,
+        semantic: None,
     }
 }
 

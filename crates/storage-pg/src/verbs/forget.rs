@@ -25,7 +25,9 @@ use crate::tx::{TxOutcome, in_transaction};
 /// discard rows deleted by the parent FK.
 /// Hydration refuses older records because a dump list alone cannot prove
 /// which sidecars the original Memory admission declared.
-pub const COLD_FORMAT_VERSION: u8 = 7;
+/// Version 8 records the width of each embedding space next to its model id.
+/// Older objects restore at 1024, the only width a vector could have then.
+pub const COLD_FORMAT_VERSION: u8 = 8;
 
 // The persisted key derivation lives in core, the lowest crate shared by
 // storage-pg and blob-s3; re-exported here so the storage path names it.
@@ -117,9 +119,9 @@ pub struct ColdRecord {
     /// present even when it has zero rows, so a cold record cannot add a
     /// forged table or omit a surface during restore.
     detail_dumps: Vec<(String, Vec<String>)>,
-    /// Model ids that had vectors. Vectors stay out of the object; hydrate
-    /// enqueues embed jobs for these ids.
-    embed_models: Vec<String>,
+    /// Embedding spaces that had vectors. Vectors stay out of the object;
+    /// hydrate enqueues embed jobs in these spaces.
+    embed_spaces: Vec<proxima_core::EmbeddingSpace>,
     /// Exact persisted one-liner. v4+; older cold objects restore from sidecar/kind.
     sketch: Option<String>,
     /// Format version this record was decoded from, or the current version
@@ -154,7 +156,18 @@ fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
         write_str(&mut out, table)?;
         write_str(&mut out, json)?;
     }
-    write_str_list(&mut out, &rec.embed_models)?;
+    let embed_models: Vec<String> = rec
+        .embed_spaces
+        .iter()
+        .map(|space| space.model_id().to_owned())
+        .collect();
+    write_str_list(&mut out, &embed_models)?;
+    write_count(&mut out, rec.embed_spaces.len())?;
+    for space in &rec.embed_spaces {
+        let width = u16::try_from(space.dim().width())
+            .map_err(|_| StorageError::Internal("embedding width exceeds u16".into()))?;
+        write_u16(&mut out, width);
+    }
     write_opt_str(&mut out, rec.sketch.as_deref())?;
     write_count(&mut out, rec.detail_dumps.len())?;
     for (table, rows) in &rec.detail_dumps {
@@ -169,6 +182,43 @@ fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
 
 fn cold_digest(bytes: &[u8]) -> Vec<u8> {
     blake3::hash(bytes).as_bytes().to_vec()
+}
+
+/// The spaces a cold object's `t` had vectors in: the model list (v2+), then
+/// one width per model (v8+). Before v8 every vector was 1024 wide.
+fn read_embed_spaces(
+    bytes: &[u8],
+    i: &mut usize,
+    version: u8,
+) -> Result<Vec<proxima_core::EmbeddingSpace>, StorageError> {
+    let models = if version >= 2 {
+        read_str_list(bytes, i)?
+    } else {
+        Vec::new()
+    };
+    if version < 8 {
+        return Ok(models
+            .into_iter()
+            .map(|model_id| {
+                proxima_core::EmbeddingSpace::new(model_id, proxima_core::EmbeddingDim::D1024)
+            })
+            .collect());
+    }
+    if usize::from(read_u16(bytes, i)?) != models.len() {
+        return Err(StorageError::Internal(
+            "cold object embedding widths do not match its models".into(),
+        ));
+    }
+    models
+        .into_iter()
+        .map(|model_id| {
+            let width = usize::from(read_u16(bytes, i)?);
+            let dim = proxima_core::EmbeddingDim::from_width(width).ok_or_else(|| {
+                StorageError::Internal(format!("cold object embedding width {width} has no lane"))
+            })?;
+            Ok(proxima_core::EmbeddingSpace::new(model_id, dim))
+        })
+        .collect()
 }
 
 fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
@@ -221,11 +271,7 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         let _sidecar = read_bytes(bytes, &mut i)?;
         Vec::new()
     };
-    let embed_models = if version >= 2 {
-        read_str_list(bytes, &mut i)?
-    } else {
-        Vec::new()
-    };
+    let embed_spaces = read_embed_spaces(bytes, &mut i, version)?;
     let sketch = if version >= 4 {
         read_opt_str(bytes, &mut i)?
     } else {
@@ -257,7 +303,7 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         schema_id,
         sidecar_dumps,
         detail_dumps,
-        embed_models,
+        embed_spaces,
         sketch,
         format_version: version,
     })
@@ -606,16 +652,28 @@ async fn load_sketch_text(
         .map_err(map_err)
 }
 
-async fn load_embed_models(conn: &mut PgConnection, t: Uuid) -> Result<Vec<String>, StorageError> {
-    let mut models: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT model_id FROM proxima_core.embeddings WHERE entity_id = $1",
+async fn load_embed_spaces(
+    conn: &mut PgConnection,
+    t: Uuid,
+) -> Result<Vec<proxima_core::EmbeddingSpace>, StorageError> {
+    let rows: Vec<(String, i16)> = sqlx::query_as(
+        "SELECT DISTINCT model_id, dim
+           FROM proxima_core.embeddings
+          WHERE entity_id = $1
+          ORDER BY model_id, dim",
     )
     .bind(t)
     .fetch_all(&mut *conn)
     .await
     .map_err(map_err)?;
-    models.sort();
-    Ok(models)
+    rows.into_iter()
+        .map(|(model_id, dim)| {
+            Ok(proxima_core::EmbeddingSpace::new(
+                model_id,
+                crate::pgvector::stored_dim(dim)?,
+            ))
+        })
+        .collect()
 }
 
 const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id
@@ -643,14 +701,14 @@ pub async fn snapshot_hot(
     let schema_id = row.schema_id.clone();
     let sidecar_dumps = dump_stamped_sidecars(conn, sidecars, &row.sidecar_tables, t).await?;
     let detail_dumps = dump_cascaded_details(conn, surfaces, &schema_id, t).await?;
-    let embed_models = load_embed_models(conn, t).await?;
+    let embed_spaces = load_embed_spaces(conn, t).await?;
     let sketch = load_sketch_text(conn, t).await?;
     Ok(ColdRecord {
         row,
         schema_id,
         sidecar_dumps,
         detail_dumps,
-        embed_models,
+        embed_spaces,
         sketch,
         format_version: COLD_FORMAT_VERSION,
     })
@@ -693,14 +751,14 @@ pub async fn commit_forget(
     let sidecar_dumps =
         dump_stamped_sidecars(tx.as_mut(), sidecars, &locked.sidecar_tables, t).await?;
     let detail_dumps = dump_cascaded_details(tx.as_mut(), surfaces, &schema_id, t).await?;
-    let embed_models = load_embed_models(tx.as_mut(), t).await?;
+    let embed_spaces = load_embed_spaces(tx.as_mut(), t).await?;
     let sketch = load_sketch_text(tx.as_mut(), t).await?;
     let current = ColdRecord {
         row: locked,
         schema_id,
         sidecar_dumps,
         detail_dumps,
-        embed_models,
+        embed_spaces,
         sketch,
         format_version: COLD_FORMAT_VERSION,
     };
@@ -1756,8 +1814,8 @@ async fn restore_cascaded_details(
 ///
 /// `non_embeddable_schemas` is the registry's answer, a parameter because
 /// storage does not hold the registry. It is consulted instead of trusting
-/// `embed_models` alone: that list records the models this `t` HAD vectors
-/// under, so a row under a `Never` schema that carries one — from any write
+/// `embed_spaces` alone: that list records the spaces this `t` HAD vectors
+/// in, so a row under a `Never` schema that carries one — from any write
 /// that did not ask the registry — would have the job re-filed here on every
 /// hydrate, for a drain that can only drop it.
 async fn enqueue_embed_jobs(
@@ -1766,7 +1824,7 @@ async fn enqueue_embed_jobs(
     owner_id: Uuid,
     non_embeddable_schemas: &[String],
 ) -> Result<(), StorageError> {
-    if rec.embed_models.is_empty() || non_embeddable_schemas.contains(&rec.schema_id) {
+    if rec.embed_spaces.is_empty() || non_embeddable_schemas.contains(&rec.schema_id) {
         return Ok(());
     }
     // Named exhaustively, with no catch-all. `HotRow.kind` is a String because
@@ -1791,14 +1849,14 @@ async fn enqueue_embed_jobs(
             .fetch_one(tx.as_mut())
             .await
             .map_err(map_err)?;
-    for model_id in &rec.embed_models {
+    for space in &rec.embed_spaces {
         crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
             tx,
             owner_kind,
             Some(owner_id),
             kind,
             rec.row.t,
-            model_id,
+            space,
         )
         .await?;
     }
@@ -3882,25 +3940,37 @@ mod tests {
             schema_id: "core/upload-v1".to_owned(),
             sidecar_dumps: Vec::new(),
             detail_dumps: Vec::new(),
-            embed_models: Vec::new(),
+            embed_spaces: Vec::new(),
             sketch: None,
             format_version: super::COLD_FORMAT_VERSION,
         }
     }
 
     #[test]
-    fn a_v7_cold_object_round_trips_pins_and_sidecar_stamp() {
+    fn a_current_cold_object_round_trips_embedding_spaces() {
+        let mut rec = cold_row(Vec::new(), Vec::new());
+        rec.embed_spaces = vec![
+            proxima_core::EmbeddingSpace::new("a", proxima_core::EmbeddingDim::D768),
+            proxima_core::EmbeddingSpace::new("b", proxima_core::EmbeddingDim::D3072),
+        ];
+        let decoded =
+            super::decode_record(&super::encode_record(&rec).expect("encode")).expect("decodes");
+        assert_eq!(decoded.embed_spaces, rec.embed_spaces);
+    }
+
+    #[test]
+    fn a_current_cold_object_round_trips_pins_and_sidecar_stamp() {
         let memory = uuid::Uuid::now_v7();
         let goal = uuid::Uuid::now_v7();
         let mut rec = cold_row(vec![memory], vec![goal]);
         rec.row.sidecar_tables = vec!["proxima_core.agent_note_v1".to_owned()];
         rec.sidecar_dumps = vec![(rec.row.sidecar_tables[0].clone(), "{}".to_owned())];
-        let decoded =
-            super::decode_record(&super::encode_record(&rec).expect("encode")).expect("v7 decodes");
+        let decoded = super::decode_record(&super::encode_record(&rec).expect("encode"))
+            .expect("current format decodes");
         assert_eq!(decoded.row.refs, vec![memory]);
         assert_eq!(decoded.row.goal_refs, vec![goal]);
         assert_eq!(decoded.row.sidecar_tables, rec.row.sidecar_tables);
-        assert_eq!(decoded.format_version, 7);
+        assert_eq!(decoded.format_version, super::COLD_FORMAT_VERSION);
         let sidecars = crate::core_pg_sidecars();
         assert!(super::cold_sidecar_stamp_matches(&decoded, &sidecars));
         let mut retained = decoded.clone();
@@ -3939,7 +4009,7 @@ mod tests {
         super::write_uuid_list(&mut v4, &mixed).expect("refs");
         super::write_str(&mut v4, &rec.schema_id).expect("schema");
         super::write_count(&mut v4, 0).expect("no sidecars");
-        super::write_str_list(&mut v4, &rec.embed_models).expect("embed models");
+        super::write_str_list(&mut v4, &[]).expect("embed models");
         super::write_opt_str(&mut v4, None).expect("sketch");
 
         let decoded = super::decode_record(&v4).expect("v4 decodes");
@@ -3970,10 +4040,18 @@ mod tests {
         super::write_uuid_list(&mut v5, &rec.row.goal_refs).expect("goal refs");
         super::write_str(&mut v5, &rec.schema_id).expect("schema");
         super::write_count(&mut v5, 0).expect("no sidecars");
-        super::write_str_list(&mut v5, &rec.embed_models).expect("embed models");
+        super::write_str_list(&mut v5, &["legacy-model".to_owned()]).expect("embed models");
         super::write_opt_str(&mut v5, None).expect("sketch");
         let decoded = super::decode_record(&v5).expect("v5 decodes");
         assert_eq!(decoded.format_version, 5);
+        assert_eq!(
+            decoded.embed_spaces,
+            vec![proxima_core::EmbeddingSpace::new(
+                "legacy-model",
+                proxima_core::EmbeddingDim::D1024
+            )],
+            "a pre-v8 object's vectors were 1024 wide"
+        );
         assert!(decoded.row.sidecar_tables.is_empty());
         assert!(!super::cold_sidecar_stamp_matches(
             &decoded,

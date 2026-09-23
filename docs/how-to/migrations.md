@@ -13,6 +13,25 @@ for core, one dated `_v0XY_` file per flavor — never several, never edited
 after the tag. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.16
+
+| Lane | Migration |
+|---|---|
+| Core | `0015_v016_embedding_spaces.sql`: `embeddings.vec` becomes untyped `vector` with a `dim` column on embeddings, heads and jobs; one partial HNSW index per supported width replaces `idx_embeddings_vec_hnsw` |
+
+Requires pgvector `>= 0.8.0`; the migration refuses an older extension, and
+boot checks it again. Existing rows are 1024 wide and are labelled so without
+a table rewrite, but the 1024 index is rebuilt over every existing vector
+during the migration — budget the same time the original index build took.
+
+The cold-archive record format moves to v8, which stores each vector's width.
+v0.0.16 reads older records as 1024 wide; an older binary cannot read a v8
+record, so a rollback after a Fact has been cooled needs the database restored
+from before the upgrade.
+
+`maintain-embeddings --drain` is removed; the serving process drains the jobs
+maintenance enqueues. Remove `--drain` from any scheduled invocation.
+
 ## v0.0.15
 
 | Lane | Migration |

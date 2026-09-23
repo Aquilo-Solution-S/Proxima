@@ -17,33 +17,45 @@
 //! exactly like the lexical candidates it is merged with. Nothing here
 //! decides visibility. Owner scope is `embeddings.owner_id = $1`.
 
+use proxima_core::verbs::query::SemanticQuery;
 use proxima_core::{Owner, StorageError};
 use sqlx::{PgConnection, PgPool};
 
 use crate::error::map_err;
-use crate::pgvector::set_hnsw_search_sql;
+use crate::pgvector::{Lane, check_width, set_hnsw_search_sql};
 use crate::tuning::PgTuning;
 
-/// One vec per `(entity_id, model_id, embedding_version)`. The head join
-/// already picks the current version; there is nothing to DISTINCT ON.
-const NEAREST_CODE_CHUNK_SQL: &str = "SELECT emb.entity_id AS memory_id,
-                            GREATEST(0.0, (1 - (emb.vec <=> $4::vector)))::real
+/// One vec per `(entity_id, model_id, dim, embedding_version)`. The head
+/// join already picks the current version; there is nothing to DISTINCT ON.
+/// The lane's predicate and casts are literals so the planner proves the
+/// lane's partial HNSW index.
+fn nearest_code_chunk_sql(lane: Lane) -> String {
+    format!(
+        "SELECT emb.entity_id AS memory_id,
+                            GREATEST(0.0, (1 - ({vec} <=> $4{cast})))::real
                                 AS similarity_score
                        FROM proxima_core.embeddings emb
                        JOIN proxima_core.embedding_heads head
                          ON head.entity_id = emb.entity_id
                         AND head.model_id = emb.model_id
+                        AND head.dim = emb.dim
                         AND head.embedding_version = emb.embedding_version
                        JOIN proxima_code.code_chunk_v1 c
                          ON c.t = emb.entity_id
                       WHERE emb.owner_id = $1
                         AND emb.model_id = $3
+                        AND {predicate}
                         AND c.state = 'Present'
                         AND ($2::uuid IS NULL OR c.repo_id = $2)
                         AND ($5::text IS NULL OR c.language = $5)
                         AND ($6::text IS NULL OR c.chunk_type = $6)
-                      ORDER BY emb.vec <=> $4::vector
-                      LIMIT $7";
+                      ORDER BY {vec} <=> $4{cast}
+                      LIMIT $7",
+        vec = lane.vec,
+        cast = lane.cast,
+        predicate = lane.predicate,
+    )
+}
 
 /// One chunk memory and its cosine similarity to the query vector.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -52,7 +64,7 @@ pub struct CodeChunkVectorCandidate {
     pub similarity_score: f32,
 }
 
-/// Nearest `limit` `code-chunk-v1` chunk memories to `query_embedding`,
+/// Nearest `limit` `code-chunk-v1` chunk memories to `query`, in its space,
 /// restricted to `owner`'s own scope and to chunks matching the structural
 /// filters, best-first.
 ///
@@ -73,8 +85,7 @@ pub async fn nearest_code_chunk_candidates(
     pool: &PgPool,
     tuning: &PgTuning,
     owner: Owner,
-    model_id: &str,
-    query_embedding: &[f32],
+    query: &SemanticQuery,
     filters: CodeChunkVectorFilters<'_>,
     limit: i64,
 ) -> Result<Vec<CodeChunkVectorCandidate>, StorageError> {
@@ -83,8 +94,7 @@ pub async fn nearest_code_chunk_candidates(
         tx.as_mut(),
         tuning,
         owner,
-        model_id,
-        query_embedding,
+        query,
         filters,
         limit,
     )
@@ -100,29 +110,30 @@ pub async fn nearest_code_chunk_candidates_on_connection(
     connection: &mut PgConnection,
     tuning: &PgTuning,
     owner: Owner,
-    model_id: &str,
-    query_embedding: &[f32],
+    query: &SemanticQuery,
     filters: CodeChunkVectorFilters<'_>,
     limit: i64,
 ) -> Result<Vec<CodeChunkVectorCandidate>, StorageError> {
     if limit <= 0 {
         return Ok(Vec::new());
     }
-    if query_embedding.len() != proxima_core::llm::EMBEDDING_DIM {
-        return Err(StorageError::ConstraintViolation(format!(
-            "semantic chunk search embedding length must be {}",
-            proxima_core::llm::EMBEDDING_DIM
-        )));
-    }
+    check_width(
+        query.space.dim(),
+        &query.vector,
+        "semantic chunk search embedding",
+    )?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(tuning)))
         .execute(&mut *connection)
         .await
         .map_err(map_err)?;
-    sqlx::query_as::<_, CodeChunkVectorCandidate>(NEAREST_CODE_CHUNK_SQL)
+    let sql = nearest_code_chunk_sql(Lane::of(query.space.dim()));
+    // SQL-POLICY: fixed-fragment — the lane's compile-time predicate and
+    // casts, chosen by a closed enum; every value is bound.
+    sqlx::query_as::<_, CodeChunkVectorCandidate>(sqlx::AssertSqlSafe(sql))
         .bind(owner.stored_owner_id())
         .bind(filters.repo_id)
-        .bind(model_id)
-        .bind(crate::pgvector::literal(query_embedding))
+        .bind(query.space.model_id())
+        .bind(crate::pgvector::literal(&query.vector))
         .bind(filters.language)
         .bind(filters.chunk_type)
         .bind(limit)
@@ -145,11 +156,16 @@ pub struct CodeChunkVectorFilters<'a> {
 mod tests {
     #[test]
     fn nearest_chunk_sql_is_one_vec_per_head() {
-        let sql = super::NEAREST_CODE_CHUNK_SQL;
-        let distinct = format!("{} {}", "DISTINCT", "ON");
-        assert!(
-            !sql.contains(&distinct),
-            "v008 embeddings have one vec per version"
-        );
+        for dim in proxima_core::EmbeddingDim::ALL {
+            let lane = super::Lane::of(dim);
+            let sql = super::nearest_code_chunk_sql(lane);
+            let distinct = format!("{} {}", "DISTINCT", "ON");
+            assert!(
+                !sql.contains(&distinct),
+                "v008 embeddings have one vec per version"
+            );
+            assert!(sql.contains(lane.predicate) && sql.contains("AND head.dim = emb.dim"));
+            assert!(sql.contains(&format!("ORDER BY {} <=> $4{}", lane.vec, lane.cast)));
+        }
     }
 }

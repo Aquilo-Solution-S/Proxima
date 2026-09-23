@@ -390,7 +390,6 @@ async fn create_goal(
                 },
                 context: GoalAtomicContext {
                     registry,
-                    embedding_model_id: None,
                     author_self_perspective_id: None,
                 },
                 write_act_t: None,
@@ -451,9 +450,7 @@ async fn authorized_links_are_persisted_by_engine_uow() {
                 &[SidecarPayload::fact(pool_payload.clone())],
             )
             .await?;
-        let pool_typed = engine
-            .ingest_fact_with_typed_sidecar(&authorized, None)
-            .await?;
+        let pool_typed = engine.ingest_fact_with_typed_sidecar(&authorized).await?;
         assert_eq!(
             stored_refs(&pg, pool_typed.memory_id).await?,
             vec![fact_id.into_inner()]
@@ -584,7 +581,7 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
             )
             .await?;
         let inline = engine
-            .ingest_fact_with_citation_and_typed_sidecar(&authorized, None)
+            .ingest_fact_with_citation_and_typed_sidecar(&authorized)
             .await?;
         assert_eq!(
             stored_refs(&pg, inline.memory_id).await?,
@@ -618,7 +615,7 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
             )
             .await?;
         let by_ref = engine
-            .ingest_fact_with_citation_ref_and_typed_sidecar(&authorized, None)
+            .ingest_fact_with_citation_ref_and_typed_sidecar(&authorized)
             .await?;
         assert_eq!(
             stored_refs(&pg, by_ref.memory_id).await?,
@@ -683,7 +680,7 @@ async fn storage_uses_sidecars_bound_during_authorization() {
             )
             .await?;
         drop(admitted_sidecars);
-        let written = pg.ingest_fact_with_typed_sidecar(&authorized, None).await?;
+        let written = pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await?;
         assert_eq!(
             stored_refs(&pg, written.memory_id).await?,
             vec![first.into_inner()]
@@ -1229,7 +1226,7 @@ async fn storage_persists_authorized_links_not_draft_refs() {
             Vec::new(),
             links,
         );
-        let outcome = pg.ingest_authorized_fact_atomic(&authorized, None).await?;
+        let outcome = pg.ingest_authorized_fact_atomic(&authorized, &[]).await?;
         assert_eq!(
             stored_refs(&pg, outcome.memory_id).await?,
             vec![fact_a.into_inner()]
@@ -1287,7 +1284,7 @@ async fn receipt_replay_requires_identical_authorized_refs() {
             Vec::new(),
             first_links.clone(),
         );
-        let outcome = pg.ingest_authorized_fact_atomic(&first, None).await?;
+        let outcome = pg.ingest_authorized_fact_atomic(&first, &[]).await?;
         assert!(!outcome.idempotent_replay);
 
         let same = AuthorizedFactWrite::new_with_links_for_tests(
@@ -1297,7 +1294,7 @@ async fn receipt_replay_requires_identical_authorized_refs() {
             Vec::new(),
             first_links,
         );
-        let replay = pg.ingest_authorized_fact_atomic(&same, None).await?;
+        let replay = pg.ingest_authorized_fact_atomic(&same, &[]).await?;
         assert!(replay.idempotent_replay);
         assert_eq!(replay.memory_id, outcome.memory_id);
 
@@ -1316,7 +1313,7 @@ async fn receipt_replay_requires_identical_authorized_refs() {
             ),
         );
         let error = pg
-            .ingest_authorized_fact_atomic(&changed, None)
+            .ingest_authorized_fact_atomic(&changed, &[])
             .await
             .expect_err("changed refs must conflict");
         assert!(matches!(error, StorageError::Conflict(message) if message.contains("refs")));
@@ -1359,7 +1356,7 @@ async fn cooled_replay_requires_known_identical_refs() {
                 ],
             ),
         );
-        let outcome = pg.ingest_authorized_fact_atomic(&first, None).await?;
+        let outcome = pg.ingest_authorized_fact_atomic(&first, &[]).await?;
         pg.forget_memory(
             &OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
             outcome.memory_id,
@@ -1380,7 +1377,7 @@ async fn cooled_replay_requires_known_identical_refs() {
             ),
         );
         assert!(
-            pg.ingest_authorized_fact_atomic(&replay, None)
+            pg.ingest_authorized_fact_atomic(&replay, &[])
                 .await?
                 .idempotent_replay
         );
@@ -1399,7 +1396,7 @@ async fn cooled_replay_requires_known_identical_refs() {
             ),
         );
         let error = pg
-            .ingest_authorized_fact_atomic(&changed, None)
+            .ingest_authorized_fact_atomic(&changed, &[])
             .await
             .expect_err("cooled replay with changed refs must conflict");
         assert!(matches!(error, StorageError::Conflict(message) if message.contains("refs")));
@@ -1434,7 +1431,7 @@ async fn cooled_replay_requires_known_identical_refs() {
             ),
         );
         let error = pg
-            .ingest_authorized_fact_atomic(&unknown, None)
+            .ingest_authorized_fact_atomic(&unknown, &[])
             .await
             .expect_err("legacy cooled refs must not be fabricated");
         assert!(

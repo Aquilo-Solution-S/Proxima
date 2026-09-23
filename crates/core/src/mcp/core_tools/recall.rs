@@ -272,21 +272,21 @@ async fn collect_question(
     // fact to the caller: the semantic leg did not run. `degraded` carries it
     // to the wire instead of leaving it in a log line the caller cannot see.
     let mut degraded = false;
-    let (mode, query_embedding, embedding_model_id) = if engine.embed_client().is_some() {
+    let (mode, semantic) = if engine.embed_client().is_some() {
         match embed_query(engine, query).await {
-            Ok((embedding, model_id)) => (SearchMode::Hybrid, Some(embedding), Some(model_id)),
+            Ok(semantic) => (SearchMode::Hybrid, Some(semantic)),
             Err(err) => {
                 tracing::warn!(
                     error = %err,
                     "recall hybrid embedding unavailable; degrading to lexical"
                 );
                 degraded = true;
-                (SearchMode::Lexical, None, None)
+                (SearchMode::Lexical, None)
             }
         }
     } else {
         degraded = true;
-        (SearchMode::Lexical, None, None)
+        (SearchMode::Lexical, None)
     };
     let page = engine
         .search(
@@ -309,8 +309,7 @@ async fn collect_question(
                     min_score: None,
                     semantic_weight: None,
                     after: None,
-                    query_embedding,
-                    embedding_model_id,
+                    semantic,
                 },
                 include_body: false,
                 include_neighbor_edges: false,
@@ -552,15 +551,21 @@ fn require_cue(question: Option<&str>, subjects: &[String]) -> Result<(), McpToo
     Ok(())
 }
 
-async fn embed_query(engine: &crate::Engine, query: &str) -> Result<(Vec<f32>, String), String> {
+async fn embed_query(
+    engine: &crate::Engine,
+    query: &str,
+) -> Result<crate::verbs::query::SemanticQuery, String> {
     let embed = engine
         .embed_client()
         .ok_or_else(|| "no embedding client".to_string())?;
-    let embedding = embed.embed(query).await.map_err(|err| {
+    let vector = embed.embed(query).await.map_err(|err| {
         tracing::warn!(error = %err, "embedding provider failed");
         "embedding provider error".to_string()
     })?;
-    Ok((embedding, embed.model_id().to_string()))
+    Ok(crate::verbs::query::SemanticQuery {
+        space: embed.space().clone(),
+        vector,
+    })
 }
 
 #[cfg(test)]

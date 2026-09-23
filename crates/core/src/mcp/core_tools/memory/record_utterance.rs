@@ -97,15 +97,11 @@ impl McpTool for RecordUtteranceTool {
                 .with_lexical_language(Some(lexical_language));
 
             let engine = ctx.require_engine()?;
-            let embedding_client = engine.embed_client();
-            let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
             let sidecars = [SidecarPayload::fact(payload.clone())];
             let authorized = engine
                 .authorize_fact_ingest(&authz, Relation::Editor, draft, &sidecars)
                 .await?;
-            let outcome = engine
-                .ingest_fact_with_typed_sidecar(&authorized, embedding_model_id)
-                .await?;
+            let outcome = engine.ingest_fact_with_typed_sidecar(&authorized).await?;
 
             Ok(RecordUtteranceOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),

@@ -67,7 +67,8 @@ Headless MCP at `http://127.0.0.1:31415/mcp`. Code flavor is default-on;
 `--no-default-features` is substrate-only.
 
 Semantic search needs an OpenAI-compatible `/embeddings` endpoint
-(1024-dim). Local, no API key:
+(1024-dim by default; set `PROXIMA_EMBED_DIM` for 384, 768, 1536, 2048 or
+3072). Local, no API key:
 
 ```sh
 ollama pull qwen3-embedding:0.6b

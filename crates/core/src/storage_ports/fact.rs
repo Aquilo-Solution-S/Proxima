@@ -13,11 +13,12 @@ pub trait FactIngestPort: Send + Sync {
     async fn ingest_authorized_fact_atomic(
         &self,
         authorized: &AuthorizedFactWrite,
-        embedding_model_id: Option<&str>,
+        embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError>;
 
     /// Compatibility adapter for storage fixtures. Production callers must
-    /// use the Engine-minted authorized carrier above.
+    /// use the Engine-minted authorized carrier above. A fixture model id
+    /// names a 1024-wide space.
     #[cfg(any(test, feature = "test-fixtures"))]
     async fn ingest_fact_atomic(
         &self,
@@ -28,7 +29,11 @@ pub trait FactIngestPort: Send + Sync {
         let permit = OwnerWritePermit::new_for_tests(*permit.owner(), permit.access_kind());
         let authorized =
             AuthorizedFactWrite::new_for_tests(permit, draft.clone(), None, Vec::new());
-        self.ingest_authorized_fact_atomic(&authorized, embedding_model_id)
+        let spaces: Vec<crate::EmbeddingSpace> = embedding_model_id
+            .map(|model_id| crate::EmbeddingSpace::new(model_id, crate::EmbeddingDim::D1024))
+            .into_iter()
+            .collect();
+        self.ingest_authorized_fact_atomic(&authorized, &spaces)
             .await
     }
 
@@ -72,13 +77,13 @@ pub trait FactIngestPort: Send + Sync {
     async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
-        embedding_model_id: Option<&str>,
+        embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError>;
 
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        embedding_model_id: Option<&str>,
+        embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError>;
 
     /// The by-ref twin of
@@ -89,6 +94,6 @@ pub trait FactIngestPort: Send + Sync {
     async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitationRef,
-        embedding_model_id: Option<&str>,
+        embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError>;
 }

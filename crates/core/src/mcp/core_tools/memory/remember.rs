@@ -142,8 +142,6 @@ impl McpTool for RememberTool {
                 .with_lexical_language(Some(lexical_language));
 
             let engine = ctx.require_engine()?;
-            let embedding_client = engine.embed_client();
-            let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
             let outcome = if let Some(citation) = args.citation {
                 ingest_cited_fact(
                     engine,
@@ -151,7 +149,6 @@ impl McpTool for RememberTool {
                     draft,
                     remember_citation_drafts(citation)?,
                     std::slice::from_ref(&SidecarPayload::fact(payload.clone())),
-                    embedding_model_id,
                 )
                 .await?
             } else {
@@ -159,9 +156,7 @@ impl McpTool for RememberTool {
                 let authorized = engine
                     .authorize_fact_ingest(&authz, Relation::Editor, draft, &sidecars)
                     .await?;
-                engine
-                    .ingest_fact_with_typed_sidecar(&authorized, embedding_model_id)
-                    .await?
+                engine.ingest_fact_with_typed_sidecar(&authorized).await?
             };
 
             Ok(RememberOutput {
@@ -180,7 +175,6 @@ async fn ingest_cited_fact(
     draft: FactWriteCommand,
     drafts: RememberCitationDrafts,
     sidecars: &[SidecarPayload],
-    embedding_model_id: Option<&str>,
 ) -> Result<crate::FactIngestOutcome, McpToolError> {
     match drafts {
         RememberCitationDrafts::Inline {
@@ -198,7 +192,7 @@ async fn ingest_cited_fact(
                 )
                 .await?;
             Ok(engine
-                .ingest_fact_with_citation_and_typed_sidecar(&authorized, embedding_model_id)
+                .ingest_fact_with_citation_and_typed_sidecar(&authorized)
                 .await?)
         }
         RememberCitationDrafts::ByRef {
@@ -216,7 +210,7 @@ async fn ingest_cited_fact(
                 )
                 .await?;
             Ok(engine
-                .ingest_fact_with_citation_ref_and_typed_sidecar(&authorized, embedding_model_id)
+                .ingest_fact_with_citation_ref_and_typed_sidecar(&authorized)
                 .await?)
         }
     }

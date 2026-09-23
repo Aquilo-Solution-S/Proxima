@@ -747,15 +747,13 @@ impl UnitOfWork<'_> {
             .await?;
         self.engine
             .validate_write_permit(authorized.owner_write_permit())?;
-        let embed_client = self.engine.embed_client();
-        let requested = embed_client.as_ref().map(|client| client.model_id());
-        let embedding_model_id = self
+        let embedding_spaces = self
             .engine
-            .vector_model_for(authorized.draft().schema_id.as_str(), requested);
+            .fact_embedding_spaces(authorized.draft().schema_id.as_str());
         let outcome = self
             .ensure_session()
             .await?
-            .ingest_fact_with_typed_sidecar(&authorized, embedding_model_id)
+            .ingest_fact_with_typed_sidecar(&authorized, &embedding_spaces)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -861,10 +859,9 @@ impl UnitOfWork<'_> {
             req.authorship.clone(),
             req.request_id.clone(),
         );
-        let embedding_client = self.engine.embed_client();
         let context = self
             .engine
-            .goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+            .goal_atomic_context(req.author_self_perspective_id);
         let atomic = CreateGoalAtomicRequest {
             draft,
             context,

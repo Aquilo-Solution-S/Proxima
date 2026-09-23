@@ -8,7 +8,6 @@ use crate::FlavorRegistryError;
 use crate::authz::{
     DelegationRuntimeAuthority, DelegationRuntimeBinding, SystemAuthority, SystemAuthorityBinding,
 };
-use crate::llm::EmbeddingClient;
 use crate::storage_ports::{EngineStoragePorts, StoragePorts};
 use crate::verbs::schema::FlavorRegistryFrozen;
 
@@ -127,7 +126,7 @@ impl Engine {
     }
 
     #[must_use]
-    pub fn with_embed(mut self, embed: Arc<dyn EmbeddingClient>) -> Self {
+    pub fn with_embed(mut self, embed: crate::llm::BoundEmbeddingClient) -> Self {
         self.embed = Arc::new(RwLock::new(Some(embed)));
         self
     }
@@ -233,7 +232,7 @@ mod tests {
         }
 
         fn dim(&self) -> usize {
-            4
+            crate::llm::EmbeddingDim::D1024.width()
         }
     }
 
@@ -248,7 +247,10 @@ mod tests {
         .expect("valid policy");
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_embedding_runtime_policy(policy)
-            .with_embed(Arc::new(HangingCustomEmbedding));
+            .with_embed(
+                crate::llm::BoundEmbeddingClient::bind(Arc::new(HangingCustomEmbedding))
+                    .expect("supported lane"),
+            );
 
         let result = engine
             .embed_client()

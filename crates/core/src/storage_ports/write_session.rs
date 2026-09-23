@@ -163,7 +163,7 @@ pub trait WriteSession: Send {
     async fn ingest_fact_with_typed_sidecar(
         &mut self,
         authorized: &AuthorizedFactWrite,
-        embedding_model_id: Option<&str>,
+        embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError>;
 
     async fn author_derived(

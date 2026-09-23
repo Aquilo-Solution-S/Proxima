@@ -726,7 +726,7 @@ async fn natural_key_selection_uses_the_authorized_payload() {
             .authorize_fact_ingest(&authz, proxima::Relation::Editor, draft, &[])
             .await?;
         let err = engine
-            .ingest_fact_with_typed_sidecar(&missing, None)
+            .ingest_fact_with_typed_sidecar(&missing)
             .await
             .expect_err("automatic NK selection requires authorization-time values");
         assert!(err.message.contains("typed Fact payload"), "{err}");
@@ -737,9 +737,7 @@ async fn natural_key_selection_uses_the_authorized_payload() {
                 .memories
                 .is_empty()
         );
-        let valid = engine
-            .ingest_fact_with_typed_sidecar(&authorized, None)
-            .await?;
+        let valid = engine.ingest_fact_with_typed_sidecar(&authorized).await?;
         assert_eq!(
             engine
                 .get_memories(
@@ -1342,8 +1340,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                         min_score: None,
                         semantic_weight: None,
                         after: None,
-                        query_embedding: None,
-                        embedding_model_id: None,
+                        semantic: None,
                     },
                     include_body: true,
                     include_neighbor_edges: false,

@@ -2,7 +2,7 @@ pub use super::proof::EmbeddingWriteProof;
 
 use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::storage_ports::{OperatorMaintenanceProof, OwnerWritePermit};
-use crate::{EmbeddableEntityRef, EntityKind, Owner, OwnerScope};
+use crate::{EmbeddableEntityRef, EmbeddingSpace, EntityKind, Owner, OwnerScope};
 
 #[async_trait::async_trait]
 pub trait EmbeddingTextPort: Send + Sync {
@@ -48,7 +48,7 @@ pub trait EmbeddingTextPort: Send + Sync {
         non_embeddable_schemas: &[String],
     ) -> Result<Vec<Option<String>>, StorageError>;
 
-    /// Facts with text but no vector under `model_id`.
+    /// Facts with text but no vector in `space`.
     ///
     /// `non_embeddable_schemas` are excluded — they are not missing a
     /// vector, they declined one ([`crate::flavor::EmbeddingRecipe::Never`]).
@@ -59,7 +59,7 @@ pub trait EmbeddingTextPort: Send + Sync {
         &self,
         scope: Option<&OwnerScope>,
         owner: &Owner,
-        model_id: &str,
+        space: &EmbeddingSpace,
         limit: usize,
         non_embeddable_schemas: &[String],
     ) -> Result<Vec<crate::MemoryId>, StorageError>;
@@ -67,15 +67,15 @@ pub trait EmbeddingTextPort: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait EmbeddingWritePort: Send + Sync {
-    /// Write one embedding row for an entity. Public callers cannot forge
+    /// Write one embedding row for an entity in `space`; `vec` must be
+    /// `space.dim()` wide. Public callers cannot forge
     /// `EmbeddingWriteProof`; route through engine embedding-write APIs
     /// instead.
     async fn insert_embedding(
         &self,
         owner: &Owner,
         entity: EmbeddableEntityRef,
-        model_id: &str,
-        dim: usize,
+        space: &EmbeddingSpace,
         vec: &[f32],
         proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError>;
@@ -90,8 +90,7 @@ pub trait EmbeddingWritePort: Send + Sync {
         &self,
         owner: &Owner,
         entity: EmbeddableEntityRef,
-        model_id: &str,
-        dim: usize,
+        space: &EmbeddingSpace,
         chunks: &[&[f32]],
         proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError>;
@@ -126,6 +125,8 @@ pub struct EmbeddingOrphanSweepOutcome {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EmbeddingRecallCanary {
     pub model_id: String,
+    /// Width of the sampled space; the canary measures that width's index.
+    pub dim: usize,
     pub k: u64,
     pub exact_count: u64,
     pub ann_count: u64,
@@ -151,7 +152,7 @@ pub struct EmbeddingAnnObservability {
 pub trait EmbeddingJobPort: Send + Sync {
     async fn claim_pending_embedding_jobs(
         &self,
-        model_id: &str,
+        space: &EmbeddingSpace,
         limit: i64,
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError>;
 
@@ -219,7 +220,7 @@ pub trait EmbeddingJobPort: Send + Sync {
     async fn enqueue_missing_embedding_jobs(
         &self,
         permit: &OwnerWritePermit,
-        model_id: &str,
+        space: &EmbeddingSpace,
         limit: i64,
         non_embeddable_schemas: &[String],
     ) -> Result<u64, StorageError>;
@@ -284,7 +285,7 @@ pub const EMBEDDING_RECONCILE_DEFAULT_LIMIT: i64 = 50_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddingReconcileOptions<'a> {
-    pub model_id: &'a str,
+    pub space: &'a EmbeddingSpace,
     pub scope: EmbeddingReconcileScope,
     /// Required at the storage boundary. `None` is a constraint error.
     /// Engine `None` becomes [`EMBEDDING_RECONCILE_DEFAULT_LIMIT`].
@@ -320,8 +321,8 @@ pub trait EmbeddingMaintenancePort: Send + Sync {
     ) -> Result<EmbeddingOrphanSweepOutcome, StorageError>;
 
     /// Global enqueue-only reconciliation: durable embedding jobs for every
-    /// embeddable memory the scope selects that lacks coverage under
-    /// `options.model_id`. Idempotent; requeues `failed` jobs, leaves
+    /// embeddable memory the scope selects that lacks coverage in
+    /// `options.space`. Idempotent; requeues `failed` jobs, leaves
     /// `pending`/`processing` untouched.
     async fn reconcile_embeddings(
         &self,

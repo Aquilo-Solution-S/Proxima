@@ -234,7 +234,8 @@ Independent of entity tables.
 | re-embed = new row | memory row unchanged |
 | similarity is query-time | never authors a pin |
 
-`embeddings.vec vector(1024)`. Forget drops vectors; hydrate enqueues jobs.
+`embeddings.vec` is an untyped `vector` keyed by its space `(model_id, dim)`,
+indexed per width. Forget drops vectors; hydrate enqueues jobs.
 
 <a id="consequences-of-append-only"></a>
 

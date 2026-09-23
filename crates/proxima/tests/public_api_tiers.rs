@@ -239,10 +239,10 @@ fn host_api_can_build_an_openai_compatible_embedding_client() {
     // out-of-tree host that ever built one. `new` + `with_*` keeps them
     // compiling across a version that adds an axis they do not set.
     let caps = proxima::EmbedCaps::new(
-        u32::try_from(proxima::llm::EMBEDDING_DIM).expect("the width fits u32"),
+        u32::try_from(proxima::llm::EmbeddingDim::D768.width()).expect("the width fits u32"),
         // The reason a local endpoint needs this at all: a model whose
-        // native width is not EMBEDDING_DIM must be asked for a nested
-        // prefix, or every write fails the fixed-width vector column.
+        // native width is no supported `EmbeddingDim` must be asked for a
+        // nested prefix, or binding the client refuses it.
         true,
     )
     // The other reason a local endpoint needs the facade to name this: a
@@ -252,7 +252,7 @@ fn host_api_can_build_an_openai_compatible_embedding_client() {
         NonZeroU32::try_from(u32::try_from(proxima::llm::MIN_EMBED_INPUT_CAP_CHARS).unwrap())
             .expect("the floor is positive"),
     );
-    assert_eq!(caps.dim as usize, proxima::llm::EMBEDDING_DIM);
+    assert_eq!(caps.dim as usize, proxima::llm::EmbeddingDim::D768.width());
     assert!(
         caps.max_input_chars.is_some(),
         "the cap survives the builder"
@@ -295,8 +295,7 @@ fn host_api_can_build_a_search_read_request() {
             min_score: None,
             semantic_weight: Some(proxima::DEFAULT_HYBRID_SEMANTIC_WEIGHT),
             after: None,
-            query_embedding: None,
-            embedding_model_id: None,
+            semantic: None::<proxima::SemanticQuery>,
         },
         include_body: false,
         include_neighbor_edges: false,

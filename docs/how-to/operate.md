@@ -100,5 +100,8 @@ SELECT relname, n_live_tup, n_dead_tup, vacuum_count, autovacuum_count
 SELECT
     pg_relation_size('proxima_core.embeddings'::regclass) AS embedding_table_bytes,
     pg_total_relation_size('proxima_core.embeddings'::regclass) AS embedding_total_bytes,
-    pg_relation_size('proxima_core.idx_embeddings_vec_hnsw'::regclass) AS hnsw_index_bytes;
+    (SELECT sum(pg_relation_size(format('proxima_core.%I', indexname)::regclass))
+       FROM pg_indexes
+      WHERE schemaname = 'proxima_core'
+        AND indexname LIKE 'embeddings\_hnsw\_d%') AS hnsw_index_bytes;
 ```

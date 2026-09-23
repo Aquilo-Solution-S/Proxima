@@ -18,8 +18,7 @@ use sqlx::query::QueryScalar;
 use sqlx::{PgConnection, PgPool, Postgres};
 use std::sync::Arc;
 pub use verbs::fact_embeddings::{
-    EmbeddingInlineDrainOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
-    EmbeddingReconcileScope,
+    EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
 };
 pub use verbs::maintenance::{
     ChangeEventPruneOptions, ChangeEventPruneOutcome, ColdPurgeRetryOptions, ColdPurgeRetryOutcome,
@@ -390,6 +389,7 @@ async fn ensure_core_schema_markers_on_connection(
     probe_marker_group(connection, sqlx::query_scalar(LEXICAL_CONFIG_MARKERS)).await?;
     probe_marker_group(connection, sqlx::query_scalar(ENUM_ORDER_MARKERS)).await?;
     probe_marker_group(connection, sqlx::query_scalar(EMBEDDING_JOB_MARKERS)).await?;
+    probe_marker_group(connection, sqlx::query_scalar(EMBEDDING_SPACE_MARKERS)).await?;
     Ok(())
 }
 
@@ -1288,6 +1288,73 @@ const EMBEDDING_JOB_MARKERS: &str = r"SELECT CASE
          ELSE NULL
        END";
 
+/// Width lanes (migration 0015): every embedding table keys on the space's
+/// width, the vector column is untyped, and each supported width has its
+/// partial HNSW index. A lane query against a database without its index
+/// still answers, by sequential scan, so the index is asserted here.
+const EMBEDDING_SPACE_MARKERS: &str = r"SELECT CASE
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'embeddings'
+                     AND column_name = 'dim'
+                     AND data_type = 'smallint'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'embeddings.dim must be smallint NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'embedding_heads'
+                     AND column_name = 'dim'
+                     AND data_type = 'smallint'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'embedding_heads.dim must be smallint NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'embedding_jobs'
+                     AND column_name = 'dim'
+                     AND data_type = 'smallint'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'embedding_jobs.dim must be smallint NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_attribute a
+                   WHERE a.attrelid = to_regclass('proxima_core.embeddings')
+                     AND a.attname = 'vec'
+                     AND a.atttypmod = -1
+                     AND NOT a.attisdropped
+                )
+           THEN 'embeddings.vec must be an untyped vector'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_constraint c
+                   WHERE c.conrelid = to_regclass('proxima_core.embeddings')
+                     AND c.conname = 'embeddings_vec_width_chk'
+                     AND c.convalidated
+                )
+           THEN 'embeddings.vec width check is missing'
+         WHEN to_regclass('proxima_core.embeddings_hnsw_d384') IS NULL
+           THEN 'missing width-lane index proxima_core.embeddings_hnsw_d384'
+         WHEN to_regclass('proxima_core.embeddings_hnsw_d768') IS NULL
+           THEN 'missing width-lane index proxima_core.embeddings_hnsw_d768'
+         WHEN to_regclass('proxima_core.embeddings_hnsw_d1024') IS NULL
+           THEN 'missing width-lane index proxima_core.embeddings_hnsw_d1024'
+         WHEN to_regclass('proxima_core.embeddings_hnsw_d1536') IS NULL
+           THEN 'missing width-lane index proxima_core.embeddings_hnsw_d1536'
+         WHEN to_regclass('proxima_core.embeddings_hnsw_d2048') IS NULL
+           THEN 'missing width-lane index proxima_core.embeddings_hnsw_d2048'
+         WHEN to_regclass('proxima_core.embeddings_hnsw_d3072') IS NULL
+           THEN 'missing width-lane index proxima_core.embeddings_hnsw_d3072'
+         ELSE NULL
+       END";
+
 /// Every `lexical_language` column in `proxima_core` is FK-stamped against
 /// `lexical_languages(config)`, and flavor #0 declared each one.
 ///
@@ -2105,27 +2172,6 @@ impl PgStorage {
         .await
     }
 
-    /// Inline drain for queued embedding jobs.
-    ///
-    /// # Errors
-    ///
-    /// Returns storage errors from claiming or writing jobs/embeddings.
-    pub async fn drain_embedding_jobs_inline(
-        &self,
-        client: &dyn proxima_core::llm::EmbeddingClient,
-        limit: i64,
-    ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
-        verbs::fact_embeddings::drain_embedding_jobs_inline_with_platform(
-            &self.pool,
-            self.platform_scope.as_ref(),
-            client,
-            limit,
-            &self.embed_units,
-            self.embedding_runtime_policy,
-        )
-        .await
-    }
-
     /// Delete embedding infrastructure rows whose source entity no longer
     /// exists (crash residue). Operator surface for the maintenance CLI,
     /// like [`Self::reconcile_embeddings`]; in-engine callers go through
@@ -2265,6 +2311,20 @@ impl PgStorage {
         .await
     }
 
+    /// Refuse a pgvector that cannot serve this deployment's semantic
+    /// search: below 0.8.0, or rejecting its HNSW session settings.
+    ///
+    /// [`Self::run_migrations`] runs this itself; a host that migrates
+    /// through another path calls it once at boot.
+    ///
+    /// # Errors
+    ///
+    /// `StorageError::Unavailable` when the extension is missing, too old,
+    /// or refuses the settings.
+    pub async fn ensure_pgvector_compatible(&self) -> Result<(), StorageError> {
+        ensure_pgvector_runtime_compatible(&self.pool, &self.tuning).await
+    }
+
     /// Apply all pending migrations under
     /// `crates/storage-pg/migrations/`. Idempotent — sqlx tracks
     /// applied migrations in `_sqlx_migrations`. Call once
@@ -2342,7 +2402,7 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
              0003_v010_reference_integrity.sql, 0004_v011_goal_refs.sql, \
@@ -2351,7 +2411,8 @@ mod tests {
              0007_upload_content_identity.sql, 0008_cold_integrity_digest.sql, \
              0009_declared_sidecar_presence.sql, 0010_purge_queue_backend.sql \
              0011_v012_fact_outbox.sql, 0012_v013_publication_origin.sql and \
-             0013_v015_agent_note_natural_key_index.sql and 0014_v015_owner_rls.sql"
+             0013_v015_agent_note_natural_key_index.sql, 0014_v015_owner_rls.sql and \
+             0015_v016_embedding_spaces.sql"
         );
     }
 

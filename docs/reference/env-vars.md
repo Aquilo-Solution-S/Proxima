@@ -44,8 +44,9 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_TOOL_DENY` | MCP tool surface | unset | profile restriction | comma-separated canonical scope keys removed after allow |
 | `PROXIMA_EMBED_BASE_URL` | embeddings | unset | any OpenAI-compatible endpoint, local or hosted | required with `PROXIMA_EMBED_MODEL` to enable embeddings; loopback needs no key |
 | `PROXIMA_EMBED_API_KEY` | embeddings | unset | hosted embedding endpoint | bearer sent to `/embeddings` |
-| `PROXIMA_EMBED_MODEL` | embeddings | unset | embeddings enabled | required with `PROXIMA_EMBED_BASE_URL`; must yield 1024-dim vectors |
-| `PROXIMA_EMBED_MATRYOSHKA` | embeddings | `false` | nested-prefix model wider than 1024 | sends a `dimensions` request parameter |
+| `PROXIMA_EMBED_MODEL` | embeddings | unset | embeddings enabled | required with `PROXIMA_EMBED_BASE_URL`; must yield `PROXIMA_EMBED_DIM`-wide vectors |
+| `PROXIMA_EMBED_DIM` | embeddings | `1024` | model of another width | one of 384, 768, 1024, 1536, 2048, 3072; anything else fails boot |
+| `PROXIMA_EMBED_MATRYOSHKA` | embeddings | `false` | nested-prefix model wider than `PROXIMA_EMBED_DIM` | sends a `dimensions` request parameter |
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | embeddings | unset | provider needs a client-side input bound | longest input, in characters, sent before chunked rescue; unset/empty/whitespace means no client-side bound; minimum `4095`; invalid values fail boot |
 | `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | embedding runtime | `120` | slow provider | complete provider request timeout; range `1..=3600`; invalid values fail boot |
 | `PROXIMA_EMBED_BATCH_SIZE` | embedding runtime | `32` | provider batch tuning | texts per provider call; range `1..=1024`; invalid values fail boot |

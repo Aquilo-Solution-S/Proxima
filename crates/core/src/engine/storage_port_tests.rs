@@ -260,7 +260,6 @@ async fn goal_helper_accepts_only_goal_command_handles() {
         request_id: crate::verbs::goal_write::IdempotencyKey::generated("test"),
         context: crate::verbs::goal_write::GoalAtomicContext {
             registry: &registry,
-            embedding_model_id: None,
             author_self_perspective_id: None,
         },
     };
@@ -402,7 +401,7 @@ mod storage_port_tests_support {
     impl crate::EmbeddingJobPort for EmbeddingJobFake {
         async fn claim_pending_embedding_jobs(
             &self,
-            _model_id: &str,
+            _space: &crate::EmbeddingSpace,
             _limit: i64,
         ) -> Result<Vec<crate::storage::EmbeddingJobClaim>, StorageError> {
             Ok(Vec::new())
@@ -456,7 +455,7 @@ mod storage_port_tests_support {
         async fn enqueue_missing_embedding_jobs(
             &self,
             _permit: &crate::storage_ports::OwnerWritePermit,
-            _model_id: &str,
+            _space: &crate::EmbeddingSpace,
             _limit: i64,
             _non_embeddable_schemas: &[String],
         ) -> Result<u64, StorageError> {

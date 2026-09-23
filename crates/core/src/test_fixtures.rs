@@ -1,8 +1,11 @@
 #![allow(dead_code)]
 
 use async_trait::async_trait;
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
+use proxima_core::llm::{EmbeddingClient, EmbeddingDim, LlmError};
 use proxima_core::{Owner, OwnerRef, UserId};
+
+/// Fixture embeddings sit on the default 1024-wide lane.
+const EMBEDDING_DIM: usize = EmbeddingDim::D1024.width();
 
 /// Model a successful verifier for a synthetic fixture principal.
 ///

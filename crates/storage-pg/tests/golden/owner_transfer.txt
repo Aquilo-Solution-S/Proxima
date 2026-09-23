@@ -57,35 +57,35 @@
 ## proxima_core.delegated_authority_grants (1)
 {"action_name":null,"auth_epoch":1,"delegation_id":"<id062>","expires_at":"<ts051>","issued_at":"<ts050>","owner_id":"<id018>","owner_kind":"personal","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id018>","tool_name":"core_remember","write_ceiling":"fact"}
 ## proxima_core.embedding_heads (9)
-{"embedding_version":1,"entity_id":"<id014>","model_id":"test-embed","owner_id":"<id018>"}
-{"embedding_version":1,"entity_id":"<id016>","model_id":"test-embed","owner_id":"<id036>"}
-{"embedding_version":1,"entity_id":"<id063>","model_id":"test-embed","owner_id":"<id018>"}
-{"embedding_version":1,"entity_id":"<id002>","model_id":"test-embed","owner_id":"<id039>"}
-{"embedding_version":1,"entity_id":"<id004>","model_id":"test-embed","owner_id":"<id039>"}
-{"embedding_version":1,"entity_id":"<id006>","model_id":"test-embed","owner_id":"<id039>"}
-{"embedding_version":1,"entity_id":"<id008>","model_id":"test-embed","owner_id":"<id039>"}
-{"embedding_version":1,"entity_id":"<id010>","model_id":"test-embed","owner_id":"<id039>"}
-{"embedding_version":1,"entity_id":"<id012>","model_id":"test-embed","owner_id":"<id039>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id014>","model_id":"test-embed","owner_id":"<id018>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id016>","model_id":"test-embed","owner_id":"<id036>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id063>","model_id":"test-embed","owner_id":"<id018>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id002>","model_id":"test-embed","owner_id":"<id039>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id004>","model_id":"test-embed","owner_id":"<id039>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id006>","model_id":"test-embed","owner_id":"<id039>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id008>","model_id":"test-embed","owner_id":"<id039>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id010>","model_id":"test-embed","owner_id":"<id039>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id012>","model_id":"test-embed","owner_id":"<id039>"}
 ## proxima_core.embedding_jobs (9)
-{"claim_token":null,"claimed_at":null,"entity_id":"<id014>","job_id":"<id064>","last_error":null,"model_id":"test-embed","owner_id":"<id018>","status":"pending"}
-{"claim_token":null,"claimed_at":null,"entity_id":"<id016>","job_id":"<id065>","last_error":null,"model_id":"test-embed","owner_id":"<id036>","status":"pending"}
-{"claim_token":null,"claimed_at":null,"entity_id":"<id063>","job_id":"<id066>","last_error":null,"model_id":"test-embed","owner_id":"<id018>","status":"pending"}
-{"claim_token":null,"claimed_at":null,"entity_id":"<id002>","job_id":"<id067>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
-{"claim_token":null,"claimed_at":null,"entity_id":"<id004>","job_id":"<id068>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
-{"claim_token":null,"claimed_at":null,"entity_id":"<id006>","job_id":"<id069>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
-{"claim_token":null,"claimed_at":null,"entity_id":"<id008>","job_id":"<id070>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
-{"claim_token":null,"claimed_at":null,"entity_id":"<id010>","job_id":"<id071>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
-{"claim_token":null,"claimed_at":null,"entity_id":"<id012>","job_id":"<id072>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
+{"claim_token":null,"claimed_at":null,"dim":1024,"entity_id":"<id014>","job_id":"<id064>","last_error":null,"model_id":"test-embed","owner_id":"<id018>","status":"pending"}
+{"claim_token":null,"claimed_at":null,"dim":1024,"entity_id":"<id016>","job_id":"<id065>","last_error":null,"model_id":"test-embed","owner_id":"<id036>","status":"pending"}
+{"claim_token":null,"claimed_at":null,"dim":1024,"entity_id":"<id063>","job_id":"<id066>","last_error":null,"model_id":"test-embed","owner_id":"<id018>","status":"pending"}
+{"claim_token":null,"claimed_at":null,"dim":1024,"entity_id":"<id002>","job_id":"<id067>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
+{"claim_token":null,"claimed_at":null,"dim":1024,"entity_id":"<id004>","job_id":"<id068>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
+{"claim_token":null,"claimed_at":null,"dim":1024,"entity_id":"<id006>","job_id":"<id069>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
+{"claim_token":null,"claimed_at":null,"dim":1024,"entity_id":"<id008>","job_id":"<id070>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
+{"claim_token":null,"claimed_at":null,"dim":1024,"entity_id":"<id010>","job_id":"<id071>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
+{"claim_token":null,"claimed_at":null,"dim":1024,"entity_id":"<id012>","job_id":"<id072>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
 ## proxima_core.embeddings (9)
-{"embedding_version":1,"entity_id":"<id014>","model_id":"test-embed","owner_id":"<id018>"}
-{"embedding_version":1,"entity_id":"<id016>","model_id":"test-embed","owner_id":"<id036>"}
-{"embedding_version":1,"entity_id":"<id063>","model_id":"test-embed","owner_id":"<id018>"}
-{"embedding_version":1,"entity_id":"<id002>","model_id":"test-embed","owner_id":"<id039>"}
-{"embedding_version":1,"entity_id":"<id004>","model_id":"test-embed","owner_id":"<id039>"}
-{"embedding_version":1,"entity_id":"<id006>","model_id":"test-embed","owner_id":"<id039>"}
-{"embedding_version":1,"entity_id":"<id008>","model_id":"test-embed","owner_id":"<id039>"}
-{"embedding_version":1,"entity_id":"<id010>","model_id":"test-embed","owner_id":"<id039>"}
-{"embedding_version":1,"entity_id":"<id012>","model_id":"test-embed","owner_id":"<id039>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id014>","model_id":"test-embed","owner_id":"<id018>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id016>","model_id":"test-embed","owner_id":"<id036>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id063>","model_id":"test-embed","owner_id":"<id018>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id002>","model_id":"test-embed","owner_id":"<id039>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id004>","model_id":"test-embed","owner_id":"<id039>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id006>","model_id":"test-embed","owner_id":"<id039>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id008>","model_id":"test-embed","owner_id":"<id039>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id010>","model_id":"test-embed","owner_id":"<id039>"}
+{"dim":1024,"embedding_version":1,"entity_id":"<id012>","model_id":"test-embed","owner_id":"<id039>"}
 ## proxima_core.flavor_surface (7)
 {"flavor_id":"core","table_name":"proxima_core.agent_derivation_v1"}
 {"flavor_id":"core","table_name":"proxima_core.agent_note_v1"}

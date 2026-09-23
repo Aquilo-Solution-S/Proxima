@@ -274,8 +274,8 @@ fn embed_literal() -> String {
 async fn embed(pool: &PgPool, t: Uuid, owner: OwnerRef) -> Result<(), Box<dyn std::error::Error>> {
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
-             (entity_id, model_id, embedding_version, vec, owner_id)
-         VALUES ($1, 'test-embed', 1, $2::vector, $3)",
+             (entity_id, model_id, dim, embedding_version, vec, owner_id)
+         VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
     )
     .bind(t)
     .bind(embed_literal())
@@ -284,16 +284,16 @@ async fn embed(pool: &PgPool, t: Uuid, owner: OwnerRef) -> Result<(), Box<dyn st
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.embedding_heads
-             (entity_id, model_id, embedding_version, owner_id)
-         VALUES ($1, 'test-embed', 1, $2)",
+             (entity_id, model_id, dim, embedding_version, owner_id)
+         VALUES ($1, 'test-embed', 1024, 1, $2)",
     )
     .bind(t)
     .bind(owner.stored_owner_id())
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, owner_id)
-         VALUES ($1, 'test-embed', $2)",
+        "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
+         VALUES ($1, 'test-embed', 1024, $2)",
     )
     .bind(t)
     .bind(owner.stored_owner_id())

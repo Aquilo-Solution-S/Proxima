@@ -412,7 +412,12 @@ async fn migrations_apply_to_fresh_db() {
             "embedding_jobs_pending_claim_idx",
             "owners_kind_idx",
             "announce_owner_seq_idx",
-            "idx_embeddings_vec_hnsw",
+            "embeddings_hnsw_d384",
+            "embeddings_hnsw_d768",
+            "embeddings_hnsw_d1024",
+            "embeddings_hnsw_d1536",
+            "embeddings_hnsw_d2048",
+            "embeddings_hnsw_d3072",
             "embeddings_owner_model_idx",
             "goal_owner_state_t_idx",
             "sketch_owner_t_idx",
@@ -426,6 +431,8 @@ async fn migrations_apply_to_fresh_db() {
         }
 
         for retired in [
+            // One partial index per width lane replaced the fixed-width one.
+            "idx_embeddings_vec_hnsw",
             "agent_note_v1_search_tsv_gin",
             "utterance_v1_search_tsv_gin",
             "agent_derivation_v1_search_tsv_gin",
@@ -1947,6 +1954,136 @@ async fn pre_v008_database_fails_closed() {
     result.expect("pre-v0.0.8 fail-closed test failed");
 }
 
+/// 0015 upgrades a v0.0.15 database in place: every stored vector becomes
+/// the 1024 lane's (`dim = 1024` on vectors, heads and jobs), the vector
+/// table is not rewritten, each supported width has its lane index, and the
+/// new CHECKs refuse a width no lane serves or a vector that is not `dim`
+/// wide.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn embedding_spaces_migration_upgrades_1024_rows_in_place() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        let pool = pg.pool_for_tests();
+        let mut staged = proxima_storage_pg::core_migrator();
+        staged.migrations = std::borrow::Cow::Owned(
+            staged
+                .iter()
+                .filter(|migration| migration.version < 14)
+                .cloned()
+                .collect(),
+        );
+        staged.run(pool).await?;
+
+        let owner_id = Uuid::now_v7();
+        let entity_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner_id)
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embeddings (entity_id, model_id, vec, owner_id)
+             VALUES ($1, 'legacy-model', array_fill(0.5::real, ARRAY[1024])::vector, $2)",
+        )
+        .bind(entity_id)
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embedding_heads
+                 (entity_id, model_id, embedding_version, owner_id)
+             VALUES ($1, 'legacy-model', 1, $2)",
+        )
+        .bind(entity_id)
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, owner_id)
+             VALUES ($1, 'legacy-model', $2)",
+        )
+        .bind(entity_id)
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+        let before: i64 =
+            sqlx::query_scalar("SELECT pg_relation_filenode('proxima_core.embeddings')::bigint")
+                .fetch_one(pool)
+                .await?;
+
+        apply_current_migrations(&pg).await?;
+
+        let after: i64 =
+            sqlx::query_scalar("SELECT pg_relation_filenode('proxima_core.embeddings')::bigint")
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(before, after, "0015 must not rewrite the vector table");
+        let dims: (Vec<i16>, Vec<i16>, Vec<i16>) = sqlx::query_as(
+            "SELECT (SELECT array_agg(dim) FROM proxima_core.embeddings),
+                    (SELECT array_agg(dim) FROM proxima_core.embedding_heads),
+                    (SELECT array_agg(dim) FROM proxima_core.embedding_jobs)",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            dims,
+            (vec![1024], vec![1024], vec![1024]),
+            "vectors, heads and jobs join the 1024 lane"
+        );
+        let lanes: Vec<String> = sqlx::query_scalar(
+            "SELECT indexname::text FROM pg_indexes
+              WHERE schemaname = 'proxima_core' AND tablename = 'embeddings'
+                AND indexname LIKE 'embeddings\\_hnsw\\_d%'
+              ORDER BY substr(indexname, 18)::int",
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            lanes,
+            [384, 768, 1024, 1536, 2048, 3072].map(|w| format!("embeddings_hnsw_d{w}")),
+        );
+        let nearest: Uuid = sqlx::query_scalar(
+            "SELECT emb.entity_id FROM proxima_core.embeddings emb
+              WHERE emb.dim = 1024
+              ORDER BY emb.vec::vector(1024) <=> array_fill(0.5::real, ARRAY[1024])::vector(1024)
+              LIMIT 1",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(nearest, entity_id, "the 1024 lane serves the upgraded row");
+
+        for (dim, width, check) in [
+            (512_i16, 512_i32, "embeddings_dim_lane_chk"),
+            (1024, 768, "embeddings_vec_width_chk"),
+        ] {
+            let err = sqlx::query(
+                "INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, vec, owner_id)
+                 VALUES ($1, 'legacy-model', $2, array_fill(0.5::real, ARRAY[$3])::vector, $4)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(dim)
+            .bind(width)
+            .bind(owner_id)
+            .execute(pool)
+            .await
+            .expect_err("the width CHECKs refuse the row");
+            assert!(err.to_string().contains(check), "{dim}/{width}: {err}");
+        }
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("embedding-space upgrade test failed");
+}
+
 /// `proxima_core.flavor_surface` is the registry as the database sees it,
 /// and `memory.sidecar_tables` is constrained to be a subset of it.
 ///
@@ -3153,7 +3290,7 @@ async fn a_v008_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
              baseline"
         );
@@ -3359,6 +3496,14 @@ async fn publication_origin_backfill_uses_original_outbox_owner_after_transfer()
         insert_legacy_outbox_row(&pool, pruned, current_group).await?;
         insert_legacy_outbox_row(&pool, orphan, current_group).await?;
         insert_legacy_outbox_row(&pool, witnessed, original_personal).await?;
+
+        // The runtime borrowed below reads each vector's width (0015) when it
+        // cools a Fact; stage only that column. 0012 never reads it.
+        sqlx::query(
+            "ALTER TABLE proxima_core.embeddings ADD COLUMN dim smallint NOT NULL DEFAULT 1024",
+        )
+        .execute(&pool)
+        .await?;
 
         // Establish the transfer through the runtime path: origin is the
         // outbox's original owner even though the retained hot/cold Fact is

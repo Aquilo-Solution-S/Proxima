@@ -20,7 +20,191 @@ pub enum LlmError {
     Internal(String),
 }
 
-pub const EMBEDDING_DIM: usize = 1024;
+/// A vector width the store can index.
+///
+/// Closed on purpose. pgvector indexes one width per HNSW index, so the
+/// store keeps one partial index per width over a single `embeddings`
+/// table. A width outside this set has no index to be searched through; it
+/// is refused where a client is bound ([`BoundEmbeddingClient::bind`]),
+/// not discovered on the first write. Widths above pgvector's
+/// 2,000-dimension HNSW cap for `vector` are indexed as `halfvec`
+/// ([`Self::is_halfvec_indexed`]); the stored vector keeps full precision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum EmbeddingDim {
+    D384,
+    D768,
+    D1024,
+    D1536,
+    D2048,
+    D3072,
+}
+
+impl EmbeddingDim {
+    /// Every supported width, narrowest first.
+    pub const ALL: [Self; 6] = [
+        Self::D384,
+        Self::D768,
+        Self::D1024,
+        Self::D1536,
+        Self::D2048,
+        Self::D3072,
+    ];
+
+    /// Number of components in a vector of this width.
+    #[must_use]
+    pub const fn width(self) -> usize {
+        match self {
+            Self::D384 => 384,
+            Self::D768 => 768,
+            Self::D1024 => 1024,
+            Self::D1536 => 1536,
+            Self::D2048 => 2048,
+            Self::D3072 => 3072,
+        }
+    }
+
+    /// Whether this width's index casts to `halfvec`: pgvector cannot build
+    /// an HNSW index over `vector` wider than 2,000 dimensions.
+    #[must_use]
+    pub const fn is_halfvec_indexed(self) -> bool {
+        matches!(self, Self::D2048 | Self::D3072)
+    }
+
+    /// The supported width with exactly `width` components, if any.
+    #[must_use]
+    pub const fn from_width(width: usize) -> Option<Self> {
+        match width {
+            384 => Some(Self::D384),
+            768 => Some(Self::D768),
+            1024 => Some(Self::D1024),
+            1536 => Some(Self::D1536),
+            2048 => Some(Self::D2048),
+            3072 => Some(Self::D3072),
+            _ => None,
+        }
+    }
+}
+
+impl TryFrom<usize> for EmbeddingDim {
+    type Error = UnsupportedEmbeddingWidth;
+
+    fn try_from(width: usize) -> Result<Self, Self::Error> {
+        Self::from_width(width).ok_or(UnsupportedEmbeddingWidth { width })
+    }
+}
+
+impl std::fmt::Display for EmbeddingDim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.width())
+    }
+}
+
+/// A client width no [`EmbeddingDim`] matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "embedding width {width} is not supported; the store indexes 384, 768, 1024, 1536, 2048 \
+     and 3072 (a Matryoshka model can request one of these)"
+)]
+pub struct UnsupportedEmbeddingWidth {
+    pub width: usize,
+}
+
+/// Where vectors live: the model that produced them and their width.
+///
+/// Vectors are comparable only within one space. The width is part of the
+/// identity, so the same model re-embedded at another Matryoshka width is a
+/// different space, not a collision.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EmbeddingSpace {
+    model_id: String,
+    dim: EmbeddingDim,
+}
+
+impl EmbeddingSpace {
+    #[must_use]
+    pub fn new(model_id: impl Into<String>, dim: EmbeddingDim) -> Self {
+        Self {
+            model_id: model_id.into(),
+            dim,
+        }
+    }
+
+    #[must_use]
+    pub fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    #[must_use]
+    pub const fn dim(&self) -> EmbeddingDim {
+        self.dim
+    }
+}
+
+impl std::fmt::Display for EmbeddingSpace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}@{}", self.model_id, self.dim)
+    }
+}
+
+/// An embedding client bound to the [`EmbeddingSpace`] its vectors live in.
+///
+/// The engine installs only bound clients. Binding checks the client's
+/// width once, so every downstream write and query names a width the store
+/// indexes. Dereferences to the client.
+#[derive(Debug, Clone)]
+pub struct BoundEmbeddingClient {
+    client: std::sync::Arc<dyn EmbeddingClient>,
+    space: EmbeddingSpace,
+}
+
+impl BoundEmbeddingClient {
+    /// Bind `client` to its space.
+    ///
+    /// # Errors
+    ///
+    /// [`UnsupportedEmbeddingWidth`] when `client.dim()` is not an
+    /// [`EmbeddingDim`].
+    pub fn bind(
+        client: std::sync::Arc<dyn EmbeddingClient>,
+    ) -> Result<Self, UnsupportedEmbeddingWidth> {
+        let dim = EmbeddingDim::try_from(client.dim())?;
+        let space = EmbeddingSpace::new(client.model_id(), dim);
+        Ok(Self { client, space })
+    }
+
+    #[must_use]
+    pub const fn space(&self) -> &EmbeddingSpace {
+        &self.space
+    }
+
+    #[must_use]
+    pub const fn client(&self) -> &std::sync::Arc<dyn EmbeddingClient> {
+        &self.client
+    }
+
+    /// The same space served through `client`, which must be a wrapper
+    /// around this binding's client (the engine's request-timeout layer).
+    pub(crate) fn rewrap(&self, client: std::sync::Arc<dyn EmbeddingClient>) -> Self {
+        Self {
+            client,
+            space: self.space.clone(),
+        }
+    }
+}
+
+impl AsRef<dyn EmbeddingClient> for BoundEmbeddingClient {
+    fn as_ref(&self) -> &(dyn EmbeddingClient + 'static) {
+        self.client.as_ref()
+    }
+}
+
+impl std::ops::Deref for BoundEmbeddingClient {
+    type Target = dyn EmbeddingClient;
+
+    fn deref(&self) -> &Self::Target {
+        self.client.as_ref()
+    }
+}
 
 pub const PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS: &str = "PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS";
 pub const PROXIMA_EMBED_BATCH_SIZE: &str = "PROXIMA_EMBED_BATCH_SIZE";
@@ -362,8 +546,7 @@ pub const MIN_EMBED_INPUT_CAP_CHARS: usize = 2 * CHUNKED_EMBED_MIN_BYTES - 1;
 /// [`CHUNKED_EMBED_MIN_BYTES`] abort — partial coverage would mask poison
 /// input.
 ///
-/// Lives here, not on `Engine`: both the in-process drain and
-/// `maintain-embeddings --drain` must rescue the same way.
+/// Lives here, not on `Engine`, so every drainer rescues the same way.
 ///
 /// `Ok(Some(vectors))` in text order, `Ok(None)` if a live provider refuses
 /// every length, `Err` on a failed liveness probe or another transient
@@ -572,6 +755,52 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex;
     use std::time::Duration;
+
+    #[test]
+    fn every_width_round_trips_and_only_supported_widths_bind() {
+        for dim in super::EmbeddingDim::ALL {
+            assert_eq!(super::EmbeddingDim::try_from(dim.width()), Ok(dim));
+            assert_eq!(dim.is_halfvec_indexed(), dim.width() > 2000);
+        }
+        for width in [0, 4, 383, 1023, 1025, 4096] {
+            assert_eq!(
+                super::EmbeddingDim::try_from(width),
+                Err(super::UnsupportedEmbeddingWidth { width })
+            );
+        }
+    }
+
+    #[test]
+    fn binding_refuses_an_unsupported_width_and_records_the_space() {
+        #[derive(Debug)]
+        struct Width(usize);
+
+        #[async_trait]
+        impl EmbeddingClient for Width {
+            async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+                Ok(vec![0.0; self.0])
+            }
+
+            fn model_id(&self) -> &'static str {
+                "m"
+            }
+
+            fn dim(&self) -> usize {
+                self.0
+            }
+        }
+
+        let bound = super::BoundEmbeddingClient::bind(std::sync::Arc::new(Width(768)))
+            .expect("768 is a lane");
+        assert_eq!(
+            bound.space(),
+            &super::EmbeddingSpace::new("m", super::EmbeddingDim::D768)
+        );
+        assert_eq!(
+            super::BoundEmbeddingClient::bind(std::sync::Arc::new(Width(1000))).unwrap_err(),
+            super::UnsupportedEmbeddingWidth { width: 1000 }
+        );
+    }
 
     fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {

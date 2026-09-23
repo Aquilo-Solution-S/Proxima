@@ -167,7 +167,7 @@ async fn ingest_listenable_with_source_id(
         payload,
         PublicationLimits::default(),
     ));
-    pg.ingest_fact_with_typed_sidecar(&authorized, None).await
+    pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await
 }
 
 /// The same route under an explicit deployment bound.
@@ -181,7 +181,7 @@ async fn ingest_listenable_under(
     let command = fact_command(ListenableProbeV1::SCHEMA_ID, ingest_key);
     let authorized =
         witness(owner, command).with_publication_for_tests(plan_for(*owner, payload, limits));
-    pg.ingest_fact_with_typed_sidecar(&authorized, None).await
+    pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await
 }
 
 /// The same route with host-bound extension attributes on the draft —
@@ -197,7 +197,7 @@ async fn ingest_listenable_with_extensions(
     draft.extensions = extensions;
     let authorized = witness(owner, command)
         .with_publication_for_tests(PublicationPlan::new(draft, PublicationLimits::default()));
-    pg.ingest_fact_with_typed_sidecar(&authorized, None).await
+    pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await
 }
 
 async fn ingest_unlistenable(
@@ -207,7 +207,7 @@ async fn ingest_unlistenable(
 ) -> Result<FactIngestOutcome, StorageError> {
     let command = fact_command(UnlistenableProbeV1::SCHEMA_ID, ingest_key);
     let authorized = witness(owner, command);
-    pg.ingest_fact_with_typed_sidecar(&authorized, None).await
+    pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await
 }
 
 async fn outbox_rows(pool: &sqlx::PgPool) -> i64 {
@@ -609,7 +609,7 @@ async fn a_failing_sidecar_rolls_back_the_fact_and_its_capture() {
     let err = crate::verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
         &mut tx,
         &authorized,
-        None,
+        &[],
         crate::verbs::fact_ingest::FactAdmissionInput {
             natural_key: None,
             sidecar_tables: &[],
@@ -669,7 +669,7 @@ async fn a_failure_after_the_capture_takes_the_captured_record_with_it() {
     let outcome = crate::verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
         &mut tx,
         &authorized,
-        None,
+        &[],
         crate::verbs::fact_ingest::FactAdmissionInput {
             natural_key: None,
             sidecar_tables: &[],
@@ -707,7 +707,7 @@ async fn a_failure_after_the_capture_takes_the_captured_record_with_it() {
         Some(stranger),
         proxima_core::EntityKind::Fact,
         t,
-        "probe/model",
+        &proxima_core::EmbeddingSpace::new("probe/model", proxima_core::EmbeddingDim::D1024),
     )
     .await
     .expect_err("an unregistered owner cannot own an embedding job");
@@ -826,7 +826,7 @@ async fn the_receipt_only_route_refuses_a_listenable_schema() {
         PublicationLimits::default(),
     ));
     let err = pg
-        .ingest_authorized_fact_atomic(&authorized, None)
+        .ingest_authorized_fact_atomic(&authorized, &[])
         .await
         .expect_err("the receipt-only route cannot export a payload it never saw");
     assert!(
@@ -856,7 +856,7 @@ async fn the_receipt_only_route_refuses_bound_typed_sidecars() {
     let authorized = witness(&owner, fact_command(ListenableProbeV1::SCHEMA_ID, None))
         .with_sidecar_payloads_for_tests(vec![SidecarPayload::fact(payload)]);
     let err = pg
-        .ingest_authorized_fact_atomic(&authorized, None)
+        .ingest_authorized_fact_atomic(&authorized, &[])
         .await
         .expect_err("receipt-only persistence must not drop bound typed sidecars");
     assert!(
@@ -887,7 +887,7 @@ async fn an_uncommitted_write_session_leaves_no_visible_record() {
     {
         let mut session = pg.begin(None).await.expect("session begins");
         session
-            .ingest_fact_with_typed_sidecar(&authorized, None)
+            .ingest_fact_with_typed_sidecar(&authorized, &[])
             .await
             .expect("the write succeeds inside the transaction");
         // Dropped without commit.
@@ -921,7 +921,7 @@ async fn a_late_commit_is_claimed_on_the_next_pass_not_stepped_over() {
     ));
     let mut session_a = pg.begin(None).await.expect("session A begins");
     let a_outcome = session_a
-        .ingest_fact_with_typed_sidecar(&slow_witness, None)
+        .ingest_fact_with_typed_sidecar(&slow_witness, &[])
         .await
         .expect("A writes");
 

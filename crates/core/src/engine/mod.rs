@@ -67,7 +67,7 @@ pub struct Engine {
     delegation_runtime_binding: crate::authz::DelegationRuntimeBinding,
     storage: EngineStoragePorts,
     deployment_tool_scope: crate::authz::ToolScope,
-    embed: Arc<RwLock<Option<Arc<dyn EmbeddingClient>>>>,
+    embed: Arc<RwLock<Option<crate::llm::BoundEmbeddingClient>>>,
     embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy,
     embedding_reloader: Option<Arc<dyn EmbeddingClientReloader>>,
     /// Producer identity and capture bounds for listenable Fact schemas
@@ -155,14 +155,16 @@ impl Engine {
         &self.storage
     }
 
+    /// The installed client, bound to its space, with the host's request
+    /// deadline applied to every call.
     #[must_use]
-    pub fn embed_client(&self) -> Option<Arc<dyn EmbeddingClient>> {
+    pub fn embed_client(&self) -> Option<crate::llm::BoundEmbeddingClient> {
         self.embed.try_read().ok().and_then(|slot| {
-            slot.clone().map(|inner| {
-                Arc::new(RequestTimeoutEmbeddingClient {
-                    inner,
+            slot.as_ref().map(|bound| {
+                bound.rewrap(Arc::new(RequestTimeoutEmbeddingClient {
+                    inner: Arc::clone(bound.client()),
                     request_timeout: self.embedding_runtime_policy.request_timeout(),
-                }) as Arc<dyn EmbeddingClient>
+                }))
             })
         })
     }
@@ -172,7 +174,7 @@ impl Engine {
         self.embedding_runtime_policy
     }
 
-    pub async fn set_embed_client(&self, embed: Option<Arc<dyn EmbeddingClient>>) {
+    pub async fn set_embed_client(&self, embed: Option<crate::llm::BoundEmbeddingClient>) {
         *self.embed.write().await = embed;
     }
 
@@ -193,11 +195,16 @@ impl Engine {
         let embed = reloader
             .reload(owner)
             .await
+            .map_err(|e| ProtocolError::internal(format!("reload embedding client: {e}")))?
+            .map(crate::llm::BoundEmbeddingClient::bind)
+            .transpose()
             .map_err(|e| ProtocolError::internal(format!("reload embedding client: {e}")))?;
         let outcome = EmbeddingReloadOutcome {
             active: embed.is_some(),
-            model_id: embed.as_ref().map(|client| client.model_id().to_string()),
-            dim: embed.as_ref().map(|client| client.dim()),
+            model_id: embed
+                .as_ref()
+                .map(|client| client.space().model_id().to_string()),
+            dim: embed.as_ref().map(|client| client.space().dim().width()),
         };
         self.set_embed_client(embed).await;
         Ok(outcome)

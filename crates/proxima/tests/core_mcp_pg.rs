@@ -25,7 +25,7 @@ use uuid::Uuid;
 mod embedding_failure_regressions {
     use super::*;
     use proxima::host::{EmbedCaps, OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
-    use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
+    use proxima_core::llm::{BoundEmbeddingClient, EmbeddingClient, EmbeddingDim, LlmError};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -33,6 +33,11 @@ mod embedding_failure_regressions {
 
     type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
     const DEADLINE: Duration = Duration::from_secs(10);
+    const EMBEDDING_DIM: usize = EmbeddingDim::D1024.width();
+
+    fn bound(client: Arc<dyn EmbeddingClient>) -> BoundEmbeddingClient {
+        BoundEmbeddingClient::bind(client).expect("test clients embed in a lane")
+    }
 
     struct OverflowEndpoint {
         client: Arc<OpenAiCompatEmbeddingClient>,
@@ -149,7 +154,10 @@ mod embedding_failure_regressions {
             .as_str()
             .ok_or("memory handle")?
             .to_owned();
-        built.engine.set_embed_client(Some(test_embedding())).await;
+        built
+            .engine
+            .set_embed_client(Some(bound(test_embedding())))
+            .await;
         ensure_fact_embedding_for_handle(&built.engine, &owner, &memory).await?;
         Ok(memory)
     }
@@ -172,7 +180,7 @@ mod embedding_failure_regressions {
         let adapter = endpoint.client.embed("response control").await;
         built
             .engine
-            .set_embed_client(Some(endpoint.client.clone()))
+            .set_embed_client(Some(bound(endpoint.client.clone())))
             .await;
         let mut calls = [0; 6];
         calls[0] = endpoint.calls.load(Ordering::SeqCst);
@@ -202,7 +210,10 @@ mod embedding_failure_regressions {
         .await??;
         calls[5] = endpoint.calls.load(Ordering::SeqCst);
 
-        built.engine.set_embed_client(Some(test_embedding())).await;
+        built
+            .engine
+            .set_embed_client(Some(bound(test_embedding())))
+            .await;
         let healthy = call("core_search_memories", search_args("semantic")).await??;
         Ok(Observed {
             memory,
@@ -1184,6 +1195,113 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
 
     let _ = drop_db(&db_name).await;
     result.expect("core search MCP facade integration test failed");
+}
+
+/// A client at a non-default width whose vectors separate two topics, so a
+/// semantic search ranks correctly only by reading its own width lane.
+#[derive(Debug)]
+struct LaneEmbedding(proxima_core::llm::EmbeddingDim);
+
+#[async_trait::async_trait]
+impl proxima_core::llm::EmbeddingClient for LaneEmbedding {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, proxima_core::llm::LlmError> {
+        let mut vector = vec![0.0; self.0.width()];
+        vector[usize::from(!text.contains("alpha"))] = 1.0;
+        Ok(vector)
+    }
+
+    fn model_id(&self) -> &'static str {
+        "lane-embed"
+    }
+
+    fn dim(&self) -> usize {
+        self.0.width()
+    }
+}
+
+/// One `vector` lane and one `halfvec` lane, each end to end through the
+/// facade: `core_remember` queues jobs in the client's space, the drain
+/// stores vectors at that width, and `core_search_memories` embeds the query
+/// in the same space and ranks through that lane.
+#[tokio::test]
+async fn facade_embeds_and_searches_at_a_non_default_width() {
+    for dim in [
+        proxima_core::llm::EmbeddingDim::D768,
+        proxima_core::llm::EmbeddingDim::D3072,
+    ] {
+        let db_name = unique_db_name("proxima_core_width_lane");
+        create_db(&db_name).await.expect("PG required for tests");
+        let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = company_owner(Uuid::now_v7());
+            let built = Proxima::<AgentMemoryApp>::app()
+                .database_url(runtime_url.clone())
+                .platform_database_url(platform_url.clone())
+                .owner(owner)
+                .embed_client(Arc::new(LaneEmbedding(dim)))
+                .tool_scope(ToolScope::All)
+                .build()
+                .await?;
+            let tools = built.core_mcp_tools();
+            let authz = host_authz(&owner, ToolScope::All);
+
+            let mut handles = Vec::new();
+            for topic in ["alpha", "beta"] {
+                let remembered = call_test_model_tool(
+                    &tools,
+                    authz.clone(),
+                    owner,
+                    "core_remember",
+                    serde_json::json!({
+                        "title": format!("{topic} lane fact"),
+                        "body": format!("{topic} survey notes"),
+                        "idempotency_key": format!("width-lane-{topic}")
+                    }),
+                )
+                .await?;
+                handles.push(remembered["handle"].as_str().expect("handle").to_owned());
+            }
+
+            let drained = built.engine.drain_embedding_jobs(10).await?;
+            assert_eq!((drained.processed, drained.failed), (2, 0), "{dim}");
+            let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
+            let stored: Vec<(String, i16, i32)> = sqlx::query_as(
+                "SELECT model_id, dim, vector_dims(vec)
+                   FROM proxima_core.embeddings ORDER BY entity_id",
+            )
+            .fetch_all(&admin_pool)
+            .await?;
+            let width = i16::try_from(dim.width())?;
+            assert_eq!(
+                stored,
+                vec![("lane-embed".to_owned(), width, i32::from(width)); 2],
+                "vectors land in the client's space"
+            );
+
+            for (query, expected) in [("alpha", &handles[0]), ("beta", &handles[1])] {
+                let found = call_test_model_tool(
+                    &tools,
+                    authz.clone(),
+                    owner,
+                    "core_search_memories",
+                    serde_json::json!({
+                        "query": query, "mode": "semantic", "kind": "Fact", "limit": 5
+                    }),
+                )
+                .await?;
+                assert_eq!(found["memories"][0]["memory"], **expected, "{dim}: {query}");
+                assert_eq!(found["memories"].as_array().map(Vec::len), Some(2));
+            }
+
+            built.shutdown();
+            Ok(())
+        }
+        .await;
+
+        let _ = drop_db(&db_name).await;
+        result.unwrap_or_else(|err| panic!("width lane {dim} end to end failed: {err}"));
+    }
 }
 
 #[tokio::test]

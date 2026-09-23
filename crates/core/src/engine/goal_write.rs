@@ -156,9 +156,7 @@ impl Engine {
             req.authorship.clone(),
             req.request_id.clone(),
         );
-        let embedding_client = self.embed_client();
-        let context =
-            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+        let context = self.goal_atomic_context(req.author_self_perspective_id);
         let atomic = CreateGoalAtomicRequest {
             draft,
             context,
@@ -203,9 +201,7 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
-        let embedding_client = self.embed_client();
-        let context =
-            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+        let context = self.goal_atomic_context(req.author_self_perspective_id);
         let atomic = TransitionGoalAtomicRequest {
             owner: *permit.owner(),
             prior_goal_id: req.prior_goal_id,
@@ -262,9 +258,7 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
-        let embedding_client = self.embed_client();
-        let context =
-            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+        let context = self.goal_atomic_context(req.author_self_perspective_id);
         let atomic = AchieveGoalAtomicRequest {
             owner: *permit.owner(),
             prior_goal_id: req.prior_goal_id,
@@ -312,9 +306,7 @@ impl Engine {
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;
         let replacement = self.normalize_payload_write(req.replacement.clone())?;
-        let embedding_client = self.embed_client();
-        let context =
-            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+        let context = self.goal_atomic_context(req.author_self_perspective_id);
         let atomic = ModifyGoalAtomicRequest {
             owner: *permit.owner(),
             prior_goal_id: req.prior_goal_id,
@@ -386,9 +378,7 @@ impl Engine {
         for child in &req.children {
             children.push(self.normalize_child_goal_draft(child)?);
         }
-        let embedding_client = self.embed_client();
-        let context =
-            self.goal_atomic_context(embedding_client.as_ref(), req.author_self_perspective_id);
+        let context = self.goal_atomic_context(req.author_self_perspective_id);
         let atomic = DecomposeGoalAtomicRequest {
             owner: *permit.owner(),
             parent_goal_id: req.parent_goal_id,
@@ -422,15 +412,12 @@ impl Engine {
             .map_err(map_goal_storage_error)
     }
 
-    pub(in crate::engine) fn goal_atomic_context<'a>(
-        &'a self,
-        embedding_client: Option<&'a std::sync::Arc<dyn crate::llm::EmbeddingClient>>,
+    pub(in crate::engine) fn goal_atomic_context(
+        &self,
         author_self_perspective_id: Option<MemoryId>,
-    ) -> GoalAtomicContext<'a> {
-        let embedding_model_id = embedding_client.map(|client| client.model_id());
+    ) -> GoalAtomicContext<'_> {
         GoalAtomicContext {
             registry: self.registry(),
-            embedding_model_id,
             author_self_perspective_id,
         }
     }

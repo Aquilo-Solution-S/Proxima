@@ -55,7 +55,7 @@ fn core_migrator_before_owner_rls() -> Migrator {
     migrator.migrations = Cow::Owned(
         migrator
             .iter()
-            .filter(|migration| migration.version < 14)
+            .filter(|migration| migration.version != 14)
             .cloned()
             .collect(),
     );

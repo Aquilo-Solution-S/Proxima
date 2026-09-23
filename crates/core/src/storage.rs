@@ -466,16 +466,19 @@ pub enum DerivedEmbedding<'a> {
     /// the same transaction as the row. An over-limit refusal whose
     /// bisection then covered every piece also lands here: one vec per
     /// version, so the first piece is what is stored.
-    Ready { model_id: &'a str, vector: Vec<f32> },
+    Ready {
+        space: &'a crate::EmbeddingSpace,
+        vector: Vec<f32>,
+    },
     /// The client could not embed this text at any length, or the chunked
     /// rescue itself failed, while the provider is up — so the input, not
     /// the provider, is what failed. Storage writes no vector and enqueues
-    /// a durable embedding job for `model_id` **in the same transaction as
+    /// a durable embedding job for `space` **in the same transaction as
     /// the row**, so the drain (which owns terminal failures and retries)
     /// picks the memory up. Losing the whole write, and every model call
     /// upstream of it, is not the right answer to an input one provider
     /// call refused.
-    Deferred { model_id: &'a str },
+    Deferred { space: &'a crate::EmbeddingSpace },
 }
 
 impl DerivedEmbedding<'_> {
@@ -549,6 +552,6 @@ pub struct EmbeddingJobClaim {
     pub owner: Owner,
     pub entity_kind: EntityKind,
     pub entity_id: MemoryId,
-    pub model_id: String,
+    pub space: crate::EmbeddingSpace,
     pub claim_token: Uuid,
 }

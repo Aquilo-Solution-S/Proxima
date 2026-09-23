@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 
 use proxima_core::MemoryId;
 use proxima_core::mcp::cursor as wire_cursor;
-use proxima_core::verbs::query::like_pattern;
+use proxima_core::verbs::query::{SemanticQuery, like_pattern};
 use proxima_core::{Tool, ToolCtx, ToolError};
 use proxima_storage_pg::begin_compatible_owner_transaction;
 use schemars::JsonSchema;
@@ -471,9 +471,9 @@ struct ChunkCandidateScan<'a> {
     effective_mode: ChunkSearchMode,
     candidate_limit: i64,
     read_owner_ids: &'a [Uuid],
-    /// The query embedding and the model that produced it, `None` when the
-    /// semantic arm does not run.
-    query_embedding: Option<&'a (Vec<f32>, String)>,
+    /// The query embedding and the space it was embedded in, `None` when
+    /// the semantic arm does not run.
+    query_embedding: Option<&'a SemanticQuery>,
 }
 
 /// Phases 1 and 2: scan both content arms, fuse their ranks, and admit the
@@ -551,14 +551,13 @@ async fn scan_semantic_candidates(
     pool: &crate::CodeFlavorStore,
     scan: &ChunkCandidateScan<'_>,
 ) -> Result<Vec<CodeChunkVectorCandidate>, ToolError> {
-    let Some((embedding, model_id)) = scan.query_embedding else {
+    let Some(query) = scan.query_embedding else {
         return Ok(Vec::new());
     };
     pool.nearest_code_chunk_candidates(
         ctx.authz().owner_scope(),
         ctx.owner(),
-        model_id,
-        embedding,
+        query,
         CodeChunkVectorFilters {
             repo_id: scan.resolved.repo_id,
             language: scan.resolved.language,
@@ -693,7 +692,7 @@ async fn resolve_query_embedding(
     engine: &proxima_core::Engine,
     mode: ChunkSearchMode,
     query: &str,
-) -> Result<(ChunkSearchMode, Option<(Vec<f32>, String)>), ToolError> {
+) -> Result<(ChunkSearchMode, Option<SemanticQuery>), ToolError> {
     if mode == ChunkSearchMode::Lexical {
         return Ok((ChunkSearchMode::Lexical, None));
     }
@@ -708,7 +707,13 @@ async fn resolve_query_embedding(
     // The client can vanish, or its call fail, between the probe above and
     // here; both land in the same place.
     match embed.embed(query).await {
-        Ok(embedding) => Ok((mode, Some((embedding, embed.model_id().to_string())))),
+        Ok(vector) => Ok((
+            mode,
+            Some(SemanticQuery {
+                space: embed.space().clone(),
+                vector,
+            }),
+        )),
         Err(err) if mode == ChunkSearchMode::Semantic => {
             tracing::warn!(error = %err, "embedding provider failed");
             Err(ToolError::Unavailable(

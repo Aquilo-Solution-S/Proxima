@@ -7,7 +7,6 @@
 //! validation, reference-kind validation, the sidecar + projection insert,
 //! and the declared-index assertion as a unit.
 
-use proxima_core::llm::EMBEDDING_DIM;
 use std::collections::{BTreeMap, BTreeSet};
 
 use proxima_core::storage_ports::OwnerWritePermit;
@@ -247,27 +246,26 @@ async fn settle_derived_embedding(
 ) -> Result<(), StorageError> {
     match &draft.embedding {
         DerivedEmbedding::None => Ok(()),
-        DerivedEmbedding::Ready { model_id, vector } => {
+        DerivedEmbedding::Ready { space, vector } => {
             crate::verbs::fact_embeddings::insert_memory_embedding(
                 tx,
                 &draft.owner,
                 draft.kind,
                 memory_id,
-                model_id,
-                EMBEDDING_DIM,
+                space,
                 vector,
             )
             .await
             .map(|_| ())
         }
-        DerivedEmbedding::Deferred { model_id } => {
+        DerivedEmbedding::Deferred { space } => {
             crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
                 tx,
                 OwnerRefKind::of(&draft.owner),
                 Some(draft.owner.stored_owner_id()),
                 draft.kind,
                 memory_id.into_inner(),
-                model_id,
+                space,
             )
             .await
         }

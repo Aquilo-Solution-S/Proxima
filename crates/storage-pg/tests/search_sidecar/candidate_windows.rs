@@ -14,7 +14,7 @@ use proxima_core::{
 use super::{
     EntityKind, MemorySearchRequest, OwnerRef, PgStorage, SchemaId, SearchMode, SearchOrder,
     SupersessionStatus, UserId, Uuid, create_db, db_url, drop_db, embed_literal, embed_literal_xy,
-    search_req, seed_embedding,
+    search_req, seed_embedding, test_semantic,
 };
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -74,7 +74,7 @@ impl Fixture {
             .await?;
         Ok(self
             .engine
-            .ingest_fact_with_typed_sidecar(&authorized, None)
+            .ingest_fact_with_typed_sidecar(&authorized)
             .await?
             .memory_id)
     }
@@ -161,10 +161,10 @@ impl Fixture {
         request.mode = mode;
         request.limit = 1;
         request.semantic_weight = matches!(mode, SearchMode::Hybrid).then_some(1.0);
-        request.embedding_model_id = Some("test-embed".into());
         let mut query = vec![0.0; 1024];
         query[0] = 1.0;
-        request.query_embedding = Some(query);
+
+        request.semantic = Some(test_semantic(query));
         request
     }
 }

@@ -21,9 +21,8 @@ pub use jobs::{
 };
 pub(crate) use ops::{embedding_ann_observability, sweep_orphan_embedding_rows};
 pub use reconcile::{
-    EmbeddingInlineDrainOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
-    EmbeddingReconcileScope, drain_embedding_jobs_inline,
-    drain_embedding_jobs_inline_with_platform, reconcile_embeddings,
+    EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
+    reconcile_embeddings,
 };
 pub use text::{
     load_embedding_text, load_embedding_text_on_connection, load_embedding_texts,
@@ -31,7 +30,6 @@ pub use text::{
 };
 pub(crate) use write::{
     insert_embedding, insert_embedding_chunks, insert_memory_embedding, lock_embedding_job_claim,
-    lock_embedding_job_claim_for_claim,
 };
 
 fn ensure_nonnegative_limit(limit: i64) -> Result<i64, StorageError> {

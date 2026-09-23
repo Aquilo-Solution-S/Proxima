@@ -496,7 +496,7 @@ impl Fixture {
         )
         .with_publication_for_tests(plan);
         self.pg
-            .ingest_fact_with_typed_sidecar(&authorized, None)
+            .ingest_fact_with_typed_sidecar(&authorized, &[])
             .await
     }
 
