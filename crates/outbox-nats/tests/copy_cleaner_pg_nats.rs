@@ -239,6 +239,7 @@ async fn source_erasure_removes_a_published_copy_after_a_finite_scan() {
                     proxima_core::EntityId::Memory(preserved.memory_id),
                     destination,
                     fixture.pg.surfaces(),
+                    &[],
                 )
                 .await
                 .expect("real transfer preserves the origin")

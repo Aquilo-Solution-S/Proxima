@@ -175,6 +175,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
                 EntityId::Memory(file.memory_id),
                 dest,
                 &transfer_surfaces(),
+                &[],
             )
             .await?;
         assert!(

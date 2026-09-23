@@ -84,6 +84,9 @@ async fn lock_owner_fences_session(
 }
 
 use crate::error::{map_err, with_bounded_retry};
+use crate::verbs::fact_embeddings::{
+    RouteSpaces, enqueue_series_head_in_tx, purge_series_embedding_spaces_in_tx,
+};
 
 #[must_use]
 pub fn owner_binds(owner: &OwnerRef) -> (OwnerRefKind, uuid::Uuid) {
@@ -876,6 +879,7 @@ pub(crate) async fn transfer_to_owner(
     surfaces: &OwnerSurfaces,
     entity: EntityId,
     to_owner: OwnerRef,
+    embeddings: RouteSpaces<'_>,
 ) -> Result<bool, StorageError> {
     let from_owner = *permit.owner();
     // The backstop, DRIVEN by the declaration rather than merely agreeing
@@ -907,8 +911,15 @@ pub(crate) async fn transfer_to_owner(
         // same sorted order, so an owner erase cannot pass the transfer's
         // boundary half-way through and crossed transfers cannot deadlock.
         lock_owner_fences_exclusive_tx(&mut tx, &[from_owner, to_owner]).await?;
-        let transferred =
-            transfer_memory_t(&mut tx, surfaces, memory_id.into_inner(), from_id, to_owner).await?;
+        let transferred = transfer_memory_t(
+            &mut tx,
+            surfaces,
+            memory_id.into_inner(),
+            from_id,
+            to_owner,
+            embeddings,
+        )
+        .await?;
         if !transferred {
             // A false persist can follow real writes: when the head is gone
             // or changed owner after the series reads, cooled/blob/content
@@ -965,6 +976,7 @@ async fn transfer_memory_t(
     t: uuid::Uuid,
     from_id: uuid::Uuid,
     to_owner: OwnerRef,
+    embeddings: RouteSpaces<'_>,
 ) -> Result<bool, StorageError> {
     let handle: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT handle
@@ -988,7 +1000,7 @@ async fn transfer_memory_t(
     let Some(handle) = handle else {
         return Ok(false);
     };
-    transfer_memory_handle(tx, surfaces, t, handle, from_id, to_owner).await
+    transfer_memory_handle(tx, surfaces, t, handle, from_id, to_owner, embeddings).await
 }
 
 const SERIES_TS_SQL: &str = "SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2
@@ -1151,6 +1163,7 @@ async fn transfer_memory_handle(
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     to_owner: OwnerRef,
+    embeddings: RouteSpaces<'_>,
 ) -> Result<bool, StorageError> {
     // The destination's `owners` row is not seeded anywhere, so mint it (or
     // confirm its kind) BEFORE any statement below binds `to_id` into
@@ -1241,6 +1254,11 @@ async fn transfer_memory_handle(
         }
         None => *ts.last().expect("non-empty transfer series has an event t"),
     };
+    // The vectors moved with the series, but they are the destination's
+    // only in spaces its route names: the rest go, and the head is queued
+    // for each route space it has no vector in.
+    purge_series_embedding_spaces_in_tx(tx, to_id, embeddings.spaces, &ts).await?;
+    enqueue_series_head_in_tx(tx, to_id, handle, embeddings).await?;
     announce_series_transfer(tx, handle, from_id, to_id, event_t).await?;
     Ok(true)
 }

@@ -55,6 +55,7 @@ pub(super) struct PreparedDerived {
     pub(super) supersedes: Option<MemoryId>,
     pub(super) lexical_language: Option<String>,
     pub(super) embedding: PreparedEmbedding,
+    pub(super) queued_spaces: Vec<crate::EmbeddingSpace>,
     pub(super) origins: Vec<EdgeEndpoint>,
     pub(super) references: Vec<EdgeEndpoint>,
 }
@@ -142,6 +143,7 @@ impl PreparedDerived {
             supersedes: self.supersedes,
             lexical_language: self.lexical_language.as_deref(),
             embedding: self.embedding.as_derived(),
+            queued_spaces: &self.queued_spaces,
             origins: &self.origins,
             references: &self.references,
         }
@@ -548,7 +550,8 @@ impl Engine {
     ///
     /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on the
     /// owner; `InvalidArgument` for an unbounded or duplicate request; and
-    /// `Internal` for storage failures.
+    /// `Internal` for storage failures or when the host cannot route the
+    /// owner's embeddings.
     pub async fn hydrate_memories<A>(
         &self,
         authority: &A,
@@ -577,11 +580,22 @@ impl Engine {
         let write_permit = self
             .authorize_write(authority, &owner, Relation::Editor)
             .await?;
+        // Hydrated memories are queued for the spaces the Owner's route names
+        // now; a route error refuses the hydrate like any other write.
+        let embedding_spaces = self
+            .embedding_route(&owner)
+            .await
+            .map_err(|err| super::ingest::embedding_route_refused(&owner, &err))?
+            .write_spaces();
         let outcome = self
             .storage()
             .memory_authoring
             .memory_authoring
-            .hydrate_memories(write_permit.owner_write_permit(), memory_ids)
+            .hydrate_memories(
+                write_permit.owner_write_permit(),
+                memory_ids,
+                &embedding_spaces,
+            )
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(err, "memory_ids", "memory not found")
@@ -675,7 +689,7 @@ impl Engine {
             .await?;
         validate_typed_invocation(&memory, memory_id, kind, operator_kind, &origins)
             .map_err(map_derived_storage_error)?;
-        let embedding = self
+        let (embedding, queued_spaces) = self
             .prepare_memory_embedding(
                 write_permit.owner(),
                 memory_id,
@@ -697,6 +711,7 @@ impl Engine {
             supersedes,
             lexical_language: memory.lexical_language,
             embedding,
+            queued_spaces,
             origins,
             references,
         })
@@ -807,6 +822,9 @@ impl Engine {
 
     /// Embeds through `owner`'s route. A route error fails the write, the
     /// same as for a Fact: the memory would otherwise land unsearchable.
+    ///
+    /// Returns the `current` space's embedding and the spaces queued beside
+    /// it: a moving route's `next` space is never embedded inline.
     async fn prepare_memory_embedding(
         &self,
         owner: &Owner,
@@ -814,37 +832,40 @@ impl Engine {
         schema_id: &str,
         text: &str,
         defer: bool,
-    ) -> Result<PreparedEmbedding, ProtocolError> {
+    ) -> Result<(PreparedEmbedding, Vec<crate::EmbeddingSpace>), ProtocolError> {
         if !self.registry().schema_is_embeddable(schema_id) {
-            return Ok(PreparedEmbedding::None);
+            return Ok((PreparedEmbedding::None, Vec::new()));
         }
         let route = self
             .embedding_route(owner)
             .await
             .map_err(|err| super::ingest::embedding_route_refused(owner, &err))?;
+        let queued = route
+            .next_client()
+            .map(|client| client.space().clone())
+            .into_iter()
+            .collect();
         let Some(client) = route.current_client() else {
-            return Ok(PreparedEmbedding::None);
+            return Ok((PreparedEmbedding::None, queued));
         };
         if defer {
-            return Ok(PreparedEmbedding::Deferred {
-                space: client.space().clone(),
-            });
+            let space = client.space().clone();
+            return Ok((PreparedEmbedding::Deferred { space }, queued));
         }
-        Ok(
-            match resolve_derived_embedding(client, memory_id, text)
-                .await
-                .map_err(map_derived_storage_error)?
-            {
-                DerivedEmbedding::None => PreparedEmbedding::None,
-                DerivedEmbedding::Ready { space, vector } => PreparedEmbedding::Ready {
-                    space: space.clone(),
-                    vector,
-                },
-                DerivedEmbedding::Deferred { space } => PreparedEmbedding::Deferred {
-                    space: space.clone(),
-                },
+        let embedding = match resolve_derived_embedding(client, memory_id, text)
+            .await
+            .map_err(map_derived_storage_error)?
+        {
+            DerivedEmbedding::None => PreparedEmbedding::None,
+            DerivedEmbedding::Ready { space, vector } => PreparedEmbedding::Ready {
+                space: space.clone(),
+                vector,
             },
-        )
+            DerivedEmbedding::Deferred { space } => PreparedEmbedding::Deferred {
+                space: space.clone(),
+            },
+        };
+        Ok((embedding, queued))
     }
 
     /// Author one derived Memory and its already-resolved edges. When an
@@ -892,12 +913,19 @@ impl Engine {
             .embedding_route(&req.owner)
             .await
             .map_err(|err| StorageError::Internal(format!("embedding route: {err}")))?;
+        let embeddable = self.registry().schema_is_embeddable(req.schema_id.as_str());
         let embedding = match route.current_client() {
-            Some(client) if self.registry().schema_is_embeddable(req.schema_id.as_str()) => {
+            Some(client) if embeddable => {
                 resolve_derived_embedding(client, req.memory_id, &req.text).await?
             }
             _ => DerivedEmbedding::None,
         };
+        let queued_spaces: Vec<crate::EmbeddingSpace> = route
+            .next_client()
+            .filter(|_| embeddable)
+            .map(|client| client.space().clone())
+            .into_iter()
+            .collect();
 
         let storage_req = AuthorDerivedRequest {
             memory_id: req.memory_id,
@@ -914,6 +942,7 @@ impl Engine {
             supersedes: req.supersedes,
             lexical_language: req.lexical_language,
             embedding,
+            queued_spaces: &queued_spaces,
             origins: req.derived_from,
             references,
         };
@@ -1452,6 +1481,7 @@ mod tests {
             &self,
             permit: &OwnerWritePermit,
             memory_ids: &[MemoryId],
+            _embedding_spaces: &[crate::EmbeddingSpace],
         ) -> Result<crate::MemoryHydrationBatchOutcome, StorageError> {
             self.hydration_calls
                 .lock()

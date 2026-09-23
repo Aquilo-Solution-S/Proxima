@@ -3520,6 +3520,7 @@ async fn publication_origin_backfill_uses_original_outbox_owner_after_transfer()
                     EntityId::Memory(MemoryId::new(t)),
                     group_owner,
                     pg.surfaces(),
+                    &[],
                 )
                 .await?,
                 "the migration fixture must perform an actual A-to-B transfer"

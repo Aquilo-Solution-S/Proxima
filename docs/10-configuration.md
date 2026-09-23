@@ -271,7 +271,7 @@ answers `route(owner)` for the Owner that **owns the data** — never the
 caller — with an `EmbeddingRoute`: one `BoundEmbeddingClient`, or none. An
 Owner's texts and queries reach only its own route's endpoint.
 
-- **Writes** queue a job in the route's space. A route error fails the write,
+- **Writes** queue a job in each of the route's spaces. A route error fails the write,
   so nothing lands unsearchable; a route with no client queues nothing.
 - **The drain** claims across every space and embeds each job through its
   Owner's route. A route error or a provider outage releases that Owner's
@@ -286,10 +286,44 @@ Owner's texts and queries reach only its own route's endpoint.
   sets `degraded_to_lexical`. Code chunk search embeds through the current
   Owner's route, so chunks another route embedded rank lexically.
 
+- **Hydrate and transfer** queue the route's spaces for the rows they bring
+  back, and a transfer re-embeds the moved series under the destination
+  Owner's route: vectors in any other space are deleted with the move. A
+  destination the host cannot route refuses the transfer.
+
 `route` runs on every write, drain batch and search: make it a lookup of host
 configuration, and fetch credentials inside the client's `embed`, where a
 failure is retried. The boot reconcile pages every Owner through the router
 once.
+
+#### Moving an Owner to a new model
+
+A new model, key-bound endpoint or width is a new space. Move an Owner
+without a search gap:
+
+1. **Route both.** Return `EmbeddingRoute::moving(current, next)`. `current`
+   still embeds inline and serves search; every write, derive, hydrate and
+   transfer also queues `next`, and the drain fills it through the `next`
+   client. `moving` refuses two clients in the same space.
+2. **Backfill.** `Engine::backfill_missing_embeddings(authz, owner, limit)`
+   queues every memory missing a vector in either space; repeat until it
+   returns 0.
+3. **Watch coverage.** `Engine::embedding_coverage(owner)` lists each space
+   with its role (`Current`, `Next`, `Unrouted`) and counts. The move is
+   complete when `Next`'s `embedded` equals `embeddable` less
+   `failed_permanent` — inputs that provider refuses at any length.
+4. **Flip.** Return `EmbeddingRoute::current(next)`. Search embeds through
+   the new client from the next request on; the old space is `Unrouted`.
+5. **Purge.** `Engine::purge_embedding_spaces(owner)` deletes the Owner's
+   vectors, heads and jobs in every `Unrouted` space. A drain batch that
+   routed before the flip can still land an old-space vector afterwards —
+   coverage shows it, and purging again removes it.
+
+A failing `next` provider backs the whole Owner off, `current` jobs
+included; drop `next` from the route if it stays down. Purge refuses when no router is
+installed or the Owner cannot be routed, so it never reads a missing route
+as "keep nothing". The same purge offboards an Owner whose route became
+`none()`. Coverage and purge are host methods, not MCP tools.
 
 `apps/proxima-mcp` talks to any OpenAI-compatible `/embeddings` endpoint.
 Base URL and model are explicit; a locally-hosted endpoint (Ollama,

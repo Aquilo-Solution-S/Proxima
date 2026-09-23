@@ -2305,6 +2305,7 @@ async fn owner_erase_excludes_a_memory_transferred_away_before_its_fence() {
                     EntityId::Memory(proxima_core::MemoryId::new(t)),
                     destination,
                     &contract_sidecar_tables(),
+                    &[],
                 )
                 .await
         });
@@ -2409,6 +2410,7 @@ async fn destination_erase_includes_a_memory_transferred_in_before_its_fence() {
                     EntityId::Memory(proxima_core::MemoryId::new(t)),
                     destination,
                     &contract_sidecar_tables(),
+                    &[],
                 )
                 .await
         });
@@ -2504,6 +2506,7 @@ async fn destination_source_erase_includes_a_series_transferred_in_before_its_fe
                     EntityId::Memory(proxima_core::MemoryId::new(t)),
                     destination,
                     &contract_sidecar_tables(),
+                    &[],
                 )
                 .await
         });

@@ -143,6 +143,7 @@ async fn code_stateful_ingest_mints_after_owner_transfer() {
                 EntityId::Memory(first.memory_id),
                 destination,
                 &transfer_surfaces(),
+                &[],
             )
             .await?;
         assert!(transferred);

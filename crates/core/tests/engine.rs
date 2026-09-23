@@ -87,6 +87,19 @@ async fn embedding_route_comes_from_the_installed_router() {
     assert_eq!(client.space().dim(), EmbeddingDim::D1024);
 }
 
+/// With no router the engine reads every Owner as unrouted; a purge must
+/// not take that as "keep no space" and delete everything.
+#[tokio::test]
+async fn purge_without_a_router_is_refused() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner);
+    let err = engine
+        .purge_embedding_spaces(&owner)
+        .await
+        .expect_err("no router is not an empty route");
+    assert!(err.to_string().contains("no embedding router"), "{err}");
+}
+
 #[tokio::test]
 async fn drain_embedding_jobs_without_client_is_noop() {
     let (principal, owner) = fresh_owner();

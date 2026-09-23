@@ -164,15 +164,12 @@ impl EmbeddingClient for RefusingEmbedding {
 }
 
 /// A host router a test rewires while the engine runs: a default route for
-/// every Owner, overridden per Owner by a client, no client, or a refusal.
+/// every Owner, overridden per Owner by a route or a refusal.
 #[derive(Debug, Default)]
 pub struct TestEmbeddingRouter {
     default: std::sync::RwLock<Option<proxima_core::llm::BoundEmbeddingClient>>,
     owners: std::sync::RwLock<
-        std::collections::HashMap<
-            Owner,
-            Result<Option<proxima_core::llm::BoundEmbeddingClient>, String>,
-        >,
+        std::collections::HashMap<Owner, Result<proxima_core::llm::EmbeddingRoute, String>>,
     >,
 }
 
@@ -190,10 +187,24 @@ impl TestEmbeddingRouter {
     /// # Panics
     /// On a poisoned lock.
     pub fn set_owner(&self, owner: Owner, client: Option<proxima_core::llm::BoundEmbeddingClient>) {
+        self.set_route(
+            owner,
+            client.map_or_else(
+                proxima_core::llm::EmbeddingRoute::none,
+                proxima_core::llm::EmbeddingRoute::current,
+            ),
+        );
+    }
+
+    /// Route `owner` through `route` — a moving route, say.
+    ///
+    /// # Panics
+    /// On a poisoned lock.
+    pub fn set_route(&self, owner: Owner, route: proxima_core::llm::EmbeddingRoute) {
         self.owners
             .write()
             .expect("router lock")
-            .insert(owner, Ok(client));
+            .insert(owner, Ok(route));
     }
 
     /// Refuse to route `owner`.
@@ -214,17 +225,19 @@ impl proxima_core::llm::EmbeddingRouter for TestEmbeddingRouter {
         &self,
         owner: &Owner,
     ) -> Result<proxima_core::llm::EmbeddingRoute, proxima_core::llm::EmbeddingRouteError> {
-        let client = match self.owners.read().expect("router lock").get(owner) {
-            Some(Ok(client)) => client.clone(),
-            Some(Err(message)) => {
-                return Err(proxima_core::llm::EmbeddingRouteError::new(message.clone()));
-            }
-            None => self.default.read().expect("router lock").clone(),
-        };
-        Ok(client.map_or_else(
-            proxima_core::llm::EmbeddingRoute::none,
-            proxima_core::llm::EmbeddingRoute::current,
-        ))
+        match self.owners.read().expect("router lock").get(owner) {
+            Some(Ok(route)) => Ok(route.clone()),
+            Some(Err(message)) => Err(proxima_core::llm::EmbeddingRouteError::new(message.clone())),
+            None => Ok(self
+                .default
+                .read()
+                .expect("router lock")
+                .clone()
+                .map_or_else(
+                    proxima_core::llm::EmbeddingRoute::none,
+                    proxima_core::llm::EmbeddingRoute::current,
+                )),
+        }
     }
 }
 

@@ -1337,6 +1337,7 @@ async fn erasing_one_memory_destroys_its_captured_event() {
             EntityId::Memory(erased.memory_id),
             destination,
             pg.surfaces(),
+            &[],
         )
         .await
         .expect("transfer preserves publication origin")
@@ -1404,6 +1405,7 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
             EntityId::Memory(fact.memory_id),
             group,
             pg.surfaces(),
+            &[],
         )
         .await
         .expect("A-to-B transfer succeeds"),
@@ -1599,6 +1601,7 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // three erase orders share one transferred-Fact fixture
 async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
     let (pg, db) = fresh_pg("pub_erase_first_eligibility").await;
     let pool = pg.pool_for_tests().clone();
@@ -1648,6 +1651,7 @@ async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
             EntityId::Memory(source_fact),
             destination,
             pg.surfaces(),
+            &[],
         )
         .await
         .expect("transfer to current owner")
@@ -1740,6 +1744,7 @@ async fn source_erase_after_outbox_prune_revokes_transferred_origin_only() {
             EntityId::Memory(fact.memory_id),
             current_owner,
             pg.surfaces(),
+            &[],
         )
         .await
         .expect("transfer to current owner")
@@ -1881,6 +1886,7 @@ async fn source_and_destination_erase_revoke_physical_and_original_publication_s
                 EntityId::Memory(fact.memory_id),
                 destination,
                 pg.surfaces(),
+                &[],
             )
             .await
             .expect("A-to-B transfer succeeds")
@@ -2140,7 +2146,7 @@ async fn forgetting_a_fact_keeps_the_event_it_already_committed() {
     assert_eq!(cold_eligibility, PublicationOriginEligibility::Eligible);
     cold_check.commit().await.expect("finish cooled check");
 
-    let hydrated = MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[outcome.memory_id])
+    let hydrated = MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[outcome.memory_id], &[])
         .await
         .expect("hydrate the same real cooled Fact");
     assert_eq!(hydrated.outcomes.len(), 1);

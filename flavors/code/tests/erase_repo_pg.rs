@@ -1806,6 +1806,7 @@ async fn a_transferred_admission_stops_the_erase_instead_of_being_swept() {
             proxima_core::EntityId::Memory(proxima_core::MemoryId::new(work_item)),
             stranger,
             &transfer_surfaces(),
+            &[],
         )
         .await?;
         assert!(moved, "the transfer verb must move the work item");
@@ -1930,6 +1931,7 @@ async fn repository_erase_holds_the_owner_boundary_against_transfer() {
                 proxima_core::EntityId::Memory(proxima_core::MemoryId::new(work_item)),
                 destination,
                 &transfer_surfaces(),
+                &[],
             )
             .await
         });

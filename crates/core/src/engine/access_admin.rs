@@ -233,7 +233,8 @@ impl Engine {
     /// (absent or tombstoned). Returns `Forbidden` when the caller lacks
     /// admin/manage authority on either side. Returns `InvalidArgument`
     /// when an authorized caller names the current owner as the
-    /// destination. Returns `Internal` for storage failures, and
+    /// destination. Returns `Internal` for storage failures and when the
+    /// host cannot route the destination's embeddings, and
     /// `NotFound` if the storage transfer finds no matching row (owner
     /// changed concurrently between the lookup and the write).
     pub async fn transfer_to_owner(
@@ -303,6 +304,13 @@ impl Engine {
             AuthzOperation::EntityTransfer { entity, to_owner },
         )?;
 
+        // The moved memory is embedded under the destination's route; a
+        // route error refuses the transfer like any other write.
+        let embedding_spaces = self
+            .embedding_route(&to_owner)
+            .await
+            .map_err(|err| super::ingest::embedding_route_refused(&to_owner, &err))?
+            .write_spaces();
         let transferred = self
             .storage()
             .access_admin
@@ -312,6 +320,7 @@ impl Engine {
                 entity,
                 to_owner,
                 &self.owner_surfaces(),
+                &embedding_spaces,
             )
             .await
             .map_err(|err| storage_error("transfer_to_owner", &err))?;

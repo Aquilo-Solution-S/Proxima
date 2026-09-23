@@ -62,6 +62,11 @@ pub trait OwnerTransferPort: Send + Sync {
     /// The verb READS those answers; it does not re-derive them and holds no
     /// table list of its own, exactly as erase and export do.
     ///
+    /// `embedding_spaces` are the spaces the destination's route names: the
+    /// moved series' vectors, heads and jobs in any other space are deleted
+    /// in the transfer, and its head is queued for each of them it has no
+    /// vector in.
+    ///
     /// [`TransferLeg`]: crate::flavor::TransferLeg
     async fn transfer_to_owner(
         &self,
@@ -69,6 +74,7 @@ pub trait OwnerTransferPort: Send + Sync {
         entity: EntityId,
         to_owner: OwnerRef,
         surfaces: &crate::owner_inverse::OwnerSurfaces,
+        embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<bool, StorageError>;
 }
 

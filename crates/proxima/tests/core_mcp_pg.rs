@@ -1718,6 +1718,349 @@ async fn one_client_across_owners_ranks_by_score() {
     result.expect("shared-client ranking test failed");
 }
 
+impl TwoOwnerFixture {
+    /// A search over the personal space only.
+    async fn search_personal(&self, mode: &str) -> Result<serde_json::Value, CoreMcpError> {
+        call_test_model_tool(
+            &self.tools,
+            self.authz.clone(),
+            self.personal,
+            "core_search_memories",
+            serde_json::json!({
+                "query": "needle", "mode": mode, "limit": 10, "spaces": ["current"],
+            }),
+        )
+        .await
+    }
+
+    /// `(model_id, dim)` of every vector and every job for `handle`.
+    #[allow(clippy::type_complexity)]
+    async fn embedding_rows(
+        &self,
+        handle: &str,
+    ) -> Result<(Vec<(String, i16)>, Vec<(String, i16)>), Box<dyn std::error::Error>> {
+        let memory_id = handle
+            .split_once(':')
+            .ok_or("typed handle")?
+            .1
+            .parse::<Uuid>()?;
+        let vectors = sqlx::query_as(
+            "SELECT model_id, dim FROM proxima_core.embeddings
+              WHERE entity_id = $1 ORDER BY model_id",
+        )
+        .bind(memory_id)
+        .fetch_all(&self.admin_pool)
+        .await?;
+        let jobs = sqlx::query_as(
+            "SELECT model_id, dim FROM proxima_core.embedding_jobs
+              WHERE entity_id = $1 ORDER BY model_id",
+        )
+        .bind(memory_id)
+        .fetch_all(&self.admin_pool)
+        .await?;
+        Ok((vectors, jobs))
+    }
+}
+
+fn returned_handles(page: &serde_json::Value) -> Vec<String> {
+    page["memories"]
+        .as_array()
+        .expect("memories")
+        .iter()
+        .map(|memory| memory["memory"].as_str().expect("handle").to_owned())
+        .collect()
+}
+
+/// An Owner moves to a new model with no search gap: while its route is
+/// moving, every write is queued for both spaces and backfill fills the new
+/// one, search stays on the old space until the host flips the route and
+/// then moves with it, and purge leaves only the new space.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn an_owner_moves_to_a_new_model_without_a_search_gap() {
+    use proxima_core::EmbeddingSpaceRole;
+    use proxima_core::llm::{EmbeddingDim, EmbeddingRoute};
+    let db_name = unique_db_name("proxima_core_route_move");
+    create_db(&db_name).await.expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let fixture = TwoOwnerFixture::boot(&db_name).await?;
+        let engine = &fixture.built.engine;
+        let owner = fixture.personal;
+        let old = RecordingRouteEmbedding::new("route-old", EmbeddingDim::D768);
+        let new = RecordingRouteEmbedding::new("route-new", EmbeddingDim::D1024);
+        let old_space = ("route-old".to_owned(), 768_i16);
+        let new_space = ("route-new".to_owned(), 1024_i16);
+        fixture.router.set_owner(owner, Some(old.bound()));
+
+        let before = fixture
+            .remember("current", "needle before the move")
+            .await?;
+        let drained = engine.drain_embedding_jobs(10).await?;
+        assert_eq!((drained.processed, drained.failed), (1, 0));
+
+        // Moving: a new Fact is queued for both spaces, a derived memory is
+        // embedded inline in the old one and queued for the new one.
+        fixture.router.set_route(
+            owner,
+            EmbeddingRoute::moving(Some(old.bound()), new.bound())?,
+        );
+        let during = fixture
+            .remember("current", "needle during the move")
+            .await?;
+        assert_eq!(
+            fixture.embedding_rows(&during).await?,
+            (vec![], vec![new_space.clone(), old_space.clone()]),
+            "a write while moving is queued for both spaces"
+        );
+        let derived = call_test_model_tool(
+            &fixture.tools,
+            fixture.authz.clone(),
+            owner,
+            "core_derive",
+            serde_json::json!({
+                "space": "current",
+                "kind": "Abstraction",
+                "title": "moved pattern",
+                "body": "needle pattern across the move",
+                "tags": [],
+                "source_handles": [before, during],
+                "model_id": "test-model"
+            }),
+        )
+        .await?;
+        let derived = derived["handle"].as_str().expect("handle").to_owned();
+        assert_eq!(
+            fixture.embedding_rows(&derived).await?,
+            (vec![old_space.clone()], vec![new_space.clone()]),
+            "a derived memory embeds inline through current and queues next"
+        );
+
+        engine
+            .backfill_missing_embeddings(&fixture.authz, &owner, 100)
+            .await?;
+        let drained = engine.drain_embedding_jobs(20).await?;
+        assert_eq!(drained.failed, 0);
+        for handle in [&before, &during, &derived] {
+            assert_eq!(
+                fixture.embedding_rows(handle).await?,
+                (vec![new_space.clone(), old_space.clone()], vec![]),
+                "{handle} is embedded in both spaces"
+            );
+        }
+        let coverage = engine.embedding_coverage(&owner).await?;
+        let roles: Vec<_> = coverage
+            .iter()
+            .map(|row| (row.space.model_id().to_owned(), row.role))
+            .collect();
+        assert_eq!(
+            roles,
+            vec![
+                ("route-new".to_owned(), EmbeddingSpaceRole::Next),
+                ("route-old".to_owned(), EmbeddingSpaceRole::Current),
+            ]
+        );
+        for row in &coverage {
+            assert!(row.counts.embeddable >= 3, "{row:?}");
+            assert_eq!(row.counts.embedded, row.counts.embeddable, "{row:?}");
+            assert_eq!(row.counts.pending + row.counts.processing, 0, "{row:?}");
+        }
+
+        // Search reads the old space until the flip.
+        let (old_seen, new_seen) = (old.texts().len(), new.texts().len());
+        let page = fixture.search_personal("semantic").await?;
+        assert_eq!(page["ranking"], "score", "{page}");
+        let found = returned_handles(&page);
+        for handle in [&before, &during] {
+            assert!(found.contains(handle), "{page}");
+        }
+        assert_eq!(
+            old.texts().len(),
+            old_seen + 1,
+            "the query embeds through current"
+        );
+        assert_eq!(new.texts().len(), new_seen, "next serves no query");
+
+        // The flip: search moves with the route, with every memory already
+        // embedded in the new space.
+        fixture.router.set_owner(owner, Some(new.bound()));
+        let (old_seen, new_seen) = (old.texts().len(), new.texts().len());
+        let page = fixture.search_personal("semantic").await?;
+        let found = returned_handles(&page);
+        for handle in [&before, &during] {
+            assert!(found.contains(handle), "{page}");
+        }
+        assert_eq!(
+            new.texts().len(),
+            new_seen + 1,
+            "the query embeds through the new model"
+        );
+        assert_eq!(
+            old.texts().len(),
+            old_seen,
+            "the old model sees nothing after the flip"
+        );
+
+        let coverage = engine.embedding_coverage(&owner).await?;
+        let unrouted = coverage
+            .iter()
+            .find(|row| row.role == EmbeddingSpaceRole::Unrouted)
+            .expect("the old space is left over until purged");
+        assert_eq!(unrouted.space.model_id(), "route-old");
+        assert!(unrouted.counts.vectors >= 3, "{unrouted:?}");
+
+        let purged = engine.purge_embedding_spaces(&owner).await?;
+        assert_eq!(purged.vectors, unrouted.counts.vectors);
+        assert_eq!(purged.heads, unrouted.counts.embedded);
+        let coverage = engine.embedding_coverage(&owner).await?;
+        assert_eq!(coverage.len(), 1, "{coverage:?}");
+        assert_eq!(coverage[0].role, EmbeddingSpaceRole::Current);
+        assert_eq!(coverage[0].space.model_id(), "route-new");
+        for handle in [&before, &during, &derived] {
+            assert_eq!(
+                fixture.embedding_rows(handle).await?,
+                (vec![new_space.clone()], vec![]),
+                "{handle} keeps only its new vector"
+            );
+        }
+        let after = fixture.remember("current", "needle after the move").await?;
+        assert_eq!(
+            fixture.embedding_rows(&after).await?,
+            (vec![], vec![new_space.clone()]),
+            "after the flip a write is queued for the new space only"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("model move test failed");
+}
+
+/// A transferred memory is embedded under its new Owner's route: its vector
+/// in a space the destination does not route goes with the transfer, and it
+/// is queued for the destination's space. A destination the host cannot
+/// route refuses the transfer.
+#[tokio::test]
+async fn a_transferred_memory_moves_to_the_destinations_space() {
+    use proxima_core::llm::EmbeddingDim;
+    let db_name = unique_db_name("proxima_core_route_transfer");
+    create_db(&db_name).await.expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let fixture = TwoOwnerFixture::boot(&db_name).await?;
+        let engine = &fixture.built.engine;
+        let personal_client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D768);
+        let shared_client = RecordingRouteEmbedding::new("route-b", EmbeddingDim::D1024);
+        fixture
+            .router
+            .set_owner(fixture.personal, Some(personal_client.bound()));
+        fixture
+            .router
+            .refuse(fixture.shared, "tenant config unavailable");
+
+        let moved = fixture
+            .remember("current", "needle that changes hands")
+            .await?;
+        engine.drain_embedding_jobs(10).await?;
+        let personal_space = ("route-a".to_owned(), 768_i16);
+        let shared_space = ("route-b".to_owned(), 1024_i16);
+        assert_eq!(
+            fixture.embedding_rows(&moved).await?,
+            (vec![personal_space.clone()], vec![])
+        );
+        let entity = proxima_core::EntityId::Memory(MemoryId::new(
+            moved
+                .split_once(':')
+                .ok_or("typed handle")?
+                .1
+                .parse::<Uuid>()?,
+        ));
+
+        let refused = engine
+            .transfer_to_owner(&fixture.authz, entity, fixture.shared)
+            .await
+            .expect_err("an unroutable destination refuses the transfer");
+        assert!(
+            refused.to_string().contains("no embedding route"),
+            "{refused}"
+        );
+        assert_eq!(
+            fixture.embedding_rows(&moved).await?,
+            (vec![personal_space.clone()], vec![]),
+            "a refused transfer moves nothing"
+        );
+
+        fixture
+            .router
+            .set_owner(fixture.shared, Some(shared_client.bound()));
+        engine
+            .transfer_to_owner(&fixture.authz, entity, fixture.shared)
+            .await?;
+        assert_eq!(
+            fixture.embedding_rows(&moved).await?,
+            (vec![], vec![shared_space.clone()]),
+            "the source's vector goes; the destination's space is queued"
+        );
+        let job_owner: Uuid = sqlx::query_scalar(
+            "SELECT owner_id FROM proxima_core.embedding_jobs WHERE model_id = 'route-b'",
+        )
+        .fetch_one(&fixture.admin_pool)
+        .await?;
+        assert_eq!(job_owner, fixture.shared.stored_owner_id());
+
+        let drained = engine.drain_embedding_jobs(10).await?;
+        assert_eq!((drained.processed, drained.failed), (1, 0));
+        assert!(
+            shared_client
+                .texts()
+                .iter()
+                .any(|text| text.contains("changes hands")),
+            "the destination's endpoint embeds the moved text"
+        );
+        assert_eq!(
+            fixture.embedding_rows(&moved).await?,
+            (vec![shared_space], vec![])
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("transfer retarget test failed");
+}
+
+/// A purge for an Owner the host cannot route deletes nothing.
+#[tokio::test]
+async fn an_unroutable_owner_is_never_purged() {
+    use proxima_core::llm::EmbeddingDim;
+    let db_name = unique_db_name("proxima_core_route_purge_refusal");
+    create_db(&db_name).await.expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let fixture = TwoOwnerFixture::boot(&db_name).await?;
+        let engine = &fixture.built.engine;
+        let owner = fixture.personal;
+        let client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D768);
+        fixture.router.set_owner(owner, Some(client.bound()));
+        let kept = fixture.remember("current", "needle kept").await?;
+        engine.drain_embedding_jobs(10).await?;
+
+        fixture.router.refuse(owner, "tenant config unavailable");
+        let err = engine
+            .purge_embedding_spaces(&owner)
+            .await
+            .expect_err("a route error purges nothing");
+        assert!(
+            err.to_string().contains("tenant config unavailable"),
+            "{err}"
+        );
+        assert_eq!(
+            fixture.embedding_rows(&kept).await?.0,
+            vec![("route-a".to_owned(), 768)]
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("purge refusal test failed");
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {

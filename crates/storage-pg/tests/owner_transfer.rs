@@ -557,6 +557,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
                 EntityId::Memory(written.memory_id),
                 dest,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?;
         assert!(first);
@@ -636,6 +637,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
                 EntityId::Memory(written.memory_id),
                 dest,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?;
         assert!(
@@ -686,10 +688,9 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             .bind(personal_content_id)
             .execute(pool)
             .await?;
-        // The cold dump's `embed_models` list is read off
-        // `proxima_core.embeddings` at cooling time, so this series has to
-        // carry an embedding BEFORE it is forgotten, or the hydrate below
-        // files no job at all and the owner assertion on it is vacuous.
+        // The cold dump records the spaces this series had vectors in, read
+        // off `proxima_core.embeddings` at cooling time and stamped with the
+        // giver as owner.
         sqlx::query(
             "INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, vec, owner_id)
              VALUES ($1, 'transfer-hydrate-model', 1024,
@@ -713,6 +714,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
                 EntityId::Memory(second.memory_id),
                 dest,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?;
         assert!(transferred);
@@ -805,8 +807,19 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
                 .await?;
 
         let dest_permit = OwnerWritePermit::new_for_tests(dest, AccessKind::Fact);
-        let hydrated =
-            MemoryAuthoringPort::hydrate_memories(&pg, &dest_permit, &[first.memory_id]).await?;
+        // The hydrate files a job per space the destination's route names;
+        // naming one keeps the job-owner assertion below from being vacuous.
+        let dest_spaces = [proxima_core::EmbeddingSpace::new(
+            "transfer-hydrate-model",
+            proxima_core::EmbeddingDim::D1024,
+        )];
+        let hydrated = MemoryAuthoringPort::hydrate_memories(
+            &pg,
+            &dest_permit,
+            &[first.memory_id],
+            &dest_spaces,
+        )
+        .await?;
         assert_eq!(
             hydrated.outcomes[0].status,
             proxima_core::MemoryHydrationStatus::Hydrated
@@ -905,6 +918,7 @@ async fn transfer_accepts_a_cooled_input_for_a_live_series() {
                 EntityId::Memory(first.memory_id),
                 dest,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?
         );
@@ -982,6 +996,7 @@ async fn transfer_moves_a_fully_cooled_headless_series() {
                 EntityId::Memory(first.memory_id),
                 dest,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?
         );
@@ -1140,6 +1155,7 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
                     EntityId::Memory(transferred_id),
                     dest,
                     &contract_sidecar_tables(),
+                    &[],
                 )
                 .await
         });
@@ -1334,6 +1350,7 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
                     EntityId::Memory(target.memory_id),
                     destination,
                     &contract_sidecar_tables(),
+                    &[],
                 )
                 .await
         });
@@ -1512,6 +1529,7 @@ async fn transfer_serializes_destination_citation_dedupe() {
                     EntityId::Memory(source_row.memory_id),
                     destination,
                     &contract_sidecar_tables(),
+                    &[],
                 )
                 .await
         });
@@ -1618,6 +1636,7 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await
             .expect_err("transfer must wait for unresolved upload publication");
@@ -1652,7 +1671,8 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
                 &permit,
                 EntityId::Memory(written.memory_id),
                 destination,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?,
             "transfer proceeds once finish published the upload row"
@@ -1728,6 +1748,7 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await
             .expect_err("an identity-ambiguous legacy stage must fence transfer");
@@ -1762,6 +1783,7 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?,
             "transfer proceeds after the retry publishes exact identity"
@@ -1834,6 +1856,7 @@ async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
                 EntityId::Memory(moving.memory_id),
                 destination,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?,
             "neither an abandoned prepare nor another series' staged upload may pin this series"
@@ -1910,6 +1933,7 @@ async fn transfer_allows_aborted_and_expired_upload_cleanup() {
                     EntityId::Memory(written.memory_id),
                     destination,
                     &contract_sidecar_tables(),
+                    &[],
                 )
                 .await?,
                 "transfer must proceed after {status} cleanup"
@@ -1968,6 +1992,7 @@ async fn transfer_waits_for_terminal_uploaded_blob_publication() {
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await
             .expect_err("a committed uploaded-blob Fact must finish before transfer");
@@ -1991,6 +2016,7 @@ async fn transfer_waits_for_terminal_uploaded_blob_publication() {
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?,
             "transfer proceeds after terminal publication is resolved"
@@ -2039,6 +2065,7 @@ async fn terminal_same_hash_retry_does_not_pin_an_exactly_published_blob() {
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?,
             "a superseded terminal attempt must not pin an exact publication"
@@ -2110,6 +2137,7 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
                     EntityId::Memory(first.memory_id),
                     dest,
                     &contract_sidecar_tables(),
+                    &[],
                 )
                 .await
         });
@@ -2244,6 +2272,7 @@ async fn crossed_transfers_do_not_deadlock_on_owner_fences() {
                     EntityId::Memory(left_row.memory_id),
                     right,
                     &contract_sidecar_tables(),
+                    &[],
                 )
                 .await
         });
@@ -2254,6 +2283,7 @@ async fn crossed_transfers_do_not_deadlock_on_owner_fences() {
                     EntityId::Memory(right_row.memory_id),
                     left,
                     &contract_sidecar_tables(),
+                    &[],
                 )
                 .await
         });
@@ -2337,6 +2367,7 @@ async fn transfer_does_not_move_a_handle_reused_after_complete_erase() {
                 EntityId::Memory(original.memory_id),
                 destination,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?;
         assert!(
@@ -2418,6 +2449,7 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
                 EntityId::Memory(first.memory_id),
                 dest,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?;
         assert!(
@@ -2512,6 +2544,7 @@ async fn transfer_refuses_goal_entities() {
                 EntityId::Goal(GoalId::new(out.t)),
                 dest,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await
             .expect_err("goals do not transfer");
@@ -2612,6 +2645,7 @@ async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
                 EntityId::Goal(GoalId::new(goal_t)),
                 dest,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await
             .expect_err("an armed goal is refused like any goal");
@@ -2673,7 +2707,8 @@ async fn transfer_writes_announce_rows_under_both_lanes() {
                 &permit,
                 EntityId::Memory(written.memory_id),
                 dest,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?
         );
@@ -2790,7 +2825,8 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
                 &permit,
                 EntityId::Memory(written.memory_id),
                 dest,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?
         );
@@ -2864,7 +2900,8 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
                 &permit,
                 EntityId::Memory(written.memory_id),
                 dest,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?
         );
@@ -3007,6 +3044,7 @@ async fn source_scope_erase_reaches_a_retained_actor_log_after_transfer() {
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?
         );
@@ -3075,7 +3113,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
         later.ingest_key = Some("k2".into());
         let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(second.memory_id), dest, &contract_sidecar_tables())
+            pg.transfer_to_owner(&permit, EntityId::Memory(second.memory_id), dest, &contract_sidecar_tables(), &[])
                 .await?
         );
 
@@ -3090,7 +3128,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
 
         // ...and hydrates it back. The row was never in the dump, so it is
         // not restored either — it never left.
-        let hydrated = MemoryAuthoringPort::hydrate_memories(&pg, &dest_permit, &[first.memory_id])
+        let hydrated = MemoryAuthoringPort::hydrate_memories(&pg, &dest_permit, &[first.memory_id], &[])
             .await?;
         assert_eq!(
             hydrated.outcomes[0].status,
@@ -3175,7 +3213,8 @@ async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
                 &permit,
                 EntityId::Memory(written.memory_id),
                 dest,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?
         );
@@ -3246,6 +3285,7 @@ async fn absent_destination_append_waits_before_owner_insert() {
                     EntityId::Memory(written.memory_id),
                     destination,
                     &contract_sidecar_tables(),
+                    &[],
                 )
                 .await
         });
@@ -3383,6 +3423,7 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
                     EntityId::Memory(written.memory_id),
                     destination,
                     &contract_sidecar_tables(),
+                    &[],
                 )
                 .await
         });
@@ -3493,6 +3534,7 @@ async fn transfer_refuses_the_current_owner_as_destination() {
                 EntityId::Memory(written.memory_id),
                 owner,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await
             .expect_err("a self-transfer is refused");
@@ -3666,6 +3708,7 @@ async fn transfer_refuses_a_series_citing_another_owners_blob() {
                 EntityId::Memory(written.memory_id),
                 destination(),
                 &contract_sidecar_tables(),
+                &[],
             )
             .await
             .expect_err("a source series cannot move another owner's blob");
@@ -3717,6 +3760,7 @@ async fn transfer_refuses_an_uploaded_blob_with_a_noncanonical_source_locator() 
                 EntityId::Memory(moving.memory_id),
                 destination(),
                 &contract_sidecar_tables(),
+                &[],
             )
             .await
             .expect_err("a locator not minted by its upload lineage must not transfer");
@@ -3761,6 +3805,7 @@ async fn transfer_refuses_a_mixed_valid_and_malformed_source_publication_set() {
                 EntityId::Memory(moving.memory_id),
                 destination(),
                 &contract_sidecar_tables(),
+                &[],
             )
             .await
             .expect_err("one valid upload row must not mask a malformed completed row");
@@ -3824,6 +3869,7 @@ async fn transfer_refuses_an_unpublished_destination_dedupe_blob() {
                 EntityId::Memory(moving.memory_id),
                 destination,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await
             .expect_err("dedupe must not remap onto a blob without a readable publication");
@@ -3873,6 +3919,7 @@ async fn transfer_refuses_a_mixed_valid_and_malformed_destination_publication_se
                 EntityId::Memory(moving.memory_id),
                 destination,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await
             .expect_err("destination dedupe must reject a mixed publication set");
@@ -3946,6 +3993,7 @@ async fn a_blob_mount_copies_only_source_owned_upload_rows() {
                 EntityId::Memory(moving.memory_id),
                 destination,
                 &contract_sidecar_tables(),
+                &[],
             )
             .await?
         );
@@ -4023,6 +4071,7 @@ async fn an_in_place_blob_move_refuses_a_foreign_upload_pointer() {
                 EntityId::Memory(moving.memory_id),
                 destination(),
                 &contract_sidecar_tables(),
+                &[],
             )
             .await
             .expect_err("a malformed foreign upload pointer must stop an in-place move");
@@ -4092,7 +4141,8 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
                 &permit,
                 EntityId::Memory(mine.memory_id),
                 dest,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?,
             "a shared cited blob must not refuse the transfer"
@@ -4190,7 +4240,8 @@ async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
                 &permit,
                 EntityId::Memory(written.memory_id),
                 dest,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?
         );
@@ -4259,7 +4310,8 @@ async fn a_destination_that_already_holds_the_bytes_keeps_its_own_row() {
                 &permit,
                 EntityId::Memory(written.memory_id),
                 dest,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?,
             "the destination already holding these bytes is not a conflict"
@@ -4329,7 +4381,8 @@ async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
                 &permit,
                 EntityId::Memory(mine.memory_id),
                 first,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?
         );
@@ -4348,7 +4401,8 @@ async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
                 &first_permit,
                 EntityId::Memory(mine.memory_id),
                 second,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?
         );
@@ -4415,7 +4469,8 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
                 &permit,
                 EntityId::Memory(mine.memory_id),
                 dest,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?
         );
@@ -4520,7 +4575,8 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
                 &permit,
                 EntityId::Memory(mine.memory_id),
                 dest,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?
         );
@@ -4662,7 +4718,8 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
                 &permit,
                 EntityId::Memory(handed_over.memory_id),
                 dest,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?
         );
@@ -4849,7 +4906,8 @@ async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
                 &permit,
                 EntityId::Memory(handed_over.memory_id),
                 dest,
-                &contract_sidecar_tables()
+                &contract_sidecar_tables(),
+                &[]
             )
             .await?
         );

@@ -17,6 +17,7 @@ use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::tx::{TxOutcome, in_transaction};
+use crate::verbs::fact_embeddings::RouteSpaces;
 
 /// Version 6 adds the exact `memory.sidecar_tables` stamp to each object.
 /// Version 7 adds contract-declared cascaded detail declarations and their
@@ -1812,19 +1813,18 @@ async fn restore_cascaded_details(
 /// lookup below is a `fetch_one` against a row that is gone, which fails the
 /// whole hydrate.
 ///
-/// `non_embeddable_schemas` is the registry's answer, a parameter because
-/// storage does not hold the registry. It is consulted instead of trusting
-/// `embed_spaces` alone: that list records the spaces this `t` HAD vectors
-/// in, so a row under a `Never` schema that carries one — from any write
-/// that did not ask the registry — would have the job re-filed here on every
-/// hydrate, for a drain that can only drop it.
+/// `embeddings` are the spaces the hydrating Owner's route names now, not
+/// the cold record's `embed_spaces`: that list names the spaces the row HAD
+/// vectors in, which a route change since the forget may have retired. Its
+/// schema veto keeps a row under a `Never` schema from being re-filed,
+/// whatever route its Owner has.
 async fn enqueue_embed_jobs(
     tx: &mut Transaction<'_, Postgres>,
     rec: &ColdRecord,
     owner_id: Uuid,
-    non_embeddable_schemas: &[String],
+    embeddings: RouteSpaces<'_>,
 ) -> Result<(), StorageError> {
-    if rec.embed_spaces.is_empty() || non_embeddable_schemas.contains(&rec.schema_id) {
+    if embeddings.spaces.is_empty() || embeddings.non_embeddable_schemas.contains(&rec.schema_id) {
         return Ok(());
     }
     // Named exhaustively, with no catch-all. `HotRow.kind` is a String because
@@ -1849,7 +1849,7 @@ async fn enqueue_embed_jobs(
             .fetch_one(tx.as_mut())
             .await
             .map_err(map_err)?;
-    for space in &rec.embed_spaces {
+    for space in embeddings.spaces {
         crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
             tx,
             owner_kind,
@@ -2449,7 +2449,7 @@ async fn apply_hydration(
     surfaces: &OwnerSurfaces,
     prepared: &PreparedHydration,
     locked: &CooledRow,
-    non_embeddable_schemas: &[String],
+    embeddings: RouteSpaces<'_>,
 ) -> Result<u32, HydrationFailure> {
     let PreparedHydration {
         rec,
@@ -2479,7 +2479,7 @@ async fn apply_hydration(
     // let the owner that gave this series away go on recalling it.
     let hydrate_line = hydrate_sketch_line(rec);
     super::sketch::upsert_sketch(tx, locked.owner_id, t, &rec.row.kind, &hydrate_line).await?;
-    enqueue_embed_jobs(tx, rec, locked.owner_id, non_embeddable_schemas).await?;
+    enqueue_embed_jobs(tx, rec, locked.owner_id, embeddings).await?;
 
     sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1")
         .bind(t)
@@ -2724,7 +2724,7 @@ pub(crate) async fn hydrate_one_in_tx(
     cold: &dyn ColdObjectStore,
     t: Uuid,
     owner_id: Uuid,
-    non_embeddable_schemas: &[String],
+    embeddings: RouteSpaces<'_>,
 ) -> Result<Result<u32, ColdRejection>, StorageError> {
     let mut cache = ColdCatalogCache::default();
     let prepared =
@@ -2750,13 +2750,7 @@ pub(crate) async fn hydrate_one_in_tx(
     // command and every test read hydration's two answers here, not inside
     // the steps that produce them.
     match apply_hydration(
-        tx,
-        &mut cache,
-        sidecars,
-        surfaces,
-        &prepared,
-        &locked,
-        non_embeddable_schemas,
+        tx, &mut cache, sidecars, surfaces, &prepared, &locked, embeddings,
     )
     .await
     {
@@ -2779,20 +2773,14 @@ pub(crate) async fn hydrate_memories_oneshot(
     cold: &dyn ColdObjectStore,
     permit: &proxima_core::storage_ports::OwnerWritePermit,
     memory_ids: &[proxima_core::MemoryId],
-    non_embeddable_schemas: &[String],
+    embeddings: RouteSpaces<'_>,
 ) -> Result<MemoryHydrationBatchOutcome, StorageError> {
     validate_hydration_request(memory_ids)?;
     let owner_id = permit.owner().stored_owner_id();
 
     in_transaction(tx, |mut tx| async move {
         let outcome = hydrate_planned_set(
-            &mut tx,
-            sidecars,
-            surfaces,
-            cold,
-            owner_id,
-            memory_ids,
-            non_embeddable_schemas,
+            &mut tx, sidecars, surfaces, cold, owner_id, memory_ids, embeddings,
         )
         .await;
         (tx, outcome)
@@ -2814,7 +2802,7 @@ async fn hydrate_planned_set(
     cold: &dyn ColdObjectStore,
     owner_id: Uuid,
     memory_ids: &[proxima_core::MemoryId],
-    non_embeddable_schemas: &[String],
+    embeddings: RouteSpaces<'_>,
 ) -> Result<TxOutcome<MemoryHydrationBatchOutcome>, StorageError> {
     // One catalog read per relation for the whole transaction, planner and
     // write half alike, instead of one per item per relation.
@@ -2849,13 +2837,7 @@ async fn hydrate_planned_set(
     };
 
     let restored = match apply_prepared_hydrations(
-        tx,
-        &mut cache,
-        sidecars,
-        surfaces,
-        &prepared,
-        &locked,
-        non_embeddable_schemas,
+        tx, &mut cache, sidecars, surfaces, &prepared, &locked, embeddings,
     )
     .await?
     {
@@ -2985,21 +2967,11 @@ async fn apply_prepared_hydrations(
     surfaces: &OwnerSurfaces,
     prepared: &[&PreparedHydration],
     locked: &[CooledRow],
-    non_embeddable_schemas: &[String],
+    embeddings: RouteSpaces<'_>,
 ) -> Result<Result<Vec<u32>, (Uuid, ColdRejection)>, StorageError> {
     let mut restored = Vec::with_capacity(prepared.len());
     for (prepared, locked) in prepared.iter().zip(locked) {
-        match apply_hydration(
-            tx,
-            cache,
-            sidecars,
-            surfaces,
-            prepared,
-            locked,
-            non_embeddable_schemas,
-        )
-        .await
-        {
+        match apply_hydration(tx, cache, sidecars, surfaces, prepared, locked, embeddings).await {
             Ok(count) => restored.push(count),
             Err(HydrationFailure::Rejected(rejection)) => {
                 return Ok(Err((prepared.cooled.t, rejection)));

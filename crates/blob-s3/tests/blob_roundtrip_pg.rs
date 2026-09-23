@@ -2566,7 +2566,8 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
             &permit,
             EntityId::Memory(completed.memory_id),
             destination,
-            &transfer_surfaces()
+            &transfer_surfaces(),
+            &[]
         )
         .await
         .expect("transfer"),
@@ -2673,7 +2674,8 @@ async fn erase_follows_the_transfer_rather_than_the_key() {
             &permit,
             EntityId::Memory(completed.memory_id),
             destination,
-            &transfer_surfaces()
+            &transfer_surfaces(),
+            &[]
         )
         .await
         .expect("transfer"),
