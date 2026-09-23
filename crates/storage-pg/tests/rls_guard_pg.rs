@@ -14,7 +14,6 @@ use tokio::time::{Duration, timeout};
 
 static DDL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-const STAGED_CORE_OWNER_RLS: &str = include_str!("../migrations/0014_v015_owner_rls.sql");
 const STAGED_CODE_OWNER_RLS: &str =
     include_str!("../../../flavors/code/migrations/20260922000020_v015_owner_rls.sql");
 
@@ -238,10 +237,15 @@ async fn apply_owner_rls_fixtures(pool: &PgPool) {
     let mut transaction = proxima_storage_pg::begin_migration_transaction(&mut connection)
         .await
         .unwrap();
-    sqlx::raw_sql(sqlx::AssertSqlSafe(STAGED_CORE_OWNER_RLS.to_owned()))
-        .execute(transaction.as_mut())
-        .await
-        .unwrap();
+    let core = proxima_storage_pg::core_migrator();
+    for migration in core.iter().filter(|migration| {
+        proxima_storage_pg::test_fixtures::OWNER_RLS_MIGRATION_VERSIONS.contains(&migration.version)
+    }) {
+        sqlx::raw_sql(migration.sql.clone())
+            .execute(transaction.as_mut())
+            .await
+            .unwrap();
+    }
     sqlx::raw_sql(sqlx::AssertSqlSafe(STAGED_CODE_OWNER_RLS.to_owned()))
         .execute(transaction.as_mut())
         .await
@@ -996,6 +1000,43 @@ async fn full_policy_isolation_uses_authenticated_scope_and_platform_role() {
         .expect_err("owner A cannot insert owner B's head");
     assert_rls_refusal(&error);
     foreign_insert.rollback().await.unwrap();
+
+    // Owner scope registers a lexical language on first use and writes no
+    // other deployment metadata.
+    let mut metadata_tx = begin_owner_transaction(&runtime, scope).await.unwrap();
+    sqlx::query(
+        "INSERT INTO proxima_core.lexical_languages (config)
+         VALUES ('simple'::regconfig) ON CONFLICT DO NOTHING",
+    )
+    .execute(&mut *metadata_tx)
+    .await
+    .expect("ingest registers a language");
+    let touched = [
+        sqlx::query("UPDATE proxima_core.lexical_default SET config = 'simple'::regconfig")
+            .execute(&mut *metadata_tx)
+            .await,
+        sqlx::query("DELETE FROM proxima_core.lexical_languages")
+            .execute(&mut *metadata_tx)
+            .await,
+        sqlx::query("DELETE FROM proxima_core.flavor_surface")
+            .execute(&mut *metadata_tx)
+            .await,
+    ]
+    .map(|outcome| outcome.expect("owner-scope metadata write").rows_affected());
+    assert_eq!(
+        touched,
+        [0, 0, 0],
+        "owner scope rewrote deployment metadata"
+    );
+    let error = sqlx::query(
+        "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id)
+         VALUES ('proxima_core.forged', 'forged')",
+    )
+    .execute(&mut *metadata_tx)
+    .await
+    .expect_err("owner scope registers no flavor surface");
+    assert_rls_refusal(&error);
+    metadata_tx.rollback().await.unwrap();
 
     let mut platform_tx = platform.begin().await.unwrap();
     sqlx::query("SET LOCAL app.proxima_scope = 'platform'")

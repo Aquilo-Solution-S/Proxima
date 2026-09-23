@@ -574,7 +574,7 @@ async fn a_v008_code_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             core_versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
             "core appends every migration after its baseline"
         );
 
