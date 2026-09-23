@@ -462,8 +462,8 @@ pub(crate) mod tests {
     impl EmbeddingJobPort for MembershipStorage {
         async fn claim_pending_embedding_jobs(
             &self,
-            _space: &crate::EmbeddingSpace,
             _limit: i64,
+            _skip_owners: &[crate::Owner],
         ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -583,6 +583,17 @@ pub(crate) mod tests {
             _policy: crate::EmbeddingRuntimePolicy,
             _proof: crate::OperatorMaintenanceProof,
         ) -> Result<crate::EmbeddingReconcileOutcome, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects embedding maintenance".into(),
+            ))
+        }
+
+        async fn embedding_owner_page(
+            &self,
+            _after: Option<crate::Owner>,
+            _limit: i64,
+            _proof: crate::OperatorMaintenanceProof,
+        ) -> Result<Vec<crate::Owner>, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects embedding maintenance".into(),
             ))

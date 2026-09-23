@@ -9,13 +9,6 @@
 //! read an empty value as unset while `PROXIMA_EXPOSE_NETWORK=` aborted boot
 //! with `must be a boolean, got ""`, and `DATABASE_URL=` reached the pool as an
 //! empty connection string.
-//!
-//! Not to be confused with [`crate::secrets::EnvResolver`], which deliberately
-//! takes the opposite stance: an `env:`-scheme secret resolves an empty variable
-//! *successfully*, as a present-but-empty secret, and leaves rejection to the
-//! caller. That is right for a secret — an empty credential is a value someone
-//! configured, and only the consumer knows whether it is legal. It is wrong for
-//! a bucket name or a bind address, where empty can only mean "unset".
 
 /// Read `key` through `lookup`, trimmed, treating an empty result as unset.
 ///
@@ -70,8 +63,7 @@ pub fn env_value(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Option<
 ///
 /// Note this is the *raw* reader: it does not trim and does not treat an
 /// empty value as unset. Those are [`env_value`]'s job, and every
-/// configuration read should go through it. The two are separate because
-/// [`crate::secrets::EnvResolver`] deliberately wants the raw rule.
+/// configuration read should go through it.
 #[must_use]
 pub fn process_env(key: &str) -> Option<String> {
     std::env::var(key).ok()

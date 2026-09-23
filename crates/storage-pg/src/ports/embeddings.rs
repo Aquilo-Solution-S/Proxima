@@ -133,12 +133,13 @@ impl EmbeddingWritePort for PgStorage {
 impl EmbeddingJobPort for PgStorage {
     async fn claim_pending_embedding_jobs(
         &self,
-        space: &EmbeddingSpace,
         limit: i64,
+        skip_owners: &[Owner],
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
         let mut tx = self.platform_transaction().await?;
         let rows =
-            verbs::fact_embeddings::claim_pending_embedding_jobs(tx.as_mut(), space, limit).await?;
+            verbs::fact_embeddings::claim_pending_embedding_jobs(tx.as_mut(), limit, skip_owners)
+                .await?;
         tx.commit().await.map_err(crate::error::map_err)?;
         Ok(rows)
     }
@@ -291,6 +292,21 @@ impl EmbeddingMaintenancePort for PgStorage {
             self.platform_scope.as_ref(),
             options,
             policy.stale_claim_timeout_seconds(),
+        )
+        .await
+    }
+
+    async fn embedding_owner_page(
+        &self,
+        after: Option<Owner>,
+        limit: i64,
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<Vec<Owner>, StorageError> {
+        verbs::fact_embeddings::embedding_owner_page(
+            &self.pool,
+            self.platform_scope.as_ref(),
+            after,
+            limit,
         )
         .await
     }

@@ -5,10 +5,10 @@ use std::sync::Arc;
 #[path = "../src/test_fixtures.rs"]
 mod test_fixtures;
 
-use proxima_core::engine::{EmbeddingClientReloader, Engine};
+use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::ids::UserId;
-use proxima_core::llm::{EmbeddingClient, EmbeddingDim};
+use proxima_core::llm::{BoundEmbeddingClient, EmbeddingDim, SingleClientRouter};
 use proxima_core::owner::{Owner, OwnerRef};
 use proxima_core::verbs::change_history::ChangeHistoryRequest;
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
@@ -43,20 +43,10 @@ fn granted_no_access_authz(auth_path: AuthPath) -> ResolvedAuthz {
     AuthzContext::for_subject(user, auth_path)
 }
 
-#[derive(Debug)]
-struct FixedEmbeddingReloader;
-
-impl EmbeddingClientReloader for FixedEmbeddingReloader {
-    fn reload<'a>(
-        &'a self,
-        _owner: &'a Owner,
-    ) -> futures::future::BoxFuture<'a, Result<Option<Arc<dyn EmbeddingClient>>, String>> {
-        Box::pin(async {
-            Ok(Some(
-                Arc::new(ConstantEmbedding::zero("test-embedding")) as Arc<dyn EmbeddingClient>
-            ))
-        })
-    }
+fn fixed_router() -> Arc<SingleClientRouter> {
+    let client = BoundEmbeddingClient::bind(Arc::new(ConstantEmbedding::zero("test-embedding")))
+        .expect("supported width");
+    Arc::new(SingleClientRouter::new(client))
 }
 
 #[test]
@@ -84,24 +74,17 @@ fn schema_verb_projects_the_validated_engine_registry() {
 }
 
 #[tokio::test]
-async fn reload_embedding_client_replaces_engine_slot() {
+async fn embedding_route_comes_from_the_installed_router() {
     let (principal, owner) = fresh_owner();
-    let engine =
-        boot_engine(principal, owner).with_embedding_reloader(Arc::new(FixedEmbeddingReloader));
+    let bare = boot_engine(principal, owner);
+    let unrouted = bare.embedding_route(&owner).await.expect("no router");
+    assert!(unrouted.current_client().is_none());
 
-    assert!(engine.embed_client().is_none());
-    let outcome = engine
-        .reload_embedding_client(&owner)
-        .await
-        .expect("reload hook must install client");
-
-    assert!(outcome.active);
-    assert_eq!(outcome.model_id.as_deref(), Some("test-embedding"));
-    assert_eq!(outcome.dim, Some(EmbeddingDim::D1024.width()));
-    assert_eq!(
-        engine.embed_client().expect("client installed").model_id(),
-        "test-embedding"
-    );
+    let engine = boot_engine(principal, owner).with_embedding_router(fixed_router());
+    let route = engine.embedding_route(&owner).await.expect("routed");
+    let client = route.current_client().expect("client routed");
+    assert_eq!(client.model_id(), "test-embedding");
+    assert_eq!(client.space().dim(), EmbeddingDim::D1024);
 }
 
 #[tokio::test]
@@ -133,12 +116,7 @@ async fn reconcile_embeddings_without_client_is_noop() {
 #[tokio::test]
 async fn reconcile_embeddings_with_client_reaches_maintenance_port() {
     let (principal, owner) = fresh_owner();
-    let engine =
-        boot_engine(principal, owner).with_embedding_reloader(Arc::new(FixedEmbeddingReloader));
-    engine
-        .reload_embedding_client(&owner)
-        .await
-        .expect("reload hook must install client");
+    let engine = boot_engine(principal, owner).with_embedding_router(fixed_router());
 
     let err = engine
         .reconcile_embeddings(proxima_core::EmbeddingReconcileScope::MissingOnly, Some(10))

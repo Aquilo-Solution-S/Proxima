@@ -3,7 +3,7 @@ use proxima_core::StorageError;
 mod jobs;
 mod ops;
 mod reconcile;
-pub(crate) use reconcile::reconcile_embeddings_with_platform;
+pub(crate) use reconcile::{embedding_owner_page, reconcile_embeddings_with_platform};
 #[cfg(test)]
 mod tests;
 mod text;

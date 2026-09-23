@@ -331,6 +331,7 @@ Runtime search:
 | extension | pgvector `>= 0.8.0`, checked by migration 0015 and again at boot |
 | provider batching | `PROXIMA_EMBED_BATCH_SIZE`; host policy, not a core provider assumption |
 | durable claims | heartbeat during all provider calls; reconcile and observability use `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` |
+| routing | each job is embedded through its data Owner's route; the drain claims across every space in queue order and backs off an Owner whose route or provider fails — see [10 §Per-Owner embedding routing](10-configuration.md#per-owner-embedding-routing) |
 | semantic-search GUCs | `SET LOCAL hnsw.ef_search = 100`; `SET LOCAL hnsw.iterative_scan = relaxed_order`; `SET LOCAL hnsw.max_scan_tuples = 20000` |
 | cold owner subsets | planner may prefer owner btree + exact sort |
 

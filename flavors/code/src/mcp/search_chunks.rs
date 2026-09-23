@@ -155,7 +155,7 @@ const RRF_K: f32 = 60.0;
 /// has no embedding model. Mirrors `core_search_memories`: pure semantic
 /// has no lexical component to fall back on, so answering lexically would
 /// be answering a different question than the one asked.
-const SEMANTIC_CHUNK_SEARCH_UNAVAILABLE: &str = "semantic chunk search unavailable: no embedding model is configured. \
+const SEMANTIC_CHUNK_SEARCH_UNAVAILABLE: &str = "semantic chunk search unavailable: no embedding model is configured for this space. \
      Use mode=lexical, or mode=hybrid to rank lexically when embeddings are absent.";
 
 /// Shortest token worth treating as an identifier. `id` and `fs` carry no
@@ -338,8 +338,13 @@ impl Tool for CodeSearchChunksTool {
             // which arms run at all: a `semantic` request with no embedding
             // model is an error, not an empty result set, and a `hybrid` one
             // becomes a `lexical` one that reports having done so.
-            let (effective_mode, query_embedding) =
-                resolve_query_embedding(&engine, resolved.requested_mode, resolved.query).await?;
+            let (effective_mode, query_embedding) = resolve_query_embedding(
+                &engine,
+                &resolved.owner,
+                resolved.requested_mode,
+                resolved.query,
+            )
+            .await?;
 
             let read_owner_ids = super::read_owner_ids(&engine, &ctx).await?;
             let needed = seen.saturating_add(limit);
@@ -679,9 +684,11 @@ struct MatchScores {
     similarity_score: f32,
 }
 
-/// Resolve the requested mode against what the deployment can actually do,
-/// returning the mode that will run and the query embedding if one is
-/// needed.
+/// Resolve the requested mode against what the current Owner's embedding
+/// route can do, returning the mode that will run and the query embedding
+/// if one is needed. The query is embedded by the current Owner's client
+/// only, so the semantic arm ranks the read set's chunks stored in that
+/// Owner's space; chunks another route embedded are reachable lexically.
 ///
 /// The three outcomes deliberately match `core_search_memories`, because a
 /// caller should not have to learn two rules: `lexical` never asks for an
@@ -690,13 +697,18 @@ struct MatchScores {
 /// lexically would answer a question the caller did not ask.
 async fn resolve_query_embedding(
     engine: &proxima_core::Engine,
+    owner: &proxima_core::Owner,
     mode: ChunkSearchMode,
     query: &str,
 ) -> Result<(ChunkSearchMode, Option<SemanticQuery>), ToolError> {
     if mode == ChunkSearchMode::Lexical {
         return Ok((ChunkSearchMode::Lexical, None));
     }
-    let Some(embed) = engine.embed_client() else {
+    let route = engine.embedding_route(owner).await.unwrap_or_else(|err| {
+        tracing::warn!(error = %err, "chunk search embedding route refused");
+        proxima_core::llm::EmbeddingRoute::none()
+    });
+    let Some(embed) = route.current_client() else {
         if mode == ChunkSearchMode::Semantic {
             return Err(ToolError::Unavailable(
                 SEMANTIC_CHUNK_SEARCH_UNAVAILABLE.to_string(),
@@ -704,8 +716,6 @@ async fn resolve_query_embedding(
         }
         return Ok((ChunkSearchMode::Lexical, None));
     };
-    // The client can vanish, or its call fail, between the probe above and
-    // here; both land in the same place.
     match embed.embed(query).await {
         Ok(vector) => Ok((
             mode,

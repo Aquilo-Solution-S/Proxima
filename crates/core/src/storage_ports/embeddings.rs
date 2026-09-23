@@ -150,10 +150,12 @@ pub struct EmbeddingAnnObservability {
 
 #[async_trait::async_trait]
 pub trait EmbeddingJobPort: Send + Sync {
+    /// Claim up to `limit` pending jobs in queue order, across every
+    /// space, skipping `skip_owners`' jobs. Each claim carries its space.
     async fn claim_pending_embedding_jobs(
         &self,
-        space: &EmbeddingSpace,
         limit: i64,
+        skip_owners: &[crate::Owner],
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError>;
 
     async fn complete_embedding_job(&self, claim: &EmbeddingJobClaim) -> Result<(), StorageError>;
@@ -286,6 +288,9 @@ pub const EMBEDDING_RECONCILE_DEFAULT_LIMIT: i64 = 50_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddingReconcileOptions<'a> {
     pub space: &'a EmbeddingSpace,
+    /// Reconcile only these Owners' memories; `None` is every Owner. The
+    /// engine names the Owners whose route names `space`.
+    pub owners: Option<&'a [crate::Owner]>,
     pub scope: EmbeddingReconcileScope,
     /// Required at the storage boundary. `None` is a constraint error.
     /// Engine `None` becomes [`EMBEDDING_RECONCILE_DEFAULT_LIMIT`].
@@ -330,4 +335,13 @@ pub trait EmbeddingMaintenancePort: Send + Sync {
         policy: crate::EmbeddingRuntimePolicy,
         proof: OperatorMaintenanceProof,
     ) -> Result<EmbeddingReconcileOutcome, StorageError>;
+
+    /// Up to `limit` Owners after `after`, in a stable order: the engine
+    /// pages every Owner to route it before reconciling.
+    async fn embedding_owner_page(
+        &self,
+        after: Option<crate::Owner>,
+        limit: i64,
+        proof: OperatorMaintenanceProof,
+    ) -> Result<Vec<crate::Owner>, StorageError>;
 }

@@ -6,18 +6,22 @@ use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 
 use crate::engine::SearchReadRequest;
+use crate::llm::BoundEmbeddingClient;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
 use crate::verbs::query::{
-    EntityKind, MemorySearchRequest, SearchCursor, SearchMode, SearchOrder, SupersessionStatus,
-    TagMatch,
+    EntityKind, MemorySearchRequest, SearchCursor, SearchMode, SearchOrder, SemanticQuery,
+    SupersessionStatus, TagMatch,
 };
-use crate::{McpTool, MemoryId, SchemaId};
+use crate::{EmbeddingSpace, McpTool, MemoryId, SchemaId};
 
 use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
+use super::memory_spaces::ResolvedMemorySpace;
 
 const SEMANTIC_SEARCH_UNAVAILABLE: &str =
-    "semantic search unavailable: no embedding client is configured for this host";
+    "semantic search unavailable: no embedding client is configured for space";
+const EMBEDDING_PROVIDER_UNAVAILABLE: &str =
+    "semantic search unavailable: embedding provider error";
 const DEFAULT_BODY_MAX_CHARS: usize = crate::MAX_TEXT_CAP_CHARS;
 /// Each distinct space costs one full storage search, so the space list is
 /// this tool's only per-request work multiplier; cap it like every other
@@ -193,10 +197,23 @@ pub struct SearchMemoriesArgs {
 pub struct SearchMemoriesOutput {
     pub mode: String,
     pub degraded_to_lexical: bool,
+    /// `score`: every result's `score` is on one scale. `rank`: the
+    /// searched spaces were scored on different scales — Owners embedded
+    /// by different models, or some searched lexically — so a `score`
+    /// compares only within its `space`, and relevance order interleaves
+    /// the spaces by rank.
+    pub ranking: SearchRanking,
     pub memories: Vec<SearchMemoryOutput>,
     pub neighbor_edges: Vec<NeighborEdge>,
     pub next_cursor: Option<String>,
     pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchRanking {
+    Score,
+    Rank,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -246,86 +263,69 @@ impl McpTool for SearchMemoriesTool {
             fold_tag_filter(&mut args.tags);
 
             let mode = SearchMode::from(args.mode);
-            let embeddings_available = ctx
-                .engine()
-                .is_some_and(|engine| engine.embed_client().is_some());
-            let (mut effective_mode, resolver_degraded) =
-                resolve_effective_search_mode(mode, embeddings_available)?;
-            let mut degraded_to_lexical = resolver_degraded;
             let since = parse_rfc3339(args.since.as_deref(), "since")?;
             let until = parse_rfc3339(args.until.as_deref(), "until")?;
             let spaces = resolve_search_spaces(&ctx, &args.spaces)?;
+            let lanes = plan_owner_lanes(&ctx, mode, query, spaces).await?;
+            let mut degraded_to_lexical = lanes.iter().any(|lane| lane.degraded);
+            let ranking = ranking_for(&lanes);
             // The fingerprint binds a cursor to everything that shapes the
-            // result set, so page N+1 provably continues the same query.
-            let fingerprint = query_fingerprint(query, &args, since, until, &spaces);
+            // result set, so page N+1 provably continues the same query —
+            // including each Owner's scoring lane, so a page that would be
+            // ranked differently (a route moved, a provider went down)
+            // rejects the cursor instead of skipping or repeating rows.
+            let fingerprint = query_fingerprint(query, &args, since, until, &lanes);
             let after = args
                 .cursor
                 .as_deref()
                 .map(|raw| decode_cursor(raw, &fingerprint))
                 .transpose()?;
-            let semantic = if matches!(effective_mode, SearchMode::Semantic | SearchMode::Hybrid) {
-                let engine = ctx.require_engine()?;
-                // The embed client can vanish (or its call can fail) between
-                // the availability probe above and this point. A pure
-                // Semantic request has no lexical fallback, so it hard-fails
-                // with an actionable precondition. A Hybrid request degrades
-                // to lexical-only ranking and flags `degraded_to_lexical`.
-                match embed_query_for_search(engine, query).await {
-                    Ok(semantic) => Some(semantic),
-                    Err(err) => {
-                        if matches!(effective_mode, SearchMode::Hybrid) {
-                            tracing::warn!(
-                                error = %err,
-                                "hybrid search query embedding unavailable; degrading to lexical",
-                            );
-                            effective_mode = SearchMode::Lexical;
-                            degraded_to_lexical = true;
-                            None
-                        } else {
-                            return Err(McpToolError::Unavailable(err));
-                        }
-                    }
-                }
-            } else {
-                None
-            };
+            let merge = MergeKind::of(ranking, args.order);
+            let positions = cursor_positions(after.as_ref(), merge, &lanes)?;
             let prepared = PreparedSearch {
                 query: query.to_string(),
-                effective_mode,
-                semantic_weight: weight_for_effective_mode(args.semantic_weight, effective_mode),
                 since,
                 until,
-                semantic,
                 body_max_chars: effective_body_max_chars(args.body_max_chars),
                 limit: args.limit.min(50),
-                after,
             };
-            let mut all_memories = Vec::new();
+            let mut lists = Vec::with_capacity(lanes.len());
             let mut all_neighbor_edges = Vec::new();
-            // Every space receives the same keyset cursor: a keyset is a
-            // per-row predicate, so filtering each space independently and
-            // re-merging yields exactly the next page of the merged order.
             let mut any_space_has_more = false;
-            for space in spaces {
-                let result = search_one_space(&ctx, &args, &prepared, space).await?;
+            for (lane, position) in lanes.into_iter().zip(positions) {
+                let result =
+                    search_one_space(&ctx, &args, &prepared, &lane, position.after).await?;
                 degraded_to_lexical |= result.degraded_to_lexical;
                 any_space_has_more |= result.has_more;
-                all_memories.extend(result.memories);
                 all_neighbor_edges.extend(result.neighbor_edges);
+                lists.push(RankedList {
+                    owner: lane.space.owner,
+                    position,
+                    rows: result.memories,
+                });
             }
-            let (memories, has_more, next_cursor) = paginate_merged_outputs(
-                all_memories,
-                args.order,
-                prepared.limit as usize,
-                any_space_has_more,
-                after,
-                &fingerprint,
-            );
+            let (memories, has_more, next_cursor) = match merge {
+                MergeKind::Keyset => paginate_merged_outputs(
+                    lists.into_iter().flat_map(|list| list.rows).collect(),
+                    args.order,
+                    prepared.limit as usize,
+                    any_space_has_more,
+                    after.as_ref().and_then(PageCursor::keyset),
+                    &fingerprint,
+                ),
+                MergeKind::Rank => paginate_rank_fused(
+                    lists,
+                    prepared.limit as usize,
+                    any_space_has_more,
+                    &fingerprint,
+                ),
+            };
             retain_surviving_neighbor_edges(&memories, &mut all_neighbor_edges);
 
             Ok(SearchMemoriesOutput {
                 mode: format!("{mode:?}").to_lowercase(),
                 degraded_to_lexical,
+                ranking,
                 memories,
                 neighbor_edges: all_neighbor_edges,
                 next_cursor,
@@ -337,18 +337,188 @@ impl McpTool for SearchMemoriesTool {
 
 struct PreparedSearch {
     query: String,
-    effective_mode: SearchMode,
-    /// The caller's weight, dropped when `effective_mode` degraded away
-    /// from hybrid. Degradation is an availability fact, not a caller
-    /// error, so the knob the run can no longer honor is discarded here
-    /// rather than carried into a verb that rejects it.
-    semantic_weight: Option<f32>,
     since: Option<time::OffsetDateTime>,
     until: Option<time::OffsetDateTime>,
-    semantic: Option<crate::verbs::query::SemanticQuery>,
     body_max_chars: usize,
     limit: u32,
+}
+
+/// How one Owner's list is scored: the mode its search runs in and, for a
+/// semantic arm, the query embedded in that Owner's space.
+struct OwnerLane {
+    space: ResolvedMemorySpace,
+    mode: SearchMode,
+    semantic: Option<SemanticQuery>,
+    /// Hybrid was requested and this Owner runs lexically: no route, or its
+    /// provider failed.
+    degraded: bool,
+}
+
+impl OwnerLane {
+    /// The scale this list's scores are on; lists with equal keys merge by
+    /// score.
+    fn scoring_key(&self) -> Option<&EmbeddingSpace> {
+        self.semantic.as_ref().map(|semantic| &semantic.space)
+    }
+}
+
+/// Route every searched Owner and embed the query once per distinct
+/// client. Each Owner's query goes only to its own route's endpoint.
+///
+/// A pure Semantic request fails when any Owner cannot be served — there
+/// is no lexical fallback to degrade to. Hybrid degrades just that Owner.
+async fn plan_owner_lanes(
+    ctx: &McpToolCtx,
+    requested: SearchMode,
+    query: &str,
+    spaces: Vec<ResolvedMemorySpace>,
+) -> Result<Vec<OwnerLane>, McpToolError> {
+    if matches!(requested, SearchMode::Lexical) {
+        return Ok(spaces
+            .into_iter()
+            .map(|space| OwnerLane {
+                space,
+                mode: SearchMode::Lexical,
+                semantic: None,
+                degraded: false,
+            })
+            .collect());
+    }
+    let engine = ctx.require_engine()?;
+    let mut embedded: Vec<(BoundEmbeddingClient, Result<SemanticQuery, String>)> = Vec::new();
+    let mut lanes = Vec::with_capacity(spaces.len());
+    for space in spaces {
+        let route = engine
+            .embedding_route(&space.owner)
+            .await
+            .unwrap_or_else(|err| {
+                tracing::warn!(
+                    space = %space.key,
+                    error = %err,
+                    "search embedding route refused; the space has no semantic arm"
+                );
+                crate::llm::EmbeddingRoute::none()
+            });
+        let semantic = match route.current_client() {
+            None => Err(format!("{SEMANTIC_SEARCH_UNAVAILABLE} {}", space.key)),
+            Some(client) => {
+                let cached = embedded
+                    .iter()
+                    .find(|(seen, _)| seen.same_client(client) && seen.space() == client.space());
+                if let Some((_, result)) = cached {
+                    result.clone()
+                } else {
+                    let result = embed_query_for_search(client, query).await;
+                    embedded.push((client.clone(), result.clone()));
+                    result
+                }
+            }
+        };
+        lanes.push(match (semantic, requested) {
+            (Ok(semantic), _) => OwnerLane {
+                space,
+                mode: requested,
+                semantic: Some(semantic),
+                degraded: false,
+            },
+            (Err(err), SearchMode::Hybrid) => {
+                tracing::warn!(
+                    space = %space.key,
+                    error = %err,
+                    "hybrid search degrading the space to lexical",
+                );
+                OwnerLane {
+                    space,
+                    mode: SearchMode::Lexical,
+                    semantic: None,
+                    degraded: true,
+                }
+            }
+            (Err(err), _) => return Err(McpToolError::Unavailable(err)),
+        });
+    }
+    Ok(lanes)
+}
+
+fn ranking_for(lanes: &[OwnerLane]) -> SearchRanking {
+    let mut keys = lanes.iter().map(OwnerLane::scoring_key);
+    let first = keys.next();
+    if keys.all(|key| Some(key) == first) {
+        SearchRanking::Score
+    } else {
+        SearchRanking::Rank
+    }
+}
+
+/// How the per-Owner lists become one page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MergeKind {
+    /// One sort key across every list, one shared keyset cursor.
+    Keyset,
+    /// Interleave by per-list rank; one keyset per list.
+    Rank,
+}
+
+impl MergeKind {
+    /// Recency is comparable across any lanes; relevance only on one scale.
+    fn of(ranking: SearchRanking, order: SearchOrder) -> Self {
+        match (ranking, order) {
+            (SearchRanking::Rank, SearchOrder::Relevance) => Self::Rank,
+            _ => Self::Keyset,
+        }
+    }
+}
+
+/// Where one Owner's list resumes: its own keyset and how many of its rows
+/// earlier pages emitted, which is the rank its next row continues from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ListPosition {
     after: Option<SearchCursor>,
+    consumed: u32,
+}
+
+fn cursor_positions(
+    after: Option<&PageCursor>,
+    merge: MergeKind,
+    lanes: &[OwnerLane],
+) -> Result<Vec<ListPosition>, McpToolError> {
+    match (after, merge) {
+        (None, _) => Ok(vec![ListPosition::default(); lanes.len()]),
+        // A keyset is a per-row predicate, so every list takes the same one
+        // and the re-merge is exactly the next page of the merged order.
+        (Some(PageCursor::Keyset(cursor)), MergeKind::Keyset) => Ok(vec![
+            ListPosition {
+                after: Some(*cursor),
+                consumed: 0,
+            };
+            lanes.len()
+        ]),
+        (Some(PageCursor::Ranked(ranked)), MergeKind::Rank) => Ok(lanes
+            .iter()
+            .map(|lane| {
+                let owner = lane.space.owner.external_key();
+                ranked
+                    .lists
+                    .iter()
+                    .find(|list| list.owner == owner)
+                    .map_or_else(ListPosition::default, |list| ListPosition {
+                        after: Some(list.after),
+                        consumed: list.consumed,
+                    })
+            })
+            .collect()),
+        _ => Err(McpToolError::InvalidInput(
+            "malformed cursor: pass next_cursor from a previous core_search_memories response"
+                .into(),
+        )),
+    }
+}
+
+/// One Owner's rows in storage order, with where that list stood.
+struct RankedList {
+    owner: crate::OwnerRef,
+    position: ListPosition,
+    rows: Vec<RankedMemoryOutput>,
 }
 
 /// A wire output paired with the typed sort/cursor keys it was ranked
@@ -426,13 +596,15 @@ async fn search_one_space(
     ctx: &McpToolCtx,
     args: &SearchMemoriesArgs,
     prepared: &PreparedSearch,
-    space: super::memory_spaces::ResolvedMemorySpace,
+    lane: &OwnerLane,
+    after: Option<SearchCursor>,
 ) -> Result<SpaceSearchResult, McpToolError> {
+    let space = &lane.space;
     let req = MemorySearchRequest {
         owner: space.owner,
         read_owners: Vec::new(),
         query: prepared.query.clone(),
-        mode: prepared.effective_mode,
+        mode: lane.mode,
         supersession: args.supersession.into(),
         limit: prepared.limit,
         kind: args.kind.map(EntityKind::from),
@@ -443,9 +615,13 @@ async fn search_one_space(
         until: prepared.until,
         order: args.order,
         min_score: args.min_score,
-        semantic_weight: prepared.semantic_weight,
-        after: prepared.after,
-        semantic: prepared.semantic.clone(),
+        // The caller's weight, dropped when this lane degraded away from
+        // hybrid. Degradation is an availability fact, not a caller error,
+        // so the knob the run can no longer honor is discarded here rather
+        // than carried into a verb that rejects it.
+        semantic_weight: weight_for_effective_mode(args.semantic_weight, lane.mode),
+        after,
+        semantic: lane.semantic.clone(),
     };
     let engine = ctx.require_engine()?;
     let response = engine
@@ -459,7 +635,7 @@ async fn search_one_space(
         )
         .await?;
     let rows = response.memories;
-    let degraded_to_lexical = semantic_search_degraded_to_lexical(prepared.effective_mode, &rows);
+    let degraded_to_lexical = semantic_search_degraded_to_lexical(lane.mode, &rows);
     let payloads = response
         .payloads
         .into_iter()
@@ -536,12 +712,71 @@ fn paginate_merged_outputs(
                 seen,
             },
         };
-        encode_cursor(cursor, fingerprint)
+        encode_cursor(&PageCursor::Keyset(cursor), fingerprint)
     });
     let memories = all_memories
         .into_iter()
         .map(|ranked| ranked.output)
         .collect();
+    (memories, has_more, next_cursor)
+}
+
+/// Reciprocal-rank fusion over lists whose scores are on different scales.
+///
+/// Every memory sits in exactly one Owner's list, so its fused score
+/// `1 / (k + rank)` orders exactly as its rank does, for any `k`: fusion is
+/// interleaving the lists by rank, ties to the higher `memory_id`.
+///
+/// A row's rank is its list's `consumed` plus its place in this fetch, so
+/// the merged order is `(rank asc, memory_id desc)` across all pages. Each
+/// list's emitted rows are a prefix of that list, so the next page resumes
+/// every list from its own last emitted row.
+fn paginate_rank_fused(
+    lists: Vec<RankedList>,
+    page_len: usize,
+    any_space_has_more: bool,
+    fingerprint: &str,
+) -> (Vec<SearchMemoryOutput>, bool, Option<String>) {
+    let mut ranked: Vec<(u32, usize, RankedMemoryOutput)> = Vec::new();
+    let mut positions: Vec<(crate::OwnerRef, ListPosition)> = Vec::with_capacity(lists.len());
+    for (index, list) in lists.into_iter().enumerate() {
+        let mut rank = list.position.consumed;
+        for row in list.rows {
+            rank = rank.saturating_add(1);
+            ranked.push((rank, index, row));
+        }
+        positions.push((list.owner, list.position));
+    }
+    ranked.sort_by(|(a_rank, _, a), (b_rank, _, b)| {
+        a_rank
+            .cmp(b_rank)
+            .then_with(|| b.memory_id.cmp(&a.memory_id))
+    });
+    let has_more = any_space_has_more || ranked.len() > page_len;
+    ranked.truncate(page_len);
+    let next_cursor = (has_more && !ranked.is_empty()).then(|| {
+        for (_, index, row) in &ranked {
+            let position = &mut positions[*index].1;
+            position.consumed = position.consumed.saturating_add(1);
+            position.after = Some(SearchCursor::Relevance {
+                score_bits: row.output.score.to_bits(),
+                memory_id: MemoryId::new(row.memory_id),
+                seen: position.consumed,
+            });
+        }
+        let lists = positions
+            .iter()
+            .filter_map(|(owner, position)| {
+                position.after.map(|after| RankedListCursor {
+                    owner: owner.external_key(),
+                    after,
+                    consumed: position.consumed,
+                })
+            })
+            .collect();
+        encode_cursor(&PageCursor::Ranked(RankedCursor { lists }), fingerprint)
+    });
+    let memories = ranked.into_iter().map(|(_, _, row)| row.output).collect();
     (memories, has_more, next_cursor)
 }
 
@@ -565,6 +800,37 @@ fn sort_ranked_outputs(memories: &mut [RankedMemoryOutput], order: SearchOrder) 
     }
 }
 
+/// The resume point under the cursor envelope: one shared keyset when every
+/// list is on one scale, else one keyset per Owner list. Untagged so a
+/// keyset cursor keeps the wire shape it always had.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+enum PageCursor {
+    Keyset(SearchCursor),
+    Ranked(RankedCursor),
+}
+
+impl PageCursor {
+    const fn keyset(&self) -> Option<SearchCursor> {
+        match self {
+            Self::Keyset(cursor) => Some(*cursor),
+            Self::Ranked(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct RankedCursor {
+    lists: Vec<RankedListCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct RankedListCursor {
+    owner: String,
+    after: SearchCursor,
+    consumed: u32,
+}
+
 /// Opaque cursor codec: the shared `{v, fp, c}` envelope with the typed
 /// resume point under `c`. Clients must treat the token as opaque; the
 /// fingerprint rejects replay against a different query shape, and `v`
@@ -576,11 +842,11 @@ const SEARCH_CURSOR: crate::mcp::cursor::FingerprintedCursor =
         rebind_hint: "repeat the query, mode, filters, order, and spaces that produced it",
     };
 
-fn encode_cursor(cursor: SearchCursor, fingerprint: &str) -> String {
-    SEARCH_CURSOR.encode(fingerprint, &cursor)
+fn encode_cursor(cursor: &PageCursor, fingerprint: &str) -> String {
+    SEARCH_CURSOR.encode(fingerprint, cursor)
 }
 
-fn decode_cursor(raw: &str, fingerprint: &str) -> Result<SearchCursor, McpToolError> {
+fn decode_cursor(raw: &str, fingerprint: &str) -> Result<PageCursor, McpToolError> {
     SEARCH_CURSOR.decode(fingerprint, raw).map_err(Into::into)
 }
 
@@ -588,19 +854,25 @@ fn decode_cursor(raw: &str, fingerprint: &str) -> Result<SearchCursor, McpToolEr
 /// its order. Page size (`limit`) and presentation flags (bodies,
 /// neighbor edges) stay out so they may vary between pages. Tags and
 /// resolved space owners are sorted first, making equivalent filter
-/// sets fingerprint identically.
+/// sets fingerprint identically. Each Owner carries its scoring lane —
+/// the embedding space its arm searched, or none when it ran lexically.
 fn query_fingerprint(
     query: &str,
     args: &SearchMemoriesArgs,
     since: Option<time::OffsetDateTime>,
     until: Option<time::OffsetDateTime>,
-    spaces: &[super::memory_spaces::ResolvedMemorySpace],
+    lanes: &[OwnerLane],
 ) -> String {
     let mut tags = args.tags.clone();
     tags.sort_unstable();
-    let mut space_keys: Vec<String> = spaces
+    let mut space_keys: Vec<(String, Option<String>)> = lanes
         .iter()
-        .map(|space| space.owner.external_key())
+        .map(|lane| {
+            (
+                lane.space.owner.external_key(),
+                lane.scoring_key().map(ToString::to_string),
+            )
+        })
         .collect();
     space_keys.sort_unstable();
     let canon = serde_json::to_string(&(
@@ -736,35 +1008,18 @@ fn weight_for_effective_mode(requested: Option<f32>, effective: SearchMode) -> O
     requested.filter(|_| matches!(effective, SearchMode::Hybrid))
 }
 
-fn resolve_effective_search_mode(
-    requested: SearchMode,
-    embeddings_available: bool,
-) -> Result<(SearchMode, bool), McpToolError> {
-    match (requested, embeddings_available) {
-        (SearchMode::Semantic, false) => Err(McpToolError::Unavailable(
-            SEMANTIC_SEARCH_UNAVAILABLE.to_string(),
-        )),
-        (SearchMode::Hybrid, false) => Ok((SearchMode::Lexical, true)),
-        (SearchMode::Semantic | SearchMode::Hybrid, true) => Ok((requested, false)),
-        (SearchMode::Lexical, _) => Ok((SearchMode::Lexical, false)),
-    }
-}
-
-/// Compute the query embedding + active embedding-model id, mapping absence or
-/// provider failure to a caller-actionable message. The caller decides whether
-/// that message hard-fails (pure Semantic) or degrades to lexical (Hybrid).
+/// Embed the query in `embed`'s space, mapping provider failure to a
+/// caller-actionable message. The caller decides whether that message
+/// hard-fails (pure Semantic) or degrades the Owner to lexical (Hybrid).
 async fn embed_query_for_search(
-    engine: &crate::Engine,
+    embed: &BoundEmbeddingClient,
     query: &str,
-) -> Result<crate::verbs::query::SemanticQuery, String> {
-    let embed = engine
-        .embed_client()
-        .ok_or_else(|| SEMANTIC_SEARCH_UNAVAILABLE.to_string())?;
+) -> Result<SemanticQuery, String> {
     let vector = embed.embed(query).await.map_err(|err| {
         tracing::warn!(error = %err, "embedding provider failed");
-        "semantic search unavailable: embedding provider error".to_string()
+        EMBEDDING_PROVIDER_UNAVAILABLE.to_string()
     })?;
-    Ok(crate::verbs::query::SemanticQuery {
+    Ok(SemanticQuery {
         space: embed.space().clone(),
         vector,
     })
@@ -818,12 +1073,13 @@ fn format_rfc3339(value: time::OffsetDateTime) -> Result<String, McpToolError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_BODY_MAX_CHARS, NeighborEdge, SEMANTIC_SEARCH_UNAVAILABLE, SearchMemoriesArgs,
+        DEFAULT_BODY_MAX_CHARS, ListPosition, MergeKind, NeighborEdge, OwnerLane, PageCursor,
+        RankedList, RankedMemoryOutput, SEMANTIC_SEARCH_UNAVAILABLE, SearchMemoriesArgs,
         SearchMemoriesKind, SearchMemoriesMode, SearchMemoriesSupersession, SearchMemoryOutput,
-        decode_cursor, degraded_to_lexical, effective_body_max_chars, encode_cursor,
-        resolve_effective_search_mode, retain_surviving_neighbor_edges, truncate_body,
-        validate_body_max_chars, validate_list_caps, validate_score_args,
-        weight_for_effective_mode,
+        SearchRanking, cursor_positions, decode_cursor, degraded_to_lexical,
+        effective_body_max_chars, encode_cursor, paginate_rank_fused, ranking_for,
+        retain_surviving_neighbor_edges, truncate_body, validate_body_max_chars,
+        validate_list_caps, validate_score_args, weight_for_effective_mode,
     };
     use crate::MemoryId;
     use crate::mcp::McpToolError;
@@ -945,8 +1201,11 @@ mod tests {
             memory_id: MemoryId::new(uuid::Uuid::now_v7()),
             seen: 42,
         };
-        let token = encode_cursor(cursor, "fp-aaaa");
-        assert_eq!(decode_cursor(&token, "fp-aaaa").unwrap(), cursor);
+        let token = encode_cursor(&PageCursor::Keyset(cursor), "fp-aaaa");
+        assert_eq!(
+            decode_cursor(&token, "fp-aaaa").unwrap(),
+            PageCursor::Keyset(cursor)
+        );
 
         // Same token replayed against a different query shape.
         match decode_cursor(&token, "fp-bbbb") {
@@ -1055,47 +1314,138 @@ mod tests {
             None,
             "degrading to lexical leaves no semantic component to weight"
         );
-        // The same holds for the degradation `resolve_effective_search_mode`
-        // performs, which is the only way a non-hybrid effective mode can
-        // meet a weight that `validate_score_args` already admitted.
-        let (effective, degraded) =
-            resolve_effective_search_mode(SearchMode::Hybrid, false).expect("hybrid degrades");
-        assert!(degraded);
-        assert_eq!(weight_for_effective_mode(Some(0.25), effective), None);
         assert_eq!(weight_for_effective_mode(None, SearchMode::Hybrid), None);
     }
 
-    #[test]
-    fn resolve_effective_search_mode_degrades_only_implicit_semantic_search() {
-        assert_eq!(
-            resolve_effective_search_mode(SearchMode::Lexical, false).unwrap(),
-            (SearchMode::Lexical, false)
-        );
-        assert_eq!(
-            resolve_effective_search_mode(SearchMode::Lexical, true).unwrap(),
-            (SearchMode::Lexical, false)
-        );
-        assert_eq!(
-            resolve_effective_search_mode(SearchMode::Hybrid, false).unwrap(),
-            (SearchMode::Lexical, true)
-        );
-        assert_eq!(
-            resolve_effective_search_mode(SearchMode::Hybrid, true).unwrap(),
-            (SearchMode::Hybrid, false)
-        );
-        assert_eq!(
-            resolve_effective_search_mode(SearchMode::Semantic, true).unwrap(),
-            (SearchMode::Semantic, false)
-        );
-
-        // A pure Semantic request with no embedding client is a caller-actionable
-        // precondition (`Unavailable`), not an opaque internal fault (`Other`).
-        match resolve_effective_search_mode(SearchMode::Semantic, false) {
-            Err(McpToolError::Unavailable(message)) => {
-                assert_eq!(message, SEMANTIC_SEARCH_UNAVAILABLE);
-            }
-            other => panic!("expected semantic unavailable error, got {other:?}"),
+    fn lane(owner: u128, space: Option<&str>) -> OwnerLane {
+        let owner = crate::OwnerRef::Personal(crate::UserId::new(uuid::Uuid::from_u128(owner)));
+        OwnerLane {
+            space: crate::mcp::core_tools::memory_spaces::ResolvedMemorySpace {
+                key: owner.external_key(),
+                label: owner.external_key(),
+                owner,
+            },
+            mode: if space.is_some() {
+                SearchMode::Semantic
+            } else {
+                SearchMode::Lexical
+            },
+            semantic: space.map(|model| crate::verbs::query::SemanticQuery {
+                space: crate::EmbeddingSpace::new(model, crate::EmbeddingDim::D1024),
+                vector: Vec::new(),
+            }),
+            degraded: false,
         }
+    }
+
+    fn ranked(memory_id: u128, score: f32) -> RankedMemoryOutput {
+        let mut output = memory_output(&format!("F:{memory_id}"));
+        output.memory_id = uuid::Uuid::from_u128(memory_id);
+        output.score = score;
+        RankedMemoryOutput {
+            memory_id: uuid::Uuid::from_u128(memory_id),
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            output,
+        }
+    }
+
+    #[test]
+    fn one_scoring_lane_ranks_by_score_and_any_mix_ranks_by_rank() {
+        assert_eq!(
+            ranking_for(&[lane(1, Some("m")), lane(2, Some("m"))]),
+            SearchRanking::Score
+        );
+        assert_eq!(
+            ranking_for(&[lane(1, None), lane(2, None)]),
+            SearchRanking::Score
+        );
+        assert_eq!(
+            ranking_for(&[lane(1, Some("m")), lane(2, Some("other"))]),
+            SearchRanking::Rank
+        );
+        // A degraded Owner's lexical score is not on its peer's scale.
+        assert_eq!(
+            ranking_for(&[lane(1, Some("m")), lane(2, None)]),
+            SearchRanking::Rank
+        );
+        assert_eq!(
+            MergeKind::of(SearchRanking::Rank, SearchOrder::Relevance),
+            MergeKind::Rank
+        );
+        assert_eq!(
+            MergeKind::of(SearchRanking::Rank, SearchOrder::Recency),
+            MergeKind::Keyset,
+            "recency compares across any scoring lanes"
+        );
+    }
+
+    /// Two Owners on different models: scores are incomparable, so the page
+    /// interleaves by rank, and paging through per-list keysets visits every
+    /// row exactly once, in one stable order.
+    #[test]
+    fn rank_fusion_interleaves_and_pages_without_gaps_or_repeats() {
+        let lanes = [lane(1, Some("m")), lane(2, Some("other"))];
+        // Owner 1's scores all beat owner 2's; a score merge would bury
+        // owner 2 entirely.
+        let a: Vec<(u128, f32)> = vec![(10, 0.99), (11, 0.98), (12, 0.97)];
+        let b: Vec<(u128, f32)> = vec![(20, 0.30), (21, 0.20)];
+        let fetch = |rows: &[(u128, f32)], position: ListPosition, limit: usize| {
+            let start = usize::try_from(position.consumed).unwrap();
+            let slice = &rows[start.min(rows.len())..];
+            let has_more = slice.len() > limit;
+            (
+                slice
+                    .iter()
+                    .take(limit)
+                    .map(|(id, score)| ranked(*id, *score))
+                    .collect::<Vec<_>>(),
+                has_more,
+            )
+        };
+        let mut after: Option<PageCursor> = None;
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            let positions = cursor_positions(after.as_ref(), MergeKind::Rank, &lanes).unwrap();
+            let (a_rows, a_more) = fetch(&a, positions[0], 2);
+            let (b_rows, b_more) = fetch(&b, positions[1], 2);
+            let lists = vec![
+                RankedList {
+                    owner: lanes[0].space.owner,
+                    position: positions[0],
+                    rows: a_rows,
+                },
+                RankedList {
+                    owner: lanes[1].space.owner,
+                    position: positions[1],
+                    rows: b_rows,
+                },
+            ];
+            let (page, _, next) = paginate_rank_fused(lists, 2, a_more || b_more, "fp");
+            seen.extend(page.iter().map(|memory| memory.memory_id.as_u128()));
+            let Some(next) = next else { break };
+            after = Some(decode_cursor(&next, "fp").unwrap());
+        }
+        assert_eq!(seen, vec![20, 10, 21, 11, 12]);
+    }
+
+    #[test]
+    fn a_cursor_of_the_other_merge_kind_is_rejected() {
+        let lanes = [lane(1, Some("m"))];
+        let keyset = PageCursor::Keyset(crate::verbs::query::SearchCursor::Relevance {
+            score_bits: 0.5_f32.to_bits(),
+            memory_id: MemoryId::new(uuid::Uuid::from_u128(1)),
+            seen: 1,
+        });
+        assert!(matches!(
+            cursor_positions(Some(&keyset), MergeKind::Rank, &lanes),
+            Err(McpToolError::InvalidInput(message)) if message.contains("malformed cursor")
+        ));
+        assert_eq!(
+            cursor_positions(Some(&keyset), MergeKind::Keyset, &lanes)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1195,10 +1545,21 @@ mod tests {
         // it matches the single-spelling query exactly.
         let single =
             super::resolve_search_spaces(&ctx, &["current".to_string()]).expect("valid space");
+        let lexical = |spaces: Vec<super::ResolvedMemorySpace>| -> Vec<OwnerLane> {
+            spaces
+                .into_iter()
+                .map(|space| OwnerLane {
+                    space,
+                    mode: SearchMode::Lexical,
+                    semantic: None,
+                    degraded: false,
+                })
+                .collect()
+        };
         let query_args = args(SearchMemoriesMode::Lexical);
         assert_eq!(
-            super::query_fingerprint("needle", &query_args, None, None, &deduped),
-            super::query_fingerprint("needle", &query_args, None, None, &single),
+            super::query_fingerprint("needle", &query_args, None, None, &lexical(deduped)),
+            super::query_fingerprint("needle", &query_args, None, None, &lexical(single)),
         );
     }
 }

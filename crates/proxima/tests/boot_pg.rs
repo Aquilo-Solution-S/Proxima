@@ -758,14 +758,33 @@ async fn boot_rejects_embedding_client_with_unsupported_width() {
             other => panic!("expected EmbedError::Config, got {other:?}"),
         }
 
+        // One client and a router are two answers to one question.
+        let lane_768 = proxima_core::llm::BoundEmbeddingClient::bind(Arc::new(
+            FixedDimEmbedding::new("lane-768", 768),
+        ))?;
+        let err = ProximaBuilder::new(config(), owner)
+            .embed_client(Arc::new(FixedDimEmbedding::new("lane-768", 768)))
+            .embedding_router(Arc::new(proxima_core::llm::SingleClientRouter::new(
+                lane_768,
+            )))
+            .boot()
+            .await
+            .expect_err("a client and a router together must be rejected at boot");
+        assert!(
+            matches!(&err, EmbedError::Config(msg) if msg.contains("not both")),
+            "expected the either-or config error, got {err:?}"
+        );
+
         // A supported width other than the 1024 default boots.
         let booted = ProximaBuilder::new(config(), owner)
             .embed_client(Arc::new(FixedDimEmbedding::new("lane-768", 768)))
             .boot()
             .await?;
-        assert!(
-            booted.engine.embed_client().is_some(),
-            "a supported-width client is wired into the engine"
+        let route = booted.engine.embedding_route(&owner).await?;
+        assert_eq!(
+            route.current_client().map(|client| client.space().dim()),
+            Some(proxima_core::llm::EmbeddingDim::D768),
+            "a supported-width client routes every Owner"
         );
         booted.engine.stop(booted.handle);
         Ok(())

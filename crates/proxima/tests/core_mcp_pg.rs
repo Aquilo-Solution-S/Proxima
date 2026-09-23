@@ -26,6 +26,7 @@ mod embedding_failure_regressions {
     use super::*;
     use proxima::host::{EmbedCaps, OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
     use proxima_core::llm::{BoundEmbeddingClient, EmbeddingClient, EmbeddingDim, LlmError};
+    use proxima_core::test_fixtures::TestEmbeddingRouter;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -135,7 +136,11 @@ mod embedding_failure_regressions {
         healthy_semantic: serde_json::Value,
     }
 
-    async fn prepare_fact(built: &proxima::BuiltProxima, owner: Owner) -> TestResult<String> {
+    async fn prepare_fact(
+        built: &proxima::BuiltProxima,
+        router: &TestEmbeddingRouter,
+        owner: Owner,
+    ) -> TestResult<String> {
         let tools = built.core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
         let remembered = call_test_model_tool(
@@ -154,10 +159,7 @@ mod embedding_failure_regressions {
             .as_str()
             .ok_or("memory handle")?
             .to_owned();
-        built
-            .engine
-            .set_embed_client(Some(bound(test_embedding())))
-            .await;
+        router.set_default(bound(test_embedding()));
         ensure_fact_embedding_for_handle(&built.engine, &owner, &memory).await?;
         Ok(memory)
     }
@@ -172,16 +174,17 @@ mod embedding_failure_regressions {
         args
     }
 
-    async fn exercise(built: &proxima::BuiltProxima, owner: Owner) -> TestResult<Observed> {
+    async fn exercise(
+        built: &proxima::BuiltProxima,
+        router: &TestEmbeddingRouter,
+        owner: Owner,
+    ) -> TestResult<Observed> {
         let tools = built.core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
-        let memory = prepare_fact(built, owner).await?;
+        let memory = prepare_fact(built, router, owner).await?;
         let endpoint = overflow_endpoint().await?;
         let adapter = endpoint.client.embed("response control").await;
-        built
-            .engine
-            .set_embed_client(Some(bound(endpoint.client.clone())))
-            .await;
+        router.set_default(bound(endpoint.client.clone()));
         let mut calls = [0; 6];
         calls[0] = endpoint.calls.load(Ordering::SeqCst);
 
@@ -210,10 +213,7 @@ mod embedding_failure_regressions {
         .await??;
         calls[5] = endpoint.calls.load(Ordering::SeqCst);
 
-        built
-            .engine
-            .set_embed_client(Some(bound(test_embedding())))
-            .await;
+        router.set_default(bound(test_embedding()));
         let healthy = call("core_search_memories", search_args("semantic")).await??;
         Ok(Observed {
             memory,
@@ -235,14 +235,16 @@ mod embedding_failure_regressions {
         let result: TestResult<Observed> = async {
             let (runtime_url, platform_url) = split_role_urls(&name).await?;
             let owner = company_owner(Uuid::now_v7());
+            let router = Arc::new(TestEmbeddingRouter::default());
             let built = Proxima::<AgentMemoryApp>::app()
                 .database_url(runtime_url)
                 .platform_database_url(platform_url)
                 .owner(owner)
                 .tool_scope(ToolScope::All)
+                .embedding_router(router.clone())
                 .build()
                 .await?;
-            let result = exercise(&built, owner).await;
+            let result = exercise(&built, &router, owner).await;
             built.shutdown();
             result
         }
@@ -1302,6 +1304,418 @@ async fn facade_embeds_and_searches_at_a_non_default_width() {
         let _ = drop_db(&db_name).await;
         result.unwrap_or_else(|err| panic!("width lane {dim} end to end failed: {err}"));
     }
+}
+
+/// Records every text it embeds. Every vector carries axis 0; a text that
+/// says `far` also carries axis 1, so a `needle` query scores `near` rows
+/// above `far` ones.
+#[derive(Debug)]
+struct RecordingRouteEmbedding {
+    model: &'static str,
+    dim: proxima_core::llm::EmbeddingDim,
+    texts: std::sync::Mutex<Vec<String>>,
+}
+
+impl RecordingRouteEmbedding {
+    fn new(model: &'static str, dim: proxima_core::llm::EmbeddingDim) -> Arc<Self> {
+        Arc::new(Self {
+            model,
+            dim,
+            texts: std::sync::Mutex::default(),
+        })
+    }
+
+    fn texts(&self) -> Vec<String> {
+        self.texts.lock().expect("recorder lock").clone()
+    }
+
+    fn bound(self: &Arc<Self>) -> proxima_core::llm::BoundEmbeddingClient {
+        proxima_core::llm::BoundEmbeddingClient::bind(self.clone()).expect("lane width")
+    }
+}
+
+#[async_trait::async_trait]
+impl proxima_core::llm::EmbeddingClient for RecordingRouteEmbedding {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, proxima_core::llm::LlmError> {
+        self.texts
+            .lock()
+            .expect("recorder lock")
+            .push(text.to_owned());
+        let mut vector = vec![0.0; self.dim.width()];
+        vector[0] = 1.0;
+        if text.contains("far") {
+            vector[1] = 1.0;
+        }
+        Ok(vector)
+    }
+
+    fn model_id(&self) -> &str {
+        self.model
+    }
+
+    fn dim(&self) -> usize {
+        self.dim.width()
+    }
+}
+
+/// A caller with a personal space and a group space, each its own data
+/// Owner, served by one runtime whose router the test rewires.
+struct TwoOwnerFixture {
+    built: proxima::BuiltProxima,
+    tools: CoreMcpTools,
+    authz: AuthzContext,
+    personal: Owner,
+    shared: Owner,
+    shared_space: String,
+    router: Arc<proxima_core::test_fixtures::TestEmbeddingRouter>,
+    admin_pool: sqlx::PgPool,
+}
+
+impl TwoOwnerFixture {
+    async fn boot(db_name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let (runtime_url, platform_url) = split_role_urls(db_name).await?;
+        let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let shared = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let router = Arc::new(proxima_core::test_fixtures::TestEmbeddingRouter::default());
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(runtime_url)
+            .platform_database_url(platform_url)
+            .owner(personal)
+            .embedding_router(router.clone())
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = space_authz(personal, vec![personal, shared], Role::admin());
+        let shared_space =
+            server_issued_group_space_selector(&tools, authz.clone(), personal).await;
+        let admin_pool = sqlx::PgPool::connect(&db_url(db_name)).await?;
+        Ok(Self {
+            built,
+            tools,
+            authz,
+            personal,
+            shared,
+            shared_space,
+            router,
+            admin_pool,
+        })
+    }
+
+    async fn remember(&self, space: &str, body: &str) -> Result<String, CoreMcpError> {
+        let remembered = call_test_model_tool(
+            &self.tools,
+            self.authz.clone(),
+            self.personal,
+            "core_remember",
+            serde_json::json!({"space": space, "title": "routed note", "body": body}),
+        )
+        .await?;
+        Ok(remembered["handle"].as_str().expect("handle").to_owned())
+    }
+
+    async fn search(
+        &self,
+        mode: &str,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<serde_json::Value, CoreMcpError> {
+        let mut args = serde_json::json!({
+            "query": "needle", "mode": mode, "kind": "Fact", "limit": limit,
+            "spaces": ["current", self.shared_space],
+        });
+        if let Some(cursor) = cursor {
+            args["cursor"] = serde_json::json!(cursor);
+        }
+        call_test_model_tool(
+            &self.tools,
+            self.authz.clone(),
+            self.personal,
+            "core_search_memories",
+            args,
+        )
+        .await
+    }
+
+    /// Every page of a search, in order.
+    async fn search_all_pages(
+        &self,
+        mode: &str,
+        limit: u32,
+    ) -> Result<(Vec<String>, Vec<serde_json::Value>), Box<dyn std::error::Error>> {
+        let mut handles = Vec::new();
+        let mut pages = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..16 {
+            let page = self.search(mode, limit, cursor.as_deref()).await?;
+            handles.extend(
+                page["memories"]
+                    .as_array()
+                    .expect("memories")
+                    .iter()
+                    .map(|memory| memory["memory"].as_str().expect("handle").to_owned()),
+            );
+            cursor = page["next_cursor"].as_str().map(str::to_owned);
+            pages.push(page);
+            if cursor.is_none() {
+                return Ok((handles, pages));
+            }
+        }
+        Err("search did not finish paging".into())
+    }
+
+    /// `(model_id, dim)` of the stored vector for `handle`, if any.
+    async fn stored_space(
+        &self,
+        handle: &str,
+    ) -> Result<Option<(String, i16)>, Box<dyn std::error::Error>> {
+        let memory_id = handle
+            .strip_prefix("F:")
+            .ok_or("fact handle")?
+            .parse::<Uuid>()?;
+        Ok(
+            sqlx::query_as(
+                "SELECT model_id, dim FROM proxima_core.embeddings WHERE entity_id = $1",
+            )
+            .bind(memory_id)
+            .fetch_optional(&self.admin_pool)
+            .await?,
+        )
+    }
+
+    async fn job_statuses(&self, handle: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let memory_id = handle
+            .strip_prefix("F:")
+            .ok_or("fact handle")?
+            .parse::<Uuid>()?;
+        Ok(sqlx::query_scalar(
+            "SELECT status::text FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+        )
+        .bind(memory_id)
+        .fetch_all(&self.admin_pool)
+        .await?)
+    }
+}
+
+/// Two data Owners on two models: each Owner's texts and queries reach only
+/// its own endpoint, its vectors land in its own space, and a search over
+/// both interleaves them by rank — scores from two models are not one scale
+/// — while paging through every row exactly once.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn each_owner_embeds_and_searches_through_its_own_route() {
+    use proxima_core::llm::EmbeddingDim;
+    let db_name = unique_db_name("proxima_core_route_owners");
+    create_db(&db_name).await.expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let fixture = TwoOwnerFixture::boot(&db_name).await?;
+        let personal_client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D768);
+        let shared_client = RecordingRouteEmbedding::new("route-b", EmbeddingDim::D1024);
+        fixture
+            .router
+            .set_owner(fixture.personal, Some(personal_client.bound()));
+        fixture
+            .router
+            .set_owner(fixture.shared, Some(shared_client.bound()));
+
+        let personal_near = fixture.remember("current", "personal needle near").await?;
+        let personal_far = fixture.remember("current", "personal needle far").await?;
+        let shared_near = fixture
+            .remember(&fixture.shared_space, "shared needle near")
+            .await?;
+        let shared_far = fixture
+            .remember(&fixture.shared_space, "shared needle far")
+            .await?;
+        let drained = fixture.built.engine.drain_embedding_jobs(10).await?;
+        assert_eq!((drained.processed, drained.failed), (4, 0));
+
+        let personal_texts = personal_client.texts();
+        let shared_texts = shared_client.texts();
+        assert_eq!(personal_texts.len(), 2, "{personal_texts:?}");
+        assert_eq!(shared_texts.len(), 2, "{shared_texts:?}");
+        assert!(personal_texts.iter().all(|text| text.contains("personal")));
+        assert!(shared_texts.iter().all(|text| text.contains("shared")));
+        for handle in [&personal_near, &personal_far] {
+            assert_eq!(
+                fixture.stored_space(handle).await?,
+                Some(("route-a".to_owned(), 768))
+            );
+        }
+        for handle in [&shared_near, &shared_far] {
+            assert_eq!(
+                fixture.stored_space(handle).await?,
+                Some(("route-b".to_owned(), 1024))
+            );
+        }
+
+        let whole = fixture.search("semantic", 10, None).await?;
+        assert_eq!(whole["ranking"], "rank", "{whole}");
+        let (visited, pages) = fixture.search_all_pages("semantic", 1).await?;
+        // Rank 1 of each list, then rank 2; ties go to the later memory.
+        let expected = vec![
+            shared_near.clone(),
+            personal_near.clone(),
+            shared_far.clone(),
+            personal_far.clone(),
+        ];
+        assert_eq!(visited, expected, "one row per page, every row once");
+        assert!(pages.iter().all(|page| page["ranking"] == "rank"));
+        let whole_handles: Vec<&str> = whole["memories"]
+            .as_array()
+            .expect("memories")
+            .iter()
+            .map(|memory| memory["memory"].as_str().expect("handle"))
+            .collect();
+        assert_eq!(whole_handles, expected, "paging matches the one-page order");
+
+        let queries = |texts: Vec<String>| texts.iter().filter(|text| *text == "needle").count();
+        assert_eq!(queries(personal_client.texts()), 1 + pages.len());
+        assert_eq!(queries(shared_client.texts()), 1 + pages.len());
+        assert!(
+            personal_client
+                .texts()
+                .iter()
+                .all(|text| !text.contains("shared")),
+            "no shared text reaches the personal endpoint"
+        );
+        assert!(
+            shared_client
+                .texts()
+                .iter()
+                .all(|text| !text.contains("personal")),
+            "no personal text reaches the shared endpoint"
+        );
+
+        fixture.built.shutdown();
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("per-owner routing test failed");
+}
+
+/// One Owner's refused route refuses that Owner's writes and parks its
+/// queued jobs, while the other Owner keeps writing and draining. An Owner
+/// routed to no client writes without queuing anything.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_route_failure_stays_with_its_owner() {
+    use proxima_core::llm::EmbeddingDim;
+    let db_name = unique_db_name("proxima_core_route_refusal");
+    create_db(&db_name).await.expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let fixture = TwoOwnerFixture::boot(&db_name).await?;
+        let personal_client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D768);
+        let shared_client = RecordingRouteEmbedding::new("route-b", EmbeddingDim::D1024);
+        fixture
+            .router
+            .set_owner(fixture.personal, Some(personal_client.bound()));
+        fixture
+            .router
+            .set_owner(fixture.shared, Some(shared_client.bound()));
+        let queued = fixture
+            .remember("current", "personal needle queued")
+            .await?;
+
+        fixture
+            .router
+            .refuse(fixture.personal, "no key for this owner");
+        assert!(
+            fixture
+                .remember("current", "personal needle refused")
+                .await
+                .is_err(),
+            "a write the route refuses must fail, not land unsearchable"
+        );
+        let shared = fixture
+            .remember(&fixture.shared_space, "shared needle routed")
+            .await?;
+        let drained = fixture.built.engine.drain_embedding_jobs(10).await?;
+        assert_eq!((drained.processed, drained.failed), (1, 0));
+        assert!(personal_client.texts().is_empty());
+        assert_eq!(shared_client.texts().len(), 1);
+        assert_eq!(fixture.job_statuses(&queued).await?, vec!["pending"]);
+        assert_eq!(fixture.stored_space(&queued).await?, None);
+        assert_eq!(
+            fixture.stored_space(&shared).await?,
+            Some(("route-b".to_owned(), 1024))
+        );
+
+        let hybrid = fixture.search("hybrid", 10, None).await?;
+        assert_eq!(hybrid["degraded_to_lexical"], true, "{hybrid}");
+        assert_eq!(hybrid["ranking"], "rank", "{hybrid}");
+        assert_eq!(hybrid["memories"].as_array().map(Vec::len), Some(2));
+        let semantic = fixture.search("semantic", 10, None).await;
+        assert!(
+            matches!(&semantic, Err(CoreMcpError::Tool { message, .. })
+                if message.contains("no embedding client is configured for space current")),
+            "{semantic:?}"
+        );
+        assert!(
+            personal_client.texts().is_empty(),
+            "a refused route sends nothing"
+        );
+
+        fixture.router.set_owner(fixture.personal, None);
+        let unrouted = fixture
+            .remember("current", "personal needle unrouted")
+            .await?;
+        assert!(fixture.job_statuses(&unrouted).await?.is_empty());
+
+        fixture.built.shutdown();
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("route refusal isolation test failed");
+}
+
+/// Owners that share one client share one scale: the page merges by score,
+/// as before routing, and the query is embedded once for both.
+#[tokio::test]
+async fn one_client_across_owners_ranks_by_score() {
+    use proxima_core::llm::EmbeddingDim;
+    let db_name = unique_db_name("proxima_core_route_shared");
+    create_db(&db_name).await.expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let fixture = TwoOwnerFixture::boot(&db_name).await?;
+        let client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D1024);
+        fixture.router.set_default(client.bound());
+
+        let first = fixture.remember("current", "personal needle near").await?;
+        let second = fixture
+            .remember("current", "personal needle near again")
+            .await?;
+        let far = fixture
+            .remember(&fixture.shared_space, "shared needle far")
+            .await?;
+        let drained = fixture.built.engine.drain_embedding_jobs(10).await?;
+        assert_eq!((drained.processed, drained.failed), (3, 0));
+
+        let page = fixture.search("semantic", 10, None).await?;
+        assert_eq!(page["ranking"], "score", "{page}");
+        let handles: Vec<&str> = page["memories"]
+            .as_array()
+            .expect("memories")
+            .iter()
+            .map(|memory| memory["memory"].as_str().expect("handle"))
+            .collect();
+        // By rank this would be [second, far, first]; by score both near
+        // rows outrank the far one.
+        assert_eq!(handles, [second.as_str(), first.as_str(), far.as_str()]);
+        let queries = client
+            .texts()
+            .iter()
+            .filter(|text| *text == "needle")
+            .count();
+        assert_eq!(queries, 1, "one shared client embeds the query once");
+
+        fixture.built.shutdown();
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("shared-client ranking test failed");
 }
 
 #[tokio::test]

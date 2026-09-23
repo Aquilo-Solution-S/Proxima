@@ -330,8 +330,8 @@ impl EmbeddingWritePort for RejectingStorage {
 impl EmbeddingJobPort for RejectingStorage {
     async fn claim_pending_embedding_jobs(
         &self,
-        _space: &crate::EmbeddingSpace,
         _limit: i64,
+        _skip_owners: &[crate::Owner],
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -448,6 +448,17 @@ impl EmbeddingMaintenancePort for RejectingStorage {
         _policy: crate::EmbeddingRuntimePolicy,
         _proof: OperatorMaintenanceProof,
     ) -> Result<super::embeddings::EmbeddingReconcileOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects embedding maintenance".into(),
+        ))
+    }
+
+    async fn embedding_owner_page(
+        &self,
+        _after: Option<crate::Owner>,
+        _limit: i64,
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<Vec<crate::Owner>, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects embedding maintenance".into(),
         ))

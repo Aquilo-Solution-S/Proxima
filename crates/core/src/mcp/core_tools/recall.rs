@@ -267,13 +267,17 @@ async fn collect_question(
         Some(RecallKind::Perspective) => Some(EntityKind::Perspective),
         Some(RecallKind::Goal) | None => None,
     };
-    // Recall always intends Hybrid, so both ways of not getting it — no
-    // embed client configured, or a client whose call failed — are the same
+    // Recall always intends Hybrid, so every way of not getting it — no
+    // route for the Owner, or a client whose call failed — is the same
     // fact to the caller: the semantic leg did not run. `degraded` carries it
     // to the wire instead of leaving it in a log line the caller cannot see.
     let mut degraded = false;
-    let (mode, semantic) = if engine.embed_client().is_some() {
-        match embed_query(engine, query).await {
+    let route = engine.embedding_route(&owner).await.unwrap_or_else(|err| {
+        tracing::warn!(error = %err, "recall embedding route refused; degrading to lexical");
+        crate::llm::EmbeddingRoute::none()
+    });
+    let (mode, semantic) = if let Some(embed) = route.current_client() {
+        match embed_query(embed, query).await {
             Ok(semantic) => (SearchMode::Hybrid, Some(semantic)),
             Err(err) => {
                 tracing::warn!(
@@ -552,12 +556,9 @@ fn require_cue(question: Option<&str>, subjects: &[String]) -> Result<(), McpToo
 }
 
 async fn embed_query(
-    engine: &crate::Engine,
+    embed: &crate::llm::BoundEmbeddingClient,
     query: &str,
 ) -> Result<crate::verbs::query::SemanticQuery, String> {
-    let embed = engine
-        .embed_client()
-        .ok_or_else(|| "no embedding client".to_string())?;
     let vector = embed.embed(query).await.map_err(|err| {
         tracing::warn!(error = %err, "embedding provider failed");
         "embedding provider error".to_string()

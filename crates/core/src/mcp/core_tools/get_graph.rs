@@ -22,8 +22,8 @@ pub struct GetGraphArgs {}
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetGraphOutput {
-    /// Whether an embedding client is installed (semantic/hybrid search can
-    /// embed queries). Note: `true` does NOT imply stored vectors exist —
+    /// Whether this Owner's memories route to an embedding client
+    /// (semantic/hybrid search can embed queries for it). Note: `true` does NOT imply stored vectors exist —
     /// check `pending_embedding_jobs`.
     pub embeddings_client_configured: bool,
     /// Counts the owner's embedding jobs in `pending` or `processing` state
@@ -61,10 +61,15 @@ pub async fn get_graph(
     _args: GetGraphArgs,
 ) -> Result<GetGraphOutput, McpToolError> {
     let engine = ctx.require_engine()?;
-    let embeddings_client_configured = engine.embed_client().is_some();
     let graph = engine
         .get_graph(&ctx.authz, &GetGraphReadRequest { owner: ctx.owner })
         .await?;
+    // Routed only after the read is authorized; a route the host refuses
+    // reports the same as no route.
+    let embeddings_client_configured = engine
+        .embedding_route(&ctx.owner)
+        .await
+        .is_ok_and(|route| route.current_client().is_some());
 
     let schemas = ctx
         .registry

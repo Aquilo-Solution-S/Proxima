@@ -401,8 +401,8 @@ mod storage_port_tests_support {
     impl crate::EmbeddingJobPort for EmbeddingJobFake {
         async fn claim_pending_embedding_jobs(
             &self,
-            _space: &crate::EmbeddingSpace,
             _limit: i64,
+            _skip_owners: &[crate::Owner],
         ) -> Result<Vec<crate::storage::EmbeddingJobClaim>, StorageError> {
             Ok(Vec::new())
         }
@@ -518,6 +518,15 @@ mod storage_port_tests_support {
                 enqueued: 2,
                 skipped: 1,
             })
+        }
+
+        async fn embedding_owner_page(
+            &self,
+            _after: Option<crate::Owner>,
+            _limit: i64,
+            _proof: crate::OperatorMaintenanceProof,
+        ) -> Result<Vec<crate::Owner>, StorageError> {
+            Ok(Vec::new())
         }
     }
 

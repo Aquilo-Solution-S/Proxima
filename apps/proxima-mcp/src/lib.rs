@@ -408,6 +408,7 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     let outcome = storage
         .reconcile_embeddings(EmbeddingReconcileOptions {
             space: &space,
+            owners: None,
             scope: reconcile_scope(config.scope),
             // Omitted `--limit` is the operator full pass. Process boot
             // never takes this path; it uses EMBEDDING_RECONCILE_DEFAULT_LIMIT.

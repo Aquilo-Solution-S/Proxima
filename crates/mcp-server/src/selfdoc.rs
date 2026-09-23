@@ -474,8 +474,9 @@ fn push_reading(out: &mut String, s: Surface) {
     }
     out.push_str(
         "\nDiscover available reads with `resources/list` and `resources/templates/list`. \
-         Semantic ranking needs embeddings; if no embedding client is configured the server \
-         degrades to lexical search.\n\n",
+         Semantic ranking needs embeddings; a space with no embedding client degrades to \
+         lexical search. When the searched spaces score on different scales the result says \
+         `ranking: \"rank\"`: compare `score` only within one `space`.\n\n",
     );
 }
 
