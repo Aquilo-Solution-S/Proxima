@@ -321,20 +321,6 @@ pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::E
         sqlx::raw_sql(AssertSqlSafe(statement))
             .execute(&mut control)
             .await?;
-        sqlx::query("SELECT pg_advisory_lock(90300014)")
-            .execute(&mut control)
-            .await?;
-        let scope_acl = format!(
-            "GRANT SET ON PARAMETER app.proxima_scope TO {}",
-            quoted_ident(SPLIT_PLATFORM_ROLE),
-        );
-        // SQL-POLICY: fixed-fragment — generated role identifier only.
-        sqlx::raw_sql(AssertSqlSafe(scope_acl))
-            .execute(&mut control)
-            .await?;
-        sqlx::query("SELECT pg_advisory_unlock(90300014)")
-            .execute(&mut control)
-            .await?;
 
         let mut target = PgConnection::connect(&db_url(database)).await?;
         // Several HTTP test binaries share one isolated database. Once its

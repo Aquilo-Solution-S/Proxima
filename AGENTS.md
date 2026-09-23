@@ -103,6 +103,8 @@ kernel, **the kernel wins** until renegotiated in writing. Check it with
    Keep the already-merged `0013_v015` index migration byte-for-byte and append
    `0014_v015_owner_rls.sql`. This is the named exception to one core file per
    release; it preserves existing migration checksums instead of rewriting 0013.
+   0014 itself was corrected in place after the tag, the second named exception
+   (`docs/how-to/migrations.md` §v0.0.15).
 
 Do not weaken the Lean guardrails: server-resolved `OwnerRef`,
 source-owned pins with target redaction, optional Memory/Goal sidecars,

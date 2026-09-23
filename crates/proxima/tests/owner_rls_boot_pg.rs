@@ -41,24 +41,19 @@ async fn exec(pool: &PgPool, sql: impl Into<String>) {
         .expect("fixture SQL");
 }
 
-async fn parameter_acl(statement: String) {
-    // Advisory locks are database-local; all fixtures must lock the common
-    // control database before modifying the cluster-wide parameter ACL row.
-    let pool = PgPool::connect(&proxima_pg_testkit::admin_url())
-        .await
-        .unwrap();
-    let mut tx = pool.begin().await.expect("parameter ACL transaction");
-    sqlx::query("SELECT pg_advisory_xact_lock(90300014)")
-        .execute(&mut *tx)
-        .await
-        .expect("parameter ACL lock");
-    // SQL-POLICY: fixed-fragment — only quoted, generated fixture-role ACL statements.
-    sqlx::query(AssertSqlSafe(statement))
-        .execute(&mut *tx)
-        .await
-        .expect("parameter ACL statement");
-    tx.commit().await.expect("parameter ACL commit");
-    pool.close().await;
+/// The platform role migrates with no parameter ACL: owner RLS must activate
+/// without any superuser-only grant.
+async fn assert_no_scope_parameter_grant(admin: &PgPool, platform: &str) {
+    let granted: bool =
+        sqlx::query_scalar("SELECT has_parameter_privilege($1, 'app.proxima_scope', 'SET')")
+            .bind(platform)
+            .fetch_one(admin)
+            .await
+            .expect("parameter privilege probe");
+    assert!(
+        !granted,
+        "fixture platform role must not hold SET on app.proxima_scope"
+    );
 }
 
 async fn role_pool(database: &str, role: &str, password: &str) -> PgPool {
@@ -79,11 +74,6 @@ async fn cleanup(database: &str, admin: PgPool, runtime: &str, platform: &str) {
     let control = PgPool::connect(&admin_url())
         .await
         .expect("control connection");
-    parameter_acl(format!(
-        "REVOKE SET ON PARAMETER app.proxima_scope FROM {}",
-        ident(platform)
-    ))
-    .await;
     // SQL-POLICY: fixed-fragment — uniquely generated fixture roles, quoted identifiers.
     exec(&control, format!("DROP ROLE IF EXISTS {}", ident(runtime))).await;
     exec(&control, format!("DROP ROLE IF EXISTS {}", ident(platform))).await;
@@ -106,12 +96,6 @@ async fn provision_platform_role(admin: &PgPool, platform: &str, runtime: &str, 
     // SQL-POLICY: fixed-fragment — generated role identifiers are quoted.
     exec(admin, format!("ALTER SCHEMA proxima_core OWNER TO {p}; GRANT USAGE, CREATE ON SCHEMA proxima_core TO {p}", p = ident(platform))).await;
     exec(admin, format!("DO $$ DECLARE r record; BEGIN FOR r IN SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid) AS args FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'proxima_core' LOOP EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO {platform}', r.nspname, r.proname, r.args); END LOOP; END $$")).await;
-    // SQL-POLICY: fixed-fragment — generated role identifier is quoted.
-    parameter_acl(format!(
-        "GRANT SET ON PARAMETER app.proxima_scope TO {}",
-        ident(platform)
-    ))
-    .await;
 }
 
 async fn setup() -> (String, PgPool, String, String, Owner, String, String) {
@@ -138,6 +122,7 @@ async fn setup() -> (String, PgPool, String, String, Owner, String, String) {
     )
     .await;
     provision_platform_role(&admin, &platform, &runtime, &password).await;
+    assert_no_scope_parameter_grant(&admin, &platform).await;
     exec(
         &admin,
         format!(
@@ -223,11 +208,7 @@ async fn setup_fresh() -> (String, PgPool, String, String, String, String) {
         ),
     )
     .await;
-    parameter_acl(format!(
-        "GRANT SET ON PARAMETER app.proxima_scope TO {}",
-        ident(&platform)
-    ))
-    .await;
+    assert_no_scope_parameter_grant(&admin, &platform).await;
     let runtime_url = PgConnectOptions::from_str(&db_url(&database))
         .expect("database URL")
         .username(&runtime)

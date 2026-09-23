@@ -849,22 +849,6 @@ async fn assert_role_ddl_contention_retries_to_green(
         .execute(&mut target_admin)
         .await?;
         target_admin.close().await?;
-        let mut acl_control = sqlx::PgConnection::connect(&admin_url()).await?;
-        sqlx::query("SELECT pg_advisory_lock(90300014)")
-            .execute(&mut acl_control)
-            .await?;
-        // SQL-POLICY: fixed-fragment — role_name is the generated, quoted
-        // fixture identifier; the parameter name is a closed literal.
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "GRANT SET ON PARAMETER app.proxima_scope TO {}",
-            quoted_ident(&role_name),
-        )))
-        .execute(&mut admin)
-        .await?;
-        sqlx::query("SELECT pg_advisory_unlock(90300014)")
-            .execute(&mut acl_control)
-            .await?;
-        acl_control.close().await?;
         if role_settings_pre_seeded {
             // SQL-POLICY: fixed-fragment — same test-minted {role_name} as above.
             sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -957,17 +941,6 @@ async fn assert_role_ddl_contention_retries_to_green(
     let database_cleanup = drop_db(&db_name).await;
     let role_cleanup = async {
         let mut cleanup = sqlx::PgConnection::connect(&admin_url()).await?;
-        sqlx::query("SELECT pg_advisory_lock(90300014)")
-            .execute(&mut cleanup)
-            .await?;
-        // SQL-POLICY: fixed-fragment — role_name is the generated, quoted
-        // fixture identifier; the parameter name is a closed literal.
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "REVOKE SET ON PARAMETER app.proxima_scope FROM {}",
-            quoted_ident(&role_name),
-        )))
-        .execute(&mut cleanup)
-        .await?;
         // SQL-POLICY: fixed-fragment — role_name is minted by this test and
         // contains only the closed [a-z0-9_] identifier alphabet.
         sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -975,9 +948,6 @@ async fn assert_role_ddl_contention_retries_to_green(
         )))
         .execute(&mut cleanup)
         .await?;
-        sqlx::query("SELECT pg_advisory_unlock(90300014)")
-            .execute(&mut cleanup)
-            .await?;
         let still_exists: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)")
                 .bind(&role_name)
