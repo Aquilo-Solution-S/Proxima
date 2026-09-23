@@ -214,18 +214,27 @@ impl BoundEmbeddingClient {
 ///
 /// A route is the host's answer for the Owner whose memories are written or
 /// searched — never the caller's. The engine embeds that Owner's texts and
-/// queries only through the route's client, so a route naming no client
+/// queries only through the route's clients, so a route naming no client
 /// means no jobs, no vectors and lexical-only search for the Owner.
+///
+/// A route has up to two clients. `current` embeds new memories inline and
+/// serves search. `next`, set while the Owner moves to another model, is
+/// queued for every new memory and filled by backfill; search stays on
+/// `current` until the host flips the route to `current(next)`.
 #[derive(Debug, Clone, Default)]
 pub struct EmbeddingRoute {
     current: Option<BoundEmbeddingClient>,
+    next: Option<BoundEmbeddingClient>,
 }
 
 impl EmbeddingRoute {
     /// No embeddings for this Owner.
     #[must_use]
     pub const fn none() -> Self {
-        Self { current: None }
+        Self {
+            current: None,
+            next: None,
+        }
     }
 
     /// Embed and search this Owner's memories through `client`.
@@ -233,7 +242,35 @@ impl EmbeddingRoute {
     pub const fn current(client: BoundEmbeddingClient) -> Self {
         Self {
             current: Some(client),
+            next: None,
         }
+    }
+
+    /// Search through `current` while every memory is also embedded in
+    /// `next`'s space. `current: None` starts an Owner that had no
+    /// embeddings on `next` without serving semantic search yet.
+    ///
+    /// # Errors
+    ///
+    /// [`EmbeddingRouteError`] when both clients embed the same space: that
+    /// is no move.
+    pub fn moving(
+        current: Option<BoundEmbeddingClient>,
+        next: BoundEmbeddingClient,
+    ) -> Result<Self, EmbeddingRouteError> {
+        if current
+            .as_ref()
+            .is_some_and(|current| current.space() == next.space())
+        {
+            return Err(EmbeddingRouteError::new(format!(
+                "a move needs a new embedding space; both clients embed {}",
+                next.space()
+            )));
+        }
+        Ok(Self {
+            current,
+            next: Some(next),
+        })
     }
 
     /// The client that embeds new memories inline and search queries.
@@ -242,11 +279,17 @@ impl EmbeddingRoute {
         self.current.as_ref()
     }
 
-    /// Spaces a new memory of this Owner is queued for.
+    /// The client this Owner is moving to, if a move is under way.
+    #[must_use]
+    pub const fn next_client(&self) -> Option<&BoundEmbeddingClient> {
+        self.next.as_ref()
+    }
+
+    /// Spaces a new memory of this Owner is queued for: `current`, then
+    /// `next`.
     #[must_use]
     pub fn write_spaces(&self) -> Vec<EmbeddingSpace> {
-        self.current
-            .iter()
+        self.clients()
             .map(|client| client.space().clone())
             .collect()
     }
@@ -255,9 +298,11 @@ impl EmbeddingRoute {
     /// route no longer names it: a job queued for such a space is stale.
     #[must_use]
     pub fn client_for(&self, space: &EmbeddingSpace) -> Option<&BoundEmbeddingClient> {
-        self.current
-            .as_ref()
-            .filter(|client| client.space() == space)
+        self.clients().find(|client| client.space() == space)
+    }
+
+    fn clients(&self) -> impl Iterator<Item = &BoundEmbeddingClient> {
+        self.current.iter().chain(self.next.iter())
     }
 
     /// The same route with every client passed through `wrap`.
@@ -266,7 +311,8 @@ impl EmbeddingRoute {
         wrap: impl Fn(&BoundEmbeddingClient) -> BoundEmbeddingClient,
     ) -> Self {
         Self {
-            current: self.current.as_ref().map(wrap),
+            current: self.current.as_ref().map(&wrap),
+            next: self.next.as_ref().map(&wrap),
         }
     }
 }
@@ -945,6 +991,65 @@ mod tests {
             super::BoundEmbeddingClient::bind(std::sync::Arc::new(Width(1000))).unwrap_err(),
             super::UnsupportedEmbeddingWidth { width: 1000 }
         );
+    }
+
+    #[derive(Debug)]
+    struct Named(&'static str, usize);
+
+    #[async_trait]
+    impl EmbeddingClient for Named {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+            Ok(vec![0.0; self.1])
+        }
+
+        fn model_id(&self) -> &str {
+            self.0
+        }
+
+        fn dim(&self) -> usize {
+            self.1
+        }
+    }
+
+    fn named(model: &'static str, dim: usize) -> super::BoundEmbeddingClient {
+        super::BoundEmbeddingClient::bind(std::sync::Arc::new(Named(model, dim))).expect("a lane")
+    }
+
+    #[test]
+    fn a_moving_route_writes_both_spaces_and_searches_current() {
+        let old = named("old", 768);
+        let new = named("new", 1024);
+        let route = super::EmbeddingRoute::moving(Some(old.clone()), new.clone()).expect("a move");
+        assert_eq!(
+            route.write_spaces(),
+            vec![old.space().clone(), new.space().clone()]
+        );
+        assert!(route.current_client().is_some_and(|c| c.same_client(&old)));
+        assert!(route.next_client().is_some_and(|c| c.same_client(&new)));
+        assert!(
+            route
+                .client_for(new.space())
+                .is_some_and(|c| c.same_client(&new))
+        );
+        assert!(
+            route
+                .client_for(old.space())
+                .is_some_and(|c| c.same_client(&old))
+        );
+
+        let first = super::EmbeddingRoute::moving(None, new.clone()).expect("a first route");
+        assert!(first.current_client().is_none(), "nothing to search yet");
+        assert_eq!(first.write_spaces(), vec![new.space().clone()]);
+    }
+
+    #[test]
+    fn a_move_needs_a_new_space() {
+        // Same model at a new width is a move; the same space twice is not.
+        let rewidth = super::EmbeddingRoute::moving(Some(named("m", 1024)), named("m", 768));
+        assert!(rewidth.is_ok());
+        let err = super::EmbeddingRoute::moving(Some(named("m", 1024)), named("m", 1024))
+            .expect_err("no move");
+        assert!(err.to_string().contains("new embedding space"), "{err}");
     }
 
     fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {

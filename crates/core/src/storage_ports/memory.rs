@@ -68,10 +68,15 @@ pub trait MemoryAuthoringPort: Send + Sync {
     /// but must not
     /// leave a subset of the set hydrated. Implementations may omit no ids;
     /// absent and foreign ids are represented as `NotFound`.
+    ///
+    /// `embedding_spaces` are the spaces the permit Owner's route names now;
+    /// each hydrated embeddable memory is queued for them, not for the
+    /// spaces it had vectors in when it cooled.
     async fn hydrate_memories(
         &self,
         _permit: &OwnerWritePermit,
         _memory_ids: &[MemoryId],
+        _embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<MemoryHydrationBatchOutcome, StorageError> {
         Err(StorageError::Internal(
             "storage backend does not implement memory hydration".into(),

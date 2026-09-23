@@ -52,11 +52,29 @@ fn erase_context(
 }
 
 /// The hydrate's registry-resolved embedding answer, same reason.
-fn non_embeddable_schemas() -> Vec<String> {
+static NON_EMBEDDABLE_SCHEMAS: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
     proxima_core::FlavorRegistry::new()
         .freeze_or_panic_for_tests()
         .non_embeddable_schema_ids()
         .to_vec()
+});
+
+/// The space these fixtures' vectors live in, which their Owners' route
+/// names on hydrate.
+static ROUTE_SPACES: std::sync::LazyLock<Vec<proxima_core::EmbeddingSpace>> =
+    std::sync::LazyLock::new(|| {
+        vec![proxima_core::EmbeddingSpace::new(
+            "test-embed",
+            proxima_core::EmbeddingDim::D1024,
+        )]
+    });
+
+/// What a fixture hydrate files for embedding.
+fn hydrate_embeddings() -> crate::verbs::fact_embeddings::RouteSpaces<'static> {
+    crate::verbs::fact_embeddings::RouteSpaces {
+        spaces: &ROUTE_SPACES,
+        non_embeddable_schemas: &NON_EMBEDDABLE_SCHEMAS,
+    }
 }
 
 /// Read the database-only historical identity witness without exposing it
@@ -533,7 +551,7 @@ async fn forget_hydrate_and_erase() {
             &cold,
             t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect("the record restores");
@@ -782,7 +800,7 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
             cold.as_ref(),
             t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect("the record restores");
@@ -1372,7 +1390,7 @@ async fn hydrate_of_older_cooled_version_preserves_newer_head() {
             &cold,
             first_t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect("the record restores");
@@ -1445,7 +1463,7 @@ async fn historical_restore_may_reuse_a_closed_handle_but_new_pins_may_not() {
             &cold,
             source_t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect("the record restores");
@@ -1774,7 +1792,7 @@ async fn commit_forget_reputs_when_a_sidecar_row_lands_after_the_snapshot() {
             &cold,
             t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect("the record restores");
@@ -1854,7 +1872,7 @@ async fn forget_dumps_only_stamped_tables_and_skips_unregistered_scan() {
             &cold,
             t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect("the record restores");
@@ -1941,7 +1959,7 @@ async fn forget_dumps_every_stamped_extra() {
             &cold,
             t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect("the record restores");
@@ -2220,7 +2238,7 @@ async fn exact_hydrate_restores_witnessed_sole_fact_origin() {
             &cold,
             abstraction_t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect("the record restores");
@@ -2362,7 +2380,7 @@ async fn concurrent_hydrates_recreate_an_empty_memory_head() {
                 older_cold.as_ref(),
                 first_t,
                 owner.stored_owner_id(),
-                &non_embeddable_schemas(),
+                hydrate_embeddings(),
             )
             .await
             {
@@ -2394,7 +2412,7 @@ async fn concurrent_hydrates_recreate_an_empty_memory_head() {
                 newer_cold.as_ref(),
                 second_t,
                 owner.stored_owner_id(),
-                &non_embeddable_schemas(),
+                hydrate_embeddings(),
             )
             .await
             {
@@ -2535,12 +2553,22 @@ async fn reversed_overlapping_hydration_batches_do_not_deadlock() {
         let left_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let right_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let left = tokio::spawn(async move {
-            MemoryAuthoringPort::hydrate_memories(&left_pg, &left_permit, &[first_id, second_id])
-                .await
+            MemoryAuthoringPort::hydrate_memories(
+                &left_pg,
+                &left_permit,
+                &[first_id, second_id],
+                &ROUTE_SPACES,
+            )
+            .await
         });
         let right = tokio::spawn(async move {
-            MemoryAuthoringPort::hydrate_memories(&right_pg, &right_permit, &[second_id, first_id])
-                .await
+            MemoryAuthoringPort::hydrate_memories(
+                &right_pg,
+                &right_permit,
+                &[second_id, first_id],
+                &ROUTE_SPACES,
+            )
+            .await
         });
         let joined = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             tokio::join!(left, right)
@@ -2619,7 +2647,7 @@ async fn hydrate_retries_when_cold_digest_changes_under_lock() {
                 hydrate_cold.as_ref(),
                 source_t,
                 owner.stored_owner_id(),
-                &non_embeddable_schemas(),
+                hydrate_embeddings(),
             )
             .await;
             let _ = tx.rollback().await;
@@ -2716,7 +2744,7 @@ async fn exact_hydrate_restores_memory_and_goal_witness_refs() {
             &cold,
             source_t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect("the record restores");
@@ -2787,7 +2815,7 @@ async fn hydrate_rejects_unknown_and_wrong_kind_witnesses_atomically() {
             &cold,
             unknown_source_t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect_err("unknown decoded origin must not be restored");
@@ -2858,7 +2886,7 @@ async fn hydrate_rejects_unknown_and_wrong_kind_witnesses_atomically() {
             &cold,
             perspective_t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect_err("wrong-kind origin witness must not be restored");
@@ -2919,7 +2947,7 @@ async fn hydrate_rejects_unknown_and_wrong_kind_witnesses_atomically() {
             &cold,
             memory_ref_source_t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect_err("Goal witness must not satisfy a Memory refs target");
@@ -2967,7 +2995,7 @@ async fn hydrate_rejects_unknown_and_wrong_kind_witnesses_atomically() {
             &cold,
             goal_source_t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect_err("wrong-kind Goal witness must not be restored");
@@ -3137,7 +3165,7 @@ async fn a_legacy_cooled_locator_is_unsupported_and_untouched() {
             cold.as_ref(),
             source_t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect_err("a legacy locator carries no integrity witness");
@@ -3208,6 +3236,7 @@ async fn transferred_cooled_source_hydrates_after_target_erase() {
                 EntityId::Memory(successor.memory_id),
                 destination,
                 &transfer_surfaces(),
+                &[],
             )
             .await?
         );
@@ -3246,7 +3275,7 @@ async fn transferred_cooled_source_hydrates_after_target_erase() {
             // The series changed hands while cold: the fence is the
             // DESTINATION's, and a stale source-owner permit must not reach it.
             destination.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect("the record restores");
@@ -3309,7 +3338,7 @@ async fn hydrate_rejects_cold_identity_and_sealed_pin_mismatch() {
             &cold,
             identity_t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect_err("a cold object with a different t must not hydrate");
@@ -3352,7 +3381,7 @@ async fn hydrate_rejects_cold_identity_and_sealed_pin_mismatch() {
             &cold,
             source_t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect_err("cold pins that differ from the cooled seal must not hydrate");
@@ -3838,7 +3867,7 @@ async fn forget_of_an_already_cooled_t_reports_not_found() {
             cold.as_ref(),
             t,
             owner.stored_owner_id(),
-            &non_embeddable_schemas(),
+            hydrate_embeddings(),
         )
         .await?
         .expect("the record restores");
@@ -4667,7 +4696,8 @@ async fn commit_forget_aborts_when_owner_transferred() {
                 &permit,
                 EntityId::Memory(written.memory_id),
                 dest,
-                &transfer_surfaces()
+                &transfer_surfaces(),
+                &[]
             )
             .await?
         );
@@ -4732,6 +4762,7 @@ async fn stale_source_erase_does_not_lock_transferred_series() {
                 EntityId::Memory(first.memory_id),
                 destination,
                 &transfer_surfaces(),
+                &[],
             )
             .await?
         );
@@ -5281,11 +5312,12 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
     result.expect("a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget failed");
 }
 
-/// A rehydrate re-files the embedding jobs the dump recorded, and the dump
-/// records what the row HAD: the models it held vectors under. A row written
-/// under a `Never` schema before the recipe was honoured has one, so the
-/// models alone would restore the job the recipe exists to prevent — once
-/// per hydrate, forever.
+/// A rehydrate files embedding jobs for the spaces the Owner's route names
+/// now, not the spaces the dump recorded: the row held a `test-model` vector
+/// when it cooled, and the route names `test-embed`. A row written under a
+/// `Never` schema before the recipe was honoured also holds one, so a route
+/// alone would restore the job the recipe exists to prevent — once per
+/// hydrate, forever.
 #[tokio::test]
 async fn hydrate_files_no_embedding_job_for_a_never_schema() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -5305,8 +5337,16 @@ async fn hydrate_files_no_embedding_job_for_a_never_schema() {
         // zero mean the gate rather than an empty table.
         let never = cool_then_hydrate(&pg, &owner, &permit, &cold, "core/write-act-v1").await?;
         let embeds = cool_then_hydrate(&pg, &owner, &permit, &cold, "core/agent-note-v1").await?;
-        assert_eq!(never, 0, "a Never schema files no embedding job on hydrate");
-        assert_eq!(embeds, 1, "an embeddable schema still restores its job");
+        assert_eq!(
+            never,
+            Vec::<String>::new(),
+            "a Never schema files no embedding job on hydrate"
+        );
+        assert_eq!(
+            embeds,
+            vec!["test-embed".to_owned()],
+            "an embeddable schema is queued for its route's space, not the cooled one"
+        );
         Ok(())
     }
     .await;
@@ -5335,6 +5375,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
             &pg,
             &permit,
             &[hot.memory_id],
+            &ROUTE_SPACES,
         )
         .await?;
         assert!(hot_result.committed);
@@ -5368,6 +5409,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
             &pg,
             &permit,
             &[cooled.memory_id],
+            &ROUTE_SPACES,
         )
         .await?;
         assert!(hydrated.committed);
@@ -5390,7 +5432,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
         .await?;
         make_legacy_cooled(pool, incomplete_t).await?;
         let incomplete_result =
-            MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[incomplete_seal.memory_id])
+            MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[incomplete_seal.memory_id], &ROUTE_SPACES)
                 .await?;
         assert_eq!(
             incomplete_result.outcomes[0].status,
@@ -5443,6 +5485,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
             &pg,
             &permit,
             &[witness_source.memory_id],
+            &ROUTE_SPACES,
         )
         .await?;
         assert!(witnessed.committed);
@@ -5589,6 +5632,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
             &pg,
             &permit,
             &sidecar_ids,
+            &ROUTE_SPACES,
         )
         .await?;
         assert!(!invalid_sidecars.committed);
@@ -5655,6 +5699,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
             &pg,
             &permit,
             &[missing.memory_id],
+            &ROUTE_SPACES,
         )
         .await?;
         assert!(!missing_result.committed);
@@ -5672,6 +5717,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
             &pg,
             &permit,
             &[corrupt.memory_id],
+            &ROUTE_SPACES,
         )
         .await?;
         assert!(!corrupt_result.committed);
@@ -5687,7 +5733,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
         let legacy_record = decode_record(&cold.get(&legacy_key).await?)?;
         let legacy_bytes = encode_v5_without_sidecar_stamp(&legacy_record)?;
         replace_cold_bytes(pool, &cold, legacy_t, &legacy_key, &legacy_bytes).await?;
-        let legacy_result = MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[legacy.memory_id])
+        let legacy_result = MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[legacy.memory_id], &ROUTE_SPACES)
             .await?;
         assert!(!legacy_result.committed);
         assert_eq!(
@@ -5730,7 +5776,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
             .await?;
         unwitnessed_tx.commit().await?;
         let unwitnessed_result =
-            MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[unwitnessed.memory_id]).await?;
+            MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[unwitnessed.memory_id], &ROUTE_SPACES).await?;
         assert_eq!(
             unwitnessed_result.outcomes[0].status,
             MemoryHydrationStatus::UnsupportedColdObject
@@ -5743,7 +5789,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
         let mut future_bytes = cold.get(&future_key).await?;
         future_bytes[0] = COLD_FORMAT_VERSION.saturating_add(1);
         replace_cold_bytes(pool, &cold, future_t, &future_key, &future_bytes).await?;
-        let future_result = MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[future.memory_id])
+        let future_result = MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[future.memory_id], &ROUTE_SPACES)
             .await?;
         assert_eq!(
             future_result.outcomes[0].status,
@@ -5754,6 +5800,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
             &pg,
             &foreign_permit,
             &[missing.memory_id],
+            &ROUTE_SPACES,
         )
         .await?;
         assert!(foreign_result.committed);
@@ -5789,6 +5836,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
             &pg,
             &permit,
             &[atomic_a.memory_id, atomic_b.memory_id],
+            &ROUTE_SPACES,
         )
         .await?;
         assert!(!atomic.committed);
@@ -5871,8 +5919,13 @@ async fn authorized_hydration_reports_witness_count_after_erase_race() {
         let hydrate_owner = owner;
         let hydrate_task = tokio::spawn(async move {
             let hydrate_permit = OwnerWritePermit::new_for_tests(hydrate_owner, AccessKind::Fact);
-            MemoryAuthoringPort::hydrate_memories(&hydrate_pg, &hydrate_permit, &[source.memory_id])
-                .await
+            MemoryAuthoringPort::hydrate_memories(
+                &hydrate_pg,
+                &hydrate_permit,
+                &[source.memory_id],
+                &ROUTE_SPACES,
+            )
+            .await
         });
         wait_for_advisory_waiters(pool, 2).await?;
         gate.rollback().await?;
@@ -5897,14 +5950,15 @@ async fn authorized_hydration_reports_witness_count_after_erase_race() {
 }
 
 /// Ingest one Fact under `schema_id`, give it the vector a write that ignored
-/// the recipe would have left behind, cool it, hydrate it, count the jobs.
+/// the recipe would have left behind, cool it, hydrate it, and name the
+/// model of every job the hydrate filed.
 async fn cool_then_hydrate(
     pg: &PgStorage,
     owner: &OwnerRef,
     permit: &OwnerWritePermit,
     cold: &MemoryColdStore,
     schema_id: &str,
-) -> Result<i64, Box<dyn std::error::Error>> {
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let pool = pg.pool_for_tests();
     let mut sourced = draft(None);
     sourced.schema_id = SchemaId::new(schema_id.to_owned());
@@ -5945,16 +5999,16 @@ async fn cool_then_hydrate(
         cold,
         t,
         owner.stored_owner_id(),
-        &non_embeddable_schemas(),
+        hydrate_embeddings(),
     )
     .await?
     .expect("the record restores");
     tx.commit().await?;
 
     Ok(sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+        "SELECT model_id FROM proxima_core.embedding_jobs WHERE entity_id = $1 ORDER BY model_id",
     )
     .bind(t)
-    .fetch_one(pool)
+    .fetch_all(pool)
     .await?)
 }

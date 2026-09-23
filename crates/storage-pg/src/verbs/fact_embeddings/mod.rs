@@ -4,6 +4,11 @@ mod jobs;
 mod ops;
 mod reconcile;
 pub(crate) use reconcile::{embedding_owner_page, reconcile_embeddings_with_platform};
+mod spaces;
+pub(crate) use spaces::{
+    RouteSpaces, embedding_coverage, enqueue_series_head_in_tx, purge_embedding_spaces,
+    purge_series_embedding_spaces_in_tx,
+};
 #[cfg(test)]
 mod tests;
 mod text;

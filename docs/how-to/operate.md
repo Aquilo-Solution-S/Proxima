@@ -72,7 +72,8 @@ version/GUC preflight (see [15 §Runtime requirements](../15-deployment.md#runti
 |---|---|---|
 | `embeddings_client_configured` | `false` | no embedding route for this Owner; its search is lexical-only (`degraded_to_lexical=true`). Set `PROXIMA_EMBED_BASE_URL` + `PROXIMA_EMBED_MODEL`, or route the Owner in the host's router, if semantic recall is expected (see [10-configuration.md](../10-configuration.md#per-owner-embedding-routing)) |
 | `pending_embedding_jobs` | `> 0`, trending down | normal in-process catch-up; no action |
-| `pending_embedding_jobs` | `> 0`, flat/rising | drainer stalled, the Owner's client unreachable, or its route refused (log: `embedding route refused`); the drain backs such an Owner off for up to 15 minutes per retry. Check the Owner's endpoint and route |
+| `pending_embedding_jobs` | `> 0`, flat/rising | drainer stalled, the Owner's client unreachable, or its route refused (log: `embedding route refused`); the drain backs such an Owner off for up to 15 minutes per retry. Check the Owner's endpoint and route — during a model move, the `next` endpoint too |
+| `Engine::embedding_coverage(owner)` | an `Unrouted` space with rows | a finished move or offboarding left vectors behind; run `Engine::purge_embedding_spaces(owner)` (see [10-configuration.md](../10-configuration.md#moving-an-owner-to-a-new-model)) |
 
 `Engine::embedding_ann_observability(authz)` — host-only operator method
 (`AuthPath::System` or `OwnerEraseAuthorityPort::may_perform_operator_maintenance`),

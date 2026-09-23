@@ -926,6 +926,7 @@ pub(crate) mod tests {
             _entity: EntityId,
             _to_owner: OwnerRef,
             _surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
+            _embedding_spaces: &[crate::EmbeddingSpace],
         ) -> Result<bool, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),

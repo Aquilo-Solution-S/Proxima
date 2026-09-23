@@ -1065,6 +1065,7 @@ async fn source_erase_combines_physical_and_original_copy_selectors_once() {
                 EntityId::Memory(original_only),
                 transferred_owner,
                 pg.surfaces(),
+                &[],
             )
             .await?,
             "the original-only selector is a transferred Fact"

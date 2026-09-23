@@ -1862,6 +1862,7 @@ mod pg_tests {
                     EntityId::Memory(written.memory_id),
                     destination,
                     &surfaces,
+                    std::slice::from_ref(&*STUB_SPACE),
                 )
                 .await?,
                 "the transfer moves the processing job with its Memory"

@@ -1814,6 +1814,110 @@ impl Engine {
         Ok(total)
     }
 
+    /// Host-invoked: `owner`'s embedding state in every space its route
+    /// names and every space it still has vectors or jobs in.
+    ///
+    /// Read it while an Owner moves to a new model: once the `Next` space's
+    /// `embedded` reaches `embeddable` — less the inputs its provider
+    /// refuses, counted in `failed_permanent` — the host can flip the route
+    /// to `current(next)` and search moves with it. `Unrouted` rows are what
+    /// [`Self::purge_embedding_spaces`] deletes.
+    ///
+    /// # Errors
+    ///
+    /// Storage errors from the counts; `Internal` when the host cannot
+    /// route `owner`.
+    pub async fn embedding_coverage(
+        &self,
+        owner: &Owner,
+    ) -> Result<Vec<crate::EmbeddingSpaceCoverage>, StorageError> {
+        let route = self
+            .embedding_route(owner)
+            .await
+            .map_err(|err| StorageError::Internal(format!("embedding route: {err}")))?;
+        let rows = self
+            .storage
+            .owner_inverse
+            .embedding_maintenance
+            .embedding_coverage(
+                owner,
+                &route.write_spaces(),
+                self.registry().non_embeddable_schema_ids(),
+                crate::storage_ports::OperatorMaintenanceProof::new(),
+            )
+            .await?;
+        let serves = |client: Option<&BoundEmbeddingClient>, space: &EmbeddingSpace| {
+            client.is_some_and(|client| client.space() == space)
+        };
+        Ok(rows
+            .into_iter()
+            .map(|(space, counts)| {
+                let role = if serves(route.current_client(), &space) {
+                    crate::EmbeddingSpaceRole::Current
+                } else if serves(route.next_client(), &space) {
+                    crate::EmbeddingSpaceRole::Next
+                } else {
+                    crate::EmbeddingSpaceRole::Unrouted
+                };
+                crate::EmbeddingSpaceCoverage {
+                    space,
+                    role,
+                    counts,
+                }
+            })
+            .collect())
+    }
+
+    /// Host-invoked: delete `owner`'s vectors, heads and jobs in every space
+    /// its route no longer names — the last step of a model move, and the
+    /// offboarding step when an Owner's route becomes `none()`.
+    ///
+    /// Runs in batches until nothing is left. A `processing` job stays: its
+    /// drain completes it as stale. A drain batch that resolved the route
+    /// before the host flipped it can still land a vector in the old space
+    /// after this returns; [`Self::embedding_coverage`] shows it and a second
+    /// purge removes it.
+    ///
+    /// # Errors
+    ///
+    /// `Internal` when no embedding router is installed — the engine would
+    /// read that as "no spaces" and delete everything — or when the host
+    /// cannot route `owner`; neither deletes anything. Storage errors from
+    /// the purge, which leave earlier batches committed.
+    pub async fn purge_embedding_spaces(
+        &self,
+        owner: &Owner,
+    ) -> Result<crate::EmbeddingPurgeOutcome, StorageError> {
+        const BATCH: i64 = 1_000;
+        if self.embedding_router.is_none() {
+            return Err(StorageError::Internal(
+                "no embedding router is installed; refusing to purge every space".into(),
+            ));
+        }
+        let keep = self
+            .embedding_route(owner)
+            .await
+            .map_err(|err| StorageError::Internal(format!("embedding route: {err}")))?
+            .write_spaces();
+        let maintenance = &self.storage.owner_inverse.embedding_maintenance;
+        let mut total = crate::EmbeddingPurgeOutcome::default();
+        loop {
+            let batch = maintenance
+                .purge_embedding_spaces(
+                    owner,
+                    &keep,
+                    BATCH,
+                    crate::storage_ports::OperatorMaintenanceProof::new(),
+                )
+                .await?;
+            total += batch;
+            let cut = u64::try_from(BATCH).unwrap_or(u64::MAX);
+            if batch.vectors < cut && batch.heads < cut && batch.jobs < cut {
+                return Ok(total);
+            }
+        }
+    }
+
     pub(super) fn ingest_protocol_payload<'a>(
         &'a self,
         schema_id: &crate::SchemaId,

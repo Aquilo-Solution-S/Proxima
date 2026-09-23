@@ -44,6 +44,9 @@ pub(crate) struct DerivedDraft<'a> {
     /// [`DerivedEmbedding`]. Whichever it is happens inside this write's
     /// transaction.
     pub embedding: DerivedEmbedding<'a>,
+    /// Spaces queued beside `embedding` in this transaction — see
+    /// [`proxima_core::AuthorDerivedRequest::queued_spaces`].
+    pub queued_spaces: &'a [proxima_core::EmbeddingSpace],
 }
 
 #[derive(Debug, Clone)]
@@ -244,8 +247,8 @@ async fn settle_derived_embedding(
     draft: &DerivedDraft<'_>,
     memory_id: MemoryId,
 ) -> Result<(), StorageError> {
-    match &draft.embedding {
-        DerivedEmbedding::None => Ok(()),
+    let deferred = match &draft.embedding {
+        DerivedEmbedding::None => None,
         DerivedEmbedding::Ready { space, vector } => {
             crate::verbs::fact_embeddings::insert_memory_embedding(
                 tx,
@@ -255,21 +258,23 @@ async fn settle_derived_embedding(
                 space,
                 vector,
             )
-            .await
-            .map(|_| ())
+            .await?;
+            None
         }
-        DerivedEmbedding::Deferred { space } => {
-            crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
-                tx,
-                OwnerRefKind::of(&draft.owner),
-                Some(draft.owner.stored_owner_id()),
-                draft.kind,
-                memory_id.into_inner(),
-                space,
-            )
-            .await
-        }
+        DerivedEmbedding::Deferred { space } => Some(*space),
+    };
+    for space in deferred.into_iter().chain(draft.queued_spaces) {
+        crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
+            tx,
+            OwnerRefKind::of(&draft.owner),
+            Some(draft.owner.stored_owner_id()),
+            draft.kind,
+            memory_id.into_inner(),
+            space,
+        )
+        .await?;
     }
+    Ok(())
 }
 
 async fn resolve_derived_content_id(

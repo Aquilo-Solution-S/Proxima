@@ -341,6 +341,8 @@ Host-only operator methods:
 |---|---|---|
 | `Engine::embedding_ann_observability(authz)` | `AuthPath::System` or `OwnerEraseAuthorityPort::may_perform_operator_maintenance` | owner-agnostic rows/bytes/backlog/stale/orphan/recall-canary signals |
 | `Engine::sweep_orphan_embedding_rows(authz)` | same | deletes embedding infra rows whose source memory/goal row no longer exists |
+| `Engine::embedding_coverage(owner)` | host-invoked, like reconcile | per-space counts and route role for one Owner — see [10 §Moving an Owner to a new model](10-configuration.md#moving-an-owner-to-a-new-model) |
+| `Engine::purge_embedding_spaces(owner)` | host-invoked, like reconcile | deletes one Owner's vectors, heads and non-`processing` jobs in spaces its route no longer names; refuses without a router or route |
 
 An owner erase is separate: owner- and source-scope erasure delete
 embeddings, `embedding_heads` and `embedding_jobs` synchronously at commit.

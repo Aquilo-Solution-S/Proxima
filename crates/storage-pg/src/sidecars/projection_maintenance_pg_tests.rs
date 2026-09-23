@@ -242,8 +242,14 @@ async fn a_transfer_moves_the_projection_row_with_the_admission() {
         let t = write_note(pool, owner, None).await?;
 
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(t), dest, &transfer_surfaces())
-                .await?
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(t),
+                dest,
+                &transfer_surfaces(),
+                &[]
+            )
+            .await?
         );
 
         let row = projection_of(pool, t).await?.expect("projection survives");

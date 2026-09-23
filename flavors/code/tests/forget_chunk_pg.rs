@@ -194,7 +194,7 @@ async fn forget_hydrate_restores_code_chunk_sidecar() {
         assert_eq!(hot, 0, "forget deletes the flavor sidecar before memory");
 
         let hydrated =
-            MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[MemoryId::new(memory_id)])
+            MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[MemoryId::new(memory_id)], &[])
                 .await?;
         assert_eq!(
             hydrated.outcomes[0].status,
@@ -382,7 +382,7 @@ async fn forged_detail_case(
         }
 
         let hydrated =
-            MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[MemoryId::new(memory_id)])
+            MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[MemoryId::new(memory_id)], &[])
                 .await?;
         assert_eq!(hydrated.outcomes[0].status, expected);
         let memory_count: i64 =
@@ -527,7 +527,7 @@ async fn forget_hydrate_restores_execution_plan_details() {
         .await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, MemoryId::new(memory_id)).await?;
         let hydrated =
-            MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[MemoryId::new(memory_id)])
+            MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[MemoryId::new(memory_id)], &[])
                 .await?;
         assert_eq!(
             hydrated.outcomes[0].status,

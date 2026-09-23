@@ -150,6 +150,7 @@ impl OwnerTransferPort for PgStorage {
         entity: EntityId,
         to_owner: OwnerRef,
         surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
+        embedding_spaces: &[proxima_core::EmbeddingSpace],
     ) -> Result<bool, StorageError> {
         if permit.owner_scope().is_some() && permit.transfer_destination() != Some(to_owner) {
             return Err(StorageError::ConstraintViolation(
@@ -163,6 +164,10 @@ impl OwnerTransferPort for PgStorage {
             surfaces,
             entity,
             to_owner,
+            verbs::fact_embeddings::RouteSpaces {
+                spaces: embedding_spaces,
+                non_embeddable_schemas: &self.non_embeddable_schemas,
+            },
         )
         .await
     }

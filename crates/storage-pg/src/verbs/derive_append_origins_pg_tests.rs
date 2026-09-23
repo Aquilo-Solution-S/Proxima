@@ -57,6 +57,7 @@ fn derived_draft(
         supersedes: None,
         lexical_language: None,
         embedding: DerivedEmbedding::None,
+        queued_spaces: &[],
     }
 }
 

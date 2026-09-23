@@ -310,4 +310,44 @@ impl EmbeddingMaintenancePort for PgStorage {
         )
         .await
     }
+
+    async fn embedding_coverage(
+        &self,
+        owner: &Owner,
+        spaces: &[proxima_core::EmbeddingSpace],
+        non_embeddable_schemas: &[String],
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<
+        Vec<(
+            proxima_core::EmbeddingSpace,
+            proxima_core::EmbeddingSpaceCounts,
+        )>,
+        StorageError,
+    > {
+        verbs::fact_embeddings::embedding_coverage(
+            &self.pool,
+            self.platform_scope.as_ref(),
+            owner,
+            spaces,
+            non_embeddable_schemas,
+        )
+        .await
+    }
+
+    async fn purge_embedding_spaces(
+        &self,
+        owner: &Owner,
+        keep: &[proxima_core::EmbeddingSpace],
+        limit: i64,
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<proxima_core::EmbeddingPurgeOutcome, StorageError> {
+        verbs::fact_embeddings::purge_embedding_spaces(
+            &self.pool,
+            self.platform_scope.as_ref(),
+            owner,
+            keep,
+            limit,
+        )
+        .await
+    }
 }

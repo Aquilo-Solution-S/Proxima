@@ -55,9 +55,10 @@ pub use delegated_authority::{
 pub use embeddings::{
     EMBEDDING_RECONCILE_DEFAULT_LIMIT, EmbeddingAnnObservability, EmbeddingJobBacklog,
     EmbeddingJobPort, EmbeddingJobStatusCounts, EmbeddingMaintenancePort, EmbeddingOrphanCounts,
-    EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, EmbeddingReconcileOptions,
-    EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome,
-    EmbeddingWritePort, EmbeddingWriteProof,
+    EmbeddingOrphanSweepOutcome, EmbeddingPurgeOutcome, EmbeddingRecallCanary,
+    EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
+    EmbeddingSpaceCounts, EmbeddingSpaceCoverage, EmbeddingSpaceRole, EmbeddingTextPort,
+    EmbeddingWriteOutcome, EmbeddingWritePort, EmbeddingWriteProof,
 };
 pub use fact::FactIngestPort;
 pub use goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};

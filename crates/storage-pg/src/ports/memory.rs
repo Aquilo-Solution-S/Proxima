@@ -46,6 +46,7 @@ impl MemoryAuthoringPort for PgStorage {
                 supersedes: req.supersedes,
                 lexical_language: req.lexical_language,
                 embedding: req.embedding.clone(),
+                queued_spaces: req.queued_spaces,
             };
             // Share origin validation with the write-session authoring path.
             verbs::derive_append::validate_derived_origins_in_tx(&mut tx, &draft, req.origins)
@@ -220,6 +221,7 @@ impl MemoryAuthoringPort for PgStorage {
         &self,
         permit: &OwnerWritePermit,
         memory_ids: &[MemoryId],
+        embedding_spaces: &[proxima_core::EmbeddingSpace],
     ) -> Result<MemoryHydrationBatchOutcome, StorageError> {
         let storage = self.clone();
         let sidecars = self.sidecars.clone();
@@ -243,7 +245,10 @@ impl MemoryAuthoringPort for PgStorage {
                     cold.as_ref(),
                     permit,
                     &ids,
-                    &non_embeddable_schemas,
+                    verbs::fact_embeddings::RouteSpaces {
+                        spaces: embedding_spaces,
+                        non_embeddable_schemas: &non_embeddable_schemas,
+                    },
                 )
                 .await
             }

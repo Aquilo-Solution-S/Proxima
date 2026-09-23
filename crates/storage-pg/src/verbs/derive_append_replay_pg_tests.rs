@@ -45,6 +45,7 @@ fn derived_draft(owner: OwnerRef, handle: Uuid) -> DerivedDraft<'static> {
         supersedes: None,
         lexical_language: None,
         embedding: DerivedEmbedding::None,
+        queued_spaces: &[],
     }
 }
 

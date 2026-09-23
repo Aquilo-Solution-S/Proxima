@@ -238,6 +238,7 @@ impl WriteSession for PgWriteSession {
             supersedes: req.supersedes,
             lexical_language: req.lexical_language,
             embedding: req.embedding.clone(),
+            queued_spaces: req.queued_spaces,
         };
         verbs::derive_append::validate_derived_origins_in_tx(&mut self.tx, &draft, req.origins)
             .await?;

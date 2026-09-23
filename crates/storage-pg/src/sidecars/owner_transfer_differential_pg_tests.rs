@@ -271,6 +271,15 @@ fn embed_literal() -> String {
     )
 }
 
+/// The destination routes the space `embed` writes, so the transfer keeps
+/// every fixture vector and the pinned baseline stays the one before routing.
+fn destination_route() -> [proxima_core::EmbeddingSpace; 1] {
+    [proxima_core::EmbeddingSpace::new(
+        "test-embed",
+        proxima_core::EmbeddingDim::D1024,
+    )]
+}
+
 async fn embed(pool: &PgPool, t: Uuid, owner: OwnerRef) -> Result<(), Box<dyn std::error::Error>> {
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
@@ -902,6 +911,7 @@ async fn run_transfers(
                 EntityId::Memory(memory),
                 corpus.destination,
                 &transfer_surfaces(),
+                &destination_route(),
             )
             .await?;
         out.push_str(&format!("## transfer {name} -> {moved}\n"));
@@ -914,6 +924,7 @@ async fn run_transfers(
             EntityId::Goal(proxima_core::GoalId::new(corpus.goal)),
             corpus.destination,
             &transfer_surfaces(),
+            &destination_route(),
         )
         .await
         .expect_err("goals do not transfer");
@@ -925,6 +936,7 @@ async fn run_transfers(
             EntityId::Memory(corpus.in_place),
             corpus.destination,
             &transfer_surfaces(),
+            &destination_route(),
         )
         .await;
     out.push_str(&format!("## transfer already-there -> {same:?}\n"));

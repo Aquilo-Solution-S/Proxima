@@ -312,6 +312,66 @@ pub struct EmbeddingReconcileOutcome {
     pub skipped: u64,
 }
 
+/// One Owner's embedding state in one space.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EmbeddingSpaceCounts {
+    /// The Owner's current memories under an embeddable schema — the
+    /// memories reconcile and backfill cover. The same number in every
+    /// space.
+    pub embeddable: u64,
+    /// Of those, the memories with a vector in this space.
+    pub embedded: u64,
+    /// Every vector row the Owner has in this space, superseded versions
+    /// included.
+    pub vectors: u64,
+    pub pending: u64,
+    pub processing: u64,
+    pub failed: u64,
+    pub failed_permanent: u64,
+}
+
+/// What the route makes of a space an Owner has embedding state in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingSpaceRole {
+    /// Embedded inline and searched.
+    Current,
+    /// Queued for every write while the Owner moves to it; not searched.
+    Next,
+    /// Named by neither: left over from an earlier route, until purged.
+    Unrouted,
+}
+
+/// One row of [`crate::Engine::embedding_coverage`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingSpaceCoverage {
+    pub space: EmbeddingSpace,
+    pub role: EmbeddingSpaceRole,
+    pub counts: EmbeddingSpaceCounts,
+}
+
+/// Rows [`crate::Engine::purge_embedding_spaces`] deleted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EmbeddingPurgeOutcome {
+    pub vectors: u64,
+    pub heads: u64,
+    pub jobs: u64,
+}
+
+impl EmbeddingPurgeOutcome {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.vectors == 0 && self.heads == 0 && self.jobs == 0
+    }
+}
+
+impl std::ops::AddAssign for EmbeddingPurgeOutcome {
+    fn add_assign(&mut self, other: Self) {
+        self.vectors += other.vectors;
+        self.heads += other.heads;
+        self.jobs += other.jobs;
+    }
+}
+
 #[async_trait::async_trait]
 pub trait EmbeddingMaintenancePort: Send + Sync {
     async fn embedding_ann_observability(
@@ -344,4 +404,33 @@ pub trait EmbeddingMaintenancePort: Send + Sync {
         limit: i64,
         proof: OperatorMaintenanceProof,
     ) -> Result<Vec<crate::Owner>, StorageError>;
+
+    /// `owner`'s state in every space it has vectors or jobs in, and in
+    /// each of `spaces`, ordered by space.
+    async fn embedding_coverage(
+        &self,
+        _owner: &crate::Owner,
+        _spaces: &[EmbeddingSpace],
+        _non_embeddable_schemas: &[String],
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<Vec<(EmbeddingSpace, EmbeddingSpaceCounts)>, StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement embedding coverage".into(),
+        ))
+    }
+
+    /// Delete up to `limit` rows per table of `owner`'s vectors, heads and
+    /// jobs in spaces outside `keep`. A `processing` job stays: its drain
+    /// completes it as stale, and deleting it would fail that drain.
+    async fn purge_embedding_spaces(
+        &self,
+        _owner: &crate::Owner,
+        _keep: &[EmbeddingSpace],
+        _limit: i64,
+        _proof: OperatorMaintenanceProof,
+    ) -> Result<EmbeddingPurgeOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement embedding purge".into(),
+        ))
+    }
 }

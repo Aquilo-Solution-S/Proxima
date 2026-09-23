@@ -515,6 +515,11 @@ pub struct AuthorDerivedRequest<'a> {
     /// against the catalog inside the write transaction.
     pub lexical_language: Option<&'a str>,
     pub embedding: DerivedEmbedding<'a>,
+    /// Further spaces this memory is queued for, in the same transaction
+    /// as the row: the `next` space of an Owner moving to another model.
+    /// They never make the write deferred — search reads the `embedding`
+    /// space until the host flips the route.
+    pub queued_spaces: &'a [crate::EmbeddingSpace],
     /// What this memory was made from. Storage stores the entries in the
     /// row's own `origins` pin column, in the same transaction as the
     /// row — the [`crate::EdgeKind::Origin`] reading is a consequence of
