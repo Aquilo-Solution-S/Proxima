@@ -155,6 +155,9 @@ impl std::fmt::Display for EmbeddingSpace {
 pub struct BoundEmbeddingClient {
     client: std::sync::Arc<dyn EmbeddingClient>,
     space: EmbeddingSpace,
+    /// The client as the host bound it, kept through engine wrapping so two
+    /// bindings of one host client still compare as the same endpoint.
+    origin: std::sync::Arc<dyn EmbeddingClient>,
 }
 
 impl BoundEmbeddingClient {
@@ -169,7 +172,11 @@ impl BoundEmbeddingClient {
     ) -> Result<Self, UnsupportedEmbeddingWidth> {
         let dim = EmbeddingDim::try_from(client.dim())?;
         let space = EmbeddingSpace::new(client.model_id(), dim);
-        Ok(Self { client, space })
+        Ok(Self {
+            origin: std::sync::Arc::clone(&client),
+            client,
+            space,
+        })
     }
 
     #[must_use]
@@ -188,7 +195,145 @@ impl BoundEmbeddingClient {
         Self {
             client,
             space: self.space.clone(),
+            origin: std::sync::Arc::clone(&self.origin),
         }
+    }
+
+    /// Whether both bindings serve the same host client, so one embedding
+    /// of a text may stand for both.
+    #[must_use]
+    pub fn same_client(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(
+            std::sync::Arc::as_ptr(&self.origin),
+            std::sync::Arc::as_ptr(&other.origin),
+        )
+    }
+}
+
+/// Where one Owner's memories are embedded.
+///
+/// A route is the host's answer for the Owner whose memories are written or
+/// searched — never the caller's. The engine embeds that Owner's texts and
+/// queries only through the route's client, so a route naming no client
+/// means no jobs, no vectors and lexical-only search for the Owner.
+#[derive(Debug, Clone, Default)]
+pub struct EmbeddingRoute {
+    current: Option<BoundEmbeddingClient>,
+}
+
+impl EmbeddingRoute {
+    /// No embeddings for this Owner.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self { current: None }
+    }
+
+    /// Embed and search this Owner's memories through `client`.
+    #[must_use]
+    pub const fn current(client: BoundEmbeddingClient) -> Self {
+        Self {
+            current: Some(client),
+        }
+    }
+
+    /// The client that embeds new memories inline and search queries.
+    #[must_use]
+    pub const fn current_client(&self) -> Option<&BoundEmbeddingClient> {
+        self.current.as_ref()
+    }
+
+    /// Spaces a new memory of this Owner is queued for.
+    #[must_use]
+    pub fn write_spaces(&self) -> Vec<EmbeddingSpace> {
+        self.current
+            .iter()
+            .map(|client| client.space().clone())
+            .collect()
+    }
+
+    /// The client that embeds `space` for this Owner, or `None` when the
+    /// route no longer names it: a job queued for such a space is stale.
+    #[must_use]
+    pub fn client_for(&self, space: &EmbeddingSpace) -> Option<&BoundEmbeddingClient> {
+        self.current
+            .as_ref()
+            .filter(|client| client.space() == space)
+    }
+
+    /// The same route with every client passed through `wrap`.
+    pub(crate) fn map_clients(
+        self,
+        wrap: impl Fn(&BoundEmbeddingClient) -> BoundEmbeddingClient,
+    ) -> Self {
+        Self {
+            current: self.current.as_ref().map(wrap),
+        }
+    }
+}
+
+/// A route the host cannot resolve for an Owner.
+///
+/// Misconfiguration, not an outage: fetch credentials inside the client's
+/// `embed`, where the drain retries. The engine never falls back to another
+/// Owner's client or a default; it refuses the write, releases the Owner's
+/// jobs, or drops the Owner's semantic arm.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct EmbeddingRouteError {
+    message: String,
+}
+
+impl EmbeddingRouteError {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl From<UnsupportedEmbeddingWidth> for EmbeddingRouteError {
+    fn from(err: UnsupportedEmbeddingWidth) -> Self {
+        Self::new(err.to_string())
+    }
+}
+
+/// Host policy: which embedding endpoint serves each Owner.
+///
+/// Called for the Owner of the data on every write, drain batch and search,
+/// so it must be a cheap lookup of host configuration.
+#[async_trait]
+pub trait EmbeddingRouter: Send + Sync + std::fmt::Debug {
+    /// The route for memories `owner` owns.
+    ///
+    /// # Errors
+    ///
+    /// [`EmbeddingRouteError`] when the host cannot say, for this Owner.
+    async fn route(&self, owner: &crate::Owner) -> Result<EmbeddingRoute, EmbeddingRouteError>;
+}
+
+/// One client for every Owner: the single-endpoint host.
+#[derive(Debug, Clone)]
+pub struct SingleClientRouter {
+    client: BoundEmbeddingClient,
+}
+
+impl SingleClientRouter {
+    #[must_use]
+    pub const fn new(client: BoundEmbeddingClient) -> Self {
+        Self { client }
+    }
+
+    #[must_use]
+    pub const fn client(&self) -> &BoundEmbeddingClient {
+        &self.client
+    }
+}
+
+#[async_trait]
+impl EmbeddingRouter for SingleClientRouter {
+    async fn route(&self, _owner: &crate::Owner) -> Result<EmbeddingRoute, EmbeddingRouteError> {
+        Ok(EmbeddingRoute::current(self.client.clone()))
     }
 }
 

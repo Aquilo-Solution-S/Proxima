@@ -143,15 +143,15 @@ mod embedding_failure_regressions {
         let registry = registry_for_mcp();
         let temp = TempDir::new()?;
         ingest_topic_repo(fixture, owner, &registry, &temp).await?;
-        let context = ctx(fixture.pg.clone(), owner, registry);
-        let engine = context.engine.as_ref().ok_or("engine")?.clone();
+        let router = Arc::new(proxima_core::test_fixtures::TestEmbeddingRouter::default());
+        let mut context = ctx(fixture.pg.clone(), owner, registry);
+        context.engine = Some(Arc::new(
+            engine_for_test(fixture.pg.clone()).with_embedding_router(router.clone()),
+        ));
         let endpoint = overflow_endpoint().await?;
         let adapter = endpoint.client.embed("response control").await;
-        engine
-            .set_embed_client(Some(
-                BoundEmbeddingClient::bind(endpoint.client.clone()).expect("lane width"),
-            ))
-            .await;
+        router
+            .set_default(BoundEmbeddingClient::bind(endpoint.client.clone()).expect("lane width"));
         let mut calls = [0; 4];
         calls[0] = endpoint.calls.load(Ordering::SeqCst);
 
@@ -175,11 +175,8 @@ mod embedding_failure_regressions {
         .await?;
         calls[3] = endpoint.calls.load(Ordering::SeqCst);
 
-        engine
-            .set_embed_client(Some(
-                BoundEmbeddingClient::bind(Arc::new(TopicEmbedding)).expect("lane width"),
-            ))
-            .await;
+        router
+            .set_default(BoundEmbeddingClient::bind(Arc::new(TopicEmbedding)).expect("lane width"));
         let healthy = tokio::time::timeout(
             DEADLINE,
             run_tool::<CodeSearchChunksTool>(context, args("semantic")),
@@ -2552,6 +2549,14 @@ fn engine_for_test(pg: PgStorage) -> Engine {
     Engine::new(registry_for_engine()).with_storage_ports(Arc::new(pg).storage_ports())
 }
 
+/// Every Owner embedded by [`TopicEmbedding`].
+fn topic_router() -> Arc<proxima_core::llm::SingleClientRouter> {
+    Arc::new(proxima_core::llm::SingleClientRouter::new(
+        proxima_core::llm::BoundEmbeddingClient::bind(Arc::new(TopicEmbedding))
+            .expect("lane width"),
+    ))
+}
+
 /// A deterministic stand-in for an embedding model.
 ///
 /// Every text that mentions one of `TOPIC_MARKERS` embeds to the same basis
@@ -2589,12 +2594,7 @@ impl proxima_core::llm::EmbeddingClient for TopicEmbedding {
 fn embedding_ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
-    let engine = Arc::new(
-        engine_for_test(pg).with_embed(
-            proxima_core::llm::BoundEmbeddingClient::bind(Arc::new(TopicEmbedding))
-                .expect("lane width"),
-        ),
-    );
+    let engine = Arc::new(engine_for_test(pg).with_embedding_router(topic_router()));
     McpToolCtx {
         owner,
         authz,
@@ -2653,10 +2653,7 @@ async fn ingest_topic_repo(
     // Ingest enqueues embedding_jobs when the engine has a client. Drain
     // claims those jobs; backfill is residue for heads written without a
     // model. Between ingest and this drain the repo is lexical-only.
-    let engine = engine_for_test(fixture.pg.clone()).with_embed(
-        proxima_core::llm::BoundEmbeddingClient::bind(Arc::new(TopicEmbedding))
-            .expect("lane width"),
-    );
+    let engine = engine_for_test(fixture.pg.clone()).with_embedding_router(topic_router());
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let _ = engine
         .backfill_missing_embeddings(&authz, &owner, 1_000)

@@ -653,9 +653,8 @@ async fn hot_path_plans_use_expected_indexes() {
         let claim_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {claim}");
         // SQL-POLICY: fixed-fragment
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(claim_explain))
-            .bind("test-embed")
             .bind(32_i64)
-            .bind(1024_i16)
+            .bind(&owner_ids)
             .fetch_one(&mut *tx)
             .await?;
         assert_plan_names(&plan, "embedding_jobs_pending_claim_idx");

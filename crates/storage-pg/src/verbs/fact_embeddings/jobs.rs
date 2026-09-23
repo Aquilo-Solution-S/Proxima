@@ -9,10 +9,10 @@ use crate::pg_enums::PgMemoryKind;
 
 use super::ensure_nonnegative_limit;
 
-/// Claim pending jobs for one embedding space, ordered by `job_id`.
+/// Claim pending jobs across every embedding space, ordered by `job_id`.
 ///
-/// One arm: `status = 'pending'`. Rides
-/// `embedding_jobs_pending_claim_idx (model_id, dim, job_id) WHERE status =
+/// One arm: `status = 'pending'`, minus the Owners the drainer is backing
+/// off. Rides `embedding_jobs_pending_claim_idx (job_id) WHERE status =
 /// 'pending'`. Locked unclaimed rows release with the statement's
 /// transaction. `claimed_at` is what makes a crashed drainer's row
 /// recoverable ([`reclaim_stale_embedding_jobs`]); there is no
@@ -24,12 +24,11 @@ use super::ensure_nonnegative_limit;
 const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
              SELECT job_id
                FROM proxima_core.embedding_jobs
-              WHERE model_id = $1
-                AND dim = $3
-                AND status = 'pending'
+              WHERE status = 'pending'
+                AND owner_id <> ALL($2::uuid[])
               ORDER BY job_id ASC
               FOR UPDATE SKIP LOCKED
-              LIMIT $2
+              LIMIT $1
          )
          UPDATE proxima_core.embedding_jobs j
             SET status = 'processing',
@@ -147,10 +146,13 @@ async fn missing_embedding_ids<'e>(
     Ok(rows.into_iter().map(MemoryId::new).collect())
 }
 
-/// Atomically claim pending embedding jobs for one embedding space.
+/// Atomically claim pending embedding jobs in queue order, across every
+/// embedding space, skipping `skip_owners`' jobs.
 ///
-/// Selects `status = 'pending'` rows for the space, `FOR UPDATE SKIP LOCKED`, then
-/// sets `processing` and stamps `claimed_at`. There is no `next_attempt_at`
+/// Selects `status = 'pending'` rows, `FOR UPDATE SKIP LOCKED`, then sets
+/// `processing` and stamps `claimed_at`. Each claim carries its own space: the
+/// drainer routes the job's Owner and embeds only when that route still names
+/// it. There is no `next_attempt_at`
 /// column; a claim a drainer never finishes is recovered by
 /// [`reclaim_stale_embedding_jobs`].
 ///
@@ -160,19 +162,23 @@ async fn missing_embedding_ids<'e>(
 /// failures through the shared mapper.
 pub async fn claim_pending_embedding_jobs<'e, E: PgExecutor<'e>>(
     pool: E,
-    space: &EmbeddingSpace,
     limit: i64,
+    skip_owners: &[Owner],
 ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
     let limit = ensure_nonnegative_limit(limit)?;
     if limit == 0 {
         return Ok(Vec::new());
     }
+    let skip_owner_ids: Vec<uuid::Uuid> = skip_owners
+        .iter()
+        .copied()
+        .map(Owner::stored_owner_id)
+        .collect();
     // SQL-POLICY: fixed-fragment — the compile-time claim constant above;
     // every value is bound.
     let rows = sqlx::query_as::<_, EmbeddingJobClaimRow>(CLAIM_EMBEDDING_JOBS_SQL)
-        .bind(space.model_id())
         .bind(limit)
-        .bind(crate::pgvector::Lane::of(space.dim()).width)
+        .bind(&skip_owner_ids)
         .fetch_all(pool)
         .await
         .map_err(map_err)?;
@@ -693,7 +699,7 @@ mod tests {
     fn the_claim_names_pending_only() {
         assert_eq!(
             CLAIM_EMBEDDING_JOBS_SQL
-                .matches("AND status = 'pending'")
+                .matches("status = 'pending'")
                 .count(),
             1
         );
@@ -707,7 +713,7 @@ mod tests {
             "the DB must admit at most one job per entity and space"
         );
         assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("ANY("));
-        assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("$4"));
+        assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("$3"));
     }
 
     #[test]
@@ -737,12 +743,11 @@ mod tests {
     const CLAIM_GOLDEN: &str = r"WITH claimed AS (
              SELECT job_id
                FROM proxima_core.embedding_jobs
-              WHERE model_id = $1
-                AND dim = $3
-                AND status = 'pending'
+              WHERE status = 'pending'
+                AND owner_id <> ALL($2::uuid[])
               ORDER BY job_id ASC
               FOR UPDATE SKIP LOCKED
-              LIMIT $2
+              LIMIT $1
          )
          UPDATE proxima_core.embedding_jobs j
             SET status = 'processing',

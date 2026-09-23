@@ -19,7 +19,8 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::{
     AuthPath, Authenticator, AuthzContext, DelegationRuntimeAuthority, EmbeddingClient,
-    FlavorRegistryFrozen, FlavorServiceError, FlavorServices, RevalidationConfig, ToolScope,
+    EmbeddingRouter, FlavorRegistryFrozen, FlavorServiceError, FlavorServices, RevalidationConfig,
+    ToolScope,
 };
 use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
@@ -208,6 +209,12 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     #[must_use]
     pub fn embed_client(mut self, client: Arc<dyn EmbeddingClient>) -> Self {
         self.overlay = self.overlay.embed_client(client);
+        self
+    }
+
+    #[must_use]
+    pub fn embedding_router(mut self, router: Arc<dyn EmbeddingRouter>) -> Self {
+        self.overlay = self.overlay.embedding_router(router);
         self
     }
 
@@ -1014,7 +1021,7 @@ async fn prune_published_records(
 
 fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if engine.embed_client().is_none() {
+        if engine.embedding_router().is_none() {
             return;
         }
         let policy = engine.embedding_runtime_policy();
@@ -1258,6 +1265,9 @@ async fn boot_app<A: FlavorApp + 'static>(
     }
     if let Some(client) = parts.embed_client.clone() {
         builder = builder.embed_client(client);
+    }
+    if let Some(router) = parts.embedding_router.clone() {
+        builder = builder.embedding_router(router);
     }
     if let Some(participant) = parts.host_state_participant.clone() {
         builder = builder.host_state_participant(participant);

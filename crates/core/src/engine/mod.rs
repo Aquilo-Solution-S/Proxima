@@ -24,14 +24,13 @@ mod upload;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use futures::future::BoxFuture;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
 use crate::Owner;
 use crate::authz::{EngineAuthority, EngineOperationAuthority, context_for_engine_operation};
 use crate::error::ProtocolError;
-use crate::llm::EmbeddingClient;
+use crate::llm::{EmbeddingClient, EmbeddingRoute, EmbeddingRouteError, EmbeddingRouter};
 use crate::storage_ports::{EngineStoragePorts, OwnerWritePermit};
 use crate::verbs::schema::FlavorRegistryFrozen;
 
@@ -67,9 +66,11 @@ pub struct Engine {
     delegation_runtime_binding: crate::authz::DelegationRuntimeBinding,
     storage: EngineStoragePorts,
     deployment_tool_scope: crate::authz::ToolScope,
-    embed: Arc<RwLock<Option<crate::llm::BoundEmbeddingClient>>>,
+    embedding_router: Option<Arc<dyn EmbeddingRouter>>,
     embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy,
-    embedding_reloader: Option<Arc<dyn EmbeddingClientReloader>>,
+    /// Owners whose route or provider failed recently; the drain skips
+    /// their jobs until the delay passes.
+    embedding_backoff: ingest::EmbeddingBackoff,
     /// Producer identity and capture bounds for listenable Fact schemas
     /// (docs/18). Default-constructed means "no source bound", which is
     /// correct for the overwhelming majority of deployments: nothing is
@@ -103,20 +104,6 @@ impl EmbeddingClient for RequestTimeoutEmbeddingClient {
     fn dim(&self) -> usize {
         self.inner.dim()
     }
-}
-
-pub trait EmbeddingClientReloader: Send + Sync + std::fmt::Debug {
-    fn reload<'a>(
-        &'a self,
-        owner: &'a Owner,
-    ) -> BoxFuture<'a, Result<Option<Arc<dyn EmbeddingClient>>, String>>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EmbeddingReloadOutcome {
-    pub active: bool,
-    pub model_id: Option<String>,
-    pub dim: Option<usize>,
 }
 
 /// Owns the background tasks spawned by [`Engine::start`]. The engine
@@ -155,59 +142,41 @@ impl Engine {
         &self.storage
     }
 
-    /// The installed client, bound to its space, with the host's request
-    /// deadline applied to every call.
+    /// The host's embedding router, if one is installed.
     #[must_use]
-    pub fn embed_client(&self) -> Option<crate::llm::BoundEmbeddingClient> {
-        self.embed.try_read().ok().and_then(|slot| {
-            slot.as_ref().map(|bound| {
-                bound.rewrap(Arc::new(RequestTimeoutEmbeddingClient {
-                    inner: Arc::clone(bound.client()),
-                    request_timeout: self.embedding_runtime_policy.request_timeout(),
-                }))
-            })
-        })
+    pub fn embedding_router(&self) -> Option<&Arc<dyn EmbeddingRouter>> {
+        self.embedding_router.as_ref()
+    }
+
+    /// The route for memories `owner` owns, every client behind the host's
+    /// request deadline. No router means [`EmbeddingRoute::none`].
+    ///
+    /// `owner` is the Owner of the data being written or searched, never
+    /// the caller: the engine embeds an Owner's texts and queries only
+    /// through this route.
+    ///
+    /// # Errors
+    ///
+    /// The router's [`EmbeddingRouteError`]; callers fail closed on it.
+    pub async fn embedding_route(
+        &self,
+        owner: &Owner,
+    ) -> Result<EmbeddingRoute, EmbeddingRouteError> {
+        let Some(router) = &self.embedding_router else {
+            return Ok(EmbeddingRoute::none());
+        };
+        let request_timeout = self.embedding_runtime_policy.request_timeout();
+        Ok(router.route(owner).await?.map_clients(|bound| {
+            bound.rewrap(Arc::new(RequestTimeoutEmbeddingClient {
+                inner: Arc::clone(bound.client()),
+                request_timeout,
+            }))
+        }))
     }
 
     #[must_use]
     pub const fn embedding_runtime_policy(&self) -> crate::llm::EmbeddingRuntimePolicy {
         self.embedding_runtime_policy
-    }
-
-    pub async fn set_embed_client(&self, embed: Option<crate::llm::BoundEmbeddingClient>) {
-        *self.embed.write().await = embed;
-    }
-
-    /// Rebuilds the embedding client via the configured reload hook and
-    /// swaps it into the engine.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Internal` when no reload hook is wired into the engine or
-    /// when the hook's reload itself fails.
-    pub async fn reload_embedding_client(
-        &self,
-        owner: &Owner,
-    ) -> Result<EmbeddingReloadOutcome, ProtocolError> {
-        let reloader = self.embedding_reloader.as_ref().ok_or_else(|| {
-            ProtocolError::internal("embedding reload hook not wired into engine")
-        })?;
-        let embed = reloader
-            .reload(owner)
-            .await
-            .map_err(|e| ProtocolError::internal(format!("reload embedding client: {e}")))?
-            .map(crate::llm::BoundEmbeddingClient::bind)
-            .transpose()
-            .map_err(|e| ProtocolError::internal(format!("reload embedding client: {e}")))?;
-        let outcome = EmbeddingReloadOutcome {
-            active: embed.is_some(),
-            model_id: embed
-                .as_ref()
-                .map(|client| client.space().model_id().to_string()),
-            dim: embed.as_ref().map(|client| client.space().dim().width()),
-        };
-        self.set_embed_client(embed).await;
-        Ok(outcome)
     }
 
     /// Bound MCP URL after [`Engine::start`] succeeds. `None` before

@@ -677,13 +677,13 @@ impl Engine {
             .map_err(map_derived_storage_error)?;
         let embedding = self
             .prepare_memory_embedding(
+                write_permit.owner(),
                 memory_id,
                 memory.sidecar_payload.schema_id.as_str(),
                 &memory.text,
                 defer_embedding,
             )
-            .await
-            .map_err(map_derived_storage_error)?;
+            .await?;
         Ok(PreparedDerived {
             owner: *write_permit.owner(),
             write_permit,
@@ -805,18 +805,24 @@ impl Engine {
         Ok(())
     }
 
+    /// Embeds through `owner`'s route. A route error fails the write, the
+    /// same as for a Fact: the memory would otherwise land unsearchable.
     async fn prepare_memory_embedding(
         &self,
+        owner: &Owner,
         memory_id: MemoryId,
         schema_id: &str,
         text: &str,
         defer: bool,
-    ) -> Result<PreparedEmbedding, StorageError> {
-        let client = self.embed_client();
-        let Some(client) = client
-            .as_ref()
-            .filter(|_| self.registry().schema_is_embeddable(schema_id))
-        else {
+    ) -> Result<PreparedEmbedding, ProtocolError> {
+        if !self.registry().schema_is_embeddable(schema_id) {
+            return Ok(PreparedEmbedding::None);
+        }
+        let route = self
+            .embedding_route(owner)
+            .await
+            .map_err(|err| super::ingest::embedding_route_refused(owner, &err))?;
+        let Some(client) = route.current_client() else {
             return Ok(PreparedEmbedding::None);
         };
         if defer {
@@ -825,7 +831,10 @@ impl Engine {
             });
         }
         Ok(
-            match resolve_derived_embedding(client, memory_id, text).await? {
+            match resolve_derived_embedding(client, memory_id, text)
+                .await
+                .map_err(map_derived_storage_error)?
+            {
                 DerivedEmbedding::None => PreparedEmbedding::None,
                 DerivedEmbedding::Ready { space, vector } => PreparedEmbedding::Ready {
                     space: space.clone(),
@@ -879,8 +888,11 @@ impl Engine {
         validate_operator_memory_invocation_request(&req)?;
         // Bound outside the call: `DerivedEmbedding` borrows the client's
         // space for the length of the storage request.
-        let client = self.embed_client();
-        let embedding = match client.as_ref() {
+        let route = self
+            .embedding_route(&req.owner)
+            .await
+            .map_err(|err| StorageError::Internal(format!("embedding route: {err}")))?;
+        let embedding = match route.current_client() {
             Some(client) if self.registry().schema_is_embeddable(req.schema_id.as_str()) => {
                 resolve_derived_embedding(client, req.memory_id, &req.text).await?
             }

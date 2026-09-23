@@ -18,6 +18,11 @@ after the tag. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 | Lane | Migration |
 |---|---|
 | Core | `0015_v016_embedding_spaces.sql`: `embeddings.vec` becomes untyped `vector` with a `dim` column on embeddings, heads and jobs; one partial HNSW index per supported width replaces `idx_embeddings_vec_hnsw` |
+| Core | `0016_v016_embedding_claim_order.sql`: the pending-claim index keys on queue position alone, because the drain claims across every embedding space |
+
+v0.0.16 is the second named exception to the one-core-file rule: 0015 merged
+before per-Owner embedding routing and may have been applied independently,
+so its bytes stay and 0016 appends the claim-index change.
 
 Requires pgvector `>= 0.8.0`; the migration refuses an older extension, and
 boot checks it again. Existing rows are 1024 wide and are labelled so without

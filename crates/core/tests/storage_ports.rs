@@ -298,8 +298,8 @@ struct EmbeddingJobFake;
 impl EmbeddingJobPort for EmbeddingJobFake {
     async fn claim_pending_embedding_jobs(
         &self,
-        _space: &proxima_core::EmbeddingSpace,
         limit: i64,
+        _skip_owners: &[proxima_core::Owner],
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
         fake_error()
     }
@@ -401,6 +401,16 @@ impl EmbeddingMaintenancePort for EmbeddingJobFake {
         proof: OperatorMaintenanceProof,
     ) -> Result<proxima_core::EmbeddingReconcileOutcome, StorageError> {
         let _ = (options, policy, proof);
+        fake_error()
+    }
+
+    async fn embedding_owner_page(
+        &self,
+        after: Option<proxima_core::Owner>,
+        limit: i64,
+        proof: OperatorMaintenanceProof,
+    ) -> Result<Vec<proxima_core::Owner>, StorageError> {
+        let _ = (after, limit, proof);
         fake_error()
     }
 }

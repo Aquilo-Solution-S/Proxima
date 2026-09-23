@@ -40,7 +40,6 @@ pub mod protocol;
 pub mod publication;
 pub mod read_models;
 pub mod scope;
-pub mod secrets;
 pub mod storage;
 pub mod storage_ports;
 // Also under plain `cfg(test)`: the in-crate suites use the same probe
@@ -100,7 +99,6 @@ pub use publication::{
 };
 pub use read_models::*;
 pub use scope::{ScopeDecl, ScopeKind, ScopeRef, scope_set};
-pub use secrets::*;
 pub use storage::*;
 pub use text_bounds::*;
 pub use tool::*;

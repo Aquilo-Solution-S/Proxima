@@ -5,8 +5,8 @@ use std::time::Duration;
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::publication::PublicationConfig;
 use proxima_core::{
-    Authenticator, EmbeddingClient, EmbeddingRuntimePolicy, FlavorServiceError, Owner,
-    RevalidationConfig, ToolScope, is_loopback_host,
+    Authenticator, EmbeddingClient, EmbeddingRouter, EmbeddingRuntimePolicy, FlavorServiceError,
+    Owner, RevalidationConfig, ToolScope, is_loopback_host,
 };
 use proxima_mcp_server::ResourceServerMetadata;
 use proxima_storage_pg::{PgHostStateParticipant, PgPoolConfig, PgTuning};
@@ -42,6 +42,7 @@ pub struct RuntimeBuilder {
     authenticator: Option<Arc<dyn Authenticator>>,
     resource_metadata: Option<ResourceServerMetadata>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
+    embedding_router: Option<Arc<dyn EmbeddingRouter>>,
     embedding_runtime_policy: Option<EmbeddingRuntimePolicy>,
     publication: Option<PublicationConfig>,
     /// Horizon after which a DELIVERED outbox record is reclaimed. `None`
@@ -79,6 +80,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("has_authenticator", &self.authenticator.is_some())
             .field("has_resource_metadata", &self.resource_metadata.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
+            .field("has_embedding_router", &self.embedding_router.is_some())
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .field("publication", &self.publication)
             .field("published_retention", &self.published_retention)
@@ -114,6 +116,7 @@ impl RuntimeBuilder {
             authenticator: self.authenticator.or(base.authenticator),
             resource_metadata: self.resource_metadata.or(base.resource_metadata),
             embed_client: self.embed_client.or(base.embed_client),
+            embedding_router: self.embedding_router.or(base.embedding_router),
             embedding_runtime_policy: self
                 .embedding_runtime_policy
                 .or(base.embedding_runtime_policy),
@@ -343,10 +346,19 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Install the embedding client (`Engine::with_embed`).
+    /// One embedding client for every Owner. Mutually exclusive with
+    /// [`Self::embedding_router`].
     #[must_use]
     pub fn embed_client(mut self, client: Arc<dyn EmbeddingClient>) -> Self {
         self.embed_client = Some(client);
+        self
+    }
+
+    /// Per-Owner embedding routing (`Engine::with_embedding_router`).
+    /// Mutually exclusive with [`Self::embed_client`].
+    #[must_use]
+    pub fn embedding_router(mut self, router: Arc<dyn EmbeddingRouter>) -> Self {
+        self.embedding_router = Some(router);
         self
     }
 
@@ -515,6 +527,7 @@ impl RuntimeBuilder {
         let parts = RuntimeParts {
             authenticator: self.authenticator,
             embed_client: self.embed_client,
+            embedding_router: self.embedding_router,
             host_state_participant: self.host_state_participant,
         };
         let pg_pool_config = self.pg_pool_config.unwrap_or_default();
@@ -758,6 +771,7 @@ pub struct McpSettings {
 pub struct RuntimeParts {
     pub authenticator: Option<Arc<dyn Authenticator>>,
     pub embed_client: Option<Arc<dyn EmbeddingClient>>,
+    pub embedding_router: Option<Arc<dyn EmbeddingRouter>>,
     pub host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
 }
 
@@ -766,6 +780,7 @@ impl std::fmt::Debug for RuntimeParts {
         f.debug_struct("RuntimeParts")
             .field("has_authenticator", &self.authenticator.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
+            .field("has_embedding_router", &self.embedding_router.is_some())
             .field(
                 "has_host_state_participant",
                 &self.host_state_participant.is_some(),

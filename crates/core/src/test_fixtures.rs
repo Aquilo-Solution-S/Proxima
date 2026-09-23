@@ -163,6 +163,71 @@ impl EmbeddingClient for RefusingEmbedding {
     }
 }
 
+/// A host router a test rewires while the engine runs: a default route for
+/// every Owner, overridden per Owner by a client, no client, or a refusal.
+#[derive(Debug, Default)]
+pub struct TestEmbeddingRouter {
+    default: std::sync::RwLock<Option<proxima_core::llm::BoundEmbeddingClient>>,
+    owners: std::sync::RwLock<
+        std::collections::HashMap<
+            Owner,
+            Result<Option<proxima_core::llm::BoundEmbeddingClient>, String>,
+        >,
+    >,
+}
+
+impl TestEmbeddingRouter {
+    /// Route every Owner without an override to `client`.
+    ///
+    /// # Panics
+    /// On a poisoned lock.
+    pub fn set_default(&self, client: proxima_core::llm::BoundEmbeddingClient) {
+        *self.default.write().expect("router lock") = Some(client);
+    }
+
+    /// Route `owner` to `client`, or to no client.
+    ///
+    /// # Panics
+    /// On a poisoned lock.
+    pub fn set_owner(&self, owner: Owner, client: Option<proxima_core::llm::BoundEmbeddingClient>) {
+        self.owners
+            .write()
+            .expect("router lock")
+            .insert(owner, Ok(client));
+    }
+
+    /// Refuse to route `owner`.
+    ///
+    /// # Panics
+    /// On a poisoned lock.
+    pub fn refuse(&self, owner: Owner, message: &str) {
+        self.owners
+            .write()
+            .expect("router lock")
+            .insert(owner, Err(message.to_string()));
+    }
+}
+
+#[async_trait]
+impl proxima_core::llm::EmbeddingRouter for TestEmbeddingRouter {
+    async fn route(
+        &self,
+        owner: &Owner,
+    ) -> Result<proxima_core::llm::EmbeddingRoute, proxima_core::llm::EmbeddingRouteError> {
+        let client = match self.owners.read().expect("router lock").get(owner) {
+            Some(Ok(client)) => client.clone(),
+            Some(Err(message)) => {
+                return Err(proxima_core::llm::EmbeddingRouteError::new(message.clone()));
+            }
+            None => self.default.read().expect("router lock").clone(),
+        };
+        Ok(client.map_or_else(
+            proxima_core::llm::EmbeddingRoute::none,
+            proxima_core::llm::EmbeddingRoute::current,
+        ))
+    }
+}
+
 #[must_use]
 pub fn owner_fixture() -> Owner {
     OwnerRef::Personal(UserId::new(uuid::Uuid::nil()))

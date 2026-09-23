@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use common::{TestDb, test_owner};
 use proxima_code::testkit::build_engine;
 use proxima_code::{CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1};
-use proxima_core::llm::{BoundEmbeddingClient, EmbeddingClient, EmbeddingDim, LlmError};
+use proxima_core::llm::{
+    BoundEmbeddingClient, EmbeddingClient, EmbeddingDim, LlmError, SingleClientRouter,
+};
 use proxima_core::{
     AuthPath, AuthzContext, DerivationIdentity, DerivedMemory, InputContractId, MemoryId,
     MemoryTarget, OperatorId, SeriesHandle,
@@ -77,8 +79,10 @@ fn only_the_text_schemas_are_embeddable() {
 async fn a_never_schema_enqueues_no_embedding_job() {
     let db = TestDb::fresh().await;
     let owner = test_owner();
-    let engine = build_engine(db.pg.clone())
-        .with_embed(BoundEmbeddingClient::bind(Arc::new(ConstantEmbedding)).expect("lane width"));
+    let engine =
+        build_engine(db.pg.clone()).with_embedding_router(Arc::new(SingleClientRouter::new(
+            BoundEmbeddingClient::bind(Arc::new(ConstantEmbedding)).expect("lane width"),
+        )));
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     let plan_source_memory_id = Uuid::now_v7();
@@ -144,8 +148,10 @@ async fn a_never_schema_enqueues_no_embedding_job() {
 async fn a_never_schema_stores_no_inline_vector() {
     let db = TestDb::fresh().await;
     let owner = test_owner();
-    let engine = build_engine(db.pg.clone())
-        .with_embed(BoundEmbeddingClient::bind(Arc::new(ConstantEmbedding)).expect("lane width"));
+    let engine =
+        build_engine(db.pg.clone()).with_embedding_router(Arc::new(SingleClientRouter::new(
+            BoundEmbeddingClient::bind(Arc::new(ConstantEmbedding)).expect("lane width"),
+        )));
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     let plan_source_memory_id = Uuid::now_v7();

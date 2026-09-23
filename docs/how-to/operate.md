@@ -70,9 +70,9 @@ version/GUC preflight (see [15 §Runtime requirements](../15-deployment.md#runti
 
 | Signal | Condition | Action |
 |---|---|---|
-| `embeddings_client_configured` | `false` | no embedding client; search is lexical-only (`degraded_to_lexical=true`). Set `PROXIMA_EMBED_BASE_URL` + `PROXIMA_EMBED_MODEL` if semantic recall is expected (see [10-configuration.md](../10-configuration.md)) |
+| `embeddings_client_configured` | `false` | no embedding route for this Owner; its search is lexical-only (`degraded_to_lexical=true`). Set `PROXIMA_EMBED_BASE_URL` + `PROXIMA_EMBED_MODEL`, or route the Owner in the host's router, if semantic recall is expected (see [10-configuration.md](../10-configuration.md#per-owner-embedding-routing)) |
 | `pending_embedding_jobs` | `> 0`, trending down | normal in-process catch-up; no action |
-| `pending_embedding_jobs` | `> 0`, flat/rising | drainer stalled or client unreachable; check embedding client reachability and logs |
+| `pending_embedding_jobs` | `> 0`, flat/rising | drainer stalled, the Owner's client unreachable, or its route refused (log: `embedding route refused`); the drain backs such an Owner off for up to 15 minutes per retry. Check the Owner's endpoint and route |
 
 `Engine::embedding_ann_observability(authz)` — host-only operator method
 (`AuthPath::System` or `OwnerEraseAuthorityPort::may_perform_operator_maintenance`),

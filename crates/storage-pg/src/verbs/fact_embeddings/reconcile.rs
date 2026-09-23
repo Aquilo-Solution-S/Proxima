@@ -1,4 +1,4 @@
-use proxima_core::StorageError;
+use proxima_core::{Owner, OwnerRefKind, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
@@ -23,6 +23,7 @@ WITH scoped AS MATERIALIZED (
       WHERE ($3::text <> 'since'
              OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') >= $4)
         AND mh.schema_id <> ALL($5::text[])
+        AND ($7::uuid[] IS NULL OR m.owner_id = ANY($7::uuid[]))
  ),
  eligible AS MATERIALIZED (
      SELECT s.*
@@ -70,7 +71,9 @@ WITH scoped AS MATERIALIZED (
 
 /// Global reconciliation for embeddable memories.
 ///
-/// Scans Facts plus derived memories with stored text, skips rows by
+/// Scans Facts plus derived memories with stored text — every Owner's, or
+/// only `options.owners` when the engine names the Owners routed to
+/// `options.space` — skips rows by
 /// scope-specific embedding coverage and target-space durable jobs, and
 /// enqueues via `proxima_core.embedding_jobs`. A row that already holds a
 /// `failed` job (retryable cause, per `fail_embedding_job`) is requeued —
@@ -132,6 +135,9 @@ async fn reconcile_embeddings_on_connection(
         EmbeddingReconcileScope::Since(since) => ("since", Some(since)),
     };
 
+    let owner_ids: Option<Vec<uuid::Uuid>> = options
+        .owners
+        .map(|owners| owners.iter().copied().map(Owner::stored_owner_id).collect());
     let row: (i64, i64) = sqlx::query_as(RECONCILE_EMBEDDINGS_SQL)
         .bind(options.space.model_id())
         .bind(limit)
@@ -139,6 +145,7 @@ async fn reconcile_embeddings_on_connection(
         .bind(since)
         .bind(options.non_embeddable_schemas)
         .bind(crate::pgvector::Lane::of(options.space.dim()).width)
+        .bind(owner_ids)
         .fetch_one(&mut *pool)
         .await
         .map_err(map_err)?;
@@ -152,6 +159,48 @@ async fn reconcile_embeddings_on_connection(
         enqueued,
         skipped: scanned.saturating_sub(enqueued),
     })
+}
+
+const EMBEDDING_OWNER_PAGE_SQL: &str = "
+SELECT kind, owner_id
+  FROM proxima_core.owners
+ WHERE ($1::uuid IS NULL OR owner_id > $1)
+ ORDER BY owner_id ASC
+ LIMIT $2";
+
+/// Up to `limit` Owners after `after`, in `owner_id` order.
+///
+/// The engine pages every Owner through its embedding router before
+/// reconciling, so this reads the Owner registry, not the memory table: an
+/// Owner with nothing to embed routes once and reconciles nothing.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` for negative limits, otherwise maps SQL
+/// failures through the shared mapper.
+pub(crate) async fn embedding_owner_page(
+    pool: &PgPool,
+    platform: Option<&crate::PgPlatformScope>,
+    after: Option<Owner>,
+    limit: i64,
+) -> Result<Vec<Owner>, StorageError> {
+    let limit = ensure_nonnegative_limit(limit)?;
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
+    let result = sqlx::query_as::<_, (OwnerRefKind, uuid::Uuid)>(EMBEDDING_OWNER_PAGE_SQL)
+        .bind(after.map(Owner::stored_owner_id))
+        .bind(limit)
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(kind, id)| kind.with_uuid(id))
+                .collect()
+        });
+    crate::owner_scope::finish_transaction(tx, result).await
 }
 
 fn resolve_reconcile_limit(limit: Option<i64>) -> Result<i64, StorageError> {

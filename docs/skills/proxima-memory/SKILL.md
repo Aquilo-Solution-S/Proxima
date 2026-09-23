@@ -121,7 +121,10 @@ Goals):
 
 Semantic search needs embeddings; the server drains them in-process when an
 embedding client is configured, and degrades to lexical search otherwise — so a
-just-written memory may take a moment to become semantically findable.
+just-written memory may take a moment to become semantically findable. Each
+space can be embedded by a different model: when a search spans spaces whose
+scores are on different scales, the result says `ranking: "rank"` and a
+`score` compares only within its `space`.
 
 ## Common mistakes
 

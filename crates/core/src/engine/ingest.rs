@@ -4,7 +4,7 @@ use crate::access::Relation;
 use crate::authz::{AuthzContext, EngineAuthority};
 use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
-use crate::llm::LlmError;
+use crate::llm::{BoundEmbeddingClient, EmbeddingRouteError, EmbeddingSpace, LlmError};
 use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::storage_ports::EmbeddingJobHandle;
 
@@ -88,6 +88,82 @@ enum EmbedStep {
     NothingToEmbed,
 }
 
+/// Longest a failing Owner's jobs wait between drain attempts.
+const MAX_EMBEDDING_BACKOFF: std::time::Duration = std::time::Duration::from_mins(15);
+
+/// Owners whose route or provider failed, and until when the drain skips
+/// their jobs.
+///
+/// One Owner's broken endpoint must not stall the queue for every other
+/// Owner, and must not be hammered either: its claims are released and it
+/// waits `worker_interval`, doubling per consecutive failure up to
+/// [`MAX_EMBEDDING_BACKOFF`]. A successful batch clears it. In memory only:
+/// a restart retries every Owner once.
+#[derive(Debug, Default)]
+pub(crate) struct EmbeddingBackoff {
+    owners: std::sync::Mutex<std::collections::HashMap<Owner, OwnerBackoff>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OwnerBackoff {
+    until: tokio::time::Instant,
+    delay: std::time::Duration,
+}
+
+impl EmbeddingBackoff {
+    fn owners(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<Owner, OwnerBackoff>> {
+        self.owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Owners whose delay has not passed.
+    fn blocked(&self) -> Vec<Owner> {
+        let now = tokio::time::Instant::now();
+        self.owners()
+            .iter()
+            .filter(|(_, backoff)| backoff.until > now)
+            .map(|(owner, _)| *owner)
+            .collect()
+    }
+
+    /// Record a failure; returns how long the Owner now waits.
+    fn fail(&self, owner: Owner, base: std::time::Duration) -> std::time::Duration {
+        let mut owners = self.owners();
+        let cap = MAX_EMBEDDING_BACKOFF.max(base);
+        let delay = owners
+            .get(&owner)
+            .map_or(base, |prior| prior.delay.saturating_mul(2))
+            .min(cap);
+        owners.insert(
+            owner,
+            OwnerBackoff {
+                until: tokio::time::Instant::now() + delay,
+                delay,
+            },
+        );
+        delay
+    }
+
+    fn succeed(&self, owner: &Owner) {
+        self.owners().remove(owner);
+    }
+}
+
+/// Logs the route failure and returns what the caller sees. The host's
+/// message can name its own configuration, so it stays in the log.
+pub(in crate::engine) fn embedding_route_refused(
+    owner: &Owner,
+    err: &EmbeddingRouteError,
+) -> ProtocolError {
+    tracing::warn!(
+        owner = %owner.external_key(),
+        error = %err,
+        "embedding route refused"
+    );
+    ProtocolError::internal("no embedding route for this owner")
+}
+
 struct EmbeddingClaimHeartbeat {
     handle: tokio::task::JoinHandle<()>,
 }
@@ -112,6 +188,19 @@ fn spawn_embedding_claim_heartbeat(
         }
     });
     EmbeddingClaimHeartbeat { handle }
+}
+
+/// Group `items` by `key`, keeping first-seen order of keys and items.
+fn group_claims<T, K: PartialEq>(items: Vec<T>, key: impl Fn(&T) -> K) -> Vec<(K, Vec<T>)> {
+    let mut groups: Vec<(K, Vec<T>)> = Vec::new();
+    for item in items {
+        let item_key = key(&item);
+        match groups.iter_mut().find(|(group, _)| *group == item_key) {
+            Some((_, members)) => members.push(item),
+            None => groups.push((item_key, vec![item])),
+        }
+    }
+    groups
 }
 
 impl Engine {
@@ -140,7 +229,12 @@ impl Engine {
             .authorize_fact_ingest(authority, Relation::Ingest, draft, &[])
             .await?;
         self.validate_write_permit(authorized.owner_write_permit())?;
-        let embedding_spaces = self.fact_embedding_spaces(authorized.draft().schema_id.as_str());
+        let embedding_spaces = self
+            .fact_embedding_spaces(
+                authorized.owner_write_permit().owner(),
+                authorized.draft().schema_id.as_str(),
+            )
+            .await?;
         let outcome = self
             .storage
             .ingest
@@ -611,9 +705,9 @@ impl Engine {
         }
     }
 
-    /// The embedding spaces a new Fact of `schema_id` is queued for: the
-    /// installed client's space, unless the schema's recipe resolves to no
-    /// embed unit.
+    /// The embedding spaces a new Fact of `schema_id` owned by `owner` is
+    /// queued for: the spaces `owner`'s route names, unless the schema's
+    /// recipe resolves to no embed unit.
     ///
     /// APPLIED HERE, NOT AT THE CALL SITES, because every typed Fact
     /// write in the process funnels through one of the four verbs that
@@ -626,17 +720,23 @@ impl Engine {
     ///
     /// Storage would be the lower boundary, and cannot host this: the
     /// answer lives in the flavor registry, which storage does not hold.
-    pub(in crate::engine) fn fact_embedding_spaces(
+    ///
+    /// # Errors
+    ///
+    /// `Internal` when the host cannot route `owner`: the write fails
+    /// rather than landing without the job that would make it searchable.
+    pub(in crate::engine) async fn fact_embedding_spaces(
         &self,
+        owner: &Owner,
         schema_id: &str,
-    ) -> Vec<crate::EmbeddingSpace> {
+    ) -> Result<Vec<EmbeddingSpace>, ProtocolError> {
         if !self.registry().schema_is_embeddable(schema_id) {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        self.embed_client()
-            .map(|client| client.space().clone())
-            .into_iter()
-            .collect()
+        self.embedding_route(owner)
+            .await
+            .map(|route| route.write_spaces())
+            .map_err(|err| embedding_route_refused(owner, &err))
     }
 
     /// Persist an already-authorized typed-sidecar Fact ingest, queued for
@@ -651,7 +751,12 @@ impl Engine {
         authorized: &AuthorizedFactWrite,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
-        let embedding_spaces = self.fact_embedding_spaces(authorized.draft().schema_id.as_str());
+        let embedding_spaces = self
+            .fact_embedding_spaces(
+                authorized.owner_write_permit().owner(),
+                authorized.draft().schema_id.as_str(),
+            )
+            .await?;
         self.storage()
             .ingest
             .fact_ingest
@@ -677,7 +782,12 @@ impl Engine {
         authorized: &AuthorizedFactWithCitation,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
-        let embedding_spaces = self.fact_embedding_spaces(authorized.draft().schema_id.as_str());
+        let embedding_spaces = self
+            .fact_embedding_spaces(
+                authorized.owner_write_permit().owner(),
+                authorized.draft().schema_id.as_str(),
+            )
+            .await?;
         self.storage()
             .ingest
             .fact_ingest
@@ -705,7 +815,12 @@ impl Engine {
         authorized: &AuthorizedFactWithCitationRef,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
-        let embedding_spaces = self.fact_embedding_spaces(authorized.draft().schema_id.as_str());
+        let embedding_spaces = self
+            .fact_embedding_spaces(
+                authorized.owner_write_permit().owner(),
+                authorized.draft().schema_id.as_str(),
+            )
+            .await?;
         self.storage()
             .ingest
             .fact_ingest
@@ -1013,18 +1128,22 @@ impl Engine {
         entity_kind: EntityKind,
         memory_id: MemoryId,
     ) -> Result<bool, StorageError> {
-        let Some(client) = self.embed_client() else {
+        let route = self
+            .embedding_route(owner)
+            .await
+            .map_err(|err| StorageError::Internal(format!("embedding route: {err}")))?;
+        let Some(client) = route.current_client() else {
             return Ok(false);
         };
         let step = self
-            .embed_claimed_memory(&client, owner, entity_kind, memory_id)
+            .embed_claimed_memory(client, owner, entity_kind, memory_id)
             .await?;
         Ok(matches!(step, EmbedStep::Embedded))
     }
 
     async fn embed_claimed_memory(
         &self,
-        client: &crate::llm::BoundEmbeddingClient,
+        client: &BoundEmbeddingClient,
         owner: &Owner,
         entity_kind: EntityKind,
         memory_id: MemoryId,
@@ -1077,7 +1196,7 @@ impl Engine {
     }
 
     /// Owner-scoped, idempotent backfill enqueue for memories missing an
-    /// embedding under the current client's model id.
+    /// embedding in a space `owner`'s route names.
     ///
     /// Covers Facts *and* derived memories. Derived rows matter because a
     /// flavor can materialize Abstractions through its own sidecar path with
@@ -1096,46 +1215,60 @@ impl Engine {
         limit: usize,
     ) -> Result<usize, ProtocolError> {
         self.operation_authority(authz)?;
-        let Some(client) = self.embed_client() else {
-            return Ok(0);
-        };
         let limit = i64::try_from(limit)
             .map_err(|_| ProtocolError::invalid_argument("limit", "too large"))?;
         let permit = self.authorize_write(authz, owner, Relation::Ingest).await?;
-        let enqueued = self
-            .storage
-            .ingest
-            .embedding_job
-            .enqueue_missing_embedding_jobs(
-                permit.owner_write_permit(),
-                client.space(),
-                limit,
-                self.registry().non_embeddable_schema_ids(),
-            )
+        let spaces = self
+            .embedding_route(owner)
             .await
-            .map_err(|err| ProtocolError::internal(err.to_string()))?;
+            .map_err(|err| embedding_route_refused(owner, &err))?
+            .write_spaces();
+        let mut enqueued = 0_u64;
+        for space in &spaces {
+            enqueued += self
+                .storage
+                .ingest
+                .embedding_job
+                .enqueue_missing_embedding_jobs(
+                    permit.owner_write_permit(),
+                    space,
+                    limit,
+                    self.registry().non_embeddable_schema_ids(),
+                )
+                .await
+                .map_err(|err| ProtocolError::internal(err.to_string()))?;
+        }
         usize::try_from(enqueued)
             .map_err(|_| ProtocolError::internal("enqueued count does not fit usize"))
     }
 
-    /// Host-invoked sweep that drains durable pending memory embedding jobs
-    /// for the currently active embedding model. This method does not
-    /// spawn a worker, timer, or model decision loop; the caller controls
-    /// invocation and `limit`. Jobs are claimed and embedded in batches of
-    /// up to the host-configured [`crate::EmbeddingRuntimePolicy::batch_size`]
-    /// texts per provider call. Direct core hosts can install the policy with
-    /// [`Engine::with_embedding_runtime_policy`].
+    /// Host-invoked sweep that drains durable pending memory embedding
+    /// jobs, each through the route of the Owner whose memory it embeds.
+    /// This method does not spawn a worker, timer, or model decision loop;
+    /// the caller controls invocation and `limit`. Jobs are claimed in
+    /// batches of up to the host-configured
+    /// [`crate::EmbeddingRuntimePolicy::batch_size`] and sent to each
+    /// Owner's client grouped by Owner and space. Direct core hosts can
+    /// install the policy with [`Engine::with_embedding_runtime_policy`].
     ///
     /// Every invocation first returns `processing` claims older than the
-    /// policy's stale-claim timeout to `pending` (one statement, all models),
-    /// then claims. A drainer that died holding a claim — a process stopped
-    /// between claim and completion — is recovered here, not only at boot.
+    /// policy's stale-claim timeout to `pending` (one statement, all
+    /// spaces), then claims. A drainer that died holding a claim — a process
+    /// stopped between claim and completion — is recovered here, not only at
+    /// boot.
+    ///
+    /// Routing semantics:
+    /// - a route error releases that Owner's claims and backs the Owner off
+    ///   (from the policy's worker interval, doubling to 15 minutes, reset
+    ///   by a successful batch); other Owners keep draining;
+    /// - a job for a space the Owner's route no longer names is stale and
+    ///   completes without a vector — reconcile queues the route's space.
     ///
     /// Failure semantics:
-    /// - a *transient* batch failure (429/5xx/network) releases the claimed
-    ///   jobs back to `pending` without burning retry attempts — a provider
-    ///   outage is not evidence against any individual job — and ends the
-    ///   drain call;
+    /// - a *transient* batch failure (429/5xx/network) releases the Owner's
+    ///   claimed jobs back to `pending` without burning retry attempts — a
+    ///   provider outage is not evidence against any individual job — and
+    ///   backs that Owner off;
     /// - a batch failure whose liveness probe succeeds re-embeds the batch one
     ///   text at a time to isolate the content-attributed input(s); an
     ///   over-limit input is rescued by bisecting it into chunked embeddings
@@ -1153,9 +1286,9 @@ impl Engine {
         &self,
         limit: usize,
     ) -> Result<EmbeddingDrainOutcome, StorageError> {
-        let Some(client) = self.embed_client() else {
+        if self.embedding_router.is_none() {
             return Ok(EmbeddingDrainOutcome::default());
-        };
+        }
         let policy = self.embedding_runtime_policy();
         self.reclaim_stale_embedding_claims(policy).await?;
         let mut outcome = EmbeddingDrainOutcome::default();
@@ -1167,7 +1300,7 @@ impl Engine {
                 .storage
                 .ingest
                 .embedding_job
-                .claim_pending_embedding_jobs(client.space(), take)
+                .claim_pending_embedding_jobs(take, &self.embedding_backoff.blocked())
                 .await?;
             if claims.is_empty() {
                 break;
@@ -1178,31 +1311,90 @@ impl Engine {
                 claims.clone(),
                 policy.claim_heartbeat_interval(),
             );
+            let batch = self.texted_claims(claims, &mut outcome).await?;
+            for (owner, owner_batch) in group_claims(batch, |(claim, _)| claim.owner) {
+                self.drain_owner_batch(owner, owner_batch, policy, &mut outcome)
+                    .await?;
+            }
+        }
+        Ok(outcome)
+    }
 
-            // Jobs whose memory no longer yields embeddable text are
-            // complete as-is; only texted jobs go to the provider.
-            // Also excluded here, not just at enqueue: a job queued
-            // before its schema stopped resolving an embed unit completes
-            // as a no-op instead of embedding what now declines a vector.
-            let items: Vec<(Owner, EntityKind, MemoryId)> = claims
-                .iter()
-                .map(|claim| (claim.owner, claim.entity_kind, claim.entity_id))
-                .collect();
-            let texts = self
-                .storage
-                .ingest
-                .embedding_text
-                .load_embedding_texts_for_host(
-                    &items,
-                    self.registry().non_embeddable_schema_ids(),
-                    crate::storage_ports::OperatorMaintenanceProof::new(),
-                )
-                .await?;
-            let mut batch: Vec<(EmbeddingJobClaim, String)> = Vec::with_capacity(claims.len());
-            for (claim, text) in claims.into_iter().zip(texts) {
-                if let Some(text) = text {
-                    batch.push((claim, text));
-                } else {
+    /// Pair each claim with its memory's embeddable text, completing the
+    /// claims whose memory no longer yields any.
+    ///
+    /// Also excluded here, not just at enqueue: a job queued before its
+    /// schema stopped resolving an embed unit completes as a no-op instead
+    /// of embedding what now declines a vector.
+    async fn texted_claims(
+        &self,
+        claims: Vec<EmbeddingJobClaim>,
+        outcome: &mut EmbeddingDrainOutcome,
+    ) -> Result<Vec<(EmbeddingJobClaim, String)>, StorageError> {
+        let items: Vec<(Owner, EntityKind, MemoryId)> = claims
+            .iter()
+            .map(|claim| (claim.owner, claim.entity_kind, claim.entity_id))
+            .collect();
+        let texts = self
+            .storage
+            .ingest
+            .embedding_text
+            .load_embedding_texts_for_host(
+                &items,
+                self.registry().non_embeddable_schema_ids(),
+                crate::storage_ports::OperatorMaintenanceProof::new(),
+            )
+            .await?;
+        let mut batch = Vec::with_capacity(claims.len());
+        for (claim, text) in claims.into_iter().zip(texts) {
+            if let Some(text) = text {
+                batch.push((claim, text));
+            } else {
+                outcome.processed += 1;
+                self.storage
+                    .ingest
+                    .embedding_job
+                    .complete_embedding_job(&claim)
+                    .await?;
+            }
+        }
+        Ok(batch)
+    }
+
+    /// Embed one Owner's claims through that Owner's route, space by space.
+    async fn drain_owner_batch(
+        &self,
+        owner: Owner,
+        batch: Vec<(EmbeddingJobClaim, String)>,
+        policy: crate::EmbeddingRuntimePolicy,
+        outcome: &mut EmbeddingDrainOutcome,
+    ) -> Result<(), StorageError> {
+        let route = match self.embedding_route(&owner).await {
+            Ok(route) => route,
+            Err(err) => {
+                let retry_in = self.embedding_backoff.fail(owner, policy.worker_interval());
+                tracing::warn!(
+                    owner = %owner.external_key(),
+                    error = %err,
+                    ?retry_in,
+                    "embedding route refused; releasing this owner's jobs"
+                );
+                let claims: Vec<EmbeddingJobClaim> =
+                    batch.into_iter().map(|(claim, _)| claim).collect();
+                return self
+                    .storage
+                    .ingest
+                    .embedding_job
+                    .release_embedding_jobs(&claims, &format!("embedding route: {err}"))
+                    .await;
+            }
+        };
+        let mut spaces = group_claims(batch, |(claim, _)| claim.space.clone()).into_iter();
+        while let Some((space, space_batch)) = spaces.next() {
+            let Some(client) = route.client_for(&space) else {
+                // The route moved on from this space since the job was
+                // queued; embedding it would write a vector nothing reads.
+                for (claim, _) in space_batch {
                     outcome.processed += 1;
                     self.storage
                         .ingest
@@ -1210,41 +1402,66 @@ impl Engine {
                         .complete_embedding_job(&claim)
                         .await?;
                 }
-            }
-            if batch.is_empty() {
                 continue;
-            }
-
-            let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
-            match client.embed_many(&texts).await {
-                Ok(vectors) if vectors.len() != batch.len() => {
-                    self.release_malformed_embedding_batch(batch, vectors.len())
-                        .await?;
-                    break;
-                }
-                Ok(vectors) => {
-                    for ((claim, _), vector) in batch.iter().zip(vectors) {
-                        outcome.processed += 1;
-                        if !self.store_claim_embedding(&client, claim, &vector).await? {
-                            outcome.failed += 1;
-                        }
-                    }
-                }
-                Err(LlmError::EmbedPermanent(_)) => {
-                    self.embed_claims_individually(&client, batch, &mut outcome)
+            };
+            if !self.embed_claim_batch(client, space_batch, outcome).await? {
+                let retry_in = self.embedding_backoff.fail(owner, policy.worker_interval());
+                tracing::warn!(
+                    owner = %owner.external_key(),
+                    ?retry_in,
+                    "embedding provider unavailable; backing this owner off"
+                );
+                let rest: Vec<EmbeddingJobClaim> = spaces
+                    .flat_map(|(_, rest)| rest.into_iter().map(|(claim, _)| claim))
+                    .collect();
+                if !rest.is_empty() {
+                    self.storage
+                        .ingest
+                        .embedding_job
+                        .release_embedding_jobs(&rest, "embedding provider unavailable")
                         .await?;
                 }
-                Err(err) => {
-                    if !self
-                        .recover_transient_embedding_batch(&client, batch, &mut outcome, &err)
-                        .await?
-                    {
-                        break;
-                    }
-                }
+                return Ok(());
             }
         }
-        Ok(outcome)
+        self.embedding_backoff.succeed(&owner);
+        Ok(())
+    }
+
+    /// One provider batch for one Owner and space. `false` when the
+    /// provider is down: the batch's claims are released for a later drain.
+    async fn embed_claim_batch(
+        &self,
+        client: &BoundEmbeddingClient,
+        batch: Vec<(EmbeddingJobClaim, String)>,
+        outcome: &mut EmbeddingDrainOutcome,
+    ) -> Result<bool, StorageError> {
+        let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
+        match client.embed_many(&texts).await {
+            Ok(vectors) if vectors.len() != batch.len() => {
+                self.release_malformed_embedding_batch(batch, vectors.len())
+                    .await?;
+                Ok(false)
+            }
+            Ok(vectors) => {
+                for ((claim, _), vector) in batch.iter().zip(vectors) {
+                    outcome.processed += 1;
+                    if !self.store_claim_embedding(client, claim, &vector).await? {
+                        outcome.failed += 1;
+                    }
+                }
+                Ok(true)
+            }
+            Err(LlmError::EmbedPermanent(_)) => {
+                self.embed_claims_individually(client, batch, outcome)
+                    .await?;
+                Ok(true)
+            }
+            Err(err) => {
+                self.recover_transient_embedding_batch(client, batch, outcome, &err)
+                    .await
+            }
+        }
     }
 
     /// A transient batch error is supposed to mean the provider failed
@@ -1263,10 +1480,10 @@ impl Engine {
     /// permanent rejection is isolated, and the drain continues (`true`).
     /// If the probe also fails, the provider really is down: release
     /// without burning attempts, exactly as before, for one extra tiny
-    /// call, and the drain ends (`false`).
+    /// call, and the Owner backs off (`false`).
     async fn recover_transient_embedding_batch(
         &self,
-        client: &crate::llm::BoundEmbeddingClient,
+        client: &BoundEmbeddingClient,
         batch: Vec<(EmbeddingJobClaim, String)>,
         outcome: &mut EmbeddingDrainOutcome,
         err: &LlmError,
@@ -1346,7 +1563,7 @@ impl Engine {
     /// instead. Returns whether the vector was stored.
     async fn store_claim_embedding(
         &self,
-        client: &crate::llm::BoundEmbeddingClient,
+        client: &BoundEmbeddingClient,
         claim: &EmbeddingJobClaim,
         vector: &[f32],
     ) -> Result<bool, StorageError> {
@@ -1396,7 +1613,7 @@ impl Engine {
     /// most one attempt in this pass.
     async fn embed_claims_individually(
         &self,
-        client: &crate::llm::BoundEmbeddingClient,
+        client: &BoundEmbeddingClient,
         batch: Vec<(EmbeddingJobClaim, String)>,
         outcome: &mut EmbeddingDrainOutcome,
     ) -> Result<(), StorageError> {
@@ -1466,7 +1683,7 @@ impl Engine {
     /// stored.
     async fn store_claim_embedding_chunks(
         &self,
-        client: &crate::llm::BoundEmbeddingClient,
+        client: &BoundEmbeddingClient,
         claim: &EmbeddingJobClaim,
         vectors: &[Vec<f32>],
     ) -> Result<bool, StorageError> {
@@ -1507,40 +1724,94 @@ impl Engine {
         Ok(true)
     }
 
-    /// Host-invoked global reconciliation: enqueue durable embedding jobs for
-    /// every embeddable memory in `scope` that lacks coverage under the
-    /// active embedding client's model. Complements [`Self::drain_embedding_jobs`]:
+    /// Host-invoked reconciliation: enqueue durable embedding jobs for
+    /// every embeddable memory in `scope` that lacks coverage in a space its
+    /// Owner's route names. Complements [`Self::drain_embedding_jobs`]:
     /// drain heals the queue, reconcile heals the *absence* of queue entries
-    /// (memories written while no embedding client was configured, model
-    /// changes, `failed` jobs whose retries are exhausted). Idempotent; like
-    /// drain, the caller controls invocation — no worker or timer is spawned.
+    /// (memories written while an Owner had no route, route changes,
+    /// `failed` jobs whose retries are exhausted). Idempotent; like drain,
+    /// the caller controls invocation — no worker or timer is spawned.
+    ///
+    /// Owners are read a page at a time and routed; Owners whose routes name
+    /// the same space are reconciled in one pass. An Owner the host cannot
+    /// route is skipped and logged: reconcile only heals, so there is no
+    /// write to refuse.
     ///
     /// # Errors
     ///
-    /// Returns storage errors from the reconciliation scan/enqueue.
-    /// `limit: None` uses [`crate::EMBEDDING_RECONCILE_DEFAULT_LIMIT`].
+    /// Returns storage errors from the owner scan and the
+    /// reconciliation scan/enqueue. `limit: None` uses
+    /// [`crate::EMBEDDING_RECONCILE_DEFAULT_LIMIT`]; it bounds the memories
+    /// scanned across all Owners.
     pub async fn reconcile_embeddings(
         &self,
         scope: crate::EmbeddingReconcileScope,
         limit: Option<i64>,
     ) -> Result<crate::EmbeddingReconcileOutcome, StorageError> {
-        let Some(client) = self.embed_client() else {
-            return Ok(crate::EmbeddingReconcileOutcome::default());
-        };
-        self.storage
-            .owner_inverse
-            .embedding_maintenance
-            .reconcile_embeddings(
-                crate::EmbeddingReconcileOptions {
-                    space: client.space(),
-                    scope,
-                    limit: Some(limit.unwrap_or(crate::EMBEDDING_RECONCILE_DEFAULT_LIMIT)),
-                    non_embeddable_schemas: self.registry().non_embeddable_schema_ids(),
-                },
-                self.embedding_runtime_policy(),
-                crate::storage_ports::OperatorMaintenanceProof::new(),
-            )
-            .await
+        const OWNER_PAGE: i64 = 1_000;
+        let mut total = crate::EmbeddingReconcileOutcome::default();
+        if self.embedding_router.is_none() {
+            return Ok(total);
+        }
+        let maintenance = &self.storage.owner_inverse.embedding_maintenance;
+        let mut budget = limit.unwrap_or(crate::EMBEDDING_RECONCILE_DEFAULT_LIMIT);
+        let mut after: Option<Owner> = None;
+        while budget > 0 {
+            let page = maintenance
+                .embedding_owner_page(
+                    after,
+                    OWNER_PAGE,
+                    crate::storage_ports::OperatorMaintenanceProof::new(),
+                )
+                .await?;
+            let Some(last) = page.last().copied() else {
+                break;
+            };
+            let mut routed: Vec<(EmbeddingSpace, Owner)> = Vec::new();
+            for owner in &page {
+                match self.embedding_route(owner).await {
+                    Ok(route) => routed.extend(
+                        route
+                            .write_spaces()
+                            .into_iter()
+                            .map(|space| (space, *owner)),
+                    ),
+                    Err(err) => tracing::warn!(
+                        owner = %owner.external_key(),
+                        error = %err,
+                        "embedding route refused; not reconciling this owner"
+                    ),
+                }
+            }
+            for (space, owners) in group_claims(routed, |(space, _)| space.clone()) {
+                if budget <= 0 {
+                    break;
+                }
+                let owners: Vec<Owner> = owners.into_iter().map(|(_, owner)| owner).collect();
+                let outcome = maintenance
+                    .reconcile_embeddings(
+                        crate::EmbeddingReconcileOptions {
+                            space: &space,
+                            owners: Some(&owners),
+                            scope,
+                            limit: Some(budget),
+                            non_embeddable_schemas: self.registry().non_embeddable_schema_ids(),
+                        },
+                        self.embedding_runtime_policy(),
+                        crate::storage_ports::OperatorMaintenanceProof::new(),
+                    )
+                    .await?;
+                budget = budget.saturating_sub(i64::try_from(outcome.scanned).unwrap_or(i64::MAX));
+                total.scanned += outcome.scanned;
+                total.enqueued += outcome.enqueued;
+                total.skipped += outcome.skipped;
+            }
+            if i64::try_from(page.len()).unwrap_or(i64::MAX) < OWNER_PAGE {
+                break;
+            }
+            after = Some(last);
+        }
+        Ok(total)
     }
 
     pub(super) fn ingest_protocol_payload<'a>(

@@ -262,6 +262,35 @@ space appends a new version and advances `embedding_heads`; prior vector
 rows are not updated. If no client is
 injected, semantic search modes are unavailable; lexical paths still work.
 
+### Per-Owner embedding routing
+
+`embed_client` is one client for every Owner. A host whose Owners bring their
+own endpoint, key, model or width installs an `EmbeddingRouter` instead
+(`builder.embedding_router(router)`; setting both fails boot). The router
+answers `route(owner)` for the Owner that **owns the data** — never the
+caller — with an `EmbeddingRoute`: one `BoundEmbeddingClient`, or none. An
+Owner's texts and queries reach only its own route's endpoint.
+
+- **Writes** queue a job in the route's space. A route error fails the write,
+  so nothing lands unsearchable; a route with no client queues nothing.
+- **The drain** claims across every space and embeds each job through its
+  Owner's route. A route error or a provider outage releases that Owner's
+  jobs and backs the Owner off, from the worker interval doubling to 15
+  minutes; other Owners keep draining. A job in a space the route no longer
+  names completes without a vector.
+- **Search** routes each searched Owner and embeds the query once per
+  distinct client. When the Owners' scores are on different scales —
+  different spaces, or some searched lexically — relevance order interleaves
+  them by rank and the response says `ranking: "rank"`. `semantic` fails when
+  a searched Owner has no route; `hybrid` searches that Owner lexically and
+  sets `degraded_to_lexical`. Code chunk search embeds through the current
+  Owner's route, so chunks another route embedded rank lexically.
+
+`route` runs on every write, drain batch and search: make it a lookup of host
+configuration, and fetch credentials inside the client's `embed`, where a
+failure is retried. The boot reconcile pages every Owner through the router
+once.
+
 `apps/proxima-mcp` talks to any OpenAI-compatible `/embeddings` endpoint.
 Base URL and model are explicit; a locally-hosted endpoint (Ollama,
 llama.cpp, LM Studio, vLLM) needs no credential:

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use super::{EmbeddingClientReloader, Engine, EngineMcpListener};
+use super::{Engine, EngineMcpListener};
 use crate::FlavorRegistryError;
 use crate::authz::{
     DelegationRuntimeAuthority, DelegationRuntimeBinding, SystemAuthority, SystemAuthorityBinding,
@@ -22,9 +22,9 @@ impl Engine {
             delegation_runtime_binding: DelegationRuntimeBinding::fresh(),
             storage: EngineStoragePorts::from(StoragePorts::rejecting()),
             deployment_tool_scope: crate::authz::ToolScope::All,
-            embed: Arc::new(RwLock::new(None)),
+            embedding_router: None,
             embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy::default(),
-            embedding_reloader: None,
+            embedding_backoff: super::ingest::EmbeddingBackoff::default(),
             publication: crate::publication::PublicationConfig::default(),
             mcp_listen_addr: DEFAULT_MCP_LISTEN_ADDR,
             mcp_listener: None,
@@ -125,14 +125,17 @@ impl Engine {
         &self.deployment_tool_scope
     }
 
+    /// Install the host's embedding router: every write, drain and search
+    /// embeds through the route of the Owner whose memories it touches.
+    /// Without one, nothing is embedded and search is lexical.
     #[must_use]
-    pub fn with_embed(mut self, embed: crate::llm::BoundEmbeddingClient) -> Self {
-        self.embed = Arc::new(RwLock::new(Some(embed)));
+    pub fn with_embedding_router(mut self, router: Arc<dyn crate::llm::EmbeddingRouter>) -> Self {
+        self.embedding_router = Some(router);
         self
     }
 
     /// Set provider batching and durable-claim lifecycle policy for the
-    /// installed embedding client. Direct core composition defaults to the
+    /// installed embedding clients. Direct core composition defaults to the
     /// generic finite policy; hosts should pass their resolved deployment
     /// policy explicitly.
     #[must_use]
@@ -174,12 +177,6 @@ impl Engine {
     }
 
     #[must_use]
-    pub fn with_embedding_reloader(mut self, reloader: Arc<dyn EmbeddingClientReloader>) -> Self {
-        self.embedding_reloader = Some(reloader);
-        self
-    }
-
-    #[must_use]
     pub fn with_mcp_listen_addr(mut self, addr: SocketAddr) -> Self {
         self.mcp_listen_addr = addr;
         self
@@ -211,7 +208,7 @@ mod tests {
     fn compose_assembles_engine_over_registry_closure() {
         let engine = Engine::compose_or_panic_for_tests(StoragePorts::rejecting(), |_registry| {});
         assert!(engine.mcp_url().is_none());
-        assert!(engine.embed_client().is_none());
+        assert!(engine.embedding_router().is_none());
     }
 
     #[derive(Debug)]
@@ -247,13 +244,15 @@ mod tests {
         .expect("valid policy");
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_embedding_runtime_policy(policy)
-            .with_embed(
+            .with_embedding_router(Arc::new(crate::llm::SingleClientRouter::new(
                 crate::llm::BoundEmbeddingClient::bind(Arc::new(HangingCustomEmbedding))
                     .expect("supported lane"),
-            );
+            )));
 
-        let result = engine
-            .embed_client()
+        let owner = crate::Owner::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
+        let route = engine.embedding_route(&owner).await.expect("route");
+        let result = route
+            .current_client()
             .expect("client")
             .embed_many(&["one".to_owned(), "two".to_owned()])
             .await;

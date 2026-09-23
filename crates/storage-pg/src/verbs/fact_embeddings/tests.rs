@@ -23,7 +23,7 @@ mod pg_tests {
     use proxima_core::EmbeddableEntityRef;
     use proxima_core::EmbeddingSpace;
     use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
-    use proxima_core::llm::{BoundEmbeddingClient, EmbeddingDim};
+    use proxima_core::llm::{BoundEmbeddingClient, EmbeddingDim, SingleClientRouter};
     use proxima_core::llm::{
         CHUNKED_EMBED_MIN_BYTES, EMBED_LIVENESS_PROBE, MIN_EMBED_INPUT_CAP_CHARS,
     };
@@ -58,6 +58,11 @@ mod pg_tests {
 
     fn bound(client: impl EmbeddingClient + 'static) -> BoundEmbeddingClient {
         BoundEmbeddingClient::bind(Arc::new(client)).expect("stub clients embed in a lane")
+    }
+
+    /// Every Owner routed to `client`.
+    fn routed(client: impl EmbeddingClient + 'static) -> Arc<SingleClientRouter> {
+        Arc::new(SingleClientRouter::new(bound(client)))
     }
 
     fn stale_claim_seconds() -> i64 {
@@ -360,6 +365,7 @@ mod pg_tests {
     fn missing_only(limit: i64) -> EmbeddingReconcileOptions<'static> {
         EmbeddingReconcileOptions {
             space: &STUB_SPACE,
+            owners: None,
             scope: EmbeddingReconcileScope::MissingOnly,
             limit: Some(limit),
             non_embeddable_schemas: &[],
@@ -559,7 +565,7 @@ mod pg_tests {
                     Some("stub-fact-embed"),
                 )
                 .await?;
-            let claims = claim_pending_embedding_jobs(pg.pool_for_tests(), &STUB_SPACE, 1).await?;
+            let claims = claim_pending_embedding_jobs(pg.pool_for_tests(), 1, &[]).await?;
             assert_eq!(claims.len(), 1);
             assert_eq!(claims[0].entity_id, outcome.memory_id);
             assert_eq!(
@@ -1018,7 +1024,7 @@ mod pg_tests {
             let pool = pg.pool_for_tests();
             let entity_id = outcome.memory_id.into_inner();
 
-            let claims = claim_pending_embedding_jobs(pool, &STUB_SPACE, 1).await?;
+            let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
             assert_eq!(claims.len(), 1);
             let (status, _, claim_unstamped) = job_state(pool, entity_id).await?;
             assert_eq!(status, "processing");
@@ -1073,7 +1079,7 @@ mod pg_tests {
                 .await?;
             let pool = pg.pool_for_tests();
 
-            let claims = claim_pending_embedding_jobs(pool, &STUB_SPACE, 1).await?;
+            let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
             assert_eq!(claims.len(), 1);
             assert_eq!(claims[0].entity_id, permanently_rejected.memory_id);
             fail_embedding_job_permanently(pool, &claims[0], "provider rejects forever").await?;
@@ -1082,6 +1088,7 @@ mod pg_tests {
                 pool,
                 EmbeddingReconcileOptions {
                     space: &STUB_SPACE,
+                    owners: None,
                     scope: EmbeddingReconcileScope::MissingOnly,
                     limit: Some(1),
                     non_embeddable_schemas: &[],
@@ -1186,7 +1193,7 @@ mod pg_tests {
             );
         }
         let pool = pg.pool_for_tests();
-        let claims = claim_pending_embedding_jobs(pool, &STUB_SPACE, 1).await?;
+        let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
         if claims.len() != 1 || claims[0].entity_id != earlier {
             return Err("the real claim must target only the earlier Fact".into());
         }
@@ -1198,7 +1205,7 @@ mod pg_tests {
         let configured_pg = pg.clone().with_flavors(&registry);
         let engine = Engine::new(registry)
             .with_storage_ports(Arc::new(configured_pg).storage_ports())
-            .with_embed(bound(RecordingBatchEmbedding {
+            .with_embedding_router(routed(RecordingBatchEmbedding {
                 batch_widths: Arc::default(),
             }));
         let Owner::Personal(user_id) = owner else {
@@ -1302,6 +1309,7 @@ mod pg_tests {
                         &pool,
                         EmbeddingReconcileOptions {
                             space: &STUB_SPACE,
+                            owners: None,
                             scope: EmbeddingReconcileScope::MissingOnly,
                             limit: Some(10),
                             non_embeddable_schemas: &[],
@@ -1371,7 +1379,7 @@ mod pg_tests {
             let pool = pg.pool_for_tests();
             let entity_id = outcome.memory_id.into_inner();
 
-            let claims = claim_pending_embedding_jobs(pool, &STUB_SPACE, 1).await?;
+            let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
             fail_embedding_job(pool, &claims[0], "embed memory text: 503").await?;
             assert_eq!(
                 job_state(pool, entity_id).await?,
@@ -1390,7 +1398,7 @@ mod pg_tests {
                 ("pending".to_owned(), None, true),
                 "a requeued job carries no stale error"
             );
-            let claimed_again = claim_pending_embedding_jobs(pool, &STUB_SPACE, 1).await?;
+            let claimed_again = claim_pending_embedding_jobs(pool, 1, &[]).await?;
             assert_eq!(claimed_again.len(), 1, "the requeued job is claimable");
             Ok(())
         }
@@ -1432,7 +1440,7 @@ mod pg_tests {
             let engine = Engine::new(registry)
                 .with_storage_ports(Arc::new(pg.clone()).storage_ports())
                 .with_embedding_runtime_policy(policy)
-                .with_embed(bound(RecordingBatchEmbedding {
+                .with_embedding_router(routed(RecordingBatchEmbedding {
                     batch_widths: widths.clone(),
                 }));
 
@@ -1484,7 +1492,7 @@ mod pg_tests {
             let engine = Engine::new(registry)
                 .with_storage_ports(Arc::new(configured_pg).storage_ports())
                 .with_embedding_runtime_policy(policy)
-                .with_embed(bound(MalformedBatchEmbedding {
+                .with_embedding_router(routed(MalformedBatchEmbedding {
                     returned_vectors: 1,
                 }));
 
@@ -1544,10 +1552,10 @@ mod pg_tests {
                 Engine::new(registry)
                     .with_storage_ports(Arc::new(configured_pg).storage_ports())
                     .with_embedding_runtime_policy(policy)
-                    .with_embed(
+                    .with_embedding_router(Arc::new(SingleClientRouter::new(
                         BoundEmbeddingClient::bind(client.clone())
                             .expect("stub clients embed in a lane"),
-                    ),
+                    ))),
             );
             let drain = {
                 let engine = engine.clone();
@@ -1623,7 +1631,7 @@ mod pg_tests {
                 .await?;
             let pool = pg.pool_for_tests();
 
-            let claims = claim_pending_embedding_jobs(pool, &STUB_SPACE, 2).await?;
+            let claims = claim_pending_embedding_jobs(pool, 2, &[]).await?;
             assert_eq!(claims.len(), 2);
 
             sqlx::query(
@@ -1657,7 +1665,7 @@ mod pg_tests {
                 "a claim inside the window belongs to a live drainer"
             );
 
-            let reclaimable = claim_pending_embedding_jobs(pool, &STUB_SPACE, 2).await?;
+            let reclaimable = claim_pending_embedding_jobs(pool, 2, &[]).await?;
             assert_eq!(
                 reclaimable.len(),
                 1,
@@ -1687,7 +1695,7 @@ mod pg_tests {
                 )
                 .await?;
             let pool = pg.pool_for_tests();
-            let claims = claim_pending_embedding_jobs(pool, &STUB_SPACE, 1).await?;
+            let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
             let claim = &claims[0];
 
             sqlx::query(
@@ -1741,7 +1749,7 @@ mod pg_tests {
                 )
                 .await?;
             let pool = pg.pool_for_tests();
-            let old_claims = claim_pending_embedding_jobs(pool, &STUB_SPACE, 1).await?;
+            let old_claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
             let old_claim = old_claims[0].clone();
 
             sqlx::query(
@@ -1758,7 +1766,7 @@ mod pg_tests {
                 1
             );
 
-            let successor_claims = claim_pending_embedding_jobs(pool, &STUB_SPACE, 1).await?;
+            let successor_claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
             assert_eq!(successor_claims.len(), 1);
             let successor = &successor_claims[0];
             assert_eq!(old_claim.job_id, successor.job_id);
@@ -1842,7 +1850,7 @@ mod pg_tests {
                 )
                 .await?;
             let pool = pg.pool_for_tests();
-            let claims = claim_pending_embedding_jobs(pool, &STUB_SPACE, 1).await?;
+            let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
             let stale = claims[0].clone();
             let destination = Owner::Group(GroupId::new(Uuid::now_v7()));
             let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
@@ -1900,7 +1908,7 @@ mod pg_tests {
                 1,
                 "the destination can reclaim the abandoned source claim"
             );
-            let successor = claim_pending_embedding_jobs(pool, &STUB_SPACE, 1).await?;
+            let successor = claim_pending_embedding_jobs(pool, 1, &[]).await?;
             assert_eq!(successor.len(), 1);
             assert_eq!(successor[0].owner, destination);
             insert_claimed_fact_embedding(&pg, &successor[0], [0.4, 0.5, 0.6]).await?;
@@ -1931,7 +1939,7 @@ mod pg_tests {
                 .await?;
             let pool = pg.pool_for_tests();
             let entity_id = outcome.memory_id.into_inner();
-            claim_pending_embedding_jobs(pool, &STUB_SPACE, 1).await?;
+            claim_pending_embedding_jobs(pool, 1, &[]).await?;
             sqlx::query(
                 "UPDATE proxima_core.embedding_jobs
                     SET claimed_at = now() - make_interval(secs => $2::double precision)
@@ -2084,7 +2092,7 @@ mod pg_tests {
 
             // A previous process claimed both and died holding them; one
             // claim is older than the stale window, the other is not.
-            let claims = claim_pending_embedding_jobs(pool, &STUB_SPACE, 2).await?;
+            let claims = claim_pending_embedding_jobs(pool, 2, &[]).await?;
             assert_eq!(claims.len(), 2);
             let policy = EmbeddingRuntimePolicy::new(
                 std::time::Duration::from_secs(1),
@@ -2107,7 +2115,7 @@ mod pg_tests {
             let engine = Engine::new(registry)
                 .with_storage_ports(Arc::new(pg.clone()).storage_ports())
                 .with_embedding_runtime_policy(policy)
-                .with_embed(bound(RecordingBatchEmbedding {
+                .with_embedding_router(routed(RecordingBatchEmbedding {
                     batch_widths: Arc::new(std::sync::Mutex::new(Vec::new())),
                 }));
 
@@ -2240,7 +2248,7 @@ mod pg_tests {
         let configured_pg = pg.clone().with_flavors(&registry);
         let engine = Engine::new(registry)
             .with_storage_ports(Arc::new(configured_pg).storage_ports())
-            .with_embed(bound(CappedEmbedding {
+            .with_embedding_router(routed(CappedEmbedding {
                 max_chars,
                 offered: offered.clone(),
             }));

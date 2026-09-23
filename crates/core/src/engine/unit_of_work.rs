@@ -749,7 +749,11 @@ impl UnitOfWork<'_> {
             .validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
             .engine
-            .fact_embedding_spaces(authorized.draft().schema_id.as_str());
+            .fact_embedding_spaces(
+                authorized.owner_write_permit().owner(),
+                authorized.draft().schema_id.as_str(),
+            )
+            .await?;
         let outcome = self
             .ensure_session()
             .await?

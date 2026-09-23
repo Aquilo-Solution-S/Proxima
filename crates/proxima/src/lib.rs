@@ -117,7 +117,7 @@ pub use proxima_core::authz::SystemAuthority;
 use std::sync::Arc;
 
 use crate::bundle::FlavorBundle;
-use proxima_core::llm::EmbeddingClient;
+use proxima_core::llm::{EmbeddingClient, EmbeddingRouter};
 // `CitedBlobStore` and `GroupId` are not imported here: both are
 // re-exported through `host::*`
 // above, and a private import of the same name would shadow that
@@ -222,6 +222,7 @@ pub struct ProximaBuilder {
     migrators: Vec<NamedMigrator>,
     skip_migrations: bool,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
+    embedding_router: Option<Arc<dyn EmbeddingRouter>>,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
     deployment_tool_scope: Option<proxima_core::ToolScope>,
     /// The deployment's publication source and capture bounds (docs/18).
@@ -244,6 +245,7 @@ impl std::fmt::Debug for ProximaBuilder {
             .field("migrators", &self.migrators.len())
             .field("skip_migrations", &self.skip_migrations)
             .field("has_embed_client", &self.embed_client.is_some())
+            .field("has_embedding_router", &self.embedding_router.is_some())
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .field("deployment_tool_scope", &self.deployment_tool_scope)
             .field("publication", &self.publication)
@@ -399,6 +401,7 @@ impl ProximaBuilder {
             migrators: Vec::new(),
             skip_migrations: false,
             embed_client: None,
+            embedding_router: None,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
             deployment_tool_scope: None,
             publication: proxima_core::publication::PublicationConfig::default(),
@@ -470,13 +473,25 @@ impl ProximaBuilder {
         self
     }
 
-    /// Embedding client passthrough (`Engine::with_embed`).
+    /// One embedding client for every Owner: a [`SingleClientRouter`].
     ///
     /// Proxima registers no inference targets or tiers; hosts inject the
-    /// embedding client used by retrieval.
+    /// embedding client used by retrieval. Mutually exclusive with
+    /// [`Self::embedding_router`].
+    ///
+    /// [`SingleClientRouter`]: proxima_core::llm::SingleClientRouter
     #[must_use]
     pub fn embed_client(mut self, client: Arc<dyn EmbeddingClient>) -> Self {
         self.embed_client = Some(client);
+        self
+    }
+
+    /// Per-Owner embedding routing (`Engine::with_embedding_router`): the
+    /// host names the endpoint and space for each data Owner. Mutually
+    /// exclusive with [`Self::embed_client`].
+    #[must_use]
+    pub fn embedding_router(mut self, router: Arc<dyn EmbeddingRouter>) -> Self {
+        self.embedding_router = Some(router);
         self
     }
 
@@ -560,6 +575,7 @@ impl ProximaBuilder {
             migrators,
             skip_migrations,
             embed_client,
+            embedding_router,
             embedding_runtime_policy,
             deployment_tool_scope,
             publication,
@@ -604,7 +620,7 @@ impl ProximaBuilder {
             embedding_runtime_policy,
             deployment_tool_scope,
             publication,
-            embed_client,
+            embedding_router_for(embed_client, embedding_router)?,
         )?;
         // The one handle on the captured outbox. Host-only: it is not in
         // `StoragePorts`, so no flavor, tool or write session can reach a
@@ -936,7 +952,7 @@ fn compose_engine(
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
     deployment_tool_scope: Option<proxima_core::ToolScope>,
     publication: proxima_core::publication::PublicationConfig,
-    embed_client: Option<Arc<dyn EmbeddingClient>>,
+    embedding_router: Option<Arc<dyn EmbeddingRouter>>,
 ) -> Result<Engine, EmbedError> {
     let mut engine = Engine::new(registry)
         .with_storage_ports(Arc::new(pg.clone()).storage_ports())
@@ -946,14 +962,33 @@ fn compose_engine(
     if let Some(scope) = deployment_tool_scope {
         engine = engine.with_deployment_tool_scope(scope);
     }
-    if let Some(client) = embed_client {
-        // Fail fast on a width no lane indexes: jobs would be claimed and
-        // then rejected at insert, silently burning the queue.
-        let client = proxima_core::llm::BoundEmbeddingClient::bind(client)
-            .map_err(|error| EmbedError::Config(error.to_string()))?;
-        engine = engine.with_embed(client);
+    if let Some(router) = embedding_router {
+        engine = engine.with_embedding_router(router);
     }
     Ok(engine)
+}
+
+/// The router the engine embeds through: the host's, or one client for
+/// every Owner.
+fn embedding_router_for(
+    embed_client: Option<Arc<dyn EmbeddingClient>>,
+    embedding_router: Option<Arc<dyn EmbeddingRouter>>,
+) -> Result<Option<Arc<dyn EmbeddingRouter>>, EmbedError> {
+    match (embed_client, embedding_router) {
+        (Some(_), Some(_)) => Err(EmbedError::Config(
+            "set embed_client or embedding_router, not both".into(),
+        )),
+        (Some(client), None) => {
+            // Fail fast on a width no lane indexes: jobs would be claimed
+            // and then rejected at insert, silently burning the queue.
+            let client = proxima_core::llm::BoundEmbeddingClient::bind(client)
+                .map_err(|error| EmbedError::Config(error.to_string()))?;
+            Ok(Some(Arc::new(proxima_core::llm::SingleClientRouter::new(
+                client,
+            ))))
+        }
+        (None, router) => Ok(router),
+    }
 }
 
 /// Errors from embedded boot.
