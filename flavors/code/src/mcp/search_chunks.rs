@@ -267,7 +267,10 @@ pub struct ChunkMatch {
 /// (docs/16 §The Model).
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CallEdge {
+    /// The caller chunk, `null` when this caller cannot read it.
     pub source: Option<String>,
+    /// The callee chunk, `null` when this caller cannot read it — a callee
+    /// moved to another Owner keeps its index row but not its id.
     pub target: Option<String>,
     /// Call sites in the caller chunk that reach this callee, in payload
     /// order. Empty when the caller chunk is not readable by this caller,
@@ -377,7 +380,7 @@ impl Tool for CodeSearchChunksTool {
             // for them and the page phase 2 admitted is non-empty. Keyed on
             // that page's chunk ids, so the pins cost nothing on a miss.
             let calls_edges = if args.include_calls && !chunk_ids.is_empty() {
-                load_call_edges(&ctx, &chunk_ids).await?
+                load_call_edges(&ctx, &engine, &chunk_ids).await?
             } else {
                 Vec::new()
             };
@@ -878,6 +881,7 @@ fn match_metadata(
 
 async fn load_call_edges(
     ctx: &ToolCtx,
+    engine: &proxima_core::Engine,
     chunk_ids: &[uuid::Uuid],
 ) -> Result<Vec<CallEdge>, ToolError> {
     let pool = code_store(ctx)?;
@@ -904,7 +908,9 @@ async fn load_call_edges(
             pairs.push((MemoryId::new(caller), MemoryId::new(callee)));
         }
     }
-
+    if pairs.is_empty() {
+        return Ok(Vec::new());
+    }
     // Hydrate the sites from the caller chunks' payload rows. The index
     // answers "is there a connection"; this is the node answering "what is
     // it", and it is one query for the whole page.
@@ -930,6 +936,12 @@ async fn load_call_edges(
     .await
     .map_err(map_storage)?;
     tx.commit().await.map_err(map_storage)?;
+    let readable = readable_call_endpoints(ctx, engine, &pairs).await?;
+    let shown = |id: MemoryId| {
+        readable
+            .contains(&id)
+            .then(|| ctx.format_abstraction_memory(id))
+    };
     let mut sites: HashMap<(uuid::Uuid, uuid::Uuid), Vec<CallSite>> = HashMap::new();
     for row in site_rows {
         sites
@@ -945,14 +957,49 @@ async fn load_call_edges(
 
     Ok(pairs
         .into_iter()
-        .map(|(source, target)| CallEdge {
-            source: Some(ctx.format_abstraction_memory(source)),
-            target: Some(ctx.format_abstraction_memory(target)),
-            sites: sites
+        .map(|(source, target)| {
+            let pair_sites = sites
                 .remove(&(source.into_inner(), target.into_inner()))
-                .unwrap_or_default(),
+                .unwrap_or_default();
+            let source = shown(source);
+            CallEdge {
+                sites: if source.is_some() {
+                    pair_sites
+                } else {
+                    Vec::new()
+                },
+                source,
+                target: shown(target),
+            }
         })
         .collect())
+}
+
+/// The call endpoints this caller may read.
+///
+/// The index row belongs to the caller chunk's Owner; the callee id it holds
+/// does not. Both endpoints pass the same read check as any other memory, so
+/// an unreadable one comes back `null`, id and all.
+async fn readable_call_endpoints(
+    ctx: &ToolCtx,
+    engine: &proxima_core::Engine,
+    pairs: &[(MemoryId, MemoryId)],
+) -> Result<HashSet<MemoryId>, ToolError> {
+    let endpoints = pairs
+        .iter()
+        .flat_map(|(source, target)| [source.into_inner(), target.into_inner()])
+        .collect::<Vec<_>>();
+    Ok(proxima::flavor::authorized_memory_ids(
+        engine,
+        ctx.authz(),
+        &endpoints,
+        proxima_core::EntityKind::Abstraction,
+        Some(<CodeChunkV1 as proxima_core::AbstractionPayload>::schema_id()),
+        endpoints.len(),
+    )
+    .await?
+    .into_iter()
+    .collect())
 }
 
 struct ChunkSidecarScan<'a> {

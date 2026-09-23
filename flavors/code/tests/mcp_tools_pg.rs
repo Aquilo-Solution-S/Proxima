@@ -1182,6 +1182,63 @@ async fn search_chunks_includes_calls_edges_when_present() -> Result<(), Box<dyn
     Ok(())
 }
 
+/// The call index row stays with the caller's Owner when a callee moves
+/// away; the callee id it holds must not reach a caller who cannot read it.
+#[tokio::test]
+async fn search_chunks_withholds_an_unreadable_callee() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+
+    let source_chunk = ingest_code_chunk(
+        fixture.pg.pool_for_tests(),
+        owner,
+        Uuid::now_v7(),
+        "src/a.rs",
+        0,
+        "fn a() { b(); }",
+    )
+    .await?;
+    let foreign_chunk = ingest_code_chunk(
+        fixture.pg.pool_for_tests(),
+        owner_fixture(),
+        Uuid::now_v7(),
+        "src/b.rs",
+        0,
+        "fn b() {}",
+    )
+    .await?;
+    ingest_calls_edge(
+        fixture.pg.pool_for_tests(),
+        &owner,
+        source_chunk,
+        foreign_chunk,
+        "b",
+    )
+    .await?;
+
+    let result = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "query": "fn a", "include_calls": true }),
+    )
+    .await?;
+
+    let calls = result["calls_edges"].as_array().expect("calls array");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["source"], format!("A:{source_chunk}"));
+    assert!(calls[0]["target"].is_null(), "{}", calls[0]);
+    assert!(
+        !result.to_string().contains(&foreign_chunk.to_string()),
+        "the foreign id appears nowhere in the response"
+    );
+    assert_eq!(
+        calls[0]["sites"].as_array().map(Vec::len),
+        Some(2),
+        "the sites are the caller's own payload"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn search_chunks_supports_exact_substring_and_chunk_type_filter()
 -> Result<(), Box<dyn std::error::Error>> {
