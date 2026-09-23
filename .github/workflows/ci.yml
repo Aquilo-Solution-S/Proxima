@@ -3,6 +3,11 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # Main runs the same validation after a merge and is the only ref that saves
+  # the Rust caches: a PR can restore its base branch's caches but not another
+  # PR's, so without a main cache every new PR compiles from scratch.
+  push:
+    branches: [main]
 
 # Least-privilege default: every job's GITHUB_TOKEN is read-only (no job
 # writes contents, packages, or PRs).
@@ -57,11 +62,17 @@ jobs:
       # rust-toolchain.toml pins the channel (1.96.0) + components (rustfmt, clippy).
       # Swatinem/rust-cache@v2.9.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: rustfmt
         run: cargo fmt --all --check
       - name: clippy
         # Workspace lints set warnings = deny, clippy::pedantic = deny.
         run: cargo clippy --workspace --all-targets --all-features --locked
+      - name: clippy (default features)
+        # The test job builds with every feature on, so this is the one place
+        # `cfg(not(feature = ..))` code still compiles.
+        run: cargo clippy --workspace --all-targets --locked
       - name: doc
         # Fail on broken intra-doc links / rustdoc warnings before a public tag.
         env:
@@ -249,6 +260,8 @@ jobs:
           fetch-depth: 0
       # Swatinem/rust-cache@v2.9.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: create e2e database
         # Dedicated DB for the HTTP e2e tests, isolated from pg-testkit's
         # per-test clones (psql ships on the ubuntu-latest runner).
@@ -288,35 +301,13 @@ jobs:
       - name: install nextest
         # taiki-e/install-action@nextest
         uses: taiki-e/install-action@0c80bcf54d007ab0e714c95f3bcc43c387707535
+      # One feature set, one build. Every feature-gated target (the REST
+      # surface and mounted REST/OIDC e2e, the Fact-outbox host lane and
+      # publisher supervision, the durable-intake example) compiles into this
+      # build and runs in the single nextest pass below. Separate `--features`
+      # lanes each recompiled part of the workspace. `.config/nextest.toml`
+      # keeps the retained-copy cleaner serial.
       - name: build
-        run: cargo build --workspace --all-targets --locked
+        run: cargo build --workspace --all-targets --all-features --locked
       - name: test
-        # Code flavor is the proxima-mcp default, so workspace nextest is the
-        # Code-tool MCP/OIDC e2e. REST still needs an extra feature.
-        run: cargo nextest run --workspace --locked
-      - name: test (REST surface contract)
-        # Feature-gated and storage-independent: the workspace-default lane
-        # compiles this target to an empty test binary unless `rest` is on.
-        run: cargo nextest run -p proxima-mcp-server --features rest --test rest_surface --locked
-      - name: test (mounted REST/OIDC e2e)
-        # Both opt-in gates mount /v1 beside /mcp on the same authenticated listener.
-        env:
-          PROXIMA_REST_ENABLED: "true"
-        run: cargo nextest run -p proxima-mcp --features rest --test oidc_e2e --locked
-      - name: test (Fact-outbox host lane)
-        # Feature-gated: the workspace-default lane does not compile the
-        # publisher into the host binary, so this target only exists here.
-        # The broker-side delivery contract itself runs in the workspace
-        # lane above (crates/outbox-nats), which is why this is one step
-        # and not a job.
-        run: cargo nextest run -p proxima-mcp --features nats --test nats_e2e --locked
-      - name: test (Fact-outbox publisher supervision)
-        run: cargo nextest run --locked -p proxima --features outbox-nats --lib --test publication_supervision_pg
-      - name: test (durable reference consumer supervision)
-        run: cargo nextest run --locked -p proxima-outbox-nats --test consumer_supervision_nats
-      - name: test (retained-copy cleaner)
-        # This target owns the fixed, initially empty PROXIMA_FACTS stream;
-        # keep its cases serial even as the fixture grows.
-        run: cargo nextest run --locked -p proxima-outbox-nats --test copy_cleaner_pg_nats --test-threads=1
-      - name: test (durable reference intake)
-        run: cargo test -p proxima-outbox-nats --example durable_intake --locked
+        run: cargo nextest run --workspace --all-targets --all-features --locked

@@ -6,7 +6,7 @@
 //! Uses `PROXIMA_TEST_DATABASE_URL` when set; otherwise `create_db`. Built when
 //! the `code` feature is on (the host default; asserts the Code flavor's
 //! tools are present); the mounted REST smoke additionally requires `rest`
-//! and `PROXIMA_REST_ENABLED=true`.
+//! (mounted through `rest_enabled(true)`, not process env).
 #![cfg(feature = "code")]
 
 mod common;
