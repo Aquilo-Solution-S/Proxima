@@ -143,9 +143,11 @@ Use the smallest relevant check:
 still works as fallback. PG tests clone a pre-migrated template DB.
 Single-test selection: `cargo nextest run -E 'test(<name>)'`.
 
-`cargo nextest run --workspace` covers `apps/proxima-mcp` OIDC e2e (code
-flavor is the host default). REST still needs
-`cargo nextest run -p proxima-mcp --features rest --test oidc_e2e`.
+CI runs one pass, `cargo nextest run --workspace --all-targets --all-features`,
+which includes every feature-gated target (REST surface, mounted REST/OIDC
+e2e, Fact-outbox host lane, publisher supervision, durable-intake example).
+Plain `cargo nextest run --workspace` covers `apps/proxima-mcp` OIDC e2e
+without REST (code flavor is the host default).
 Substrate-only: `--no-default-features`. Touching the flavor's `mcp_tools`
 without the host e2e passes the flavor crate and fails the served tool list.
 
