@@ -80,8 +80,9 @@ kernel, **the kernel wins** until renegotiated in writing. Check it with
 1. `main` is PR-only (required checks, up-to-date branches, `enforce_admins`);
    no direct local pushes.
 2. Work continues on short reviewed branches targeting `main`.
-3. CI validates only PRs targeting `main`, using GitHub's merge ref. Trust the
-   successful required gate against up-to-date `main` once the PR merges.
+3. CI validates PRs targeting `main`, using GitHub's merge ref, and re-runs on
+   each push to `main` (the only ref that saves the Rust build caches). Trust
+   the successful required gate against up-to-date `main` once the PR merges.
 4. A release is cut by MERGING, not by tagging: a PR that bumps
    `proxima_core::RELEASE_VERSION` becomes `v${RELEASE_VERSION}` on merge, with
    git-cliff notes. A merge that leaves the constant alone cuts nothing.
