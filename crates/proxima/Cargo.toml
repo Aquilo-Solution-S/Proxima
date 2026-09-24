@@ -51,7 +51,10 @@ outbox-nats = ["dep:proxima-outbox-nats"]
 # Compile the `/v1` REST rendering of the tool manifest (docs/17). Compiling
 # it is not enabling it: the surface still needs `PROXIMA_REST_ENABLED`.
 rest = ["proxima-mcp-server/rest"]
-testkit = ["dep:proxima-pg-testkit"]
+# Test support for flavor crates (`proxima::testkit`): PG fixtures, a verified
+# owner-scoped AuthzContext (core `test-fixtures`), split-role databases and
+# the trigger drift assertion.
+testkit = ["dep:proxima-pg-testkit", "proxima-core/test-fixtures"]
 
 [dev-dependencies]
 proxima-code = { path = "../../flavors/code" }
@@ -72,3 +75,7 @@ tracing-subscriber = { workspace = true }
 [[test]]
 name = "publication_supervision_pg"
 required-features = ["outbox-nats"]
+
+[[test]]
+name = "flavor_kit_pg"
+required-features = ["testkit"]

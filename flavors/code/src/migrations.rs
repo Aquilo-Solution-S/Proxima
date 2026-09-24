@@ -14,7 +14,9 @@
 #[must_use]
 pub fn migrator() -> sqlx::migrate::Migrator {
     let mut m = sqlx::migrate!("./migrations");
-    m.dangerous_set_table_name("public._sqlx_migrations_proxima_code");
+    m.dangerous_set_table_name(proxima::flavor::flavor_ledger_table(
+        crate::contract::FLAVOR_ID,
+    ));
     m.set_ignore_missing(true);
     m
 }

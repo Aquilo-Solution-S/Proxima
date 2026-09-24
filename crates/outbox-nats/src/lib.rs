@@ -68,8 +68,8 @@ pub use cleaner::{
     spawn_supervised_copy_cleaner,
 };
 pub use config::{
-    ConfigError, InboxPrefix, NatsAuth, NatsConsumerConfig, NatsPublisherConfig,
-    inbox_prefix_is_valid, subject_for, type_token,
+    ConfigError, InboxPrefix, NatsAuth, NatsConsumerConfig, NatsPublisherConfig, ParsedSubject,
+    SubjectParseError, inbox_prefix_is_valid, parse_subject, subject_for, type_token,
 };
 pub use consumer::{
     AckAction, AckAlwaysHook, AckHook, CloudEventEnvelope, ConsumeReport, ConsumerConnectionState,

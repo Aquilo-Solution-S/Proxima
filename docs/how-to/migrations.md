@@ -13,6 +13,22 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.18
+
+| Lane | Migration |
+|---|---|
+| Core | `0018_v018_owner_rls_installer.sql`: `proxima_core.install_owner_rls(schema, owner_id_tables, fk_parent_tables, ownerless_tables[, memory_owner_tables])`, the owner-RLS installer flavor migrations call ([09 §Owner RLS](../09-developing-flavors.md#owner-rls)); no table or row changes |
+| Code flavor | No new migration |
+
+Existing databases upgrade in place. A flavor adopting the installer does so
+in a **new** migration; its released v0.0.15 file stays byte for byte.
+
+A flavor built with `NamedMigrator::flavor(id, migrator)` records on
+`public._sqlx_migrations_<id>` (§Lanes). A flavor that recorded on core's
+`public._sqlx_migrations` moves there on its next boot: the facade copies the
+rows whose versions its migrator embeds into the new ledger and deletes them
+from core's, in one transaction, before the flavor migrator first runs.
+
 ## v0.0.16
 
 | Lane | Migration |
@@ -136,7 +152,10 @@ Core versions are small integers (`0001_v008.sql`). Flavor versions are
 date-shaped. Boundary: `CORE_MIGRATION_VERSION_CEILING` (9999).
 
 Core ledger: `public._sqlx_migrations`.
-Code flavor: `public._sqlx_migrations_proxima_code`.
+Flavor `<id>`: `public._sqlx_migrations_<id>`, `-` spelled `_`
+(`NamedMigrator::flavor`, `flavor_ledger_table`); the code flavor's is
+`public._sqlx_migrations_proxima_code`. A flavor on core's ledger boots with a
+warning.
 
 ## Reset
 

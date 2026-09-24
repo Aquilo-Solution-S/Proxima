@@ -10,8 +10,8 @@ pub use crate::app::{AppContext, AppInfo, Authz, FlavorApp};
 pub use crate::config::EmbedConfig;
 pub use crate::core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};
 pub use crate::migrations::{
-    MigrationError, MigrationRunReport, NamedMigrator, preflight_without_migrations,
-    run_core_and_flavor_migrations,
+    MigrationError, MigrationRunReport, NamedMigrator, flavor_ledger_table,
+    preflight_without_migrations, run_core_and_flavor_migrations,
 };
 pub use crate::runtime::{
     BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
@@ -221,10 +221,9 @@ pub use proxima_mcp_server::{HostAllowlist, McpAuthContext, ResourceServerMetada
 pub use proxima_outbox_nats::{
     ConfigError as NatsConfigError, ConsumerError, DrainReport, DrainSummary, DurableIntake,
     Intake, IntakeError, JetStreamPublisher, NatsAuth, NatsConsumerConfig, NatsPublisherConfig,
-    PublisherError, ReceivedEvent, ReferenceConsumer,
+    ParsedSubject, PublisherError, ReceivedEvent, ReferenceConsumer, SubjectParseError,
+    parse_subject, subject_for,
 };
-#[cfg(feature = "testkit")]
-pub use proxima_pg_testkit as testkit;
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts
 /// (see [`proxima_storage_pg::PgOwnerAccessResolver`]).
 pub use proxima_storage_pg::PgOwnerAccessResolver;

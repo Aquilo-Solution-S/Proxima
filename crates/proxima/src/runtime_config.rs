@@ -19,6 +19,8 @@ use crate::config::{
 
 const DEFAULT_MCP_BIND: &str = "127.0.0.1:31415";
 
+pub(crate) const DUPLICATE_HOST_STATE_PARTICIPANT: &str = "a host-state participant is already registered and a unit of work dispatches to exactly one; register one participant that serves every command type (docs/19)";
+
 /// Runtime configuration builder for host applications.
 #[derive(Default)]
 pub struct RuntimeBuilder {
@@ -52,6 +54,8 @@ pub struct RuntimeBuilder {
     #[cfg(feature = "outbox-nats")]
     nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
     host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
+    /// A second participant was registered; [`Self::resolve`] refuses.
+    duplicate_host_state_participant: bool,
 }
 
 impl std::fmt::Debug for RuntimeBuilder {
@@ -87,6 +91,10 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field(
                 "has_host_state_participant",
                 &self.host_state_participant.is_some(),
+            )
+            .field(
+                "duplicate_host_state_participant",
+                &self.duplicate_host_state_participant,
             )
             .finish_non_exhaustive()
     }
@@ -124,6 +132,9 @@ impl RuntimeBuilder {
             published_retention: self.published_retention.or(base.published_retention),
             #[cfg(feature = "outbox-nats")]
             nats: self.nats.or(base.nats),
+            duplicate_host_state_participant: self.duplicate_host_state_participant
+                || base.duplicate_host_state_participant
+                || (self.host_state_participant.is_some() && base.host_state_participant.is_some()),
             host_state_participant: self.host_state_participant.or(base.host_state_participant),
         }
     }
@@ -205,9 +216,18 @@ impl RuntimeBuilder {
     /// Register a typed host-state participant on the [`crate::UnitOfWork`]
     /// write session. Hosts that register none keep existing Fact/sidecar/lock
     /// behavior with no extra configuration.
+    ///
+    /// Exactly one: a second registration — here, through
+    /// [`crate::Proxima::host_state_participant`], or from another tuple
+    /// element's [`crate::FlavorApp::configure`] — keeps the first and makes
+    /// [`Self::resolve`] refuse, instead of silently replacing it.
     #[must_use]
     pub fn host_state_participant(mut self, participant: Arc<dyn PgHostStateParticipant>) -> Self {
-        self.host_state_participant = Some(participant);
+        if self.host_state_participant.is_some() {
+            self.duplicate_host_state_participant = true;
+        } else {
+            self.host_state_participant = Some(participant);
+        }
         self
     }
 
@@ -481,6 +501,11 @@ impl RuntimeBuilder {
     /// Returns `ProximaError::Config` for missing required config and
     /// `ProximaError::Security` for fail-closed validation failures.
     pub fn resolve(self) -> Result<(RuntimeConfig, RuntimeParts), ProximaError> {
+        if self.duplicate_host_state_participant {
+            return Err(ProximaError::Config(
+                DUPLICATE_HOST_STATE_PARTICIPANT.into(),
+            ));
+        }
         let database_url = self
             .database_url
             .ok_or_else(|| ProximaError::Config("DATABASE_URL is required".into()))?;
@@ -949,6 +974,59 @@ mod tests {
 
     fn owner(id: uuid::Uuid) -> Owner {
         OwnerRef::Group(GroupId::new(id))
+    }
+
+    struct NoopParticipant;
+
+    #[async_trait]
+    impl PgHostStateParticipant for NoopParticipant {
+        fn participant_id(&self) -> proxima_core::storage_ports::HostStateParticipantId {
+            proxima_core::storage_ports::HostStateParticipantId::new("noop")
+        }
+
+        fn declared_tables(&self) -> &'static [proxima_core::storage_ports::StateSurfaceName] {
+            &[]
+        }
+
+        async fn apply(
+            &self,
+            _tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+            _permit: &proxima_core::storage_ports::HostStateWritePermit,
+            _request: proxima_core::storage_ports::HostStateRequest,
+        ) -> Result<proxima_core::storage_ports::HostStateReply, proxima_core::StorageError>
+        {
+            unreachable!("registration-only fixture")
+        }
+    }
+
+    #[test]
+    fn a_second_host_state_participant_refuses_instead_of_replacing_the_first() {
+        let with =
+            |builder: RuntimeBuilder| builder.host_state_participant(Arc::new(NoopParticipant));
+        let base = || {
+            RuntimeBuilder::default()
+                .database_url("postgres://localhost/proxima")
+                .tool_scope(ToolScope::All)
+        };
+
+        let (_, parts) = with(base()).resolve().expect("one participant resolves");
+        assert!(parts.host_state_participant.is_some());
+
+        let twice = with(with(base()))
+            .resolve()
+            .expect_err("two on one builder");
+        assert!(twice.to_string().contains("already registered"), "{twice}");
+
+        // An overlay's participant over a `FlavorApp::configure` one, as a
+        // tuple app or `Proxima::host_state_participant` composes them.
+        let layered = with(RuntimeBuilder::default())
+            .merge_over(with(base()))
+            .resolve()
+            .expect_err("two across layers");
+        assert!(
+            layered.to_string().contains("already registered"),
+            "{layered}"
+        );
     }
 
     #[derive(Debug)]

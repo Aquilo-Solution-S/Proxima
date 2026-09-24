@@ -32,9 +32,37 @@ pub struct NamedMigrator {
 impl NamedMigrator {
     /// Build a named migrator. Use the flavor id or host app id as
     /// `source`, e.g. `proxima-code`.
+    ///
+    /// The migrator keeps whatever tracking table it declares; a flavor
+    /// that declares none records into core's `public._sqlx_migrations`.
+    /// Prefer [`Self::flavor`].
     #[must_use]
     pub fn new(source: &'static str, migrator: Migrator) -> Self {
         Self { source, migrator }
+    }
+
+    /// A flavor's migrator on its own ledger, [`flavor_ledger_table`]`(id)`.
+    ///
+    /// A flavor ledger lives in `public` because a destructive flavor
+    /// baseline drops the flavor schema and the ledger must survive it. A
+    /// database whose rows for this flavor still sit in core's
+    /// `public._sqlx_migrations` moves them on the next migration run
+    /// (one-time cutover, before the flavor's migrator first reads its own
+    /// table), so switching an existing flavor to this constructor re-runs
+    /// nothing.
+    ///
+    /// # Panics
+    ///
+    /// When `id` is not a flavor id (see [`flavor_ledger_table`]); ids are
+    /// compile-time constants, so this is a programming error.
+    #[must_use]
+    pub fn flavor(id: &'static str, mut migrator: Migrator) -> Self {
+        migrator.dangerous_set_table_name(flavor_ledger_table(id));
+        migrator.set_ignore_missing(true);
+        Self {
+            source: id,
+            migrator,
+        }
     }
 
     /// Source id used in reports and errors.
@@ -48,6 +76,36 @@ impl NamedMigrator {
     pub fn migrator(&self) -> &Migrator {
         &self.migrator
     }
+}
+
+/// The tracking table [`NamedMigrator::flavor`] gives flavor `id`:
+/// `public._sqlx_migrations_<id>`, `-` spelled `_`
+/// (`proxima-code` → `public._sqlx_migrations_proxima_code`).
+///
+/// # Panics
+///
+/// When `id` is empty, longer than 40 bytes, or not lowercase ASCII
+/// letters, digits, `-` and `_` starting with a letter. The derived name is
+/// interpolated into DDL by `SQLx` and by the ledger cutover, so only a name
+/// that needs no quoting is accepted, and the bound keeps it within
+/// the 63-byte `PostgreSQL` identifier limit.
+#[must_use]
+pub fn flavor_ledger_table(id: &str) -> String {
+    let valid = !id.is_empty()
+        && id.len() <= 40
+        && id.as_bytes()[0].is_ascii_lowercase()
+        && id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+        });
+    assert!(
+        valid,
+        "flavor id {id:?} must be 1-40 bytes of [a-z0-9_-] starting with a letter"
+    );
+    format!("public._sqlx_migrations_{}", id.replace('-', "_"))
+}
+
+fn is_core_ledger(table_name: &str) -> bool {
+    table_name == "_sqlx_migrations" || table_name == "public._sqlx_migrations"
 }
 
 /// Successful migration run metadata.
@@ -373,7 +431,7 @@ async fn cut_over_flavor_ledger(
     source: &NamedMigrator,
 ) -> Result<(), MigrationError> {
     let table_name = source.migrator().table_name.clone();
-    if table_name == "_sqlx_migrations" || table_name == "public._sqlx_migrations" {
+    if is_core_ledger(&table_name) {
         return Ok(());
     }
     let map_err = |err: sqlx::Error| MigrationError::FlavorLedgerCutover {
@@ -458,6 +516,14 @@ fn prepare_sources(
 
     for mut source in flavors {
         source.migrator.set_ignore_missing(true);
+        if is_core_ledger(&source.migrator.table_name) {
+            tracing::warn!(
+                source = source.source,
+                "flavor records its migrations in core's public._sqlx_migrations; \
+                 build it with NamedMigrator::flavor to give it its own ledger \
+                 (docs/09 §Migrations)"
+            );
+        }
         sources.push(source);
     }
 
@@ -495,7 +561,7 @@ mod tests {
     use sqlx::SqlSafeStr;
     use sqlx::migrate::{Migration, MigrationType, Migrator};
 
-    use super::{MigrationError, NamedMigrator, prepare_sources};
+    use super::{MigrationError, NamedMigrator, flavor_ledger_table, prepare_sources};
 
     const TEST_FLAVOR_VERSION: i64 = 20_260_612_000_010;
 
@@ -535,6 +601,47 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_flavor_migrator_records_on_its_own_ledger() {
+        assert_eq!(
+            flavor_ledger_table("proxima-code"),
+            "public._sqlx_migrations_proxima_code",
+            "the derivation reproduces the ledger the code flavor already uses"
+        );
+        let mut shared = migrator(&[TEST_FLAVOR_VERSION]);
+        shared.set_ignore_missing(false);
+        let source = NamedMigrator::flavor("acme-forge_2", shared);
+        assert_eq!(source.source(), "acme-forge_2");
+        assert_eq!(
+            source.migrator().table_name,
+            "public._sqlx_migrations_acme_forge_2"
+        );
+        assert!(source.migrator().ignore_missing);
+        assert_eq!(
+            NamedMigrator::new("beta", migrator(&[TEST_FLAVOR_VERSION]))
+                .migrator()
+                .table_name,
+            "_sqlx_migrations",
+            "`new` keeps the migrator's own table, core's by default"
+        );
+    }
+
+    #[test]
+    fn a_flavor_id_that_would_need_quoting_is_refused() {
+        for id in [
+            "",
+            "Acme",
+            "9acme",
+            "acme.forge",
+            "acme forge",
+            "acme\"",
+            &"a".repeat(41),
+        ] {
+            let result = std::panic::catch_unwind(|| flavor_ledger_table(id));
+            assert!(result.is_err(), "{id:?} must be refused");
+        }
     }
 
     #[test]

@@ -502,6 +502,13 @@ input, since every escape carries its two hex digits.
 | `probe_listenable-v1` | `probe_5flistenable-v1` |
 | `acme/build.finished-v1` | `acme_2fbuild_2efinished-v1` |
 
+`proxima_outbox_nats::parse_subject(prefix, subject)` (also `proxima::` under
+feature `outbox-nats`) is the inverse of `subject_for`: `ParsedSubject { owner,
+event_type }`. It accepts only what `subject_for` produces — the hyphenated
+lowercase owner uuid, the canonical escaping above — and refuses anything else
+(`SubjectParseError`), so a consumer routing on the result never reads two
+subjects as one event type.
+
 Owner routing lives in the subject, so NATS account permissions restrict a
 consumer by subject prefix. File storage plus PubAck is durability against
 process death, **not** a claim of surviving arbitrary disk loss.

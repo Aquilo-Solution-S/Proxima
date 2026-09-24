@@ -399,6 +399,19 @@ fn generator_output_is_the_code_baseline_text() {
 /// The shared function is deliberately NOT asserted here — it is core's,
 /// defined once in core's `0002`, and a flavor that restated it would be
 /// a second declaration of one thing.
+/// The same drift check an out-of-tree flavor runs, through the test kit:
+/// every generated declaration and presence trigger is in a migration.
+#[test]
+fn the_testkit_drift_assertion_holds_for_the_code_flavor() {
+    proxima::testkit::assert_trigger_migrations::<proxima_code::CodeFlavor>(
+        proxima_code::contract::FLAVOR_ID,
+        &[
+            include_str!("../migrations/20260824000020_v009_declaration_triggers.sql"),
+            include_str!("../migrations/20260901000020_declared_sidecar_presence.sql"),
+        ],
+    );
+}
+
 #[test]
 fn generated_declaration_triggers_are_the_code_migration_text() {
     let registry = proxima_code::schema_registry();

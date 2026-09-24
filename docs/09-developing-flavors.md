@@ -69,13 +69,15 @@ Writes go through `proxima::Engine` (Host API). Do not depend on
 3. Implement payload traits and schema-owned keys.
 4. Write sidecar SQL tables. In an owner-RLS schema every base/detail table
    needs `proxima_owner_read`, `proxima_owner_write`, and the role-restricted
-   `proxima_platform` policy plus `ENABLE`/`FORCE ROW LEVEL SECURITY`.
+   `proxima_platform` policy plus `ENABLE`/`FORCE ROW LEVEL SECURITY`; one
+   `proxima_core.install_owner_rls(...)` call installs them (§Owner RLS).
    Runtime reads/writes use the authenticated transaction; sidecar predicates
    correlate to the parent owner and write-kind ceiling. Boot discovers tables
    from the catalog and refuses an uncovered table (see 07 §Runtime owner binding).
 5. Implement PG sidecar insert/load traits.
-6. Register schemas/tools with `proxima_flavor!`.
-7. Wrap the flavor in `FlavorBundle`.
+6. Declare the flavor with `proxima::flavor_bundle!` (§FlavorBundle):
+   `proxima_flavor!` registration, PG sidecars, ledger and bundle in one.
+7. Export the bundle type.
 8. Add ingestion/operators/tools.
 9. Add tests.
 10. Run workspace verification.
@@ -653,7 +655,32 @@ Register every schema exactly once. There is no `relations` or
 
 ## FlavorBundle
 
-One public bundle type per flavor (in-repo: `CodeFlavor` in `flavors/code/src/lib.rs`):
+One public bundle type per flavor, declared once (in-repo: `CodeFlavor` in
+`flavors/code/src/lib.rs`):
+
+```rust
+proxima::flavor_bundle! {
+    bundle = MyFlavor,
+    name = "my-flavor",
+    fact_schemas = [DocumentFiledV1],
+    contract = &contract::MY_FLAVOR_CONTRACT,
+    migrations = sqlx::migrate!("./migrations"),
+    app = { title = "My flavor" },
+}
+```
+
+| Key | Emits |
+|---|---|
+| `bundle = Name` (first) | `pub struct Name` implementing `FlavorBundle` |
+| `name` … `contract` | `proxima_flavor!`'s keys, in its order: `pub fn register` |
+| (derived) | `pub fn register_pg_sidecars`: one `add_*::<T>()` per typed schema listed |
+| `migrations = expr` | `migrators()` = `NamedMigrator::flavor(name, expr)` (§Migrations) |
+| `workers = path` | `spawn_workers` |
+| `app = { title, id?, version?, configure?, services? }` | `FlavorApp`; `id` = `name`, `version` = the crate's `CARGO_PKG_VERSION` unless given |
+
+Every listed typed schema needs its PG sidecar impls (`pg_sidecar!`). A
+flavor whose sidecar set differs from its schema lists, or whose app mounts
+HTTP, writes the impls by hand:
 
 ```rust
 pub struct MyFlavor;
@@ -668,7 +695,7 @@ impl FlavorBundle for MyFlavor {
     }
 
     fn migrators() -> Vec<NamedMigrator> {
-        vec![NamedMigrator::new("my-flavor", migrator())]
+        vec![NamedMigrator::flavor("my-flavor", migrator())]
     }
 }
 ```
@@ -710,7 +737,14 @@ unit.commit().await?;
 ```
 
 `Engine::ingest_fact(&authz, request)` and `Engine::create_goal(&authz, request)`
-use the same requests for standalone writes. Destination authorization precedes
+use the same requests for standalone writes.
+
+A tool whose upstream side effect already happened (mail sent, commit
+pushed) records it with `proxima::flavor::ingest_fact_detached(&ctx, write,
+deadline)`: the ingest runs on a spawned task under the tool's authorization,
+so a client disconnect after the first poll no longer rolls it back;
+`deadline` bounds the task. A write abandoned mid-commit has an unknown
+outcome; retrying the same write replays (`idempotent_replay`). Destination authorization precedes
 admission; a multi-owner context retains its readable target set. Dropping an
 uncommitted unit rolls back its Facts, derived rows, Goals, sidecars, and any
 host-state rows written through `UnitOfWork::apply_host_state`.
@@ -723,7 +757,11 @@ host registers a `PgHostStateParticipant` at boot (`Proxima::host_state_particip
 refuses undeclared tables and unregistered participants before mutation, and
 runs the command on the same backend transaction as Fact ingest. Hosts that
 register no participant keep the existing UnitOfWork Fact path with no extra
-configuration. Do not hold the unit open across broker or provider network I/O.
+configuration. A host registers exactly one participant; a second registration
+refuses boot (`ProximaError::Config` / `EmbedError::Config`) rather than
+replacing the first. A participant serving several command types dispatches
+with `HostStateRequest::is::<C>()` or `try_downcast::<C>()`, which hands the
+request back on a mismatch. Do not hold the unit open across broker or provider network I/O.
 A participant error after its SQL has succeeded poisons the unit: `commit`
 refuses and drop rolls every participant back. `AppContext::clone_pool_for_host`
 remains a different pool and is not this path.
@@ -867,19 +905,24 @@ test service set with
 ## Migrations
 
 ```rust
-#[must_use]
-pub fn migrator() -> sqlx::migrate::Migrator {
-    let mut migrator = sqlx::migrate!("./migrations");
-    migrator.set_ignore_missing(true);
-    migrator
+fn migrators() -> Vec<NamedMigrator> {
+    vec![NamedMigrator::flavor("my-flavor", sqlx::migrate!("./migrations"))]
 }
 ```
+
+`flavor_bundle!`'s `migrations = expr` emits exactly this.
 
 Rules:
 
 1. SQLx migration versions share one database-global namespace.
 2. Core migrator runs before flavor migrators.
-3. Every flavor migrator sets `ignore_missing(true)`.
+3. Every flavor records on its own ledger, `public._sqlx_migrations_<id>`
+   (`-` → `_`; `flavor_ledger_table(id)`), which `NamedMigrator::flavor` sets
+   with `ignore_missing(true)`. The ledger lives in `public` so a destructive
+   flavor baseline that drops the flavor schema keeps it. A flavor still on
+   core's `public._sqlx_migrations` boots with a warning; switching it to
+   `NamedMigrator::flavor` moves its rows on the next migration run (one-time
+   cutover, keyed on the versions its migrator embeds) and re-runs nothing.
 4. `run_core_and_flavor_migrations` rejects duplicate versions before any
    database write; external migrator composition owns the same collision
    check if it bypasses this facade.
@@ -899,6 +942,38 @@ Run `python3 scripts/check-migration-ranges.py` before adding a migration. It
 also locks every migration file a `v*` tag from v0.0.8 on shipped: a schema
 change is a **new** migration, never an edit to a released file
 (see [how-to/migrations.md](how-to/migrations.md) rule 2).
+
+### Owner RLS
+
+One call per flavor schema, as the migration's whole owner-RLS section:
+
+```sql
+SELECT proxima_core.install_owner_rls(
+    'my_flavor',                             -- schema
+    ARRAY['sync_cursor'],                    -- owner_id_tables
+    ARRAY['document_filed_v1', 'page_v1'],   -- fk_parent_tables
+    ARRAY['settings']                        -- ownerless_tables
+    -- , ARRAY[...]                          -- memory_owner_tables (optional)
+);
+```
+
+| Class | Table | `proxima_owner_read` / `proxima_owner_write` |
+|---|---|---|
+| `owner_id_tables` | has `owner_id` | `app.owner` / `app.write_owner` |
+| `fk_parent_tables` | single-column FK to `proxima_core` or the flavor schema | parent row visible in owner scope / parent memory's kind (`app.write_owner`, `app.write_abstraction`, `app.write_perspective`), `app.write_goal` for a goal parent |
+| `ownerless_tables` | platform-only | `false` / `false` |
+| `memory_owner_tables` | keyed by a `proxima_core.memory` `t` | that memory's owner in `app.owner` / `app.write_owner`, any kind |
+
+Every table also gets `ENABLE`/`FORCE ROW LEVEL SECURITY` and
+`proxima_platform` for its owner role in platform scope. Refused before a
+policy changes: an unclassified table, a name in two lists, a listed name
+that does not exist, an `owner_id` table outside `owner_id_tables`, an
+FK-parent table without such an FK, a memory-owner table without a uuid `t`,
+`proxima_core`/`public`/system schemas. A census then checks what the
+runtime RLS guard requires at boot. SECURITY INVOKER, EXECUTE for its owner
+only: run it as the migration role that owns the tables. A later migration
+that adds a table calls it again with the full classification; re-running
+re-creates the same policies.
 
 ### Declaration triggers
 
@@ -1146,6 +1221,17 @@ Minimum:
 Use `flavors/code` for Fact/A/P/reference/MCP coverage and
 `apps/proxima-mcp` for the host that serves it.
 
+`proxima = { features = ["testkit"] }` in `[dev-dependencies]` carries the
+support a flavor's `tests/support` used to rebuild:
+
+| `proxima::testkit::` | Use |
+|---|---|
+| `SplitRoleDb::create(prefix, &[])` | fresh database + NOSUPERUSER platform/runtime roles; boot with `.runtime_url()` / `.platform_url()`; dropped on success |
+| `split_role_urls_for(db, &["my_flavor"])` | the same roles on an existing database, transferring objects already in the flavor schemas |
+| `scoped_authz(owner)` | verified `AuthzContext` scoped to exactly `owner` (sealed owner scope, as production) |
+| `assert_trigger_migrations::<MyFlavor>(id, &[include_str!(...)])` | every generated declaration/presence trigger appears verbatim in a migration |
+| `create_db`, `db_url`, `DbGuard`, `ensure_template`, … | `proxima-pg-testkit`, re-exported |
+
 ## Verification
 
 Smallest relevant check:
@@ -1169,12 +1255,14 @@ serialization. Internal identity/storage/query paths must stay typed.
 
 ## Done Checklist
 
-- `FlavorBundle` exported.
+- `FlavorBundle` exported (`flavor_bundle!`).
 - `proxima_flavor!` registration complete.
 - Payload keys are explicit and schema-owned.
 - Sidecar SQL exists for every registered sidecar table.
 - PG sidecar insert/load registered.
-- Migrator exported with `ignore_missing(true)`.
+- Migrator on its own ledger (`NamedMigrator::flavor`).
+- Owner RLS installed by `proxima_core.install_owner_rls`; trigger SQL pinned
+  by `testkit::assert_trigger_migrations`.
 - No JSON escape hatch in payload structs or sidecars.
 - Prefix guards pass at registry freeze.
 - Every flavor-owned lifecycle scope is DECLARED — `SCOPE_KIND`/`scope_id` on
