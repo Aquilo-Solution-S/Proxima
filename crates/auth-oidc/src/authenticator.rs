@@ -28,6 +28,12 @@ use crate::config::{OidcAuthConfig, OidcConfigError};
 use crate::keys::KeyResolver;
 use crate::subject_map::OidcSubjectMap;
 
+/// The signature algorithms a token may carry: the RSA family, the only key
+/// type either resolver materializes. A pinned JWKS entry naming any other
+/// `alg` is refused against this same list, so the two cannot drift.
+pub(crate) const VERIFIED_ALGORITHMS: [Algorithm; 3] =
+    [Algorithm::RS256, Algorithm::RS384, Algorithm::RS512];
+
 #[derive(Debug, Deserialize)]
 struct Claims {
     sub: String,
@@ -100,7 +106,7 @@ impl OidcTokenValidator {
         // (e.g. forging an HS256 token signed with the public RSA key, or
         // `alg: none`).
         let mut validation = Validation::new(Algorithm::RS256);
-        validation.algorithms = vec![Algorithm::RS256, Algorithm::RS384, Algorithm::RS512];
+        validation.algorithms = VERIFIED_ALGORITHMS.to_vec();
         validation.set_issuer(&[&self.issuer]);
         validation.set_audience(&[&self.audience]);
         validation.set_required_spec_claims(&["exp", "aud", "iss", "sub"]);
