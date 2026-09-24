@@ -446,14 +446,16 @@ impl Engine {
     /// The write is copied and spawned on the first poll, so once this
     /// future has been polled, dropping it (client disconnect, handler
     /// cancellation) no longer cancels the write; it only stops waiting for
-    /// the result. `deadline` bounds the spawned write itself: past it the
-    /// write is abandoned and rolls back, so a stuck database cannot leak
-    /// tasks. A failure nobody is waiting for is logged.
+    /// the result. `deadline` bounds how long the spawned task works on the
+    /// write: past it the write is abandoned and rolls back, unless its
+    /// COMMIT was already sent, in which case the outcome is unknown. Every
+    /// error the write returns is logged, whether or not anyone still waits.
     ///
-    /// A write abandoned mid-commit has an unknown outcome. Retrying the same
-    /// write (same owner, source id and payload) is safe: Fact ingest is keyed
-    /// on the payload's receipt key, so a write that did land replays
-    /// (`idempotent_replay`).
+    /// The task is not drained at shutdown: a write still in flight when the
+    /// runtime stops is cancelled. Retrying the same write (same owner,
+    /// source id and payload) is safe after an unknown outcome: Fact ingest
+    /// is keyed on the payload's receipt key, so a write that did land
+    /// replays (`idempotent_replay`).
     ///
     /// # Errors
     /// Returns [`Self::ingest_fact`]'s errors, and `Internal` when the write
@@ -469,25 +471,31 @@ impl Engine {
         let authz = authz.clone();
         let write = spec.to_owned_write();
         let schema_id = P::SCHEMA_ID;
-        let task = tokio::spawn(async move {
-            let result =
-                match tokio::time::timeout(deadline, engine.ingest_fact(&authz, write.as_write()))
-                    .await
-                {
-                    Ok(result) => result,
-                    Err(_) => Err(ProtocolError::internal(format!(
+        let task = tokio::spawn(tracing::Instrument::instrument(
+            async move {
+                let ingest = engine.ingest_fact(&authz, write.as_write());
+                let Ok(result) = tokio::time::timeout(deadline, ingest).await else {
+                    tracing::warn!(
+                        schema_id,
+                        ?deadline,
+                        "detached fact ingest missed its deadline; outcome unknown, \
+                         retrying the same write replays"
+                    );
+                    return Err(ProtocolError::internal(format!(
                         "detached ingest of {schema_id} missed its {deadline:?} deadline"
-                    ))),
+                    )));
                 };
-            if let Err(error) = &result {
-                tracing::warn!(
-                    schema_id,
-                    error = %error.message,
-                    "detached fact ingest failed; the upstream side effect it records is unrecorded"
-                );
-            }
-            result
-        });
+                if let Err(error) = &result {
+                    tracing::warn!(
+                        schema_id,
+                        error = %error.message,
+                        "detached fact ingest failed; the side effect it records is unrecorded"
+                    );
+                }
+                result
+            },
+            tracing::Span::current(),
+        ));
         match task.await {
             Ok(result) => result,
             Err(error) => Err(ProtocolError::internal(format!(

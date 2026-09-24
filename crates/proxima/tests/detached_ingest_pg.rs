@@ -102,6 +102,8 @@ async fn a_dropped_request_still_records_its_fact() {
         ));
         assert!(futures::poll!(request.as_mut()).is_pending());
     }
+    // `committed(plain)` above re-ingested `plain`, so the detached note is
+    // the second memory past `before`.
     let landed = async {
         while memory_count(&booted, &authz).await < before + 2 {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -115,18 +117,35 @@ async fn a_dropped_request_still_records_its_fact() {
         "the detached write is the one that landed"
     );
 
-    // A missed deadline abandons the write and says so.
+    // A missed deadline abandons the write and says so. Holding the owner's
+    // admission fence exclusively makes the ingest wait, so the deadline is
+    // what ends it, whatever the machine's speed.
     let late = note("late");
+    let fence = sqlx::PgPool::connect(&db.admin_url())
+        .await
+        .expect("admin pool");
+    let mut fence = fence.acquire().await.expect("fence connection");
+    let (kind, id) = owner.columns();
+    sqlx::query("SELECT pg_advisory_lock(hashtextextended('proxima-owner-fence:' || $1 || ':' || $2::text, 0))")
+        .bind(kind.as_str())
+        .bind(id)
+        .execute(&mut *fence)
+        .await
+        .expect("hold the owner fence");
     let error = booted
         .engine
         .ingest_fact_detached(
             &authz,
             FactWrite::new(owner, "test/detached", &late),
-            Duration::ZERO,
+            Duration::from_millis(300),
         )
         .await
-        .expect_err("a zero deadline cannot be met");
+        .expect_err("a write held behind the fence misses its deadline");
     assert!(error.message.contains("deadline"), "{}", error.message);
+    sqlx::query("SELECT pg_advisory_unlock_all()")
+        .execute(&mut *fence)
+        .await
+        .expect("release the owner fence");
     assert!(!committed(&booted, &authz, owner, &late).await);
 
     // The tool-facing form resolves the engine and authorization from the

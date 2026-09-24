@@ -246,7 +246,13 @@ macro_rules! flavor_bundle {
             fn migrators() -> ::std::vec::Vec<$crate::flavor::NamedMigrator> {
                 #[allow(unused_mut)]
                 let mut migrators = ::std::vec::Vec::new();
-                $(migrators.push($crate::flavor::NamedMigrator::flavor($name, $migrator));)?
+                $(
+                    const _: () = ::std::assert!(
+                        $crate::flavor::is_flavor_ledger_id($name),
+                        "flavor_bundle! name must be 1-40 bytes of [a-z0-9_-] starting with a letter: it names the flavor's ledger",
+                    );
+                    migrators.push($crate::flavor::NamedMigrator::flavor($name, $migrator));
+                )?
                 migrators
             }
 

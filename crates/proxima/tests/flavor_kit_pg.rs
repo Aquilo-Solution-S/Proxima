@@ -184,6 +184,43 @@ mod kit_gap {
     }
 }
 
+/// Every optional key, so each macro arm is expanded and type-checked.
+mod kit_full {
+    fn no_workers(
+        _ctx: &proxima::flavor::FlavorWorkerContext,
+    ) -> Vec<proxima::flavor::FlavorWorker> {
+        Vec::new()
+    }
+
+    fn configure(builder: proxima::RuntimeBuilder) -> proxima::RuntimeBuilder {
+        builder.tool_scope(proxima::ToolScope::All)
+    }
+
+    #[allow(clippy::unnecessary_wraps, reason = "FlavorApp::services signature")]
+    fn services(
+        _ctx: &proxima::AppContext,
+    ) -> Result<proxima::flavor::FlavorServices, proxima::flavor::FlavorServiceError> {
+        Ok(proxima::flavor::FlavorServices::default())
+    }
+
+    proxima::flavor_bundle! {
+        bundle = KitFullFlavor,
+        name = "kittest",
+        display_name = "Kit",
+        fact_schemas = [super::KitNoteV1],
+        contract = &super::KIT_CONTRACT,
+        migrations = super::kit_migrator(false),
+        workers = no_workers,
+        app = {
+            title = "Kit, every key",
+            id = "kit-full",
+            version = "1.2.3",
+            configure = configure,
+            services = services,
+        },
+    }
+}
+
 /// The same flavor as a pre-v0.0.19 flavor wrote it by hand, on core's
 /// shared ledger.
 struct SharedLedgerKit;
@@ -239,6 +276,26 @@ async fn ledger_versions(db: &SplitRoleDb, table: &str) -> Option<Vec<i64>> {
     versions
 }
 
+/// Whether the split runtime role may change `table` — it must not on any
+/// ledger: a deleted ledger row makes the next boot re-run that migration.
+async fn runtime_may_write(db: &SplitRoleDb, table: &str) -> bool {
+    let admin = sqlx::PgPool::connect(&db.admin_url())
+        .await
+        .expect("admin pool");
+    let writable: bool = sqlx::query_scalar(
+        "SELECT has_table_privilege('proxima_test_runtime', $1, 'INSERT')
+             OR has_table_privilege('proxima_test_runtime', $1, 'UPDATE')
+             OR has_table_privilege('proxima_test_runtime', $1, 'DELETE')
+             OR has_table_privilege('proxima_test_runtime', $1, 'TRUNCATE')",
+    )
+    .bind(table)
+    .fetch_one(&admin)
+    .await
+    .expect("privilege probe");
+    admin.close().await;
+    writable
+}
+
 #[test]
 fn the_bundle_is_the_hand_written_one() {
     assert_eq!(
@@ -258,6 +315,14 @@ fn the_bundle_is_the_hand_written_one() {
     );
     assert!(migrators[0].migrator().ignore_missing);
     assert_eq!(kit_gap::KitGapFlavor::app_info().id, "kittest");
+    assert_eq!(
+        kit_full::KitFullFlavor::app_info(),
+        AppInfo {
+            id: "kit-full",
+            title: "Kit, every key",
+            version: "1.2.3",
+        }
+    );
 
     let mut registry = PgSidecarRegistry::new();
     <kit::KitFlavor as FlavorBundle>::register_pg_sidecars(&mut registry);
@@ -331,6 +396,10 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
         Some(Vec::new()),
         "and not on core's"
     );
+    assert!(
+        !runtime_may_write(&db, "public._sqlx_migrations_kittest").await,
+        "the runtime role reads the flavor ledger and cannot change it"
+    );
 }
 
 #[tokio::test]
@@ -355,7 +424,7 @@ async fn an_unclassified_table_refuses_the_migration() {
 }
 
 #[tokio::test]
-async fn a_shared_ledger_flavor_moves_to_its_own_ledger_without_rerunning() {
+async fn a_shared_ledger_flavor_moves_to_its_own_ledger_without_rerunning_either_binary() {
     let db = SplitRoleDb::create("proxima_flavor_kit_cutover", &[])
         .await
         .expect("PG required");
@@ -399,7 +468,20 @@ async fn a_shared_ledger_flavor_moves_to_its_own_ledger_without_rerunning() {
     );
     assert_eq!(
         ledger_versions(&db, "public._sqlx_migrations").await,
-        Some(Vec::new()),
-        "and gone from core's"
+        Some(vec![KIT_MIGRATION_VERSION]),
+        "and still on core's, for a binary that has not switched"
     );
+    assert!(!runtime_may_write(&db, "public._sqlx_migrations_kittest").await);
+
+    // A rollback to the shared-ledger binary re-runs nothing either.
+    let rolled_back = Proxima::<SharedLedgerKit>::app()
+        .database_url(db.runtime_url())
+        .platform_database_url(db.platform_url())
+        .owner(owner)
+        .allow_insecure_single_owner()
+        .tool_scope(ToolScope::All)
+        .build()
+        .await
+        .expect("the older shared-ledger binary boots after the cutover");
+    rolled_back.shutdown();
 }

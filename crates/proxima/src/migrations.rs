@@ -41,15 +41,16 @@ impl NamedMigrator {
         Self { source, migrator }
     }
 
-    /// A flavor's migrator on its own ledger, [`flavor_ledger_table`]`(id)`.
+    /// A flavor's migrator on its own ledger: [`flavor_ledger_table`]`(id)`,
+    /// unless the migrator already declares a table of its own, which it
+    /// keeps (a ledger is never renamed under a live database).
     ///
     /// A flavor ledger lives in `public` because a destructive flavor
     /// baseline drops the flavor schema and the ledger must survive it. A
-    /// database whose rows for this flavor still sit in core's
-    /// `public._sqlx_migrations` moves them on the next migration run
-    /// (one-time cutover, before the flavor's migrator first reads its own
-    /// table), so switching an existing flavor to this constructor re-runs
-    /// nothing.
+    /// database whose rows for this flavor sit in core's
+    /// `public._sqlx_migrations` gets them copied over on the next migration
+    /// run, before the flavor's migrator first reads its own table, so
+    /// switching a shared-ledger flavor to this constructor re-runs nothing.
     ///
     /// # Panics
     ///
@@ -57,7 +58,10 @@ impl NamedMigrator {
     /// compile-time constants, so this is a programming error.
     #[must_use]
     pub fn flavor(id: &'static str, mut migrator: Migrator) -> Self {
-        migrator.dangerous_set_table_name(flavor_ledger_table(id));
+        let derived = flavor_ledger_table(id);
+        if is_core_ledger(&migrator.table_name) {
+            migrator.dangerous_set_table_name(derived);
+        }
         migrator.set_ignore_missing(true);
         Self {
             source: id,
@@ -91,17 +95,30 @@ impl NamedMigrator {
 /// the 63-byte `PostgreSQL` identifier limit.
 #[must_use]
 pub fn flavor_ledger_table(id: &str) -> String {
-    let valid = !id.is_empty()
-        && id.len() <= 40
-        && id.as_bytes()[0].is_ascii_lowercase()
-        && id.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
-        });
     assert!(
-        valid,
+        is_flavor_ledger_id(id),
         "flavor id {id:?} must be 1-40 bytes of [a-z0-9_-] starting with a letter"
     );
     format!("public._sqlx_migrations_{}", id.replace('-', "_"))
+}
+
+/// Whether [`flavor_ledger_table`] accepts `id`. `const`, so
+/// `flavor_bundle!` checks its `name` at compile time.
+#[must_use]
+pub const fn is_flavor_ledger_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    if bytes.is_empty() || bytes.len() > 40 || !bytes[0].is_ascii_lowercase() {
+        return false;
+    }
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_') {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }
 
 fn is_core_ledger(table_name: &str) -> bool {
@@ -142,6 +159,14 @@ pub enum MigrationError {
         source: &'static str,
         #[source]
         err: MigrateError,
+    },
+    #[error(
+        "two flavors record on one ledger {table}: {first_source} and {second_source}; give each its own (flavor ids that differ only in `-`/`_` derive the same name)"
+    )]
+    DuplicateLedger {
+        table: String,
+        first_source: &'static str,
+        second_source: &'static str,
     },
     #[error("flavor ledger cutover failed for {source}: {err}")]
     FlavorLedgerCutover {
@@ -290,7 +315,7 @@ async fn run_sources_on_connection(
                 .await
                 .map_err(MigrationError::Core)?;
         } else {
-            cut_over_flavor_ledger(conn, &source).await?;
+            prepare_flavor_ledger(conn, &source).await?;
             run_source_with_contention_retry(conn, &source)
                 .await
                 .map_err(|err| MigrationError::Flavor {
@@ -411,22 +436,26 @@ fn is_shared_catalog_contention(err: &MigrateError) -> bool {
         )
 }
 
-/// One-time per-database cutover of a flavor's ledger rows out of the shared
-/// `public._sqlx_migrations` table into the flavor's own tracking table.
+/// Prepare a flavor's own ledger before its migrator first reads it: create
+/// it, copy in the rows core's shared ledger holds for its versions, and
+/// leave it read-only for every role but its owner. Runs on every migration
+/// run; every step is idempotent.
 ///
-/// A flavor's migrator declares its own table (see
-/// `flavors/code/src/migrations.rs`). A database migrated before the ledger
-/// split still carries the flavor's rows in `public`, and `SQLx` would
-/// re-run the flavor's DDL against the flavor's empty new table. Every
-/// migrator sets `ignore_missing = true` because a shared table shows each
-/// one versions it did not author. This moves exactly
-/// the rows the flavor's embedded migrator recognizes, inside one
-/// transaction, before the flavor migrator first runs against the new table.
-/// Idempotent: a moved row is gone from `public`, and a database created
-/// after the split never has rows to move. Rows no migrator recognizes stay
-/// in `public` by design — orphan rows there are inert (core runs with
-/// `ignore_missing`).
-async fn cut_over_flavor_ledger(
+/// - Copy, not move. A database migrated before the ledger split, or a
+///   flavor switching from `NamedMigrator::new` to [`NamedMigrator::flavor`],
+///   carries the flavor's rows in `public._sqlx_migrations`; without them
+///   `SQLx` would re-run the flavor's DDL against the empty new table. The
+///   rows also stay where they were, so an older binary still on the shared
+///   ledger (a rollback, a pod restarted mid-deploy) re-runs nothing either;
+///   core ignores versions above its ceiling. Rows are matched by version:
+///   a checksum that differs then fails the flavor's run as `SQLx`'s
+///   version mismatch instead of re-running it.
+/// - Read-only. The platform role's default privileges hand every new
+///   table's DML to the runtime role, and a runtime role that can delete a
+///   ledger row makes the next boot re-run that migration — a destructive
+///   baseline included. Every non-owner INSERT/UPDATE/DELETE/TRUNCATE grant
+///   on the ledger is revoked; SELECT stays.
+async fn prepare_flavor_ledger(
     conn: &mut PgConnection,
     source: &NamedMigrator,
 ) -> Result<(), MigrationError> {
@@ -438,33 +467,11 @@ async fn cut_over_flavor_ledger(
         source: source.source,
         err,
     };
-
-    let shared_table_exists: bool =
-        sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(map_err)?;
-    if !shared_table_exists {
-        return Ok(());
-    }
-
     let versions: Vec<i64> = source
         .migrator()
         .iter()
         .map(|migration| migration.version)
         .collect();
-    let rows_to_move: bool = sqlx::query_scalar(
-        "SELECT EXISTS (
-             SELECT 1 FROM public._sqlx_migrations WHERE version = ANY($1::bigint[])
-         )",
-    )
-    .bind(&versions)
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(map_err)?;
-    if !rows_to_move {
-        return Ok(());
-    }
 
     let mut tx = conn.begin().await.map_err(map_err)?;
     for schema in source.migrator().create_schemas.iter() {
@@ -479,34 +486,51 @@ async fn cut_over_flavor_ledger(
         .await
         .map_err(map_err)?;
     }
-    // SQL-POLICY: fixed-fragment — `table_name` is the flavor migrator's
-    // compiled-in tracking-table name; no value reaches it from a caller.
-    // Interpolated as-is, like `SQLx` itself interpolates the configured
-    // table name in `ensure_migrations_table`.
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "CREATE TABLE IF NOT EXISTS {table_name} \
-         (LIKE public._sqlx_migrations INCLUDING ALL)"
-    )))
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    // SQL-POLICY: fixed-fragment — same compiled-in `table_name` as above.
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO {table_name}
-         SELECT * FROM public._sqlx_migrations WHERE version = ANY($1::bigint[])
-         ON CONFLICT (version) DO NOTHING"
-    )))
+    sqlx::query(
+        "SELECT set_config('proxima.flavor_ledger', $1, true),
+                set_config('proxima.flavor_ledger_versions', $2::bigint[]::text, true)",
+    )
+    .bind(&table_name)
     .bind(&versions)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-    sqlx::query("DELETE FROM public._sqlx_migrations WHERE version = ANY($1::bigint[])")
-        .bind(&versions)
+    sqlx::query(PREPARE_FLAVOR_LEDGER)
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
     tx.commit().await.map_err(map_err)
 }
+
+/// [`prepare_flavor_ledger`]'s statement. The ledger name arrives through a
+/// transaction-local setting, so the statement text is fixed; it is the
+/// flavor migrator's compiled-in table name, interpolated as `SQLx` itself
+/// interpolates it in `ensure_migrations_table`.
+const PREPARE_FLAVOR_LEDGER: &str = r"DO $prepare_flavor_ledger$
+DECLARE
+    ledger text := current_setting('proxima.flavor_ledger');
+    versions bigint[] := current_setting('proxima.flavor_ledger_versions')::bigint[];
+    ledger_oid regclass;
+    grantee oid;
+BEGIN
+    IF to_regclass('public._sqlx_migrations') IS NULL THEN
+        RAISE EXCEPTION 'core ledger public._sqlx_migrations is missing; core migrates first';
+    END IF;
+    EXECUTE format('CREATE TABLE IF NOT EXISTS %s (LIKE public._sqlx_migrations INCLUDING ALL)', ledger);
+    ledger_oid := ledger::regclass;
+    EXECUTE format('INSERT INTO %s SELECT * FROM public._sqlx_migrations WHERE version = ANY($1) ON CONFLICT (version) DO NOTHING', ledger_oid)
+        USING versions;
+    FOR grantee IN
+        SELECT DISTINCT acl.grantee
+          FROM pg_class AS c, aclexplode(c.relacl) AS acl
+         WHERE c.oid = ledger_oid AND acl.grantee <> c.relowner
+           AND acl.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')
+    LOOP
+        EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON %s FROM %s', ledger_oid,
+            CASE WHEN grantee = 0 THEN 'PUBLIC' ELSE quote_ident(pg_get_userbyid(grantee)) END);
+    END LOOP;
+END
+$prepare_flavor_ledger$";
 
 fn prepare_sources(
     flavors: impl IntoIterator<Item = NamedMigrator>,
@@ -528,7 +552,26 @@ fn prepare_sources(
     }
 
     reject_duplicate_versions(&sources)?;
+    reject_shared_flavor_ledgers(&sources)?;
     Ok(sources)
+}
+
+fn reject_shared_flavor_ledgers(sources: &[NamedMigrator]) -> Result<(), MigrationError> {
+    let mut seen: BTreeMap<String, &'static str> = BTreeMap::new();
+    for source in sources.iter().skip(1) {
+        let table = source.migrator.table_name.to_string();
+        if is_core_ledger(&table) {
+            continue;
+        }
+        if let Some(first_source) = seen.insert(table.clone(), source.source) {
+            return Err(MigrationError::DuplicateLedger {
+                table,
+                first_source,
+                second_source: source.source,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn reject_duplicate_versions(sources: &[NamedMigrator]) -> Result<(), MigrationError> {
@@ -629,6 +672,38 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_ledger_is_kept_and_two_flavors_never_share_one() {
+        let mut declared = migrator(&[TEST_FLAVOR_VERSION]);
+        declared.dangerous_set_table_name("acme._sqlx_migrations");
+        assert_eq!(
+            NamedMigrator::flavor("acme", declared)
+                .migrator()
+                .table_name,
+            "acme._sqlx_migrations",
+            "a ledger already in use is never renamed under a live database"
+        );
+
+        let err = prepare_sources([
+            NamedMigrator::flavor("a-b", migrator(&[TEST_FLAVOR_VERSION])),
+            NamedMigrator::flavor("a_b", migrator(&[TEST_FLAVOR_VERSION + 1])),
+        ])
+        .expect_err("two flavors on one ledger");
+        assert!(matches!(
+            err,
+            MigrationError::DuplicateLedger {
+                first_source: "a-b",
+                second_source: "a_b",
+                ..
+            }
+        ));
+        prepare_sources([
+            NamedMigrator::new("alpha", migrator(&[TEST_FLAVOR_VERSION])),
+            NamedMigrator::new("beta", migrator(&[TEST_FLAVOR_VERSION + 1])),
+        ])
+        .expect("flavors still on core's shared ledger are a warning, not a refusal");
+    }
+
+    #[test]
     fn a_flavor_id_that_would_need_quoting_is_refused() {
         for id in [
             "",
@@ -641,6 +716,7 @@ mod tests {
         ] {
             let result = std::panic::catch_unwind(|| flavor_ledger_table(id));
             assert!(result.is_err(), "{id:?} must be refused");
+            assert!(!super::is_flavor_ledger_id(id));
         }
     }
 

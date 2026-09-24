@@ -1,11 +1,45 @@
-//! `proxima_core.install_owner_rls` reproduces this flavor's hand-written
-//! v0.0.15 owner-RLS policies exactly, and refuses a classification that does
-//! not cover the schema.
+//! `proxima_core.install_owner_rls` against this flavor's hand-written v0.0.15
+//! owner-RLS block: identical policies on every table but one, where the
+//! v0.0.15 block keyed an Abstraction sidecar on a Fact reference; the v0.0.19
+//! code migration is exactly the installer call; and every classification
+//! that does not name one owner per table is refused.
 
 mod common;
 
 use common::{TestDb, apply_current_migrations};
 use sqlx::{Connection, PgConnection};
+
+/// The code migration that replaces the v0.0.15 block with the installer.
+const INSTALLER_MIGRATION: i64 = 20_260_924_000_020;
+
+/// Core and the code lane up to (not including) the installer migration:
+/// the v0.0.15 hand-written policies.
+async fn migrate_through_v015(database: &str, pg: &proxima_storage_pg::PgStorage) {
+    let _ = pg;
+    let (_, platform_url) = proxima_pg_testkit::split_role_urls(database)
+        .await
+        .expect("split roles");
+    let platform = proxima_storage_pg::PgStorage::connect_for_migrations_with_config(
+        &platform_url,
+        proxima_storage_pg::PgPoolConfig::default(),
+        proxima_storage_pg::PgTuning::default(),
+    )
+    .await
+    .expect("platform pool");
+    let mut v015 = proxima_code::migrator();
+    v015.migrations = std::borrow::Cow::Owned(
+        v015.iter()
+            .filter(|migration| migration.version < INSTALLER_MIGRATION)
+            .cloned()
+            .collect(),
+    );
+    proxima::run_core_and_flavor_migrations(
+        &platform,
+        [proxima::NamedMigrator::flavor("proxima-code", v015)],
+    )
+    .await
+    .expect("core and the v0.0.15 code lane");
+}
 
 /// The code schema's classification, as a flavor calling the installer
 /// states it.
@@ -154,12 +188,80 @@ async fn assert_refusals(conn: &mut PgConnection) {
     );
 }
 
-#[tokio::test]
-async fn installer_reproduces_the_code_flavor_policies_and_refuses_gaps() {
-    let db = TestDb::fresh().await;
-    apply_current_migrations(&db.pg)
+/// Classifications that do not name one owner per table, on scratch tables
+/// in a throwaway schema.
+async fn assert_parent_refusals(conn: &mut PgConnection) {
+    let cases: [(&str, &str, &str); 4] = [
+        (
+            "CREATE TABLE probe.self_ref (t uuid PRIMARY KEY, parent_t uuid REFERENCES probe.self_ref (t))",
+            "ARRAY['self_ref']",
+            "no single-column FK",
+        ),
+        (
+            "CREATE TABLE probe.a (t uuid PRIMARY KEY);
+             CREATE TABLE probe.b (t uuid PRIMARY KEY REFERENCES probe.a (t));
+             ALTER TABLE probe.a ADD FOREIGN KEY (t) REFERENCES probe.b (t)",
+            "ARRAY['a', 'b']",
+            "reaches itself through its parent FKs",
+        ),
+        (
+            "CREATE TABLE probe.amb (id bigint PRIMARY KEY,
+                 cited_t uuid REFERENCES proxima_core.memory (t),
+                 about_t uuid REFERENCES proxima_core.memory (t))",
+            "ARRAY['amb']",
+            "has 2 candidate parent FKs and none on its leading primary-key column",
+        ),
+        (
+            "CREATE TABLE probe.keyed (t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+                 cited_t uuid REFERENCES proxima_core.memory (t));
+             CREATE TABLE probe.only_one (id bigint PRIMARY KEY, x uuid REFERENCES proxima_core.memory (t))",
+            "ARRAY['keyed', 'only_one']",
+            "",
+        ),
+    ];
+    for (tables, fk_parent, refusal) in cases {
+        let mut tx = conn.begin().await.expect("probe transaction");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "CREATE SCHEMA probe; {tables}"
+        )))
+        .execute(&mut *tx)
         .await
-        .expect("current core and code migrations");
+        .expect("probe tables");
+        let result = sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SELECT proxima_core.install_owner_rls('probe', '{{}}', {fk_parent}, '{{}}')"
+        )))
+        .execute(&mut *tx)
+        .await;
+        if refusal.is_empty() {
+            result.expect("an FK on the key, or the only FK, names the owner");
+            let key: String = sqlx::query_scalar(
+                "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy
+                  WHERE polrelid = 'probe.keyed'::regclass AND polname = 'proxima_owner_read'",
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .expect("keyed read policy");
+            assert!(
+                key.contains("parent.t = keyed.t"),
+                "keyed on its own t: {key}"
+            );
+        } else {
+            let message = result.expect_err(refusal).to_string();
+            assert!(message.contains(refusal), "{refusal}: {message}");
+        }
+        tx.rollback().await.expect("rollback");
+    }
+    let error = sqlx::query("SELECT proxima_core.install_owner_rls('public', '{}', '{}', '{}')")
+        .execute(&mut *conn)
+        .await
+        .expect_err("public is not a flavor schema");
+    assert!(error.to_string().contains("public is not a flavor schema"));
+}
+
+#[tokio::test]
+async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
+    let db = TestDb::fresh().await;
+    migrate_through_v015(&db.name, &db.pg).await;
     let (_, platform_url) = proxima_pg_testkit::split_role_urls(&db.name)
         .await
         .expect("split roles");
@@ -192,15 +294,52 @@ async fn installer_reproduces_the_code_flavor_policies_and_refuses_gaps() {
         .await
         .expect("installed policies");
     tx.rollback().await.expect("rollback");
-    for (left, right) in hand_written.iter().zip(&installed) {
-        assert_eq!(
-            left, right,
-            "installer policy differs from the v0.0.15 file"
-        );
-    }
     assert_eq!(hand_written.len(), installed.len());
+    let changed: Vec<(&PolicyRow, &PolicyRow)> = hand_written
+        .iter()
+        .zip(&installed)
+        .filter(|(left, right)| left != right)
+        .collect();
+    assert_eq!(
+        changed
+            .iter()
+            .map(|(left, _)| (left.0.as_str(), left.1.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("execution_plan_v1", "proxima_owner_read"),
+            ("execution_plan_v1", "proxima_owner_write"),
+        ],
+        "every other policy is the v0.0.15 file's"
+    );
+    for (v015, v019) in changed {
+        assert!(
+            v015.5
+                .contains("execution_plan_v1.goal_activated_memory_id"),
+            "{}",
+            v015.5
+        );
+        assert!(
+            v019.5.contains("parent.t = execution_plan_v1.t"),
+            "{}",
+            v019.5
+        );
+        assert!(!v019.5.contains("goal_activated_memory_id"), "{}", v019.5);
+    }
+
+    apply_current_migrations(&db.pg)
+        .await
+        .expect("the v0.0.19 code migration applies");
+    let live: Vec<PolicyRow> = sqlx::query_as(POLICIES)
+        .fetch_all(&mut conn)
+        .await
+        .expect("live policies");
+    assert_eq!(
+        live, installed,
+        "the v0.0.19 migration is the installer call"
+    );
 
     assert_refusals(&mut conn).await;
+    assert_parent_refusals(&mut conn).await;
 
     conn.close().await.expect("close");
 }

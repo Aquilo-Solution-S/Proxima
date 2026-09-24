@@ -458,6 +458,11 @@ pub async fn split_role_urls_for(
                    EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.nspname, r.relname, '{platform}');
                  END IF;
                END LOOP;
+               FOR r IN SELECT n.nspname, t.typname
+                   FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+                  WHERE n.nspname IN ({schema_list}) AND t.typtype IN ('e','d') LOOP
+                 EXECUTE format('ALTER TYPE %I.%I OWNER TO %I', r.nspname, r.typname, '{platform}');
+               END LOOP;
                FOR r IN SELECT n.nspname, p.proname,
                                 pg_get_function_identity_arguments(p.oid) AS args
                    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace

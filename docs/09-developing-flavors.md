@@ -695,7 +695,7 @@ impl FlavorBundle for MyFlavor {
     }
 
     fn migrators() -> Vec<NamedMigrator> {
-        vec![NamedMigrator::flavor("my-flavor", migrator())]
+        vec![NamedMigrator::flavor("my-flavor", sqlx::migrate!("./migrations"))]
     }
 }
 ```
@@ -737,17 +737,18 @@ unit.commit().await?;
 ```
 
 `Engine::ingest_fact(&authz, request)` and `Engine::create_goal(&authz, request)`
-use the same requests for standalone writes.
+use the same requests for standalone writes. Destination authorization precedes
+admission; a multi-owner context retains its readable target set. Dropping an
+uncommitted unit rolls back its Facts, derived rows, Goals, sidecars, and any
+host-state rows written through `UnitOfWork::apply_host_state`.
 
 A tool whose upstream side effect already happened (mail sent, commit
 pushed) records it with `proxima::flavor::ingest_fact_detached(&ctx, write,
 deadline)`: the ingest runs on a spawned task under the tool's authorization,
 so a client disconnect after the first poll no longer rolls it back;
-`deadline` bounds the task. A write abandoned mid-commit has an unknown
-outcome; retrying the same write replays (`idempotent_replay`). Destination authorization precedes
-admission; a multi-owner context retains its readable target set. Dropping an
-uncommitted unit rolls back its Facts, derived rows, Goals, sidecars, and any
-host-state rows written through `UnitOfWork::apply_host_state`.
+`deadline` bounds the task, which shutdown does not drain. Past the deadline
+the write rolls back unless its COMMIT was already sent (outcome unknown);
+retrying the same write replays (`idempotent_replay`).
 
 Host-state participation is **not** Flavor SDK. Flavor handlers do not receive
 raw SQL, a transaction, or a generic state-administration tool. An embedding
@@ -918,11 +919,16 @@ Rules:
 2. Core migrator runs before flavor migrators.
 3. Every flavor records on its own ledger, `public._sqlx_migrations_<id>`
    (`-` → `_`; `flavor_ledger_table(id)`), which `NamedMigrator::flavor` sets
-   with `ignore_missing(true)`. The ledger lives in `public` so a destructive
-   flavor baseline that drops the flavor schema keeps it. A flavor still on
-   core's `public._sqlx_migrations` boots with a warning; switching it to
-   `NamedMigrator::flavor` moves its rows on the next migration run (one-time
-   cutover, keyed on the versions its migrator embeds) and re-runs nothing.
+   with `ignore_missing(true)`; a migrator that already declares its own table
+   keeps it. The ledger lives in `public` so a destructive flavor baseline
+   that drops the flavor schema keeps it. Two flavors on one ledger refuse
+   (`MigrationError::DuplicateLedger`); a flavor still on core's
+   `public._sqlx_migrations` boots with a warning. Each migration run creates
+   the flavor ledger, copies in the rows core's ledger holds for its versions
+   (so switching to `NamedMigrator::flavor` re-runs nothing, and neither does
+   an older binary still on the shared ledger), and revokes every non-owner
+   write on it: a runtime role that can delete a ledger row makes the next
+   boot re-run that migration.
 4. `run_core_and_flavor_migrations` rejects duplicate versions before any
    database write; external migrator composition owns the same collision
    check if it bypasses this facade.
@@ -960,20 +966,30 @@ SELECT proxima_core.install_owner_rls(
 | Class | Table | `proxima_owner_read` / `proxima_owner_write` |
 |---|---|---|
 | `owner_id_tables` | has `owner_id` | `app.owner` / `app.write_owner` |
-| `fk_parent_tables` | single-column FK to `proxima_core` or the flavor schema | parent row visible in owner scope / parent memory's kind (`app.write_owner`, `app.write_abstraction`, `app.write_perspective`), `app.write_goal` for a goal parent |
+| `fk_parent_tables` | single-column FK to `proxima_core` or the flavor schema: the one on the leading primary-key column, else the table's only one | parent row visible in owner scope / parent memory's kind (`app.write_owner`, `app.write_abstraction`, `app.write_perspective`), `app.write_goal` for a goal parent |
 | `ownerless_tables` | platform-only | `false` / `false` |
 | `memory_owner_tables` | keyed by a `proxima_core.memory` `t` | that memory's owner in `app.owner` / `app.write_owner`, any kind |
 
 Every table also gets `ENABLE`/`FORCE ROW LEVEL SECURITY` and
-`proxima_platform` for its owner role in platform scope. Refused before a
-policy changes: an unclassified table, a name in two lists, a listed name
-that does not exist, an `owner_id` table outside `owner_id_tables`, an
-FK-parent table without such an FK, a memory-owner table without a uuid `t`,
-`proxima_core`/`public`/system schemas. A census then checks what the
-runtime RLS guard requires at boot. SECURITY INVOKER, EXECUTE for its owner
-only: run it as the migration role that owns the tables. A later migration
-that adds a table calls it again with the full classification; re-running
-re-creates the same policies.
+`proxima_platform` for its owner role in platform scope. Refused, with
+nothing applied: a missing or empty schema, `proxima_core`/`public`/system
+schemas; an unclassified table, a name in two lists, a listed name that does
+not exist; an `owner_id` table outside `owner_id_tables`, an
+`owner_id_tables` entry without `owner_id`; an FK-parent table with no such
+FK, with several and none on its key (ambiguous owner), whose parent chain
+returns to itself (recursive policies), or whose parent is neither
+memory/goal nor carries `t`; a memory-owner table without a uuid `t`. A
+census then checks the structural part of the runtime RLS guard (RLS
+flags, three policies, owner-role platform policy). SECURITY INVOKER,
+EXECUTE for its owner only: run it as the migration role that owns the
+tables. A later migration that adds a table calls it again with the full
+classification; re-running re-creates the same policies.
+
+v0.0.15's hand-written blocks took an FK-parent table's first FK in creation
+order; `proxima_code.execution_plan_v1` (an Abstraction sidecar) was keyed on
+a Fact reference. The code flavor's v0.0.19 migration is the installer call
+and rekeys it on `t`. A flavor adopting the installer gets the same fix for
+any such table; diff its policies before and after.
 
 ### Declaration triggers
 

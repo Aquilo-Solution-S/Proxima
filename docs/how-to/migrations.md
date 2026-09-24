@@ -18,16 +18,18 @@ several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 | Lane | Migration |
 |---|---|
 | Core | `0018_v019_owner_rls_installer.sql`: `proxima_core.install_owner_rls(schema, owner_id_tables, fk_parent_tables, ownerless_tables[, memory_owner_tables])`, the owner-RLS installer flavor migrations call ([09 §Owner RLS](../09-developing-flavors.md#owner-rls)); no table or row changes |
-| Code flavor | No new migration |
+| Code flavor | `20260924000020_v019_owner_rls_installer.sql`: the v0.0.15 owner-RLS block as one installer call; rekeys `execution_plan_v1` (an Abstraction sidecar) on its own `t` instead of a Fact reference |
 
 Existing databases upgrade in place. A flavor adopting the installer does so
 in a **new** migration; its released v0.0.15 file stays byte for byte.
 
 A flavor built with `NamedMigrator::flavor(id, migrator)` records on
 `public._sqlx_migrations_<id>` (§Lanes). A flavor that recorded on core's
-`public._sqlx_migrations` moves there on its next boot: the facade copies the
-rows whose versions its migrator embeds into the new ledger and deletes them
-from core's, in one transaction, before the flavor migrator first runs.
+`public._sqlx_migrations` gets its rows copied there on its next migration
+run (boot, unless `skip_migrations`; or `dev-migrate`), before its migrator
+first reads the new ledger; the rows stay on core's ledger too, so an older
+binary re-runs nothing. Every run also revokes non-owner writes on the
+flavor ledger.
 
 ## v0.0.16
 

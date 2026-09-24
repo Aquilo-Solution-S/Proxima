@@ -3,7 +3,7 @@
 pub use crate::bundle::FlavorBundle;
 /// One-declaration flavor bundle; see the macro's docs.
 pub use crate::flavor_bundle;
-pub use crate::migrations::{NamedMigrator, flavor_ledger_table};
+pub use crate::migrations::{NamedMigrator, flavor_ledger_table, is_flavor_ledger_id};
 /// Background-worker surface for [`FlavorBundle::spawn_workers`]: the
 /// runtime handles a spawning flavor receives and the named join handle
 /// it returns.

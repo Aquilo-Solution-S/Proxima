@@ -1029,6 +1029,24 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_embedded_builder_refuses_a_second_participant_before_connecting() {
+        let config = crate::EmbedConfig {
+            database_url: "postgres://nobody@127.0.0.1:1/unreachable".into(),
+            platform_database_url: None,
+            s3: None,
+        };
+        let refused = crate::ProximaBuilder::new(config, owner(uuid::Uuid::now_v7()))
+            .host_state_participant(Arc::new(NoopParticipant))
+            .host_state_participant(Arc::new(NoopParticipant))
+            .boot()
+            .await
+            .err()
+            .map(|error| error.to_string())
+            .expect("two participants refuse");
+        assert!(refused.contains("already registered"), "{refused}");
+    }
+
     #[derive(Debug)]
     struct TestAuthenticator;
 
