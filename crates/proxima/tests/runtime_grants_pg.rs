@@ -188,9 +188,21 @@ fn host_context(owner: Owner) -> AuthzContext {
     .expect("trusted host resolved this exact owner")
 }
 
-async fn has(admin: &PgPool, probe: &str, role: &str, object: &str, privilege: &str) -> bool {
-    // SQL-POLICY: fixed-fragment — `probe` is a closed privilege function name.
-    sqlx::query_scalar(AssertSqlSafe(format!("SELECT {probe}($1, $2, $3)")))
+/// The privilege inquiry functions the assertions probe.
+#[derive(Clone, Copy)]
+enum Probe {
+    Schema,
+    Table,
+    Sequence,
+}
+
+async fn has(admin: &PgPool, probe: Probe, role: &str, object: &str, privilege: &str) -> bool {
+    let query = match probe {
+        Probe::Schema => sqlx::query_scalar("SELECT has_schema_privilege($1, $2, $3)"),
+        Probe::Table => sqlx::query_scalar("SELECT has_table_privilege($1, $2, $3)"),
+        Probe::Sequence => sqlx::query_scalar("SELECT has_sequence_privilege($1, $2, $3)"),
+    };
+    query
         .bind(role)
         .bind(object)
         .bind(privilege)
@@ -202,17 +214,17 @@ async fn has(admin: &PgPool, probe: &str, role: &str, object: &str, privilege: &
 async fn assert_runtime_privileges(fixture: &Fixture) {
     let (admin, runtime) = (&fixture.admin, fixture.runtime.as_str());
     for schema in SCHEMAS {
-        assert!(has(admin, "has_schema_privilege", runtime, schema, "USAGE").await);
+        assert!(has(admin, Probe::Schema, runtime, schema, "USAGE").await);
         assert!(
-            !has(admin, "has_schema_privilege", runtime, schema, "CREATE").await,
+            !has(admin, Probe::Schema, runtime, schema, "CREATE").await,
             "runtime must not CREATE in {schema}"
         );
     }
     for ledger in LEDGERS {
-        assert!(has(admin, "has_table_privilege", runtime, ledger, "SELECT").await);
+        assert!(has(admin, Probe::Table, runtime, ledger, "SELECT").await);
         for privilege in ["INSERT", "UPDATE", "DELETE", "TRUNCATE"] {
             assert!(
-                !has(admin, "has_table_privilege", runtime, ledger, privilege).await,
+                !has(admin, Probe::Table, runtime, ledger, privilege).await,
                 "runtime must not {privilege} {ledger}"
             );
         }
@@ -297,9 +309,9 @@ async fn assert_default_privileges(fixture: &Fixture, platform_pool: &PgPool) {
     .await;
     let (admin, runtime) = (&fixture.admin, fixture.runtime.as_str());
     let table = "proxima_code.runtime_grants_default_probe";
-    assert!(has(admin, "has_table_privilege", runtime, table, "INSERT").await);
+    assert!(has(admin, Probe::Table, runtime, table, "INSERT").await);
     let sequence = "proxima_code.runtime_grants_default_seq";
-    assert!(has(admin, "has_sequence_privilege", runtime, sequence, "USAGE").await);
+    assert!(has(admin, Probe::Sequence, runtime, sequence, "USAGE").await);
 }
 
 #[tokio::test]
@@ -325,7 +337,7 @@ async fn runtime_grants_boot_grants_a_fresh_runtime_role() {
     assert!(
         !has(
             &fixture.admin,
-            "has_schema_privilege",
+            Probe::Schema,
             &fixture.runtime,
             "proxima_core",
             "USAGE"
@@ -357,7 +369,7 @@ async fn runtime_grants_boot_grants_a_fresh_runtime_role() {
         assert!(
             !has(
                 &fixture.admin,
-                "has_table_privilege",
+                Probe::Table,
                 &fixture.runtime,
                 "public.runtime_grants_host_probe",
                 privilege
