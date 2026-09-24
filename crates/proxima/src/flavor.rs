@@ -107,8 +107,8 @@ pub use proxima_core::{
     FlavorRegistry, FlavorRegistryError, FlavorRegistryFrozen, FlavorServiceError, FlavorServices,
     GoalId, GoalPayload, GroupId, InputContractId, MAX_MEMORY_HYDRATION_BATCH,
     MemoryHydrationBatchOutcome, MemoryHydrationOutcome, MemoryHydrationStatus, MemoryId, ModelId,
-    OperatorId, OwnerRef, PayloadKeyBuilder, PerspectivePayload, PromptVersion, SchemaId,
-    SchemaVersion, SearchProjectionColumnKind, SidecarPayload, Tool, ToolCaller, ToolCtx,
+    OperatorId, OwnerRef, PayloadKeyBuilder, PerspectivePayload, PromptVersion, RequestHeaders,
+    SchemaId, SchemaVersion, SearchProjectionColumnKind, SidecarPayload, Tool, ToolCaller, ToolCtx,
     ToolError, ToolId, ToolServices, TrustedModelIdError, UserId, is_loopback_endpoint,
     is_loopback_host, proxima_flavor, proxima_schema_id, validate_endpoint_url,
 };
@@ -208,3 +208,12 @@ pub use authorized_read::{
     authorized_abstraction_payloads, authorized_fact_payloads, authorized_memory_ids,
     read_owner_ids,
 };
+
+/// Types of the [`Tool::ARGV_ACTION_SPECS`] and [`Tool::AUDIENCE`] consts.
+pub use proxima_core::mcp::{McpArgvActionSpec, McpToolAudience};
+/// The request-behavior onion [`FlavorRegistry::add_request_behavior`] takes.
+/// Its transport context/error (`McpToolCtx`, `McpToolError`) stay host-tier.
+pub use proxima_core::mcp::{Next, RequestBehavior, ToolCall};
+/// sqlx → `StorageError` classifier for hand-written [`PgMemorySidecar`]
+/// inserts; `pg_sidecar!` expansions use the same one.
+pub use proxima_storage_pg::map_err;

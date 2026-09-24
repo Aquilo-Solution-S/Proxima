@@ -105,10 +105,13 @@ mod bundle;
 mod config;
 mod core_mcp;
 pub mod flavor;
+mod health;
 pub mod host;
 mod migrations;
+mod owner_access;
 mod runtime;
 mod runtime_config;
+mod runtime_grants;
 mod workers;
 
 pub use host::*;
@@ -117,6 +120,7 @@ pub use proxima_core::authz::SystemAuthority;
 use std::sync::Arc;
 
 use crate::bundle::FlavorBundle;
+use crate::runtime_grants::RuntimeGrants;
 use proxima_core::llm::{EmbeddingClient, EmbeddingRouter};
 // `CitedBlobStore` and `GroupId` are not imported here: both are
 // re-exported through `host::*`
@@ -221,6 +225,7 @@ pub struct ProximaBuilder {
     pg_sidecar_registers: Vec<PgSidecarRegisterFn>,
     migrators: Vec<NamedMigrator>,
     skip_migrations: bool,
+    runtime_grants: bool,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     embedding_router: Option<Arc<dyn EmbeddingRouter>>,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
@@ -244,6 +249,7 @@ impl std::fmt::Debug for ProximaBuilder {
             .field("pg_sidecars", &self.pg_sidecar_registers.len())
             .field("migrators", &self.migrators.len())
             .field("skip_migrations", &self.skip_migrations)
+            .field("runtime_grants", &self.runtime_grants)
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_embedding_router", &self.embedding_router.is_some())
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
@@ -400,6 +406,7 @@ impl ProximaBuilder {
             pg_sidecar_registers: Vec::new(),
             migrators: Vec::new(),
             skip_migrations: false,
+            runtime_grants: false,
             embed_client: None,
             embedding_router: None,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
@@ -470,6 +477,20 @@ impl ProximaBuilder {
     #[must_use]
     pub fn skip_migrations(mut self) -> Self {
         self.skip_migrations = true;
+        self
+    }
+
+    /// Grant the `database_url` role its runtime privileges at boot, as the
+    /// `platform_database_url` role, after migrating (or the
+    /// [`Self::skip_migrations`] preflight) and before the runtime pool
+    /// connects: usage + DML + sequence access + schema-scoped default
+    /// privileges over the composed schemas, `SELECT` only on the migration
+    /// ledgers. Never `CREATE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`,
+    /// ownership or role membership; idempotent. Boot refuses it without a
+    /// platform URL naming a different user (docs/15 §Owner-RLS rollout).
+    #[must_use]
+    pub fn runtime_grants(mut self) -> Self {
+        self.runtime_grants = true;
         self
     }
 
@@ -562,8 +583,9 @@ impl ProximaBuilder {
     ///
     /// # Errors
     ///
-    /// Returns `EmbedError::Storage` for connection or migration
-    /// failures, `EmbedError::SchemaResetRequired` when the target database
+    /// Returns `EmbedError::Storage` for connection, migration or runtime
+    /// grant failures, `EmbedError::Config` when [`Self::runtime_grants`]
+    /// lacks split roles, `EmbedError::SchemaResetRequired` when the target database
     /// does not match `0001_v008.sql` (see `docs/how-to/migrations.md`), and
     /// `EmbedError::Engine` when engine startup fails.
     pub async fn boot(self) -> Result<EmbeddedProxima, EmbedError> {
@@ -574,6 +596,7 @@ impl ProximaBuilder {
             pg_sidecar_registers,
             migrators,
             skip_migrations,
+            runtime_grants,
             embed_client,
             embedding_router,
             embedding_runtime_policy,
@@ -584,6 +607,7 @@ impl ProximaBuilder {
             host_state_participant,
         } = self;
 
+        let (registry, grants) = freeze_and_plan(registers, runtime_grants, &config, &migrators)?;
         let mut pg = connect_and_migrate(
             &config.database_url,
             config.platform_database_url.as_deref(),
@@ -591,13 +615,13 @@ impl ProximaBuilder {
             pg_tuning,
             migrators,
             skip_migrations,
+            grants.as_ref(),
         )
         .await?;
         if let Some(participant) = host_state_participant {
             pg = pg.with_host_state_participant(participant);
         }
 
-        let registry = compose_registry(registers)?;
         let pg = admit_owner_rls(pg, &registry, config.platform_database_url.as_deref()).await?;
         let pg_sidecars = compose_pg_sidecars(&pg, &registry, pg_sidecar_registers).await?;
         let pg = pg
@@ -707,6 +731,9 @@ async fn publication_origin_ports(
 /// binary's expectation.
 ///
 /// Unset pool policy or tuning falls back to the process environment.
+/// `runtime_grants` runs on the migration (platform) pool after migrating
+/// and before the runtime pool connects: that connect already asserts the
+/// runtime role under owner RLS.
 async fn connect_and_migrate(
     database_url: &str,
     platform_database_url: Option<&str>,
@@ -714,6 +741,7 @@ async fn connect_and_migrate(
     pg_tuning: Option<proxima_storage_pg::PgTuning>,
     migrators: Vec<NamedMigrator>,
     skip_migrations: bool,
+    runtime_grants: Option<&RuntimeGrants>,
 ) -> Result<PgStorage, EmbedError> {
     let pg_pool_config = match pg_pool_config {
         Some(config) => config,
@@ -739,6 +767,9 @@ async fn connect_and_migrate(
             .await
             .map_err(embed_migration_error)?;
     }
+    if let Some(grants) = runtime_grants {
+        grants.apply(&migration_pg.clone_pool_for_backend()).await?;
+    }
     drop(migration_pg);
     let pg = PgStorage::connect_with_config(database_url, pg_pool_config, pg_tuning)
         .await
@@ -749,6 +780,29 @@ async fn connect_and_migrate(
         .await
         .map_err(embed_storage_error)?;
     Ok(pg)
+}
+
+/// Freeze the registry (pure) and, when enabled, plan the runtime grants over
+/// its composed schemas — both before any SQL, so a missing role split is
+/// refused up front.
+fn freeze_and_plan(
+    registers: Vec<RegisterFn>,
+    runtime_grants: bool,
+    config: &EmbedConfig,
+    migrators: &[NamedMigrator],
+) -> Result<(proxima_core::FlavorRegistryFrozen, Option<RuntimeGrants>), EmbedError> {
+    let registry = compose_registry(registers)?;
+    let grants = runtime_grants
+        .then(|| {
+            RuntimeGrants::plan(
+                &config.database_url,
+                config.platform_database_url.as_deref(),
+                composed_schema_names(&registry),
+                runtime_grants::ledger_names(migrators),
+            )
+        })
+        .transpose()?;
+    Ok((registry, grants))
 }
 
 /// Run every linked flavor's registration callback and freeze the result.

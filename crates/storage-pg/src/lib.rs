@@ -10,6 +10,18 @@ extern crate self as proxima_storage_pg;
 #[doc(hidden)]
 pub use proxima_core as core;
 
+/// Expansion paths for the exported sidecar macros (`$crate::__private::sqlx`,
+/// `uuid`, and the column-type crates), so a flavor invoking `pg_sidecar!`
+/// through the `proxima` facade needs none of them as a direct dependency.
+#[doc(hidden)]
+pub mod __private {
+    pub use ::rust_decimal;
+    pub use ::serde_json;
+    pub use ::sqlx;
+    pub use ::time;
+    pub use ::uuid;
+}
+
 use proxima_core::StorageError;
 use proxima_core::env_value;
 use proxima_core::storage_ports::StoragePorts;

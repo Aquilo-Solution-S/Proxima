@@ -1,13 +1,13 @@
 #[macro_export]
 macro_rules! pg_sidecar_row_ty {
     (uuid) => {
-        ::uuid::Uuid
+        $crate::__private::uuid::Uuid
     };
     (uuid_array) => {
-        ::std::vec::Vec<::uuid::Uuid>
+        ::std::vec::Vec<$crate::__private::uuid::Uuid>
     };
     (opt_uuid) => {
-        ::std::option::Option<::uuid::Uuid>
+        ::std::option::Option<$crate::__private::uuid::Uuid>
     };
     (text) => {
         ::std::string::String
@@ -19,22 +19,22 @@ macro_rules! pg_sidecar_row_ty {
         ::std::vec::Vec<::std::string::String>
     };
     (decimal) => {
-        ::rust_decimal::Decimal
+        $crate::__private::rust_decimal::Decimal
     };
     (opt_decimal) => {
-        ::std::option::Option<::rust_decimal::Decimal>
+        ::std::option::Option<$crate::__private::rust_decimal::Decimal>
     };
     (naive_date) => {
-        ::time::Date
+        $crate::__private::time::Date
     };
     (opt_naive_date) => {
-        ::std::option::Option<::time::Date>
+        ::std::option::Option<$crate::__private::time::Date>
     };
     (jsonb) => {
-        ::serde_json::Value
+        $crate::__private::serde_json::Value
     };
     (opt_jsonb) => {
-        ::std::option::Option<::serde_json::Value>
+        ::std::option::Option<$crate::__private::serde_json::Value>
     };
     (bool) => {
         bool
@@ -43,7 +43,7 @@ macro_rules! pg_sidecar_row_ty {
         f32
     };
     (timestamptz) => {
-        ::time::OffsetDateTime
+        $crate::__private::time::OffsetDateTime
     };
     (bytea32) => {
         ::std::vec::Vec<u8>
@@ -448,7 +448,7 @@ macro_rules! pg_sidecar {
         impl $crate::sidecars::PgMemorySidecar for $($payload_ty)::+ {
             fn insert_memory_sidecar<'t>(
                 &'t self,
-                tx: &'t mut ::sqlx::Transaction<'_, ::sqlx::Postgres>,
+                tx: &'t mut $crate::__private::sqlx::Transaction<'_, $crate::__private::sqlx::Postgres>,
                 memory_id: $crate::core::MemoryId,
                 _permit: $crate::sidecars::SidecarInsertPermit,
             ) -> $crate::sidecars::PgSidecarFuture<'t> {
@@ -467,7 +467,7 @@ macro_rules! pg_sidecar {
                     // SQL-POLICY: PgIdent — `sql` is built by memory_insert_sql
                     // from macro-literal table/column names validated as PgIdent;
                     // every value below is bound.
-                    let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+                    let result = $crate::__private::sqlx::query($crate::__private::sqlx::AssertSqlSafe(sql))
                         .bind(memory_id.into_inner())
                         $(
                             .bind($crate::pg_sidecar_bind!($column_kind, self, $field))
@@ -492,12 +492,36 @@ macro_rules! pg_sidecar {
             }
         }
 
-        #[derive(Debug, ::sqlx::FromRow)]
+        #[derive(Debug)]
         struct $row_ty {
-            $key_column: ::uuid::Uuid,
+            $key_column: $crate::__private::uuid::Uuid,
             $(
                 $field: $crate::pg_sidecar_row_ty! $column_kind,
             )+
+        }
+
+        // Written out, not `#[derive(sqlx::FromRow)]`: the derive expands to
+        // absolute `sqlx` paths a flavor depending only on `proxima` cannot
+        // resolve. Decodes each field by its own name, as the derive does.
+        impl<'r> $crate::__private::sqlx::FromRow<'r, $crate::__private::sqlx::postgres::PgRow>
+            for $row_ty
+        {
+            fn from_row(
+                row: &'r $crate::__private::sqlx::postgres::PgRow,
+            ) -> ::std::result::Result<Self, $crate::__private::sqlx::Error> {
+                ::std::result::Result::Ok(Self {
+                    $key_column: $crate::__private::sqlx::Row::try_get(
+                        row,
+                        ::std::stringify!($key_column),
+                    )?,
+                    $(
+                        $field: $crate::__private::sqlx::Row::try_get(
+                            row,
+                            ::std::stringify!($field),
+                        )?,
+                    )+
+                })
+            }
         }
 
         impl $crate::sidecars::PgMemoryPayload for $($payload_ty)::+ {

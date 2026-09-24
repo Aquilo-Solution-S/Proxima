@@ -4,9 +4,18 @@ Runbook for running a deployed Code-flavor MCP server. Deployment and env
 reference: [15-deployment.md](../15-deployment.md). Symptom lookup:
 [troubleshoot.md](troubleshoot.md).
 
-Readiness probe: read the `proxima://graph` MCP resource (`core/get_graph`).
-There is no HTTP health endpoint — the process is ready when the resource
-returns; auth/DB failures surface on that read.
+Probes: with `PROXIMA_HEALTH_ENDPOINTS=true` the MCP listener serves
+anonymous `GET /healthz` (liveness) and `GET /readyz` (the database answers
+within 2 s and the runtime is not shutting down), outside the Host guard and
+bearer auth. Without it, read the `proxima://graph` MCP resource
+(`core/get_graph`): the process is ready when the resource returns, and
+auth/DB failures surface on that read.
+
+Shutdown: a host on `proxima::serve` (or
+`RunningProxima::until_shutdown_signal`) drains on SIGTERM/SIGINT — `/readyz`
+turns 503, the listener stops accepting, in-flight requests and streams
+finish, workers join — and exits 0. Keep the orchestrator's grace period
+above your longest request.
 
 ## Backup and restore
 

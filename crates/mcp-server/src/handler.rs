@@ -157,6 +157,7 @@ impl ServerHandler for DynamicHandler {
         let uri = request.uri;
         let auth = auth_context(&context);
         let (client_name, client_version) = peer_implementation(&context);
+        let request_services = request_services(&self.server, &context);
         let server = self.server.clone();
         async move {
             if uri == selfdoc::HOW_TO_URI {
@@ -183,8 +184,9 @@ impl ServerHandler for DynamicHandler {
                 ));
             }
             let author = author_from_ctx(auth.as_ref(), &client_name, &client_version);
+            let request = request_services?;
             let value = server
-                .read_resource(&uri, author, auth)
+                .read_resource_in_request(&uri, author, auth, request)
                 .await
                 .map_err(resource_invocation_error_to_error_data)?;
             let text = serde_json::to_string(&value).map_err(generic_internal_error)?;
@@ -275,7 +277,9 @@ impl ServerHandler for DynamicHandler {
         let server = self.server.clone();
         let auth = auth_context(&context);
         let (client_name, client_version) = peer_implementation(&context);
+        let request_services = request_services(&self.server, &context);
         async move {
+            let request_services = request_services?;
             let request_name = request.name.to_string();
             let canonical_name =
                 canonical_tool_name(&server, &request_name).unwrap_or_else(|| request_name.clone());
@@ -286,7 +290,7 @@ impl ServerHandler for DynamicHandler {
             strip_call_context_args(&mut args);
             let error_auth = auth.clone();
             let output = server
-                .call_tool(&canonical_name, args, author, auth)
+                .call_tool_in_request(&canonical_name, args, author, auth, request_services)
                 .await
                 .map_err(|err| {
                     tool_invocation_error_to_error_data(server.registry(), err, error_auth.as_ref())
@@ -595,6 +599,23 @@ fn canonical_tool_name(server: &McpToolHost, request_name: &str) -> Option<Strin
         .iter()
         .find(|descriptor| tool_name_matches(descriptor.name, request_name))
         .map(|descriptor| descriptor.name.to_string())
+}
+
+/// The per-request service set (request-extension bag plus allowlisted
+/// headers) of one served call. Empty when rmcp injected no HTTP parts
+/// (direct handler tests).
+fn request_services(
+    server: &McpToolHost,
+    context: &RequestContext<RoleServer>,
+) -> Result<proxima_core::FlavorServices, ErrorData> {
+    context
+        .extensions
+        .get::<http::request::Parts>()
+        .map_or_else(
+            || Ok(proxima_core::FlavorServices::default()),
+            |parts| server.request_services(&parts.headers, &parts.extensions),
+        )
+        .map_err(|err| mcp_tool_error_to_error_data(&err))
 }
 
 /// Resolve the token scope from the request auth context. Returns `None`
