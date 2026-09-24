@@ -142,6 +142,17 @@ The shipped OIDC resolver bounds each discovery and JWKS request, including
 connect and body read, to `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` (`10` by default;
 `1..=300`). Zero, malformed, and out-of-range values fail boot.
 
+A host with no network path to its issuer pins the keys instead:
+`PROXIMA_OIDC_JWKS_JSON` takes a standard JWKS document
+(`{"keys":[{"kty":"RSA","kid":..,"n":..,"e":..,"alg":"RS256","use":"sig"}]}`).
+When it is set nothing is fetched — no discovery, no JWKS request — and
+`PROXIMA_OIDC_ISSUER`, still required and still URL-validated, is only matched
+against the token's `iss`. Every key must be a named RSA public key (`alg`, if
+present, RS256/RS384/RS512; `use`, if present, `sig`); an empty set, a key
+without `kid`, a non-RSA key, private key material, or malformed JSON fails
+boot. It is mutually exclusive with `PROXIMA_OIDC_JWKS_URI`, the discovery
+override. Rotating a pinned key is a config change and a restart.
+
 The runtime resolves roles through one `OwnerAccessPort`: the host's
 (`.owner_access(..)`), else the Postgres resolver over the runtime pool. The
 edge's per-Group probe and the delegation service use it, and so does the

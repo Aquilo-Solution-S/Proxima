@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use jsonwebtoken::DecodingKey;
 use tokio::sync::{Mutex, RwLock};
 
+use crate::authenticator::VERIFIED_ALGORITHMS;
 use crate::config::{OidcConfigError, validate_issuer_url, validate_jwks_url};
 
 /// Minimum spacing between JWKS refetches. Bounds the outbound-fetch rate so a
@@ -51,7 +52,8 @@ pub trait KeyResolver: Send + Sync {
     async fn key_for(&self, kid: &str) -> Result<Arc<DecodingKey>, KeyError>;
 }
 
-/// In-memory resolver for tests / pre-shared keys.
+/// In-memory resolver for pre-shared keys: tests, and a host verifying
+/// against a JWKS pinned in its configuration ([`Self::from_jwks_json`]).
 pub struct StaticJwksResolver {
     keys: HashMap<String, Arc<DecodingKey>>,
 }
@@ -68,6 +70,67 @@ impl StaticJwksResolver {
     #[must_use]
     pub fn new(keys: HashMap<String, Arc<DecodingKey>>) -> Self {
         Self { keys }
+    }
+
+    /// Build a resolver from a JWKS document shipped in configuration, so a
+    /// host with no network path to its issuer still verifies its tokens.
+    ///
+    /// Strict where [`HttpJwksResolver`] is tolerant. A fetched set is the
+    /// issuer's to publish, and one EC key in it must not take down the RSA
+    /// keys beside it. A pinned set is the operator's, and an entry this
+    /// resolver skipped would be a key the operator believes is trusted and
+    /// is not — so every entry must be a named RSA verification key.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::Parse`] when the document is not a JWKS or a key's `n`/`e`
+    /// do not decode. [`KeyError::Config`] when the set is empty, or an entry
+    /// has no `kid`, repeats one, is not `kty: RSA`, lacks `n` or `e`, names an
+    /// `alg` outside RS256/RS384/RS512 or a `use` other than `sig`, or carries
+    /// the private exponent `d`.
+    pub fn from_jwks_json(raw: &str) -> Result<Self, KeyError> {
+        let set: PinnedJwkSet =
+            serde_json::from_str(raw).map_err(|err| KeyError::Parse(err.to_string()))?;
+        if set.keys.is_empty() {
+            return Err(KeyError::Config("jwks contains no keys".into()));
+        }
+        let mut keys = HashMap::with_capacity(set.keys.len());
+        for (index, jwk) in set.keys.into_iter().enumerate() {
+            let Some(kid) = jwk.kid.filter(|kid| !kid.trim().is_empty()) else {
+                return Err(KeyError::Config(format!("key {index} has no kid")));
+            };
+            let refuse = |reason: &str| Err(KeyError::Config(format!("key {kid:?} {reason}")));
+            if jwk.kty != "RSA" {
+                return refuse(&format!("has kty {:?}; only RSA is verified", jwk.kty));
+            }
+            if let Some(alg) = &jwk.alg
+                && !alg
+                    .parse::<jsonwebtoken::Algorithm>()
+                    .is_ok_and(|alg| VERIFIED_ALGORITHMS.contains(&alg))
+            {
+                return refuse(&format!("has alg {alg:?}; only RS256/RS384/RS512"));
+            }
+            if let Some(key_use) = &jwk.key_use
+                && key_use != "sig"
+            {
+                return refuse(&format!("has use {key_use:?}; only sig"));
+            }
+            // Only the public half belongs in configuration. A private key
+            // here would let anyone who can read the config mint tokens.
+            if jwk.d.is_some() {
+                return refuse("carries private key material (d)");
+            }
+            let (Some(n), Some(e)) = (&jwk.n, &jwk.e) else {
+                return refuse("lacks n or e");
+            };
+            let key = DecodingKey::from_rsa_components(n, e)
+                .map_err(|err| KeyError::Parse(format!("key {kid:?}: {err}")))?;
+            if keys.contains_key(&kid) {
+                return refuse("appears twice");
+            }
+            keys.insert(kid, Arc::new(key));
+        }
+        Ok(Self::new(keys))
     }
 }
 
@@ -101,6 +164,26 @@ struct Jwk {
 #[derive(serde::Deserialize)]
 struct JwkSet {
     keys: Vec<Jwk>,
+}
+
+/// A JWKS entry shipped in configuration. Every member is optional so the
+/// refusal names what is missing instead of a serde position.
+#[derive(serde::Deserialize)]
+struct PinnedJwk {
+    kid: Option<String>,
+    #[serde(default)]
+    kty: String,
+    n: Option<String>,
+    e: Option<String>,
+    alg: Option<String>,
+    #[serde(rename = "use")]
+    key_use: Option<String>,
+    d: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(serde::Deserialize)]
+struct PinnedJwkSet {
+    keys: Vec<PinnedJwk>,
 }
 
 /// Production resolver: discovers the JWKS endpoint and caches keys by kid,
@@ -413,8 +496,8 @@ mod http_tests {
     // test needs neither `rsa` nor `rand` (RUSTSEC-2023-0071: the `rsa` crate
     // ships an unfixed Marvin timing sidechannel). The test only serves the
     // public JWK from a mock IdP and resolves it; nothing signs here.
-    const TEST_JWK_N: &str = "vcvNMtDvpJExXOyytyqUOWhX2sxa-Xtxd4KmfJ05-iPgT_RiyZzx3UoTuJYtvDCCRcXKU13Rn8cIc0ushWlKpLDW08U4r9bBVctcajpnOumCcuIvnM1_HEiM-WuYPRFk0I5h--ueLA0KhIfPs0ORLpqsvF0XIuL6_uZtObrH9wxPMmG4r5Hh7h3Gm5PchY0R8H7VrEOm79fnra7OGg5nh7XkmStnZnwozODW0FFnpW-kMeCK2-2fzmSWg1A_clFdicji1-xIvk7Wog9CVsZZK9iRHgAIxmsU-Iawb_Wwlwuu-_gIZWFkund24iA2qLktFx_39CORZqfFRNiIsHSvIQ";
-    const TEST_JWK_E: &str = "AQAB";
+    pub(super) const TEST_JWK_N: &str = "vcvNMtDvpJExXOyytyqUOWhX2sxa-Xtxd4KmfJ05-iPgT_RiyZzx3UoTuJYtvDCCRcXKU13Rn8cIc0ushWlKpLDW08U4r9bBVctcajpnOumCcuIvnM1_HEiM-WuYPRFk0I5h--ueLA0KhIfPs0ORLpqsvF0XIuL6_uZtObrH9wxPMmG4r5Hh7h3Gm5PchY0R8H7VrEOm79fnra7OGg5nh7XkmStnZnwozODW0FFnpW-kMeCK2-2fzmSWg1A_clFdicji1-xIvk7Wog9CVsZZK9iRHgAIxmsU-Iawb_Wwlwuu-_gIZWFkund24iA2qLktFx_39CORZqfFRNiIsHSvIQ";
+    pub(super) const TEST_JWK_E: &str = "AQAB";
 
     fn test_key() -> Arc<jsonwebtoken::DecodingKey> {
         Arc::new(
@@ -1204,6 +1287,93 @@ mod http_tests {
                 field: "discovered jwks_uri",
                 ..
             })
+        ));
+    }
+}
+
+#[cfg(test)]
+mod pinned_jwks_tests {
+    use serde_json::{Value, json};
+
+    use super::http_tests::{TEST_JWK_E, TEST_JWK_N};
+    use super::{KeyError, KeyResolver, StaticJwksResolver};
+
+    fn rsa_key(kid: &str) -> Value {
+        json!({ "kty": "RSA", "kid": kid, "alg": "RS256", "use": "sig", "n": TEST_JWK_N, "e": TEST_JWK_E })
+    }
+
+    fn with(mut key: Value, member: &str, value: Value) -> Value {
+        key[member] = value;
+        key
+    }
+
+    fn without(mut key: Value, member: &str) -> Value {
+        key.as_object_mut().expect("jwk object").remove(member);
+        key
+    }
+
+    fn parse(keys: &[Value]) -> Result<StaticJwksResolver, KeyError> {
+        StaticJwksResolver::from_jwks_json(&json!({ "keys": keys }).to_string())
+    }
+
+    #[tokio::test]
+    async fn a_pinned_set_resolves_each_key_by_kid_and_nothing_else() {
+        let resolver = parse(&[rsa_key("k1"), without(without(rsa_key("k2"), "alg"), "use")])
+            .expect("named RSA keys with and without alg/use");
+
+        assert!(resolver.key_for("k1").await.is_ok());
+        assert!(resolver.key_for("k2").await.is_ok());
+        assert_eq!(
+            resolver.key_for("k3").await.err(),
+            Some(KeyError::UnknownKid)
+        );
+    }
+
+    /// An entry the HTTP resolver would skip is refused here: a pinned key
+    /// silently dropped is one the operator believes is trusted and is not.
+    #[test]
+    fn every_entry_must_be_a_named_public_rsa_verification_key() {
+        let refused = [
+            ("empty set", vec![]),
+            ("no kid", vec![without(rsa_key("k1"), "kid")]),
+            ("blank kid", vec![rsa_key(" ")]),
+            ("EC key", vec![with(rsa_key("k1"), "kty", json!("EC"))]),
+            ("no kty", vec![without(rsa_key("k1"), "kty")]),
+            ("no n", vec![without(rsa_key("k1"), "n")]),
+            ("no e", vec![without(rsa_key("k1"), "e")]),
+            ("HS256", vec![with(rsa_key("k1"), "alg", json!("HS256"))]),
+            ("none", vec![with(rsa_key("k1"), "alg", json!("none"))]),
+            ("PS256", vec![with(rsa_key("k1"), "alg", json!("PS256"))]),
+            ("enc use", vec![with(rsa_key("k1"), "use", json!("enc"))]),
+            ("private d", vec![with(rsa_key("k1"), "d", json!("AQAB"))]),
+            ("duplicate kid", vec![rsa_key("k1"), rsa_key("k1")]),
+            (
+                "one bad key among good",
+                vec![rsa_key("k1"), with(rsa_key("k2"), "kty", json!("OKP"))],
+            ),
+        ];
+        for (case, keys) in refused {
+            assert!(
+                matches!(parse(&keys), Err(KeyError::Config(_))),
+                "{case} must be a config error"
+            );
+        }
+    }
+
+    #[test]
+    fn a_document_that_is_not_a_jwks_is_a_parse_error() {
+        for raw in ["", "not json", "{}", r#"{"keys":{}}"#, r#"[{"kid":"k1"}]"#] {
+            assert!(
+                matches!(
+                    StaticJwksResolver::from_jwks_json(raw),
+                    Err(KeyError::Parse(_))
+                ),
+                "{raw:?} must be a parse error"
+            );
+        }
+        assert!(matches!(
+            parse(&[with(rsa_key("k1"), "n", json!("!!not base64url!!"))]),
+            Err(KeyError::Parse(_))
         ));
     }
 }

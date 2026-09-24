@@ -28,6 +28,11 @@ use crate::runtime_config::ProximaError;
 const SUBJECT_MAP_JSON: &str = "PROXIMA_OIDC_SUBJECT_MAP_JSON";
 const SUBJECT_MAP_LEGACY: &str = "PROXIMA_OIDC_SUBJECT_MAP";
 
+/// Where verification keys come from: fetched from the issuer (discovered, or
+/// at `JWKS_URI`), or pinned in configuration (`JWKS_JSON`). At most one.
+const JWKS_URI: &str = "PROXIMA_OIDC_JWKS_URI";
+const JWKS_JSON: &str = "PROXIMA_OIDC_JWKS_JSON";
+
 /// Complete-request timeout for OIDC discovery and JWKS HTTP requests.
 const OIDC_HTTP_TIMEOUT_SECONDS: &str = "PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS";
 
@@ -37,11 +42,12 @@ const LEEWAY_SECS: u64 = 60;
 /// Every variable [`oidc_from_lookup`] reads. The runtime environment layer
 /// captures exactly these, so the authenticator it builds at resolve sees
 /// the environment the builder was given.
-pub(crate) const OIDC_ENV_KEYS: [&str; 8] = [
+pub(crate) const OIDC_ENV_KEYS: [&str; 9] = [
     "PROXIMA_OIDC_ISSUER",
     "PROXIMA_OIDC_AUDIENCE",
     "PROXIMA_PUBLIC_URL",
-    "PROXIMA_OIDC_JWKS_URI",
+    JWKS_URI,
+    JWKS_JSON,
     "PROXIMA_OIDC_ALLOWED_SUBJECTS",
     OIDC_HTTP_TIMEOUT_SECONDS,
     SUBJECT_MAP_JSON,
@@ -82,6 +88,9 @@ pub use proxima_core::{AccessError, OwnerRoles};
 /// - `PROXIMA_OIDC_SUBJECT_MAP_JSON` or `PROXIMA_OIDC_SUBJECT_MAP` — which
 ///   subject maps to which owner. Mutually exclusive.
 /// - `PROXIMA_OIDC_JWKS_URI` — optional override; discovered otherwise.
+/// - `PROXIMA_OIDC_JWKS_JSON` — optional JWKS document pinned in config. When
+///   set nothing is fetched: the issuer is only matched against `iss`, for a
+///   host with no network path to it. Mutually exclusive with `JWKS_URI`.
 /// - `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` — optional complete-request timeout;
 ///   default 10 seconds, maximum 300 seconds.
 /// - `PROXIMA_OIDC_ALLOWED_SUBJECTS` — optional comma-separated allowlist.
@@ -89,8 +98,9 @@ pub use proxima_core::{AccessError, OwnerRoles};
 /// # Errors
 ///
 /// Returns [`ProximaError::Config`] when an issuer is set without its
-/// companions, when both subject-map spellings are set, when the subject map
-/// will not parse, or when the issuer or JWKS URI is not a secure URL.
+/// companions, when both subject-map spellings or both JWKS sources are set,
+/// when the subject map or pinned JWKS will not parse, or when the issuer or
+/// JWKS URI is not a secure URL.
 pub fn oidc_from_env(
     owner_access: Arc<dyn OwnerAccessPort>,
 ) -> Result<Option<OidcBundle>, ProximaError> {
@@ -117,7 +127,15 @@ pub fn oidc_from_lookup(
     let public_url = non_empty(lookup, "PROXIMA_PUBLIC_URL").ok_or_else(|| {
         ProximaError::Config("PROXIMA_OIDC_ISSUER set without PROXIMA_PUBLIC_URL".into())
     })?;
-    let jwks_uri = non_empty(lookup, "PROXIMA_OIDC_JWKS_URI");
+    let jwks_uri = non_empty(lookup, JWKS_URI);
+    let jwks_json = non_empty(lookup, JWKS_JSON);
+    // Both is an error rather than a precedence rule: one says fetch keys
+    // from the issuer, the other says never contact it.
+    if jwks_uri.is_some() && jwks_json.is_some() {
+        return Err(ProximaError::Config(format!(
+            "{JWKS_JSON} and {JWKS_URI} are mutually exclusive"
+        )));
+    }
     let allowed_subjects = non_empty(lookup, "PROXIMA_OIDC_ALLOWED_SUBJECTS").map(|raw| {
         raw.split(',')
             .map(str::trim)
@@ -143,21 +161,25 @@ pub fn oidc_from_lookup(
     // The issuer/JWKS URL boundary is validated BEFORE the subject map and
     // before storage, so an insecure-URL rejection short-circuits rather
     // than being reported after two other things have already been parsed.
-    let resolver = proxima_auth_oidc::HttpJwksResolver::with_request_timeout(
-        issuer.clone(),
-        config.jwks_uri.clone(),
-        request_timeout,
-    )
-    .map_err(|err| ProximaError::Config(err.to_string()))?;
+    let resolver: Arc<dyn KeyResolver> = match jwks_json {
+        Some(json) => Arc::new(
+            StaticJwksResolver::from_jwks_json(&json)
+                .map_err(|err| ProximaError::Config(format!("{JWKS_JSON}: {err}")))?,
+        ),
+        None => Arc::new(
+            HttpJwksResolver::with_request_timeout(
+                issuer.clone(),
+                config.jwks_uri.clone(),
+                request_timeout,
+            )
+            .map_err(|err| ProximaError::Config(err.to_string()))?,
+        ),
+    };
     let subject_map = subject_map(lookup, &issuer)?;
 
-    let authenticator = proxima_auth_oidc::OidcAuthenticator::new(
-        config,
-        Arc::new(resolver),
-        subject_map,
-        owner_access,
-    )
-    .map_err(|err| ProximaError::Config(err.to_string()))?;
+    let authenticator =
+        proxima_auth_oidc::OidcAuthenticator::new(config, resolver, subject_map, owner_access)
+            .map_err(|err| ProximaError::Config(err.to_string()))?;
     Ok(Some((
         Arc::new(authenticator),
         ResourceServerMetadata {
@@ -399,6 +421,240 @@ mod tests {
             ),
         ]);
         assert!(oidc_from_lookup(&insecure, owner_access()).is_err());
+    }
+
+    /// The pack-call shape: tokens minted by an issuer the host has no
+    /// network path to, verified against a key set shipped in its config.
+    mod pinned_jwks {
+        use std::io::ErrorKind;
+        use std::net::TcpListener;
+        use std::sync::Arc;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        use async_trait::async_trait;
+        use aws_lc_rs::rand::SystemRandom;
+        use aws_lc_rs::rsa::KeySize;
+        use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use proxima_core::{
+            AccessError, AuthError, Authenticator, Credentials, OwnerAccessPort, OwnerRoles, UserId,
+        };
+        use uuid::Uuid;
+
+        use super::env;
+        use crate::auth::{JWKS_JSON, JWKS_URI, oidc_from_lookup};
+        use crate::runtime_config::ProximaError;
+
+        const KID: &str = "pack-call-1";
+        const FLEET: &str = "pack-fleet";
+        const CALLER: &str = "centauri";
+
+        /// An issuer that never answers. Plaintext loopback passes the
+        /// issuer URL policy, and any discovery or JWKS fetch aimed at it
+        /// completes its handshake into this listener's backlog, where
+        /// [`Self::assert_never_contacted`] finds it.
+        struct SilentIssuer {
+            listener: TcpListener,
+            url: String,
+        }
+
+        impl SilentIssuer {
+            fn bind() -> Self {
+                let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback issuer");
+                listener.set_nonblocking(true).expect("non-blocking accept");
+                let url = format!("http://{}", listener.local_addr().expect("bound address"));
+                Self { listener, url }
+            }
+
+            fn assert_never_contacted(&self) {
+                match self.listener.accept() {
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {}
+                    other => panic!("the static path contacted the issuer: {other:?}"),
+                }
+            }
+        }
+
+        struct OneSubject(UserId);
+
+        #[async_trait]
+        impl OwnerAccessPort for OneSubject {
+            async fn resolve_roles_for_subject(
+                &self,
+                subject: UserId,
+            ) -> Result<OwnerRoles, AccessError> {
+                if subject != self.0 {
+                    return Err(AccessError::Resolution("unknown subject".into()));
+                }
+                OwnerRoles::for_subject(subject, [])
+            }
+        }
+
+        fn signing_key() -> RsaKeyPair {
+            RsaKeyPair::generate(KeySize::Rsa2048).expect("generate test RSA key")
+        }
+
+        fn jwks(kid: &str, key: &RsaKeyPair) -> String {
+            let public = key.public_key();
+            serde_json::json!({ "keys": [{
+                "kty": "RSA",
+                "kid": kid,
+                "alg": "RS256",
+                "use": "sig",
+                "n": URL_SAFE_NO_PAD.encode(public.modulus().big_endian_without_leading_zero()),
+                "e": URL_SAFE_NO_PAD.encode(public.exponent().big_endian_without_leading_zero()),
+            }]})
+            .to_string()
+        }
+
+        fn token(key: &RsaKeyPair, kid: &str, issuer: &str) -> Credentials {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_secs();
+            let header = serde_json::json!({ "alg": "RS256", "kid": kid, "typ": "JWT" });
+            let claims = serde_json::json!({
+                "iss": issuer,
+                "aud": FLEET,
+                "sub": CALLER,
+                "exp": now + 60,
+            });
+            let signing_input = format!(
+                "{}.{}",
+                URL_SAFE_NO_PAD.encode(header.to_string()),
+                URL_SAFE_NO_PAD.encode(claims.to_string())
+            );
+            let mut signature = vec![0; key.public_modulus_len()];
+            key.sign(
+                &RSA_PKCS1_SHA256,
+                &SystemRandom::new(),
+                signing_input.as_bytes(),
+                &mut signature,
+            )
+            .expect("sign jwt");
+            Credentials::Bearer(format!(
+                "{signing_input}.{}",
+                URL_SAFE_NO_PAD.encode(signature)
+            ))
+        }
+
+        fn pinned(
+            issuer: &str,
+            jwks: &str,
+            user: Uuid,
+        ) -> Result<Option<crate::auth::OidcBundle>, ProximaError> {
+            let subject_map = format!("{CALLER}:{user}");
+            oidc_from_lookup(
+                &env(&[
+                    ("PROXIMA_OIDC_ISSUER", issuer),
+                    ("PROXIMA_OIDC_AUDIENCE", FLEET),
+                    ("PROXIMA_PUBLIC_URL", "https://pack.test"),
+                    ("PROXIMA_OIDC_SUBJECT_MAP", &subject_map),
+                    (JWKS_JSON, jwks),
+                    // A regression to the HTTP resolver stalls on the silent
+                    // issuer; make it fail in one second rather than ten.
+                    ("PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS", "1"),
+                ]),
+                Arc::new(OneSubject(UserId::new(user))),
+            )
+        }
+
+        fn authenticator(issuer: &str, jwks: &str, user: Uuid) -> Arc<dyn Authenticator> {
+            let (authenticator, metadata) = pinned(issuer, jwks, user)
+                .expect("pinned jwks config")
+                .expect("an issuer yields a bundle");
+            assert_eq!(metadata.authorization_servers, [issuer]);
+            authenticator
+        }
+
+        #[tokio::test]
+        async fn a_token_signed_by_a_pinned_key_authenticates_without_contacting_the_issuer() {
+            let issuer = SilentIssuer::bind();
+            let key = signing_key();
+            let user = Uuid::now_v7();
+            let authenticator = authenticator(&issuer.url, &jwks(KID, &key), user);
+
+            let ctx = authenticator
+                .authenticate(&token(&key, KID, &issuer.url))
+                .await
+                .expect("pinned key verifies its token");
+
+            assert_eq!(ctx.subject(), Some(UserId::new(user)));
+            issuer.assert_never_contacted();
+        }
+
+        /// An unknown kid is where the HTTP resolver refetches, so it is the
+        /// case that proves the pinned set is the whole set.
+        #[tokio::test]
+        async fn a_token_with_an_unknown_kid_is_refused_without_contacting_the_issuer() {
+            let issuer = SilentIssuer::bind();
+            let pinned_key = signing_key();
+            let other_key = signing_key();
+            let user = Uuid::now_v7();
+            let authenticator = authenticator(&issuer.url, &jwks(KID, &pinned_key), user);
+
+            for credentials in [
+                token(&other_key, "rotated-in", &issuer.url),
+                token(&pinned_key, "rotated-in", &issuer.url),
+            ] {
+                assert_eq!(
+                    authenticator.authenticate(&credentials).await.err(),
+                    Some(AuthError::InvalidCredentials)
+                );
+            }
+            issuer.assert_never_contacted();
+        }
+
+        /// One source says fetch keys from the issuer, the other says never
+        /// contact it; neither is allowed to win silently.
+        #[tokio::test]
+        async fn both_jwks_sources_at_once_is_refused() {
+            let user = Uuid::now_v7();
+            let both = env(&[
+                ("PROXIMA_OIDC_ISSUER", "https://centauri.test"),
+                ("PROXIMA_OIDC_AUDIENCE", FLEET),
+                ("PROXIMA_PUBLIC_URL", "https://pack.test"),
+                ("PROXIMA_OIDC_SUBJECT_MAP", &format!("{CALLER}:{user}")),
+                (JWKS_URI, "https://centauri.test/keys"),
+                (JWKS_JSON, &jwks(KID, &signing_key())),
+            ]);
+            let Err(ProximaError::Config(message)) =
+                oidc_from_lookup(&both, Arc::new(OneSubject(UserId::new(user))))
+            else {
+                panic!("both JWKS sources must be a config error");
+            };
+            assert!(
+                message.contains(JWKS_JSON) && message.contains(JWKS_URI),
+                "message: {message}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_malformed_pinned_jwks_is_refused_at_boot() {
+            let key = signing_key();
+            let mut no_kid: serde_json::Value =
+                serde_json::from_str(&jwks(KID, &key)).expect("jwks json");
+            no_kid["keys"][0]
+                .as_object_mut()
+                .expect("jwk object")
+                .remove("kid");
+            let mut ec: serde_json::Value =
+                serde_json::from_str(&jwks(KID, &key)).expect("jwks json");
+            ec["keys"][0]["kty"] = "EC".into();
+
+            for (case, raw) in [
+                ("malformed JSON", "{\"keys\": [".to_owned()),
+                ("no keys", r#"{"keys":[]}"#.to_owned()),
+                ("no kid", no_kid.to_string()),
+                ("non-RSA key", ec.to_string()),
+            ] {
+                let Err(ProximaError::Config(message)) =
+                    pinned("https://centauri.test", &raw, Uuid::now_v7())
+                else {
+                    panic!("{case} must be a config error");
+                };
+                assert!(message.contains(JWKS_JSON), "{case}: {message}");
+            }
+        }
     }
 
     /// A variable set to whitespace is set to nothing. Otherwise an empty
