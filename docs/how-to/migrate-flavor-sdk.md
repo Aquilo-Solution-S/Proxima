@@ -1,14 +1,14 @@
 # Migrate the Flavor SDK
 
-## v0.0.18
+## v0.0.19
 
-Pin all Proxima Rust dependencies to the same `v0.0.18` tag. Every item is
+Pin all Proxima Rust dependencies to the same `v0.0.19` tag. Every item is
 additive except the host-state registration row; hand-written flavors keep
 compiling.
 
 | Surface | Upgrade |
 |---|---|
-| Database | Core `0018_v018_owner_rls_installer.sql` adds `proxima_core.install_owner_rls`; existing databases upgrade in place. |
+| Database | Core `0018_v019_owner_rls_installer.sql` adds `proxima_core.install_owner_rls`; existing databases upgrade in place. |
 | Owner RLS | Replace a flavor's hand-written owner-RLS `DO` block with one `SELECT proxima_core.install_owner_rls(...)` in a **new** migration ([09 §Owner RLS](../09-developing-flavors.md#owner-rls)); never edit the released file. |
 | Flavor ledger | `NamedMigrator::new(id, m)` → `NamedMigrator::flavor(id, m)`: own ledger `public._sqlx_migrations_<id>`. A flavor that recorded on core's ledger is moved on its next boot, nothing re-runs. |
 | Bundle | `proxima::flavor_bundle! { bundle = …, <proxima_flavor! keys>, migrations = …, app = { … } }` replaces `proxima_flavor!` + `register_pg_sidecars` + `impl FlavorBundle` (+ `FlavorApp::app_info`) ([09 §FlavorBundle](../09-developing-flavors.md#flavorbundle)). |

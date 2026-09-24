@@ -184,7 +184,7 @@ mod kit_gap {
     }
 }
 
-/// The same flavor as a pre-v0.0.18 flavor wrote it by hand, on core's
+/// The same flavor as a pre-v0.0.19 flavor wrote it by hand, on core's
 /// shared ledger.
 struct SharedLedgerKit;
 

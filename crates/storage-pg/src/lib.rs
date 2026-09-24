@@ -1364,7 +1364,7 @@ const EMBEDDING_SPACE_MARKERS: &str = r"SELECT CASE
          ELSE NULL
        END";
 
-/// v0.0.18: the owner-RLS installer flavor migrations call (0018).
+/// v0.0.19: the owner-RLS installer flavor migrations call (0018).
 const OWNER_RLS_INSTALLER_MARKERS: &str = r"SELECT CASE
          WHEN to_regprocedure('proxima_core.install_owner_rls(text,text[],text[],text[],text[])') IS NULL
            THEN 'missing function proxima_core.install_owner_rls'
@@ -2449,7 +2449,7 @@ mod tests {
              0011_v012_fact_outbox.sql, 0012_v013_publication_origin.sql and \
              0013_v015_agent_note_natural_key_index.sql, 0014_v015_owner_rls.sql, \
              0015_v016_embedding_spaces.sql, 0016_v016_embedding_claim_order.sql, \
-             0017_v016_metadata_write_scope.sql and 0018_v018_owner_rls_installer.sql"
+             0017_v016_metadata_write_scope.sql and 0018_v019_owner_rls_installer.sql"
         );
     }
 

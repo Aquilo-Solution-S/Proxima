@@ -13,11 +13,11 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
-## v0.0.18
+## v0.0.19
 
 | Lane | Migration |
 |---|---|
-| Core | `0018_v018_owner_rls_installer.sql`: `proxima_core.install_owner_rls(schema, owner_id_tables, fk_parent_tables, ownerless_tables[, memory_owner_tables])`, the owner-RLS installer flavor migrations call ([09 §Owner RLS](../09-developing-flavors.md#owner-rls)); no table or row changes |
+| Core | `0018_v019_owner_rls_installer.sql`: `proxima_core.install_owner_rls(schema, owner_id_tables, fk_parent_tables, ownerless_tables[, memory_owner_tables])`, the owner-RLS installer flavor migrations call ([09 §Owner RLS](../09-developing-flavors.md#owner-rls)); no table or row changes |
 | Code flavor | No new migration |
 
 Existing databases upgrade in place. A flavor adopting the installer does so

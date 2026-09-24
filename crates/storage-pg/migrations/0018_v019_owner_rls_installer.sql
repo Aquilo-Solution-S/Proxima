@@ -1,4 +1,4 @@
--- v0.0.18: the owner-RLS installer every flavor schema calls.
+-- v0.0.19: the owner-RLS installer every flavor schema calls.
 --
 -- Each flavor's v0.0.15 cutover carried its own copy of the same DO block,
 -- differing only in the schema name and the table classification, with core's
