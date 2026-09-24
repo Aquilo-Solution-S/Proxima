@@ -1,8 +1,8 @@
 # Migrate the Flavor SDK
 
-## v0.0.19
+## v0.0.20
 
-Pin all Proxima Rust dependencies to the same `v0.0.19` tag. Hand-written
+Pin all Proxima Rust dependencies to the same `v0.0.20` tag. Hand-written
 flavors keep compiling. Not additive: the host-state registration row; the
 new `MigrationError::DuplicateLedger` variant (exhaustive matches); and the
 code flavor's `execution_plan_v1` policies, now keyed on the plan's own `t`,
@@ -10,7 +10,7 @@ so a caller with Fact rights alone no longer reaches plan rows.
 
 | Surface | Upgrade |
 |---|---|
-| Database | Core `0018_v019_owner_rls_installer.sql` adds `proxima_core.install_owner_rls`; code flavor `20260924000020_v019_owner_rls_installer.sql` re-installs its policies through it. Existing databases upgrade in place. |
+| Database | Core `0018_v020_owner_rls_installer.sql` adds `proxima_core.install_owner_rls`; code flavor `20260924000020_v020_owner_rls_installer.sql` re-installs its policies through it. Existing databases upgrade in place. |
 | Owner RLS | Replace a flavor's hand-written owner-RLS `DO` block with one `SELECT proxima_core.install_owner_rls(...)` in a **new** migration ([09 §Owner RLS](../09-developing-flavors.md#owner-rls)); never edit the released file. The installer keys an FK-parent table on the FK of its leading primary-key column; a v0.0.15-style block took the first FK by creation order, so diff the policies before and after. |
 | Flavor ledger | `NamedMigrator::new(id, m)` → `NamedMigrator::flavor(id, m)`: own ledger `public._sqlx_migrations_<id>` (a migrator that already declares a table keeps it). Rows on core's ledger are copied over on the next migration run and stay there, so neither binary re-runs anything. Two flavors on one ledger refuse. |
 | Bundle | `proxima::flavor_bundle! { bundle = …, <proxima_flavor! keys>, migrations = …, app = { … } }` replaces `proxima_flavor!` + `register_pg_sidecars` + `impl FlavorBundle` (+ `FlavorApp::app_info`) ([09 §FlavorBundle](../09-developing-flavors.md#flavorbundle)). |

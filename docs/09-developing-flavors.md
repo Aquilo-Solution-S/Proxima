@@ -987,7 +987,7 @@ classification; re-running re-creates the same policies.
 
 v0.0.15's hand-written blocks took an FK-parent table's first FK in creation
 order; `proxima_code.execution_plan_v1` (an Abstraction sidecar) was keyed on
-a Fact reference. The code flavor's v0.0.19 migration is the installer call
+a Fact reference. The code flavor's v0.0.20 migration is the installer call
 and rekeys it on `t`. A flavor adopting the installer gets the same fix for
 any such table; diff its policies before and after.
 

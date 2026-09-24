@@ -168,7 +168,7 @@ pub enum MigrationError {
         first_source: &'static str,
         second_source: &'static str,
     },
-    #[error("flavor ledger cutover failed for {source}: {err}")]
+    #[error("migration ledger preparation failed for {source}: {err}")]
     FlavorLedgerCutover {
         source: &'static str,
         #[source]
@@ -314,8 +314,9 @@ async fn run_sources_on_connection(
             run_source_with_contention_retry(conn, &source)
                 .await
                 .map_err(MigrationError::Core)?;
+            prepare_ledger(conn, &source).await?;
         } else {
-            prepare_flavor_ledger(conn, &source).await?;
+            prepare_ledger(conn, &source).await?;
             run_source_with_contention_retry(conn, &source)
                 .await
                 .map_err(|err| MigrationError::Flavor {
@@ -371,6 +372,11 @@ async fn run_source_with_contention_retry(
         let mut transaction = proxima_storage_pg::begin_migration_transaction(conn)
             .await
             .map_err(|error| MigrateError::Execute(sqlx::Error::Protocol(error.to_string())))?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(MIGRATION_LOCK_KEY)
+            .execute(&mut *transaction)
+            .await
+            .map_err(MigrateError::Execute)?;
         let result = source
             .migrator
             .run_direct(None, &mut *transaction, false)
@@ -439,8 +445,13 @@ fn is_shared_catalog_contention(err: &MigrateError) -> bool {
 /// Prepare a flavor's own ledger before its migrator first reads it: create
 /// it, copy in the rows core's shared ledger holds for its versions, and
 /// leave it read-only for every role but its owner. Runs on every migration
-/// run; every step is idempotent.
+/// run; every step is idempotent. Core's ledger, which `SQLx` creates on
+/// core's first run, gets the read-only step alone, after core migrates.
 ///
+/// - Serialized. Pods booting together race on `CREATE SCHEMA`, `CREATE
+///   TABLE` (`pg_type` unique index) and the ledger's ACL ("tuple
+///   concurrently updated"), all before `SQLx`'s own migrator lock; the
+///   transaction takes [`MIGRATION_LOCK_KEY`] first.
 /// - Copy, not move. A database migrated before the ledger split, or a
 ///   flavor switching from `NamedMigrator::new` to [`NamedMigrator::flavor`],
 ///   carries the flavor's rows in `public._sqlx_migrations`; without them
@@ -454,15 +465,14 @@ fn is_shared_catalog_contention(err: &MigrateError) -> bool {
 ///   table's DML to the runtime role, and a runtime role that can delete a
 ///   ledger row makes the next boot re-run that migration — a destructive
 ///   baseline included. Every non-owner INSERT/UPDATE/DELETE/TRUNCATE grant
-///   on the ledger is revoked; SELECT stays.
-async fn prepare_flavor_ledger(
+///   on the ledger is revoked (`CASCADE`, so grants passed on go too); SELECT
+///   stays. A role that owns the ledger then refuses the boot if any such
+///   grant is left; one that does not can revoke only what it granted.
+async fn prepare_ledger(
     conn: &mut PgConnection,
     source: &NamedMigrator,
 ) -> Result<(), MigrationError> {
     let table_name = source.migrator().table_name.clone();
-    if is_core_ledger(&table_name) {
-        return Ok(());
-    }
     let map_err = |err: sqlx::Error| MigrationError::FlavorLedgerCutover {
         source: source.source,
         err,
@@ -474,7 +484,17 @@ async fn prepare_flavor_ledger(
         .collect();
 
     let mut tx = conn.begin().await.map_err(map_err)?;
-    for schema in source.migrator().create_schemas.iter() {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(MIGRATION_LOCK_KEY)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    let schemas = if is_core_ledger(&table_name) {
+        &[][..]
+    } else {
+        &source.migrator().create_schemas[..]
+    };
+    for schema in schemas {
         // SQL-POLICY: fixed-fragment — `schema` is a compiled-in
         // `create_schemas` entry from the flavor crate's migrator; no value
         // reaches it from a caller. Interpolated as-is, like `SQLx` itself
@@ -495,18 +515,28 @@ async fn prepare_flavor_ledger(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-    sqlx::query(PREPARE_FLAVOR_LEDGER)
+    sqlx::query(PREPARE_LEDGER)
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
     tx.commit().await.map_err(map_err)
 }
 
-/// [`prepare_flavor_ledger`]'s statement. The ledger name arrives through a
+/// `pg_advisory_xact_lock` key taken first in every transaction this module
+/// opens — each source's run and each ledger's preparation: ASCII
+/// `proxmigr`, beside `runtime_grants`' `proxgrnt`. `SQLx`'s own migrator lock
+/// is session-level and released inside `run_direct`, before the enclosing
+/// transaction commits; alone, it let a replica booting alongside read the
+/// ledger before the first one's rows were visible and re-apply them
+/// (`schema "proxima_core" already exists`). The wait is bounded by
+/// [`MIGRATION_LOCK_TIMEOUT_SQL`], as `SQLx`'s is.
+const MIGRATION_LOCK_KEY: i64 = i64::from_be_bytes(*b"proxmigr");
+
+/// [`prepare_ledger`]'s statement. The ledger name arrives through a
 /// transaction-local setting, so the statement text is fixed; it is the
 /// flavor migrator's compiled-in table name, interpolated as `SQLx` itself
 /// interpolates it in `ensure_migrations_table`.
-const PREPARE_FLAVOR_LEDGER: &str = r"DO $prepare_flavor_ledger$
+const PREPARE_LEDGER: &str = r"DO $prepare_ledger$
 DECLARE
     ledger text := current_setting('proxima.flavor_ledger');
     versions bigint[] := current_setting('proxima.flavor_ledger_versions')::bigint[];
@@ -516,21 +546,30 @@ BEGIN
     IF to_regclass('public._sqlx_migrations') IS NULL THEN
         RAISE EXCEPTION 'core ledger public._sqlx_migrations is missing; core migrates first';
     END IF;
-    EXECUTE format('CREATE TABLE IF NOT EXISTS %s (LIKE public._sqlx_migrations INCLUDING ALL)', ledger);
+    IF to_regclass(ledger) IS DISTINCT FROM 'public._sqlx_migrations'::regclass THEN
+        EXECUTE format('CREATE TABLE IF NOT EXISTS %s (LIKE public._sqlx_migrations INCLUDING ALL)', ledger);
+        EXECUTE format('INSERT INTO %s SELECT * FROM public._sqlx_migrations WHERE version = ANY($1) ON CONFLICT (version) DO NOTHING', ledger::regclass)
+            USING versions;
+    END IF;
     ledger_oid := ledger::regclass;
-    EXECUTE format('INSERT INTO %s SELECT * FROM public._sqlx_migrations WHERE version = ANY($1) ON CONFLICT (version) DO NOTHING', ledger_oid)
-        USING versions;
     FOR grantee IN
         SELECT DISTINCT acl.grantee
           FROM pg_class AS c, aclexplode(c.relacl) AS acl
          WHERE c.oid = ledger_oid AND acl.grantee <> c.relowner
            AND acl.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')
     LOOP
-        EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON %s FROM %s', ledger_oid,
+        EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON %s FROM %s CASCADE', ledger_oid,
             CASE WHEN grantee = 0 THEN 'PUBLIC' ELSE quote_ident(pg_get_userbyid(grantee)) END);
     END LOOP;
+    IF EXISTS (SELECT 1
+                 FROM pg_class AS c, aclexplode(c.relacl) AS acl
+                WHERE c.oid = ledger_oid AND pg_has_role(c.relowner, 'USAGE')
+                  AND acl.grantee <> c.relowner
+                  AND acl.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')) THEN
+        RAISE EXCEPTION 'migration ledger % is still writable by a role other than its owner', ledger_oid;
+    END IF;
 END
-$prepare_flavor_ledger$";
+$prepare_ledger$";
 
 fn prepare_sources(
     flavors: impl IntoIterator<Item = NamedMigrator>,

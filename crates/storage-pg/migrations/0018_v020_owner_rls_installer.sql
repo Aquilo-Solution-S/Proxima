@@ -1,4 +1,4 @@
--- v0.0.19: the owner-RLS installer every flavor schema calls.
+-- v0.0.20: the owner-RLS installer every flavor schema calls.
 --
 -- Each flavor's v0.0.15 cutover carried its own copy of the same DO block,
 -- differing only in the schema name and the table classification, with core's
@@ -129,6 +129,11 @@ BEGIN
            AND array_length(con.conkey, 1) = 1 AND array_length(con.confkey, 1) = 1
            AND con.confrelid <> con.conrelid
            AND parent_ns.nspname IN ('proxima_core', target_schema)
+           -- An FK to a partitioned parent adds one row per referenced
+           -- partition, each a clone of this table's own parent-level FK;
+           -- one a partition inherits from its partitioned table stays.
+           AND NOT EXISTS (SELECT 1 FROM pg_constraint AS clone_of
+                            WHERE clone_of.oid = con.conparentid AND clone_of.conrelid = con.conrelid)
          ORDER BY COALESCE(con.conkey[1] = pk.conkey[1], false) DESC,
                   (parent_ns.nspname = 'proxima_core' AND parent.relname IN ('memory', 'goal')) DESC,
                   con.oid

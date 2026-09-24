@@ -1,4 +1,4 @@
--- v0.0.19: the code schema's owner RLS through proxima_core.install_owner_rls.
+-- v0.0.20: the code schema's owner RLS through proxima_core.install_owner_rls.
 --
 -- Same classification as the v0.0.15 block, one policy change: that block
 -- took an FK-parent table's first FK in creation order, so

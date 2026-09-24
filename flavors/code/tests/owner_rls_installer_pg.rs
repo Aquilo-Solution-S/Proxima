@@ -1,6 +1,6 @@
 //! `proxima_core.install_owner_rls` against this flavor's hand-written v0.0.15
 //! owner-RLS block: identical policies on every table but one, where the
-//! v0.0.15 block keyed an Abstraction sidecar on a Fact reference; the v0.0.19
+//! v0.0.15 block keyed an Abstraction sidecar on a Fact reference; the v0.0.20
 //! code migration is exactly the installer call; and every classification
 //! that does not name one owner per table is refused.
 
@@ -190,12 +190,21 @@ async fn assert_refusals(conn: &mut PgConnection) {
 
 /// Classifications that do not name one owner per table, on scratch tables
 /// in a throwaway schema.
+/// (tables, `fk_parent_tables`, refusal or `""`, accepted `(table, read-policy fragment)`).
+type ParentCase = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
 async fn assert_parent_refusals(conn: &mut PgConnection) {
-    let cases: [(&str, &str, &str); 4] = [
+    let cases: [ParentCase; 5] = [
         (
             "CREATE TABLE probe.self_ref (t uuid PRIMARY KEY, parent_t uuid REFERENCES probe.self_ref (t))",
             "ARRAY['self_ref']",
             "no single-column FK",
+            &[],
         ),
         (
             "CREATE TABLE probe.a (t uuid PRIMARY KEY);
@@ -203,6 +212,7 @@ async fn assert_parent_refusals(conn: &mut PgConnection) {
              ALTER TABLE probe.a ADD FOREIGN KEY (t) REFERENCES probe.b (t)",
             "ARRAY['a', 'b']",
             "reaches itself through its parent FKs",
+            &[],
         ),
         (
             "CREATE TABLE probe.amb (id bigint PRIMARY KEY,
@@ -210,6 +220,7 @@ async fn assert_parent_refusals(conn: &mut PgConnection) {
                  about_t uuid REFERENCES proxima_core.memory (t))",
             "ARRAY['amb']",
             "has 2 candidate parent FKs and none on its leading primary-key column",
+            &[],
         ),
         (
             "CREATE TABLE probe.keyed (t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
@@ -217,9 +228,22 @@ async fn assert_parent_refusals(conn: &mut PgConnection) {
              CREATE TABLE probe.only_one (id bigint PRIMARY KEY, x uuid REFERENCES proxima_core.memory (t))",
             "ARRAY['keyed', 'only_one']",
             "",
+            &[("probe.keyed", "parent.t = keyed.t"), ("probe.only_one", "parent.t = only_one.x")],
+        ),
+        // An FK to a partitioned table carries one clone per partition; a
+        // partitioned child and its partition each still have one parent.
+        (
+            "CREATE TABLE probe.u (t uuid PRIMARY KEY REFERENCES proxima_core.memory (t)) PARTITION BY HASH (t);
+             CREATE TABLE probe.u0 PARTITION OF probe.u FOR VALUES WITH (MODULUS 2, REMAINDER 0);
+             CREATE TABLE probe.u1 PARTITION OF probe.u FOR VALUES WITH (MODULUS 2, REMAINDER 1);
+             CREATE TABLE probe.c (id bigint PRIMARY KEY, ut uuid REFERENCES probe.u (t)) PARTITION BY HASH (id);
+             CREATE TABLE probe.c0 PARTITION OF probe.c FOR VALUES WITH (MODULUS 1, REMAINDER 0)",
+            "ARRAY['u', 'u0', 'u1', 'c', 'c0']",
+            "",
+            &[("probe.c", "parent.t = c.ut"), ("probe.c0", "parent.t = c0.ut")],
         ),
     ];
-    for (tables, fk_parent, refusal) in cases {
+    for (tables, fk_parent, refusal, accepted) in cases {
         let mut tx = conn.begin().await.expect("probe transaction");
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "CREATE SCHEMA probe; {tables}"
@@ -234,17 +258,17 @@ async fn assert_parent_refusals(conn: &mut PgConnection) {
         .await;
         if refusal.is_empty() {
             result.expect("an FK on the key, or the only FK, names the owner");
-            let key: String = sqlx::query_scalar(
-                "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy
-                  WHERE polrelid = 'probe.keyed'::regclass AND polname = 'proxima_owner_read'",
-            )
-            .fetch_one(&mut *tx)
-            .await
-            .expect("keyed read policy");
-            assert!(
-                key.contains("parent.t = keyed.t"),
-                "keyed on its own t: {key}"
-            );
+            for (table, fragment) in accepted {
+                let key: String = sqlx::query_scalar(
+                    "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy
+                      WHERE polrelid = $1::regclass AND polname = 'proxima_owner_read'",
+                )
+                .bind(table)
+                .fetch_one(&mut *tx)
+                .await
+                .expect("read policy");
+                assert!(key.contains(fragment), "{table} keyed as {fragment}: {key}");
+            }
         } else {
             let message = result.expect_err(refusal).to_string();
             assert!(message.contains(refusal), "{refusal}: {message}");
@@ -311,7 +335,7 @@ async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
         ],
         "every other policy is the v0.0.15 file's"
     );
-    for (v015, v019) in changed {
+    for (v015, v020) in changed {
         assert!(
             v015.5
                 .contains("execution_plan_v1.goal_activated_memory_id"),
@@ -319,23 +343,23 @@ async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
             v015.5
         );
         assert!(
-            v019.5.contains("parent.t = execution_plan_v1.t"),
+            v020.5.contains("parent.t = execution_plan_v1.t"),
             "{}",
-            v019.5
+            v020.5
         );
-        assert!(!v019.5.contains("goal_activated_memory_id"), "{}", v019.5);
+        assert!(!v020.5.contains("goal_activated_memory_id"), "{}", v020.5);
     }
 
     apply_current_migrations(&db.pg)
         .await
-        .expect("the v0.0.19 code migration applies");
+        .expect("the v0.0.20 code migration applies");
     let live: Vec<PolicyRow> = sqlx::query_as(POLICIES)
         .fetch_all(&mut conn)
         .await
         .expect("live policies");
     assert_eq!(
         live, installed,
-        "the v0.0.19 migration is the installer call"
+        "the v0.0.20 migration is the installer call"
     );
 
     assert_refusals(&mut conn).await;

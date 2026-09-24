@@ -13,12 +13,12 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
-## v0.0.19
+## v0.0.20
 
 | Lane | Migration |
 |---|---|
-| Core | `0018_v019_owner_rls_installer.sql`: `proxima_core.install_owner_rls(schema, owner_id_tables, fk_parent_tables, ownerless_tables[, memory_owner_tables])`, the owner-RLS installer flavor migrations call ([09 §Owner RLS](../09-developing-flavors.md#owner-rls)); no table or row changes |
-| Code flavor | `20260924000020_v019_owner_rls_installer.sql`: the v0.0.15 owner-RLS block as one installer call; rekeys `execution_plan_v1` (an Abstraction sidecar) on its own `t` instead of a Fact reference |
+| Core | `0018_v020_owner_rls_installer.sql`: `proxima_core.install_owner_rls(schema, owner_id_tables, fk_parent_tables, ownerless_tables[, memory_owner_tables])`, the owner-RLS installer flavor migrations call ([09 §Owner RLS](../09-developing-flavors.md#owner-rls)); no table or row changes |
+| Code flavor | `20260924000020_v020_owner_rls_installer.sql`: the v0.0.15 owner-RLS block as one installer call; rekeys `execution_plan_v1` (an Abstraction sidecar) on its own `t` instead of a Fact reference |
 
 Existing databases upgrade in place. A flavor adopting the installer does so
 in a **new** migration; its released v0.0.15 file stays byte for byte.
@@ -28,8 +28,13 @@ A flavor built with `NamedMigrator::flavor(id, migrator)` records on
 `public._sqlx_migrations` gets its rows copied there on its next migration
 run (boot, unless `skip_migrations`; or `dev-migrate`), before its migrator
 first reads the new ledger; the rows stay on core's ledger too, so an older
-binary re-runs nothing. Every run also revokes non-owner writes on the
-flavor ledger.
+binary re-runs nothing. Every run also revokes non-owner writes on every
+ledger, core's included.
+
+Replicas booting together serialize every migration transaction on
+`pg_advisory_xact_lock('proxmigr')` (bounded by the 5 s `lock_timeout`);
+before v0.0.20 a replica could re-apply migrations the first had not yet
+committed and fail its boot.
 
 ## v0.0.16
 

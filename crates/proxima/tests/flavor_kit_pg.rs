@@ -221,7 +221,7 @@ mod kit_full {
     }
 }
 
-/// The same flavor as a pre-v0.0.19 flavor wrote it by hand, on core's
+/// The same flavor as a pre-v0.0.20 flavor wrote it by hand, on core's
 /// shared ledger.
 struct SharedLedgerKit;
 
@@ -396,10 +396,40 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
         Some(Vec::new()),
         "and not on core's"
     );
-    assert!(
-        !runtime_may_write(&db, "public._sqlx_migrations_kittest").await,
-        "the runtime role reads the flavor ledger and cannot change it"
+    for ledger in ["public._sqlx_migrations_kittest", "public._sqlx_migrations"] {
+        assert!(
+            !runtime_may_write(&db, ledger).await,
+            "the runtime role reads {ledger} and cannot change it"
+        );
+    }
+}
+
+/// Replicas booting together on a fresh database race on core's first
+/// migrations and on the flavor ledger's `CREATE TABLE` and ACL; every one of
+/// them boots.
+#[tokio::test]
+async fn replicas_booting_together_on_a_fresh_database_all_boot() {
+    let db = SplitRoleDb::create("proxima_flavor_kit_race", &[])
+        .await
+        .expect("PG required");
+    let owner = company_owner(Uuid::now_v7());
+    let boots = (0..4).map(|_| {
+        Proxima::<kit::KitFlavor>::app()
+            .database_url(db.runtime_url())
+            .platform_database_url(db.platform_url())
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+    });
+    for built in futures::future::join_all(boots).await {
+        built.expect("every replica boots").shutdown();
+    }
+    assert_eq!(
+        ledger_versions(&db, "public._sqlx_migrations_kittest").await,
+        Some(vec![KIT_MIGRATION_VERSION])
     );
+    assert!(!runtime_may_write(&db, "public._sqlx_migrations_kittest").await);
 }
 
 #[tokio::test]
