@@ -112,6 +112,8 @@ mod owner_access;
 mod runtime;
 mod runtime_config;
 mod runtime_grants;
+#[cfg(feature = "testkit")]
+pub mod testkit;
 mod workers;
 
 pub use host::*;
@@ -238,6 +240,7 @@ pub struct ProximaBuilder {
     pg_pool_config: Option<proxima_storage_pg::PgPoolConfig>,
     pg_tuning: Option<proxima_storage_pg::PgTuning>,
     host_state_participant: Option<Arc<dyn proxima_storage_pg::PgHostStateParticipant>>,
+    duplicate_host_state_participant: bool,
 }
 
 impl std::fmt::Debug for ProximaBuilder {
@@ -260,6 +263,10 @@ impl std::fmt::Debug for ProximaBuilder {
             .field(
                 "has_host_state_participant",
                 &self.host_state_participant.is_some(),
+            )
+            .field(
+                "duplicate_host_state_participant",
+                &self.duplicate_host_state_participant,
             )
             .finish()
     }
@@ -415,6 +422,7 @@ impl ProximaBuilder {
             pg_pool_config: None,
             pg_tuning: None,
             host_state_participant: None,
+            duplicate_host_state_participant: false,
         }
     }
 
@@ -570,12 +578,19 @@ impl ProximaBuilder {
 
     /// Register a typed host-state participant on each [`crate::UnitOfWork`]
     /// write session. Hosts that register none keep existing Fact behavior.
+    ///
+    /// Exactly one: a second registration keeps the first and makes
+    /// [`Self::boot`] refuse, instead of silently replacing it.
     #[must_use]
     pub fn host_state_participant(
         mut self,
         participant: Arc<dyn proxima_storage_pg::PgHostStateParticipant>,
     ) -> Self {
-        self.host_state_participant = Some(participant);
+        if self.host_state_participant.is_some() {
+            self.duplicate_host_state_participant = true;
+        } else {
+            self.host_state_participant = Some(participant);
+        }
         self
     }
 
@@ -605,7 +620,9 @@ impl ProximaBuilder {
             pg_pool_config,
             pg_tuning,
             host_state_participant,
+            duplicate_host_state_participant,
         } = self;
+        refuse_duplicate_host_state_participant(duplicate_host_state_participant)?;
 
         let (registry, grants) = freeze_and_plan(registers, runtime_grants, &config, &migrators)?;
         let mut pg = connect_and_migrate(
@@ -618,9 +635,7 @@ impl ProximaBuilder {
             grants.as_ref(),
         )
         .await?;
-        if let Some(participant) = host_state_participant {
-            pg = pg.with_host_state_participant(participant);
-        }
+        pg = attach_host_state_participant(pg, host_state_participant);
 
         let pg = admit_owner_rls(pg, &registry, config.platform_database_url.as_deref()).await?;
         let pg_sidecars = compose_pg_sidecars(&pg, &registry, pg_sidecar_registers).await?;
@@ -870,6 +885,25 @@ fn composed_schema_names(registry: &proxima_core::FlavorRegistryFrozen) -> Vec<S
     }
     schemas.sort();
     schemas
+}
+
+fn attach_host_state_participant(
+    pg: PgStorage,
+    participant: Option<Arc<dyn proxima_storage_pg::PgHostStateParticipant>>,
+) -> PgStorage {
+    match participant {
+        Some(participant) => pg.with_host_state_participant(participant),
+        None => pg,
+    }
+}
+
+fn refuse_duplicate_host_state_participant(duplicate: bool) -> Result<(), EmbedError> {
+    if duplicate {
+        return Err(EmbedError::Config(
+            crate::runtime_config::DUPLICATE_HOST_STATE_PARTICIPANT.into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Freeze the PG sidecar registry against the composed contracts, then

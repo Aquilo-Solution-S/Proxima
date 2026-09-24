@@ -183,6 +183,36 @@ impl HostStateRequest {
         self.tables
     }
 
+    /// Whether the boxed command is a `C`, without consuming the request —
+    /// for a participant that serves several command types and dispatches
+    /// on which one arrived.
+    #[must_use]
+    pub fn is<C: HostStateCommand>(&self) -> bool {
+        self.payload.is::<C>()
+    }
+
+    /// Recover the typed command, or get the request back unchanged when it
+    /// is not a `C`, so a multi-command participant can try the next type.
+    ///
+    /// # Errors
+    ///
+    /// The request itself when the boxed type is not `C`.
+    pub fn try_downcast<C: HostStateCommand>(self) -> Result<C, Self> {
+        let Self {
+            participant_id,
+            tables,
+            payload,
+        } = self;
+        payload
+            .downcast::<C>()
+            .map(|boxed| *boxed)
+            .map_err(|payload| Self {
+                participant_id,
+                tables,
+                payload,
+            })
+    }
+
     /// Recover the typed command. A mismatch is a participant programming
     /// error, not a caller-fixable argument.
     ///
@@ -340,6 +370,31 @@ mod tests {
         assert_eq!(request.tables()[0].as_str(), "dummy.table");
         let command = request.downcast::<Dummy>().expect("command type");
         assert_eq!(command.owner(), owner);
+    }
+
+    #[test]
+    fn a_multi_command_participant_dispatches_without_losing_the_request() {
+        let owner = OwnerRef::Group(GroupId::new(Uuid::nil()));
+        let request = HostStateRequest::from_command(ExtraTable { owner });
+        assert!(request.is::<ExtraTable>());
+        assert!(!request.is::<Dummy>());
+        let Err(request) = request.try_downcast::<Dummy>() else {
+            panic!("an ExtraTable is not a Dummy");
+        };
+        assert_eq!(request.participant_id().as_str(), "dummy");
+        assert_eq!(request.tables().len(), 2, "the request comes back whole");
+        let Ok(command) = request.try_downcast::<ExtraTable>() else {
+            panic!("the second try matches");
+        };
+        assert_eq!(command.owner(), owner);
+
+        let Err(error) = HostStateRequest::from_command(Dummy { owner }).downcast::<ExtraTable>()
+        else {
+            panic!("downcast still refuses a mismatch");
+        };
+        assert!(
+            matches!(error, crate::StorageError::Internal(message) if message.contains("dummy"))
+        );
     }
 
     #[test]

@@ -11,8 +11,8 @@ pub use crate::config::EmbedConfig;
 pub use crate::core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};
 pub use crate::health::{HEALTHZ_PATH, READYZ_PATH};
 pub use crate::migrations::{
-    MigrationError, MigrationRunReport, NamedMigrator, preflight_without_migrations,
-    run_core_and_flavor_migrations,
+    MigrationError, MigrationRunReport, NamedMigrator, flavor_ledger_table, is_flavor_ledger_id,
+    preflight_without_migrations, run_core_and_flavor_migrations,
 };
 pub use crate::owner_access::ForwarderPolicy;
 pub use crate::runtime::{
@@ -151,6 +151,9 @@ pub use proxima_storage_pg::{PgHostStateLifecyclePort, PgHostStateParticipant};
 // them cannot bind the payload without being able to name its type. An
 // unnameable type in a public signature is the usual shape of an
 // out-of-tree blocker, so it is re-exported beside the error itself.
+/// `proxima::host::testkit` kept as a path to [`crate::testkit`].
+#[cfg(feature = "testkit")]
+pub use crate::testkit;
 /// The publication half of the engine configuration (docs/18).
 ///
 /// A host that registers a listenable schema must bind a
@@ -227,10 +230,9 @@ pub use proxima_mcp_server::{
 pub use proxima_outbox_nats::{
     ConfigError as NatsConfigError, ConsumerError, DrainReport, DrainSummary, DurableIntake,
     Intake, IntakeError, JetStreamPublisher, NatsAuth, NatsConsumerConfig, NatsPublisherConfig,
-    PublisherError, ReceivedEvent, ReferenceConsumer,
+    ParsedSubject, PublisherError, ReceivedEvent, ReferenceConsumer, SubjectParseError,
+    parse_subject, subject_for,
 };
-#[cfg(feature = "testkit")]
-pub use proxima_pg_testkit as testkit;
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts
 /// (see [`proxima_storage_pg::PgOwnerAccessResolver`]).
 pub use proxima_storage_pg::PgOwnerAccessResolver;

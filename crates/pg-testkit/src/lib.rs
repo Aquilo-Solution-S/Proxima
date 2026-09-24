@@ -264,15 +264,57 @@ pub async fn create_db(name: &str) -> Result<(), sqlx::Error> {
 ///
 /// # Errors
 /// Returns admin, target-database, catalog, or role-attribute errors.
+pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::Error> {
+    split_role_urls_for(database, &[]).await
+}
+
+/// [`split_role_urls`] for a database that also holds out-of-tree flavor
+/// schemas: objects already in `flavor_schemas` move to the platform role
+/// and the runtime role gets the same grants it gets on `proxima_core` and
+/// `proxima_code`.
+///
+/// Only the first call on a database prepares it; a schema the platform
+/// role creates later (the usual case: boot migrates as platform) is
+/// covered by the platform role's default privileges instead.
+///
+/// # Errors
+/// Returns admin, target-database, catalog, or role-attribute errors, and a
+/// protocol error for a schema name that is not a plain lowercase
+/// identifier.
 #[expect(
     clippy::too_many_lines,
     reason = "isolated split-role fixture provisioning"
 )]
-pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::Error> {
+pub async fn split_role_urls_for(
+    database: &str,
+    flavor_schemas: &[&str],
+) -> Result<(String, String), sqlx::Error> {
     let database = database.trim();
     if database.is_empty() {
         return Err(sqlx::Error::Protocol("database name is empty".into()));
     }
+    if let Some(schema) = flavor_schemas.iter().find(|schema| {
+        schema.is_empty()
+            || !schema.as_bytes()[0].is_ascii_lowercase()
+            || !schema
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    }) {
+        return Err(sqlx::Error::Protocol(format!(
+            "flavor schema {schema:?} is not a plain lowercase identifier"
+        )));
+    }
+    let mut schemas: Vec<&str> = vec!["proxima_core", "proxima_code"];
+    for schema in flavor_schemas {
+        if !schemas.contains(schema) {
+            schemas.push(schema);
+        }
+    }
+    let schema_list = schemas
+        .iter()
+        .map(|schema| sql_literal(schema))
+        .collect::<Vec<_>>()
+        .join(", ");
     let mut control = connect_admin().await?;
     let lock_key = advisory_lock_key("_proxima_test.split_roles");
     sqlx::query("SELECT pg_advisory_lock($1)")
@@ -402,15 +444,13 @@ pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::E
             .await?;
         let transfer = format!(
             "DO $$ DECLARE r record; BEGIN
-               IF to_regnamespace('proxima_core') IS NOT NULL THEN
-                 ALTER SCHEMA proxima_core OWNER TO {platform_ident};
-               END IF;
-               IF to_regnamespace('proxima_code') IS NOT NULL THEN
-                 ALTER SCHEMA proxima_code OWNER TO {platform_ident};
-               END IF;
+               FOR r IN SELECT n.nspname FROM pg_namespace n
+                  WHERE n.nspname IN ({schema_list}) LOOP
+                 EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{platform}');
+               END LOOP;
                FOR r IN SELECT n.nspname, c.relname, c.relkind
                    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-                  WHERE n.nspname IN ('proxima_core', 'proxima_code')
+                  WHERE n.nspname IN ({schema_list})
                     AND c.relkind IN ('r','p','S') LOOP
                  IF r.relkind = 'S' THEN
                    EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I', r.nspname, r.relname, '{platform}');
@@ -418,10 +458,15 @@ pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::E
                    EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.nspname, r.relname, '{platform}');
                  END IF;
                END LOOP;
+               FOR r IN SELECT n.nspname, t.typname
+                   FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+                  WHERE n.nspname IN ({schema_list}) AND t.typtype IN ('e','d') LOOP
+                 EXECUTE format('ALTER TYPE %I.%I OWNER TO %I', r.nspname, r.typname, '{platform}');
+               END LOOP;
                FOR r IN SELECT n.nspname, p.proname,
                                 pg_get_function_identity_arguments(p.oid) AS args
                    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-                  WHERE n.nspname IN ('proxima_core', 'proxima_code') LOOP
+                  WHERE n.nspname IN ({schema_list}) LOOP
                  EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO %I',
                                 r.nspname, r.proname, r.args, '{platform}');
                END LOOP;
@@ -435,11 +480,11 @@ pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::E
             platform = SPLIT_PLATFORM_ROLE,
             platform_ident = quoted_ident(SPLIT_PLATFORM_ROLE),
         );
-        // SQL-POLICY: fixed-fragment — schema names and role are closed fixture values.
+        // SQL-POLICY: fixed-fragment — schema names are validated lowercase identifiers quoted as literals; the role is a closed fixture value.
         sqlx::raw_sql(AssertSqlSafe(transfer))
             .execute(&mut target)
             .await?;
-        for schema in ["proxima_core", "proxima_code"] {
+        for schema in &schemas {
             let statement = format!(
                 "DO $$ BEGIN
                    IF to_regnamespace('{schema_name}') IS NOT NULL THEN
@@ -512,6 +557,71 @@ pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::E
         .set_username(SPLIT_PLATFORM_ROLE)
         .map_err(|()| sqlx::Error::Protocol("invalid platform role".into()))?;
     Ok((runtime.to_string(), platform.to_string()))
+}
+
+/// A fresh database with the split platform/runtime roles, dropped on a
+/// successful drop (kept after a panic, like [`DbGuard`]).
+///
+/// Boot the host with [`Self::runtime_url`] as its database URL and
+/// [`Self::platform_url`] as its platform URL: migrations then run as the
+/// NOSUPERUSER NOBYPASSRLS platform role, which owns every schema and ledger
+/// it creates, and the runtime role reaches them through the platform
+/// role's default privileges — the shape the runtime RLS guard requires.
+#[derive(Debug)]
+#[must_use]
+pub struct SplitRoleDb {
+    guard: DbGuard,
+    runtime_url: String,
+    platform_url: String,
+}
+
+impl SplitRoleDb {
+    /// Create `<prefix>_<uuid>` and provision the split roles on it
+    /// ([`split_role_urls_for`] with `flavor_schemas`).
+    ///
+    /// # Errors
+    /// Returns database creation or role provisioning errors; a database
+    /// created before the failure is dropped.
+    pub async fn create(prefix: &str, flavor_schemas: &[&str]) -> Result<Self, sqlx::Error> {
+        let name = unique_db_name(prefix);
+        create_db(&name).await?;
+        let guard = DbGuard::adopt(name);
+        let (runtime_url, platform_url) = split_role_urls_for(guard.name(), flavor_schemas).await?;
+        Ok(Self {
+            guard,
+            runtime_url,
+            platform_url,
+        })
+    }
+
+    /// Database name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.guard.name()
+    }
+
+    /// URL for the runtime role: DML only, never an owner.
+    #[must_use]
+    pub fn runtime_url(&self) -> &str {
+        &self.runtime_url
+    }
+
+    /// URL for the platform role: migrations and platform-scope maintenance.
+    #[must_use]
+    pub fn platform_url(&self) -> &str {
+        &self.platform_url
+    }
+
+    /// Superuser URL for fixture setup and assertions outside RLS.
+    #[must_use]
+    pub fn admin_url(&self) -> String {
+        db_url(self.guard.name())
+    }
+
+    /// Keep the database after drop, for inspection.
+    pub fn keep(&mut self) {
+        self.guard.keep();
+    }
 }
 
 /// Ensure a pre-migrated template database exists.

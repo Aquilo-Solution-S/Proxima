@@ -78,7 +78,8 @@ pub mod testkit {
     }
 }
 
-proxima::flavor::proxima_flavor! {
+proxima::flavor_bundle! {
+    bundle = CodeFlavor,
     name = "proxima-code",
     display_name = "Code",
     fact_schemas = [
@@ -137,44 +138,7 @@ proxima::flavor::proxima_flavor! {
         mcp::CodeWorkItemBundleTool,
     ],
     contract = &contract::CODE_FLAVOR_CONTRACT,
-}
-
-pub fn register_pg_sidecars(registry: &mut proxima_storage_pg::PgSidecarRegistry) {
-    registry.add_fact::<payloads::CommitV1>();
-    registry.add_fact::<payloads::FileRevisionV1>();
-    registry.add_fact::<payloads::WorkRequestedV1>();
-    registry.add_fact::<payloads::TestRequestedV1>();
-    registry.add_fact::<payloads::AcceptanceCriteriaV1>();
-    registry.add_fact::<payloads::ExecutionResultV1>();
-    registry.add_fact::<payloads::TestResultV1>();
-    registry.add_fact::<payloads::AcceptanceVerificationV1>();
-    registry.add_abstraction::<payloads::CodeChunkV1>();
-    registry.add_abstraction::<payloads::CommitSummaryV1>();
-    registry.add_abstraction::<payloads::CodeExecutionPlanV1>();
-    registry.add_abstraction::<payloads::AcceptanceSummaryV1>();
-    registry.add_perspective::<payloads::CodeDevelopmentPerspectiveV1>();
-    registry.add_perspective::<payloads::CodeCommitSummarizerSelfV1>();
-    registry.add_perspective::<payloads::CodeEngineerSelfV1>();
-    registry.add_perspective::<payloads::CodeWorkAssignmentV1>();
-}
-
-#[derive(Debug)]
-pub struct CodeFlavor;
-
-impl proxima::flavor::FlavorBundle for CodeFlavor {
-    fn register(
-        registry: &mut proxima_core::FlavorRegistry,
-    ) -> Result<(), proxima_core::FlavorRegistryError> {
-        self::register(registry)
-    }
-
-    fn register_pg_sidecars(registry: &mut proxima::flavor::PgSidecarRegistry) {
-        self::register_pg_sidecars(registry);
-    }
-
-    fn migrators() -> Vec<proxima::NamedMigrator> {
-        vec![proxima::NamedMigrator::new("proxima-code", migrator())]
-    }
+    migrations = migrator(),
 }
 
 #[cfg(test)]

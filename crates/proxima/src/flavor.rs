@@ -1,7 +1,9 @@
 //! Flavor SDK exports.
 
 pub use crate::bundle::FlavorBundle;
-pub use crate::migrations::NamedMigrator;
+/// One-declaration flavor bundle; see the macro's docs.
+pub use crate::flavor_bundle;
+pub use crate::migrations::{NamedMigrator, flavor_ledger_table, is_flavor_ledger_id};
 /// Background-worker surface for [`FlavorBundle::spawn_workers`]: the
 /// runtime handles a spawning flavor receives and the named join handle
 /// it returns.
@@ -204,10 +206,13 @@ pub use proxima_storage_pg::{
 };
 
 mod authorized_read;
+mod detached;
 pub use authorized_read::{
     authorized_abstraction_payloads, authorized_fact_payloads, authorized_memory_ids,
     read_owner_ids,
 };
+/// Cancel-safe Fact ingest after an upstream side effect.
+pub use detached::ingest_fact_detached;
 
 /// Types of the [`Tool::ARGV_ACTION_SPECS`] and [`Tool::AUDIENCE`] consts.
 pub use proxima_core::mcp::{McpArgvActionSpec, McpToolAudience};

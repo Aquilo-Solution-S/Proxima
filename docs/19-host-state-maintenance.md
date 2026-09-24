@@ -25,7 +25,11 @@ not carry a redundant engine tag that it could not independently verify.
 Maintenance does not grant Fact, Abstraction, Perspective or Goal writes and
 cannot change ordinary owner-role authorization. It remains in host code,
 never `FlavorServices` or user-facing authoring handlers. Participant/table
-scope does not distinguish command types within that participant.
+scope does not distinguish command types within that participant: a host
+registers exactly one participant (a second registration refuses boot), and a
+participant serving several command types dispatches with
+`HostStateRequest::is::<C>()` / `try_downcast::<C>()`, which returns the
+request unchanged on a mismatch.
 
 Evidence: `BuiltProxima` already holds `SystemAuthority`
 (`crates/proxima/src/runtime.rs:464`), but the existing owner-write gate still

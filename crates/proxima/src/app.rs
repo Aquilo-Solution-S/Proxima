@@ -31,7 +31,9 @@ pub trait FlavorApp: FlavorBundle {
     fn app_info() -> AppInfo;
 
     /// Folded left-to-right for tuples; later tuple elements can
-    /// override fields set by earlier elements.
+    /// override fields set by earlier elements, except
+    /// [`RuntimeBuilder::host_state_participant`]: a second registration
+    /// refuses boot.
     #[must_use]
     fn configure(builder: RuntimeBuilder) -> RuntimeBuilder {
         builder

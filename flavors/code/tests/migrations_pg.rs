@@ -383,6 +383,19 @@ fn generator_output_is_the_code_baseline_text() {
     }
 }
 
+/// The same drift check an out-of-tree flavor runs, through the test kit:
+/// every generated declaration and presence trigger is in a migration.
+#[test]
+fn the_testkit_drift_assertion_holds_for_the_code_flavor() {
+    proxima::testkit::assert_trigger_migrations::<proxima_code::CodeFlavor>(
+        proxima_code::contract::FLAVOR_ID,
+        &[
+            include_str!("../migrations/20260824000020_v009_declaration_triggers.sql"),
+            include_str!("../migrations/20260901000020_declared_sidecar_presence.sql"),
+        ],
+    );
+}
+
 /// The code flavor's v0.0.9 migration carries every declaration trigger the
 /// generator emits for this flavor, verbatim.
 ///
@@ -622,7 +635,9 @@ async fn a_v008_code_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             core_versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+            ],
             "core appends every migration after its baseline"
         );
 
@@ -638,7 +653,8 @@ async fn a_v008_code_database_upgrades_to_head_in_place() {
                 20_260_818_000_020,
                 20_260_824_000_020,
                 20_260_901_000_020,
-                20_260_922_000_020
+                20_260_922_000_020,
+                20_260_924_000_020
             ],
             "the flavor appends its v0.0.9 rather than re-applying its baseline"
         );

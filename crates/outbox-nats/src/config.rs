@@ -694,9 +694,194 @@ pub fn type_token(event_type: &str) -> String {
     }
 }
 
+/// What a subject built by [`subject_for`] names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedSubject {
+    /// The owner the event was published for.
+    pub owner: proxima_core::OwnerRef,
+    /// The event type ([`type_token`] decoded), e.g. a schema id.
+    pub event_type: String,
+}
+
+/// Why [`parse_subject`] refused a subject.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SubjectParseError {
+    #[error("subject {subject:?} does not start with prefix {prefix:?}")]
+    Prefix { subject: String, prefix: String },
+    #[error("subject {subject:?} is not <prefix>.<owner_kind>.<owner_uuid>.<type_token>")]
+    Shape { subject: String },
+    #[error("subject owner kind {kind:?} is neither `personal` nor `group`")]
+    OwnerKind { kind: String },
+    #[error("subject owner id {id:?} is not a lowercase hyphenated uuid")]
+    OwnerId { id: String },
+    #[error("subject type token {token:?} is not one `type_token` produces")]
+    TypeToken { token: String },
+}
+
+/// The inverse of [`subject_for`]: the owner and event type a subject
+/// published under `prefix` names.
+///
+/// Accepts exactly the subjects [`subject_for`] produces: the owner id in
+/// its hyphenated lowercase form, and a type token in [`type_token`]'s
+/// canonical escaping (`_` + two lowercase hex digits for every byte outside
+/// `[A-Za-z0-9-]`, a bare `_` for the empty type). Anything else — another
+/// prefix, a wildcard, an unescaped `_`, an escape of a byte that needs
+/// none — is refused rather than decoded, because a consumer routing on the
+/// result must not treat two subjects as one event type.
+///
+/// # Errors
+///
+/// [`SubjectParseError`] naming the first part that does not match.
+pub fn parse_subject(prefix: &str, subject: &str) -> Result<ParsedSubject, SubjectParseError> {
+    let rest = subject
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .ok_or_else(|| SubjectParseError::Prefix {
+            subject: subject.to_owned(),
+            prefix: prefix.to_owned(),
+        })?;
+    let mut tokens = rest.split('.');
+    let (Some(kind), Some(id), Some(token), None) =
+        (tokens.next(), tokens.next(), tokens.next(), tokens.next())
+    else {
+        return Err(SubjectParseError::Shape {
+            subject: subject.to_owned(),
+        });
+    };
+    let kind = match kind {
+        "personal" => proxima_core::OwnerRefKind::Personal,
+        "group" => proxima_core::OwnerRefKind::Group,
+        other => {
+            return Err(SubjectParseError::OwnerKind {
+                kind: other.to_owned(),
+            });
+        }
+    };
+    let owner_id = uuid::Uuid::parse_str(id)
+        .ok()
+        .filter(|parsed| parsed.hyphenated().to_string() == id)
+        .ok_or_else(|| SubjectParseError::OwnerId { id: id.to_owned() })?;
+    let event_type = decode_type_token(token).ok_or_else(|| SubjectParseError::TypeToken {
+        token: token.to_owned(),
+    })?;
+    Ok(ParsedSubject {
+        owner: kind.with_uuid(owner_id),
+        event_type,
+    })
+}
+
+/// [`type_token`]'s inverse on its image: `None` for any token it cannot
+/// have produced.
+fn decode_type_token(token: &str) -> Option<String> {
+    if token == "_" {
+        return Some(String::new());
+    }
+    let bytes = token.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'_' {
+            let hex = |at: usize| {
+                bytes
+                    .get(at)
+                    .filter(|digit| digit.is_ascii_digit() || (b'a'..=b'f').contains(digit))
+                    .and_then(|digit| char::from(*digit).to_digit(16))
+            };
+            let value = u8::try_from(hex(index + 1)? * 16 + hex(index + 2)?).ok()?;
+            decoded.push(value);
+            index += 3;
+        } else if byte.is_ascii_alphanumeric() || byte == b'-' {
+            decoded.push(byte);
+            index += 1;
+        } else {
+            return None;
+        }
+    }
+    let event_type = String::from_utf8(decoded).ok()?;
+    (type_token(&event_type) == token).then_some(event_type)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_subject_inverts_subject_for() {
+        let owner_id = uuid::Uuid::now_v7();
+        for event_type in [
+            "acme/build.finished-v1",
+            "probe/listenable-v1",
+            "probe_listenable-v1",
+            "",
+            "_",
+            "a.b*c>d e",
+            "ünïcode/ok",
+        ] {
+            for (kind, owner) in [
+                (
+                    "personal",
+                    proxima_core::OwnerRefKind::Personal.with_uuid(owner_id),
+                ),
+                (
+                    "group",
+                    proxima_core::OwnerRefKind::Group.with_uuid(owner_id),
+                ),
+            ] {
+                let subject = subject_for("proxima.fact", kind, owner_id, event_type);
+                assert_eq!(
+                    parse_subject("proxima.fact", &subject),
+                    Ok(ParsedSubject {
+                        owner,
+                        event_type: event_type.to_owned(),
+                    }),
+                    "{subject}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parse_subject_refuses_what_subject_for_never_produces() {
+        let id = uuid::Uuid::nil();
+        let good = |token: &str| format!("proxima.fact.personal.{id}.{token}");
+        let refused = |subject: &str| parse_subject("proxima.fact", subject).is_err();
+        assert!(!refused(&good("acme_2fbuild")));
+        for token in [
+            "acme_2Fbuild",
+            "_41",
+            "acme_5",
+            "acme_",
+            "acme_zz",
+            "a_b",
+            "__",
+            "*",
+            ">",
+            "",
+            "_ff",
+        ] {
+            assert!(refused(&good(token)), "type token {token:?} must refuse");
+        }
+        for subject in [
+            "other.fact.personal.00000000-0000-0000-0000-000000000000.a".to_owned(),
+            "proxima.factx.personal.00000000-0000-0000-0000-000000000000.a".to_owned(),
+            "proxima.fact.robot.00000000-0000-0000-0000-000000000000.a".to_owned(),
+            "proxima.fact.personal.00000000000000000000000000000000.a".to_owned(),
+            "proxima.fact.personal.00000000-0000-0000-0000-00000000000A.a".to_owned(),
+            "proxima.fact.personal.*.a".to_owned(),
+            "proxima.fact.personal.00000000-0000-0000-0000-000000000000".to_owned(),
+            "proxima.fact.personal.00000000-0000-0000-0000-000000000000.a.b".to_owned(),
+            "proxima.fact".to_owned(),
+        ] {
+            assert!(refused(&subject), "{subject} must refuse");
+        }
+        assert_eq!(
+            parse_subject("proxima.fact", "proxima.fact.alien.x.y"),
+            Err(SubjectParseError::OwnerKind {
+                kind: "alien".to_owned()
+            })
+        );
+    }
 
     fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {

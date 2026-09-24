@@ -39,6 +39,8 @@ tokio = { workspace = true, features = ["fs", "process"] }
 [dev-dependencies]
 proxima-mcp-server = { path = "../../crates/mcp-server" }
 proxima-core = { path = "../../crates/core", features = ["test-fixtures"] }
+# The flavor test kit, used as an out-of-tree flavor uses it.
+proxima = { path = "../../crates/proxima", features = ["testkit"] }
 proxima-pg-testkit = { path = "../../crates/pg-testkit" }
 proxima-storage-pg = { path = "../../crates/storage-pg", features = ["test-fixtures"] }
 sha2 = { workspace = true }

@@ -109,6 +109,49 @@ impl<'a, P: FactPayload> FactWrite<'a, P> {
     }
 }
 
+/// A [`FactWrite`] that owns its source id and payload, so the write can
+/// move onto a task the caller does not own ([`Engine::ingest_fact_detached`]).
+struct OwnedFactWrite<P: FactPayload> {
+    owner: Owner,
+    source_id: String,
+    payload: P,
+    observed_at: Option<time::OffsetDateTime>,
+    citation: Option<CitationSpec>,
+    handle: Option<crate::SeriesHandle>,
+    lexical_language: Option<String>,
+    refs: Vec<MemoryId>,
+}
+
+impl<P: FactPayload + Clone> FactWrite<'_, P> {
+    fn to_owned_write(&self) -> OwnedFactWrite<P> {
+        OwnedFactWrite {
+            owner: self.owner,
+            source_id: self.source_id.to_owned(),
+            payload: self.payload.clone(),
+            observed_at: self.observed_at,
+            citation: self.citation.clone(),
+            handle: self.handle,
+            lexical_language: self.lexical_language.clone(),
+            refs: self.refs.clone(),
+        }
+    }
+}
+
+impl<P: FactPayload> OwnedFactWrite<P> {
+    fn as_write(&self) -> FactWrite<'_, P> {
+        FactWrite {
+            owner: self.owner,
+            source_id: &self.source_id,
+            payload: &self.payload,
+            observed_at: self.observed_at,
+            citation: self.citation.clone(),
+            handle: self.handle,
+            lexical_language: self.lexical_language.clone(),
+            refs: self.refs.clone(),
+        }
+    }
+}
+
 /// One transaction the Engine can attach several authorized writes to.
 /// Drop without [`Self::commit`] rolls the transaction back.
 ///
@@ -394,6 +437,71 @@ impl Engine {
         let outcome = uow.ingest_fact(spec).await?;
         uow.commit().await?;
         Ok(outcome)
+    }
+
+    /// [`Self::ingest_fact`] on a spawned task, for the Fact that records a
+    /// side effect already done upstream (a sent mail, a pushed commit): the
+    /// write must land even when the request that caused it is dropped.
+    ///
+    /// The write is copied and spawned on the first poll, so once this
+    /// future has been polled, dropping it (client disconnect, handler
+    /// cancellation) no longer cancels the write; it only stops waiting for
+    /// the result. `deadline` bounds how long the spawned task works on the
+    /// write: past it the write is abandoned and rolls back, unless its
+    /// COMMIT was already sent, in which case the outcome is unknown. Every
+    /// error the write returns is logged, whether or not anyone still waits.
+    ///
+    /// The task is not drained at shutdown: a write still in flight when the
+    /// runtime stops is cancelled. Retrying the same write (same owner,
+    /// source id and payload) is safe after an unknown outcome: Fact ingest
+    /// is keyed on the payload's receipt key, so a write that did land
+    /// replays (`idempotent_replay`).
+    ///
+    /// # Errors
+    /// Returns [`Self::ingest_fact`]'s errors, and `Internal` when the write
+    /// missed `deadline` or its task did not finish (panicked, or the runtime
+    /// shut down).
+    pub async fn ingest_fact_detached<P: FactPayload + Clone>(
+        self: &std::sync::Arc<Self>,
+        authz: &AuthzContext,
+        spec: FactWrite<'_, P>,
+        deadline: std::time::Duration,
+    ) -> Result<FactIngestOutcome, ProtocolError> {
+        let engine = std::sync::Arc::clone(self);
+        let authz = authz.clone();
+        let write = spec.to_owned_write();
+        let schema_id = P::SCHEMA_ID;
+        let task = tokio::spawn(tracing::Instrument::instrument(
+            async move {
+                let ingest = engine.ingest_fact(&authz, write.as_write());
+                let Ok(result) = tokio::time::timeout(deadline, ingest).await else {
+                    tracing::warn!(
+                        schema_id,
+                        ?deadline,
+                        "detached fact ingest missed its deadline; outcome unknown, \
+                         retrying the same write replays"
+                    );
+                    return Err(ProtocolError::internal(format!(
+                        "detached ingest of {schema_id} missed its {deadline:?} deadline"
+                    )));
+                };
+                if let Err(error) = &result {
+                    tracing::warn!(
+                        schema_id,
+                        error = %error.message,
+                        "detached fact ingest failed; the side effect it records is unrecorded"
+                    );
+                }
+                result
+            },
+            tracing::Span::current(),
+        ));
+        match task.await {
+            Ok(result) => result,
+            Err(error) => Err(ProtocolError::internal(format!(
+                "detached ingest of {schema_id} did not finish: {error}"
+            ))),
+        }
     }
 }
 
