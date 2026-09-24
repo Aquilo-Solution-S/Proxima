@@ -1,5 +1,25 @@
 # Migrate the Flavor SDK
 
+## v0.0.21
+
+Pin all Proxima Rust dependencies to the same `v0.0.21` tag. No database
+change. Not additive: `OidcRoleShape` gains `Host` (exhaustive matches; its
+`PartialEq` compares a `Host` shaper by instance); `RuntimeParts` and
+`RuntimeConfig` gain public fields (struct literals); a palette built by
+`canonical_scope_keys*` / `tool_palette_excluding` now carries every
+`tool:action` leaf of an argv-keyed dispatcher (before: the bare name, which
+the gate never admitted).
+
+| Surface | Upgrade |
+|---|---|
+| Host MCP tools | A hand-written `ServerHandler` that lists and dispatches host tools → `RuntimeBuilder::host_tools(Arc<dyn McpHostTools>)`; the tools run through the registry's request behaviors. Copied handler helpers → `proxima::{auth_context, author_from_args, strip_call_context_args, reject_nul_in_args, tool_invocation_error_to_error_data, …}` |
+| Own router | A second `RuntimeBuilder::resolve` for allowlists/revalidation/metadata → `BuiltProxima::mcp_edge()`; auth on `/mcp` only → `McpEdge::router(app_router)` or `layered_router_mcp_only` |
+| Call log | Host-side `log_mcp_call` on the served path and actor plumbing → `RuntimeBuilder::record_mcp_calls(true)` (actor = verified subject, no body) |
+| OIDC | A direct `jsonwebtoken` validator for custom claims → `OidcTokenValidator::validate_with::<C>`; a re-implemented multi-audience loop → `OidcBindingSet` with `OidcRoleShape::Host` |
+| System context | An empty bearer through a do-nothing authenticator → `AuthzContext::for_system(&SystemAuthority, OwnerRoles)` |
+| Palette keys | Hand-derived `tool:action` lists → `McpToolDescriptor::palette_keys()` / `owner_only_keys()` |
+| Platform-scoped resolver | Per-session `app.proxima_scope` in a host pool → `RuntimeBuilder::authenticator_with_platform_scope(\|ctx\| ..)` with the runtime's validated `PgPlatformScope` |
+
 ## v0.0.20
 
 Pin all Proxima Rust dependencies to the same `v0.0.20` tag. Hand-written

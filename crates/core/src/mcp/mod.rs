@@ -21,7 +21,9 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-pub use behavior::{Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall};
+pub use behavior::{
+    McpHostToolCall, Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall,
+};
 pub use core_tools::list_substrate_tools::scope_permits_action;
 // The one enforcement point for the reserved `model_id` operator label.
 // Published because a flavor tool that accepts `model_id` must resolve it

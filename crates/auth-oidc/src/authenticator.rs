@@ -23,6 +23,7 @@ use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerAccessPort,
 };
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 use crate::config::{OidcAuthConfig, OidcConfigError};
 use crate::keys::KeyResolver;
@@ -49,6 +50,80 @@ pub struct ValidatedOidcClaims {
     pub audience: String,
     pub subject: String,
     pub expires_at: SystemTime,
+}
+
+/// A validated token: the registered claims every token carries, plus the
+/// host's own claims `C` read from the same verified payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedOidcToken<C> {
+    pub claims: ValidatedOidcClaims,
+    /// The whole verified claim set deserialized as `C`: `serde_json::Map`
+    /// keeps every claim, a struct picks the ones the host reads.
+    pub custom: C,
+}
+
+/// Why [`OidcTokenValidator::validate_with`] refused a token. Every variant
+/// becomes [`AuthError::InvalidCredentials`] at the authenticator boundary;
+/// the reason is for the host's logs and metrics, never for the caller.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum OidcRejection {
+    #[error("token is not a well-formed JWT: {0}")]
+    Malformed(String),
+    #[error("token header names no key id")]
+    MissingKeyId,
+    #[error("no verification key for kid {kid:?}: {reason}")]
+    UnknownKey { kid: String, reason: String },
+    #[error("token algorithm is not one of RS256/RS384/RS512")]
+    DisallowedAlgorithm,
+    #[error("token signature does not verify")]
+    BadSignature,
+    #[error("token has expired")]
+    Expired,
+    #[error("token is not valid yet (nbf)")]
+    NotYetValid,
+    #[error("token issuer is not {expected:?}")]
+    WrongIssuer { expected: String },
+    #[error("token audience does not include {expected:?}")]
+    WrongAudience { expected: String },
+    #[error("token lacks required claim {0}")]
+    MissingClaim(String),
+    #[error("token claim {0} has the wrong type")]
+    InvalidClaim(String),
+    #[error("token expiry is out of range")]
+    ExpiryOutOfRange,
+    #[error("token claims do not match the host's claim type: {0}")]
+    CustomClaims(String),
+}
+
+impl From<OidcRejection> for AuthError {
+    fn from(_: OidcRejection) -> Self {
+        Self::InvalidCredentials
+    }
+}
+
+impl OidcRejection {
+    fn from_jwt(err: &jsonwebtoken::errors::Error, issuer: &str, audience: &str) -> Self {
+        use jsonwebtoken::errors::ErrorKind;
+        match err.kind() {
+            ErrorKind::InvalidSignature => Self::BadSignature,
+            ErrorKind::InvalidAlgorithm
+            | ErrorKind::InvalidAlgorithmName
+            | ErrorKind::MissingAlgorithm
+            | ErrorKind::UnsupportedAlgorithm => Self::DisallowedAlgorithm,
+            ErrorKind::ExpiredSignature => Self::Expired,
+            ErrorKind::ImmatureSignature => Self::NotYetValid,
+            ErrorKind::InvalidIssuer => Self::WrongIssuer {
+                expected: issuer.to_owned(),
+            },
+            ErrorKind::InvalidAudience => Self::WrongAudience {
+                expected: audience.to_owned(),
+            },
+            ErrorKind::MissingRequiredClaim(claim) => Self::MissingClaim(claim.clone()),
+            ErrorKind::InvalidClaimFormat(claim) => Self::InvalidClaim(claim.clone()),
+            _ => Self::Malformed(err.to_string()),
+        }
+    }
 }
 
 /// Audited OIDC bearer-JWT validation with no authz shaping.
@@ -90,15 +165,41 @@ impl OidcTokenValidator {
     ///
     /// `AuthError::InvalidCredentials` for any malformed, unsigned,
     /// wrong-issuer, wrong-audience, or expired token, or an unresolvable
-    /// key id.
+    /// key id. [`Self::validate_with`] says which.
     pub async fn validate(&self, token: &str) -> Result<ValidatedOidcClaims, AuthError> {
-        let header = decode_header(token).map_err(|_| AuthError::InvalidCredentials)?;
-        let kid = header.kid.ok_or(AuthError::InvalidCredentials)?;
+        self.validate_with::<serde::de::IgnoredAny>(token)
+            .await
+            .map(|token| token.claims)
+            .map_err(AuthError::from)
+    }
+
+    /// [`Self::validate`], reading the host's own claims `C` from the same
+    /// verified payload and keeping the reason a token was refused.
+    ///
+    /// `C` sees every claim, the registered ones included; nothing in it is
+    /// trusted until the signature, `iss`, `aud`, `exp` and `nbf` checks
+    /// above it have passed.
+    ///
+    /// # Errors
+    ///
+    /// An [`OidcRejection`] naming the failed check, or
+    /// [`OidcRejection::CustomClaims`] when the verified claims do not
+    /// deserialize as `C`.
+    pub async fn validate_with<C: DeserializeOwned>(
+        &self,
+        token: &str,
+    ) -> Result<ValidatedOidcToken<C>, OidcRejection> {
+        let header = decode_header(token)
+            .map_err(|err| OidcRejection::from_jwt(&err, &self.issuer, &self.audience))?;
+        let kid = header.kid.ok_or(OidcRejection::MissingKeyId)?;
         let key = self
             .keys
             .key_for(&kid)
             .await
-            .map_err(|_| AuthError::InvalidCredentials)?;
+            .map_err(|err| OidcRejection::UnknownKey {
+                reason: err.to_string(),
+                kid,
+            })?;
 
         // Pin the verification algorithm to the RSA family (the only key
         // type the JWKS resolver materializes). Never derive it from the
@@ -116,17 +217,24 @@ impl OidcTokenValidator {
         validation.validate_nbf = true;
         validation.leeway = self.leeway_secs;
 
-        let data = decode::<Claims>(token, &key, &validation)
-            .map_err(|_| AuthError::InvalidCredentials)?;
+        let data = decode::<serde_json::Value>(token, &key, &validation)
+            .map_err(|err| OidcRejection::from_jwt(&err, &self.issuer, &self.audience))?;
+        let registered = Claims::deserialize(&data.claims)
+            .map_err(|err| OidcRejection::Malformed(err.to_string()))?;
         let expires_at = UNIX_EPOCH
-            .checked_add(Duration::from_secs(data.claims.exp))
-            .ok_or(AuthError::InvalidCredentials)?;
+            .checked_add(Duration::from_secs(registered.exp))
+            .ok_or(OidcRejection::ExpiryOutOfRange)?;
+        let custom = C::deserialize(data.claims)
+            .map_err(|err| OidcRejection::CustomClaims(err.to_string()))?;
 
-        Ok(ValidatedOidcClaims {
-            issuer: self.issuer.clone(),
-            audience: self.audience.clone(),
-            subject: data.claims.sub,
-            expires_at,
+        Ok(ValidatedOidcToken {
+            claims: ValidatedOidcClaims {
+                issuer: self.issuer.clone(),
+                audience: self.audience.clone(),
+                subject: registered.sub,
+                expires_at,
+            },
+            custom,
         })
     }
 }

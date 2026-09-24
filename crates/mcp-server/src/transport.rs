@@ -32,6 +32,9 @@ use crate::security::{
 };
 use crate::server::McpToolHost;
 
+/// The rmcp service `/mcp` is served by ([`streamable_http_service`]).
+pub type McpStreamableService = StreamableHttpService<DynamicHandler, LocalSessionManager>;
+
 /// `host_allowlist` is the same non-empty policy applied at the outer
 /// listener. Passing it into rmcp keeps `/mcp` independently guarded as
 /// defense in depth; [`HostAllowlist`] owns the loopback defaults so this
@@ -42,7 +45,7 @@ pub fn streamable_http_service(
     allowlist: &OriginAllowlist,
     host_allowlist: &HostAllowlist,
     cancel: &CancellationToken,
-) -> StreamableHttpService<DynamicHandler, LocalSessionManager> {
+) -> McpStreamableService {
     streamable_http_service_with_transport(
         server,
         allowlist,
@@ -63,7 +66,7 @@ pub fn streamable_http_service_with_transport(
     host_allowlist: &HostAllowlist,
     cancel: &CancellationToken,
     transport: &McpTransportConfig,
-) -> StreamableHttpService<DynamicHandler, LocalSessionManager> {
+) -> McpStreamableService {
     let config = StreamableHttpServerConfig::default()
         .with_allowed_origins(allowlist.origins())
         .with_allowed_hosts(host_allowlist.hosts().iter().cloned())

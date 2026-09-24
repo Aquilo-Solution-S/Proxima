@@ -137,6 +137,7 @@ The Streamable HTTP MCP listener turns on when `PROXIMA_MCP_BIND` (or
 |---|---|---|
 | Host `Authenticator` | `.authenticator(Arc<dyn Authenticator>)` | bearer resolves to an `AuthzContext` carrying current, server-resolved `OwnerRoles` |
 | Environment OIDC | `PROXIMA_OIDC_ISSUER` and companions, no authenticator in code | the shipped `OidcAuthenticator`, resolving roles through the runtime's owner-access port |
+| Host `Authenticator` built at boot | `.authenticator_with_platform_scope(\|ctx\| ..)` | the factory receives `PlatformAuthContext { platform_scope, owner_access }` after `PgPlatformScope::new` validated the platform role; requires `platform_database_url`; one slot with `.authenticator` (a later builder layer's replaces an earlier one's, both in one layer refuse); like it, takes precedence over `PROXIMA_OIDC_*` |
 
 The shipped OIDC resolver bounds each discovery and JWKS request, including
 connect and body read, to `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` (`10` by default;
@@ -195,6 +196,17 @@ fails the call). Header values are opaque caller input — never authorize on
 one. `.services(FlavorServices)` publishes host services at boot, visible to
 `FlavorApp::services` through `AppContext::services()` and to every tool,
 request behavior, route and worker afterwards.
+
+Host-side MCP surface (v0.0.21):
+
+| Need | API | Contract |
+|---|---|---|
+| Serve host tools on `/mcp` | `.host_tools(Arc<dyn McpHostTools>)` | `McpHostTools::list(&McpAuthContext)` per caller; listed beside registry tools, filtered by palette (flat key = name) and owner role (`annotations.read_only`, silence = write); `call(ToolCall)` runs as the terminal of the registry's request behaviors, scope gate first; `ctx.services` carries `McpHostToolCall`. Names are 1..=128 characters of `[A-Za-z0-9_.-]` (never a `tool:action` leaf or `resource:` key); a name a registry tool serves (canonical or wire) or a repeated one is dropped with a warning |
+| Record served calls | `.record_mcp_calls(true)` | each `tools/call` of a registry tool, or a host tool listed for the caller, → `core/mcp-call-logged-v1` Fact under the call's owner: tool, ok or the JSON-RPC error code, latency, byte size; actor = verified subject; no body and no caller text (`io_truncated = true`). Written off the request path with the caller's own context (a caller that cannot write the owner is not recorded), at most 64 in flight (beyond that the record is dropped with a warning). Calls refused before dispatch (a contradicting `model_id`, a bad request-services bag) are not recorded |
+| Compose own router | `BuiltProxima::mcp_edge()` → `McpEdge` | resolved tool host, bearer auth, Origin/Host allowlists, revalidation, resource metadata, transport; `McpEdge::router(app)` = `/mcp` (+ `/v1`) behind bearer auth, `app` without it, all behind body cap + Host guard + CORS. `layered_router_mcp_only` puts bearer auth on `/mcp` only for a hand-built service (no resource-metadata routes; the default body cap) |
+| Custom transport | `auth_context`, `peer_implementation`, `author_from_args`, `strip_call_context_args`, `reject_nul_in_args`, `tool_invocation_error_to_error_data`, `mcp_tool_error_to_error_data`, `McpToolHost::dispatch_through_behaviors` | the handler's own helpers, public |
+| Own OIDC claims | `OidcTokenValidator::validate_with::<C>` → `ValidatedOidcToken<C>`; `OidcRoleShape::Host(Arc<dyn OidcRoleShaper>)` | `C` reads the verified payload; refusals keep their `OidcRejection` reason (→ `InvalidCredentials` at the boundary); a binding's shaper sees every verified claim and may only narrow: another subject, auth path or trusted model id, or a right the resolved roles lack, refuses the token; the tool scope is intersected and the expiry clamped to the token's |
+| Work with no bearer | `AuthzContext::for_system(&SystemAuthority, OwnerRoles)` | sealed `AuthPath::System` context from the runtime's witness instead of a stub authenticator and empty bearer; System-path owner writes check the same witness at permit time |
 
 ### Trusted model provenance
 

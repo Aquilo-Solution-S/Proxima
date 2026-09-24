@@ -107,6 +107,7 @@ mod core_mcp;
 pub mod flavor;
 mod health;
 pub mod host;
+mod mcp_edge;
 mod migrations;
 mod owner_access;
 mod runtime;

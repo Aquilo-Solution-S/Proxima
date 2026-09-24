@@ -62,12 +62,16 @@ pub type OidcBundle = (Arc<dyn Authenticator>, ResourceServerMetadata);
 /// stock authenticators (`OidcAuthenticator` one route, `OidcBindingSet`
 /// several) with their constructor inputs. `oidc_from_env` stays the
 /// one-audience env path.
+///
+/// A host reading its own claims uses [`OidcTokenValidator::validate_with`]
+/// (typed [`OidcRejection`] reasons) or an [`OidcRoleShape::Host`]
+/// [`OidcRoleShaper`] on a binding; neither needs a JWT library of its own.
 pub use proxima_auth_oidc::{
     DEFAULT_HTTP_REQUEST_TIMEOUT, HttpJwksResolver, KeyError, KeyResolver,
     MAX_HTTP_REQUEST_TIMEOUT, OidcAuthConfig, OidcAuthenticator, OidcBinding, OidcBindingRoute,
-    OidcBindingSet, OidcBindingSetError, OidcConfigError, OidcRoleShape, OidcSubjectMap,
-    OidcSubjectMapError, OidcTokenValidator, StaticJwksResolver, SubjectBinding,
-    ValidatedOidcClaims,
+    OidcBindingSet, OidcBindingSetError, OidcClaimMap, OidcConfigError, OidcRejection,
+    OidcRoleShape, OidcRoleShaper, OidcSubjectMap, OidcSubjectMapError, OidcTokenValidator,
+    StaticJwksResolver, SubjectBinding, ValidatedOidcClaims, ValidatedOidcToken,
 };
 pub use proxima_core::{AccessError, OwnerRoles};
 

@@ -71,6 +71,41 @@ pub trait RequestBehavior: Send + Sync + std::fmt::Debug {
     ) -> Result<serde_json::Value, McpToolError>;
 }
 
+/// Marks one call as a host-served tool (not in the flavor registry) and
+/// carries what the host declared about it.
+///
+/// The MCP tool host places it in the call's request services
+/// ([`McpToolCtx::services`]) when it dispatches a host tool, so every
+/// behavior sees which kind of call it wraps and the scope gate classifies
+/// the call from the host's declaration instead of treating the unknown
+/// name as a write. It names the tool it describes; the gate reads it only
+/// for that name and only when the registry has no tool of that name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpHostToolCall {
+    name: String,
+    annotations: super::McpToolAnnotations,
+}
+
+impl McpHostToolCall {
+    #[must_use]
+    pub fn new(name: impl Into<String>, annotations: super::McpToolAnnotations) -> Self {
+        Self {
+            name: name.into(),
+            annotations,
+        }
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub const fn annotations(&self) -> super::McpToolAnnotations {
+        self.annotations
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ScopeGateBehavior;
 
@@ -171,6 +206,15 @@ impl ScopeGateBehavior {
             descriptor
                 .argv_action(args)
                 .is_some_and(|action| descriptor.action_is_read_only(action))
+        } else if let Some(host) = descriptor
+            .is_none()
+            .then(|| ctx.services.get::<McpHostToolCall>())
+            .flatten()
+            .filter(|host| host.name == tool)
+        {
+            // A host tool is flat; its declaration is the host's. Silence
+            // is still a write.
+            host.annotations.read_only.unwrap_or(false)
         } else {
             // Flat tools still resolve their own declaration, then the
             // substrate manifest.
