@@ -90,7 +90,10 @@ jobs:
         with:
           # The release-version check answers "is this version already cut?"
           # from the tags. A clone without them reads as "first release ever"
-          # and would accept any number at all.
+          # and would accept any number at all. The released-migration lock in
+          # check-migration-ranges.py reads each tag's tree (`git ls-tree -r
+          # <tag>`); checkout fetches `+refs/tags/*` at depth 1, which carries
+          # every tag's commit and tree, and the check fails closed without them.
           fetch-tags: true
       - name: install docs dependencies
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.docs == 'true' }}

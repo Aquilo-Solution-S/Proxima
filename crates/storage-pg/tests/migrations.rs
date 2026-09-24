@@ -1,7 +1,6 @@
 //! The fresh CREATE set of the core migration. Requires local PG.
 
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
 use std::path::Path;
 
 use proxima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
@@ -2465,35 +2464,52 @@ fn upload_content_identity_is_an_additive_immutable_lane() {
     }
 }
 
-/// `SQLx` records SHA-384 checksums. Pin the two already-landed files here so
-/// moving their behavior into a new additive lane cannot silently rewrite the
-/// bytes that a live database may already have recorded.
+/// `SQLx` records each migration as SHA-384 of its file minus the
+/// `ignored-chars` of `crates/storage-pg/sqlx.toml` (`\r`), and every deployed
+/// ledger holds exactly that. `scripts/check-migration-ranges.py` pins the
+/// released file bytes; this pins the computation over every embedded file,
+/// so an `ignored-chars` edit or an `SQLx` upgrade that hashes differently —
+/// which would change every recorded checksum at once — fails here.
 #[test]
-fn frozen_reference_integrity_migration_checksums_are_unchanged() {
-    fn hex(bytes: &[u8]) -> String {
-        let mut text = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            write!(&mut text, "{byte:02x}").expect("writing to String cannot fail");
-        }
-        text
-    }
+fn embedded_core_checksums_are_sha384_of_the_files_without_carriage_returns() {
+    use sha2::{Digest, Sha384};
 
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
     let migrator = proxima_storage_pg::core_migrator();
-    let v3 = migrator
-        .iter()
-        .find(|migration| migration.version == 3)
-        .expect("version 3 is the frozen reference-integrity migration");
-    let v4 = migrator
-        .iter()
-        .find(|migration| migration.version == 4)
-        .expect("version 4 is the frozen Goal-reference migration");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&directory).expect("core migrations directory") {
+        let path = entry.expect("migration entry").path();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let Some(version) = name
+            .strip_suffix(".sql")
+            .and_then(|stem| stem.split('_').next())
+            .and_then(|version| version.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        let bytes: Vec<u8> = std::fs::read(&path)
+            .expect("readable migration")
+            .into_iter()
+            .filter(|byte| *byte != b'\r')
+            .collect();
+        let embedded = migrator
+            .iter()
+            .find(|migration| migration.version == version)
+            .unwrap_or_else(|| panic!("{name} is not embedded"));
+        assert_eq!(
+            embedded.checksum.as_ref(),
+            &Sha384::digest(&bytes)[..],
+            "{name}: SQLx checksum computation changed"
+        );
+        checked += 1;
+    }
     assert_eq!(
-        hex(v3.checksum.as_ref()),
-        "12f6791f63499f45a6af1233b3702a838af7ee8c06b23564a683bf3a6a363f743cc10c922427e3dfc1c2c1c37fd7fab2"
-    );
-    assert_eq!(
-        hex(v4.checksum.as_ref()),
-        "625f7bf3e2fff4064df91be7be755b9455914f8366bcaa5b80b32afa2d802cdc487ba558851074d6602a1877494db119"
+        checked,
+        migrator.iter().count(),
+        "every embedded migration checked"
     );
 }
 

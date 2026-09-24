@@ -90,22 +90,27 @@ kernel, **the kernel wins** until renegotiated in writing. Check it with
 
 ## Migration policy
 
-1. From v0.0.9 on, releases are non-breaking database-wise: a frozen baseline
-   (`*_v008*`) is never edited, existing databases upgrade in place, and a
-   release that needs schema work ships **one additive migration file per
-   version** (`000N_v0XY_<what>.sql` for core, one dated `_v0XY_` file per
-   flavor) — never several, never edited after the tag.
+1. From v0.0.9 on, releases are non-breaking database-wise: a released
+   migration (every file a `v*` tag shipped, baselines included) is never
+   edited — no exceptions; a fix ships as a new migration. Existing databases
+   upgrade in place, and a release that needs schema work ships **one additive
+   migration file per version** (`000N_v0XY_<what>.sql` for core, one dated
+   `_v0XY_` file per flavor) — never several.
 2. A destructive new baseline is a deliberate, named release decision — never a
    side effect of editing an applied file.
-3. Enforced by the content hashes in `scripts/check-migration-ranges.py`
-   (details: `docs/how-to/migrations.md`).
+3. Enforced by `scripts/check-migration-ranges.py`, which pins every migration
+   file each `v*` tag from v0.0.8 (`RELEASE_EPOCH`) on shipped
+   (`git ls-tree -r <tag>` vs `git hash-object`; details:
+   `docs/how-to/migrations.md` rule 2).
 4. **v0.0.15 coordinated cutover:** stop every older pack before owner-RLS
    activation; older binaries cannot resume against the enforcing schema.
    Keep the already-merged `0013_v015` index migration byte-for-byte and append
    `0014_v015_owner_rls.sql`. This is the named exception to one core file per
    release; it preserves existing migration checksums instead of rewriting 0013.
-   0014 itself was corrected in place after the tag, the second named exception
-   (`docs/how-to/migrations.md` §v0.0.15).
+   0014 was then edited in place after the tag (d12da4f2), which stopped every
+   database that had applied it from booting; it is the check's one
+   grandfathered entry and the list is closed (`docs/how-to/migrations.md`
+   §v0.0.15).
 
 Do not weaken the Lean guardrails: server-resolved `OwnerRef`,
 source-owned pins with target redaction, optional Memory/Goal sidecars,
