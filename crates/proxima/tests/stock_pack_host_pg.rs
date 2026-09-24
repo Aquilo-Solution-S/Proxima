@@ -558,13 +558,16 @@ async fn health_probes_answer_anonymously_across_hosts_only_when_enabled() {
                 "{path} under a non-allowlisted Host"
             );
         }
-        // The same Host is refused off the probes: the guard is live.
-        let guarded = client
-            .get(format!("{base}/mcp"))
-            .header("Host", FOREIGN_HOST)
-            .send()
-            .await?;
-        assert_eq!(guarded.status(), reqwest::StatusCode::FORBIDDEN);
+        // The same Host is refused off the probes, the router fallback
+        // included: the guard is live.
+        for path in ["/mcp", "/not-a-real-route"] {
+            let guarded = client
+                .get(format!("{base}{path}"))
+                .header("Host", FOREIGN_HOST)
+                .send()
+                .await?;
+            assert_eq!(guarded.status(), reqwest::StatusCode::FORBIDDEN, "{path}");
+        }
         let anonymous = client
             .post(format!("{base}/mcp"))
             .header("Content-Type", "application/json")
