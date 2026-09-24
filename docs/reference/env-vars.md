@@ -32,6 +32,7 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_OIDC_ISSUER` | OIDC auth | unset | OIDC deployment | issuer URL |
 | `PROXIMA_OIDC_AUDIENCE` | OIDC auth | unset | OIDC deployment | expected token audience |
 | `PROXIMA_OIDC_JWKS_URI` | OIDC auth | discovery default | non-default JWKS | overrides discovery |
+| `PROXIMA_OIDC_JWKS_JSON` | OIDC auth | unset | no network path to the issuer | pinned JWKS document; nothing fetched; mutually exclusive with `PROXIMA_OIDC_JWKS_URI` |
 | `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` | OIDC auth | `10` | slower issuer response budget | complete discovery/JWKS request timeout, including connect and body read; range `1..=300`; invalid values fail boot |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | OIDC auth | unset | subject allowlist desired | comma-separated `sub` values |
 | `PROXIMA_OIDC_SUBJECT_MAP_JSON` | OIDC auth | unset | OIDC deployment unless shorthand is used | issuer-aware `(iss, sub) -> user_id` JSON map; mutually exclusive with `PROXIMA_OIDC_SUBJECT_MAP`; optional per-entry `trusted_model_id` — see below |
