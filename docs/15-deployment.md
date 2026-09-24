@@ -494,6 +494,16 @@ sets. One release, with a coordinated stop/migrate/start cutover:
    ownership to the platform role. Grant runtime schema usage, DML, sequence
    access and migration-ledger reads, including defaults for new objects;
    runtime must have no ownership, DDL, TRUNCATE or role-escalation privileges.
+   `PROXIMA_RUNTIME_GRANTS=true` makes each boot issue this grant half as the
+   platform role, after migrating and before the runtime pool connects: per
+   composed schema `USAGE`, `REVOKE CREATE` (from `PUBLIC` and runtime),
+   `SELECT, INSERT, UPDATE, DELETE` on tables, `USAGE, SELECT, UPDATE` on
+   sequences, and both as `IN SCHEMA` default privileges; `SELECT` only on
+   the migration ledgers (+ `USAGE` on `public` if missing). Never `CREATE`,
+   `TRUNCATE`, `REFERENCES`, `TRIGGER`, ownership, role membership or
+   `SET ON PARAMETER` (superuser-only; not needed, see below). Refused unless
+   both URLs are set and name different users; roles, extensions and
+   ownership stay DBA steps.
 3. Configure `DATABASE_URL` for runtime and `PROXIMA_PLATFORM_DATABASE_URL` for
    platform. Apply core plus every linked flavor's migrations through the
    platform lane, or let the new host perform this step before serving.

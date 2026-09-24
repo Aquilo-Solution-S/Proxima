@@ -25,6 +25,7 @@ use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices,
 use serde::Serialize;
 
 use crate::auth::McpAuthContext;
+use crate::request_scope::RequestHeaderAllowlist;
 
 fn composed_schema_names(registry: &FlavorRegistryFrozen) -> Vec<String> {
     let mut schemas = vec!["proxima_core".to_owned()];
@@ -54,6 +55,7 @@ pub struct McpToolHost {
     registry: Arc<FlavorRegistryFrozen>,
     services: FlavorServices,
     engine: Option<Arc<Engine>>,
+    request_headers: RequestHeaderAllowlist,
 }
 
 impl std::fmt::Debug for McpToolHost {
@@ -71,6 +73,7 @@ impl McpToolHost {
             registry,
             services,
             engine: None,
+            request_headers: RequestHeaderAllowlist::default(),
         }
     }
 
@@ -83,6 +86,33 @@ impl McpToolHost {
     pub fn with_engine(mut self, engine: Arc<Engine>) -> Self {
         self.engine = Some(engine);
         self
+    }
+
+    /// Copy the allowlisted inbound headers of each served call into its
+    /// [`RequestHeaders`](proxima_core::RequestHeaders) service. Default:
+    /// none.
+    #[must_use]
+    pub fn with_request_headers(mut self, allowlist: RequestHeaderAllowlist) -> Self {
+        self.request_headers = allowlist;
+        self
+    }
+
+    /// The per-request service set of one served call: the
+    /// [`FlavorServices`] a host middleware placed in the request's
+    /// extensions, plus the allowlisted headers. Merged onto the boot set by
+    /// [`Self::call_tool_in_request`] / [`Self::read_resource_in_request`].
+    ///
+    /// # Errors
+    ///
+    /// [`McpToolError::InvalidInput`] for a repeated or non-ASCII allowlisted
+    /// header; [`McpToolError::Other`] when the extension bag carries a
+    /// `RequestHeaders` of its own.
+    pub fn request_services(
+        &self,
+        headers: &http::HeaderMap,
+        extensions: &http::Extensions,
+    ) -> Result<FlavorServices, McpToolError> {
+        crate::request_scope::request_services(&self.request_headers, headers, extensions)
     }
 
     /// Connect a runtime role and a separately authorized migration/platform
@@ -149,9 +179,30 @@ impl McpToolHost {
     /// assembling an author context the credential does not support.
     pub fn ctx_for(
         &self,
-        mut author: McpAuthorContext,
+        author: McpAuthorContext,
         auth: &McpAuthContext,
     ) -> Result<McpToolCtx, McpToolError> {
+        self.ctx_for_request(author, auth, FlavorServices::default())
+    }
+
+    /// [`Self::ctx_for`] with a per-request service set merged onto the boot
+    /// set ([`FlavorServices::try_extend`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ctx_for`], and [`McpToolError::Other`] when `request`
+    /// repeats a type the boot set already holds — a host wiring fault, never
+    /// a caller one, so a request can never replace a boot service.
+    pub fn ctx_for_request(
+        &self,
+        mut author: McpAuthorContext,
+        auth: &McpAuthContext,
+        request: FlavorServices,
+    ) -> Result<McpToolCtx, McpToolError> {
+        let mut services = self.services.clone();
+        services
+            .try_extend(request)
+            .map_err(|err| McpToolError::Other(format!("request services: {err}")))?;
         let owner = auth.owner;
         let authz = auth.authz.clone();
         let trusted = authz.trusted_model_id();
@@ -163,7 +214,7 @@ impl McpToolHost {
             authz,
             registry: self.registry.clone(),
             caller_self_perspective: author.caller_self_perspective,
-            services: self.services.clone(),
+            services,
             author,
             engine: self.engine.clone(),
         })
@@ -179,6 +230,24 @@ impl McpToolHost {
         author: McpAuthorContext,
         auth: Option<McpAuthContext>,
     ) -> Result<serde_json::Value, ToolInvocationError> {
+        self.call_tool_in_request(name, args, author, auth, FlavorServices::default())
+            .await
+    }
+
+    /// [`Self::call_tool`] with a per-request service set (see
+    /// [`Self::request_services`]) merged onto the boot set.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::call_tool`] and [`Self::ctx_for_request`].
+    pub async fn call_tool_in_request(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+        author: McpAuthorContext,
+        auth: Option<McpAuthContext>,
+        request: FlavorServices,
+    ) -> Result<serde_json::Value, ToolInvocationError> {
         let auth = auth.ok_or_else(|| ToolInvocationError::NotAuthorized(name.to_string()))?;
         if let Some(descriptor) = self
             .registry
@@ -186,7 +255,7 @@ impl McpToolHost {
             .iter()
             .find(|d| tool_name_matches(d.name, name))
         {
-            let ctx = self.ctx_for(author, &auth)?;
+            let ctx = self.ctx_for_request(author, &auth, request)?;
             // Validate once for every transport before a behavior can log
             // arguments or a tool can pass them to storage.
             reject_nul_in_args(&args)?;
@@ -212,10 +281,27 @@ impl McpToolHost {
         author: McpAuthorContext,
         auth: Option<McpAuthContext>,
     ) -> Result<serde_json::Value, ToolInvocationError> {
+        self.read_resource_in_request(uri, author, auth, FlavorServices::default())
+            .await
+    }
+
+    /// [`Self::read_resource`] with a per-request service set merged onto
+    /// the boot set, so request behaviors see the same values on both paths.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::read_resource`] and [`Self::ctx_for_request`].
+    pub async fn read_resource_in_request(
+        &self,
+        uri: &str,
+        author: McpAuthorContext,
+        auth: Option<McpAuthContext>,
+        request: FlavorServices,
+    ) -> Result<serde_json::Value, ToolInvocationError> {
         let parsed = parse_resource_uri(uri).map_err(|err| err.into_invocation_error(uri))?;
         let auth =
             auth.ok_or_else(|| ToolInvocationError::NotAuthorized(parsed.scope_key().to_string()))?;
-        let ctx = self.ctx_for(author, &auth)?;
+        let ctx = self.ctx_for_request(author, &auth, request)?;
         let scope_key = parsed.scope_key();
 
         let terminal: TerminalDispatch<'_> = Box::new(move |call| {
@@ -649,6 +735,7 @@ mod tests {
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
             services: FlavorServices::default(),
             engine: None,
+            request_headers: RequestHeaderAllowlist::default(),
         }
     }
 

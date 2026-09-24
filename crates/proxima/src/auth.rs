@@ -34,15 +34,33 @@ const OIDC_HTTP_TIMEOUT_SECONDS: &str = "PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS";
 /// How much clock skew a token may carry, in seconds.
 const LEEWAY_SECS: u64 = 60;
 
+/// Every variable [`oidc_from_lookup`] reads. The runtime environment layer
+/// captures exactly these, so the authenticator it builds at resolve sees
+/// the environment the builder was given.
+pub(crate) const OIDC_ENV_KEYS: [&str; 8] = [
+    "PROXIMA_OIDC_ISSUER",
+    "PROXIMA_OIDC_AUDIENCE",
+    "PROXIMA_PUBLIC_URL",
+    "PROXIMA_OIDC_JWKS_URI",
+    "PROXIMA_OIDC_ALLOWED_SUBJECTS",
+    OIDC_HTTP_TIMEOUT_SECONDS,
+    SUBJECT_MAP_JSON,
+    SUBJECT_MAP_LEGACY,
+];
+
 /// What a host needs to serve authenticated MCP: who validates a bearer
 /// token, and what to advertise at the protected-resource metadata endpoint.
 pub type OidcBundle = (Arc<dyn Authenticator>, ResourceServerMetadata);
 
-/// Low-level OIDC primitives a host authenticator composes. Not a second
-/// authenticator: `oidc_from_env` stays the one-audience env path.
+/// Low-level OIDC primitives a host authenticator composes, and the two
+/// stock authenticators (`OidcAuthenticator` one route, `OidcBindingSet`
+/// several) with their constructor inputs. `oidc_from_env` stays the
+/// one-audience env path.
 pub use proxima_auth_oidc::{
     DEFAULT_HTTP_REQUEST_TIMEOUT, HttpJwksResolver, KeyError, KeyResolver,
-    MAX_HTTP_REQUEST_TIMEOUT, OidcAuthConfig, OidcConfigError, OidcTokenValidator,
+    MAX_HTTP_REQUEST_TIMEOUT, OidcAuthConfig, OidcAuthenticator, OidcBinding, OidcBindingRoute,
+    OidcBindingSet, OidcBindingSetError, OidcConfigError, OidcRoleShape, OidcSubjectMap,
+    OidcSubjectMapError, OidcTokenValidator, StaticJwksResolver, SubjectBinding,
     ValidatedOidcClaims,
 };
 pub use proxima_core::{AccessError, OwnerRoles};
@@ -239,6 +257,37 @@ mod tests {
         let resolved =
             oidc_from_lookup(&env(&[]), owner_access()).expect("absence is not an error");
         assert!(resolved.is_none());
+    }
+
+    /// The runtime environment layer snapshots `OIDC_ENV_KEYS` and replays
+    /// them at resolve; a key read here but missing there would silently
+    /// resolve as unset.
+    #[tokio::test]
+    async fn every_variable_read_is_captured_by_the_runtime_env_layer() {
+        let asked = std::sync::Mutex::new(Vec::new());
+        let full = env(&[
+            ("PROXIMA_OIDC_ISSUER", "https://issuer.test"),
+            ("PROXIMA_OIDC_AUDIENCE", "proxima"),
+            ("PROXIMA_PUBLIC_URL", "https://mcp.test"),
+            ("PROXIMA_OIDC_JWKS_URI", "https://issuer.test/jwks"),
+            ("PROXIMA_OIDC_ALLOWED_SUBJECTS", "a,b"),
+            ("PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS", "5"),
+            (
+                "PROXIMA_OIDC_SUBJECT_MAP",
+                "a:00000000-0000-7000-8000-000000000001",
+            ),
+        ]);
+        let recording = |key: &str| {
+            asked.lock().unwrap().push(key.to_owned());
+            full(key)
+        };
+        oidc_from_lookup(&recording, owner_access()).expect("valid env");
+        for key in asked.into_inner().unwrap() {
+            assert!(
+                super::OIDC_ENV_KEYS.contains(&key.as_str()),
+                "{key} is read but not in OIDC_ENV_KEYS"
+            );
+        }
     }
 
     #[test]

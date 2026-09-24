@@ -65,9 +65,22 @@ pub struct AppContext {
     pub(crate) host_state_erase_context: proxima_storage_pg::PgHostStateEraseContext,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Option<Owner>,
+    pub(crate) services: FlavorServices,
 }
 
 impl AppContext {
+    /// Typed services published to this runtime.
+    ///
+    /// Inside [`FlavorApp::services`] this is the host's own set
+    /// ([`crate::RuntimeBuilder::services`]), so a flavor can build on a
+    /// host-provided client. Everywhere after — [`FlavorApp::mount_http`]
+    /// and the served paths — it is the composed set every tool, request
+    /// behavior, and worker sees: host, flavors, and substrate services.
+    #[must_use]
+    pub fn services(&self) -> &FlavorServices {
+        &self.services
+    }
+
     /// Host-only extra-table bridge. Not Flavor SDK.
     ///
     /// Use this inside [`FlavorApp::services`] to construct a flavor-owned
@@ -129,6 +142,7 @@ impl std::fmt::Debug for AppContext {
         f.debug_struct("AppContext")
             .field("blobs", &self.blobs)
             .field("owner", &self.owner)
+            .field("services", &self.services)
             .finish_non_exhaustive()
     }
 }
@@ -315,6 +329,7 @@ mod tests {
                 .expect("empty fixture registry has no host lifecycle tables"),
             blobs: None,
             owner: None,
+            services: proxima_core::FlavorServices::default(),
         }
     }
 

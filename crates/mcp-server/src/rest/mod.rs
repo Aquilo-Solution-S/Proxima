@@ -165,6 +165,7 @@ async fn tool_route(
     method: Method,
     Path(tool): Path<String>,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
     RestAuth(auth): RestAuth,
     body: Bytes,
 ) -> Response {
@@ -238,7 +239,15 @@ async fn tool_route(
             return problem.into_response();
         }
     }
-    dispatch(&state, &auth, &headers, descriptor.name, args, &instance).await
+    dispatch(
+        &state,
+        &auth,
+        (&headers, &extensions),
+        descriptor.name,
+        args,
+        &instance,
+    )
+    .await
 }
 
 /// `/v1/tools/{tool}/{action}` — the narrowed dispatcher form.
@@ -247,6 +256,7 @@ async fn action_route(
     method: Method,
     Path((tool, action)): Path<(String, String)>,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
     RestAuth(auth): RestAuth,
     body: Bytes,
 ) -> Response {
@@ -280,7 +290,15 @@ async fn action_route(
         Ok(args) => args,
         Err(problem) => return problem.into_response(),
     };
-    dispatch(&state, &auth, &headers, descriptor.name, args, &instance).await
+    dispatch(
+        &state,
+        &auth,
+        (&headers, &extensions),
+        descriptor.name,
+        args,
+        &instance,
+    )
+    .await
 }
 
 /// The one place a REST request becomes a tool call: no route reaches
@@ -288,7 +306,7 @@ async fn action_route(
 async fn dispatch(
     state: &RestState,
     auth: &crate::McpAuthContext,
-    headers: &axum::http::HeaderMap,
+    (headers, extensions): (&axum::http::HeaderMap, &axum::http::Extensions),
     tool: &str,
     args: serde_json::Value,
     instance: &str,
@@ -297,9 +315,13 @@ async fn dispatch(
         Ok(author) => author,
         Err(problem) => return problem.into_response(),
     };
+    let request = match state.host.request_services(headers, extensions) {
+        Ok(request) => request,
+        Err(err) => return problem_for(&err.into(), instance).into_response(),
+    };
     match state
         .host
-        .call_tool(tool, args, author, Some(auth.clone()))
+        .call_tool_in_request(tool, args, author, Some(auth.clone()), request)
         .await
     {
         Ok(value) => json_ok(&value),
@@ -317,6 +339,7 @@ async fn read_resource(
     State(state): State<RestState>,
     uri: Uri,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
     RestAuth(auth): RestAuth,
 ) -> Response {
     // Both Path and RawPathParams percent-decode captures. Read the URI
@@ -335,7 +358,15 @@ async fn read_resource(
         Ok(author) => author,
         Err(problem) => return problem.into_response(),
     };
-    match state.host.read_resource(&target, author, Some(auth)).await {
+    let request = match state.host.request_services(&headers, &extensions) {
+        Ok(request) => request,
+        Err(err) => return problem_for(&err.into(), &instance).into_response(),
+    };
+    match state
+        .host
+        .read_resource_in_request(&target, author, Some(auth), request)
+        .await
+    {
         Ok(value) => json_ok(&value),
         Err(err) => problem_for(&err, &instance).into_response(),
     }

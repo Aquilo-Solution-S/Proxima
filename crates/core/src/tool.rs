@@ -194,6 +194,74 @@ where
         .and_then(|value| value.downcast::<T>().ok())
 }
 
+/// Allowlisted inbound request headers of one served call, as opaque values.
+///
+/// The serving host copies exactly the headers its allowlist names
+/// (`PROXIMA_REQUEST_HEADERS`) off the inbound HTTP request; nothing else
+/// crosses. Proxima neither parses nor authenticates a value, so a tool may
+/// forward one (a ticket to an egress gateway) but must never authorize on
+/// one: the credential decides access, a header never does.
+///
+/// Published per call on the service set — `ctx.service::<RequestHeaders>()`
+/// — and absent when the host allowlists no header. Names are lowercase;
+/// lookup is case-insensitive. `Debug` prints names only: values are
+/// typically credentials for a downstream service.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct RequestHeaders {
+    values: std::collections::BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for RequestHeaders {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.values.keys()).finish()
+    }
+}
+
+impl RequestHeaders {
+    /// Build from `(name, value)` pairs. Names are lowercased; a repeated
+    /// name keeps its last value. Transport adapters build this from an
+    /// allowlist that already refuses repeats.
+    #[must_use]
+    pub fn from_pairs<I, N, V>(pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (N, V)>,
+        N: AsRef<str>,
+        V: Into<String>,
+    {
+        Self {
+            values: pairs
+                .into_iter()
+                .map(|(name, value)| (name.as_ref().to_ascii_lowercase(), value.into()))
+                .collect(),
+        }
+    }
+
+    /// The value of header `name`, case-insensitively.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.values
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
+    }
+
+    /// Every `(name, value)` pair, ordered by lowercase name.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.values
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+}
+
 /// Transport-neutral identity of the client invoking a generic tool.
 ///
 /// Transport adapters populate this from their authenticated call context.
@@ -712,6 +780,25 @@ pub trait Tool: Send + Sync + 'static {
     type Output: serde::Serialize + schemars::JsonSchema + Send + 'static;
 
     fn call(ctx: ToolCtx, args: Self::Args) -> BoxFuture<'static, Result<Self::Output, ToolError>>;
+}
+
+#[cfg(test)]
+mod request_headers_tests {
+    use super::RequestHeaders;
+
+    #[test]
+    fn names_fold_case_and_values_stay_out_of_debug() {
+        let headers =
+            RequestHeaders::from_pairs([("X-Pack-Ticket", "secret-ticket"), ("x-other", "b")]);
+        assert_eq!(headers.get("x-pack-ticket"), Some("secret-ticket"));
+        assert_eq!(headers.get("X-PACK-TICKET"), Some("secret-ticket"));
+        assert_eq!(headers.len(), 2);
+        assert_eq!(
+            headers.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            ["x-other", "x-pack-ticket"]
+        );
+        assert!(!format!("{headers:?}").contains("secret-ticket"));
+    }
 }
 
 #[cfg(test)]

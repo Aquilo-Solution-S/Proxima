@@ -51,6 +51,16 @@ Proxima::<App>::app()
     .await?;
 ```
 
+A stock host needs no code beyond its flavor list; everything else is the
+environment below (the flavor's `configure` still names its tool scope):
+
+```rust
+#[tokio::main]
+async fn main() -> Result<(), proxima::ProximaError> {
+    proxima::serve::<(TheFlavor,)>().await // run() + drain on SIGTERM/SIGINT
+}
+```
+
 | Env var | Meaning |
 |---|---|
 | `DATABASE_URL` | Postgres connection for core tables (`proxima_core` schema). |
@@ -67,6 +77,17 @@ Proxima::<App>::app()
 | `PROXIMA_EMBED_MATRYOSHKA` | Send a `dimensions` request parameter for nested-prefix models. Default `false`. |
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | Longest input, in characters, the client will send. Unset (default) sends every input and lets the provider judge it. Set this when the provider does not reject over-long input cleanly — see below. Minimum 4095. |
 | `PROXIMA_REST_ENABLED` | Serve the `/v1` REST rendering of the tool manifest beside `/mcp` (see [17](17-rest-surface.md)). Default `false`; requires the `rest` cargo feature at build time. |
+| `PROXIMA_OIDC_ISSUER` (+ `PROXIMA_OIDC_*`, `PROXIMA_PUBLIC_URL`) | When no authenticator is set in code, the runtime builds the OIDC authenticator and protected-resource metadata from these ([`proxima::auth::oidc_from_env`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/auth.rs) lists every variable). It resolves roles through the runtime's owner-access port (below). |
+| `PROXIMA_REQUEST_HEADERS` | Comma-separated inbound header names, or `prefix*`, copied to tools as opaque `RequestHeaders` on `/mcp` and `/v1`. Unset publishes nothing. `authorization`, `proxy-authorization` and `cookie` are refused, directly or by prefix. |
+| `PROXIMA_FORWARDER_SUBJECTS` | Comma-separated user UUIDs (as in the subject map's `user_id`) trusted to act for any Group they select. Requires `PROXIMA_FORWARDER_ROLE`. |
+| `PROXIMA_FORWARDER_ROLE` | The fixed role a forwarder holds in the Group it selects: `viewer`, `ingest` or `editor`. `admin` is refused. Requires `PROXIMA_FORWARDER_SUBJECTS`. |
+| `PROXIMA_HEALTH_ENDPOINTS` | Serve anonymous `GET /healthz` (process up) and `GET /readyz` (database answers within 2 s and not shutting down) on the MCP listener, outside the Host guard and bearer auth. Default `false`. |
+| `PROXIMA_MAX_REQUEST_BODY_BYTES` | Largest accepted request body on the listener, enforced before auth and again by rmcp. Default `4194304` (4 MiB); `0` is a boot error. |
+| `PROXIMA_MCP_SSE_KEEP_ALIVE_SECS` | SSE ping interval. Default `15`; `0` disables pings. |
+| `PROXIMA_MCP_SSE_RETRY_SECS` | SSE priming-event retry hint. Default `3`; `0` sends none. |
+| `PROXIMA_MCP_SESSIONS` | Keep a server-side MCP session per client for legacy protocol versions (`2026-07-28` is always stateless). Default `true`. |
+| `PROXIMA_MCP_JSON_RESPONSE` | With sessions off, answer simple calls as `application/json` rather than SSE. Default `false`. |
+| `PROXIMA_RUNTIME_GRANTS` | Grant the runtime role its DML privileges at boot, after migrating and before the runtime pool connects ([15](15-deployment.md)). Default `false`. |
 | `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `memory` (default, fail-closed) or `full` (opt-in). |
 | `PROXIMA_TOOL_ALLOW` | Optional comma-separated canonical scope keys unioned into the resolved profile. |
 | `PROXIMA_TOOL_DENY` | Optional comma-separated canonical scope keys subtracted from the resolved profile. |
@@ -115,15 +136,19 @@ The Streamable HTTP MCP listener turns on when `PROXIMA_MCP_BIND` (or
 | Mode | How | Identity model |
 |---|---|---|
 | Host `Authenticator` | `.authenticator(Arc<dyn Authenticator>)` | bearer resolves to an `AuthzContext` carrying current, server-resolved `OwnerRoles` |
+| Environment OIDC | `PROXIMA_OIDC_ISSUER` and companions, no authenticator in code | the shipped `OidcAuthenticator`, resolving roles through the runtime's owner-access port |
 
 The shipped OIDC resolver bounds each discovery and JWKS request, including
 connect and body read, to `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` (`10` by default;
 `1..=300`). Zero, malformed, and out-of-range values fail boot.
 
-`OwnerAccessPort` is not a second runtime input. The shipped
-`OidcAuthenticator` and each `OidcBinding` receive the port at construction
-and use it inside `authenticate`; a custom authenticator owns the equivalent
-server-side role resolution.
+The runtime resolves roles through one `OwnerAccessPort`: the host's
+(`.owner_access(..)`), else the Postgres resolver over the runtime pool. The
+edge's per-Group probe and the delegation service use it, and so does the
+environment OIDC authenticator. A host authenticator built in code receives
+its own port at construction (as `OidcAuthenticator` and each `OidcBinding`
+do); pass that same port to `.owner_access(..)`, or the eager map and the
+per-Group probe can answer differently for one subject.
 
 Per-group resolution (forwarder hosts). One operator, one host, many parties,
 one trusted subject acting for a different Group owner per request: the role
@@ -135,11 +160,30 @@ port is typed on `GroupId`, so a Personal owner cannot take the loop (it is a
 kernel rule, never a resolved role); an absent port, `Ok(None)` and an error
 fold nothing, so the path refuses with the same status and message a missing
 map entry gives today. The default `resolve_group_role` answers out of
-`resolve_roles_for_subject`, so a port that does not override it is unchanged;
-the runtime hands the edge the same port the authenticator holds. The caller
-still only selects the owner (`X-Proxima-Owner` / the session binding), the
-host still resolves the role
+`resolve_roles_for_subject`, so a port that does not override it is unchanged.
+The edge asks the runtime's port above — the one the authenticator holds only
+when that authenticator is the environment one or the host passed its port to
+`.owner_access(..)`. The caller still only selects the owner
+(`X-Proxima-Owner` / the session binding), the host still resolves the role
 ([14 §Owner-scoping](14-protocol-surface.md#owner-scoping--the-primary-axis)).
+
+Forwarder policy. `PROXIMA_FORWARDER_SUBJECTS` + `PROXIMA_FORWARDER_ROLE`
+(or `.forwarder(ForwarderPolicy)`) wraps that port: for a listed subject the
+per-Group probe answers the fixed role for whichever Group it selects, member
+or not. Real memberships still win (the eager map is asked first), a Personal
+owner stays unreachable, and delegation — which reads memberships — ignores
+the policy, so a forwarder cannot delegate a role it holds only by policy. A
+role that manages Groups is refused: a forwarder able to administer every
+Group it names could enroll anyone in all of them.
+
+Request-scoped values. Two per-call inputs reach a tool beside the boot
+services: the headers `PROXIMA_REQUEST_HEADERS` allowlists, as
+`ctx.service::<RequestHeaders>()`, and a `FlavorServices` a host middleware
+put in the request's extensions, merged onto the boot set (a type both carry
+fails the call). Header values are opaque caller input — never authorize on
+one. `.services(FlavorServices)` publishes host services at boot, visible to
+`FlavorApp::services` through `AppContext::services()` and to every tool,
+request behavior, route and worker afterwards.
 
 ### Trusted model provenance
 
@@ -590,6 +634,7 @@ coexisting pack versions share one schema.
 | Embedded host app | host builds `Proxima<App>` programmatically over a local Engine/Postgres; injects its own authenticator + embedding client |
 | Headless MCP host | process env (`apps/proxima-mcp`) + host authenticator; shipped OIDC constructs it with `OwnerAccessPort` |
 | Hosted deployment | provisioned env/secrets + tenant authenticator |
+| Stock pack host | `proxima::serve::<(TheFlavor,)>()` + chart env: environment OIDC, forwarder policy, request-header allowlist, health probes |
 
 The same Engine contract applies in every shape: build-time types,
 runtime endpoint instances.

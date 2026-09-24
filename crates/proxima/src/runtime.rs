@@ -19,19 +19,21 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::{
     AuthPath, Authenticator, AuthzContext, DelegationRuntimeAuthority, EmbeddingClient,
-    EmbeddingRouter, FlavorRegistryFrozen, FlavorServiceError, FlavorServices, RevalidationConfig,
-    ToolScope,
+    EmbeddingRouter, FlavorRegistryFrozen, FlavorServiceError, FlavorServices, OwnerAccessPort,
+    RevalidationConfig, ToolScope,
 };
 use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
-    HostAllowlist, McpEdgeAuth, McpToolHost, OriginAllowlist, assert_loopback, cors_layer,
-    default_allowlist, host_guard_layer, streamable_http_service,
+    HostAllowlist, McpEdgeAuth, McpToolHost, McpTransportConfig, OriginAllowlist, assert_loopback,
+    body_limit_layer, cors_layer, default_allowlist, host_guard_layer,
+    streamable_http_service_with_transport,
 };
 use sqlx::PgPool;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower::Service;
 
+use crate::owner_access::ForwarderPolicy;
 use crate::workers::{FlavorWorker, FlavorWorkerContext};
 use crate::{
     AppContext, CoreMcpTools, EmbedConfig, FlavorApp, ProximaBuilder, ProximaError, RuntimeBuilder,
@@ -199,6 +201,63 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// Grant the runtime role its DML privileges at boot. Env equivalent:
+    /// `PROXIMA_RUNTIME_GRANTS`.
+    #[must_use]
+    pub fn runtime_grants(mut self, runtime_grants: bool) -> Self {
+        self.overlay = self.overlay.runtime_grants(runtime_grants);
+        self
+    }
+
+    /// See [`RuntimeBuilder::request_headers`].
+    #[must_use]
+    pub fn request_headers(mut self, request_headers: Vec<String>) -> Self {
+        self.overlay = self.overlay.request_headers(request_headers);
+        self
+    }
+
+    /// See [`RuntimeBuilder::owner_access`].
+    #[must_use]
+    pub fn owner_access(mut self, owner_access: Arc<dyn OwnerAccessPort>) -> Self {
+        self.overlay = self.overlay.owner_access(owner_access);
+        self
+    }
+
+    /// See [`RuntimeBuilder::forwarder`].
+    #[must_use]
+    pub fn forwarder(mut self, policy: ForwarderPolicy) -> Self {
+        self.overlay = self.overlay.forwarder(policy);
+        self
+    }
+
+    /// See [`RuntimeBuilder::services`].
+    #[must_use]
+    pub fn services(mut self, services: FlavorServices) -> Self {
+        self.overlay = self.overlay.services(services);
+        self
+    }
+
+    /// See [`RuntimeBuilder::health_endpoints`].
+    #[must_use]
+    pub fn health_endpoints(mut self, health_endpoints: bool) -> Self {
+        self.overlay = self.overlay.health_endpoints(health_endpoints);
+        self
+    }
+
+    /// See [`RuntimeBuilder::max_request_body_bytes`].
+    #[must_use]
+    pub fn max_request_body_bytes(mut self, bytes: usize) -> Self {
+        self.overlay = self.overlay.max_request_body_bytes(bytes);
+        self
+    }
+
+    /// See [`RuntimeBuilder::mcp_transport`].
+    #[must_use]
+    pub fn mcp_transport(mut self, transport: McpTransportConfig) -> Self {
+        self.overlay = self.overlay.mcp_transport(transport);
+        self
+    }
+
     /// Serve `/v1` beside `/mcp`. Env equivalent: `PROXIMA_REST_ENABLED`.
     #[must_use]
     pub fn rest_enabled(mut self, rest_enabled: bool) -> Self {
@@ -274,6 +333,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             cancel,
             app_ctx,
             services,
+            owner_access,
         } = self.boot_common().await?;
 
         let service = if let Some(allowlist) = allowlist {
@@ -281,6 +341,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
                 app_ctx.clone(),
                 services.clone(),
                 parts.authenticator,
+                owner_access,
                 allowlist,
                 &cancel,
                 &config,
@@ -341,6 +402,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             cancel,
             app_ctx,
             services,
+            owner_access,
         } = self.boot_common().await?;
         #[cfg(feature = "outbox-nats")]
         let publication_origin_eligibility = booted.publication_origin_eligibility_for_host();
@@ -356,6 +418,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
                 app_ctx,
                 services.clone(),
                 parts.authenticator,
+                owner_access,
                 allowlist,
                 &cancel,
                 &config,
@@ -456,7 +519,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         };
         let booted = boot_app::<A>(&config, &parts).await?;
         let cancel = CancellationToken::new();
-        let app_ctx = AppContext {
+        let mut app_ctx = AppContext {
             engine: booted.engine.clone(),
             pool: booted.pool.clone(),
             platform_scope: booted.platform_scope_for_host(),
@@ -465,14 +528,25 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             host_state_erase_context: booted.host_state_erase_context_for_host(),
             blobs: booted.blobs.clone(),
             owner: booted.owner,
+            services: parts.services.clone(),
         };
+        let owner_access = runtime_owner_access(
+            &app_ctx,
+            parts.owner_access.clone(),
+            config.forwarder.clone(),
+        );
+        if let Some(late) = &parts.late_owner_access {
+            late.bind(owner_access.clone());
+        }
         let services = assemble_services::<A>(
             &app_ctx,
             &booted.registry,
             &config.tool_scope,
             parts.authenticator.as_ref(),
+            &owner_access,
             &booted.delegation_runtime_authority,
         )?;
+        app_ctx.services = services.clone();
         Ok(BootedRuntime {
             config,
             parts,
@@ -481,6 +555,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             cancel,
             app_ctx,
             services,
+            owner_access,
         })
     }
 
@@ -746,6 +821,57 @@ pub struct RunningProxima {
 }
 
 impl RunningProxima {
+    /// Serve until SIGTERM or SIGINT (Ctrl-C off Unix), then drain as
+    /// [`Self::shutdown`] does: readiness turns unavailable, the listener
+    /// stops accepting, in-flight requests and streams finish, workers join.
+    ///
+    /// Installs the process's signal handlers, so it belongs in a binary's
+    /// `main`, never in a library.
+    ///
+    /// # Errors
+    ///
+    /// [`ProximaError::Mcp`] when the handlers cannot be installed, or when
+    /// the listener stopped on its own before any signal — a process whose
+    /// server died must not keep running as if healthy. The runtime is shut
+    /// down on both paths.
+    pub async fn until_shutdown_signal(self) -> Result<(), ProximaError> {
+        self.until(shutdown_signal()).await
+    }
+
+    /// [`Self::until_shutdown_signal`] with the trigger supplied: shut down
+    /// when `signal` resolves.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::until_shutdown_signal`], with `signal`'s own error.
+    pub async fn until<F>(mut self, signal: F) -> Result<(), ProximaError>
+    where
+        F: std::future::Future<Output = Result<(), ProximaError>>,
+    {
+        let mut listener_stopped = false;
+        let outcome = match self.server.as_mut() {
+            Some(server) => tokio::select! {
+                received = signal => received,
+                joined = server => {
+                    listener_stopped = true;
+                    Err(ProximaError::Mcp(match joined {
+                        Ok(()) => "the listener stopped before a shutdown signal".to_owned(),
+                        Err(err) => format!("the listener task failed: {err}"),
+                    }))
+                }
+            },
+            None => signal.await,
+        };
+        if listener_stopped {
+            self.server = None;
+        }
+        if outcome.is_ok() {
+            tracing::info!("shutdown signal received; draining");
+        }
+        self.shutdown().await;
+        outcome
+    }
+
     pub async fn shutdown(self) {
         self.cancel.cancel();
         if let Some(server) = self.server
@@ -1092,9 +1218,50 @@ pub async fn run<A: FlavorApp + 'static>() -> Result<RunningProxima, ProximaErro
     Proxima::<A>::app().from_env().run().await
 }
 
+/// [`run`], then serve until SIGTERM or SIGINT and drain — the whole `main`
+/// of a stock host:
+///
+/// ```no_run
+/// // `main` of a host composing `TheFlavor`: `serve::<(TheFlavor,)>()`.
+/// async fn main_for<TheFlavor: proxima::FlavorApp + 'static>()
+/// -> Result<(), proxima::ProximaError> {
+///     proxima::serve::<(TheFlavor,)>().await
+/// }
+/// ```
+///
+/// # Errors
+///
+/// As [`run`] and [`RunningProxima::until_shutdown_signal`].
+pub async fn serve<A: FlavorApp + 'static>() -> Result<(), ProximaError> {
+    run::<A>().await?.until_shutdown_signal().await
+}
+
+/// SIGTERM (what an orchestrator sends) or SIGINT; Ctrl-C off Unix.
+async fn shutdown_signal() -> Result<(), ProximaError> {
+    let install = |err: std::io::Error| {
+        ProximaError::Mcp(format!("installing the shutdown signal handler: {err}"))
+    };
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = signal(SignalKind::terminate()).map_err(install)?;
+        let mut interrupt = signal(SignalKind::interrupt()).map_err(install)?;
+        tokio::select! {
+            _ = terminate.recv() => {}
+            _ = interrupt.recv() => {}
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.map_err(install)
+    }
+}
+
 /// Compose rmcp and host-mounted routes behind one body, Host, and auth policy.
 ///
-/// `host_allowlist` must also be passed to [`streamable_http_service`] so the
+/// `host_allowlist` must also be passed to
+/// [`streamable_http_service`](proxima_mcp_server::streamable_http_service) so the
 /// listener guard and rmcp's inner `/mcp` guard enforce the same authorities.
 pub fn layered_router<S>(
     mcp_service: S,
@@ -1183,7 +1350,6 @@ fn cited_blob_services(
 /// A named struct rather than a tuple because the tail reads seven fields
 /// of four visually similar types, and a 7-tuple is both unreadable at the
 /// destructuring site and `clippy::type_complexity` on the signature.
-#[derive(Debug)]
 struct BootedRuntime {
     config: crate::RuntimeConfig,
     parts: crate::RuntimeParts,
@@ -1194,16 +1360,56 @@ struct BootedRuntime {
     cancel: CancellationToken,
     app_ctx: AppContext,
     services: FlavorServices,
+    /// The one port the edge, the delegation service, and an environment
+    /// OIDC authenticator resolve roles through.
+    owner_access: Arc<dyn OwnerAccessPort>,
 }
 
+impl std::fmt::Debug for BootedRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootedRuntime")
+            .field("config", &self.config)
+            .field("parts", &self.parts)
+            .field("booted", &self.booted)
+            .field("app_ctx", &self.app_ctx)
+            .field("services", &self.services)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The host's owner-access port, else the Postgres resolver over the
+/// runtime pool, under the forwarder policy when one is configured.
+fn runtime_owner_access(
+    app_ctx: &AppContext,
+    host: Option<Arc<dyn OwnerAccessPort>>,
+    forwarder: Option<ForwarderPolicy>,
+) -> Arc<dyn OwnerAccessPort> {
+    let port = host.unwrap_or_else(|| {
+        Arc::new(match &app_ctx.platform_scope {
+            Some(scope) => {
+                PgOwnerAccessResolver::new(app_ctx.pool.clone()).with_platform_scope(scope.clone())
+            }
+            None => PgOwnerAccessResolver::new(app_ctx.pool.clone()),
+        })
+    });
+    match forwarder {
+        Some(policy) => policy.wrap(port),
+        None => port,
+    }
+}
+
+/// The delegation service is published only with an authenticator, and
+/// redeems through `owner_access`.
 fn assemble_services<A: FlavorApp>(
     app_ctx: &AppContext,
     registry: &Arc<FlavorRegistryFrozen>,
     deployment_tool_scope: &ToolScope,
     authenticator: Option<&Arc<dyn Authenticator>>,
+    owner_access: &Arc<dyn OwnerAccessPort>,
     runtime_authority: &DelegationRuntimeAuthority,
 ) -> Result<FlavorServices, ProximaError> {
-    let mut services = A::services(app_ctx)?;
+    let mut services = app_ctx.services.clone();
+    services.try_extend(A::services(app_ctx)?)?;
     debug_assert!(
         services
             .get::<proxima_core::engine::HostStateMaintenanceAuthority>()
@@ -1217,6 +1423,13 @@ fn assemble_services<A: FlavorApp>(
         services.try_insert(verified_read)?;
         services.try_insert(owner_reconcile)?;
     }
+    if services.get::<proxima_core::RequestHeaders>().is_some() {
+        return Err(ProximaError::Config(
+            "a flavor published RequestHeaders as a boot service; it is request-scoped and \
+             only the header allowlist may produce it"
+                .into(),
+        ));
+    }
     if let Some(authenticator) = authenticator {
         let store = Arc::new(match &app_ctx.platform_scope {
             Some(scope) => {
@@ -1224,15 +1437,9 @@ fn assemble_services<A: FlavorApp>(
             }
             None => PgDelegationStore::new(app_ctx.pool.clone()),
         });
-        let owner_access = Arc::new(match &app_ctx.platform_scope {
-            Some(scope) => {
-                PgOwnerAccessResolver::new(app_ctx.pool.clone()).with_platform_scope(scope.clone())
-            }
-            None => PgOwnerAccessResolver::new(app_ctx.pool.clone()),
-        });
         services.try_insert(DelegatedAuthorityService::new(
             store,
-            owner_access,
+            owner_access.clone(),
             authenticator.clone(),
             registry.clone(),
             deployment_tool_scope.clone(),
@@ -1263,6 +1470,9 @@ async fn boot_app<A: FlavorApp + 'static>(
     if config.skip_migrations {
         builder = builder.skip_migrations();
     }
+    if config.runtime_grants {
+        builder = builder.runtime_grants();
+    }
     if let Some(client) = parts.embed_client.clone() {
         builder = builder.embed_client(client);
     }
@@ -1281,6 +1491,7 @@ fn build_router<A: FlavorApp>(
     app_ctx: AppContext,
     services: FlavorServices,
     authenticator: Option<Arc<dyn Authenticator>>,
+    owner_access: Arc<dyn OwnerAccessPort>,
     allowlist: OriginAllowlist,
     cancel: &CancellationToken,
     config: &crate::RuntimeConfig,
@@ -1288,27 +1499,33 @@ fn build_router<A: FlavorApp>(
     let engine = app_ctx.engine.clone();
     let mut edge_auth = McpEdgeAuth::headless().with_tool_scope(config.tool_scope.clone());
     if let Some(authenticator) = authenticator {
-        // The same port the authenticator resolves the eager role map
-        // through, handed to the edge so a Group owner that map does not
-        // carry can still be resolved one owner per request. A host serving
-        // many parties through one forwarder subject cannot enumerate them
-        // eagerly; without this the edge would refuse every such owner.
-        let owner_access = match &app_ctx.platform_scope {
-            Some(scope) => {
-                PgOwnerAccessResolver::new(app_ctx.pool.clone()).with_platform_scope(scope.clone())
-            }
-            None => PgOwnerAccessResolver::new(app_ctx.pool.clone()),
-        };
+        // The runtime's one owner-access port, so a Group owner the eager
+        // role map does not carry can still be resolved one owner per
+        // request. A host serving many parties through one forwarder subject
+        // cannot enumerate them eagerly; without this the edge would refuse
+        // every such owner.
         edge_auth = edge_auth
             .with_host(authenticator)
-            .with_owner_access(Arc::new(owner_access));
+            .with_owner_access(owner_access);
     }
     let edge_auth = Arc::new(edge_auth);
-    let mcp_host =
-        McpToolHost::from_parts(Arc::new(engine.registry().clone()), services).with_engine(engine);
+    let mcp_host = McpToolHost::from_parts(Arc::new(engine.registry().clone()), services)
+        .with_engine(engine)
+        .with_request_headers(config.request_headers.clone());
     let host_allowlist = resolve_host_allowlist(config);
     let rest_router = rest_router(&mcp_host, config);
-    let mcp_service = streamable_http_service(mcp_host, &allowlist, &host_allowlist, cancel);
+    let mcp_service = streamable_http_service_with_transport(
+        mcp_host,
+        &allowlist,
+        &host_allowlist,
+        cancel,
+        &config.mcp_transport,
+    );
+    let health_router = if config.health_endpoints {
+        crate::health::router(app_ctx.pool.clone(), cancel.clone())
+    } else {
+        Router::new()
+    };
     let app_router = A::mount_http(Router::new(), app_ctx);
     let auth_layer = proxima_mcp_server::mcp_auth_layer_with_metadata(
         edge_auth,
@@ -1327,12 +1544,15 @@ fn build_router<A: FlavorApp>(
     // Apply listener-wide layers only after anonymous OAuth metadata has been
     // merged. Body-size rejection remains outermost; Host validation then runs
     // before CORS and bearer auth. CORS covers public metadata and preflights;
-    // bearer auth remains inside it on protected routes.
+    // bearer auth remains inside it on protected routes. Health probes merge
+    // in below the Host guard: an orchestrator probes the pod address, not a
+    // public host, and the probes disclose nothing a rebinding page could use.
     router
         .layer(cors_layer(allowlist))
         .layer(host_guard_layer(host_allowlist))
-        .layer(axum::middleware::from_fn(
-            proxima_mcp_server::enforce_body_limit,
+        .merge(health_router)
+        .layer(body_limit_layer(
+            config.mcp_transport.max_request_body_bytes,
         ))
 }
 
@@ -1516,6 +1736,7 @@ mod tests {
                 .expect("empty fixture registry has no host lifecycle tables"),
             blobs: Some(store),
             owner: None,
+            services: FlavorServices::default(),
         };
 
         let services = assemble_services::<AlphaApp>(
@@ -1523,6 +1744,7 @@ mod tests {
             &registry,
             &ToolScope::All,
             None,
+            &runtime_owner_access(&app_ctx, None, None),
             &delegation_runtime,
         )
         .expect("service assembly");
@@ -1573,6 +1795,7 @@ mod tests {
                 .expect("empty fixture registry has no host lifecycle tables"),
             blobs: None,
             owner: None,
+            services: FlavorServices::default(),
         };
         let authenticator: Arc<dyn Authenticator> = Arc::new(StubAuth { owner: owner() });
         let services = assemble_services::<AlphaApp>(
@@ -1580,6 +1803,7 @@ mod tests {
             &registry,
             &ToolScope::All,
             Some(&authenticator),
+            &runtime_owner_access(&app_ctx, None, None),
             &delegation_runtime,
         )
         .expect("service assembly");
@@ -1635,12 +1859,14 @@ mod tests {
                 .expect("empty fixture registry has no host lifecycle tables"),
             blobs: Some(store),
             owner: None,
+            services: FlavorServices::default(),
         };
         let services = assemble_services::<AlphaApp>(
             &app_ctx,
             &registry,
             &ToolScope::All,
             None,
+            &runtime_owner_access(&app_ctx, None, None),
             &delegation_runtime,
         )
         .expect("service assembly");
