@@ -9,12 +9,15 @@ pub use proxima_core::operator_label;
 pub use crate::app::{AppContext, AppInfo, Authz, FlavorApp};
 pub use crate::config::EmbedConfig;
 pub use crate::core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};
+pub use crate::health::{HEALTHZ_PATH, READYZ_PATH};
 pub use crate::migrations::{
     MigrationError, MigrationRunReport, NamedMigrator, flavor_ledger_table, is_flavor_ledger_id,
     preflight_without_migrations, run_core_and_flavor_migrations,
 };
+pub use crate::owner_access::ForwarderPolicy;
 pub use crate::runtime::{
     BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
+    serve,
 };
 pub use crate::runtime_config::{
     McpSettings, ProximaError, RuntimeBuilder, RuntimeConfig, RuntimeParts,
@@ -213,7 +216,10 @@ pub use proxima_core::{
 #[cfg(feature = "openai-compat-embed")]
 pub use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
 pub use proxima_mcp_server::selfdoc::{build_instructions, how_to_markdown};
-pub use proxima_mcp_server::{HostAllowlist, McpAuthContext, ResourceServerMetadata};
+pub use proxima_mcp_server::{
+    HostAllowlist, MAX_REQUEST_BODY_BYTES, McpAuthContext, McpTransportConfig,
+    RequestHeaderAllowlist, ResourceServerMetadata,
+};
 /// The shipped NATS `JetStream` publisher and its reference consumer
 /// (docs/18, `crates/outbox-nats`).
 ///
@@ -268,6 +274,29 @@ pub fn tool_palette_excluding(registry: &FlavorRegistryFrozen, exclude: &[&str])
         registry, exclude,
     ))
 }
+
+/// Field types of [`McpToolDescriptor`] and consts of [`McpTool`]; a host
+/// partitioning tool surfaces by audience reads them.
+pub use proxima_core::mcp::{McpArgvActionSpec, McpToolAudience};
+/// The request-behavior onion. A behavior wraps [`McpToolCtx`] /
+/// [`McpToolError`]; flavors register one through `proxima::flavor`.
+pub use proxima_core::mcp::{Next, RequestBehavior, ToolCall};
+/// Host-bound `CloudEvents` extension attributes
+/// ([`AuthzContext::with_publication_extensions`]); the error and value
+/// types are what binding returns and `get` reads.
+pub use proxima_core::publication::{
+    ExtensionValue, PublicationExtensions, PublicationExtensionsError,
+};
+/// Host authentication: the argument and error types of
+/// [`Authenticator::authenticate`], and [`authenticate`], the one mint of the
+/// [`OwnerScope`] witness [`AuthzContext::owner_scope`] returns.
+pub use proxima_core::{AuthError, Credentials, OwnerScope, authenticate};
+/// MCP edge wiring [`layered_router`] takes, and the listener CORS layer.
+pub use proxima_mcp_server::{McpEdgeAuth, OriginAllowlist, cors_layer};
+/// Owner-RLS boot: the runtime-role guard, the platform scope
+/// [`AppContext::platform_scope_for_host`] returns, and the sqlx →
+/// [`StorageError`] classifier for host-state SQL.
+pub use proxima_storage_pg::{PgPlatformScope, assert_runtime_rls, map_err};
 
 #[cfg(test)]
 mod tests {

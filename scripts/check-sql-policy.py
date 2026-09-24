@@ -865,7 +865,7 @@ def run_fixture(path: Path) -> int:
 # 140 -> 142: width lanes name each lane's partial-index expression and
 # predicate as closed-enum literals, so the code-chunk neighbour scan and the
 # recall canary became fixed-fragment builders.
-EXPECTED_DYNAMIC_SQL_SITES = 142
+EXPECTED_DYNAMIC_SQL_SITES = 140
 
 
 def run_self_test() -> int:

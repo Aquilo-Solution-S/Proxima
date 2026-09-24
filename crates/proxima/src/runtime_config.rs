@@ -6,9 +6,10 @@ use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::publication::PublicationConfig;
 use proxima_core::{
     Authenticator, EmbeddingClient, EmbeddingRouter, EmbeddingRuntimePolicy, FlavorServiceError,
-    Owner, RevalidationConfig, ToolScope, is_loopback_host,
+    FlavorServices, Owner, OwnerAccessPort, RequestHeaders, RevalidationConfig, ToolScope,
+    is_loopback_host,
 };
-use proxima_mcp_server::ResourceServerMetadata;
+use proxima_mcp_server::{McpTransportConfig, RequestHeaderAllowlist, ResourceServerMetadata};
 use proxima_storage_pg::{PgHostStateParticipant, PgPoolConfig, PgTuning};
 
 use crate::EmbedError;
@@ -16,6 +17,7 @@ use crate::config::{
     parse_bool_value, pg_pool_config_from_lookup, pg_tuning_from_lookup,
     publication_config_from_lookup, s3_from_lookup,
 };
+use crate::owner_access::{ForwarderPolicy, LateOwnerAccess, forwarder_from_lookup};
 
 const DEFAULT_MCP_BIND: &str = "127.0.0.1:31415";
 
@@ -56,6 +58,20 @@ pub struct RuntimeBuilder {
     host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
     /// A second participant was registered; [`Self::resolve`] refuses.
     duplicate_host_state_participant: bool,
+    runtime_grants: Option<bool>,
+    request_headers: Option<Vec<String>>,
+    owner_access: Option<Arc<dyn OwnerAccessPort>>,
+    forwarder: Option<ForwarderPolicy>,
+    /// Every host bag handed to [`Self::services`], across layers; merged
+    /// with [`FlavorServices::try_extend`] at resolve so a type two layers
+    /// both publish is a boot error, not a silent winner.
+    services: Vec<FlavorServices>,
+    health_endpoints: Option<bool>,
+    max_request_body_bytes: Option<usize>,
+    mcp_transport: Option<McpTransportConfig>,
+    /// The `PROXIMA_OIDC_*` values the environment layer saw, kept so the
+    /// authenticator is built at resolve only when no layer set one.
+    oidc_env: Option<std::collections::BTreeMap<&'static str, String>>,
 }
 
 impl std::fmt::Debug for RuntimeBuilder {
@@ -96,6 +112,15 @@ impl std::fmt::Debug for RuntimeBuilder {
                 "duplicate_host_state_participant",
                 &self.duplicate_host_state_participant,
             )
+            .field("runtime_grants", &self.runtime_grants)
+            .field("request_headers", &self.request_headers)
+            .field("has_owner_access", &self.owner_access.is_some())
+            .field("forwarder", &self.forwarder)
+            .field("services", &self.services)
+            .field("health_endpoints", &self.health_endpoints)
+            .field("max_request_body_bytes", &self.max_request_body_bytes)
+            .field("mcp_transport", &self.mcp_transport)
+            .field("has_oidc_env", &self.oidc_env.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -136,6 +161,15 @@ impl RuntimeBuilder {
                 || base.duplicate_host_state_participant
                 || (self.host_state_participant.is_some() && base.host_state_participant.is_some()),
             host_state_participant: self.host_state_participant.or(base.host_state_participant),
+            runtime_grants: self.runtime_grants.or(base.runtime_grants),
+            request_headers: self.request_headers.or(base.request_headers),
+            owner_access: self.owner_access.or(base.owner_access),
+            forwarder: self.forwarder.or(base.forwarder),
+            services: base.services.into_iter().chain(self.services).collect(),
+            health_endpoints: self.health_endpoints.or(base.health_endpoints),
+            max_request_body_bytes: self.max_request_body_bytes.or(base.max_request_body_bytes),
+            mcp_transport: self.mcp_transport.or(base.mcp_transport),
+            oidc_env: self.oidc_env.or(base.oidc_env),
         }
     }
 
@@ -330,6 +364,88 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Grant the runtime role its DML privileges at boot, after migrating
+    /// and before the runtime pool connects. Opt-in; off by default. Env
+    /// equivalent: `PROXIMA_RUNTIME_GRANTS`.
+    #[must_use]
+    pub const fn runtime_grants(mut self, runtime_grants: bool) -> Self {
+        self.runtime_grants = Some(runtime_grants);
+        self
+    }
+
+    /// Copy these inbound request headers to tools as opaque
+    /// [`RequestHeaders`] on the served paths (`/mcp`, `/v1`). Entries are
+    /// header names or `prefix*`; credential headers are refused. Empty —
+    /// the default — publishes nothing. Env equivalent (comma-separated):
+    /// `PROXIMA_REQUEST_HEADERS`.
+    #[must_use]
+    pub fn request_headers(mut self, request_headers: Vec<String>) -> Self {
+        self.request_headers = Some(request_headers);
+        self
+    }
+
+    /// The owner-access port the served runtime resolves roles through: the
+    /// edge's per-Group probe behind `X-Proxima-Owner` and the delegation
+    /// service. Defaults to the Postgres resolver over the runtime pool. A
+    /// host authenticator that resolves roles through its own port should
+    /// pass that same port here, or the two can answer differently for the
+    /// same subject.
+    #[must_use]
+    pub fn owner_access(mut self, owner_access: Arc<dyn OwnerAccessPort>) -> Self {
+        self.owner_access = Some(owner_access);
+        self
+    }
+
+    /// Trusted forwarder subjects and the fixed role each holds in whichever
+    /// Group it selects; wraps the owner-access port. Env equivalent:
+    /// `PROXIMA_FORWARDER_SUBJECTS` + `PROXIMA_FORWARDER_ROLE`.
+    #[must_use]
+    pub fn forwarder(mut self, policy: ForwarderPolicy) -> Self {
+        self.forwarder = Some(policy);
+        self
+    }
+
+    /// Host services published beside the flavors' own: visible to
+    /// [`crate::FlavorApp::services`] through
+    /// [`crate::AppContext::services`], and to every tool, request
+    /// behavior, route, and worker through the composed set. Repeatable; a
+    /// type published twice — by two calls or by a host and a flavor — is a
+    /// boot error.
+    #[must_use]
+    pub fn services(mut self, services: FlavorServices) -> Self {
+        self.services.push(services);
+        self
+    }
+
+    /// Serve anonymous `GET /healthz` (process up) and `GET /readyz`
+    /// (database reachable, not shutting down) on the MCP listener, outside
+    /// the Host guard and bearer auth so an orchestrator probe needs
+    /// neither. Off by default: a host that mounts its own would otherwise
+    /// collide. Env equivalent: `PROXIMA_HEALTH_ENDPOINTS`.
+    #[must_use]
+    pub const fn health_endpoints(mut self, health_endpoints: bool) -> Self {
+        self.health_endpoints = Some(health_endpoints);
+        self
+    }
+
+    /// Largest accepted request body on the listener, in bytes (default
+    /// 4 MiB). Env equivalent: `PROXIMA_MAX_REQUEST_BODY_BYTES`.
+    #[must_use]
+    pub const fn max_request_body_bytes(mut self, bytes: usize) -> Self {
+        self.max_request_body_bytes = Some(bytes);
+        self
+    }
+
+    /// rmcp Streamable HTTP tuning. Its body cap is replaced by
+    /// [`Self::max_request_body_bytes`] when that is set. Env equivalents:
+    /// `PROXIMA_MCP_SSE_KEEP_ALIVE_SECS`, `PROXIMA_MCP_SSE_RETRY_SECS`,
+    /// `PROXIMA_MCP_SESSIONS`, `PROXIMA_MCP_JSON_RESPONSE`.
+    #[must_use]
+    pub const fn mcp_transport(mut self, transport: McpTransportConfig) -> Self {
+        self.mcp_transport = Some(transport);
+        self
+    }
+
     /// Set Postgres pool and per-connection timeout policy.
     ///
     /// Env equivalents are `PROXIMA_PG_MAX_CONNECTIONS`,
@@ -447,6 +563,12 @@ impl RuntimeBuilder {
                 .map(|raw| parse_bool_value("PROXIMA_SKIP_MIGRATIONS", &raw))
                 .transpose()?;
         }
+        if self.runtime_grants.is_none() {
+            self.runtime_grants = lookup("PROXIMA_RUNTIME_GRANTS")
+                .map(|raw| parse_bool_value("PROXIMA_RUNTIME_GRANTS", &raw))
+                .transpose()?;
+        }
+        self.apply_served_path_lookup(&lookup)?;
         if self.pg_pool_config.is_none() {
             self.pg_pool_config = pg_pool_config_from_lookup(&lookup)?;
         }
@@ -494,13 +616,130 @@ impl RuntimeBuilder {
         Ok(self)
     }
 
+    /// The served-path block of [`Self::apply_lookup`]: request headers,
+    /// forwarder policy, health probes, transport, and the OIDC capture.
+    fn apply_served_path_lookup(
+        &mut self,
+        lookup: &impl Fn(&str) -> Option<String>,
+    ) -> Result<(), ProximaError> {
+        if self.request_headers.is_none() {
+            self.request_headers = lookup("PROXIMA_REQUEST_HEADERS")
+                .map(|raw| raw.split(',').map(ToOwned::to_owned).collect());
+        }
+        if self.forwarder.is_none() {
+            self.forwarder = forwarder_from_lookup(lookup)?;
+        }
+        if self.health_endpoints.is_none() {
+            self.health_endpoints = lookup("PROXIMA_HEALTH_ENDPOINTS")
+                .map(|raw| parse_bool_value("PROXIMA_HEALTH_ENDPOINTS", &raw))
+                .transpose()?;
+        }
+        if self.max_request_body_bytes.is_none() {
+            self.max_request_body_bytes = lookup("PROXIMA_MAX_REQUEST_BODY_BYTES")
+                .map(|raw| {
+                    raw.parse::<usize>().map_err(|_| {
+                        ProximaError::Config(format!(
+                            "PROXIMA_MAX_REQUEST_BODY_BYTES must be a byte count, got {raw:?}"
+                        ))
+                    })
+                })
+                .transpose()?;
+        }
+        if self.mcp_transport.is_none() {
+            self.mcp_transport = mcp_transport_from_lookup(lookup)?;
+        }
+        if self.oidc_env.is_none() && lookup("PROXIMA_OIDC_ISSUER").is_some() {
+            self.oidc_env = Some(
+                oidc_env_keys()
+                    .iter()
+                    .filter_map(|key| lookup(key).map(|value| (*key, value)))
+                    .collect(),
+            );
+        }
+        Ok(())
+    }
+
+    /// The environment's OIDC authenticator fills in only when no layer set
+    /// one in code, and resolves through a port bound at boot — the same one
+    /// the edge and the delegation service get.
+    #[cfg(feature = "auth-oidc")]
+    fn env_authenticator(&mut self) -> Result<Option<LateOwnerAccess>, ProximaError> {
+        if self.authenticator.is_some() {
+            return Ok(None);
+        }
+        let Some(oidc_env) = self.oidc_env.take() else {
+            return Ok(None);
+        };
+        let late = LateOwnerAccess::default();
+        let lookup = |key: &str| oidc_env.get(key).cloned();
+        let Some((authenticator, metadata)) =
+            crate::auth::oidc_from_lookup(&lookup, Arc::new(late.clone()))?
+        else {
+            return Ok(None);
+        };
+        self.authenticator = Some(authenticator);
+        self.resource_metadata.get_or_insert(metadata);
+        Ok(Some(late))
+    }
+
+    /// Without `auth-oidc` there is no authenticator to build: an issuer the
+    /// operator set is a request for authentication this binary cannot
+    /// honour, refused rather than ignored.
+    #[cfg(not(feature = "auth-oidc"))]
+    fn env_authenticator(&mut self) -> Result<Option<LateOwnerAccess>, ProximaError> {
+        if self.authenticator.is_none() && self.oidc_env.take().is_some() {
+            return Err(ProximaError::Config(
+                "PROXIMA_OIDC_ISSUER is set but this binary was built without the `auth-oidc` \
+                 cargo feature; enable it or install an authenticator in code"
+                    .into(),
+            ));
+        }
+        Ok(None)
+    }
+
+    /// The served-path half of [`Self::resolve`]: the environment OIDC
+    /// authenticator, the request-header allowlist, the merged host service
+    /// bag, and the transport with its one body cap.
+    fn take_served_path(&mut self) -> Result<ServedPath, ProximaError> {
+        let late_owner_access = self.env_authenticator()?;
+        let request_headers =
+            RequestHeaderAllowlist::parse(self.request_headers.as_deref().unwrap_or_default())
+                .map_err(|err| ProximaError::Config(err.to_string()))?;
+        let mut services = FlavorServices::new();
+        for bag in std::mem::take(&mut self.services) {
+            services.try_extend(bag)?;
+        }
+        if services.get::<RequestHeaders>().is_some() {
+            return Err(ProximaError::Config(
+                "RequestHeaders is request-scoped; publish headers with request_headers \
+                     (PROXIMA_REQUEST_HEADERS), not as a boot service"
+                    .into(),
+            ));
+        }
+        let mut mcp_transport = self.mcp_transport.unwrap_or_default();
+        if let Some(bytes) = self.max_request_body_bytes {
+            mcp_transport.max_request_body_bytes = bytes;
+        }
+        if mcp_transport.max_request_body_bytes == 0 {
+            return Err(ProximaError::Config(
+                "the request body limit must be at least 1 byte".into(),
+            ));
+        }
+        Ok(ServedPath {
+            late_owner_access,
+            request_headers,
+            services,
+            mcp_transport,
+        })
+    }
+
     /// Resolve the builder into pure config plus host-provided runtime parts.
     ///
     /// # Errors
     ///
     /// Returns `ProximaError::Config` for missing required config and
     /// `ProximaError::Security` for fail-closed validation failures.
-    pub fn resolve(self) -> Result<(RuntimeConfig, RuntimeParts), ProximaError> {
+    pub fn resolve(mut self) -> Result<(RuntimeConfig, RuntimeParts), ProximaError> {
         if self.duplicate_host_state_participant {
             return Err(ProximaError::Config(
                 DUPLICATE_HOST_STATE_PARTICIPANT.into(),
@@ -508,7 +747,14 @@ impl RuntimeBuilder {
         }
         let database_url = self
             .database_url
+            .take()
             .ok_or_else(|| ProximaError::Config("DATABASE_URL is required".into()))?;
+        let ServedPath {
+            late_owner_access,
+            request_headers,
+            services,
+            mcp_transport,
+        } = self.take_served_path()?;
         let mcp = if self.mcp_enabled {
             Some(McpSettings {
                 bind: self.mcp_bind.unwrap_or_else(default_mcp_bind),
@@ -554,6 +800,9 @@ impl RuntimeBuilder {
             embed_client: self.embed_client,
             embedding_router: self.embedding_router,
             host_state_participant: self.host_state_participant,
+            owner_access: self.owner_access,
+            services,
+            late_owner_access,
         };
         let pg_pool_config = self.pg_pool_config.unwrap_or_default();
         let publication = self.publication.unwrap_or_default();
@@ -571,6 +820,11 @@ impl RuntimeBuilder {
             insecure_single_owner: self.insecure_single_owner,
             rest_enabled: self.rest_enabled.unwrap_or(false),
             skip_migrations: self.skip_migrations.unwrap_or(false),
+            runtime_grants: self.runtime_grants.unwrap_or(false),
+            request_headers,
+            forwarder: self.forwarder,
+            health_endpoints: self.health_endpoints.unwrap_or(false),
+            mcp_transport,
             pg_pool_config,
             pg_tuning: self.pg_tuning.unwrap_or_default(),
             auth: RuntimeAuthState {
@@ -586,6 +840,14 @@ impl RuntimeBuilder {
         config.validate()?;
         Ok((config, parts))
     }
+}
+
+/// What [`RuntimeBuilder::take_served_path`] resolves.
+struct ServedPath {
+    late_owner_access: Option<LateOwnerAccess>,
+    request_headers: RequestHeaderAllowlist,
+    services: FlavorServices,
+    mcp_transport: McpTransportConfig,
 }
 
 /// Pure, validated runtime config.
@@ -622,6 +884,23 @@ pub struct RuntimeConfig {
     /// Boot without applying migrations (preflight only) — schema is migrated
     /// out-of-band under a DDL role in split-role `GitOps` deploys.
     pub skip_migrations: bool,
+    /// Grant the runtime role its DML privileges at boot
+    /// (`PROXIMA_RUNTIME_GRANTS`), after migrating and before the runtime
+    /// pool connects. Off by default: a DBA-managed deployment grants
+    /// out-of-band (docs/15).
+    pub runtime_grants: bool,
+    /// Inbound headers copied to tools as `RequestHeaders`
+    /// (`PROXIMA_REQUEST_HEADERS`). Empty publishes nothing.
+    pub request_headers: RequestHeaderAllowlist,
+    /// Trusted forwarder subjects and their fixed per-Group role
+    /// (`PROXIMA_FORWARDER_*`), wrapped around the owner-access port.
+    pub forwarder: Option<ForwarderPolicy>,
+    /// Anonymous `/healthz` and `/readyz` on the MCP listener
+    /// (`PROXIMA_HEALTH_ENDPOINTS`).
+    pub health_endpoints: bool,
+    /// rmcp tuning plus the one body cap both the listener guard and rmcp
+    /// enforce (`PROXIMA_MAX_REQUEST_BODY_BYTES`, `PROXIMA_MCP_*`).
+    pub mcp_transport: McpTransportConfig,
     /// Postgres pool size and timeout policy. Resolved once before storage
     /// construction; the canonical boot path never re-reads process env.
     pub pg_pool_config: PgPoolConfig,
@@ -681,6 +960,11 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("insecure_single_owner", &self.insecure_single_owner)
             .field("rest_enabled", &self.rest_enabled)
             .field("skip_migrations", &self.skip_migrations)
+            .field("runtime_grants", &self.runtime_grants)
+            .field("request_headers", &self.request_headers)
+            .field("forwarder", &self.forwarder)
+            .field("health_endpoints", &self.health_endpoints)
+            .field("mcp_transport", &self.mcp_transport)
             .field("pg_pool_config", &self.pg_pool_config)
             .field("pg_tuning", &self.pg_tuning)
             .field("auth", &self.auth)
@@ -798,6 +1082,13 @@ pub struct RuntimeParts {
     pub embed_client: Option<Arc<dyn EmbeddingClient>>,
     pub embedding_router: Option<Arc<dyn EmbeddingRouter>>,
     pub host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
+    /// The host's owner-access port; `None` uses the runtime-pool resolver.
+    pub owner_access: Option<Arc<dyn OwnerAccessPort>>,
+    /// The merged host service bag ([`RuntimeBuilder::services`]).
+    pub services: FlavorServices,
+    /// Bound at boot to the runtime's owner-access port when the
+    /// authenticator came from the `PROXIMA_OIDC_*` environment.
+    pub(crate) late_owner_access: Option<LateOwnerAccess>,
 }
 
 impl std::fmt::Debug for RuntimeParts {
@@ -810,6 +1101,9 @@ impl std::fmt::Debug for RuntimeParts {
                 "has_host_state_participant",
                 &self.host_state_participant.is_some(),
             )
+            .field("has_owner_access", &self.owner_access.is_some())
+            .field("services", &self.services)
+            .field("env_authenticator", &self.late_owner_access.is_some())
             .finish()
     }
 }
@@ -913,6 +1207,57 @@ fn parse_duration_seconds(key: &str, raw: &str) -> Result<Duration, ProximaError
         .parse::<u64>()
         .map_err(|_| ProximaError::Config(format!("{key} must be integer seconds, got {raw:?}")))?;
     Ok(Duration::from_secs(seconds))
+}
+
+/// The variables the environment layer captures for the OIDC authenticator
+/// built at resolve.
+#[cfg(feature = "auth-oidc")]
+fn oidc_env_keys() -> &'static [&'static str] {
+    &crate::auth::OIDC_ENV_KEYS
+}
+
+/// Only the issuer: its presence is what a build without `auth-oidc` refuses.
+#[cfg(not(feature = "auth-oidc"))]
+fn oidc_env_keys() -> &'static [&'static str] {
+    &["PROXIMA_OIDC_ISSUER"]
+}
+
+/// The `PROXIMA_MCP_*` transport block: `None` when none is set, else
+/// rmcp's defaults with the set values applied. Seconds of `0` disable the
+/// SSE ping or retry hint.
+fn mcp_transport_from_lookup(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<McpTransportConfig>, ProximaError> {
+    const KEEP_ALIVE: &str = "PROXIMA_MCP_SSE_KEEP_ALIVE_SECS";
+    const RETRY: &str = "PROXIMA_MCP_SSE_RETRY_SECS";
+    const SESSIONS: &str = "PROXIMA_MCP_SESSIONS";
+    const JSON_RESPONSE: &str = "PROXIMA_MCP_JSON_RESPONSE";
+    if [KEEP_ALIVE, RETRY, SESSIONS, JSON_RESPONSE]
+        .iter()
+        .all(|key| lookup(key).is_none())
+    {
+        return Ok(None);
+    }
+    let optional_secs = |key: &str| -> Result<Option<Option<Duration>>, ProximaError> {
+        lookup(key)
+            .map(|raw| parse_duration_seconds(key, &raw))
+            .transpose()
+            .map(|parsed| parsed.map(|duration| (!duration.is_zero()).then_some(duration)))
+    };
+    let mut transport = McpTransportConfig::default();
+    if let Some(keep_alive) = optional_secs(KEEP_ALIVE)? {
+        transport.sse_keep_alive = keep_alive;
+    }
+    if let Some(retry) = optional_secs(RETRY)? {
+        transport.sse_retry = retry;
+    }
+    if let Some(raw) = lookup(SESSIONS) {
+        transport.legacy_session_mode = parse_bool_value(SESSIONS, &raw)?;
+    }
+    if let Some(raw) = lookup(JSON_RESPONSE) {
+        transport.json_response = parse_bool_value(JSON_RESPONSE, &raw)?;
+    }
+    Ok(Some(transport))
 }
 
 fn embedding_runtime_policy_env_is_set(lookup: &impl Fn(&str) -> Option<String>) -> bool {
@@ -1079,6 +1424,11 @@ mod tests {
             insecure_single_owner: false,
             rest_enabled: false,
             skip_migrations: false,
+            runtime_grants: false,
+            request_headers: RequestHeaderAllowlist::default(),
+            forwarder: None,
+            health_endpoints: false,
+            mcp_transport: McpTransportConfig::default(),
             pg_pool_config: PgPoolConfig::default(),
             pg_tuning: PgTuning::default(),
             auth: RuntimeAuthState {
@@ -1797,5 +2147,144 @@ mod tests {
         );
         assert_eq!(merged.stream_max_lifetime, Some(Duration::from_secs(12)));
         assert!(merged.insecure_single_owner);
+    }
+
+    fn served_builder() -> RuntimeBuilder {
+        RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .tool_scope(ToolScope::All)
+    }
+
+    #[test]
+    fn served_path_env_resolves_into_config() {
+        let forwarder = uuid::Uuid::now_v7().to_string();
+        let (config, _) = served_builder()
+            .apply_lookup(lookup(&[
+                ("PROXIMA_REQUEST_HEADERS", "x-pack-ticket, X-Piy-Env-*"),
+                ("PROXIMA_FORWARDER_SUBJECTS", &forwarder),
+                ("PROXIMA_FORWARDER_ROLE", "ingest"),
+                ("PROXIMA_HEALTH_ENDPOINTS", "true"),
+                ("PROXIMA_MAX_REQUEST_BODY_BYTES", "8388608"),
+                ("PROXIMA_MCP_SSE_KEEP_ALIVE_SECS", "0"),
+                ("PROXIMA_MCP_SESSIONS", "false"),
+            ]))
+            .expect("valid env")
+            .resolve()
+            .expect("resolves");
+
+        assert!(
+            config
+                .request_headers
+                .allows(&http::HeaderName::from_static("x-piy-env-forgejo"))
+        );
+        assert_eq!(
+            config.forwarder.as_ref().map(ForwarderPolicy::role),
+            Some(proxima_core::Role::ingest())
+        );
+        assert!(config.health_endpoints);
+        assert_eq!(config.mcp_transport.max_request_body_bytes, 8 * 1024 * 1024);
+        assert_eq!(config.mcp_transport.sse_keep_alive, None);
+        assert!(!config.mcp_transport.legacy_session_mode);
+        assert_eq!(
+            config.mcp_transport.sse_retry,
+            McpTransportConfig::default().sse_retry,
+            "an unset transport field keeps rmcp's default"
+        );
+    }
+
+    #[test]
+    fn served_path_defaults_change_nothing() {
+        let (config, parts) = served_builder()
+            .apply_lookup(lookup(&[]))
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert!(config.request_headers.is_empty());
+        assert!(config.forwarder.is_none());
+        assert!(!config.health_endpoints);
+        assert_eq!(config.mcp_transport, McpTransportConfig::default());
+        assert!(parts.late_owner_access.is_none());
+        assert!(parts.authenticator.is_none());
+    }
+
+    #[test]
+    fn malformed_served_path_values_are_refused() {
+        for pairs in [
+            [("PROXIMA_REQUEST_HEADERS", "authorization")],
+            [("PROXIMA_MAX_REQUEST_BODY_BYTES", "8MiB")],
+            [("PROXIMA_MAX_REQUEST_BODY_BYTES", "0")],
+            [("PROXIMA_MCP_SSE_RETRY_SECS", "soon")],
+            [("PROXIMA_HEALTH_ENDPOINTS", "maybe")],
+        ] {
+            let resolved = served_builder()
+                .apply_lookup(lookup(&pairs))
+                .and_then(RuntimeBuilder::resolve);
+            assert!(resolved.is_err(), "{pairs:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn host_service_bags_merge_across_layers_and_refuse_duplicates() {
+        #[derive(Debug)]
+        struct Budget;
+        #[derive(Debug)]
+        struct Ticketing;
+
+        let base = RuntimeBuilder::default().services(FlavorServices::with(Budget));
+        let (_, parts) = served_builder()
+            .services(FlavorServices::with(Ticketing))
+            .merge_over(base)
+            .resolve()
+            .expect("disjoint bags merge");
+        assert!(parts.services.get::<Budget>().is_some());
+        assert!(parts.services.get::<Ticketing>().is_some());
+
+        let duplicate = served_builder()
+            .services(FlavorServices::with(Budget))
+            .merge_over(RuntimeBuilder::default().services(FlavorServices::with(Budget)))
+            .resolve();
+        assert!(matches!(duplicate, Err(ProximaError::FlavorServices(_))));
+
+        let forged = served_builder()
+            .services(FlavorServices::with(RequestHeaders::default()))
+            .resolve();
+        assert!(
+            matches!(forged, Err(ProximaError::Config(message)) if message.contains("request-scoped"))
+        );
+    }
+
+    #[cfg(feature = "auth-oidc")]
+    #[tokio::test]
+    async fn the_env_oidc_authenticator_fills_in_only_without_one_in_code() {
+        let map = format!("sub:{}", uuid::Uuid::now_v7());
+        let oidc = [
+            ("PROXIMA_OIDC_ISSUER", "https://idp.test"),
+            ("PROXIMA_OIDC_AUDIENCE", "proxima"),
+            ("PROXIMA_PUBLIC_URL", "https://mcp.test"),
+            ("PROXIMA_OIDC_SUBJECT_MAP", map.as_str()),
+        ];
+        let (config, parts) = served_builder()
+            .apply_lookup(lookup(&oidc))
+            .unwrap()
+            .resolve()
+            .expect("env OIDC resolves");
+        assert!(parts.authenticator.is_some());
+        assert!(parts.late_owner_access.is_some());
+        assert!(config.auth.has_host_authenticator);
+        assert_eq!(
+            config.resource_metadata.map(|md| md.public_url),
+            Some("https://mcp.test".to_owned())
+        );
+
+        let (_, parts) = served_builder()
+            .authenticator(Arc::new(TestAuthenticator))
+            .apply_lookup(lookup(&oidc))
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert!(
+            parts.late_owner_access.is_none(),
+            "a code authenticator wins; the env one is never built"
+        );
     }
 }

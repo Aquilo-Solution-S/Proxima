@@ -175,7 +175,18 @@ impl HostAllowlist {
         &self.hosts
     }
 
-    fn allows(&self, authority: &NormalizedAuthority) -> bool {
+    /// Whether an inbound `Host` / `:authority` value (`host` or
+    /// `host:port`) passes this allowlist — the listener guard's own rule,
+    /// for a host that re-checks the authority of a request it forwards.
+    /// A malformed value is refused.
+    #[must_use]
+    pub fn allows(&self, host: &str) -> bool {
+        http::uri::Authority::try_from(host.trim()).is_ok_and(|authority| {
+            self.allows_authority(&normalize_authority(authority.host(), authority.port_u16()))
+        })
+    }
+
+    fn allows_authority(&self, authority: &NormalizedAuthority) -> bool {
         self.authorities.iter().any(|allowed| {
             allowed.host == authority.host
                 && match allowed.port {
@@ -296,7 +307,7 @@ async fn enforce_host(
         Ok(authority) => authority,
         Err(error) => return error.into_response(),
     };
-    if !allowlist.allows(&authority) {
+    if !allowlist.allows_authority(&authority) {
         tracing::warn!(
             host = ?authority,
             "rejected request with disallowed Host header (possible DNS rebinding attempt)",
