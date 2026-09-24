@@ -28,11 +28,14 @@
 //!   against pointing this at anything but a scratch dev database.
 //! - `--stamp`: non-destructive ledger repair for a database that applied a
 //!   draft lane later squashed under a fresh version number (see
-//!   [`stamp_squashed_lane`] and docs/how-to/migrations.md). Refuses when the
-//!   schema does not already match the current lane.
+//!   [`stamp_squashed_lane`] and docs/how-to/migrations.md). Refuses unless
+//!   the live catalog equals what the embedded migrations create — proven by
+//!   replaying them in a rolled-back transaction ([`catalog_proof`]).
+
+mod catalog_proof;
 
 use proxima::flavor::FlavorBundle;
-use proxima::run_core_and_flavor_migrations;
+use proxima::{NamedMigrator, run_core_and_flavor_migrations};
 use proxima_storage_pg::{
     CORE_MIGRATION_VERSION_CEILING, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning,
     core_migrator, ensure_core_schema_markers,
@@ -266,14 +269,17 @@ async fn reset_local_dev_database_confirmed(
 /// later squashed under a fresh version number (docs/how-to/migrations.md).
 ///
 /// Stamping records migrations as applied **without executing them**, so it
-/// is only honest when the schema already matches the current release lane;
-/// this refuses unless the structural schema markers check out, and the
-/// remedy for a partial draft lane is `--reset`. On success: deletes the
-/// core-namespace ledger rows the embedded migrator cannot account for (the
-/// orphaned drafts, or rows whose file was amended after application), then
-/// records every pending migration as applied via `SQLx`'s skip machinery —
-/// core against the shared table, each flavor against its own table when the
-/// flavor's schema already exists.
+/// is only honest when the schema already matches the current release lane.
+/// This refuses unless the structural schema markers and the owner-RLS census
+/// check out **and** the live catalog equals what the embedded migrations
+/// create ([`catalog_proof`]); the remedy for a partial draft lane is
+/// `--reset`. A marker check alone would stamp a database whose migration
+/// was amended after it applied it — the amended checksum recorded over the
+/// old routine bodies. On success: deletes the core-namespace ledger rows the
+/// embedded migrator cannot account for (the orphaned drafts, or rows whose
+/// file was amended after application), then records every pending migration
+/// as applied via `SQLx`'s skip machinery — core against the shared table,
+/// each flavor against its own table when that table already exists.
 async fn stamp_squashed_lane(pg: &PgStorage) -> Result<(), Box<dyn std::error::Error>> {
     let pool = pg.clone_pool_for_backend();
     if let Err(err) = ensure_core_schema_markers(&pool).await {
@@ -317,6 +323,27 @@ async fn stamp_squashed_lane(pg: &PgStorage) -> Result<(), Box<dyn std::error::E
             )
         })?;
 
+    // A flavor with no ledger table of its own either never ran here or last
+    // ran pre-split; stamping it would tell SQLx its DDL already ran and
+    // permanently skip it. Leave it pending — the normal migration run
+    // afterwards cuts over and applies what is missing. The catalog proof
+    // replays exactly the lanes this stamp records.
+    let mut stamped_flavors: Vec<NamedMigrator> = Vec::new();
+    for migrator in proxima_code::CodeFlavor::migrators() {
+        let ledger_exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+            .bind(migrator.migrator().table_name.as_ref())
+            .fetch_one(&pool)
+            .await?;
+        if ledger_exists {
+            stamped_flavors.push(migrator);
+        }
+    }
+    let core = core_migrator();
+    let lanes: Vec<&sqlx::migrate::Migrator> = std::iter::once(&core)
+        .chain(stamped_flavors.iter().map(NamedMigrator::migrator))
+        .collect();
+    catalog_proof::refuse_unless_live_catalog_matches(&pool, &lanes).await?;
+
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
             .fetch_one(&pool)
@@ -334,7 +361,7 @@ async fn stamp_squashed_lane(pg: &PgStorage) -> Result<(), Box<dyn std::error::E
         let orphaned: Vec<i64> = recorded
             .iter()
             .filter(|(version, checksum)| {
-                !core_migrator().iter().any(|migration| {
+                !core.iter().any(|migration| {
                     migration.version == *version && migration.checksum.as_ref() == checksum
                 })
             })
@@ -349,21 +376,10 @@ async fn stamp_squashed_lane(pg: &PgStorage) -> Result<(), Box<dyn std::error::E
         }
     }
 
-    core_migrator().skip(&pool, None).await?;
+    core.skip(&pool, None).await?;
     println!("proxima-core ledger stamped to the embedded migration set");
 
-    for migrator in proxima_code::CodeFlavor::migrators() {
-        let ledger_exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
-            .bind(migrator.migrator().table_name.as_ref())
-            .fetch_one(&pool)
-            .await?;
-        // A flavor with no ledger table of its own either never ran here or
-        // last ran pre-split; stamping it would tell SQLx its DDL already
-        // ran and permanently skip it. Leave it pending — the normal
-        // migration run afterwards cuts over and applies what is missing.
-        if !ledger_exists {
-            continue;
-        }
+    for migrator in stamped_flavors {
         migrator.migrator().skip(&pool, None).await?;
         println!(
             "{} ledger stamped to the embedded migration set",
@@ -528,5 +544,199 @@ mod tests {
         .await;
         let _ = drop_db(&db_name).await;
         result.expect("dev stamp owner-RLS regression failed");
+    }
+
+    /// The checksum a database records when it applied bytes the binary no
+    /// longer embeds: here, version 14 as if the v0.0.15 file were applied.
+    const AMENDED_CHECKSUM_HEX: &str = "ab";
+    const AMENDED_VERSION: i64 = 14;
+
+    type Ledger = Vec<(i64, Vec<u8>)>;
+
+    async fn read_ledger(pool: &sqlx::PgPool) -> Result<Ledger, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT version, checksum FROM public._sqlx_migrations
+              UNION ALL
+             SELECT version, checksum FROM public._sqlx_migrations_proxima_code
+              ORDER BY 1",
+        )
+        .fetch_all(pool)
+        .await
+    }
+
+    /// A fully migrated split-role database whose ledger records version 14
+    /// with a checksum the embedded file does not have — the state d12da4f2
+    /// left every database that applied the v0.0.15 bytes of 0014 in.
+    async fn amended_database(
+        db_name: &str,
+    ) -> Result<(PgStorage, sqlx::PgPool), Box<dyn std::error::Error>> {
+        create_db(db_name).await?;
+        let (_, platform_url) = split_role_urls(db_name).await?;
+        let pg = PgStorage::connect_for_migrations_with_config(
+            &platform_url,
+            PgPoolConfig::from_env()?,
+            PgTuning::from_env()?,
+        )
+        .await?;
+        run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
+        let admin = sqlx::PgPool::connect(&db_url(db_name)).await?;
+        sqlx::query(
+            "UPDATE public._sqlx_migrations
+                SET checksum = decode(repeat($1, 48), 'hex')
+              WHERE version = $2",
+        )
+        .bind(AMENDED_CHECKSUM_HEX)
+        .bind(AMENDED_VERSION)
+        .execute(&admin)
+        .await?;
+        Ok((pg, admin))
+    }
+
+    /// Stamp must refuse, name the drifted object, and leave both the ledger
+    /// and the catalog exactly as it found them.
+    async fn assert_stamp_refuses_drift(
+        pg: &PgStorage,
+        admin: &sqlx::PgPool,
+        drifted: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let schemas = || async {
+            sqlx::query_scalar::<_, String>(
+                "SELECT nspname::text FROM pg_namespace
+                  WHERE nspname LIKE 'proxima\\_%' OR nspname LIKE 'stamp\\_live\\_%'
+                  ORDER BY 1",
+            )
+            .fetch_all(admin)
+            .await
+        };
+        let ledger_before = read_ledger(admin).await?;
+        let schemas_before = schemas().await?;
+        let refusal = stamp_squashed_lane(pg)
+            .await
+            .expect_err("a catalog that differs from the embedded lane must not be stampable")
+            .to_string();
+        assert!(
+            refusal.contains("the live catalog differs from what the embedded migrations create")
+                && refusal.contains(drifted),
+            "{refusal}"
+        );
+        assert_eq!(
+            read_ledger(admin).await?,
+            ledger_before,
+            "refusal must leave the ledger unchanged"
+        );
+        assert_eq!(
+            schemas().await?,
+            schemas_before,
+            "the proof's renames and replay must roll back"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stamp_refuses_an_amended_migration_whose_bodies_differ_from_the_live_catalog() {
+        let db_name = unique_db_name("proxima_dev_migrate_stamp_drift");
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let (pg, admin) = amended_database(&db_name).await?;
+
+            // A routine 0014 defines keeps the body an earlier file gave it.
+            let definition: String = sqlx::query_scalar(
+                "SELECT pg_get_functiondef(
+                    'proxima_core.record_erased_pin_target(uuid, proxima_core.pin_target_kind)'
+                        ::regprocedure)",
+            )
+            .fetch_one(&admin)
+            .await?;
+            let drifted = definition.replacen(
+                "AS $function$",
+                "AS $function$\n-- the body the v0.0.15 file shipped\n",
+                1,
+            );
+            assert_ne!(drifted, definition, "the drift must change the body");
+            sqlx::raw_sql(sqlx::AssertSqlSafe(drifted))
+                .execute(&admin)
+                .await?;
+            assert_stamp_refuses_drift(&pg, &admin, "record_erased_pin_target").await?;
+            sqlx::raw_sql(sqlx::AssertSqlSafe(definition))
+                .execute(&admin)
+                .await?;
+
+            // A policy the migration defines, with a different predicate.
+            let (using, check): (String, String) = sqlx::query_as(
+                "SELECT pg_get_expr(polqual, polrelid), pg_get_expr(polwithcheck, polrelid)
+                   FROM pg_policy
+                  WHERE polrelid = 'proxima_core.memory'::regclass
+                    AND polname = 'proxima_owner_write'",
+            )
+            .fetch_one(&admin)
+            .await?;
+            sqlx::query(
+                "ALTER POLICY proxima_owner_write ON proxima_core.memory
+                  USING (false) WITH CHECK (false)",
+            )
+            .execute(&admin)
+            .await?;
+            assert_stamp_refuses_drift(&pg, &admin, "memory.proxima_owner_write").await?;
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "ALTER POLICY proxima_owner_write ON proxima_core.memory
+                  USING ({using}) WITH CHECK ({check})"
+            )))
+            .execute(&admin)
+            .await?;
+
+            // A trigger the migration defines, disabled.
+            let trigger: String = sqlx::query_scalar(
+                "SELECT tgname::text FROM pg_trigger
+                  WHERE tgrelid = 'proxima_core.memory'::regclass AND NOT tgisinternal
+                  ORDER BY tgname LIMIT 1",
+            )
+            .fetch_one(&admin)
+            .await?;
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE proxima_core.memory DISABLE TRIGGER {trigger}"
+            )))
+            .execute(&admin)
+            .await?;
+            assert_stamp_refuses_drift(&pg, &admin, &format!("memory.{trigger}")).await?;
+            Ok(())
+        }
+        .await;
+        let _ = drop_db(&db_name).await;
+        result.expect("stamp over drifted bodies must refuse");
+    }
+
+    #[tokio::test]
+    async fn stamp_records_an_amended_migration_whose_bodies_match_the_live_catalog() {
+        let db_name = unique_db_name("proxima_dev_migrate_stamp_same");
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let (pg, admin) = amended_database(&db_name).await?;
+            // The amendment changed bytes, not objects (a comment, say): boot
+            // refuses the checksum, and the stamp may record the new one.
+            let refusal =
+                run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators())
+                    .await
+                    .expect_err("an amended checksum must stop boot")
+                    .to_string();
+            assert!(refusal.contains("were amended"), "{refusal}");
+
+            stamp_squashed_lane(&pg).await?;
+
+            let embedded = core_migrator()
+                .iter()
+                .find(|migration| migration.version == AMENDED_VERSION)
+                .map(|migration| migration.checksum.to_vec())
+                .expect("version 14 is embedded");
+            let recorded: Vec<u8> = sqlx::query_scalar(
+                "SELECT checksum FROM public._sqlx_migrations WHERE version = $1",
+            )
+            .bind(AMENDED_VERSION)
+            .fetch_one(&admin)
+            .await?;
+            assert_eq!(recorded, embedded, "stamp records the embedded checksum");
+            run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
+            Ok(())
+        }
+        .await;
+        let _ = drop_db(&db_name).await;
+        result.expect("stamp over identical bodies must succeed");
     }
 }

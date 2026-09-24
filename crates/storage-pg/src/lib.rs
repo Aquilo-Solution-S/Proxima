@@ -239,11 +239,18 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
              (recorded checksum no longer matches the embedded file)"
         ));
     }
+    // No "if the schema already matches" judgement is asked of the operator:
+    // after an in-place amendment the markers all match while the routine
+    // bodies do not. `--stamp` proves the match itself (a rolled-back replay
+    // of the embedded lane, diffed against the live catalog) and refuses on
+    // any difference.
     Err(StorageError::Internal(format!(
         "database core-migration ledger does not reconcile with this binary: {}. \
-         If the schema already matches the current lane, stamp the ledger with \
-         `cargo run -p proxima-dev-migrate -- --stamp --database-url <URL>`; \
-         otherwise reset (dev/staging only) with \
+         `cargo run -p proxima-dev-migrate -- --stamp --database-url <URL>` records the \
+         embedded checksums only if the live catalog equals what the embedded migrations \
+         create, and refuses otherwise. A migration amended after this database applied \
+         it usually left the old objects in place: restore the database from before that \
+         migration and re-run it, or reset (dev/staging only) with \
          `PROXIMA_RESET_CONFIRM=reset-my-dev-db cargo run -p proxima-dev-migrate -- --reset --database-url <URL>`, \
          then re-register and re-index. See docs/how-to/migrations.md",
         details.join("; ")
@@ -321,10 +328,11 @@ async fn ensure_core_schema_current_on_connection(
 
 /// The structural half of [`ensure_core_schema_current`]: probe the schema
 /// artifacts each release lane introduced, without consulting the migration
-/// ledger at all. `tools/dev-migrate --stamp` gates on exactly this — a
+/// ledger at all. `tools/dev-migrate --stamp` gates on this first — a
 /// database that ran a since-squashed draft lane has the *schema* of the
-/// current lane but a ledger that cannot yet say so, which is the one state
-/// where stamping is honest.
+/// current lane but a ledger that cannot yet say so. Markers alone do not make
+/// stamping honest (an amended routine body carries every marker); the stamp's
+/// catalog proof (`tools/dev-migrate/src/catalog_proof.rs`) decides that.
 ///
 /// # Errors
 ///
