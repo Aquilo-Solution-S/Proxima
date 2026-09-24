@@ -142,19 +142,23 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         "discovery must be reachable unauthenticated"
     );
     let disc_json: serde_json::Value = disc.json().await?;
-    // The public origin, not a per-surface path. One identifier is one
-    // audience, so a single token reaches both `/mcp` and `/v1`; a
-    // path-suffixed identifier would mint non-interchangeable tokens per
-    // surface (17 §Protected-resource identifier).
+    // The origin document names the origin (`/v1`, host routes); `/mcp` has
+    // its own, path-exact, because an MCP client requires `resource` to equal
+    // the URL it connected to (15 §Security guarantee).
     assert_eq!(disc_json["resource"], "https://proxima.e2e.test");
-    assert!(
-        !disc_json["resource"]
-            .as_str()
-            .expect("resource is a string")
-            .ends_with("/mcp"),
-        "the identifier must not be scoped to one surface: {disc_json}",
-    );
     assert_eq!(disc_json["authorization_servers"][0], ISSUER);
+    let mcp_disc: serde_json::Value = client
+        .get(format!("{base}/.well-known/oauth-protected-resource/mcp"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(mcp_disc["resource"], "https://proxima.e2e.test/mcp");
+    assert_eq!(mcp_disc["authorization_servers"][0], ISSUER);
+    assert_eq!(
+        mcp_disc["scopes_supported"],
+        json!(["openid", "offline_access"])
+    );
 
     // Browser CORS is listener-wide, including anonymous discovery and an
     // unauthenticated preflight for the protected MCP route.
@@ -254,9 +258,15 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         .send()
         .await?;
     assert_eq!(no_auth.status(), reqwest::StatusCode::UNAUTHORIZED);
-    assert!(
-        no_auth.headers().contains_key("WWW-Authenticate"),
-        "401 must advertise WWW-Authenticate"
+    assert_eq!(
+        no_auth
+            .headers()
+            .get("WWW-Authenticate")
+            .and_then(|value| value.to_str().ok()),
+        Some(
+            "Bearer resource_metadata=\"https://proxima.e2e.test/.well-known/oauth-protected-resource/mcp\""
+        ),
+        "a 401 on /mcp points at the /mcp document"
     );
     assert_eq!(
         no_auth

@@ -22,6 +22,7 @@ use proxima_core::{
 
 use crate::McpServerError;
 use crate::auth::McpEdgeAuth;
+use crate::oauth::{ResourceChallenges, ResourceServerMetadata};
 use crate::session::{McpSessionBindings, parse_owner_key};
 
 const MCP_SESSION_ID_HEADER: &str = "Mcp-Session-Id";
@@ -503,7 +504,7 @@ pub struct McpAuthLayerState {
     auth: Arc<McpEdgeAuth>,
     sessions: McpSessionBindings,
     revalidation: RevalidationConfig,
-    www_authenticate: Option<http::HeaderValue>,
+    challenges: Option<ResourceChallenges>,
 }
 
 /// Bearer-token middleware that resolves `Authorization: Bearer
@@ -526,14 +527,9 @@ pub fn mcp_auth_layer_with_config(
 pub fn mcp_auth_layer_with_metadata(
     auth: Arc<McpEdgeAuth>,
     revalidation: RevalidationConfig,
-    www_authenticate: Option<http::HeaderValue>,
+    metadata: Option<&ResourceServerMetadata>,
 ) -> McpAuthLayer {
-    mcp_auth_layer_with_sessions(
-        auth,
-        McpSessionBindings::new(),
-        revalidation,
-        www_authenticate,
-    )
+    mcp_auth_layer_with_sessions(auth, McpSessionBindings::new(), revalidation, metadata)
 }
 
 #[must_use = "apply the returned layer to the MCP router"]
@@ -541,7 +537,7 @@ pub fn mcp_auth_layer_with_sessions(
     auth: Arc<McpEdgeAuth>,
     sessions: McpSessionBindings,
     revalidation: RevalidationConfig,
-    www_authenticate: Option<http::HeaderValue>,
+    metadata: Option<&ResourceServerMetadata>,
 ) -> McpAuthLayer {
     fn dispatch(
         state: State<McpAuthLayerState>,
@@ -555,7 +551,7 @@ pub fn mcp_auth_layer_with_sessions(
             auth,
             sessions,
             revalidation,
-            www_authenticate,
+            challenges: metadata.and_then(ResourceChallenges::new),
         },
         dispatch as fn(_, _, _) -> _,
     )
@@ -566,8 +562,10 @@ async fn mcp_auth(
     mut request: Request,
     next: Next,
 ) -> Response {
+    // Which document a 401 points at follows the path the client asked for.
+    let path = request.uri().path().to_owned();
     let Some(token) = extract_bearer(&request) else {
-        return unauthorized(&state);
+        return unauthorized(&state, &path);
     };
     // Validate the bearer BEFORE resolving owner/session so an invalid
     // token always yields 401 regardless of session/owner-header state.
@@ -577,10 +575,10 @@ async fn mcp_auth(
     // a Group owner its role map does not carry, one per-owner resolution
     // through the host's access port.
     let Some(resolved) = state.auth.resolve_unbound(&token).await else {
-        return unauthorized(&state);
+        return unauthorized(&state, &path);
     };
     let (selected_owner, bind_new_session, via_session) =
-        match selected_owner(&state.sessions, request.headers()).await {
+        match selected_owner(&state.sessions, request.headers(), resolved.default_owner()).await {
             OwnerSelection::Selected {
                 owner,
                 bind_new,
@@ -601,7 +599,7 @@ async fn mcp_auth(
         return if via_session {
             session_not_found()
         } else {
-            unauthorized(&state)
+            unauthorized(&state, &path)
         };
     };
     let identity = ctx.authz.identity_for_revalidation();
@@ -635,12 +633,21 @@ enum OwnerSelection {
     /// (never bound, or idle-evicted). Distinct from `Missing` so the
     /// transport can answer 404 and let the client re-initialize.
     UnknownSession,
-    /// No usable owner selection: no session id and no/invalid owner
-    /// header, or an owner header that conflicts with the bound session.
+    /// No usable owner selection: no session id, no owner header and no
+    /// host-named default; an invalid owner header; or an owner header that
+    /// conflicts with the bound session.
     Missing,
 }
 
-async fn selected_owner(sessions: &McpSessionBindings, headers: &HeaderMap) -> OwnerSelection {
+/// A session binding wins, then an explicit owner header, then the owner
+/// the host named on the credential (`default`). An owner header that is
+/// present but invalid is `Missing`: a malformed selection never falls
+/// back to the default.
+async fn selected_owner(
+    sessions: &McpSessionBindings,
+    headers: &HeaderMap,
+    default: Option<Owner>,
+) -> OwnerSelection {
     let owner_header = request_header_str(headers, PROXIMA_OWNER_HEADER);
     let session_id = request_header_str(headers, MCP_SESSION_ID_HEADER);
     if let Some(session_id) = session_id {
@@ -660,7 +667,11 @@ async fn selected_owner(sessions: &McpSessionBindings, headers: &HeaderMap) -> O
         };
     }
 
-    match owner_header.and_then(parse_owner_key) {
+    let owner = match owner_header {
+        Some(raw_owner) => parse_owner_key(raw_owner),
+        None => default,
+    };
+    match owner {
         Some(owner) => OwnerSelection::Selected {
             owner,
             bind_new: true,
@@ -677,11 +688,13 @@ fn session_not_found() -> Response {
     (StatusCode::NOT_FOUND, "unknown or expired MCP session").into_response()
 }
 
-fn unauthorized(state: &McpAuthLayerState) -> Response {
+fn unauthorized(state: &McpAuthLayerState, path: &str) -> Response {
     let mut resp = StatusCode::UNAUTHORIZED.into_response();
-    if let Some(value) = &state.www_authenticate {
-        resp.headers_mut()
-            .insert(http::header::WWW_AUTHENTICATE, value.clone());
+    if let Some(challenges) = &state.challenges {
+        resp.headers_mut().insert(
+            http::header::WWW_AUTHENTICATE,
+            challenges.for_path(path).clone(),
+        );
     }
     resp
 }
@@ -1205,6 +1218,142 @@ mod tests {
             .unwrap();
         assert_eq!(status_of(app, request).await, StatusCode::OK);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// A host that serves one tenant: its authenticator names the tenant
+    /// Group as the default, as a native OAuth client sends no owner header.
+    struct TenantAuth {
+        subject: UserId,
+        tenant: Owner,
+        name_default: bool,
+    }
+
+    #[async_trait]
+    impl Authenticator for TenantAuth {
+        async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
+            let Credentials::Bearer(token) = creds;
+            if token != "good-token" {
+                return Err(AuthError::InvalidCredentials);
+            }
+            let ctx = AuthzContext::for_subject_with_role(
+                self.subject,
+                [(self.tenant, Role::editor())],
+                AuthPath::HostBearer,
+            );
+            if !self.name_default {
+                return Ok(ctx);
+            }
+            ctx.with_default_owner(self.tenant)
+                .ok_or(AuthError::InvalidCredentials)
+        }
+    }
+
+    /// Stub that mints a session like rmcp does on `initialize` and reports
+    /// the owners the request was narrowed to.
+    fn tenant_app(auth: TenantAuth, sessions: McpSessionBindings) -> Router {
+        let edge = McpEdgeAuth::headless().with_host(Arc::new(auth));
+        Router::new()
+            .route(
+                "/mcp",
+                any(|request: Request<Body>| async move {
+                    let mut response = narrowed_owners(request).await;
+                    response
+                        .headers_mut()
+                        .insert("Mcp-Session-Id", "sess-new".parse().unwrap());
+                    response
+                }),
+            )
+            .layer(mcp_auth_layer_with_sessions(
+                Arc::new(edge),
+                sessions,
+                RevalidationConfig::default(),
+                None,
+            ))
+    }
+
+    // A native client sends neither header: the host-named default is
+    // selected, narrowed like any selection, and bound to the new session.
+    #[tokio::test]
+    async fn a_request_that_selects_no_owner_acts_for_the_host_named_default() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let tenant = group_owner();
+        let sessions = McpSessionBindings::new();
+        let app = tenant_app(
+            TenantAuth {
+                subject,
+                tenant,
+                name_default: true,
+            },
+            sessions.clone(),
+        );
+
+        let initialize = mcp_request("Bearer good-token")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            narrowed_to(app, initialize).await,
+            (StatusCode::OK, Bytes::from(owner_key(tenant))),
+            "narrowed to the tenant alone, not tenant + personal"
+        );
+        assert_eq!(sessions.owner_for("sess-new").await, Some(tenant));
+    }
+
+    // An explicit header still wins over the default.
+    #[tokio::test]
+    async fn an_owner_header_overrides_the_default() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let personal = OwnerRef::Personal(subject);
+        let app = tenant_app(
+            TenantAuth {
+                subject,
+                tenant: group_owner(),
+                name_default: true,
+            },
+            McpSessionBindings::new(),
+        );
+
+        let request = mcp_request("Bearer good-token")
+            .header("X-Proxima-Owner", owner_key(personal))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            narrowed_to(app, request).await,
+            (StatusCode::OK, Bytes::from(owner_key(personal)))
+        );
+    }
+
+    // No default, no selection: the 403 this edge always gave. A malformed
+    // header never falls back to the default.
+    #[tokio::test]
+    async fn without_a_default_or_with_a_bad_header_the_selection_is_refused() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let tenant = group_owner();
+        let without = tenant_app(
+            TenantAuth {
+                subject,
+                tenant,
+                name_default: false,
+            },
+            McpSessionBindings::new(),
+        );
+        let request = mcp_request("Bearer good-token")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(without, request).await, StatusCode::FORBIDDEN);
+
+        let with = tenant_app(
+            TenantAuth {
+                subject,
+                tenant,
+                name_default: true,
+            },
+            McpSessionBindings::new(),
+        );
+        let request = mcp_request("Bearer good-token")
+            .header("X-Proxima-Owner", "group:not-a-uuid")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(with, request).await, StatusCode::FORBIDDEN);
     }
 
     fn mcp_request(bearer: &str) -> axum::http::request::Builder {

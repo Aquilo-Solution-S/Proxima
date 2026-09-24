@@ -64,6 +64,11 @@ impl ResolvedAuth {
         Some(McpAuthContext::bound(authz, owner))
     }
 
+    /// The owner the host named for a request that selects none.
+    pub(crate) const fn default_owner(&self) -> Option<Owner> {
+        self.authz.default_owner()
+    }
+
     /// Whether the eager map already carries the selected owner.
     fn carries(&self, owner: Owner) -> bool {
         self.authz.role_for_owner(&owner).is_some()
