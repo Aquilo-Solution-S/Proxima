@@ -462,9 +462,12 @@ guidance, including whether to expose `/v1` through the same gateway as
 ### Protected-resource identifier
 
 `/.well-known/oauth-protected-resource` advertises `{public_url}` as the RFC
-9728 protected-resource identifier. Clients send that public origin as the
-RFC 8707 `resource`; `PROXIMA_OIDC_AUDIENCE` matches it. One audience covers
-both `/mcp` and an enabled `/v1`.
+9728 protected-resource identifier for `/v1`; `/mcp` has its own document
+(see [15 §Security guarantee](15-deployment.md#security-guarantee)).
+`PROXIMA_OIDC_AUDIENCE` is checked against `aud`, not against either
+identifier, so one audience covers both `/mcp` and an enabled `/v1` as long
+as the authorization server does not stamp RFC 8707 `resource` into `aud`
+(Zitadel does not).
 
 ## Out of Scope
 

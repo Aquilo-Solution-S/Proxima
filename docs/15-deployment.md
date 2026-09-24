@@ -3,8 +3,9 @@
 > **Status:** current + deferred sections. Deferred rows are design intent, not implementation claims.
 
 Containerized Code-flavor server, authenticated exclusively via Zitadel
-bearer JWT, with a single unauthenticated route:
-`GET /.well-known/oauth-protected-resource` (RFC 9728). The binary is
+bearer JWT, with two unauthenticated routes: the RFC 9728 documents
+`GET /.well-known/oauth-protected-resource` (origin) and
+`GET /.well-known/oauth-protected-resource/mcp` (`/mcp`). The binary is
 `apps/proxima-mcp` (code flavor default-on); add the `rest` feature and
 set `PROXIMA_REST_ENABLED=true` to serve `/v1` beside `/mcp`.
 
@@ -145,20 +146,34 @@ layer as a short-lived, audited host credential, never as a standing token on
 
 ## Security guarantee
 
-Only `/.well-known/oauth-protected-resource` is bearer-anonymous; it remains
+Only the two protected-resource documents are bearer-anonymous; they remain
 behind the listener-wide Host and body-limit gates. All `/mcp` endpoints, and
-all `/v1` endpoints when enabled, require the same public-origin `aud`-bound
-Zitadel JWT validated in-process.
-401 responses carry `WWW-Authenticate: Bearer resource_metadata="…"`
-(RFC 9728). Defense in depth: the same JWT MUST be validated at the
-cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
+all `/v1` endpoints when enabled, require the same `aud`-bound Zitadel JWT
+validated in-process.
+
+| Resource | Document | `resource` |
+|---|---|---|
+| `/mcp` | `/.well-known/oauth-protected-resource/mcp` | `{public_url}/mcp` |
+| origin (`/v1`, host routes) | `/.well-known/oauth-protected-resource` | `{public_url}` |
+
+A 401 carries `WWW-Authenticate: Bearer resource_metadata="…"` pointing at
+the document for the requested path. Both list
+`scopes_supported: ["openid", "offline_access"]`. `resource` is the URL a
+client connects to (claude.ai requires it path-exact), not the audience:
+Zitadel ignores RFC 8707 `resource` and `aud` is checked against
+`PROXIMA_OIDC_AUDIENCE`. Defense in depth: the same JWT MUST be validated at
+the cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
 
 > **Host-resolved OIDC identity, multi-owner session scope.** The token's
 > `(iss, sub)` resolves through `PROXIMA_OIDC_SUBJECT_MAP_JSON` or
 > `PROXIMA_OIDC_SUBJECT_MAP` to a Proxima `UserId`; `PgOwnerAccessResolver`
 > reads current group memberships into `OwnerRoles`. The client selects one
 > authorized owner during MCP `initialize` using `X-Proxima-Owner`:
-> `personal:<uuid>` or `group:<uuid>`. The server binds that owner to
+> `personal:<uuid>` or `group:<uuid>`. A client that sends neither header
+> nor session (a native OAuth client) gets the owner the host authenticator
+> named with `AuthzContext::with_default_owner` — only an owner the context
+> already carries — or 403 if it named none; a malformed header never falls
+> back to it. The server binds the selected owner to
 > the returned `Mcp-Session-Id`. Every later request revalidates the bearer and
 > narrows the freshly resolved roles to the bound owner; membership
 > removal denies the next request, including an already-bound session. An
@@ -315,8 +330,9 @@ widens), so a per-user scope can restrict but never exceed the deployment
 ceiling. Proxima ships the mechanism; which subject gets which scope is the
 host's policy.
 
-MCP clients send `X-Proxima-Owner` on `initialize`; the bound owner is
-server-side session state, not a per-call tool argument.
+MCP clients send `X-Proxima-Owner` on `initialize`, or rely on the host's
+default owner; the bound owner is server-side session state, not a per-call
+tool argument.
 
 In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_interpret`; hydrate a memory through `proxima://memory/{id}`. Omitted `space` preserves the current bound owner. A cross-space derivation or interpretation may ground in readable handles outside the selected write space.
 
@@ -369,7 +385,8 @@ and the embedding signal→action runbook: [how-to/operate.md](how-to/operate.md
 Ingress MUST:
 
 - Terminate TLS.
-- Pass `/.well-known/oauth-protected-resource` through unauthenticated.
+- Pass `/.well-known/oauth-protected-resource` and
+  `/.well-known/oauth-protected-resource/mcp` through unauthenticated.
 - Statelessly validate the Zitadel JWT on `/mcp`, and on `/v1` when that
   optional surface is routed (NOT a session login-proxy).
 - Forward the `Authorization` header.

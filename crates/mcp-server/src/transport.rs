@@ -102,7 +102,7 @@ pub async fn serve_streamable_http_with_revalidation(
     // guard, auth, and finally rmcp's own Host/Origin guard.
     // Native CLI clients commonly omit Origin and keep the bearer path.
     let app = axum::Router::new()
-        .nest_service("/mcp", service)
+        .nest_service(crate::oauth::MCP_PATH, service)
         .layer(mcp_auth_layer_with_config(auth, revalidation))
         .layer(cors_layer(allowlist))
         .layer(host_guard_layer(host_allowlist))

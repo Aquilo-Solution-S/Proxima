@@ -551,8 +551,10 @@ Owner access control is per-row on graph data (see
 [01 §Owner](01-event-source.md#owner--scoping-primitive)). `OwnerRef` is
 the row-scoping handle. MCP serving does not configure a default owner:
 the bearer resolves to `OwnerRoles`, the client selects an authorized
-owner during `initialize` (`X-Proxima-Owner` for HTTP), and the server
-binds it to `Mcp-Session-Id`. Embedded hosts may still configure a boot
+owner during `initialize` (`X-Proxima-Owner` for HTTP) — or, sending none,
+gets the one the host authenticator named on that credential
+(`AuthzContext::with_default_owner`) — and the server binds it to
+`Mcp-Session-Id`. Embedded hosts may still configure a boot
 owner for host-owned direct calls. There is no per-Owner
 inference/credential table.
 

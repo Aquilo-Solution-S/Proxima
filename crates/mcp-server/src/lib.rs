@@ -19,7 +19,8 @@ pub use auth::{McpAuthContext, McpEdgeAuth};
 pub use error::McpServerError;
 pub use handler::DynamicHandler;
 pub use oauth::{
-    PROTECTED_RESOURCE_METADATA_PATH, ResourceServerMetadata, protected_resource_router,
+    MCP_PATH, MCP_PROTECTED_RESOURCE_METADATA_PATH, PROTECTED_RESOURCE_METADATA_PATH,
+    ProtectedResource, ResourceServerMetadata, SCOPES_SUPPORTED, protected_resource_router,
 };
 pub use security::{
     CorsLayer, HostAllowlist, HostGuardLayer, McpAuthLayer, OriginAllowlist, assert_loopback,

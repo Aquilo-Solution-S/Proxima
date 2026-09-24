@@ -108,7 +108,8 @@ JSON, for clients that take a config file:
 }
 ```
 
-`X-Proxima-Owner` is required on MCP `initialize`. The server binds that
+`X-Proxima-Owner` is required on MCP `initialize` unless the host
+authenticator names a default owner for the credential. The server binds that
 owner to the returned `Mcp-Session-Id` and rechecks authority on every
 request. `PROXIMA_MCP_BIND` overrides the listener. Non-loopback binds
 require `PROXIMA_EXPOSE_NETWORK=true` plus the gates in

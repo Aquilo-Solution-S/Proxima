@@ -1136,7 +1136,7 @@ where
     S::Future: Send + 'static,
 {
     Router::new()
-        .nest_service("/mcp", mcp_service)
+        .nest_service(proxima_mcp_server::MCP_PATH, mcp_service)
         .merge(app_router)
         .layer(proxima_mcp_server::mcp_auth_layer_with_config(
             edge_auth,
@@ -1310,17 +1310,13 @@ fn build_router<A: FlavorApp>(
     let rest_router = rest_router(&mcp_host, config);
     let mcp_service = streamable_http_service(mcp_host, &allowlist, &host_allowlist, cancel);
     let app_router = A::mount_http(Router::new(), app_ctx);
-    let www = config
-        .resource_metadata
-        .as_ref()
-        .and_then(|md| axum::http::HeaderValue::from_str(&md.www_authenticate_value()).ok());
     let auth_layer = proxima_mcp_server::mcp_auth_layer_with_metadata(
         edge_auth,
         config.stream_revalidation,
-        www,
+        config.resource_metadata.as_ref(),
     );
     let protected_router = Router::new()
-        .nest_service("/mcp", mcp_service)
+        .nest_service(proxima_mcp_server::MCP_PATH, mcp_service)
         .merge(rest_router)
         .merge(app_router)
         .layer(auth_layer);

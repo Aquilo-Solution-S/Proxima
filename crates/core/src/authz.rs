@@ -261,6 +261,9 @@ pub struct AuthzContext {
     /// [`AuthzContext::identity_for_revalidation`] and be re-presented as
     /// authenticated identity material.
     publication_extensions: PublicationExtensions,
+    /// The owner the HOST names for a request that selects none. Always an
+    /// owner `owner_roles` carries; see [`AuthzContext::with_default_owner`].
+    default_owner: Option<OwnerRef>,
 }
 
 /// Opaque authority for one redeemed durable-worker phase.
@@ -491,6 +494,12 @@ impl AuthzContext {
         &self.publication_extensions
     }
 
+    /// The owner a request that selects none acts for, if the host named one.
+    #[must_use]
+    pub const fn default_owner(&self) -> Option<OwnerRef> {
+        self.default_owner
+    }
+
     #[must_use]
     pub fn identity_for_revalidation(&self) -> Identity {
         self.identity.clone()
@@ -584,6 +593,7 @@ impl AuthzContext {
             owner_roles: Some(owner_roles),
             owner_scope: None,
             publication_extensions: PublicationExtensions::new(),
+            default_owner: None,
         }
     }
 
@@ -662,6 +672,26 @@ impl AuthzContext {
         Ok(self)
     }
 
+    /// Name the owner a request that selects none acts for — the MCP edge
+    /// uses it when a client sends neither `Mcp-Session-Id` nor
+    /// `X-Proxima-Owner`, as a native OAuth client does.
+    ///
+    /// **For authenticators only**, and only for an owner this context
+    /// already carries a role for: the default selects, it never grants.
+    /// The request is still narrowed through [`Self::narrowed_to_owner`]
+    /// like any selected owner. A Group only an [`OwnerAccessPort`] would
+    /// answer is not carried and cannot be the default.
+    ///
+    /// `None` when the context carries no role for `owner`.
+    #[must_use]
+    pub fn with_default_owner(mut self, owner: OwnerRef) -> Option<Self> {
+        self.role_for_owner(&owner)?;
+        self.default_owner = Some(owner);
+        Some(self)
+    }
+
+    /// Narrow to `owner`. The result is bound to that one owner, so it
+    /// names no default.
     #[must_use]
     pub fn narrowed_to_owner(mut self, owner: OwnerRef) -> Option<Self> {
         let roles = self.owner_roles.as_ref()?;
@@ -685,6 +715,7 @@ impl AuthzContext {
             self.owner_scope = Some(scope.narrow(owner)?);
         }
         self.identity.accessible_principals = accessible_principals;
+        self.default_owner = None;
         Some(self)
     }
 
@@ -810,6 +841,7 @@ impl AuthzContext {
             owner_roles: None,
             owner_scope: None,
             publication_extensions: PublicationExtensions::new(),
+            default_owner: None,
         }
     }
 }
@@ -1323,6 +1355,51 @@ mod tests {
                 .with_host_resolved_role(group, Role::admin())
                 .is_none()
         );
+    }
+
+    /// A default selects among the owners the context already carries; it
+    /// can never name one the map lacks, so it cannot grant anything.
+    #[test]
+    fn a_default_owner_must_be_one_the_context_carries() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let tenant = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let elsewhere = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let roles = OwnerRoles::for_subject(subject, [(tenant, Role::editor())]).unwrap();
+        let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer);
+        assert_eq!(ctx.default_owner(), None);
+
+        for carried in [tenant, OwnerRef::Personal(subject)] {
+            let named = ctx.clone().with_default_owner(carried).expect("carried");
+            assert_eq!(named.default_owner(), Some(carried));
+        }
+        assert!(ctx.clone().with_default_owner(elsewhere).is_none());
+        assert!(
+            ctx.with_default_owner(OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7())))
+                .is_none(),
+            "another subject's personal owner is never carried"
+        );
+        assert!(
+            AuthzContext::denied_for_owner(&tenant)
+                .with_default_owner(tenant)
+                .is_none()
+        );
+    }
+
+    /// A narrowed context is bound to one owner; a default left on it would
+    /// name an owner the context can no longer act for.
+    #[test]
+    fn narrowing_drops_the_default() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let tenant = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let roles = OwnerRoles::for_subject(subject, [(tenant, Role::editor())]).unwrap();
+        let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer)
+            .with_default_owner(tenant)
+            .expect("carried");
+
+        let narrowed = ctx
+            .narrowed_to_owner(OwnerRef::Personal(subject))
+            .expect("own personal owner");
+        assert_eq!(narrowed.default_owner(), None);
     }
 
     /// `trusted_model_id` is identity, not a capability: it must survive
