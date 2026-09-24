@@ -14,9 +14,12 @@ mod config;
 mod keys;
 mod subject_map;
 
-pub use authenticator::{OidcAuthenticator, OidcTokenValidator, ValidatedOidcClaims};
+pub use authenticator::{
+    OidcAuthenticator, OidcRejection, OidcTokenValidator, ValidatedOidcClaims, ValidatedOidcToken,
+};
 pub use binding_set::{
-    OidcBinding, OidcBindingRoute, OidcBindingSet, OidcBindingSetError, OidcRoleShape,
+    OidcBinding, OidcBindingRoute, OidcBindingSet, OidcBindingSetError, OidcClaimMap,
+    OidcRoleShape, OidcRoleShaper,
 };
 pub use config::{OidcAuthConfig, OidcConfigError};
 pub use keys::{

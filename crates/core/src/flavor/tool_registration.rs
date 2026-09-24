@@ -397,6 +397,47 @@ mod action_vocabulary_tests {
         assert!(flat.argv_action_specs.is_empty());
     }
 
+    /// One definition of a tool's palette keys, argv actions included: the
+    /// gate judges an argv dispatcher by `tool:action`, so a palette that
+    /// listed only the bare name denied every call to it.
+    #[test]
+    fn palette_keys_cover_argv_actions_and_owner_only_keys_follow_the_audience() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<ArgvTool>("proxima-stub");
+        registry.add_mcp_tool_or_panic_for_tests::<OwnerOnlyFlatTool>("proxima-stub");
+        let frozen = registry.freeze_or_panic_for_tests();
+
+        let argv_tool = frozen.mcp_tool(ArgvTool::NAME).expect("argv tool");
+        assert_eq!(
+            argv_tool.palette_keys(),
+            [
+                format!("{}:approval", ArgvTool::NAME),
+                format!("{}:approval-decide", ArgvTool::NAME),
+            ]
+        );
+        assert_eq!(
+            argv_tool.owner_only_keys(),
+            [format!("{}:approval-decide", ArgvTool::NAME)]
+        );
+        let flat = frozen.mcp_tool(OwnerOnlyFlatTool::NAME).expect("flat");
+        assert_eq!(flat.palette_keys(), [OwnerOnlyFlatTool::NAME]);
+        assert_eq!(flat.owner_only_keys(), [OwnerOnlyFlatTool::NAME]);
+        // An owner-only tool makes every action key owner-only.
+        let membership = frozen
+            .mcp_tool(crate::protocol::tool::CORE_MEMBERSHIP)
+            .expect("core_membership");
+        assert!(!membership.palette_keys().is_empty());
+        assert_eq!(membership.owner_only_keys(), membership.palette_keys());
+
+        // The canonical palette is built from the same definition, so every
+        // argv leaf is in it and the gate admits a call the palette names.
+        let canonical = crate::mcp::canonical_scope_keys(&frozen);
+        for key in argv_tool.palette_keys() {
+            assert!(canonical.contains(&key), "{key} missing from {canonical:?}");
+        }
+        assert!(!canonical.contains(&ArgvTool::NAME.to_owned()));
+    }
+
     /// The substrate's own membership dispatcher declares the owner
     /// audience — the descriptor statement hosts partition on instead of
     /// hardcoding the tool's name.

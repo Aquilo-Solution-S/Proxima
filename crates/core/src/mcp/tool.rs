@@ -238,6 +238,53 @@ impl McpToolDescriptor {
             .and_then(|annotations| annotations.read_only)
             .unwrap_or(false)
     }
+
+    /// Every [`ToolScope`](crate::ToolScope) key the scope gate judges a
+    /// call to this tool by: the bare name for a flat tool, one
+    /// `tool:action` leaf per action for either dispatcher vocabulary
+    /// (`action_arg_specs` or `argv_action_specs`). The one definition a
+    /// palette is built from.
+    #[must_use]
+    pub fn palette_keys(&self) -> Vec<String> {
+        self.keyed_audiences().map(|(key, _)| key).collect()
+    }
+
+    /// The subset of [`Self::palette_keys`] that belongs to the owner alone:
+    /// every key of an [`McpToolAudience::Owner`] tool, else each action
+    /// declared [`McpToolAudience::Owner`].
+    #[must_use]
+    pub fn owner_only_keys(&self) -> Vec<String> {
+        self.keyed_audiences()
+            .filter(|(_, audience)| *audience == McpToolAudience::Owner)
+            .map(|(key, _)| key)
+            .collect()
+    }
+
+    fn keyed_audiences(&self) -> impl Iterator<Item = (String, McpToolAudience)> + '_ {
+        let tool_audience = self.audience;
+        let effective = move |action: McpToolAudience| {
+            if tool_audience == McpToolAudience::Owner {
+                McpToolAudience::Owner
+            } else {
+                action
+            }
+        };
+        let flat = (self.action_arg_specs.is_empty() && self.argv_action_specs.is_empty())
+            .then(|| (self.name.to_owned(), tool_audience));
+        let tagged = self
+            .action_arg_specs
+            .iter()
+            .map(move |spec| (spec.action, effective(spec.audience)));
+        let argv = self
+            .argv_action_specs
+            .iter()
+            .map(move |spec| (spec.action, effective(spec.audience)));
+        flat.into_iter().chain(
+            tagged
+                .chain(argv)
+                .map(|(action, audience)| (format!("{}:{action}", self.name), audience)),
+        )
+    }
 }
 
 impl std::fmt::Debug for McpToolDescriptor {

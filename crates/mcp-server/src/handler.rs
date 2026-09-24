@@ -33,6 +33,7 @@ use crate::selfdoc;
 const SERVER_NAME: &str = "proxima";
 
 use crate::auth::McpAuthContext;
+use crate::host_tools::McpHostTool;
 use crate::server::{McpToolHost, ToolInvocationError};
 use proxima_core::ToolScope;
 
@@ -225,6 +226,16 @@ impl ServerHandler for DynamicHandler {
                 }
             })
             .collect();
+        let host_tools = auth.as_ref().map_or_else(Vec::new, |ctx| {
+            self.server
+                .host_tools_for(ctx)
+                .into_iter()
+                .filter(|tool| host_tool_allowed_for_auth(Some(ctx), tool))
+                .filter_map(host_tool_metadata)
+                .collect()
+        });
+        let mut tools = tools;
+        tools.extend(host_tools);
         std::future::ready(Ok(ListToolsResult {
             tools,
             ..Default::default()
@@ -288,14 +299,22 @@ impl ServerHandler for DynamicHandler {
                 .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
             let author = author_from_args(&args, auth.as_ref(), &client_name, &client_version)?;
             strip_call_context_args(&mut args);
+            let recording = server.records_calls().then(|| CallRecording::start(&args));
             let error_auth = auth.clone();
-            let output = server
+            let outcome = server
                 .call_tool_in_request(&canonical_name, args, author, auth, request_services)
                 .await
                 .map_err(|err| {
                     tool_invocation_error_to_error_data(server.registry(), err, error_auth.as_ref())
-                })?;
-            let text = serde_json::to_string(&output).map_err(generic_internal_error)?;
+                })
+                .and_then(|output| {
+                    let text = serde_json::to_string(&output).map_err(generic_internal_error)?;
+                    Ok((output, text))
+                });
+            if let Some(recording) = recording {
+                recording.finish(&server, error_auth.as_ref(), &canonical_name, &outcome);
+            }
+            let (output, text) = outcome?;
             let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
             result.structured_content = Some(output);
             Ok(result.into())
@@ -305,8 +324,10 @@ impl ServerHandler for DynamicHandler {
 
 /// Map a tool-invocation failure to a typed JSON-RPC error so external
 /// agents can tell bad input from a server fault, instead of every failure
-/// collapsing to `internal_error` (-32603).
-fn tool_invocation_error_to_error_data(
+/// collapsing to `internal_error` (-32603). The mapping `tools/call` uses;
+/// a not-authorized message lists the caller's still-allowed actions.
+#[must_use]
+pub fn tool_invocation_error_to_error_data(
     registry: &FlavorRegistryFrozen,
     err: ToolInvocationError,
     auth: Option<&McpAuthContext>,
@@ -397,8 +418,9 @@ const CAPACITY_EXHAUSTED_CODE: &str = "capacity_exhausted";
 /// backpressure → server error (-32000) with `data.code`
 /// `capacity_exhausted` and the message verbatim; infrastructure faults →
 /// `internal_error` (-32603). Resource reads remap `NotFound` before
-/// reaching here (see [`resource_invocation_error_to_error_data`]).
-fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
+/// reaching here (resources map a missing entity to `resource_not_found`).
+#[must_use]
+pub fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
     match err.kind() {
         McpToolErrorKind::InvalidInput | McpToolErrorKind::NotFound => {
             ErrorData::invalid_params(err.client_message(), None)
@@ -580,7 +602,8 @@ fn trusted_model_id(auth: Option<&McpAuthContext>) -> Option<String> {
 /// Client `(name, version)` from the initialize handshake's `client_info`,
 /// recorded as operator provenance. Falls back to `("unknown", "0")` when the
 /// peer info is absent (e.g. a request that never completed `initialize`).
-fn peer_implementation(context: &RequestContext<RoleServer>) -> (String, String) {
+#[must_use]
+pub fn peer_implementation(context: &RequestContext<RoleServer>) -> (String, String) {
     context.peer.peer_info().map_or_else(
         || ("unknown".to_string(), "0".to_string()),
         |info| {
@@ -627,7 +650,8 @@ fn request_services(
 /// `McpAuthContext` into the axum request extensions before nesting the
 /// rmcp service. The two extension stores are different — we follow the
 /// documented bridge.
-fn auth_context(context: &RequestContext<RoleServer>) -> Option<McpAuthContext> {
+#[must_use]
+pub fn auth_context(context: &RequestContext<RoleServer>) -> Option<McpAuthContext> {
     let parts = context.extensions.get::<http::request::Parts>()?;
     let ctx = parts.extensions.get::<McpAuthContext>()?;
     Some(ctx.clone())
@@ -776,7 +800,12 @@ const UNAUTHENTICATED_SCOPE_ALLOWS: bool = true;
 /// returns for malformed reserved metadata. Precedence itself lives in
 /// [`resolve_operator_label`], shared with the REST surface so the two
 /// transports cannot drift.
-fn author_from_args(
+///
+/// # Errors
+///
+/// `invalid_params` when `model_id` contradicts the token's bound model, or
+/// a caller-self-perspective argument is not a UUID string.
+pub fn author_from_args(
     args: &serde_json::Value,
     auth: Option<&McpAuthContext>,
     client_name: &str,
@@ -822,7 +851,10 @@ fn caller_self_perspective_from_args(
     Ok(Some(MemoryId::new(id)))
 }
 
-fn strip_call_context_args(args: &mut serde_json::Value) {
+/// Remove the reserved call-context arguments [`author_from_args`] read
+/// (`model_id` and the caller-self-perspective aliases), so a tool's own
+/// argument validation never sees them.
+pub fn strip_call_context_args(args: &mut serde_json::Value) {
     let Some(obj) = args.as_object_mut() else {
         return;
     };
@@ -835,6 +867,97 @@ fn strip_call_context_args(args: &mut serde_json::Value) {
     // accept it without a spurious unexpected-field rejection; flat tools that
     // want it (e.g. core_derive) read it from `ctx.author.model_id`.
     obj.remove("model_id");
+}
+
+/// Whether this caller may see one host tool: its name in the palette (a
+/// host tool is flat) and the owner role its declaration needs.
+fn host_tool_allowed_for_auth(auth: Option<&McpAuthContext>, tool: &McpHostTool) -> bool {
+    let in_scope = auth.map_or(UNAUTHENTICATED_SCOPE_ALLOWS, |ctx| {
+        ctx.authz.tool_scope().allows(&tool.name)
+    });
+    in_scope && owner_role_allows(auth, tool.annotations.read_only.unwrap_or(false))
+}
+
+/// A host tool's `tools/list` entry; `None` (and a warning) when its
+/// schemas are not JSON objects.
+fn host_tool_metadata(tool: McpHostTool) -> Option<Tool> {
+    let (serde_json::Value::Object(args), serde_json::Value::Object(output)) =
+        (tool.args_schema, tool.output_schema)
+    else {
+        tracing::warn!(tool = %tool.name, "host tool schemas must be JSON objects; not listed");
+        return None;
+    };
+    Some(
+        Tool::new(
+            Cow::Owned(provider_safe_tool_name(&tool.name)),
+            Cow::Owned(tool.description),
+            Arc::new(args),
+        )
+        .with_raw_output_schema(Arc::new(output))
+        .annotate(to_rmcp_annotations(tool.annotations)),
+    )
+}
+
+/// One `tools/call` being recorded ([`McpToolHost::with_call_recording`]).
+struct CallRecording {
+    started: std::time::Instant,
+    occurred_at: time::OffsetDateTime,
+    request_bytes: u64,
+}
+
+impl CallRecording {
+    fn start(args: &serde_json::Value) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            occurred_at: time::OffsetDateTime::now_utc(),
+            request_bytes: serde_json::to_vec(args).map_or(0, |bytes| bytes.len() as u64),
+        }
+    }
+
+    /// Write the record off the request path: a client that disconnects
+    /// does not cancel it, and a failed write never fails the call.
+    fn finish(
+        self,
+        server: &McpToolHost,
+        auth: Option<&McpAuthContext>,
+        tool: &str,
+        outcome: &Result<(serde_json::Value, String), ErrorData>,
+    ) {
+        let (Some(engine), Some(auth)) = (server.engine(), auth) else {
+            return;
+        };
+        // The actor is the verified subject, never a claim in the request.
+        let Some(subject) = auth.authz.subject() else {
+            return;
+        };
+        let (ok, error, response_bytes) = match outcome {
+            Ok((_, text)) => (true, None, text.len() as u64),
+            Err(err) => (false, Some(err.message.to_string()), 0),
+        };
+        let input = proxima_core::McpCallLogInput {
+            owner: auth.owner,
+            actor_oid: subject.into_inner().to_string(),
+            actor_upn: String::new(),
+            tool_name: tool.to_owned(),
+            ok,
+            error,
+            latency_ms: u32::try_from(self.started.elapsed().as_millis()).unwrap_or(u32::MAX),
+            // No body: the Fact records that the call happened and its size,
+            // never what was sent or returned.
+            io_body: Vec::new(),
+            io_byte_len_original: self.request_bytes + response_bytes,
+            io_truncated: true,
+            observed_at: time::OffsetDateTime::now_utc(),
+            occurred_at: self.occurred_at,
+        };
+        let engine = Arc::clone(engine);
+        let authz = auth.authz.clone();
+        tokio::spawn(async move {
+            if let Err(err) = engine.persist_mcp_call(&authz, input).await {
+                tracing::debug!(error = %err, "mcp call not recorded");
+            }
+        });
+    }
 }
 
 #[cfg(test)]

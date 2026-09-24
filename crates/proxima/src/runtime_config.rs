@@ -9,8 +9,10 @@ use proxima_core::{
     FlavorServices, Owner, OwnerAccessPort, RequestHeaders, RevalidationConfig, ToolScope,
     is_loopback_host,
 };
-use proxima_mcp_server::{McpTransportConfig, RequestHeaderAllowlist, ResourceServerMetadata};
-use proxima_storage_pg::{PgHostStateParticipant, PgPoolConfig, PgTuning};
+use proxima_mcp_server::{
+    McpHostTools, McpTransportConfig, RequestHeaderAllowlist, ResourceServerMetadata,
+};
+use proxima_storage_pg::{PgHostStateParticipant, PgPlatformScope, PgPoolConfig, PgTuning};
 
 use crate::EmbedError;
 use crate::config::{
@@ -20,6 +22,30 @@ use crate::config::{
 use crate::owner_access::{ForwarderPolicy, LateOwnerAccess, forwarder_from_lookup};
 
 const DEFAULT_MCP_BIND: &str = "127.0.0.1:31415";
+
+/// What an authenticator built at boot receives
+/// ([`RuntimeBuilder::authenticator_with_platform_scope`]).
+#[derive(Clone)]
+pub struct PlatformAuthContext {
+    /// The runtime's platform scope, validated at boot
+    /// ([`PgPlatformScope::new`]: platform role, ownership, `FORCE RLS`
+    /// census) — the one way to run platform-scoped queries.
+    pub platform_scope: PgPlatformScope,
+    /// The runtime's owner-access port (host port or the Postgres resolver,
+    /// under the forwarder policy when one is configured).
+    pub owner_access: Arc<dyn OwnerAccessPort>,
+}
+
+impl std::fmt::Debug for PlatformAuthContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlatformAuthContext")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Builds the host authenticator once the platform scope exists.
+pub type PlatformAuthenticatorFactory =
+    Arc<dyn Fn(PlatformAuthContext) -> Result<Arc<dyn Authenticator>, ProximaError> + Send + Sync>;
 
 pub(crate) const DUPLICATE_HOST_STATE_PARTICIPANT: &str = "a host-state participant is already registered and a unit of work dispatches to exactly one; register one participant that serves every command type (docs/19)";
 
@@ -44,6 +70,9 @@ pub struct RuntimeBuilder {
     pg_pool_config: Option<PgPoolConfig>,
     pg_tuning: Option<PgTuning>,
     authenticator: Option<Arc<dyn Authenticator>>,
+    platform_authenticator: Option<PlatformAuthenticatorFactory>,
+    host_tools: Option<Arc<dyn McpHostTools>>,
+    record_mcp_calls: Option<bool>,
     resource_metadata: Option<ResourceServerMetadata>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     embedding_router: Option<Arc<dyn EmbeddingRouter>>,
@@ -98,6 +127,12 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("pg_pool_config", &self.pg_pool_config)
             .field("pg_tuning", &self.pg_tuning)
             .field("has_authenticator", &self.authenticator.is_some())
+            .field(
+                "has_platform_authenticator",
+                &self.platform_authenticator.is_some(),
+            )
+            .field("host_tools", &self.host_tools)
+            .field("record_mcp_calls", &self.record_mcp_calls)
             .field("has_resource_metadata", &self.resource_metadata.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_embedding_router", &self.embedding_router.is_some())
@@ -147,6 +182,9 @@ impl RuntimeBuilder {
             pg_pool_config: self.pg_pool_config.or(base.pg_pool_config),
             pg_tuning: self.pg_tuning.or(base.pg_tuning),
             authenticator: self.authenticator.or(base.authenticator),
+            platform_authenticator: self.platform_authenticator.or(base.platform_authenticator),
+            host_tools: self.host_tools.or(base.host_tools),
+            record_mcp_calls: self.record_mcp_calls.or(base.record_mcp_calls),
             resource_metadata: self.resource_metadata.or(base.resource_metadata),
             embed_client: self.embed_client.or(base.embed_client),
             embedding_router: self.embedding_router.or(base.embedding_router),
@@ -474,6 +512,40 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Build the host authenticator at boot, after the runtime validated
+    /// its platform scope, from that scope and the runtime's owner-access
+    /// port — for an authenticator whose resolver runs platform-scoped
+    /// queries. Requires `platform_database_url`; exclusive with
+    /// [`Self::authenticator`] and the `PROXIMA_OIDC_*` environment.
+    #[must_use]
+    pub fn authenticator_with_platform_scope<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(PlatformAuthContext) -> Result<Arc<dyn Authenticator>, ProximaError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.platform_authenticator = Some(Arc::new(factory));
+        self
+    }
+
+    /// Serve `tools` on `/mcp` beside the registry's tools, through the same
+    /// scope gate and request behaviors ([`McpHostTools`]).
+    #[must_use]
+    pub fn host_tools(mut self, tools: Arc<dyn McpHostTools>) -> Self {
+        self.host_tools = Some(tools);
+        self
+    }
+
+    /// Record every served MCP `tools/call` as a `core/mcp-call-logged-v1`
+    /// Fact: tool, outcome, latency, size and the verified subject as actor;
+    /// never the request or response body. Default: off.
+    #[must_use]
+    pub fn record_mcp_calls(mut self, record: bool) -> Self {
+        self.record_mcp_calls = Some(record);
+        self
+    }
+
     /// Advertise OAuth protected-resource metadata (enables the public
     /// discovery route + `WWW-Authenticate` on 401).
     #[must_use]
@@ -664,7 +736,7 @@ impl RuntimeBuilder {
     /// the edge and the delegation service get.
     #[cfg(feature = "auth-oidc")]
     fn env_authenticator(&mut self) -> Result<Option<LateOwnerAccess>, ProximaError> {
-        if self.authenticator.is_some() {
+        if self.authenticator.is_some() || self.platform_authenticator.is_some() {
             return Ok(None);
         }
         let Some(oidc_env) = self.oidc_env.take() else {
@@ -687,7 +759,10 @@ impl RuntimeBuilder {
     /// honour, refused rather than ignored.
     #[cfg(not(feature = "auth-oidc"))]
     fn env_authenticator(&mut self) -> Result<Option<LateOwnerAccess>, ProximaError> {
-        if self.authenticator.is_none() && self.oidc_env.take().is_some() {
+        if self.authenticator.is_none()
+            && self.platform_authenticator.is_none()
+            && self.oidc_env.take().is_some()
+        {
             return Err(ProximaError::Config(
                 "PROXIMA_OIDC_ISSUER is set but this binary was built without the `auth-oidc` \
                  cargo feature; enable it or install an authenticator in code"
@@ -695,6 +770,27 @@ impl RuntimeBuilder {
             ));
         }
         Ok(None)
+    }
+
+    /// [`Self::authenticator_with_platform_scope`] runs at boot against the
+    /// platform scope; refuse before storage what could never reach it.
+    fn check_platform_authenticator(&self) -> Result<(), ProximaError> {
+        if self.platform_authenticator.is_none() {
+            return Ok(());
+        }
+        if self.authenticator.is_some() {
+            return Err(ProximaError::Config(
+                "set either authenticator or authenticator_with_platform_scope, not both".into(),
+            ));
+        }
+        if self.platform_database_url.is_none() {
+            return Err(ProximaError::Config(
+                "authenticator_with_platform_scope needs the platform scope: set \
+                 platform_database_url (PROXIMA_PLATFORM_DATABASE_URL)"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     /// The served-path half of [`Self::resolve`]: the environment OIDC
@@ -749,6 +845,7 @@ impl RuntimeBuilder {
             .database_url
             .take()
             .ok_or_else(|| ProximaError::Config("DATABASE_URL is required".into()))?;
+        self.check_platform_authenticator()?;
         let ServedPath {
             late_owner_access,
             request_headers,
@@ -797,6 +894,8 @@ impl RuntimeBuilder {
         let owner = self.owner;
         let parts = RuntimeParts {
             authenticator: self.authenticator,
+            platform_authenticator: self.platform_authenticator,
+            host_tools: self.host_tools,
             embed_client: self.embed_client,
             embedding_router: self.embedding_router,
             host_state_participant: self.host_state_participant,
@@ -828,8 +927,9 @@ impl RuntimeBuilder {
             pg_pool_config,
             pg_tuning: self.pg_tuning.unwrap_or_default(),
             auth: RuntimeAuthState {
-                has_host_authenticator: parts.authenticator.is_some(),
+                has_host_authenticator: parts.has_authenticator(),
             },
+            record_mcp_calls: self.record_mcp_calls.unwrap_or(false),
             resource_metadata: self.resource_metadata,
             embedding_runtime_policy: self.embedding_runtime_policy.unwrap_or_default(),
             publication: publication.clone(),
@@ -908,6 +1008,8 @@ pub struct RuntimeConfig {
     /// shipped behaviour, so an unset environment is production.
     pub pg_tuning: PgTuning,
     pub auth: RuntimeAuthState,
+    /// Record served `tools/call`s ([`RuntimeBuilder::record_mcp_calls`]).
+    pub record_mcp_calls: bool,
     pub resource_metadata: Option<ResourceServerMetadata>,
     pub embedding_runtime_policy: EmbeddingRuntimePolicy,
     /// The deployment's `CloudEvents` producer identity and capture bounds
@@ -968,6 +1070,7 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("pg_pool_config", &self.pg_pool_config)
             .field("pg_tuning", &self.pg_tuning)
             .field("auth", &self.auth)
+            .field("record_mcp_calls", &self.record_mcp_calls)
             .field("resource_metadata", &self.resource_metadata)
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .field("publication", &self.publication)
@@ -1079,6 +1182,10 @@ pub struct McpSettings {
 #[derive(Clone, Default)]
 pub struct RuntimeParts {
     pub authenticator: Option<Arc<dyn Authenticator>>,
+    /// Builds [`Self::authenticator`] at boot from the platform scope.
+    pub platform_authenticator: Option<PlatformAuthenticatorFactory>,
+    /// Host tools served on `/mcp` ([`RuntimeBuilder::host_tools`]).
+    pub host_tools: Option<Arc<dyn McpHostTools>>,
     pub embed_client: Option<Arc<dyn EmbeddingClient>>,
     pub embedding_router: Option<Arc<dyn EmbeddingRouter>>,
     pub host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
@@ -1091,10 +1198,24 @@ pub struct RuntimeParts {
     pub(crate) late_owner_access: Option<LateOwnerAccess>,
 }
 
+impl RuntimeParts {
+    /// An authenticator is installed, or built at boot from the platform
+    /// scope.
+    #[must_use]
+    pub fn has_authenticator(&self) -> bool {
+        self.authenticator.is_some() || self.platform_authenticator.is_some()
+    }
+}
+
 impl std::fmt::Debug for RuntimeParts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeParts")
             .field("has_authenticator", &self.authenticator.is_some())
+            .field(
+                "has_platform_authenticator",
+                &self.platform_authenticator.is_some(),
+            )
+            .field("host_tools", &self.host_tools)
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_embedding_router", &self.embedding_router.is_some())
             .field(
@@ -1434,6 +1555,7 @@ mod tests {
             auth: RuntimeAuthState {
                 has_host_authenticator: true,
             },
+            record_mcp_calls: false,
             resource_metadata: None,
             embedding_runtime_policy: EmbeddingRuntimePolicy::default(),
         }

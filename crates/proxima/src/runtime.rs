@@ -26,7 +26,6 @@ use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
     HostAllowlist, McpEdgeAuth, McpToolHost, McpTransportConfig, OriginAllowlist, assert_loopback,
     body_limit_layer, cors_layer, default_allowlist, host_guard_layer,
-    streamable_http_service_with_transport,
 };
 use sqlx::PgPool;
 use tokio::task::JoinHandle;
@@ -129,6 +128,33 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     #[must_use]
     pub fn authenticator(mut self, authenticator: Arc<dyn Authenticator>) -> Self {
         self.overlay = self.overlay.authenticator(authenticator);
+        self
+    }
+
+    /// [`RuntimeBuilder::authenticator_with_platform_scope`].
+    #[must_use]
+    pub fn authenticator_with_platform_scope<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(crate::PlatformAuthContext) -> Result<Arc<dyn Authenticator>, ProximaError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.overlay = self.overlay.authenticator_with_platform_scope(factory);
+        self
+    }
+
+    /// [`RuntimeBuilder::host_tools`].
+    #[must_use]
+    pub fn host_tools(mut self, tools: Arc<dyn proxima_mcp_server::McpHostTools>) -> Self {
+        self.overlay = self.overlay.host_tools(tools);
+        self
+    }
+
+    /// [`RuntimeBuilder::record_mcp_calls`].
+    #[must_use]
+    pub fn record_mcp_calls(mut self, record: bool) -> Self {
+        self.overlay = self.overlay.record_mcp_calls(record);
         self
     }
 
@@ -336,18 +362,20 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             owner_access,
         } = self.boot_common().await?;
 
-        let service = if let Some(allowlist) = allowlist {
-            Some(build_router::<A>(
-                app_ctx.clone(),
+        let (service, mcp_edge) = if let Some(allowlist) = allowlist {
+            let edge = resolve_mcp_edge(
+                &app_ctx,
                 services.clone(),
-                parts.authenticator,
+                &parts,
                 owner_access,
                 allowlist,
                 &cancel,
                 &config,
-            ))
+            );
+            let service = build_router::<A>(app_ctx.clone(), &edge, &cancel, &config);
+            (Some(service), Some(edge))
         } else {
-            None
+            (None, None)
         };
 
         #[cfg(feature = "outbox-nats")]
@@ -359,6 +387,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         let origin_scope = booted.origin_scope_for_host();
         Ok(BuiltProxima {
             service,
+            mcp_edge,
             engine: booted.engine,
             system_authority: booted.system_authority,
             host_state_maintenance_authority: booted.host_state_maintenance_authority,
@@ -414,15 +443,16 @@ impl<A: FlavorApp + 'static> Proxima<A> {
                 assert_loopback(&mcp.bind)
                     .map_err(|err| ProximaError::Security(err.to_string()))?;
             }
-            let app = build_router::<A>(
-                app_ctx,
+            let edge = resolve_mcp_edge(
+                &app_ctx,
                 services.clone(),
-                parts.authenticator,
+                &parts,
                 owner_access,
                 allowlist,
                 &cancel,
                 &config,
             );
+            let app = build_router::<A>(app_ctx, &edge, &cancel, &config);
             let listener = tokio::net::TcpListener::bind(mcp.bind)
                 .await
                 .map_err(|err| ProximaError::Mcp(err.to_string()))?;
@@ -511,7 +541,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     /// this function does. `run_refuses_an_unparseable_origin_before_storage`
     /// is what pins the ordering here, for both entry points at once.
     async fn boot_common(self) -> Result<BootedRuntime, ProximaError> {
-        let (config, parts) = self.resolve()?;
+        let (config, mut parts) = self.resolve()?;
         let allowlist = if config.mcp.is_some() {
             Some(resolve_allowlist(&config)?)
         } else {
@@ -537,6 +567,19 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         );
         if let Some(late) = &parts.late_owner_access {
             late.bind(owner_access.clone());
+        }
+        if let Some(factory) = parts.platform_authenticator.take() {
+            // `resolve` refused a missing platform URL, and boot built the
+            // scope from it; absent here is a boot that skipped the census.
+            let platform_scope = app_ctx.platform_scope.clone().ok_or_else(|| {
+                ProximaError::Config(
+                    "authenticator_with_platform_scope: the runtime has no platform scope".into(),
+                )
+            })?;
+            parts.authenticator = Some(factory(crate::PlatformAuthContext {
+                platform_scope,
+                owner_access: owner_access.clone(),
+            })?);
         }
         let services = assemble_services::<A>(
             &app_ctx,
@@ -576,6 +619,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
 /// Booted app without a bound listener.
 pub struct BuiltProxima {
     pub service: Option<Router>,
+    /// What [`Self::service`] was layered with; see [`Self::mcp_edge`].
+    mcp_edge: Option<crate::McpEdge>,
     pub engine: Arc<Engine>,
     pub system_authority: SystemAuthority,
     host_state_maintenance_authority: Option<proxima_core::engine::HostStateMaintenanceAuthority>,
@@ -706,6 +751,16 @@ impl BuiltProxima {
     #[must_use]
     pub const fn system_authority(&self) -> &SystemAuthority {
         &self.system_authority
+    }
+
+    /// The resolved MCP edge [`Self::service`] was built from, `None`
+    /// without MCP: a host composing its own router takes the tool host,
+    /// allowlists, revalidation and resource metadata from here, or
+    /// [`McpEdge::router`](crate::McpEdge::router) for `/mcp` behind bearer
+    /// auth beside its own unauthenticated routes.
+    #[must_use]
+    pub const fn mcp_edge(&self) -> Option<&crate::McpEdge> {
+        self.mcp_edge.as_ref()
     }
 
     /// Boot-held authority for the registered host-state participant.
@@ -1487,18 +1542,21 @@ async fn boot_app<A: FlavorApp + 'static>(
     Box::pin(builder.boot()).await.map_err(Into::into)
 }
 
-fn build_router<A: FlavorApp>(
-    app_ctx: AppContext,
+/// Resolve the MCP edge both entry points serve: bearer auth over the
+/// runtime's owner-access port, the tool host (engine, request headers,
+/// host tools, call recording), the Host allowlist and the REST routes.
+fn resolve_mcp_edge(
+    app_ctx: &AppContext,
     services: FlavorServices,
-    authenticator: Option<Arc<dyn Authenticator>>,
+    parts: &crate::RuntimeParts,
     owner_access: Arc<dyn OwnerAccessPort>,
     allowlist: OriginAllowlist,
     cancel: &CancellationToken,
     config: &crate::RuntimeConfig,
-) -> Router {
+) -> crate::McpEdge {
     let engine = app_ctx.engine.clone();
     let mut edge_auth = McpEdgeAuth::headless().with_tool_scope(config.tool_scope.clone());
-    if let Some(authenticator) = authenticator {
+    if let Some(authenticator) = parts.authenticator.clone() {
         // The runtime's one owner-access port, so a Group owner the eager
         // role map does not carry can still be resolved one owner per
         // request. A host serving many parties through one forwarder subject
@@ -1508,19 +1566,33 @@ fn build_router<A: FlavorApp>(
             .with_host(authenticator)
             .with_owner_access(owner_access);
     }
-    let edge_auth = Arc::new(edge_auth);
-    let mcp_host = McpToolHost::from_parts(Arc::new(engine.registry().clone()), services)
+    let mut tool_host = McpToolHost::from_parts(Arc::new(engine.registry().clone()), services)
         .with_engine(engine)
-        .with_request_headers(config.request_headers.clone());
-    let host_allowlist = resolve_host_allowlist(config);
-    let rest_router = rest_router(&mcp_host, config);
-    let mcp_service = streamable_http_service_with_transport(
-        mcp_host,
-        &allowlist,
-        &host_allowlist,
-        cancel,
-        &config.mcp_transport,
-    );
+        .with_request_headers(config.request_headers.clone())
+        .with_call_recording(config.record_mcp_calls);
+    if let Some(host_tools) = parts.host_tools.clone() {
+        tool_host = tool_host.with_host_tools(host_tools);
+    }
+    let rest_router = rest_router(&tool_host, config);
+    crate::McpEdge {
+        tool_host,
+        edge_auth: Arc::new(edge_auth),
+        origin_allowlist: allowlist,
+        host_allowlist: resolve_host_allowlist(config),
+        revalidation: config.stream_revalidation,
+        resource_metadata: config.resource_metadata.clone(),
+        transport: config.mcp_transport,
+        rest_router,
+        cancel: cancel.clone(),
+    }
+}
+
+fn build_router<A: FlavorApp>(
+    app_ctx: AppContext,
+    edge: &crate::McpEdge,
+    cancel: &CancellationToken,
+    config: &crate::RuntimeConfig,
+) -> Router {
     let health_router = if config.health_endpoints {
         crate::health::router(app_ctx.pool.clone(), cancel.clone())
     } else {
@@ -1528,17 +1600,17 @@ fn build_router<A: FlavorApp>(
     };
     let app_router = A::mount_http(Router::new(), app_ctx);
     let auth_layer = proxima_mcp_server::mcp_auth_layer_with_metadata(
-        edge_auth,
-        config.stream_revalidation,
-        config.resource_metadata.as_ref(),
+        Arc::clone(&edge.edge_auth),
+        edge.revalidation,
+        edge.resource_metadata.as_ref(),
     );
     let protected_router = Router::new()
-        .nest_service(proxima_mcp_server::MCP_PATH, mcp_service)
-        .merge(rest_router)
+        .nest_service(proxima_mcp_server::MCP_PATH, edge.mcp_service())
+        .merge(edge.rest_router.clone())
         .merge(app_router)
         .layer(auth_layer);
     let mut router = protected_router;
-    if let Some(md) = &config.resource_metadata {
+    if let Some(md) = &edge.resource_metadata {
         router = router.merge(proxima_mcp_server::protected_resource_router(md));
     }
     // Apply listener-wide layers only after anonymous OAuth metadata has been
@@ -1551,8 +1623,8 @@ fn build_router<A: FlavorApp>(
     // router; a `merge` here would replace its guarded fallback with an
     // unguarded one.
     let guarded = router
-        .layer(cors_layer(allowlist))
-        .layer(host_guard_layer(host_allowlist));
+        .layer(cors_layer(edge.origin_allowlist.clone()))
+        .layer(host_guard_layer(edge.host_allowlist.clone()));
     health_router
         .fallback_service(guarded)
         .layer(body_limit_layer(

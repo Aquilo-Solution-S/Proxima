@@ -14,8 +14,29 @@ use proxima_core::{
 
 use crate::{
     KeyResolver, OidcAuthConfig, OidcConfigError, OidcSubjectMap, OidcTokenValidator,
-    ValidatedOidcClaims,
+    ValidatedOidcToken,
 };
+
+/// Every verified claim of a token, as [`OidcRoleShaper`] sees them.
+pub type OidcClaimMap = serde_json::Map<String, serde_json::Value>;
+
+/// Host authz shaping for one binding: runs after the binding validated the
+/// token and resolved the subject's owner roles.
+///
+/// It receives the server-resolved context and every verified claim, and
+/// returns the context to use. It may narrow (a tool palette, a default
+/// owner, publication extensions) or refuse; a context it returns that is
+/// not [`AuthPath::HostBearer`] is refused by the MCP edge.
+pub trait OidcRoleShaper: Send + Sync + std::fmt::Debug {
+    /// # Errors
+    ///
+    /// An [`AuthError`] refuses the token; the binding set fails closed.
+    fn shape(
+        &self,
+        context: AuthzContext,
+        token: &ValidatedOidcToken<OidcClaimMap>,
+    ) -> Result<AuthzContext, AuthError>;
+}
 
 /// Static route owned by one OIDC binding.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -25,20 +46,42 @@ pub struct OidcBindingRoute {
 }
 
 /// Authz shaping applied after a binding validates `(iss, aud, sub)`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum OidcRoleShape {
     /// Resolve roles through `OwnerAccessPort` and return
     /// `AuthzContext::server_resolved(..., HostBearer)`.
     ServerResolved,
     /// Same as [`Self::ServerResolved`], then attach a tool palette/scope.
     ServerResolvedWithToolScope(ToolScope),
+    /// Same as [`Self::ServerResolved`], then the host's [`OidcRoleShaper`]
+    /// with every verified claim.
+    Host(Arc<dyn OidcRoleShaper>),
 }
 
+/// `Host` shapes are equal when they are the same shaper instance.
+impl PartialEq for OidcRoleShape {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::ServerResolved, Self::ServerResolved) => true,
+            (Self::ServerResolvedWithToolScope(a), Self::ServerResolvedWithToolScope(b)) => a == b,
+            (Self::Host(a), Self::Host(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for OidcRoleShape {}
+
 impl OidcRoleShape {
-    fn apply(&self, ctx: AuthzContext) -> AuthzContext {
+    fn apply(
+        &self,
+        ctx: AuthzContext,
+        token: &ValidatedOidcToken<OidcClaimMap>,
+    ) -> Result<AuthzContext, AuthError> {
         match self {
-            Self::ServerResolved => ctx,
-            Self::ServerResolvedWithToolScope(scope) => ctx.with_tool_scope(scope.clone()),
+            Self::ServerResolved => Ok(ctx),
+            Self::ServerResolvedWithToolScope(scope) => Ok(ctx.with_tool_scope(scope.clone())),
+            Self::Host(shaper) => shaper.shape(ctx, token),
         }
     }
 }
@@ -116,10 +159,11 @@ impl OidcBinding {
         &self.route
     }
 
-    async fn authz_for_claims(
+    async fn authz_for_token(
         &self,
-        claims: ValidatedOidcClaims,
+        token: ValidatedOidcToken<OidcClaimMap>,
     ) -> Result<AuthzContext, AuthError> {
+        let claims = &token.claims;
         if let Some(allow) = &self.allowed_subjects
             && !allow.contains(&claims.subject)
         {
@@ -151,7 +195,7 @@ impl OidcBinding {
                 .with_expires_at(Some(claims.expires_at)),
             binding.trusted_model_id,
         )?;
-        Ok(self.role_shape.apply(ctx))
+        self.role_shape.apply(ctx, &token)
     }
 }
 
@@ -214,16 +258,22 @@ impl Authenticator for OidcBindingSet {
         let Credentials::Bearer(token) = creds;
         let mut matches = Vec::new();
         for binding in &self.bindings {
-            if let Ok(claims) = binding.validator.validate(token).await {
-                matches.push((binding, claims));
+            match binding.validator.validate_with::<OidcClaimMap>(token).await {
+                Ok(validated) => matches.push((binding, validated)),
+                Err(reason) => tracing::debug!(
+                    iss = %binding.route.issuer,
+                    aud = %binding.route.audience,
+                    %reason,
+                    "oidc binding set: binding refused the token"
+                ),
             }
         }
 
         match matches.len() {
             0 => Err(AuthError::InvalidCredentials),
             1 => {
-                let (binding, claims) = matches.pop().expect("one match");
-                binding.authz_for_claims(claims).await
+                let (binding, validated) = matches.pop().expect("one match");
+                binding.authz_for_token(validated).await
             }
             _ => {
                 tracing::warn!(
@@ -317,13 +367,19 @@ mod tests {
     }
 
     fn token(keys: &TestKeys, audience: &str, subject: &str) -> String {
+        signed(
+            keys,
+            &TestClaims {
+                sub: subject.to_owned(),
+                iss: ISSUER.to_owned(),
+                aud: audience.to_owned(),
+                exp: jsonwebtoken::get_current_timestamp() + 3_600,
+            },
+        )
+    }
+
+    fn signed(keys: &TestKeys, claims: &impl Serialize) -> String {
         let header = serde_json::json!({"alg": "RS256", "kid": KID, "typ": "JWT"});
-        let claims = TestClaims {
-            sub: subject.to_owned(),
-            iss: ISSUER.to_owned(),
-            aud: audience.to_owned(),
-            exp: jsonwebtoken::get_current_timestamp() + 3_600,
-        };
         let signing_input = format!(
             "{}.{}",
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).expect("serialize header")),
@@ -519,5 +575,157 @@ mod tests {
                 audience: AGENT_AUD.to_string(),
             }
         );
+    }
+
+    #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+    struct TenantClaims {
+        sub: String,
+        tenant: String,
+        #[serde(default)]
+        groups: Vec<String>,
+    }
+
+    fn claims_with(audience: &str, exp: u64, extra: serde_json::Value) -> serde_json::Value {
+        let mut claims = serde_json::json!({
+            "sub": "owner-sub",
+            "iss": ISSUER,
+            "aud": audience,
+            "exp": exp,
+        });
+        let object = claims.as_object_mut().expect("claims object");
+        let serde_json::Value::Object(extra) = extra else {
+            panic!("extra claims must be an object");
+        };
+        object.extend(extra);
+        claims
+    }
+
+    /// A host reads its own claims from the verified payload, and a refusal
+    /// keeps its reason instead of collapsing to `InvalidCredentials`.
+    #[tokio::test]
+    async fn validate_with_reads_custom_claims_and_names_the_refusal() {
+        let keys = test_keys();
+        let validator = OidcTokenValidator::new(config(OWNER_AUD), resolver(keys.decoding.clone()))
+            .expect("validator");
+        let later = jsonwebtoken::get_current_timestamp() + 3_600;
+        let good = signed(
+            &keys,
+            &claims_with(
+                OWNER_AUD,
+                later,
+                serde_json::json!({"tenant": "acme", "groups": ["ops"]}),
+            ),
+        );
+        let validated = validator
+            .validate_with::<TenantClaims>(&good)
+            .await
+            .expect("valid token");
+        assert_eq!(validated.claims.subject, "owner-sub");
+        assert_eq!(
+            validated.custom,
+            TenantClaims {
+                sub: "owner-sub".into(),
+                tenant: "acme".into(),
+                groups: vec!["ops".into()],
+            }
+        );
+
+        let expired = signed(
+            &keys,
+            &claims_with(OWNER_AUD, 1_000, serde_json::json!({"tenant": "acme"})),
+        );
+        assert_eq!(
+            validator.validate_with::<TenantClaims>(&expired).await,
+            Err(crate::OidcRejection::Expired)
+        );
+        let other_audience = signed(
+            &keys,
+            &claims_with("other", later, serde_json::json!({"tenant": "acme"})),
+        );
+        assert_eq!(
+            validator
+                .validate_with::<TenantClaims>(&other_audience)
+                .await,
+            Err(crate::OidcRejection::WrongAudience {
+                expected: OWNER_AUD.into()
+            })
+        );
+        let no_tenant = signed(&keys, &claims_with(OWNER_AUD, later, serde_json::json!({})));
+        assert!(matches!(
+            validator.validate_with::<TenantClaims>(&no_tenant).await,
+            Err(crate::OidcRejection::CustomClaims(_))
+        ));
+        // The plain path accepts what it accepted before: custom claims are
+        // the host's business, not a validity condition.
+        assert!(validator.validate(&no_tenant).await.is_ok());
+        assert_eq!(
+            validator.validate(&expired).await,
+            Err(AuthError::InvalidCredentials)
+        );
+    }
+
+    /// Narrows the palette to the token's `tenant`; refuses a token without.
+    #[derive(Debug)]
+    struct TenantShaper;
+
+    impl OidcRoleShaper for TenantShaper {
+        fn shape(
+            &self,
+            context: AuthzContext,
+            token: &ValidatedOidcToken<OidcClaimMap>,
+        ) -> Result<AuthzContext, AuthError> {
+            let tenant = token
+                .custom
+                .get("tenant")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(AuthError::InvalidCredentials)?;
+            Ok(context.with_tool_scope(ToolScope::Palette(vec![format!("{tenant}_tool")])))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_host_role_shape_sees_every_verified_claim() {
+        let keys = test_keys();
+        let owner = UserId::new(Uuid::from_u128(0x0E1E));
+        let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
+            agent: UserId::new(Uuid::from_u128(0xA9E1)),
+            owner,
+            agent_group: proxima_core::GroupId::new(Uuid::now_v7()),
+            owner_group: proxima_core::GroupId::new(Uuid::now_v7()),
+        });
+        let shaper: Arc<dyn OidcRoleShaper> = Arc::new(TenantShaper);
+        let bindings = OidcBindingSet::new([OidcBinding::with_role_shape(
+            config(OWNER_AUD),
+            resolver(keys.decoding.clone()),
+            subject_map("owner-sub", owner),
+            owner_access,
+            OidcRoleShape::Host(shaper.clone()),
+        )
+        .expect("binding")])
+        .expect("binding set");
+        assert_eq!(
+            OidcRoleShape::Host(shaper.clone()),
+            OidcRoleShape::Host(shaper)
+        );
+
+        let later = jsonwebtoken::get_current_timestamp() + 3_600;
+        let ctx = bindings
+            .authenticate(&Credentials::Bearer(signed(
+                &keys,
+                &claims_with(OWNER_AUD, later, serde_json::json!({"tenant": "acme"})),
+            )))
+            .await
+            .expect("the shaper admits a tenant token");
+        assert_eq!(ctx.subject(), Some(owner));
+        assert!(ctx.tool_scope().allows("acme_tool"));
+        assert!(!ctx.tool_scope().allows("core_membership"));
+
+        let refused = bindings
+            .authenticate(&Credentials::Bearer(signed(
+                &keys,
+                &claims_with(OWNER_AUD, later, serde_json::json!({})),
+            )))
+            .await;
+        assert_eq!(refused.err(), Some(AuthError::InvalidCredentials));
     }
 }

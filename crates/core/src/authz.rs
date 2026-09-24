@@ -437,6 +437,26 @@ impl AuthzContext {
         context.seal_verified_scope()
     }
 
+    /// A sealed [`AuthPath::System`] context for backend work that has no
+    /// bearer to authenticate: scheduled jobs, projectors, host-internal
+    /// writes.
+    ///
+    /// The other way in is [`Self::authenticate`]; this one takes the
+    /// runtime's uncloneable [`SystemAuthority`] instead of credentials, so
+    /// only the booted runtime's holder mints one. `owner_roles` are the
+    /// roles the host resolved for the owners this work may touch; they are
+    /// sealed into the [`OwnerScope`] exactly as an authenticator's would
+    /// be. A System-path owner write still presents the same witness at
+    /// permit time.
+    #[must_use]
+    pub fn for_system(authority: &SystemAuthority, owner_roles: OwnerRoles) -> Self {
+        // The witness is the gate: holding it is what the call proves.
+        let _ = authority;
+        let mut context = Self::server_resolved(owner_roles.clone(), AuthPath::System);
+        context.owner_scope = Some(OwnerScope::from_verified_roles(owner_roles, None));
+        context
+    }
+
     pub(crate) fn seal_verified_scope(mut self) -> Result<Self, AuthError> {
         let roles = self
             .owner_roles
@@ -1057,6 +1077,27 @@ mod tests {
 
     fn owner() -> Owner {
         OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
+    }
+
+    /// No bearer, no authenticator: the runtime's witness alone mints a
+    /// System context whose owner scope is sealed like an authenticated one.
+    #[test]
+    fn a_system_context_is_sealed_from_the_witness_without_a_bearer() {
+        let authority = SystemAuthority::new(SystemAuthorityBinding::fresh());
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let roles = OwnerRoles::for_subject(subject, [(group, Role::admin())]).expect("roles");
+
+        let context = AuthzContext::for_system(&authority, roles);
+
+        assert_eq!(context.auth_path(), AuthPath::System);
+        assert_eq!(context.subject(), Some(subject));
+        assert!(context.owner_scope().is_some(), "the owner scope is sealed");
+        assert!(context.may_write(&group, AccessKind::Fact));
+        assert!(
+            !context.can_access_owner(&OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()))),
+            "no owner beyond the roles it was given"
+        );
     }
 
     fn identity(expires_at: Option<SystemTime>, auth_epoch: u64) -> Identity {

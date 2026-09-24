@@ -6,7 +6,7 @@ extern crate self as proxima_core;
 ///
 /// Deliberately not `CARGO_PKG_VERSION`: workspace crates are `0.1.0` with
 /// `publish = false`. Releases are git tags; bump this when cutting one.
-pub const RELEASE_VERSION: &str = "0.0.20";
+pub const RELEASE_VERSION: &str = "0.0.21";
 
 pub mod access;
 pub mod auth;
@@ -69,8 +69,8 @@ pub use goal::{SimpleTextGoalV1, TaskGoalV1, TaskPriority};
 pub use ids::*;
 pub use llm::*;
 pub use mcp::{
-    CoreActionMeta, MAX_OPERATOR_LABEL_CHARS, McpAuthorContext, McpCallFn, McpTool,
-    McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolDescriptor, McpToolError,
+    CoreActionMeta, MAX_OPERATOR_LABEL_CHARS, McpAuthorContext, McpCallFn, McpHostToolCall,
+    McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolDescriptor, McpToolError,
     McpToolErrorKind, McpToolOrigin, McpUnknownFieldPolicy, MemoryHandleClass, Next,
     OperatorLabelConflict, PrefixedUuidClass, PrefixedUuidError, RequestBehavior,
     ScopeGateBehavior, TerminalDispatch, UNKNOWN_OPERATOR_LABEL, all_core_actions,

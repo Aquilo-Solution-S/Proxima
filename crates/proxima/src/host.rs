@@ -10,6 +10,7 @@ pub use crate::app::{AppContext, AppInfo, Authz, FlavorApp};
 pub use crate::config::EmbedConfig;
 pub use crate::core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};
 pub use crate::health::{HEALTHZ_PATH, READYZ_PATH};
+pub use crate::mcp_edge::{McpEdge, layered_router_mcp_only};
 pub use crate::migrations::{
     MigrationError, MigrationRunReport, NamedMigrator, flavor_ledger_table, is_flavor_ledger_id,
     preflight_without_migrations, run_core_and_flavor_migrations,
@@ -20,8 +21,8 @@ pub use crate::runtime::{
     serve,
 };
 pub use crate::runtime_config::{
-    McpSettings, ProximaError, RuntimeBuilder, RuntimeConfig, RuntimeParts,
-    embedding_runtime_policy_from_lookup,
+    McpSettings, PlatformAuthContext, PlatformAuthenticatorFactory, ProximaError, RuntimeBuilder,
+    RuntimeConfig, RuntimeParts, embedding_runtime_policy_from_lookup,
 };
 /// The S3-backed cited-blob lane.
 ///
@@ -275,6 +276,11 @@ pub fn tool_palette_excluding(registry: &FlavorRegistryFrozen, exclude: &[&str])
     ))
 }
 
+/// Host-served MCP tools ([`RuntimeBuilder::host_tools`]), the per-call
+/// marker behaviors see, and the handler helpers a host transport reuses
+/// instead of copying: auth/peer extraction, author reconciliation, the
+/// reserved-argument strip, the NUL guard and the JSON-RPC error mapping.
+pub use proxima_core::McpHostToolCall;
 /// Field types of [`McpToolDescriptor`] and consts of [`McpTool`]; a host
 /// partitioning tool surfaces by audience reads them.
 pub use proxima_core::mcp::{McpArgvActionSpec, McpToolAudience};
@@ -293,6 +299,11 @@ pub use proxima_core::publication::{
 pub use proxima_core::{AuthError, Credentials, OwnerScope, authenticate};
 /// MCP edge wiring [`layered_router`] takes, and the listener CORS layer.
 pub use proxima_mcp_server::{McpEdgeAuth, OriginAllowlist, cors_layer};
+pub use proxima_mcp_server::{
+    McpHostTool, McpHostTools, McpStreamableService, McpToolHost, auth_context, author_from_args,
+    mcp_tool_error_to_error_data, peer_implementation, reject_nul_in_args, strip_call_context_args,
+    tool_invocation_error_to_error_data,
+};
 /// Owner-RLS boot: the runtime-role guard, the platform scope
 /// [`AppContext::platform_scope_for_host`] returns, and the sqlx →
 /// [`StorageError`] classifier for host-state SQL.

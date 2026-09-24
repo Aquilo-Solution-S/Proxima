@@ -17,14 +17,15 @@ use proxima_core::mcp::core_tools::{
     },
 };
 use proxima_core::mcp::{
-    McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind, Next, TerminalDispatch, ToolCall,
-    resolve_operator_label, tool_name_matches,
+    McpAuthorContext, McpHostToolCall, McpToolCtx, McpToolError, McpToolErrorKind, Next,
+    TerminalDispatch, ToolCall, resolve_operator_label, tool_name_matches,
 };
 use proxima_core::protocol::resource as protocol_resource;
 use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, StorageError};
 use serde::Serialize;
 
 use crate::auth::McpAuthContext;
+use crate::host_tools::{McpHostTool, McpHostTools};
 use crate::request_scope::RequestHeaderAllowlist;
 
 fn composed_schema_names(registry: &FlavorRegistryFrozen) -> Vec<String> {
@@ -56,12 +57,16 @@ pub struct McpToolHost {
     services: FlavorServices,
     engine: Option<Arc<Engine>>,
     request_headers: RequestHeaderAllowlist,
+    host_tools: Option<Arc<dyn McpHostTools>>,
+    record_calls: bool,
 }
 
 impl std::fmt::Debug for McpToolHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpToolHost")
             .field("has_engine", &self.engine.is_some())
+            .field("host_tools", &self.host_tools)
+            .field("record_calls", &self.record_calls)
             .finish_non_exhaustive()
     }
 }
@@ -74,6 +79,8 @@ impl McpToolHost {
             services,
             engine: None,
             request_headers: RequestHeaderAllowlist::default(),
+            host_tools: None,
+            record_calls: false,
         }
     }
 
@@ -86,6 +93,64 @@ impl McpToolHost {
     pub fn with_engine(mut self, engine: Arc<Engine>) -> Self {
         self.engine = Some(engine);
         self
+    }
+
+    /// Serve `tools` beside the registry's (see [`McpHostTools`]).
+    #[must_use]
+    pub fn with_host_tools(mut self, tools: Arc<dyn McpHostTools>) -> Self {
+        self.host_tools = Some(tools);
+        self
+    }
+
+    /// Record every MCP `tools/call` as a `core/mcp-call-logged-v1` Fact
+    /// under the call's owner: tool, outcome, latency, and the verified
+    /// subject as the actor; no request or response body. Needs an engine;
+    /// the write authorizes against the caller's own context, so a caller
+    /// that cannot write the owner (a viewer) is not recorded. Default: off.
+    #[must_use]
+    pub fn with_call_recording(mut self, record: bool) -> Self {
+        self.record_calls = record;
+        self
+    }
+
+    /// Whether [`Self::with_call_recording`] is on.
+    #[must_use]
+    pub const fn records_calls(&self) -> bool {
+        self.record_calls
+    }
+
+    /// The engine tools run against, when one was attached.
+    #[must_use]
+    pub fn engine(&self) -> Option<&Arc<Engine>> {
+        self.engine.as_ref()
+    }
+
+    /// The host tools `auth` may be shown, before palette and owner-role
+    /// filtering: [`McpHostTools::list`] minus any name the registry
+    /// serves.
+    #[must_use]
+    pub fn host_tools_for(&self, auth: &McpAuthContext) -> Vec<McpHostTool> {
+        let Some(source) = &self.host_tools else {
+            return Vec::new();
+        };
+        source
+            .list(auth)
+            .into_iter()
+            .filter(|tool| {
+                let shadowed = self
+                    .registry
+                    .list_mcp_tools()
+                    .iter()
+                    .any(|descriptor| tool_name_matches(descriptor.name, &tool.name));
+                if shadowed {
+                    tracing::warn!(
+                        tool = %tool.name,
+                        "host tool shares a name with a registry tool; the registry tool is served"
+                    );
+                }
+                !shadowed
+            })
+            .collect()
     }
 
     /// Copy the allowlisted inbound headers of each served call into its
@@ -268,6 +333,25 @@ impl McpToolHost {
                 .dispatch_through_behaviors(descriptor.name.to_string(), args, ctx, terminal)
                 .await;
         }
+        if let Some(source) = &self.host_tools
+            && let Some(tool) = self
+                .host_tools_for(&auth)
+                .into_iter()
+                .find(|tool| tool_name_matches(&tool.name, name))
+        {
+            let mut request = request;
+            request
+                .try_insert(McpHostToolCall::new(tool.name.clone(), tool.annotations))
+                .map_err(|err| McpToolError::Other(format!("request services: {err}")))?;
+            let ctx = self.ctx_for_request(author, &auth, request)?;
+            reject_nul_in_args(&args)?;
+            let source = Arc::clone(source);
+            let terminal: TerminalDispatch<'_> =
+                Box::new(move |call| Box::pin(async move { source.call(call).await }));
+            return self
+                .dispatch_through_behaviors(tool.name, args, ctx, terminal)
+                .await;
+        }
 
         Err(ToolInvocationError::ToolNotFound(name.to_string()))
     }
@@ -316,8 +400,14 @@ impl McpToolHost {
         .await
     }
 
-    /// Shared `RequestBehavior` onion for `call_tool` and `read_resource`.
-    async fn dispatch_through_behaviors<'a>(
+    /// Run `terminal` inside the registry's `RequestBehavior` onion (scope
+    /// gate first), as `call_tool` and `read_resource` do. `name` is the
+    /// scope key the gate judges; `ctx` comes from [`Self::ctx_for_request`].
+    ///
+    /// # Errors
+    ///
+    /// A behavior's refusal or the terminal's error.
+    pub async fn dispatch_through_behaviors<'a>(
         &'a self,
         name: String,
         args: serde_json::Value,
@@ -336,7 +426,11 @@ impl McpToolHost {
 /// as the existing caller-input error instead of a later database fault.
 /// Rejection preserves the request; silently stripping the character would
 /// execute a different query. The same rule applies to object keys.
-pub(crate) fn reject_nul_in_args(args: &serde_json::Value) -> Result<(), McpToolError> {
+///
+/// # Errors
+///
+/// [`McpToolError::InvalidInput`] naming whether a value or a key held NUL.
+pub fn reject_nul_in_args(args: &serde_json::Value) -> Result<(), McpToolError> {
     // An explicit worklist keeps the validator stack-safe independently of
     // serde_json's parser depth limit, including direct host callers.
     let mut stack = vec![args];
@@ -730,13 +824,172 @@ mod tests {
         OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
     }
 
-    fn make_server() -> McpToolHost {
-        McpToolHost {
-            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
-            services: FlavorServices::default(),
-            engine: None,
-            request_headers: RequestHeaderAllowlist::default(),
+    #[derive(Debug)]
+    struct RecordingBehavior(Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[async_trait::async_trait]
+    impl proxima_core::RequestBehavior for RecordingBehavior {
+        async fn handle(
+            &self,
+            call: ToolCall,
+            next: Next<'_>,
+        ) -> Result<serde_json::Value, McpToolError> {
+            self.0.lock().expect("lock").push(call.name.clone());
+            next.run(call).await
         }
+    }
+
+    #[derive(Debug)]
+    struct EchoHostTools;
+
+    fn host_tool(name: &str, read_only: bool) -> McpHostTool {
+        McpHostTool {
+            name: name.into(),
+            description: format!("{name} fixture"),
+            args_schema: serde_json::json!({"type": "object"}),
+            output_schema: serde_json::json!({"type": "object"}),
+            annotations: proxima_core::McpToolAnnotations::new().read_only(read_only),
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl McpHostTools for EchoHostTools {
+        fn list(&self, _auth: &McpAuthContext) -> Vec<McpHostTool> {
+            vec![
+                host_tool("host_echo", true),
+                host_tool("host_write", false),
+                // Shadowed by the registry's own tool of this name.
+                host_tool("core_memory_spaces", true),
+            ]
+        }
+
+        async fn call(&self, call: ToolCall) -> Result<serde_json::Value, McpToolError> {
+            let marker = call
+                .ctx
+                .services
+                .get::<McpHostToolCall>()
+                .ok_or_else(|| McpToolError::Other("no host-call marker".into()))?;
+            Ok(serde_json::json!({
+                "tool": call.name,
+                "marker": marker.name(),
+                "args": call.args,
+            }))
+        }
+    }
+
+    fn author() -> McpAuthorContext {
+        McpAuthorContext {
+            model_id: "test".into(),
+            trusted_model_id: None,
+            client_name: "test".into(),
+            client_version: "0".into(),
+            caller_self_perspective: None,
+        }
+    }
+
+    /// A host tool runs through the registry's behaviors, scope gate first,
+    /// and the gate classifies it from the host's declaration.
+    #[tokio::test]
+    async fn a_host_tool_dispatches_through_the_request_behaviors() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut registry = FlavorRegistry::new();
+        registry.add_request_behavior(RecordingBehavior(Arc::clone(&seen)));
+        let server = McpToolHost::from_parts(
+            Arc::new(registry.freeze_or_panic_for_tests()),
+            FlavorServices::default(),
+        )
+        .with_host_tools(Arc::new(EchoHostTools));
+        let owner = fake_owner();
+        let auth = McpAuthContext {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        };
+        let listed: Vec<String> = server
+            .host_tools_for(&auth)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(
+            listed,
+            ["host_echo", "host_write"],
+            "the registry name wins"
+        );
+
+        let output = server
+            .call_tool(
+                "host_echo",
+                serde_json::json!({"x": 1}),
+                author(),
+                Some(auth.clone()),
+            )
+            .await
+            .expect("owner calls a host tool");
+        assert_eq!(
+            output,
+            serde_json::json!({"tool": "host_echo", "marker": "host_echo", "args": {"x": 1}})
+        );
+        assert_eq!(*seen.lock().expect("lock"), ["host_echo"]);
+
+        // The palette gates a host tool by its name.
+        let narrowed = McpAuthContext {
+            owner,
+            authz: auth
+                .authz
+                .clone()
+                .with_tool_scope(ToolScope::Palette(vec!["host_write".into()])),
+        };
+        assert!(matches!(
+            server
+                .call_tool("host_echo", serde_json::json!({}), author(), Some(narrowed))
+                .await,
+            Err(ToolInvocationError::NotAuthorized(name)) if name == "host_echo"
+        ));
+
+        // A viewer reads through a read-only host tool and cannot write.
+        let group = OwnerRef::Group(proxima_core::GroupId::new(uuid::Uuid::now_v7()));
+        let viewer = McpAuthContext {
+            owner: group,
+            authz: AuthzContext::for_subject_with_role(
+                UserId::new(uuid::Uuid::now_v7()),
+                [(group, proxima_core::Role::viewer())],
+                AuthPath::HostBearer,
+            )
+            .narrowed_to_owner(group)
+            .expect("viewer narrows"),
+        };
+        server
+            .call_tool(
+                "host_echo",
+                serde_json::json!({}),
+                author(),
+                Some(viewer.clone()),
+            )
+            .await
+            .expect("a read-only host tool admits a viewer");
+        assert!(matches!(
+            server
+                .call_tool("host_write", serde_json::json!({}), author(), Some(viewer))
+                .await,
+            Err(ToolInvocationError::NotAuthorized(name)) if name == "host_write"
+        ));
+        assert!(matches!(
+            server
+                .call_tool(
+                    "host_echo",
+                    serde_json::json!({"a": "\0"}),
+                    author(),
+                    Some(auth)
+                )
+                .await,
+            Err(ToolInvocationError::Tool(McpToolError::InvalidInput(_)))
+        ));
+    }
+
+    fn make_server() -> McpToolHost {
+        McpToolHost::from_parts(
+            Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            FlavorServices::default(),
+        )
     }
 
     #[tokio::test]

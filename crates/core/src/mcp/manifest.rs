@@ -92,7 +92,9 @@ pub fn core_action_meta(tool: &str, action: &str) -> Option<&'static CoreActionM
 /// caller remembers to append.
 ///
 /// Flat tools contribute their id; dispatchers contribute one `tool:action`
-/// leaf per action, because the gate authorizes them at that granularity.
+/// leaf per action, because the gate authorizes them at that granularity
+/// ([`McpToolDescriptor::palette_keys`](crate::mcp::McpToolDescriptor::palette_keys),
+/// argv-keyed dispatchers included).
 #[must_use]
 pub fn canonical_scope_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<String> {
     canonical_scope_keys_excluding(registry, &[])
@@ -115,15 +117,7 @@ pub fn canonical_scope_keys_excluding(
         if excluded.contains(tool.name) {
             continue;
         }
-        if tool.action_arg_specs.is_empty() {
-            keys.push(tool.name.to_string());
-        } else {
-            keys.extend(
-                tool.action_arg_specs
-                    .iter()
-                    .map(|action| format!("{}:{}", tool.name, action.action)),
-            );
-        }
+        keys.extend(tool.palette_keys());
     }
     keys.extend(
         all_core_resources()

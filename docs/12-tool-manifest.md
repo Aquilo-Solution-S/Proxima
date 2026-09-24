@@ -22,6 +22,7 @@ No runtime registration tier. No install/revoke API. No `tools` table.
 |---|---|---|---|
 | Core tools | core | internal `try_add_mcp_tool<T>("core")` adapter | `McpToolCtx` |
 | Flavor tools | flavor crate | `try_add_tool<T>(prefix)` | `ToolCtx` |
+| Host tools | host binary | `RuntimeBuilder::host_tools(Arc<dyn McpHostTools>)`, listed per caller | `ToolCall` through the registry's request behaviors |
 
 `try_add_tool` delegates to `try_add_mcp_tool`: the blanket
 `impl<T: Tool> McpTool for T` adapts the context and forwards `ANNOTATIONS`
@@ -35,6 +36,13 @@ Stored ids:
 |---|---|
 | Core MCP projection | provider-safe registered names, currently `core_*` (for example `core_remember`, `core_goal`) |
 | Flavor MCP projection | provider-safe `<flavor>_<name>` |
+
+Host tools are not registered: they are listed per caller at request time,
+flat, gated by their name and declared `read_only`, and never shadow a
+registry tool ([10 §MCP Endpoint and Authentication](10-configuration.md#mcp-endpoint-and-authentication)).
+A palette's keys come from `McpToolDescriptor::palette_keys()` — the bare
+name of a flat tool, `tool:action` for every action of either dispatcher
+vocabulary — and `owner_only_keys()` is its owner-audience subset.
 
 Registered MCP tool names are already provider-safe. Slash-separated
 schema ids remain separate from MCP wire ids.
