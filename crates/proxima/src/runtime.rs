@@ -1544,13 +1544,17 @@ fn build_router<A: FlavorApp>(
     // Apply listener-wide layers only after anonymous OAuth metadata has been
     // merged. Body-size rejection remains outermost; Host validation then runs
     // before CORS and bearer auth. CORS covers public metadata and preflights;
-    // bearer auth remains inside it on protected routes. Health probes merge
-    // in below the Host guard: an orchestrator probes the pod address, not a
+    // bearer auth remains inside it on protected routes. Health probes sit
+    // outside the Host guard: an orchestrator probes the pod address, not a
     // public host, and the probes disclose nothing a rebinding page could use.
-    router
+    // Everything else, the fallback included, falls through to the guarded
+    // router; a `merge` here would replace its guarded fallback with an
+    // unguarded one.
+    let guarded = router
         .layer(cors_layer(allowlist))
-        .layer(host_guard_layer(host_allowlist))
-        .merge(health_router)
+        .layer(host_guard_layer(host_allowlist));
+    health_router
+        .fallback_service(guarded)
         .layer(body_limit_layer(
             config.mcp_transport.max_request_body_bytes,
         ))
