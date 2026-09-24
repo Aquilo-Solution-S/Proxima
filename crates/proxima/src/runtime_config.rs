@@ -163,6 +163,14 @@ impl std::fmt::Debug for RuntimeBuilder {
 impl RuntimeBuilder {
     #[must_use]
     pub(crate) fn merge_over(self, base: Self) -> Self {
+        // `authenticator` and `authenticator_with_platform_scope` are one
+        // slot: whichever this layer set replaces whichever the base set.
+        let (authenticator, platform_authenticator) =
+            if self.authenticator.is_some() || self.platform_authenticator.is_some() {
+                (self.authenticator, self.platform_authenticator)
+            } else {
+                (base.authenticator, base.platform_authenticator)
+            };
         Self {
             database_url: self.database_url.or(base.database_url),
             platform_database_url: self.platform_database_url.or(base.platform_database_url),
@@ -181,8 +189,8 @@ impl RuntimeBuilder {
             skip_migrations: self.skip_migrations.or(base.skip_migrations),
             pg_pool_config: self.pg_pool_config.or(base.pg_pool_config),
             pg_tuning: self.pg_tuning.or(base.pg_tuning),
-            authenticator: self.authenticator.or(base.authenticator),
-            platform_authenticator: self.platform_authenticator.or(base.platform_authenticator),
+            authenticator,
+            platform_authenticator,
             host_tools: self.host_tools.or(base.host_tools),
             record_mcp_calls: self.record_mcp_calls.or(base.record_mcp_calls),
             resource_metadata: self.resource_metadata.or(base.resource_metadata),
@@ -2240,6 +2248,35 @@ mod tests {
             .unwrap();
 
         assert_eq!(config.mcp.unwrap().bind, default_mcp_bind());
+    }
+
+    /// The two ways to install an authenticator are one slot: an overlay
+    /// setting either replaces the base's either, instead of both surviving
+    /// the merge and refusing boot as "not both".
+    #[test]
+    fn an_overlay_authenticator_replaces_a_base_platform_authenticator() {
+        let platform = || {
+            RuntimeBuilder::default()
+                .authenticator_with_platform_scope(|_| Ok(Arc::new(TestAuthenticator)))
+        };
+        let merged = RuntimeBuilder::default()
+            .authenticator(Arc::new(TestAuthenticator))
+            .merge_over(platform());
+        assert!(merged.authenticator.is_some() && merged.platform_authenticator.is_none());
+
+        let merged = platform()
+            .merge_over(RuntimeBuilder::default().authenticator(Arc::new(TestAuthenticator)));
+        assert!(merged.authenticator.is_none() && merged.platform_authenticator.is_some());
+
+        // One layer naming both is still ambiguous.
+        let refused = platform()
+            .authenticator(Arc::new(TestAuthenticator))
+            .database_url("postgres://unused/proxima")
+            .platform_database_url("postgres://unused/platform")
+            .tool_scope(ToolScope::All)
+            .resolve()
+            .expect_err("both in one layer");
+        assert!(refused.to_string().contains("not both"), "{refused}");
     }
 
     #[test]

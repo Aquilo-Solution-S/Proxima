@@ -11,10 +11,13 @@ use crate::auth::McpAuthContext;
 /// write).
 #[derive(Debug, Clone, PartialEq)]
 pub struct McpHostTool {
-    /// Canonical name; the wire name is
-    /// [`provider_safe_tool_name`](proxima_core::provider_safe_tool_name) of
-    /// it. A name the flavor registry also serves is never listed or called
-    /// here: the registry tool wins.
+    /// Canonical and wire name: 1..=[`MAX_HOST_TOOL_NAME_CHARS`] characters
+    /// of `[A-Za-z0-9_.-]`, so it is never a `tool:action` leaf or a
+    /// `resource:` scope key. A name the flavor registry serves (canonical or
+    /// wire), a repeat, or a malformed name is not served; see
+    /// [`McpToolHost::host_tools_for`](crate::McpToolHost::host_tools_for).
+    ///
+    /// [`MAX_HOST_TOOL_NAME_CHARS`]: crate::MAX_HOST_TOOL_NAME_CHARS
     pub name: String,
     pub description: String,
     pub args_schema: serde_json::Value,

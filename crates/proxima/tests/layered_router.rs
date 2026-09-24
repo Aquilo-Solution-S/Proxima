@@ -119,6 +119,43 @@ async fn status_with_host(
     app.oneshot(request).await.unwrap().status()
 }
 
+/// The MCP-only variant: `/mcp` still refuses a missing bearer, the host's
+/// own routes answer without one, and the Host guard covers both.
+#[tokio::test]
+async fn mcp_only_router_leaves_host_routes_to_the_host() {
+    let owner = owner();
+    let auth = Arc::new(edge_auth().with_host(Arc::new(StubHostAuth { owner })));
+    let host = McpToolHost::from_parts(
+        Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+        FlavorServices::default(),
+    );
+    let cancel = CancellationToken::new();
+    let allowlist = default_allowlist();
+    let host_allowlist = HostAllowlist::new(&[] as &[String]);
+    let service = streamable_http_service(host, &allowlist, &host_allowlist, &cancel);
+    let app = proxima::layered_router_mcp_only(
+        service,
+        Router::new().route("/app/open", get(|| async { StatusCode::OK })),
+        auth,
+        allowlist,
+        host_allowlist,
+        proxima_core::RevalidationConfig::default(),
+    );
+
+    assert_eq!(
+        status(app.clone(), Method::GET, "/app/open", owner, None).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status(app.clone(), Method::POST, "/mcp", owner, None).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        status_with_host(app, Method::GET, "/app/open", None, "rebind.example", owner).await,
+        StatusCode::FORBIDDEN
+    );
+}
+
 // rmcp's Host guard must honor a configured public host; loopback-only
 // default 403s every non-loopback `Host`.
 #[tokio::test]

@@ -34,7 +34,7 @@ pub use security::{
     cors_layer, default_allowlist, host_guard_layer, mcp_auth_layer_with_config,
     mcp_auth_layer_with_metadata,
 };
-pub use server::{McpToolHost, ToolInvocationError, reject_nul_in_args};
+pub use server::{MAX_HOST_TOOL_NAME_CHARS, McpToolHost, ToolInvocationError, reject_nul_in_args};
 pub use session::{McpSessionBindings, owner_key, parse_owner_key};
 pub use transport::{
     BodyLimitLayer, MAX_REQUEST_BODY_BYTES, McpStreamableService, McpTransportConfig,

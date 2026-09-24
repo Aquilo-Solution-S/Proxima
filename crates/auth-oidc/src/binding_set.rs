@@ -25,8 +25,10 @@ pub type OidcClaimMap = serde_json::Map<String, serde_json::Value>;
 ///
 /// It receives the server-resolved context and every verified claim, and
 /// returns the context to use. It may narrow (a tool palette, a default
-/// owner, publication extensions) or refuse; a context it returns that is
-/// not [`AuthPath::HostBearer`] is refused by the MCP edge.
+/// owner, publication extensions, fewer owners or rights) or refuse. A
+/// returned context with another subject, auth path or trusted model id, or
+/// any owner right the resolved roles lack, refuses the token; its tool scope
+/// is intersected with the given one and its expiry clamped to the token's.
 pub trait OidcRoleShaper: Send + Sync + std::fmt::Debug {
     /// # Errors
     ///
@@ -81,9 +83,48 @@ impl OidcRoleShape {
         match self {
             Self::ServerResolved => Ok(ctx),
             Self::ServerResolvedWithToolScope(scope) => Ok(ctx.with_tool_scope(scope.clone())),
-            Self::Host(shaper) => shaper.shape(ctx, token),
+            Self::Host(shaper) => {
+                let host_context = shaper.shape(ctx.clone(), token)?;
+                narrowed_by_host(&ctx, host_context, token.claims.expires_at)
+            }
         }
     }
+}
+
+/// Accept a host shaper's context only when it narrows the one it was given:
+/// the same `HostBearer` subject and trusted model id, no owner, kind or
+/// manage right the resolved roles lack. The tool scope is intersected with
+/// the given one and the expiry clamped to the token's, so neither can
+/// widen either.
+fn narrowed_by_host(
+    resolved: &AuthzContext,
+    shaped: AuthzContext,
+    token_expires_at: std::time::SystemTime,
+) -> Result<AuthzContext, AuthError> {
+    let rights_widened = proxima_core::AccessKind::ALL.into_iter().any(|kind| {
+        shaped.readable_owners(kind).iter().any(|owner| {
+            !resolved.may_read(owner, kind)
+                || (shaped.may_manage(owner) && !resolved.may_manage(owner))
+        }) || shaped
+            .writable_owners(kind)
+            .iter()
+            .any(|owner| !resolved.may_write(owner, kind))
+    });
+    if shaped.auth_path() != AuthPath::HostBearer
+        || shaped.subject() != resolved.subject()
+        || shaped.trusted_model_id() != resolved.trusted_model_id()
+        || rights_widened
+    {
+        tracing::warn!("oidc binding set: host role shape widened the resolved context; refused");
+        return Err(AuthError::InvalidCredentials);
+    }
+    let expires_at = shaped
+        .expires_at()
+        .map_or(token_expires_at, |at| at.min(token_expires_at));
+    let tool_scope = shaped.tool_scope().intersect(resolved.tool_scope());
+    Ok(shaped
+        .with_expires_at(Some(expires_at))
+        .with_tool_scope(tool_scope))
 }
 
 /// One OIDC route: validator, identity map, owner-role resolver, authz shape.
@@ -727,5 +768,85 @@ mod tests {
             )))
             .await;
         assert_eq!(refused.err(), Some(AuthError::InvalidCredentials));
+    }
+
+    /// What a shaper may do to the context it is handed.
+    #[derive(Debug)]
+    enum Reshape {
+        /// Grant admin on a Group the resolved roles do not carry.
+        Widen,
+        /// Swap in another subject.
+        OtherSubject,
+        /// Drop the expiry; the binding clamps it back to the token's.
+        DropExpiry,
+    }
+
+    impl OidcRoleShaper for Reshape {
+        fn shape(
+            &self,
+            context: AuthzContext,
+            _token: &ValidatedOidcToken<OidcClaimMap>,
+        ) -> Result<AuthzContext, AuthError> {
+            let subject = context.subject().expect("resolved subject");
+            Ok(match self {
+                Self::Widen => AuthzContext::for_subject_with_role(
+                    subject,
+                    [(
+                        OwnerRef::Group(proxima_core::GroupId::new(Uuid::now_v7())),
+                        Role::admin(),
+                    )],
+                    AuthPath::HostBearer,
+                ),
+                Self::OtherSubject => {
+                    AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer)
+                }
+                Self::DropExpiry => context.with_expires_at(None),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_host_role_shape_narrows_or_refuses() {
+        let keys = test_keys();
+        let owner = UserId::new(Uuid::from_u128(0x0E1E));
+        let later = jsonwebtoken::get_current_timestamp() + 3_600;
+        let authenticate = |reshape: Reshape| {
+            let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
+                agent: UserId::new(Uuid::from_u128(0xA9E1)),
+                owner,
+                agent_group: proxima_core::GroupId::new(Uuid::now_v7()),
+                owner_group: proxima_core::GroupId::new(Uuid::now_v7()),
+            });
+            let bindings = OidcBindingSet::new([OidcBinding::with_role_shape(
+                config(OWNER_AUD),
+                resolver(keys.decoding.clone()),
+                subject_map("owner-sub", owner),
+                owner_access,
+                OidcRoleShape::Host(Arc::new(reshape)),
+            )
+            .expect("binding")])
+            .expect("binding set");
+            let token = signed(&keys, &claims_with(OWNER_AUD, later, serde_json::json!({})));
+            async move { bindings.authenticate(&Credentials::Bearer(token)).await }
+        };
+
+        assert_eq!(
+            authenticate(Reshape::Widen).await.err(),
+            Some(AuthError::InvalidCredentials),
+            "a Group the resolved roles lack"
+        );
+        assert_eq!(
+            authenticate(Reshape::OtherSubject).await.err(),
+            Some(AuthError::InvalidCredentials),
+            "another subject"
+        );
+        let clamped = authenticate(Reshape::DropExpiry)
+            .await
+            .expect("dropping the expiry narrows nothing");
+        assert_eq!(
+            clamped.expires_at(),
+            Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(later)),
+            "the stream cannot outlive the token"
+        );
     }
 }

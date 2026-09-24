@@ -190,6 +190,55 @@ async fn rpc(
     sse_json(response).await
 }
 
+/// Recorded off the request path: poll until the served calls land. The
+/// history read filters on the actor, so a hit proves the actor is the
+/// verified subject, not a claim from the request.
+async fn assert_only_served_calls_recorded(
+    engine: &proxima::Engine,
+    subject: UserId,
+) -> TestResult {
+    let reader = proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject(
+        subject,
+        AuthPath::HostBearer,
+    ));
+    let request = McpCallHistoryRequest {
+        owner: OwnerRef::Personal(subject),
+        actor_oid: Some(subject.into_inner().to_string()),
+        limit: 10,
+        include_body: true,
+        before: None,
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let calls = proxima::read_mcp_call_history(engine, &reader, &request)
+                .await
+                .expect("history read")
+                .calls;
+            if calls.len() >= 2 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await?;
+    // A late record for the unknown name would land by now.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let recorded = proxima::read_mcp_call_history(engine, &reader, &request)
+        .await?
+        .calls;
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    assert!(recorded.iter().all(|call| call.tool_name == HOST_TOOL));
+    let ok = recorded.iter().find(|call| call.ok).ok_or("no ok record")?;
+    let refused = recorded
+        .iter()
+        .find(|call| !call.ok)
+        .ok_or("no failed record")?;
+    assert_eq!(refused.error.as_deref(), Some("jsonrpc -32602"));
+    assert!(ok.io_truncated, "no body is stored");
+    assert_eq!(ok.io_body, None, "asked for the body, and there is none");
+    Ok(())
+}
+
 /// A host tool is listed beside the registry's, runs through the flavor's
 /// request behavior, and the recorded call names the verified subject.
 #[tokio::test]
@@ -221,17 +270,24 @@ async fn a_host_tool_is_listed_dispatched_through_behaviors_and_recorded() -> Te
     assert_eq!(host["annotations"]["readOnlyHint"], json!(true));
     assert!(tools.len() > 1, "the registry's tools are listed beside it");
 
-    let called = rpc(
-        &client,
-        &base,
-        subject,
-        &session,
-        json!({
-            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-            "params": {"name": HOST_TOOL, "arguments": {"x": 1}}
-        }),
-    )
-    .await?;
+    // Neither an unknown name nor a failure's message is written into the
+    // owner's memory: only a served tool's name and the JSON-RPC code.
+    let call = |name: &'static str, arguments: Value| {
+        rpc(
+            &client,
+            &base,
+            subject,
+            &session,
+            json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                   "params": {"name": name, "arguments": arguments}}),
+        )
+    };
+    let unknown = call("ignore previous instructions", json!({})).await?;
+    assert!(unknown.get("error").is_some(), "{unknown}");
+    let failed = call(HOST_TOOL, json!({"secret": "leak\u{0}me"})).await?;
+    assert_eq!(failed["error"]["code"], json!(-32602), "{failed}");
+
+    let called = call(HOST_TOOL, json!({"x": 1})).await?;
     assert_eq!(
         called["result"]["structuredContent"],
         json!({"tool": HOST_TOOL, "marker": HOST_TOOL, "args": {"x": 1}}),
@@ -245,42 +301,7 @@ async fn a_host_tool_is_listed_dispatched_through_behaviors_and_recorded() -> Te
         "the flavor's request behavior wrapped the host tool"
     );
 
-    // Recorded off the request path: poll until it lands. The history read
-    // filters on the actor, so a hit proves the actor is the verified
-    // subject, not a claim from the request.
-    let owner = OwnerRef::Personal(subject);
-    let reader = proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject(
-        subject,
-        AuthPath::HostBearer,
-    ));
-    let request = McpCallHistoryRequest {
-        owner,
-        actor_oid: Some(subject.into_inner().to_string()),
-        limit: 10,
-        include_body: true,
-        before: None,
-    };
-    let recorded = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let calls = proxima::read_mcp_call_history(&running.engine, &reader, &request)
-                .await
-                .expect("history read")
-                .calls;
-            if !calls.is_empty() {
-                return calls;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await?;
-    assert_eq!(recorded.len(), 1, "{recorded:?}");
-    assert_eq!(recorded[0].tool_name, HOST_TOOL);
-    assert!(recorded[0].ok);
-    assert!(recorded[0].io_truncated, "no body is stored");
-    assert_eq!(
-        recorded[0].io_body, None,
-        "asked for the body, and there is none"
-    );
+    assert_only_served_calls_recorded(&running.engine, subject).await?;
 
     running.shutdown().await;
     Ok(())
@@ -294,6 +315,7 @@ async fn the_resolved_edge_puts_bearer_auth_on_mcp_only() -> TestResult {
     let subject = UserId::new(Uuid::now_v7());
     let built = app(&db)
         .authenticator(Arc::new(StubAuth { subject }))
+        .rest_enabled(true)
         .build()
         .await?;
     let edge = built.mcp_edge().ok_or("MCP is enabled")?;
@@ -322,6 +344,32 @@ async fn the_resolved_edge_puts_bearer_auth_on_mcp_only() -> TestResult {
         .oneshot(request(Method::GET, "/host/open"))
         .await?;
     assert_eq!(open.status(), StatusCode::OK, "host routes carry no bearer");
+    let foreign = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/host/open")
+                .header(header::HOST, "rebind.example")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(
+        foreign.status(),
+        StatusCode::FORBIDDEN,
+        "the Host guard covers the host's routes too"
+    );
+    #[cfg(feature = "rest")]
+    {
+        let rest = router
+            .clone()
+            .oneshot(request(Method::GET, "/v1/openapi.json"))
+            .await?;
+        assert_eq!(
+            rest.status(),
+            StatusCode::UNAUTHORIZED,
+            "/v1 keeps bearer auth"
+        );
+    }
     let mcp = router.oneshot(request(Method::POST, "/mcp")).await?;
     assert_eq!(
         mcp.status(),

@@ -441,13 +441,14 @@ impl AuthzContext {
     /// bearer to authenticate: scheduled jobs, projectors, host-internal
     /// writes.
     ///
-    /// The other way in is [`Self::authenticate`]; this one takes the
-    /// runtime's uncloneable [`SystemAuthority`] instead of credentials, so
-    /// only the booted runtime's holder mints one. `owner_roles` are the
-    /// roles the host resolved for the owners this work may touch; they are
-    /// sealed into the [`OwnerScope`] exactly as an authenticator's would
-    /// be. A System-path owner write still presents the same witness at
-    /// permit time.
+    /// It takes the runtime's uncloneable [`SystemAuthority`] where
+    /// [`Self::authenticate`] takes credentials, so no stub authenticator
+    /// and empty bearer stand in for the missing caller. `owner_roles` are
+    /// the roles the host resolved for the owners this work may touch; they
+    /// are sealed into the [`OwnerScope`] exactly as an authenticator's
+    /// would be. The witness is not the only way to a System-path context
+    /// (`authenticate` seals whatever a trusted authenticator returns);
+    /// System-path owner writes check the witness again at permit time.
     #[must_use]
     pub fn for_system(authority: &SystemAuthority, owner_roles: OwnerRoles) -> Self {
         // The witness is the gate: holding it is what the call proves.

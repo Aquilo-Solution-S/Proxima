@@ -299,7 +299,11 @@ impl ServerHandler for DynamicHandler {
                 .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
             let author = author_from_args(&args, auth.as_ref(), &client_name, &client_version)?;
             strip_call_context_args(&mut args);
-            let recording = server.records_calls().then(|| CallRecording::start(&args));
+            let recording = server
+                .records_calls()
+                .then(|| served_tool_name(&server, auth.as_ref(), &request_name))
+                .flatten()
+                .map(|tool| CallRecording::start(tool, &args));
             let error_auth = auth.clone();
             let outcome = server
                 .call_tool_in_request(&canonical_name, args, author, auth, request_services)
@@ -312,7 +316,7 @@ impl ServerHandler for DynamicHandler {
                     Ok((output, text))
                 });
             if let Some(recording) = recording {
-                recording.finish(&server, error_auth.as_ref(), &canonical_name, &outcome);
+                recording.finish(&server, error_auth.as_ref(), &outcome);
             }
             let (output, text) = outcome?;
             let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
@@ -898,16 +902,35 @@ fn host_tool_metadata(tool: McpHostTool) -> Option<Tool> {
     )
 }
 
+/// The name a call record may carry: a registry tool's canonical name or a
+/// host tool listed for this caller. A name that is neither is caller text
+/// and is never written into the owner's memory.
+fn served_tool_name(
+    server: &McpToolHost,
+    auth: Option<&McpAuthContext>,
+    request_name: &str,
+) -> Option<String> {
+    canonical_tool_name(server, request_name).or_else(|| {
+        server
+            .host_tools_for(auth?)
+            .into_iter()
+            .find(|tool| tool.name == request_name)
+            .map(|tool| tool.name)
+    })
+}
+
 /// One `tools/call` being recorded ([`McpToolHost::with_call_recording`]).
 struct CallRecording {
+    tool: String,
     started: std::time::Instant,
     occurred_at: time::OffsetDateTime,
     request_bytes: u64,
 }
 
 impl CallRecording {
-    fn start(args: &serde_json::Value) -> Self {
+    fn start(tool: String, args: &serde_json::Value) -> Self {
         Self {
+            tool,
             started: std::time::Instant::now(),
             occurred_at: time::OffsetDateTime::now_utc(),
             request_bytes: serde_json::to_vec(args).map_or(0, |bytes| bytes.len() as u64),
@@ -915,12 +938,13 @@ impl CallRecording {
     }
 
     /// Write the record off the request path: a client that disconnects
-    /// does not cancel it, and a failed write never fails the call.
+    /// does not cancel it, and a failed write never fails the call. Every
+    /// field is server-derived: a failure is its JSON-RPC code, never the
+    /// message, which can echo arguments.
     fn finish(
         self,
         server: &McpToolHost,
         auth: Option<&McpAuthContext>,
-        tool: &str,
         outcome: &Result<(serde_json::Value, String), ErrorData>,
     ) {
         let (Some(engine), Some(auth)) = (server.engine(), auth) else {
@@ -932,13 +956,13 @@ impl CallRecording {
         };
         let (ok, error, response_bytes) = match outcome {
             Ok((_, text)) => (true, None, text.len() as u64),
-            Err(err) => (false, Some(err.message.to_string()), 0),
+            Err(err) => (false, Some(format!("jsonrpc {}", err.code.0)), 0),
         };
         let input = proxima_core::McpCallLogInput {
             owner: auth.owner,
             actor_oid: subject.into_inner().to_string(),
             actor_upn: String::new(),
-            tool_name: tool.to_owned(),
+            tool_name: self.tool,
             ok,
             error,
             latency_ms: u32::try_from(self.started.elapsed().as_millis()).unwrap_or(u32::MAX),
@@ -950,12 +974,17 @@ impl CallRecording {
             observed_at: time::OffsetDateTime::now_utc(),
             occurred_at: self.occurred_at,
         };
+        let Some(permit) = server.record_permit() else {
+            tracing::warn!(tool = %input.tool_name, "mcp call recording saturated; call not recorded");
+            return;
+        };
         let engine = Arc::clone(engine);
         let authz = auth.authz.clone();
         tokio::spawn(async move {
             if let Err(err) = engine.persist_mcp_call(&authz, input).await {
-                tracing::debug!(error = %err, "mcp call not recorded");
+                tracing::warn!(error = %err, "mcp call not recorded");
             }
+            drop(permit);
         });
     }
 }

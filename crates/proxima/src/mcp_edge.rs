@@ -135,6 +135,8 @@ impl McpEdge {
 /// [`crate::layered_router_with_revalidation`] with bearer auth on `/mcp`
 /// only: `app_router` is served beside it under the listener-wide body
 /// limit, Host guard and CORS, and authenticates its own routes (or none).
+/// Unlike [`McpEdge::router`] it mounts no resource-metadata routes and caps
+/// bodies at the default [`MAX_REQUEST_BODY_BYTES`](proxima_mcp_server::MAX_REQUEST_BODY_BYTES).
 ///
 /// `host_allowlist` must also be passed to
 /// [`streamable_http_service`](proxima_mcp_server::streamable_http_service).

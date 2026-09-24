@@ -59,7 +59,16 @@ pub struct McpToolHost {
     request_headers: RequestHeaderAllowlist,
     host_tools: Option<Arc<dyn McpHostTools>>,
     record_calls: bool,
+    /// Bounds call-record writes in flight; a saturated host drops the
+    /// record (and says so) rather than queueing without limit.
+    record_permits: Arc<tokio::sync::Semaphore>,
 }
+
+/// Longest host tool name served.
+pub const MAX_HOST_TOOL_NAME_CHARS: usize = 128;
+
+/// Call-record writes in flight per tool host.
+const RECORD_PERMITS: usize = 64;
 
 impl std::fmt::Debug for McpToolHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -81,6 +90,7 @@ impl McpToolHost {
             request_headers: RequestHeaderAllowlist::default(),
             host_tools: None,
             record_calls: false,
+            record_permits: Arc::new(tokio::sync::Semaphore::new(RECORD_PERMITS)),
         }
     }
 
@@ -119,6 +129,10 @@ impl McpToolHost {
         self.record_calls
     }
 
+    pub(crate) fn record_permit(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.record_permits).try_acquire_owned().ok()
+    }
+
     /// The engine tools run against, when one was attached.
     #[must_use]
     pub fn engine(&self) -> Option<&Arc<Engine>> {
@@ -126,31 +140,24 @@ impl McpToolHost {
     }
 
     /// The host tools `auth` may be shown, before palette and owner-role
-    /// filtering: [`McpHostTools::list`] minus any name the registry
-    /// serves.
+    /// filtering: [`McpHostTools::list`] minus every name that is not
+    /// 1..=[`MAX_HOST_TOOL_NAME_CHARS`] characters of `[A-Za-z0-9_.-]`
+    /// (so its wire name is itself, and it can be neither a `tool:action`
+    /// leaf nor a `resource:` key), that a registry tool serves under its
+    /// canonical or wire name, or that the list already named.
     #[must_use]
     pub fn host_tools_for(&self, auth: &McpAuthContext) -> Vec<McpHostTool> {
         let Some(source) = &self.host_tools else {
             return Vec::new();
         };
-        source
-            .list(auth)
-            .into_iter()
-            .filter(|tool| {
-                let shadowed = self
-                    .registry
-                    .list_mcp_tools()
-                    .iter()
-                    .any(|descriptor| tool_name_matches(descriptor.name, &tool.name));
-                if shadowed {
-                    tracing::warn!(
-                        tool = %tool.name,
-                        "host tool shares a name with a registry tool; the registry tool is served"
-                    );
-                }
-                !shadowed
-            })
-            .collect()
+        let mut served: Vec<McpHostTool> = Vec::new();
+        for tool in source.list(auth) {
+            match host_tool_name_refusal(&self.registry, &tool.name, &served) {
+                Some(reason) => tracing::warn!(tool = %tool.name, reason, "host tool not served"),
+                None => served.push(tool),
+            }
+        }
+        served
     }
 
     /// Copy the allowlisted inbound headers of each served call into its
@@ -419,6 +426,28 @@ impl McpToolHost {
             .await
             .map_err(Into::into)
     }
+}
+
+fn host_tool_name_refusal(
+    registry: &FlavorRegistryFrozen,
+    name: &str,
+    served: &[McpHostTool],
+) -> Option<&'static str> {
+    if name.is_empty()
+        || name.chars().count() > MAX_HOST_TOOL_NAME_CHARS
+        || proxima_core::provider_safe_tool_name(name) != name
+    {
+        return Some("a host tool name is 1..=128 characters of [A-Za-z0-9_.-]");
+    }
+    if registry.list_mcp_tools().iter().any(|descriptor| {
+        descriptor.name == name || proxima_core::provider_safe_tool_name(descriptor.name) == name
+    }) {
+        return Some("a registry tool serves this name");
+    }
+    if served.iter().any(|tool| tool.name == name) {
+        return Some("the host listed this name twice");
+    }
+    None
 }
 
 /// Reject NUL in the entire argument tree before behaviors or tool code.
@@ -860,6 +889,13 @@ mod tests {
                 host_tool("host_write", false),
                 // Shadowed by the registry's own tool of this name.
                 host_tool("core_memory_spaces", true),
+                // A registry tool's name in another spelling, a scope-key
+                // shape, an action-leaf shape, a repeat, and an overlong name.
+                host_tool("core:memory_spaces", true),
+                host_tool("resource:graph", false),
+                host_tool("core_goal:set", false),
+                host_tool("host_echo", false),
+                host_tool(&"h".repeat(MAX_HOST_TOOL_NAME_CHARS + 1), true),
             ]
         }
 
@@ -912,7 +948,7 @@ mod tests {
         assert_eq!(
             listed,
             ["host_echo", "host_write"],
-            "the registry name wins"
+            "only well-formed, unshadowed, first-listed names are served"
         );
 
         let output = server
