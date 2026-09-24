@@ -138,6 +138,28 @@ date-shaped. Boundary: `CORE_MIGRATION_VERSION_CEILING` (9999).
 Core ledger: `public._sqlx_migrations`.
 Code flavor: `public._sqlx_migrations_proxima_code`.
 
+## Reset
+
+`dev-migrate --reset` (local hosts, `PROXIMA_RESET_CONFIRM`) drops every
+`proxima_*` schema with `CASCADE` and deletes Proxima's ledger rows. A consumer
+that embeds Proxima shares `public._sqlx_migrations` with its own lanes; the
+`CASCADE` would also drop what those lanes built on Proxima while their rows
+still claim it, so their migrator never re-creates it.
+
+| Invocation | Objects outside `proxima_*` depend on it (`pg_depend`) |
+|---|---|
+| `--reset` | refuses before dropping anything; lists each object and what it depends on |
+| `--reset --reset-dependent-lanes` | drops them too, then deletes every ledger row no Proxima lane owns: `public._sqlx_migrations` and every other `public._sqlx_migrations_*` table; refuses up front if the role cannot delete from one |
+
+Counted (direct `pg_depend` edges; their own dependents go too): an outside
+object depending on a Proxima object (FK, view, trigger, policy, column of a
+Proxima type), and an object on a Proxima table depending on a non-extension
+user object outside (a consumer trigger on `proxima_core.memory`). Not
+detectable: a consumer object on a Proxima table that references only Proxima
+or built-in objects. After the opt-in, the consumer's lanes re-run from
+scratch: reset their remaining objects first — the reset cannot tell which lane
+built which object.
+
 ## Cycle
 
 - During: add draft files. Amend only if no shared DB applied them; never
