@@ -152,5 +152,20 @@ Code flavor: `public._sqlx_migrations_proxima_code`.
 ## Tooling
 
 No retired-version lists in code. Boot floor is `min_core_migration_version()`
-(newest embedded core file). `dev-migrate --stamp` requires
-`ensure_core_schema_markers`. Otherwise reset.
+(newest embedded core file).
+
+`dev-migrate --stamp` records migrations as applied without running them. It
+refuses unless `ensure_core_schema_markers`, the owner-RLS epoch and the
+platform census pass **and** the live catalog equals what the embedded lane
+creates:
+
+| Step | Mechanism |
+|---|---|
+| Replay | one transaction, always rolled back: live `proxima_*` schemas renamed aside, core + every stamped flavor lane applied into a temp ledger; needs `CREATE` on the database, like a fresh install |
+| Compare | routines (`pg_get_functiondef`), aggregates, triggers (+ enabled), rules, policies (table owner as `<table owner>`), relations/columns/collations/RLS flags, constraints, indexes, views, sequences, enums, domains — per replayed schema, both directions |
+| Not compared | owners, ACLs, rows a migration seeds |
+| Refused, not proven | a database carrying a flavor this binary does not compose: its objects on replayed schemas count as differences |
+
+A marker check alone would have stamped a database that applied the v0.0.15
+bytes of 0014: the amended checksum recorded over the old routine bodies. Any
+difference refuses; restore from before the amended migration or reset.
