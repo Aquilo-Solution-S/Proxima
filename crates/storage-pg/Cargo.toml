@@ -39,6 +39,7 @@ workspace = true
 proxima-storage-pg = { path = ".", features = ["test-fixtures"] }
 proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../pg-testkit" }
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 time = { workspace = true }
 tokio-stream = { workspace = true }

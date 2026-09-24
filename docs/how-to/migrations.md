@@ -6,11 +6,11 @@ The frozen baselines are `crates/storage-pg/migrations/0001_v008.sql` and
 `flavors/code/migrations/20260818000020_v008_baseline.sql`. A database whose
 ledger does not match those files must reset.
 
-**From v0.0.9 on, releases are additive.** A frozen baseline is never edited,
-existing databases upgrade in place, and a release that needs schema work
-ships **exactly one migration file per version** — `000N_v0XY_<what>.sql`
-for core, one dated `_v0XY_` file per flavor — never several, never edited
-after the tag. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
+**From v0.0.9 on, releases are additive.** A released migration is never
+edited (rule 2), existing databases upgrade in place, and a release that needs
+schema work ships **exactly one migration file per version** —
+`000N_v0XY_<what>.sql` for core, one dated `_v0XY_` file per flavor — never
+several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
 ## v0.0.16
@@ -62,11 +62,14 @@ Migration authority is the nonsuperuser platform owner, with an administrator
 preparing extensions, ownership and grants first. See
 [15 §Owner-RLS rollout](../15-deployment.md#owner-rls-rollout).
 
-0014 was corrected in place after the v0.0.15 tag: the tagged file refused to
-run without a superuser-issued `GRANT SET ON PARAMETER app.proxima_scope`, so a
-database without that grant never recorded it. A database that did record the
-tagged 0014 fails the ledger checksum check at boot; restore it to before the
-cutover and re-run the migration.
+0014 was edited in place after the v0.0.15 tag (d12da4f2, shipped in v0.0.16).
+The tagged file ran only where a superuser had issued
+`GRANT SET ON PARAMETER app.proxima_scope`; every database that did record it
+refused to boot on v0.0.16+ with `core versions [14] were amended after this
+database applied them`, and the quality deployment was down until its database
+was reset (2026-09-24). Restore such a database to before the cutover and
+re-run the migration. The edit is the single grandfathered entry in
+`scripts/check-migration-ranges.py`; rule 2 has no exceptions.
 
 ## v0.0.14
 
@@ -94,18 +97,27 @@ in order. Previously shipped migration bytes remain unchanged.
 1. **A version number is never reused** on a database you do not personally own.
    Replacement takes a new version. Gaps are normal.
 
-2. **A frozen baseline is never edited.** SQLx checksums a migration's bytes,
-   so editing an applied file changes the checksum of a version live databases
-   have already recorded — `ensure_core_ledger_compatible` then answers
-   `SchemaResetRequired`, a destructive reset with no schema reason behind it.
-   Add a new additive migration instead. `scripts/check-migration-ranges.py`
-   content-pins both baselines and fails the build on an edited byte.
+2. **A released migration is never edited.** Every migration file a `v*` tag
+   shipped is immutable — baseline or not, no exceptions. SQLx checksums a
+   migration's bytes, so editing a released file changes the checksum of a
+   version live databases have already recorded, and
+   `ensure_core_ledger_compatible` refuses to boot them. A fix, including a fix
+   to a released migration, ships as a **new** migration.
+   `scripts/check-migration-ranges.py` derives the pins from the tags: for each
+   `v*` tag from `v0.0.8` on it lists the tag's migration files
+   (`git ls-tree -r <tag>`) and fails CI when a file is changed or deleted at
+   HEAD (`git hash-object`); new files pass. Tags before `v0.0.8` shipped the
+   lane that baseline replaced. The one grandfathered entry, (v0.0.15, 0014),
+   predates the check; the list only shrinks.
 
 3. **A new baseline is a release decision, not a side effect.** Replacing a
    baseline resets every deployed database, so it happens only for a
-   deliberately named destructive release — a new file under a new version,
-   pinned like the ones before it. Drafts during a cycle still squash under a
-   fresh version before tag; they just append rather than replace.
+   deliberately named destructive release — a new file under a new version.
+   The same change bumps `RELEASE_VERSION` and moves the check's
+   `RELEASE_EPOCH` to that release: until the merge cuts its tag no earlier
+   tag pins anything, and grandfathered entries older than the epoch drop out.
+   Drafts during a cycle still squash under a fresh version before tag; they
+   just append rather than replace.
 
 4. **The migrations directory is the schema**, not a changelog. Replay the
    directory in version order on an empty DB to see the shape.
@@ -128,7 +140,8 @@ Code flavor: `public._sqlx_migrations_proxima_code`.
 
 ## Cycle
 
-- During: add draft files. Amend only if no shared DB applied them.
+- During: add draft files. Amend only if no shared DB applied them; never
+  after the tag (rule 2).
 - At tag: squash the cycle's drafts to one new version appended after the
   frozen baseline; delete the drafts; `ensure_core_schema_markers` matches the
   lane.

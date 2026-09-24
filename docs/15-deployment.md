@@ -68,14 +68,14 @@ that rewrites tables holds `ACCESS EXCLUSIVE` for the duration and is not
 online-safe. The v0.0.8 baseline, `0001_v008.sql`, is a reset, not an online
 ALTER.
 
-From v0.0.9 on the lane is **additive**: the frozen baseline is never edited,
+From v0.0.9 on the lane is **additive**: no released migration is ever edited,
 each release appends a migration (v0.0.9 is `0002_v009_declaration_triggers.sql`,
 and the code flavor's `20260824000020_v009_declaration_triggers.sql`), and an
 existing v0.0.8 database upgrades in place — no export, no reset. Editing a
-baseline instead would change the checksum of a version every deployed
-database has already recorded, which boot reports as `SchemaResetRequired`;
-`scripts/check-migration-ranges.py` content-pins both baselines so that cannot
-ship by accident.
+released migration instead would change the checksum of a version every
+deployed database has already recorded, which boot refuses;
+`scripts/check-migration-ranges.py` pins every migration file a release tag
+from v0.0.8 on shipped so that cannot ship by accident.
 Boot migrations set `lock_timeout = 5s`, so a migration that cannot take the
 lock fails and retries on the next pod rather than queueing behind readers.
 

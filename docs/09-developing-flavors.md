@@ -896,9 +896,9 @@ Version lanes:
 | downstream host composition | timestamp versions ending `60..=99`; external hosts own collision avoidance when they compose migrators outside Proxima's facade |
 
 Run `python3 scripts/check-migration-ranges.py` before adding a migration. It
-also content-pins the frozen v0.0.8 baselines: from v0.0.9 on a schema change
-is a **new** migration, never an edit to a file live databases have applied
-(see [how-to/migrations.md](how-to/migrations.md)).
+also locks every migration file a `v*` tag from v0.0.8 on shipped: a schema
+change is a **new** migration, never an edit to a released file
+(see [how-to/migrations.md](how-to/migrations.md) rule 2).
 
 ### Declaration triggers
 

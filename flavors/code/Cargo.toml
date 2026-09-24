@@ -41,6 +41,7 @@ proxima-mcp-server = { path = "../../crates/mcp-server" }
 proxima-core = { path = "../../crates/core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../../crates/pg-testkit" }
 proxima-storage-pg = { path = "../../crates/storage-pg", features = ["test-fixtures"] }
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "process"] }
 tokio-stream = { workspace = true }
 tempfile = "3"
