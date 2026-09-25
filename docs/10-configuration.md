@@ -75,7 +75,7 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_EMBED_API_KEY` | Optional bearer for a hosted embedding endpoint. |
 | `PROXIMA_EMBED_MODEL` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` to enable embeddings. |
 | `PROXIMA_EMBED_MATRYOSHKA` | Send a `dimensions` request parameter for nested-prefix models. Default `false`. |
-| `PROXIMA_EMBED_MAX_INPUT_CHARS` | Longest input, in characters, the client will send. Unset (default) sends every input and lets the provider judge it. Set this when the provider does not reject over-long input cleanly — see below. Minimum 4095. |
+| `PROXIMA_EMBED_MAX_INPUT_CHARS` | Longest input, in characters, the client will send. Default `16384`; set this to override the client-side bound. Over-cap input is refused before a provider request and sent through chunked rescue. Minimum `4095`. |
 | `PROXIMA_REST_ENABLED` | Serve the `/v1` REST rendering of the tool manifest beside `/mcp` (see [17](17-rest-surface.md)). Default `false`; requires the `rest` cargo feature at build time. |
 | `PROXIMA_OIDC_ISSUER` (+ `PROXIMA_OIDC_*`, `PROXIMA_PUBLIC_URL`) | When no authenticator is set in code, the runtime builds the OIDC authenticator and protected-resource metadata from these ([`proxima::auth::oidc_from_env`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/auth.rs) lists every variable). It resolves roles through the runtime's owner-access port (below). |
 | `PROXIMA_REQUEST_HEADERS` | Comma-separated inbound header names, or `prefix*`, copied to tools as opaque `RequestHeaders` on `/mcp` and `/v1`. Unset publishes nothing. `authorization`, `proxy-authorization` and `cookie` are refused, directly or by prefix. |
@@ -405,7 +405,7 @@ llama.cpp, LM Studio, vLLM) needs no credential:
 | `PROXIMA_EMBED_API_KEY` | no | - | Bearer for a hosted endpoint. Omit for a local one. |
 | `PROXIMA_EMBED_DIM` | no | `1024` | Vector width, one of 384, 768, 1024, 1536, 2048, 3072. Any other value fails boot. |
 | `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Send a `dimensions` parameter so a nested-prefix model returns `PROXIMA_EMBED_DIM` rather than its native width. |
-| `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | - | Longest input, in characters, that will be sent. Unset ⇒ no client-side bound. Minimum `4095`. |
+| `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | `16384` | Longest input, in characters, that will be sent. Over-cap input is refused before a provider request and sent through chunked rescue. Minimum `4095`. |
 | `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | no | `120` | Complete provider-request timeout. Range `1..=3600`. Core bounds every installed-client future; the shipped adapter additionally applies it to connect, send, and response read. |
 | `PROXIMA_EMBED_BATCH_SIZE` | no | `32` | Texts per provider call. Range `1..=1024`. Custom clients remain usable because batching is host policy, not a core provider constant. |
 | `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | no | `5` | Idle in-process worker poll interval. Range `1..=3600`. |
@@ -426,9 +426,8 @@ time.
 `PROXIMA_EMBED_MAX_INPUT_CHARS` refuses an over-long input **before a
 request is made**, rather than letting the provider judge it.
 
-Leave it unset against a provider that rejects over-long input cleanly —
-that is the normal case, and the rejection is what triggers the chunked
-rescue below. Set it when the provider does *not*. A local Ollama sizes a
+The default `16384` bound applies before every provider request. Override it
+when the provider has a different safe input limit. A local Ollama sizes a
 model runner's context when the runner loads; an input past that limit
 kills the runner rather than being refused, and the death arrives as a
 transport error, which is indistinguishable at the response from a runner

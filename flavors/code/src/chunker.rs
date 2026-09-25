@@ -23,13 +23,11 @@ use tree_sitter::{Language, Node, Parser, Tree};
 /// the context window of common code embedders.
 pub const TARGET_CHUNK_CHARS: usize = 1500;
 
-/// Hard upper bound on a single emitted chunk, in non-whitespace
-/// characters. Upper end of cAST's recommended budget (paper Table 4:
-/// Pass@1 peaks at 2000 NWS chars, 2000–2500 is the sweet spot). Set
-/// above the peak so one large function passes through whole rather
-/// than being over-split. A single AST node larger than this is split
-/// into its children, or emitted as an oversize 'fragment' if it has
-/// no children.
+/// Hard upper bound on the Unicode character count of every emitted chunk.
+/// AST node selection still uses the non-whitespace cAST budget above this
+/// layer (paper Table 4: Pass@1 peaks at 2000 NWS chars, 2000–2500 is the
+/// sweet spot). An oversized node or fallback window is split at UTF-8
+/// character boundaries before emission.
 pub const MAX_CHUNK_CHARS: usize = 2500;
 
 /// Line-window stride for the no-AST fallback.
@@ -140,18 +138,35 @@ fn ast_chunks(
         if trimmed.trim().is_empty() {
             continue;
         }
-        // Bounded by MAX_BLOB_BYTES (1 MiB) at the entry of chunk_blob;
-        // u32 fits all byte and row offsets by construction.
-        out.push(Chunk {
-            file_path: file_path.to_string(),
-            text: trimmed.to_string(),
-            language,
-            chunk_type: s.chunk_type,
-            byte_range_start: u32::try_from(s.start_byte).unwrap_or(u32::MAX),
-            byte_range_end: u32::try_from(s.end_byte).unwrap_or(u32::MAX),
-            line_range_start: u32::try_from(s.start_row + 1).unwrap_or(u32::MAX),
-            line_range_end: u32::try_from(s.end_row + 1).unwrap_or(u32::MAX),
-        });
+        // The cAST walk uses non-whitespace characters to choose nodes, but
+        // the emitted contract has a hard Unicode-character bound. Most
+        // spans fit and retain the historical trailing-newline range. A
+        // whitespace-heavy span or an oversized leaf is split at UTF-8
+        // character boundaries with exact metadata for each piece.
+        if trimmed.chars().count() <= MAX_CHUNK_CHARS {
+            // Bounded by MAX_BLOB_BYTES (1 MiB) at the entry of chunk_blob;
+            // u32 fits all byte and row offsets by construction.
+            out.push(Chunk {
+                file_path: file_path.to_string(),
+                text: trimmed.to_string(),
+                language,
+                chunk_type: s.chunk_type,
+                byte_range_start: u32::try_from(s.start_byte).unwrap_or(u32::MAX),
+                byte_range_end: u32::try_from(s.end_byte).unwrap_or(u32::MAX),
+                line_range_start: u32::try_from(s.start_row + 1).unwrap_or(u32::MAX),
+                line_range_end: u32::try_from(s.end_row + 1).unwrap_or(u32::MAX),
+            });
+        } else {
+            push_bounded_chunks(
+                &mut out,
+                file_path,
+                trimmed,
+                s.start_byte,
+                s.start_row + 1,
+                language,
+                s.chunk_type,
+            );
+        }
     }
     Some((out, tree))
 }
@@ -352,21 +367,115 @@ fn fallback_chunks(file_path: &str, text: &str, language: Option<&'static str>) 
             .strip_suffix('\n')
             .map_or(window, |line| line.strip_suffix('\r').unwrap_or(line));
         if !chunk_text.trim().is_empty() {
-            out.push(Chunk {
-                file_path: file_path.to_string(),
-                text: chunk_text.to_string(),
-                language,
-                chunk_type: "file",
-                byte_range_start: u32::try_from(start_byte).unwrap_or(u32::MAX),
-                byte_range_end: u32::try_from(start_byte + chunk_text.len()).unwrap_or(u32::MAX),
-                line_range_start: u32::try_from(start_line).unwrap_or(u32::MAX),
-                line_range_end: u32::try_from(end_line).unwrap_or(u32::MAX),
-            });
+            if chunk_text.chars().count() <= MAX_CHUNK_CHARS {
+                out.push(Chunk {
+                    file_path: file_path.to_string(),
+                    text: chunk_text.to_string(),
+                    language,
+                    chunk_type: "file",
+                    byte_range_start: u32::try_from(start_byte).unwrap_or(u32::MAX),
+                    byte_range_end: u32::try_from(start_byte + chunk_text.len())
+                        .unwrap_or(u32::MAX),
+                    line_range_start: u32::try_from(start_line).unwrap_or(u32::MAX),
+                    line_range_end: u32::try_from(end_line).unwrap_or(u32::MAX),
+                });
+            } else {
+                push_bounded_chunks(
+                    &mut out, file_path, chunk_text, start_byte, start_line, language, "file",
+                );
+            }
         }
         start_byte = end_byte;
         start_line = end_line + 1;
     }
     out
+}
+
+/// Emit contiguous UTF-8-safe pieces whose text is at most the hard Unicode
+/// character bound. Ranges describe the actual piece, and line numbers are
+/// derived from its embedded newlines rather than from byte offsets.
+fn push_bounded_chunks(
+    out: &mut Vec<Chunk>,
+    file_path: &str,
+    text: &str,
+    source_start_byte: usize,
+    source_start_line: usize,
+    language: Option<&'static str>,
+    chunk_type: &'static str,
+) {
+    let mut context = BoundedChunkContext {
+        out,
+        file_path,
+        text,
+        source_start_byte,
+        language,
+        chunk_type,
+    };
+    let mut piece_start = 0;
+    let mut piece_chars = 0;
+    let mut piece_line_start = source_start_line;
+    let mut piece_newlines = 0;
+
+    for (byte, character) in context.text.char_indices() {
+        if piece_chars == MAX_CHUNK_CHARS {
+            push_bounded_piece(
+                &mut context,
+                piece_start,
+                byte,
+                piece_line_start,
+                piece_newlines,
+            );
+            piece_line_start += piece_newlines;
+            piece_start = byte;
+            piece_chars = 0;
+            piece_newlines = 0;
+        }
+        piece_chars += 1;
+        piece_newlines += usize::from(character == '\n');
+    }
+
+    if piece_start < context.text.len() {
+        let text_len = context.text.len();
+        push_bounded_piece(
+            &mut context,
+            piece_start,
+            text_len,
+            piece_line_start,
+            piece_newlines,
+        );
+    }
+}
+
+struct BoundedChunkContext<'a> {
+    out: &'a mut Vec<Chunk>,
+    file_path: &'a str,
+    text: &'a str,
+    source_start_byte: usize,
+    language: Option<&'static str>,
+    chunk_type: &'static str,
+}
+
+fn push_bounded_piece(
+    context: &mut BoundedChunkContext<'_>,
+    start: usize,
+    end: usize,
+    source_start_line: usize,
+    newline_count: usize,
+) {
+    let piece = &context.text[start..end];
+    if !piece.trim().is_empty() {
+        let line_end = source_start_line + newline_count - usize::from(piece.ends_with('\n'));
+        context.out.push(Chunk {
+            file_path: context.file_path.to_string(),
+            text: piece.to_string(),
+            language: context.language,
+            chunk_type: context.chunk_type,
+            byte_range_start: u32::try_from(context.source_start_byte + start).unwrap_or(u32::MAX),
+            byte_range_end: u32::try_from(context.source_start_byte + end).unwrap_or(u32::MAX),
+            line_range_start: u32::try_from(source_start_line).unwrap_or(u32::MAX),
+            line_range_end: u32::try_from(line_end).unwrap_or(u32::MAX),
+        });
+    }
 }
 
 /// File-extension -> language string for AST path.
@@ -413,6 +522,7 @@ pub fn fallback_language(file_path: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write;
 
     /// `U+0000` is valid UTF-8, so "is it UTF-8" does not classify these as
     /// binary — and the chunk text would reach a Postgres `text` column,
@@ -449,5 +559,74 @@ mod tests {
                 "{label}: must be treated as binary"
             );
         }
+    }
+
+    #[test]
+    fn oversized_typescript_leaf_is_split_at_unicode_boundaries() {
+        let source = format!("const encoded = '{}';\n", "ä0123456789".repeat(300));
+        let chunks = chunk_blob("payload.ts", source.as_bytes());
+
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|chunk| chunk.chunk_type != "file"));
+        for chunk in &chunks {
+            assert!(chunk.text.chars().count() <= MAX_CHUNK_CHARS);
+            assert!(std::str::from_utf8(chunk.text.as_bytes()).is_ok());
+            assert_eq!(
+                &source[chunk.byte_range_start as usize..chunk.byte_range_end as usize],
+                chunk.text,
+            );
+        }
+        assert!(chunks.iter().any(|chunk| chunk.text.contains('ä')));
+    }
+
+    #[test]
+    fn fallback_splits_long_line_and_preserves_multiline_metadata() {
+        let long_line = "ß".repeat(MAX_CHUNK_CHARS + 17);
+        let mut source = long_line.clone();
+        for line in 2..=80 {
+            source.push('\n');
+            let _ = write!(source, "line {line}");
+        }
+        source.push('\n');
+        source.push_str("tail");
+
+        let chunks = chunk_blob("payload.txt", source.as_bytes());
+        assert!(chunks.len() > 2);
+        for chunk in &chunks {
+            assert!(chunk.text.chars().count() <= MAX_CHUNK_CHARS);
+            assert_eq!(
+                &source[chunk.byte_range_start as usize..chunk.byte_range_end as usize],
+                chunk.text,
+            );
+            assert!(chunk.line_range_start <= chunk.line_range_end);
+        }
+        assert_eq!(chunks[0].line_range_start, 1);
+        assert_eq!(chunks[0].line_range_end, 1);
+        assert!(chunks.iter().any(|chunk| chunk.line_range_end >= 80));
+        assert_eq!(chunks.last().unwrap().text, "tail");
+        assert_eq!(chunks.last().unwrap().line_range_start, 81);
+    }
+
+    #[test]
+    fn fallback_splits_an_overlong_eighty_line_window() {
+        let mut source = String::new();
+        for line in 1..=80 {
+            if line > 1 {
+                source.push('\n');
+            }
+            let _ = write!(source, "line {line} {}", "x".repeat(36));
+        }
+
+        let chunks = chunk_blob("payload.txt", source.as_bytes());
+        assert!(chunks.len() >= 2);
+        for chunk in &chunks {
+            assert!(chunk.text.chars().count() <= MAX_CHUNK_CHARS);
+            assert_eq!(
+                &source[chunk.byte_range_start as usize..chunk.byte_range_end as usize],
+                chunk.text,
+            );
+        }
+        assert_eq!(chunks.first().unwrap().line_range_start, 1);
+        assert!(chunks.last().unwrap().line_range_end <= 80);
     }
 }
