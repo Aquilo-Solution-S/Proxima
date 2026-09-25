@@ -5,7 +5,9 @@ use proxima_core::{
     McpToolDescriptor, McpToolErrorKind, Owner, ToolScope, provider_safe_tool_name,
     resolve_operator_label, tool_name_matches,
 };
-use proxima_mcp_server::{DynamicHandler, McpAuthContext, McpToolHost, ToolInvocationError};
+use proxima_mcp_server::{
+    DynamicHandler, McpAuthContext, McpToolHost, ToolInvocationError, ToolListNotifier,
+};
 
 /// Facade handle for listing and dispatching the composed engine MCP tools
 /// from an embedding host's own authenticated endpoint.
@@ -102,6 +104,18 @@ impl CoreMcpTools {
         Self {
             host: McpToolHost::from_parts(registry, services).with_engine(engine),
         }
+    }
+
+    /// Tell connected clients when an owner's tool list changes: the handler
+    /// advertises `tools.listChanged` and registers each `initialize`
+    /// session and `subscriptions/listen` stream under its owner, and the
+    /// host calls [`ToolListNotifier::notify`] on its clone of `notifier`
+    /// whenever that owner's tools change. See
+    /// [`McpToolHost::with_tool_list_notifier`].
+    #[must_use]
+    pub fn with_tool_list_notifier(mut self, notifier: ToolListNotifier) -> Self {
+        self.host = self.host.with_tool_list_notifier(notifier);
+        self
     }
 
     /// Consume this boot-wired facade and expose the exact native MCP handler.

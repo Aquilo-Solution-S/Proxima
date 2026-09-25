@@ -15,6 +15,7 @@ pub mod security;
 pub mod selfdoc;
 mod server;
 mod session;
+mod tool_list;
 mod transport;
 
 pub use auth::{McpAuthContext, McpEdgeAuth};
@@ -36,6 +37,7 @@ pub use security::{
 };
 pub use server::{MAX_HOST_TOOL_NAME_CHARS, McpToolHost, ToolInvocationError, reject_nul_in_args};
 pub use session::{McpSessionBindings, owner_key, parse_owner_key};
+pub use tool_list::ToolListNotifier;
 pub use transport::{
     BodyLimitLayer, MAX_REQUEST_BODY_BYTES, McpStreamableService, McpTransportConfig,
     body_limit_layer, enforce_body_limit, serve_streamable_http,

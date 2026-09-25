@@ -19,18 +19,37 @@ use proxima_core::{
 };
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
-    Implementation, InitializeRequestParams, InitializeResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
-    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
-    ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+    DiscoverResult, ErrorData, Implementation, InitializeRequestParams, InitializeResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+    ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig, SubscriptionFilter, Tool,
+    ToolAnnotations,
 };
-use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
+use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer, SubscriptionContext};
 
 use crate::selfdoc;
 
 /// Product name reported to MCP clients on `initialize`.
 const SERVER_NAME: &str = "proxima";
+
+/// Newest MCP revision Proxima implements. rmcp's default admits every
+/// revision rmcp knows, so an rmcp upgrade that learns a newer one would
+/// start serving it before Proxima meets it: `2026-07-28` was admitted that
+/// way while the SEP-2549 list cache hints it requires were missing, and a
+/// client on it rejected `tools/list`. Raise this only with the revision's
+/// server obligations met; a test fails when rmcp knows a newer one.
+const MAX_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2026_07_28;
+
+/// SEP-2549 freshness of every list result, in milliseconds. Each list is
+/// projected from the caller's token scope, so a grant or revocation must
+/// show on the next list rather than after a cache expires.
+const LIST_TTL_MS: u64 = 0;
+
+/// SEP-2549 cache scope of every list result: per-caller, for the same
+/// reason as [`LIST_TTL_MS`], so no shared cache may serve it to another
+/// token.
+const LIST_CACHE_SCOPE: CacheScope = CacheScope::Private;
 
 use crate::auth::McpAuthContext;
 use crate::host_tools::McpHostTool;
@@ -43,6 +62,23 @@ pub struct DynamicHandler {
 }
 
 impl DynamicHandler {
+    /// [`ServerHandler::get_info`] plus `instructions` generated from the
+    /// caller's *resolved* tool scope (deployment profile ∩ token
+    /// capabilities), the scope `list_tools` advertises. A `memory`-profile
+    /// deployment thus omits guidance for tools it does not expose.
+    fn info_for(&self, context: &RequestContext<RoleServer>) -> ServerConfig {
+        let auth = auth_context(context);
+        let advertised_tools = self.advertised_tool_ids(auth.as_ref());
+        let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
+        let advertised_resources = advertised_resource_scope_keys(scope);
+        let mut info = self.get_info();
+        let instructions = selfdoc::build_instructions(&advertised_tools, &advertised_resources);
+        if !instructions.is_empty() {
+            info.instructions = Some(instructions);
+        }
+        info
+    }
+
     /// Canonical ids of the tools advertised to a caller with `scope`. Same
     /// filter `list_tools` applies, so self-documentation never references a
     /// tool the caller cannot see.
@@ -64,6 +100,11 @@ impl ServerHandler for DynamicHandler {
             .enable_tools()
             .enable_resources()
             .build();
+        if self.server.tool_list_notifier().is_some()
+            && let Some(tools) = info.capabilities.tools.as_mut()
+        {
+            tools.list_changed = Some(true);
+        }
         // NOT `Implementation::from_build_env()`: those `env!` macros expand
         // against rmcp's own manifest, so every Proxima deployment introduced
         // itself as `rmcp 2.2.0` and no client or operator could tell which
@@ -72,11 +113,20 @@ impl ServerHandler for DynamicHandler {
         info
     }
 
-    /// Override `initialize` so the `instructions` returned at the handshake
-    /// are generated from the caller's *resolved* tool scope (deployment
-    /// profile ∩ token capabilities) — the same scope `list_tools` advertises.
-    /// A `memory`-profile deployment thus omits guidance for tools it does not
-    /// expose. Mirrors the SDK default's `set_peer_info` bookkeeping.
+    /// Every revision rmcp knows up to `2026-07-28` (`MAX_PROTOCOL_VERSION`).
+    /// This bounds what `initialize` may agree to, what a per-request
+    /// version may name, and what `server/discover` advertises. A host
+    /// wrapping this handler in its own `ServerHandler` delegates here (and
+    /// to `discover`, `accepted_subscription_filter` and `listen`), or rmcp's
+    /// defaults apply instead.
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(ProtocolVersion::known_up_to(&MAX_PROTOCOL_VERSION))
+    }
+
+    /// The `initialize` handshake (revisions up to `2025-11-25`), answered
+    /// with per-caller instructions (`info_for`). Mirrors the SDK
+    /// default's `set_peer_info` bookkeeping, and registers the session
+    /// with the tool-list notifier when one is attached.
     fn initialize(
         &self,
         request: InitializeRequestParams,
@@ -85,16 +135,58 @@ impl ServerHandler for DynamicHandler {
         if context.peer.peer_info().is_none() {
             context.peer.set_peer_info(request);
         }
-        let auth = auth_context(&context);
-        let advertised_tools = self.advertised_tool_ids(auth.as_ref());
-        let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
-        let advertised_resources = advertised_resource_scope_keys(scope);
-        let mut info = self.get_info();
-        let instructions = selfdoc::build_instructions(&advertised_tools, &advertised_resources);
-        if !instructions.is_empty() {
-            info.instructions = Some(instructions);
+        if let (Some(notifier), Some(auth)) =
+            (self.server.tool_list_notifier(), auth_context(&context))
+        {
+            notifier.register_session(auth.owner, context.peer.clone());
         }
-        std::future::ready(Ok(info))
+        std::future::ready(Ok(self.info_for(&context)))
+    }
+
+    /// `server/discover`, which replaces the handshake from `2026-07-28`:
+    /// the same per-caller instructions `initialize` returns, never cached
+    /// across callers (rmcp sets `ttlMs: 0`, `cacheScope: private`).
+    fn discover(
+        &self,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<DiscoverResult, ErrorData>> + MaybeSendFuture + '_ {
+        std::future::ready(Ok(DiscoverResult::from_server_info(
+            self.supported_protocol_versions().into_owned(),
+            self.info_for(&context),
+        )))
+    }
+
+    /// `subscriptions/listen` (`2026-07-28`) carries `toolsListChanged` and
+    /// nothing else, and only with a tool-list notifier attached.
+    fn accepted_subscription_filter(
+        &self,
+        _requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        self.server
+            .tool_list_notifier()
+            .map(|_| SubscriptionFilter::builder().tools_list_changed().build())
+    }
+
+    /// Holds one accepted subscription under the caller's owner until the
+    /// client ends it.
+    fn listen(
+        &self,
+        context: SubscriptionContext,
+    ) -> impl Future<Output = Result<(), ErrorData>> + MaybeSendFuture + '_ {
+        let registration = match (
+            self.server.tool_list_notifier(),
+            auth_context(context.request_context()),
+        ) {
+            (Some(notifier), Some(auth)) if context.accepted().tools_list_changed == Some(true) => {
+                Some(notifier.register_subscription(auth.owner, context.sink().clone()))
+            }
+            _ => None,
+        };
+        async move {
+            context.cancelled().await;
+            drop(registration);
+            Ok(())
+        }
     }
 
     fn list_resources(
@@ -116,10 +208,9 @@ impl ServerHandler for DynamicHandler {
                 })
                 .map(raw_resource_from_meta),
         );
-        std::future::ready(Ok(ListResourcesResult {
-            resources,
-            ..Default::default()
-        }))
+        std::future::ready(Ok(ListResourcesResult::with_all_items(resources)
+            .with_ttl_ms(LIST_TTL_MS)
+            .with_cache_scope(LIST_CACHE_SCOPE)))
     }
 
     fn list_resource_templates(
@@ -136,10 +227,11 @@ impl ServerHandler for DynamicHandler {
             })
             .map(raw_resource_template_from_meta)
             .collect();
-        std::future::ready(Ok(ListResourceTemplatesResult {
+        std::future::ready(Ok(ListResourceTemplatesResult::with_all_items(
             resource_templates,
-            ..Default::default()
-        }))
+        )
+        .with_ttl_ms(LIST_TTL_MS)
+        .with_cache_scope(LIST_CACHE_SCOPE)))
     }
 
     /// Answers are always [`ReadResourceResponse::Complete`]. rmcp 3 widened
@@ -236,10 +328,9 @@ impl ServerHandler for DynamicHandler {
         });
         let mut tools = tools;
         tools.extend(host_tools);
-        std::future::ready(Ok(ListToolsResult {
-            tools,
-            ..Default::default()
-        }))
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(LIST_TTL_MS)
+            .with_cache_scope(LIST_CACHE_SCOPE)))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -603,19 +694,27 @@ fn trusted_model_id(auth: Option<&McpAuthContext>) -> Option<String> {
         .map(ToString::to_string)
 }
 
-/// Client `(name, version)` from the initialize handshake's `client_info`,
-/// recorded as operator provenance. Falls back to `("unknown", "0")` when the
-/// peer info is absent (e.g. a request that never completed `initialize`).
+/// Client `(name, version)`, recorded as operator provenance. A per-request
+/// call (its `_meta` names a protocol version, as every `2026-07-28` call
+/// does) names its client in that `_meta` or not at all; a session call
+/// takes the `initialize` handshake's. Falls back to `("unknown", "0")`.
+///
+/// Not `RequestContext::client_info`: for a per-request call without
+/// `clientInfo` it falls back to the peer rmcp synthesizes for stateless
+/// requests, which carries rmcp's own name.
 #[must_use]
 pub fn peer_implementation(context: &RequestContext<RoleServer>) -> (String, String) {
-    context.peer.peer_info().map_or_else(
+    let client = if context.meta.protocol_version().is_some() {
+        context.meta.client_info()
+    } else {
+        context
+            .peer
+            .peer_info()
+            .map(|info| info.client_info.clone())
+    };
+    client.map_or_else(
         || ("unknown".to_string(), "0".to_string()),
-        |info| {
-            (
-                info.client_info.name.clone(),
-                info.client_info.version.clone(),
-            )
-        },
+        |info| (info.name, info.version),
     )
 }
 
@@ -1085,6 +1184,20 @@ mod tests {
             .with_trusted_model_id(trusted_model_id)
             .expect("a well-formed runner id binds"),
         }
+    }
+
+    /// Fails when an rmcp upgrade knows a revision newer than the one
+    /// Proxima serves: implement the new revision's server obligations
+    /// (list cache hints, lifecycle, headers, errors), then raise
+    /// `MAX_PROTOCOL_VERSION`. Admitting it by default is how AQS/aquilo#9484
+    /// happened.
+    #[test]
+    fn the_protocol_ceiling_is_rmcps_newest_revision() {
+        assert_eq!(
+            ProtocolVersion::KNOWN_VERSIONS.last(),
+            Some(&MAX_PROTOCOL_VERSION),
+            "rmcp knows a revision newer than MAX_PROTOCOL_VERSION"
+        );
     }
 
     #[test]
