@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use proxima_core::mcp::cursor as wire_cursor;
-use proxima_core::{Cursor, Tool, ToolCtx, ToolError};
+use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -92,7 +92,7 @@ pub struct CodeListReposOutput {
 /// snapshot of a large repository can emit tens of thousands of memories;
 /// this bounds the post-ingest enqueue to one generous pass, and the
 /// startup reconcile (capped) plus `maintain-embeddings` pick up any remainder.
-const EMBEDDING_BACKFILL_LIMIT: usize = 50_000;
+pub(super) const EMBEDDING_BACKFILL_LIMIT: usize = 50_000;
 
 const MAX_REPO_PAGE_LIMIT: u32 = 200;
 const DEFAULT_REPO_PAGE_LIMIT: u32 = 50;
@@ -128,6 +128,9 @@ pub struct CodeIngestHeadSnapshotArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeIngestHeadSnapshotOutput {
+    /// The ingestion run this call drove; proxima-code_get_ingest_run reads
+    /// it, including after a lost response.
+    pub run_id: String,
     pub repo: RepoItem,
     pub head_commit_sha: String,
     pub head_tree_sha: String,
@@ -270,7 +273,7 @@ pub struct CodeIngestHeadSnapshotTool;
 
 impl Tool for CodeIngestHeadSnapshotTool {
     const NAME: &'static str = "proxima-code_ingest_head_snapshot";
-    const DESCRIPTION: &'static str = "Ingest the current HEAD tree for one registered local Git repository and advance its cursor to HEAD. Does not walk commit history.";
+    const DESCRIPTION: &'static str = "Ingest the current HEAD tree for one registered local Git repository and advance its cursor to HEAD, waiting for the result. Does not walk commit history. Refused while another ingestion run of this repository is active for the owner. For a large repository prefer proxima-code_start_ingest_head_snapshot, which returns at once.";
     const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> =
         Some(super::WRITE_IDEMPOTENT);
 
@@ -283,57 +286,22 @@ impl Tool for CodeIngestHeadSnapshotTool {
     ) -> futures::future::BoxFuture<'static, Result<CodeIngestHeadSnapshotOutput, ToolError>> {
         Box::pin(async move {
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
-            let pool = code_store(&ctx)?;
-            let repo =
-                crate::repos::get_repo(pool.pool(), pool.owner_scope(), &ctx.owner(), repo_id)
-                    .await
-                    .map_err(map_repo_registry)?
-                    .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
-
-            let source = crate::LocalGitSource::new(
-                repo.repo_id,
-                PathBuf::from(repo.canonical_path.clone()),
-                ctx.owner(),
-            );
-            let engine = super::engine(&ctx)?;
-            let ingest_ctx = crate::CodeIngestContext::new(&engine, ctx.authz(), pool.as_ref());
-            let prior = Cursor::from_bytes(repo.last_cursor.clone().unwrap_or_default());
-            let outcome = source
-                .run_head_snapshot(&ingest_ctx, &prior)
-                .await
-                .map_err(|err| map_index_error(&err))?;
-            crate::repos::update_cursor(
-                pool.pool(),
-                pool.owner_scope(),
-                &ctx.owner(),
-                repo.repo_id,
-                outcome.cursor.as_bytes(),
-                time::OffsetDateTime::now_utc(),
-            )
-            .await
-            .map_err(map_repo_registry)?;
-
-            // Present chunks enqueue embedding_jobs in the derive txn when
-            // the engine has a client. Backfill remains crash-residue for
-            // heads written without a model; it is one anti-join, not a
-            // second flavor-table scan.
-            let embeddings_enqueued = engine
-                .backfill_missing_embeddings(ctx.authz(), &ctx.owner(), EMBEDDING_BACKFILL_LIMIT)
-                .await
-                .map_err(|err| ToolError::Other(err.to_string()))?;
-
-            let repo =
-                crate::repos::get_repo(pool.pool(), pool.owner_scope(), &ctx.owner(), repo.repo_id)
-                    .await
-                    .map_err(map_repo_registry)?
-                    .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
-
+            let (run, created) = super::ingest_runs::start_run(&ctx, repo_id).await?;
+            if !created {
+                return Err(ToolError::InvalidInput(format!(
+                    "an ingestion run of repo {repo_id} is already active for this owner: run {}; \
+                     read it with proxima-code_get_ingest_run",
+                    run.run_id
+                )));
+            }
+            let done = super::ingest_runs::drive_run(&ctx, repo_id, run.run_id).await?;
             Ok(CodeIngestHeadSnapshotOutput {
-                repo: repo_item(&ctx, repo)?,
-                head_commit_sha: outcome.head_sha,
-                head_tree_sha: outcome.head_tree_sha,
-                report: IndexReportItem::from(outcome.report),
-                embeddings_enqueued,
+                run_id: run.run_id.to_string(),
+                repo: repo_item(&ctx, done.repo)?,
+                head_commit_sha: done.head_commit_sha,
+                head_tree_sha: done.head_tree_sha,
+                report: IndexReportItem::from(done.report),
+                embeddings_enqueued: done.embeddings_enqueued,
             })
         })
     }
@@ -469,7 +437,7 @@ async fn maybe_set_target_branch(
     .map_err(map_repo_registry)
 }
 
-fn repo_item(ctx: &ToolCtx, record: RepoRecord) -> Result<RepoItem, ToolError> {
+pub(super) fn repo_item(ctx: &ToolCtx, record: RepoRecord) -> Result<RepoItem, ToolError> {
     let last_polled_at = record.last_polled_at.map(format_time).transpose()?;
     Ok(RepoItem {
         repo_handle: ctx.format_flavor_object(
@@ -578,7 +546,7 @@ impl Tool for CodeEraseRepoTool {
     }
 }
 
-fn format_time(value: time::OffsetDateTime) -> Result<String, ToolError> {
+pub(super) fn format_time(value: time::OffsetDateTime) -> Result<String, ToolError> {
     value
         .format(&time::format_description::well_known::Rfc3339)
         .map_err(|err| ToolError::Other(format!("format time: {err}")))
@@ -600,7 +568,7 @@ impl From<IndexReport> for IndexReportItem {
     }
 }
 
-fn map_index_error(error: &crate::IndexError) -> ToolError {
+pub(super) fn map_index_error(error: &crate::IndexError) -> ToolError {
     ToolError::Other(error.to_string())
 }
 

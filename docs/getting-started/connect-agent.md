@@ -47,6 +47,18 @@ local checkout and ingest its current tree:
    the backlog drains (watch `proxima://graph`). With no embedding client
    configured this is `0` and the deployment stays lexical-only.
 
+   A large repository can take longer than the MCP session's idle timeout
+   (`PROXIMA_MCP_SESSION_IDLE_SECS`, default 300 s), and a call that runs
+   past it without sending anything loses its result. Either send
+   `_meta.progressToken` with the call (the server then sends a progress
+   notification every 30 s), or use
+   `proxima-code_start_ingest_head_snapshot`: it returns an ingestion run at
+   once and ingests in the background; poll
+   `proxima-code_get_ingest_run` with its `run_id` until `status` is
+   `succeeded` or `failed`. `proxima-code_get_ingest_run` with a
+   `repo_handle` reads that repository's latest run, which is also how to
+   recover a synchronous ingest whose response was lost.
+
 Then search with `proxima-code_search_chunks`, `proxima-code_search_commits`,
 and read exact revisions with `proxima-code_open_file_revision`.
 

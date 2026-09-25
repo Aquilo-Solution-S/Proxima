@@ -68,6 +68,7 @@ pub(crate) async fn read_owner_ids(
 pub(crate) use proxima_core::mcp::McpPresentationExt as CodeToolCtxExt;
 
 pub mod emit_execution_request;
+pub mod ingest_runs;
 pub mod open_file_revision;
 pub mod repos;
 pub mod search_chunks;
@@ -77,6 +78,7 @@ pub mod work_item_bundle;
 pub use emit_execution_request::{
     CodeEmitExecutionPlanTool, CodeEmitExecutionRequestTool, CodeRetryExecutionRequestTool,
 };
+pub use ingest_runs::{CodeGetIngestRunTool, CodeStartIngestHeadSnapshotTool};
 pub use open_file_revision::CodeOpenFileRevisionTool;
 pub use repos::{
     CodeEraseRepoTool, CodeIngestHeadSnapshotTool, CodeListReposTool, CodeRegisterRepoTool,

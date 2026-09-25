@@ -8,6 +8,18 @@ use proxima_storage_pg::begin_compatible_owner_transaction;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// How often a run's driver touches `updated_at` while it works.
+pub const RUN_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A queued or running run untouched this long has no live driver — the
+/// process driving it stopped — and is retired as failed the next time a
+/// start or a read reaches it. Ten heartbeats, so a slow statement cannot
+/// retire a live run.
+pub const RUN_STALE_AFTER: std::time::Duration = std::time::Duration::from_mins(5);
+
+pub(crate) const ABANDONED_RUN: &str =
+    "abandoned: no heartbeat for 5 minutes; the process driving this run stopped";
+
 /// Create a queued run or return the active row for `(owner, repo_id)`.
 ///
 /// # Errors
@@ -57,6 +69,8 @@ pub async fn start_run_with_created(
     if !super::fence::repo_registered_tx(&mut tx, owner, repo_id).await? {
         return Err(RepoRegistryError::NotFound { repo_id });
     }
+    // A dead process's run would hold the one-active-run slot forever.
+    retire_stale_runs_on(&mut tx, owner, repo_id).await?;
 
     let inserted = sqlx::query_as::<_, RunRow>(
         "INSERT INTO proxima_code.repo_ingestion_runs \
@@ -129,6 +143,131 @@ pub async fn get_active_run(
            AND repo_id = $3 \
            AND status IN ('queued', 'running') \
          ORDER BY started_at DESC \
+         LIMIT 1",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(repo_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(row.map(Into::into))
+}
+
+/// Retire `owner`'s queued or running runs of `repo_id` whose driver has
+/// not touched them for `RUN_STALE_AFTER` (5 min). Returns how many it retired.
+///
+/// # Errors
+/// Returns `RepoRegistryError::Database` on database failures.
+pub async fn retire_stale_runs(
+    pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<u64, RepoRegistryError> {
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
+    let retired = retire_stale_runs_on(&mut tx, owner, repo_id).await?;
+    tx.commit().await?;
+    Ok(retired)
+}
+
+async fn retire_stale_runs_on(
+    conn: &mut sqlx::PgConnection,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<u64, sqlx::Error> {
+    let (kind, principal_id) = owner.columns();
+    let result = sqlx::query(
+        "UPDATE proxima_code.repo_ingestion_runs SET \
+            status = 'failed', error_message = $4, updated_at = now(), finished_at = now() \
+          WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3 \
+            AND status IN ('queued', 'running') \
+            AND updated_at < now() - make_interval(secs => $5)",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(repo_id)
+    .bind(ABANDONED_RUN)
+    .bind(RUN_STALE_AFTER.as_secs_f64())
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// The driver's heartbeat: touch a queued or running run's `updated_at`.
+/// Returns `false` once the run is terminal (or gone), which tells the
+/// driver nobody is waiting on this row any more.
+///
+/// # Errors
+/// Returns `RepoRegistryError::Database` on database failures.
+pub async fn touch_run(
+    pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
+    run_id: Uuid,
+) -> Result<bool, RepoRegistryError> {
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
+    let result = sqlx::query(
+        "UPDATE proxima_code.repo_ingestion_runs SET updated_at = now() \
+          WHERE run_id = $1 AND status IN ('queued', 'running')",
+    )
+    .bind(run_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// `owner`'s run `run_id`, or `None` when it is not theirs or not there.
+///
+/// # Errors
+/// Returns `RepoRegistryError::Database` on database failures.
+pub async fn get_owner_run(
+    pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
+    owner: &Owner,
+    run_id: Uuid,
+) -> Result<Option<RepoIngestionRun>, RepoRegistryError> {
+    let (kind, principal_id) = owner.columns();
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
+    let row = sqlx::query_as::<_, RunRow>(
+        "SELECT run_id, repo_id, status, stage, \
+                commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
+                chunks_tombstoned, ast_edges_emitted, abstractions_emitted, \
+                embeddings_landed, citations_emitted, \
+                error_message, started_at, updated_at, finished_at \
+         FROM proxima_code.repo_ingestion_runs \
+         WHERE run_id = $1 AND owner_kind = $2 AND owner_id = $3",
+    )
+    .bind(run_id)
+    .bind(kind)
+    .bind(principal_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(row.map(Into::into))
+}
+
+/// `owner`'s most recent run of `repo_id`, whatever its status.
+///
+/// # Errors
+/// Returns `RepoRegistryError::Database` on database failures.
+pub async fn latest_run(
+    pool: &PgPool,
+    owner_scope: Option<&OwnerScope>,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<Option<RepoIngestionRun>, RepoRegistryError> {
+    let (kind, principal_id) = owner.columns();
+    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
+    let row = sqlx::query_as::<_, RunRow>(
+        "SELECT run_id, repo_id, status, stage, \
+                commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
+                chunks_tombstoned, ast_edges_emitted, abstractions_emitted, \
+                embeddings_landed, citations_emitted, \
+                error_message, started_at, updated_at, finished_at \
+         FROM proxima_code.repo_ingestion_runs \
+         WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3 \
+         ORDER BY started_at DESC, run_id DESC \
          LIMIT 1",
     )
     .bind(kind)
@@ -289,13 +428,9 @@ pub async fn mark_succeeded(
     }
 }
 
-/// Mark every queued/running run as failed.
-///
-/// Intended to be called once at process boot under the single-writer
-/// invariant: any active run in the DB belongs to a prior process whose
-/// in-memory driver and event hub are gone, so the row is unreachable and
-/// must be retired before it blocks new runs through the partial unique
-/// index `repo_ingestion_runs_one_active`.
+/// Retire every queued or running run, of any owner, that no driver has
+/// touched for `RUN_STALE_AFTER` (5 min): its process stopped. A live run is left
+/// alone, so this is safe beside other processes driving runs.
 ///
 /// Returns the number of rows transitioned.
 ///
@@ -311,9 +446,18 @@ pub async fn sweep_orphaned_runs_with_platform(
 ) -> Result<u64, RepoRegistryError> {
     if let Some(platform) = platform {
         let mut tx = platform.begin().await.map_err(RepoRegistryError::Storage)?;
+        // Stale by the driver heartbeat, not merely active: other processes
+        // behind the same platform scope may be driving live runs.
         let result = sqlx::query(
-            "UPDATE proxima_code.repo_ingestion_runs SET status = 'failed', error_message = 'orphaned run recovered' WHERE status = 'running' AND heartbeat_at < now() - interval '15 minutes'",
-        ).execute(&mut *tx).await?;
+            "UPDATE proxima_code.repo_ingestion_runs SET \
+                status = 'failed', error_message = $1, updated_at = now(), finished_at = now() \
+              WHERE status IN ('queued', 'running') \
+                AND updated_at < now() - make_interval(secs => $2)",
+        )
+        .bind(ABANDONED_RUN)
+        .bind(RUN_STALE_AFTER.as_secs_f64())
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         return Ok(result.rows_affected());
     }
@@ -322,12 +466,12 @@ pub async fn sweep_orphaned_runs_with_platform(
         .map_err(RepoRegistryError::Storage)?;
     let result = sqlx::query(
         "UPDATE proxima_code.repo_ingestion_runs SET \
-            status = 'failed', \
-            error_message = 'abandoned by process restart', \
-            updated_at = now(), \
-            finished_at = now() \
-          WHERE status IN ('queued', 'running')",
+            status = 'failed', error_message = $1, updated_at = now(), finished_at = now() \
+          WHERE status IN ('queued', 'running') \
+            AND updated_at < now() - make_interval(secs => $2)",
     )
+    .bind(ABANDONED_RUN)
+    .bind(RUN_STALE_AFTER.as_secs_f64())
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;

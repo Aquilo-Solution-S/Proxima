@@ -34,7 +34,7 @@ tree-sitter-rust = { workspace = true }
 tree-sitter-typescript = { workspace = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "process"] }
+tokio = { workspace = true, features = ["fs", "process", "time"] }
 
 [dev-dependencies]
 proxima-mcp-server = { path = "../../crates/mcp-server" }

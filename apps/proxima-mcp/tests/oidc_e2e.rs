@@ -300,8 +300,8 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         .collect();
     assert_eq!(
         code_tools.len(),
-        11,
-        "expected the 11 Code-flavor tools, got {}: {code_tools:?}",
+        13,
+        "expected the 13 Code-flavor tools, got {}: {code_tools:?}",
         code_tools.len()
     );
 
@@ -322,6 +322,130 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         call.get("result").is_some(),
         "list_repos call should succeed, got {call:?}"
     );
+
+    // 5. Ingest is a tracked run under owner RLS (issue #347): the async tool
+    // answers at once and its run is read back until it succeeds; the
+    // synchronous tool drives a run of its own.
+    let repo_dir =
+        std::env::temp_dir().join(format!("proxima-e2e-ingest-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(repo_dir.join("src"))?;
+    std::fs::write(
+        repo_dir.join("src/lib.rs"),
+        "pub fn e2e_run_marker() -> u64 { 7 }\n",
+    )?;
+    for args in [
+        &["init", "-q"][..],
+        &["add", "."],
+        &[
+            "-c",
+            "user.name=e2e",
+            "-c",
+            "user.email=e2e@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "e2e",
+        ],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_dir)
+            .args(args)
+            .status()?;
+        assert!(status.success(), "git {args:?}");
+    }
+    let tool_call = |id: u64, name: &str, arguments: serde_json::Value| {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+               "params": {"name": name, "arguments": arguments}})
+    };
+    let registered = post_rpc(
+        &client,
+        &url,
+        Some(&session),
+        &bearer,
+        tool_call(
+            10,
+            "proxima-code_register_repo",
+            json!({"path": repo_dir.to_string_lossy()}),
+        ),
+    )
+    .await?;
+    let repo_handle = registered["result"]["structuredContent"]["repo"]["repo_handle"]
+        .as_str()
+        .ok_or_else(|| format!("register_repo: {registered}"))?
+        .to_owned();
+    let started = post_rpc(
+        &client,
+        &url,
+        Some(&session),
+        &bearer,
+        tool_call(
+            11,
+            "proxima-code_start_ingest_head_snapshot",
+            json!({"repo_handle": repo_handle}),
+        ),
+    )
+    .await?;
+    let run_id = started["result"]["structuredContent"]["run"]["run_id"]
+        .as_str()
+        .ok_or_else(|| format!("start_ingest_head_snapshot: {started}"))?
+        .to_owned();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_mins(1);
+    let run = loop {
+        let read = post_rpc(
+            &client,
+            &url,
+            Some(&session),
+            &bearer,
+            tool_call(12, "proxima-code_get_ingest_run", json!({"run_id": run_id})),
+        )
+        .await?;
+        let run = read["result"]["structuredContent"]["run"].clone();
+        if matches!(run["status"].as_str(), Some("succeeded" | "failed")) {
+            break run;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "run never finished: {read}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert_eq!(run["status"], "succeeded", "{run}");
+    assert_eq!(run["files_emitted"], 1, "{run}");
+    let synchronous = post_rpc(
+        &client,
+        &url,
+        Some(&session),
+        &bearer,
+        tool_call(
+            13,
+            "proxima-code_ingest_head_snapshot",
+            json!({"repo_handle": repo_handle}),
+        ),
+    )
+    .await?;
+    let sync_run = synchronous["result"]["structuredContent"]["run_id"]
+        .as_str()
+        .ok_or_else(|| format!("ingest_head_snapshot: {synchronous}"))?
+        .to_owned();
+    let latest = post_rpc(
+        &client,
+        &url,
+        Some(&session),
+        &bearer,
+        tool_call(
+            14,
+            "proxima-code_get_ingest_run",
+            json!({"repo_handle": repo_handle}),
+        ),
+    )
+    .await?;
+    let latest = &latest["result"]["structuredContent"]["run"];
+    assert_eq!(
+        (&latest["run_id"], &latest["status"]),
+        (&json!(sync_run), &json!("succeeded"))
+    );
+    let _ = std::fs::remove_dir_all(&repo_dir);
 
     assert!(
         names.iter().any(|name| name == "core_forget"),

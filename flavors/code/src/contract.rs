@@ -652,7 +652,7 @@ const STATE_SURFACES: &[Surface] = &[
 
 // ── Tools ───────────────────────────────────────────────────────────────
 
-/// The eleven wire names, with `idempotent` mirroring each tool's
+/// The thirteen wire names, with `idempotent` mirroring each tool's
 /// `ANNOTATIONS`. No code tool is a dispatcher, so every `actions` is empty.
 const TOOLS: &[ToolContract] = &[
     ToolContract {
@@ -667,6 +667,16 @@ const TOOLS: &[ToolContract] = &[
     },
     ToolContract {
         wire_name: "proxima-code_ingest_head_snapshot",
+        actions: &[],
+        idempotent: true,
+    },
+    ToolContract {
+        wire_name: "proxima-code_start_ingest_head_snapshot",
+        actions: &[],
+        idempotent: true,
+    },
+    ToolContract {
+        wire_name: "proxima-code_get_ingest_run",
         actions: &[],
         idempotent: true,
     },
@@ -713,7 +723,7 @@ const TOOLS: &[ToolContract] = &[
 ];
 
 /// The code flavor's contract: thirty-two schema registrations (sixteen
-/// typed sidecars, sixteen opaque citation schemas), eleven tools, and no
+/// typed sidecars, sixteen opaque citation schemas), thirteen tools, and no
 /// resources — the freeze forbids them to any flavor but #0, and this one
 /// has never declared any.
 pub static CODE_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
