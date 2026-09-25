@@ -85,7 +85,7 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_MAX_REQUEST_BODY_BYTES` | Largest accepted request body on the listener, enforced before auth and again by rmcp. Default `4194304` (4 MiB); `0` is a boot error. |
 | `PROXIMA_MCP_SSE_KEEP_ALIVE_SECS` | SSE ping interval. Default `15`; `0` disables pings. |
 | `PROXIMA_MCP_SSE_RETRY_SECS` | SSE priming-event retry hint. Default `3`; `0` sends none. |
-| `PROXIMA_MCP_SESSIONS` | Keep a server-side MCP session per client for legacy protocol versions (`2026-07-28` is always stateless). Default `true`. |
+| `PROXIMA_MCP_SESSIONS` | Keep a server-side MCP session per client that opens with `initialize`; per-request (`_meta`-versioned) calls are always stateless. Default `true`. |
 | `PROXIMA_MCP_JSON_RESPONSE` | With sessions off, answer simple calls as `application/json` rather than SSE. Default `false`. |
 | `PROXIMA_RUNTIME_GRANTS` | Grant the runtime role its DML privileges at boot, after migrating and before the runtime pool connects ([15](15-deployment.md)). Default `false`. |
 | `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `memory` (default, fail-closed) or `full` (opt-in). |

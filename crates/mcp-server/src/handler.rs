@@ -19,11 +19,11 @@ use proxima_core::{
 };
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
     Implementation, InitializeRequestParams, InitializeResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
-    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
-    ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+    ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 
@@ -31,6 +31,23 @@ use crate::selfdoc;
 
 /// Product name reported to MCP clients on `initialize`.
 const SERVER_NAME: &str = "proxima";
+
+/// Newest MCP revision Proxima implements in full. rmcp accepts every
+/// revision it knows by default, `2026-07-28` included, and that revision
+/// requires more of a server than rmcp fills in for it (SEP-2549 list cache
+/// hints among them), so a client that negotiated it rejected `tools/list`.
+/// A client asking for anything newer is answered with this revision.
+const MAX_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2025_11_25;
+
+/// SEP-2549 freshness of every list result, in milliseconds. Each list is
+/// projected from the caller's token scope, so a grant or revocation must
+/// show on the next list rather than after a cache expires.
+const LIST_TTL_MS: u64 = 0;
+
+/// SEP-2549 cache scope of every list result: per-caller, for the same
+/// reason as [`LIST_TTL_MS`], so no shared cache may serve it to another
+/// token.
+const LIST_CACHE_SCOPE: CacheScope = CacheScope::Private;
 
 use crate::auth::McpAuthContext;
 use crate::host_tools::McpHostTool;
@@ -70,6 +87,15 @@ impl ServerHandler for DynamicHandler {
         // release they were talking to.
         info.server_info = Implementation::new(SERVER_NAME, proxima_core::RELEASE_VERSION);
         info
+    }
+
+    /// Every revision up to `2025-11-25`, the newest Proxima implements in
+    /// full (`MAX_PROTOCOL_VERSION`). This bounds what `initialize` may
+    /// agree to and what a per-request version may name. A host wrapping
+    /// this handler in its own `ServerHandler` must delegate here, or rmcp's
+    /// default re-admits every known revision.
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(ProtocolVersion::known_up_to(&MAX_PROTOCOL_VERSION))
     }
 
     /// Override `initialize` so the `instructions` returned at the handshake
@@ -116,10 +142,9 @@ impl ServerHandler for DynamicHandler {
                 })
                 .map(raw_resource_from_meta),
         );
-        std::future::ready(Ok(ListResourcesResult {
-            resources,
-            ..Default::default()
-        }))
+        std::future::ready(Ok(ListResourcesResult::with_all_items(resources)
+            .with_ttl_ms(LIST_TTL_MS)
+            .with_cache_scope(LIST_CACHE_SCOPE)))
     }
 
     fn list_resource_templates(
@@ -136,10 +161,11 @@ impl ServerHandler for DynamicHandler {
             })
             .map(raw_resource_template_from_meta)
             .collect();
-        std::future::ready(Ok(ListResourceTemplatesResult {
+        std::future::ready(Ok(ListResourceTemplatesResult::with_all_items(
             resource_templates,
-            ..Default::default()
-        }))
+        )
+        .with_ttl_ms(LIST_TTL_MS)
+        .with_cache_scope(LIST_CACHE_SCOPE)))
     }
 
     /// Answers are always [`ReadResourceResponse::Complete`]. rmcp 3 widened
@@ -236,10 +262,9 @@ impl ServerHandler for DynamicHandler {
         });
         let mut tools = tools;
         tools.extend(host_tools);
-        std::future::ready(Ok(ListToolsResult {
-            tools,
-            ..Default::default()
-        }))
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(LIST_TTL_MS)
+            .with_cache_scope(LIST_CACHE_SCOPE)))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {

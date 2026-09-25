@@ -54,6 +54,13 @@ resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
 
+The MCP server serves protocol revisions up to `2025-11-25`. A client
+asking for a newer one is answered with `2025-11-25` at `initialize` and
+refused on a per-request call with `unsupported protocol version`
+(-32022), whose data lists the served revisions. `tools/list`,
+`resources/list` and `resources/templates/list` carry `ttlMs: 0` and
+`cacheScope: "private"`: each is projected from the caller's token.
+
 Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Pins live on the Memory admission (`origins[]` / `refs[]`). A pin is admitted when the writer has write authority on the source and the target exists; target render is independent (`Visible` / `Redacted` / `Unavailable`). There is no Edge table.
 
 Canonical substrate tools:
@@ -110,9 +117,7 @@ Resource reads fail in three distinct shapes; none collapses into a
 generic "unknown resource":
 
 - **Unknown path** (no template matches the URI) → JSON-RPC
-  `resource_not_found` (-32002). Note the MCP SDK re-codes -32002 to
-  `invalid_params` for clients negotiating protocol `2026-07-28`+
-  (SEP-2164); the message is authoritative either way.
+  `resource_not_found` (-32002).
 - **Bad or missing query parameter** on a known template →
   `invalid_params` naming the parameter, its offending value, and the
   expected form (e.g. ``resource …: invalid parameter `direction`:

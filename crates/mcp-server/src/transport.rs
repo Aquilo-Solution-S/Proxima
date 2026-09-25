@@ -170,8 +170,8 @@ pub struct McpTransportConfig {
     pub sse_keep_alive: Option<Duration>,
     /// SSE priming-event retry interval; `None` sends none.
     pub sse_retry: Option<Duration>,
-    /// Keep a server-side session per client (legacy protocol versions
-    /// only; `2026-07-28` requests are always stateless).
+    /// Keep a server-side session per client that opens with `initialize`;
+    /// per-request (`_meta`-versioned) calls are always stateless.
     pub legacy_session_mode: bool,
     /// Prefer `application/json` for simple request/response calls when
     /// sessions are off.
@@ -327,6 +327,144 @@ mod tests {
             .unwrap();
         let status = app.oneshot(request).await.unwrap().status();
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// The production `/mcp` service over an empty registry, with no listener
+    /// layers: the tests below exercise rmcp's version negotiation against
+    /// [`crate::handler::DynamicHandler`], nothing in front of it.
+    fn mcp_service() -> super::McpStreamableService {
+        let registry = Arc::new(proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests());
+        super::streamable_http_service(
+            crate::server::McpToolHost::from_parts(
+                registry,
+                proxima_core::FlavorServices::default(),
+            ),
+            &default_allowlist(),
+            &crate::security::HostAllowlist::default(),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+    }
+
+    fn rpc_request(version: &str, body: &serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("http://localhost/mcp")
+            .header("Host", "localhost")
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", version)
+            .header("Mcp-Method", body["method"].as_str().unwrap())
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    /// A request in the per-request lifecycle (no `initialize`, no session),
+    /// naming `version` in its `_meta` the way a 2026-07-28 client does.
+    fn per_request_rpc(version: &str, method: &str) -> Request<Body> {
+        rpc_request(
+            version,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": { "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": version,
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                    "io.modelcontextprotocol/clientInfo": { "name": "test", "version": "0" },
+                }},
+            }),
+        )
+    }
+
+    /// The first JSON-RPC message of a response, whether rmcp answered with
+    /// plain JSON or an SSE stream (which may stay open after it).
+    async fn first_message(
+        service: super::McpStreamableService,
+        request: Request<Body>,
+    ) -> serde_json::Value {
+        use http_body_util::BodyExt;
+
+        let response = service.oneshot(request).await.unwrap();
+        let mut body = response.into_body();
+        let mut text = String::new();
+        let read = async {
+            while let Some(frame) = body.frame().await {
+                if let Ok(data) = frame.unwrap().into_data() {
+                    text.push_str(std::str::from_utf8(&data).unwrap());
+                }
+                let event = text
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data:"))
+                    .find_map(|data| serde_json::from_str::<serde_json::Value>(data.trim()).ok());
+                if event.is_some() {
+                    return event;
+                }
+            }
+            serde_json::from_str(&text).ok()
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), read)
+            .await
+            .expect("rmcp answered within 5s")
+            .unwrap_or_else(|| panic!("no JSON-RPC message in response body: {text:?}"))
+    }
+
+    /// Issue #9484 (Aquilo): Claude Code asked for 2026-07-28 and was
+    /// answered with it; the handshake must settle on a revision Proxima
+    /// implements instead.
+    #[tokio::test]
+    async fn initialize_requesting_2026_07_28_is_answered_with_2025_11_25() {
+        let request = rpc_request(
+            "2026-07-28",
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2026-07-28",
+                    "capabilities": {},
+                    "clientInfo": { "name": "test", "version": "0" },
+                },
+            }),
+        );
+        let message = first_message(mcp_service(), request).await;
+        assert_eq!(
+            message["result"]["protocolVersion"], "2025-11-25",
+            "{message}"
+        );
+    }
+
+    /// The path the incident took: a per-request 2026-07-28 `tools/list`.
+    /// rmcp's default admitted it and served a list without the cache
+    /// fields that revision requires; now it is refused with the versions
+    /// Proxima does serve, so the client can fall back.
+    #[tokio::test]
+    async fn per_request_2026_07_28_is_refused_with_the_supported_versions() {
+        let message =
+            first_message(mcp_service(), per_request_rpc("2026-07-28", "tools/list")).await;
+        assert_eq!(
+            message["error"]["code"],
+            rmcp::model::ErrorCode::UNSUPPORTED_PROTOCOL_VERSION.0,
+            "{message}"
+        );
+        assert_eq!(
+            message["error"]["data"]["supported"],
+            serde_json::json!(["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]),
+            "{message}"
+        );
+    }
+
+    /// Tool and resource lists are projected from the caller's token, so
+    /// they carry SEP-2549 hints that forbid a shared or stale cache.
+    #[tokio::test]
+    async fn list_results_carry_private_zero_ttl_cache_hints() {
+        for method in ["tools/list", "resources/list", "resources/templates/list"] {
+            let message = first_message(mcp_service(), per_request_rpc("2025-11-25", method)).await;
+            assert_eq!(message["result"]["ttlMs"], 0, "{method}: {message}");
+            assert_eq!(
+                message["result"]["cacheScope"], "private",
+                "{method}: {message}"
+            );
+        }
     }
 
     // A stream with no Content-Length that exceeds the cap errors when
