@@ -27,6 +27,7 @@ use serde::Serialize;
 use crate::auth::McpAuthContext;
 use crate::host_tools::{McpHostTool, McpHostTools};
 use crate::request_scope::RequestHeaderAllowlist;
+use crate::tool_list::ToolListNotifier;
 
 fn composed_schema_names(registry: &FlavorRegistryFrozen) -> Vec<String> {
     let mut schemas = vec!["proxima_core".to_owned()];
@@ -62,6 +63,7 @@ pub struct McpToolHost {
     /// Bounds call-record writes in flight; a saturated host drops the
     /// record (and says so) rather than queueing without limit.
     record_permits: Arc<tokio::sync::Semaphore>,
+    tool_list: Option<ToolListNotifier>,
 }
 
 /// Longest host tool name served.
@@ -76,6 +78,7 @@ impl std::fmt::Debug for McpToolHost {
             .field("has_engine", &self.engine.is_some())
             .field("host_tools", &self.host_tools)
             .field("record_calls", &self.record_calls)
+            .field("tool_list_notifications", &self.tool_list.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -91,6 +94,7 @@ impl McpToolHost {
             host_tools: None,
             record_calls: false,
             record_permits: Arc::new(tokio::sync::Semaphore::new(RECORD_PERMITS)),
+            tool_list: None,
         }
     }
 
@@ -121,6 +125,21 @@ impl McpToolHost {
     pub fn with_call_recording(mut self, record: bool) -> Self {
         self.record_calls = record;
         self
+    }
+
+    /// Advertise `tools.listChanged` and register every caller with
+    /// `notifier` under its owner, so [`ToolListNotifier::notify`] reaches
+    /// that owner's connected clients. A host attaches one only if it calls
+    /// `notify` whenever an owner's tool list changes: the capability is a
+    /// promise to. Default: none.
+    #[must_use]
+    pub fn with_tool_list_notifier(mut self, notifier: ToolListNotifier) -> Self {
+        self.tool_list = Some(notifier);
+        self
+    }
+
+    pub(crate) const fn tool_list_notifier(&self) -> Option<&ToolListNotifier> {
+        self.tool_list.as_ref()
     }
 
     /// Whether [`Self::with_call_recording`] is on.

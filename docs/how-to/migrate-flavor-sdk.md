@@ -1,5 +1,18 @@
 # Migrate the Flavor SDK
 
+## v0.0.22
+
+Pin all Proxima Rust dependencies to the same `v0.0.22` tag. No database
+change. Additive, with one provenance change: a per-request (`_meta`
+versioned) MCP call that names no `clientInfo` now records client
+`unknown`; before, it recorded `rmcp`, the placeholder rmcp synthesizes for
+stateless requests.
+
+| Surface | Upgrade |
+|---|---|
+| Own `ServerHandler` around `DynamicHandler` | Delegate `supported_protocol_versions`, `discover`, `accepted_subscription_filter` and `listen` to it, like `list_tools`. Otherwise rmcp's defaults admit every revision rmcp knows, `server/discover` loses the per-caller instructions, and `subscriptions/listen` is refused |
+| Tool lists that change at runtime | `CoreMcpTools::with_tool_list_notifier(notifier.clone())`, then `notifier.notify(&owner)` on every change to that owner's tools. A wrapping handler that overrides `get_info` or `initialize` keeps `tools.listChanged` and delegates `initialize`, which registers the session |
+
 ## v0.0.21
 
 Pin all Proxima Rust dependencies to the same `v0.0.21` tag. No database

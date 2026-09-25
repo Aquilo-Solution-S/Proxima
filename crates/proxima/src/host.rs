@@ -300,9 +300,9 @@ pub use proxima_core::{AuthError, Credentials, OwnerScope, authenticate};
 /// MCP edge wiring [`layered_router`] takes, and the listener CORS layer.
 pub use proxima_mcp_server::{McpEdgeAuth, OriginAllowlist, cors_layer};
 pub use proxima_mcp_server::{
-    McpHostTool, McpHostTools, McpStreamableService, McpToolHost, auth_context, author_from_args,
-    mcp_tool_error_to_error_data, peer_implementation, reject_nul_in_args, strip_call_context_args,
-    tool_invocation_error_to_error_data,
+    McpHostTool, McpHostTools, McpStreamableService, McpToolHost, ToolListNotifier, auth_context,
+    author_from_args, mcp_tool_error_to_error_data, peer_implementation, reject_nul_in_args,
+    strip_call_context_args, tool_invocation_error_to_error_data,
 };
 /// Owner-RLS boot: the runtime-role guard, the platform scope
 /// [`AppContext::platform_scope_for_host`] returns, and the sqlx →
