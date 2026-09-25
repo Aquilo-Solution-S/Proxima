@@ -928,7 +928,9 @@ Rules:
    (so switching to `NamedMigrator::flavor` re-runs nothing, and neither does
    an older binary still on the shared ledger), and revokes every non-owner
    write on it: a runtime role that can delete a ledger row makes the next
-   boot re-run that migration.
+   boot re-run that migration. A lane that does not continue its ledger is
+   refused before it applies anything
+   ([how-to/migrations.md §Ledger lineage](how-to/migrations.md#ledger-lineage)).
 4. `run_core_and_flavor_migrations` rejects duplicate versions before any
    database write; external migrator composition owns the same collision
    check if it bypasses this facade.

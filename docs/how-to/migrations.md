@@ -150,7 +150,8 @@ in order. Previously shipped migration bytes remain unchanged.
 `_sqlx_migrations` stores `(version, checksum)`.
 
 - SQLx ignores foreign-lane rows (`ignore_missing`). Core preflight requires
-  every recorded core version to match an embedded migration checksum.
+  every recorded core version to match an embedded migration checksum; a
+  flavor ledger must be one its lane continues (§Ledger lineage).
 - Checksum mismatch: fatal. Do not edit an applied file.
 
 ## Lanes
@@ -163,6 +164,29 @@ Flavor `<id>`: `public._sqlx_migrations_<id>`, `-` spelled `_`
 (`NamedMigrator::flavor`, `flavor_ledger_table`); the code flavor's is
 `public._sqlx_migrations_proxima_code`. A flavor on core's ledger boots with a
 warning.
+
+## Ledger lineage
+
+Every migrator keeps `ignore_missing`: a ledger row the binary does not ship is
+normal, because two releases' fleets share one database until the older is
+retired, and a lane may shed a file. Before a flavor lane runs, the migration
+run reads its ledger under the migration lock and refuses a lane that does not
+continue it, before applying anything (`MigrationError::Ledger`):
+
+| `LedgerConflict` | Shape | Remedy |
+|---|---|---|
+| `Replaced` | the lane's first migration was never applied, and the ledger records versions this binary does not ship | a replaced baseline, in either direction: retire the release that does not match, or reset the lane's schemas and ledger before the new baseline first boots (rule 3) |
+| `Diverged` | a pending migration is older than a recorded one this binary does not ship | a later release squashed or renumbered this one's files: retire this release |
+| `Unapplied` | `skip_migrations` only: a lane migration its ledger does not record | run the migration step first |
+
+A fresh ledger, an upgrade, an older release beside a newer one, and a lane
+that shed a file with only newer migrations pending all boot. Core's shared
+ledger is not checked: its rows cannot be attributed to a lane, and core has
+its own preflight. A host or flavor lane recording there is unchecked too;
+`NamedMigrator::flavor` moves it onto its own ledger. Not caught: a lane
+squashed in part into a newer version, whose kept first migration looks like
+an upgrade. Only a publish-time check that each release's lane extends the
+previous one's sees that.
 
 ## Reset
 
