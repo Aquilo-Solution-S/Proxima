@@ -27,7 +27,8 @@ use proxima_core::{
     EntityId, EntityRef, FlavorRegistry, GoalId, GroupId, MemoryId, OwnerRef, SchemaId,
     SchemaVersion, SidecarPayload, StorageError, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory_series};
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::wake_timeseries::{
@@ -417,7 +418,7 @@ fn destination() -> OwnerRef {
 
 async fn fresh_pg() -> (String, PgStorage) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let pg = PgStorage::connect(&db_url(&db_name))
@@ -475,7 +476,7 @@ impl ColdObjectStore for CountingColdStore {
 
 async fn fresh_pg_with_counting_cold() -> (String, PgStorage, Arc<CountingColdStore>) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let cold = Arc::new(CountingColdStore::default());
@@ -489,7 +490,7 @@ async fn fresh_pg_with_counting_cold() -> (String, PgStorage, Arc<CountingColdSt
 
 async fn fresh_pg_with_cold() -> (String, PgStorage, Arc<MemoryColdStore>) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let cold = Arc::new(MemoryColdStore::default());

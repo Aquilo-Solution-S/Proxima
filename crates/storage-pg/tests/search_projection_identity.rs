@@ -83,8 +83,9 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{OwnerRef, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 /// Small enough for CI, large enough that the overfetch window, the tie
@@ -866,7 +867,7 @@ async fn run_identity(
     language_for: impl Fn(usize) -> Option<&'static str>,
 ) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1150,7 +1151,7 @@ const STARVATION_EXPECTED: &[(&str, &[&str])] = &[
 #[tokio::test]
 async fn a_superseded_backlog_does_not_starve_the_page() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1391,7 +1392,7 @@ const KIND_PROBE_EXPECTED: &[(&str, &[&str])] = &[
 #[tokio::test]
 async fn a_kind_filter_does_not_starve_the_page() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);

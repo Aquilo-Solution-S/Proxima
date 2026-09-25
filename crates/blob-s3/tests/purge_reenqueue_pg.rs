@@ -11,7 +11,8 @@ use aws_sdk_s3::config::Region;
 use aws_sdk_s3::primitives::ByteStream;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::{ColdObjectStore, StorageError};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::{ColdPurgeRetryOptions, ColdPurgeRetryOutcome, PgStorage};
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -82,7 +83,7 @@ async fn assert_reenqueue_survives(preserve_timestamp: bool) -> TestResult<()> {
         return Ok(());
     }
     let database = unique_db_name("proxima_reenqueue_purge");
-    create_db(&database).await?;
+    create_core_db(&database).await?;
     let pg = PgStorage::connect(&db_url(&database)).await?;
     pg.run_before_owner_rls_migrations().await?;
     let config = S3RuntimeConfig {

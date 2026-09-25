@@ -33,8 +33,9 @@ use std::time::{Duration, Instant};
 // to issue any owner-write permit. Request fixtures use HostBearer; the
 // global maintenance test below obtains its witness by consuming a dedicated
 // Engine through the same host boundary as production boot.
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 /// The transfer's registry-resolved legs, exactly as the engine assembles
@@ -88,7 +89,7 @@ async fn erase_owner_and_drain(pg: &PgStorage, store: &CitedBlobStore, owner: Ow
 
 async fn fresh_storage() -> (PgStorage, String) {
     let db_name = unique_db_name("proxima_blob_s3_test");
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);

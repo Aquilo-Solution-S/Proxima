@@ -4,6 +4,7 @@
 
 use super::{DerivedDraft, DerivedOutcome};
 use crate::PgStorage;
+use crate::test_fixtures::create_core_db;
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
@@ -11,7 +12,7 @@ use proxima_core::{
     AccessKind, DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryOperatorKind, OwnerRef, SchemaId,
     SchemaVersion, StorageError, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use uuid::Uuid;
 
 fn fact_draft() -> FactWriteCommand {
@@ -96,7 +97,7 @@ async fn append_with_edges(
 
 async fn fresh_pg() -> (String, PgStorage) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let pg = PgStorage::connect(&db_url(&db_name))

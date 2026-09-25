@@ -1,3 +1,6 @@
+#[path = "fixtures/split_core_db.rs"]
+mod split_core_db;
+
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -15,6 +18,7 @@ use proxima_core::publication::{PublicationConfig, PublicationSource};
 use proxima_core::test_fixtures::authenticated_context;
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{AuthzContext, Engine, Owner};
+use split_core_db::create_split_core_db;
 use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use uuid::Uuid;
@@ -223,7 +227,7 @@ async fn publisher_health_sidecar_fixture_captures_against_real_pg() {
     }
 
     let db_name = proxima_pg_testkit::unique_db_name("publisher_health_fixture");
-    proxima_pg_testkit::create_db(&db_name)
+    create_split_core_db(&db_name)
         .await
         .expect("PG fixture database");
     let (runtime_url, platform_url) = proxima_pg_testkit::split_role_urls(&db_name)

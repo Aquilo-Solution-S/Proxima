@@ -17,7 +17,8 @@ use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::{
     AuthPath, AuthzContext, ColdObjectStore, FlavorRegistry, OwnerRef, StorageError,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::{ColdPurgeRetryOptions, PgStorage};
 
 type TestResult<T> = Result<T, Box<dyn Error>>;
@@ -81,7 +82,7 @@ async fn terminal_locator_repair_preserves_owner_erase_debt() -> TestResult<()> 
         return Ok(());
     }
     let database = unique_db_name("proxima_terminal_repair");
-    create_db(&database).await?;
+    create_core_db(&database).await?;
     let result = tokio::time::timeout(Duration::from_secs(40), run_race(&database)).await;
     // Final contract assertions happen after cleanup, including on the red
     // baseline where canonical bytes survived an apparently completed erase.

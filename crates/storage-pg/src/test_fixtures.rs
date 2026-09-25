@@ -7,8 +7,8 @@ use sqlx::migrate::Migrator;
 use std::borrow::Cow;
 
 use proxima_pg_testkit::{
-    DbGuard, FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template,
-    fnv1a64_extend,
+    DbGuard, FNV_OFFSET_BASIS, create_db_from_template, create_named_db_from_template, db_url,
+    drop_db, ensure_template, fnv1a64_extend,
 };
 
 #[must_use]
@@ -57,6 +57,37 @@ impl PgStorage {
     }
 }
 
+/// Build the [`core_template_name`] template once per migration set:
+/// [`core_migrator_before_owner_rls`] run on an empty database.
+///
+/// # Errors
+///
+/// Returns admin connection, template build, or migration errors.
+pub async fn ensure_core_template() -> Result<String, sqlx::Error> {
+    let template = core_template_name();
+    ensure_template(&template, |pool| async move {
+        core_migrator_before_owner_rls()
+            .run(&pool)
+            .await
+            .map_err(sqlx::Error::from)
+    })
+    .await?;
+    Ok(template)
+}
+
+/// Create `name` already migrated through [`core_migrator_before_owner_rls`],
+/// cloned from the core template: the drop-in for `create_db` followed by
+/// [`PgStorage::run_before_owner_rls_migrations`], which then finds every
+/// migration applied. Drop it with `drop_db` like any other test database.
+///
+/// # Errors
+///
+/// Returns admin connection, template build, or clone errors.
+pub async fn create_core_db(name: &str) -> Result<(), sqlx::Error> {
+    let template = ensure_core_template().await?;
+    create_named_db_from_template(name, &template).await
+}
+
 /// Clone a fresh test database from the core migrated template.
 ///
 /// The returned [`DbGuard`] drops the clone when the test passes and keeps
@@ -67,15 +98,9 @@ impl PgStorage {
 /// Panics when the local test Postgres admin connection, template
 /// creation, clone creation, or cloned database connection fails.
 pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
-    let template = core_template_name();
-    ensure_template(&template, |pool| async move {
-        core_migrator_before_owner_rls()
-            .run(&pool)
-            .await
-            .map_err(sqlx::Error::from)
-    })
-    .await
-    .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
+    let template = ensure_core_template()
+        .await
+        .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
 
     let db_name = create_db_from_template(prefix, &template)
         .await

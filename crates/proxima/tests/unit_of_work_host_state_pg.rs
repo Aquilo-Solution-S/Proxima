@@ -3,6 +3,8 @@
 
 #[path = "fixtures/host_state/mod.rs"]
 mod host_state_fixture;
+#[path = "fixtures/split_core_db.rs"]
+mod split_core_db;
 
 use host_state_fixture::{
     AuxiliaryHostCommand, CoreStateSurfaceCommand, DuplicateDescriptorParticipant,
@@ -15,7 +17,8 @@ use proxima::{
     ToolScope, company_owner,
 };
 use proxima_core::{AgentNoteV1, GroupId, Owner, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
+use proxima_pg_testkit::{db_url, drop_db, split_role_urls, unique_db_name};
+use split_core_db::create_split_core_db;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -260,7 +263,7 @@ async fn wait_for_erase_holding_owner_fence_and_waiting_on_test_lock(
 #[tokio::test]
 async fn injected_failures_leave_no_partial_commit() {
     let db_name = unique_db_name("proxima_uow_hs_fail");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -375,7 +378,7 @@ async fn injected_failures_leave_no_partial_commit() {
 #[tokio::test]
 async fn unauthorized_unregistered_and_invalid_binding_refuse_before_mutation() {
     let db_name = unique_db_name("proxima_uow_hs_authz");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -453,7 +456,7 @@ async fn unauthorized_unregistered_and_invalid_binding_refuse_before_mutation() 
 #[tokio::test]
 async fn concurrent_finalize_commits_exactly_one_transition() {
     let db_name = unique_db_name("proxima_uow_hs_conc");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -608,7 +611,7 @@ async fn concurrent_finalize_commits_exactly_one_transition() {
 #[tokio::test]
 async fn refused_finalize_of_missing_row_writes_nothing() {
     let db_name = unique_db_name("proxima_uow_hs_refuse");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -647,7 +650,7 @@ async fn refused_finalize_of_missing_row_writes_nothing() {
 #[tokio::test]
 async fn cancelled_host_op_after_sql_cannot_commit() {
     let db_name = unique_db_name("proxima_uow_hs_cancel");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -695,7 +698,7 @@ async fn cancelled_host_op_after_sql_cannot_commit() {
 #[tokio::test]
 async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_and_group() {
     let db_name = unique_db_name("proxima_uow_hs_authority");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let group = Owner::Group(GroupId::new(Uuid::now_v7()));
@@ -850,7 +853,7 @@ async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_
 #[tokio::test]
 async fn frozen_descriptor_rejects_full_invalid_registration_and_cannot_widen_after_boot() {
     let db_name = unique_db_name("proxima_uow_hs_descriptor");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -925,7 +928,7 @@ async fn frozen_descriptor_rejects_full_invalid_registration_and_cannot_widen_af
 #[tokio::test]
 async fn ordinary_group_editor_provenance_is_not_target_or_command_metadata() {
     let db_name = unique_db_name("proxima_uow_hs_origin");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let group = company_owner(Uuid::now_v7());
@@ -987,7 +990,7 @@ async fn ordinary_group_editor_provenance_is_not_target_or_command_metadata() {
 #[tokio::test]
 async fn subjectless_denied_ordinary_host_write_never_dispatches() {
     let db_name = unique_db_name("proxima_uow_hs_denied_origin");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -1023,7 +1026,7 @@ async fn subjectless_denied_ordinary_host_write_never_dispatches() {
 #[tokio::test]
 async fn opaque_payload_owner_mismatch_is_checked_inside_participant_before_sql() {
     let db_name = unique_db_name("proxima_uow_hs_payload_owner");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -1066,7 +1069,7 @@ async fn opaque_payload_owner_mismatch_is_checked_inside_participant_before_sql(
 #[tokio::test]
 async fn deferred_fk_commit_failure_rolls_back_fact_and_host_state_rows() {
     let db_name = unique_db_name("proxima_uow_hs_deferred");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -1120,7 +1123,7 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
     const TRIGGER_LOCK_KEY: i64 = 8_719_872_200_019;
 
     let db_name = unique_db_name("proxima_uow_hs_owner_fence");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = Owner::Group(GroupId::new(Uuid::now_v7()));

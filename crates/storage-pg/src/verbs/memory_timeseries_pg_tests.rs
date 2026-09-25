@@ -8,6 +8,7 @@
 
 use crate::PgStorage;
 use crate::access::owner_columns::ensure_owner_row;
+use crate::test_fixtures::create_core_db;
 use crate::verbs::forget::{lock_lifecycle_targets_tx, lock_memory_handles_tx};
 use crate::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use crate::verbs::memory_timeseries::{read_memory_by_t, read_memory_head};
@@ -17,7 +18,7 @@ use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{AccessKind, GroupId, OwnerRef, SchemaId, SchemaVersion, StorageError, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use uuid::Uuid;
 
 fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
@@ -42,7 +43,7 @@ fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
 #[tokio::test]
 async fn a_batched_lock_set_acquires_every_id_not_just_the_first() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -99,7 +100,7 @@ async fn a_batched_lock_set_acquires_every_id_not_just_the_first() {
 #[tokio::test]
 async fn memory_handle_and_lifecycle_namespaces_are_distinct() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -132,7 +133,7 @@ async fn memory_handle_and_lifecycle_namespaces_are_distinct() {
 #[tokio::test]
 async fn memory_timeseries_keyless_and_ingest_key_replay() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -205,7 +206,7 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
 #[tokio::test]
 async fn memory_timeseries_pins_blob_and_closed_handle() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -424,7 +425,7 @@ fn assert_kind_conflict(err: StorageError) {
 #[tokio::test]
 async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -506,7 +507,7 @@ async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
 #[tokio::test]
 async fn ensure_owner_row_returns_under_concurrent_first_insert() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);

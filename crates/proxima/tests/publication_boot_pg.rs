@@ -11,6 +11,9 @@
 //! - `PublicationConfig.limits` is the value capture enforces. There is one
 //!   copy: the limits travel with the draft on the authorization witness.
 
+#[path = "fixtures/split_core_db.rs"]
+mod split_core_db;
+
 use std::borrow::Cow;
 
 use proxima::flavor::{
@@ -24,7 +27,8 @@ use proxima_core::flavor::{
 };
 use proxima_core::publication::{PublicationConfig, PublicationLimits, PublicationSource};
 use proxima_core::verbs::schema::PayloadKind;
-use proxima_pg_testkit::{create_db, drop_db, split_role_urls, unique_db_name};
+use proxima_pg_testkit::{drop_db, split_role_urls, unique_db_name};
+use split_core_db::create_split_core_db;
 use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use uuid::Uuid;
@@ -235,7 +239,7 @@ async fn admin_pool(database: &str) -> Result<sqlx::PgPool, sqlx::Error> {
 #[tokio::test]
 async fn a_listenable_schema_without_a_bound_source_refuses_the_boot() {
     let db_name = unique_db_name("proxima_pub_boot");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -277,7 +281,7 @@ async fn a_listenable_schema_without_a_bound_source_refuses_the_boot() {
 #[tokio::test]
 async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
     let db_name = unique_db_name("proxima_pub_env");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -342,7 +346,7 @@ async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
 #[tokio::test]
 async fn an_unauthorized_listenable_write_captures_nothing() {
     let db_name = unique_db_name("proxima_pub_authz");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -442,7 +446,7 @@ async fn an_unauthorized_listenable_write_captures_nothing() {
 #[tokio::test]
 async fn the_configured_payload_ceiling_is_the_one_capture_enforces() {
     let db_name = unique_db_name("proxima_pub_limit");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {

@@ -1,3 +1,6 @@
+#[path = "fixtures/split_core_db.rs"]
+mod split_core_db;
+
 use proxima_core::storage_ports::*;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -14,11 +17,12 @@ use proxima_core::{
     FlavorRegistryFrozen, GroupId, MemoryId, Owner, OwnerRef, Relation, Role, SchemaId, UserId,
     provider_safe_tool_name,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
+use proxima_pg_testkit::{db_url, drop_db, split_role_urls, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
 };
+use split_core_db::create_split_core_db;
 use uuid::Uuid;
 
 #[cfg(feature = "openai-compat-embed")]
@@ -234,7 +238,7 @@ mod embedding_failure_regressions {
     #[tokio::test]
     async fn core_search_and_recall_degrade_after_actual_provider_response_overflow() {
         let name = unique_db_name("proxima_query_provider_overflow");
-        create_db(&name).await.expect("PG fixture");
+        create_split_core_db(&name).await.expect("PG fixture");
         let result: TestResult<Observed> = async {
             let (runtime_url, platform_url) = split_role_urls(&name).await?;
             let owner = company_owner(Uuid::now_v7());
@@ -587,7 +591,9 @@ async fn read_test_model_resource(
 #[tokio::test]
 async fn core_memory_tools_route_by_explicit_space_grants() {
     let db_name = unique_db_name("proxima_core_memory_spaces_route");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -657,7 +663,9 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
 #[tokio::test]
 async fn shared_space_include_body_uses_shared_owner() {
     let db_name = unique_db_name("proxima_core_memory_spaces_body");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -749,7 +757,9 @@ async fn shared_space_include_body_uses_shared_owner() {
 #[allow(clippy::too_many_lines)] // legal Fact→A setup plus cross-space A→A assertion is intentionally end-to-end
 async fn cross_space_derive_succeeds_when_sources_readable() {
     let db_name = unique_db_name("proxima_core_memory_spaces_derive");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -877,7 +887,9 @@ fn assert_facade_projects_output_schema(registry: &FlavorRegistryFrozen, tool: &
 #[allow(clippy::too_many_lines)]
 async fn facade_lists_and_dispatches_core_mcp_tools() {
     let db_name = unique_db_name("proxima_core_mcp");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -1026,7 +1038,9 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
 #[tokio::test]
 async fn facade_reads_core_resources_with_resource_scope() {
     let db_name = unique_db_name("proxima_core_resource_mcp");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -1101,7 +1115,9 @@ async fn facade_reads_core_resources_with_resource_scope() {
 #[allow(clippy::too_many_lines)]
 async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
     let db_name = unique_db_name("proxima_core_recall_mcp");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -1328,7 +1344,9 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
 #[allow(clippy::too_many_lines)]
 async fn facade_core_think_reaches_an_interpretations_subject_through_its_payload() {
     let db_name = unique_db_name("proxima_core_think_payload");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -1442,7 +1460,9 @@ async fn facade_core_think_reaches_an_interpretations_subject_through_its_payloa
 #[allow(clippy::too_many_lines)]
 async fn facade_core_think_pages_ancestors_from_a_derivation() {
     let db_name = unique_db_name("proxima_core_think_mcp");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -1562,7 +1582,9 @@ async fn facade_core_think_pages_ancestors_from_a_derivation() {
 #[tokio::test]
 async fn facade_core_episode_commit_binds_only_listed_members() {
     let db_name = unique_db_name("proxima_core_episode_mcp");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -1646,7 +1668,9 @@ fn trusted_host_authz(owner: &Owner, trusted_model_id: &str) -> ResolvedAuthz {
 #[allow(clippy::too_many_lines)]
 async fn facade_core_episode_commit_refuses_nested_model_id_against_the_bound_identity() {
     let db_name = unique_db_name("proxima_core_episode_trusted");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -1760,7 +1784,9 @@ async fn facade_core_episode_commit_refuses_nested_model_id_against_the_bound_id
 #[allow(clippy::too_many_lines)]
 async fn facade_core_episode_commit_bound_replay_fails() {
     let db_name = unique_db_name("proxima_core_episode_replay");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -1953,7 +1979,9 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
     // DEFAULT (Hybrid) search — it degrades to lexical (selfdoc's promise). Only
     // an EXPLICIT semantic search errors when embeddings are unavailable.
     let db_name = unique_db_name("proxima_core_search_degrade");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -2041,7 +2069,9 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
 #[tokio::test]
 async fn facade_core_citation_readback_is_owner_scoped() {
     let db_name = unique_db_name("proxima_core_citation_mcp");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -2191,7 +2221,9 @@ async fn ensure_fact_embedding_for_handle(
 #[allow(clippy::too_many_lines)]
 async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member() {
     let db_name = unique_db_name("proxima_authorized_read_transfer");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -2322,7 +2354,9 @@ async fn core_forget_cools_a_remembered_fact() {
         return;
     }
     let db_name = unique_db_name("proxima_core_forget");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -2420,7 +2454,9 @@ async fn core_forget_cools_a_remembered_fact() {
 #[tokio::test]
 async fn request_services_reject_duplicate_boot_type() {
     let db_name = unique_db_name("proxima_request_services");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());

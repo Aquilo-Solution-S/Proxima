@@ -11,8 +11,9 @@ use proxima_core::{
     FactWriteCommand, FlavorRegistry, OwnerRef, Relation, SidecarPayload, Speaker, UserId,
     UtteranceV1,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -31,7 +32,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> TestResult<Self> {
         let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-        create_db(&db_name).await?;
+        create_core_db(&db_name).await?;
         let pg = PgStorage::connect(&db_url(&db_name)).await?;
         pg.run_before_owner_rls_migrations().await?;
         let engine = Arc::new(

@@ -15,6 +15,9 @@
 //! pack host names it too.
 #![cfg(feature = "auth-oidc")]
 
+#[path = "fixtures/split_core_db.rs"]
+mod split_core_db;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -35,8 +38,9 @@ use proxima::{
     AccessKind, AppContext, AppInfo, Authz, FlavorApp, Proxima, Role, RunningProxima,
     RuntimeBuilder, ToolScope,
 };
-use proxima_pg_testkit::{create_db, drop_db, split_role_urls, unique_db_name};
+use proxima_pg_testkit::{drop_db, split_role_urls, unique_db_name};
 use serde_json::{Value, json};
+use split_core_db::create_split_core_db;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -241,7 +245,9 @@ struct Stack {
 impl Stack {
     async fn new() -> Self {
         let db_name = unique_db_name("proxima_pack_host");
-        create_db(&db_name).await.expect("PG required for tests");
+        create_split_core_db(&db_name)
+            .await
+            .expect("PG required for tests");
         let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
         let idp = Idp::start().await.expect("loopback identity provider");
         Self {

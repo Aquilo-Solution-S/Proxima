@@ -18,7 +18,8 @@ use proxima_core::{
     AccessKind, ColdObjectStore, EntityId, GroupId, OwnerRef, SchemaId, SchemaVersion, SourceId,
     StorageError, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::wake_timeseries::{
@@ -428,7 +429,7 @@ async fn release_session_advisory_lock(
 
 async fn fresh_owner_erase_pg() -> (String, PgStorage) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let pg = PgStorage::connect(&db_url(&db_name))
@@ -523,7 +524,7 @@ fn goal_draft(request_id: &str) -> GoalWriteCommand {
 #[tokio::test]
 async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -688,7 +689,7 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
 #[tokio::test]
 async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -775,7 +776,7 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
 #[tokio::test]
 async fn erase_personal_owner_destroys_wake_config() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -868,7 +869,7 @@ async fn erase_personal_owner_destroys_wake_config() {
 #[tokio::test]
 async fn erase_source_scope_keeps_all_wake_configs() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -943,7 +944,7 @@ async fn erase_source_scope_keeps_all_wake_configs() {
 #[tokio::test]
 async fn erase_personal_owner_purges_cold_objects_after_commit() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -999,7 +1000,7 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
 #[tokio::test]
 async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1114,7 +1115,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
 #[tokio::test]
 async fn an_injected_deadlock_inside_owner_erase_is_retried() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1195,7 +1196,7 @@ async fn an_injected_deadlock_inside_owner_erase_is_retried() {
 #[tokio::test]
 async fn a_drain_refuses_debts_owed_by_another_backend() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1284,7 +1285,7 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
 #[tokio::test]
 async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1367,7 +1368,7 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
 #[tokio::test]
 async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1438,7 +1439,7 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
 #[tokio::test]
 async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1557,7 +1558,7 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
 #[tokio::test]
 async fn erase_group_owner_refuses_while_membership_rows_exist() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1614,7 +1615,7 @@ async fn erase_group_owner_refuses_while_membership_rows_exist() {
 #[tokio::test]
 async fn erase_group_owner_completes_when_abandoned() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1693,7 +1694,7 @@ async fn erase_group_owner_completes_when_abandoned() {
 #[tokio::test]
 async fn erase_source_scope_rewinds_head_to_remaining_t() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1757,7 +1758,7 @@ async fn erase_source_scope_rewinds_head_to_remaining_t() {
 #[tokio::test]
 async fn erase_source_scope_destroys_cooled_from_that_source() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1874,7 +1875,7 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
 #[tokio::test]
 async fn erasing_a_member_leaves_the_memberships_that_name_it() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);

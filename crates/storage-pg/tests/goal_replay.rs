@@ -22,8 +22,9 @@ use proxima_core::{
     OperatorId, OwnerRef, PromptVersion, SchemaId, SchemaVersion, SimpleTextGoalV1, StorageError,
     ToolId, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory};
 use uuid::Uuid;
 
@@ -64,7 +65,7 @@ async fn ingest_grounded_perspective(
 
 async fn fresh_pg() -> (String, PgStorage) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let pg = PgStorage::connect(&db_url(&db_name))

@@ -5,8 +5,9 @@ use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{CitationPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{AccessKind, OwnerRef, SchemaId, SchemaVersion, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 fn draft() -> FactWriteCommand {
@@ -31,7 +32,7 @@ fn draft() -> FactWriteCommand {
 #[tokio::test]
 async fn citation_of_fact_is_blob_id_and_schema_only() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);

@@ -14,6 +14,7 @@
 
 use crate::PgStorage;
 use crate::core_pg_sidecars;
+use crate::test_fixtures::create_core_db;
 use crate::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory_oneshot};
 use crate::verbs::memory_timeseries::ingest_fact_timeseries;
 use proxima_core::owner_inverse::{
@@ -25,7 +26,7 @@ use proxima_core::{
     AccessKind, AgentNoteV1, EntityId, FactPayload, GroupId, MemoryId, OwnerRef, SchemaId,
     SchemaVersion, SidecarPayload, StorageError, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
 use uuid::Uuid;
 
 /// The transfer's registry-resolved legs, exactly as the engine assembles
@@ -142,7 +143,9 @@ where
     F: AsyncFnOnce(&PgStorage) -> Result<(), Box<dyn std::error::Error>>,
 {
     let db_name = unique_db_name(name);
-    create_db(&db_name).await.expect("PG required for tests");
+    create_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let result = async {
         let pg = PgStorage::connect(&db_url(&db_name)).await?;
         pg.run_before_owner_rls_migrations().await?;

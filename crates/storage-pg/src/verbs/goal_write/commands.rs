@@ -502,6 +502,7 @@ mod lifecycle_lock_tests {
         persist_prepared_goal_write, prepare_goal_write,
     };
     use crate::PgStorage;
+    use crate::test_fixtures::create_core_db;
     use crate::verbs::goal_timeseries::{GoalWakePlan, GoalWriteCommand, write_goal};
     use proxima_core::GoalPayload;
     use proxima_core::storage_ports::FactIngestPort;
@@ -515,7 +516,7 @@ mod lifecycle_lock_tests {
         AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, OwnerRef, SchemaId, SchemaVersion,
         SimpleTextGoalV1, StorageError, UserId,
     };
-    use proxima_pg_testkit::{create_db, db_url, drop_db};
+    use proxima_pg_testkit::{db_url, drop_db};
     use uuid::Uuid;
 
     fn fact() -> FactWriteCommand {
@@ -691,7 +692,7 @@ mod lifecycle_lock_tests {
     #[tokio::test]
     async fn decomposition_locks_the_union_before_first_goal_persist() {
         let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-        if let Err(e) = create_db(&db_name).await {
+        if let Err(e) = create_core_db(&db_name).await {
             panic!("PG required for tests but admin connect failed: {e}");
         }
         let url = db_url(&db_name);
@@ -794,7 +795,7 @@ mod lifecycle_lock_tests {
     #[tokio::test]
     async fn concurrent_successors_classify_stale_head_before_persisting() {
         let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-        if let Err(e) = create_db(&db_name).await {
+        if let Err(e) = create_core_db(&db_name).await {
             panic!("PG required for tests but admin connect failed: {e}");
         }
         let url = db_url(&db_name);
@@ -859,7 +860,7 @@ mod lifecycle_lock_tests {
     #[tokio::test]
     async fn low_level_write_act_is_reserved_until_union_lock_release() {
         let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-        if let Err(e) = create_db(&db_name).await {
+        if let Err(e) = create_core_db(&db_name).await {
             panic!("PG required for tests but admin connect failed: {e}");
         }
         let url = db_url(&db_name);
@@ -941,7 +942,7 @@ mod lifecycle_lock_tests {
     #[tokio::test]
     async fn terminal_close_fact_is_reserved_until_union_lock_release() {
         let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-        if let Err(e) = create_db(&db_name).await {
+        if let Err(e) = create_core_db(&db_name).await {
             panic!("PG required for tests but admin connect failed: {e}");
         }
         let url = db_url(&db_name);

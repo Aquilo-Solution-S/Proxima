@@ -13,8 +13,9 @@ use proxima_core::{
     OwnerRef, SchemaId, SchemaVersion, SidecarPayload, UserId, project_listed_edge,
     project_window_edges,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 fn memory_schema_specs(registry: &proxima_core::FlavorRegistryFrozen) -> Vec<MemorySchemaSpec> {
@@ -65,7 +66,7 @@ fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
 #[tokio::test]
 async fn query_neighbors_edges_and_lineage_use_pins() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -194,7 +195,7 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
 #[tokio::test]
 async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -289,7 +290,7 @@ async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
 #[tokio::test]
 async fn lineage_redacts_foreign_origin_instead_of_dropping() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -382,7 +383,7 @@ async fn lineage_redacts_foreign_origin_instead_of_dropping() {
 #[tokio::test]
 async fn inbound_pin_page_is_newest_heads_and_keyset() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -460,7 +461,7 @@ async fn inbound_pin_page_is_newest_heads_and_keyset() {
 #[tokio::test]
 async fn inbound_heads_only_drops_superseded_pin() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -537,7 +538,7 @@ async fn inbound_heads_only_drops_superseded_pin() {
 #[tokio::test]
 async fn lineage_diamond_visits_shared_node_once() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -667,7 +668,7 @@ async fn lineage_diamond_visits_shared_node_once() {
 #[tokio::test]
 async fn lineage_pages_finish_a_distance_before_the_next() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
