@@ -17,9 +17,3 @@ canonical-proxima-facts = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = "binary_id(proxima-outbox-nats::copy_cleaner_pg_nats)"
 test-group = "canonical-proxima-facts"
-
-# Family GC plants sibling `proxima_tmpl_core_*` names. Parallel live
-# `ensure_template` of the real fingerprint would drop a planted keep.
-[[profile.default.overrides]]
-filter = "test(=ensure_template_drops_other_hashes_in_the_family)"
-threads-required = "num-test-threads"

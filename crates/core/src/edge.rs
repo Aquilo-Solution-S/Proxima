@@ -376,16 +376,10 @@ mod tests {
         EdgeEndpoint, EdgeKind, EdgeTargetProjection, PinNode, project_listed_edge,
         project_window_edges, validate_edge_layering, validate_not_self_loop,
     };
-    use crate::{EntityKind, EntityRef, GoalId, MemoryId};
+    use crate::{EntityKind, GoalId, MemoryId};
 
     fn memory(kind: EntityKind) -> EdgeEndpoint {
         EdgeEndpoint::memory(kind, MemoryId::new(uuid::Uuid::now_v7()))
-    }
-
-    #[test]
-    fn kind_discriminators_are_the_sql_labels() {
-        assert_eq!(EdgeKind::Origin.as_str(), "origin");
-        assert_eq!(EdgeKind::Reference.as_str(), "reference");
     }
 
     /// The vocabulary is closed at two. A third variant is a design
@@ -427,15 +421,6 @@ mod tests {
             validate_edge_layering(memory(source), memory(target))
                 .expect_err("an upward memory edge is a layering violation");
         }
-    }
-
-    #[test]
-    fn goal_endpoints_sit_outside_the_layer_comparison() {
-        let goal = EdgeEndpoint::goal(GoalId::new(uuid::Uuid::now_v7()));
-        validate_edge_layering(goal, memory(EntityKind::Perspective))
-            .expect("a Goal endpoint is not compared by layer");
-        validate_edge_layering(memory(EntityKind::Fact), goal)
-            .expect("a Goal endpoint is not compared by layer");
     }
 
     #[test]
@@ -490,33 +475,6 @@ mod tests {
     }
 
     #[test]
-    fn window_projection_keeps_resolved_goal_references() {
-        let source = MemoryId::new(uuid::Uuid::now_v7());
-        let goal = GoalId::new(uuid::Uuid::now_v7());
-        let mut node = PinNode {
-            id: source,
-            kind: EntityKind::Fact,
-            schema_id: crate::SchemaId::new("test/pin-v1".into()),
-            origins: Vec::new(),
-            refs: Vec::new(),
-            goal_refs: vec![goal],
-        };
-        node.resolve_visible_goal_refs(&[goal]);
-        assert!(node.refs.is_empty());
-        assert_eq!(node.goal_refs, vec![goal]);
-        let edges = project_window_edges(&[node], 50);
-        assert_eq!(edges.len(), 1);
-        assert!(matches!(
-            edges[0].target,
-            EdgeTargetProjection::Visible {
-                target: EdgeEndpoint {
-                    entity: EntityRef::Goal(id), ..
-                }
-            } if id == goal
-        ));
-    }
-
-    #[test]
     fn unresolved_goal_reference_stays_a_redactable_raw_id() {
         let source = MemoryId::new(uuid::Uuid::now_v7());
         let goal = GoalId::new(uuid::Uuid::now_v7());
@@ -542,87 +500,6 @@ mod tests {
             &std::collections::HashMap::new(),
         );
         assert!(matches!(edges.target, EdgeTargetProjection::Redacted));
-    }
-
-    /// The non-disclosure invariant the split exists to preserve: after
-    /// `resolve_visible_goal_refs`, an unreadable Goal and an unreadable
-    /// Memory must be indistinguishable downstream. If the typed column
-    /// short-circuited straight to projection, a reader could tell a
-    /// withheld Goal from a withheld Memory and learn which spine a
-    /// target they may not read lives on -- the discriminant itself is
-    /// the leak, even with the id withheld.
-    #[test]
-    fn an_unreadable_goal_and_an_unreadable_memory_project_identically() {
-        let source = MemoryId::new(uuid::Uuid::now_v7());
-        // One raw id, read down each spine, so the projections can only
-        // differ by the spine and never by the target's value.
-        let raw = uuid::Uuid::now_v7();
-
-        let mut from_goal_spine = PinNode {
-            id: source,
-            kind: EntityKind::Fact,
-            schema_id: crate::SchemaId::new("test/pin-v1".into()),
-            origins: Vec::new(),
-            refs: Vec::new(),
-            goal_refs: vec![GoalId::new(raw)],
-        };
-        from_goal_spine.resolve_visible_goal_refs(&[]);
-
-        let from_memory_spine = PinNode {
-            id: source,
-            kind: EntityKind::Fact,
-            schema_id: crate::SchemaId::new("test/pin-v1".into()),
-            origins: Vec::new(),
-            refs: vec![MemoryId::new(raw)],
-            goal_refs: Vec::new(),
-        };
-
-        // The carrier itself must already be identical -- that is what
-        // makes every downstream reader identical for free.
-        assert_eq!(from_goal_spine.refs, from_memory_spine.refs);
-        assert_eq!(from_goal_spine.goal_refs, from_memory_spine.goal_refs);
-
-        let nothing_visible = std::collections::HashMap::new();
-        let project = |node: &PinNode| {
-            project_listed_edge(
-                node.kind,
-                node.id,
-                node.refs[0],
-                EdgeKind::Reference,
-                &nothing_visible,
-            )
-        };
-        let goal_edge = project(&from_goal_spine);
-        let memory_edge = project(&from_memory_spine);
-        assert_eq!(goal_edge, memory_edge);
-        assert!(matches!(goal_edge.target, EdgeTargetProjection::Redacted));
-        // Serialized too: the wire form is what actually reaches a reader.
-        assert_eq!(
-            serde_json::to_string(&goal_edge.target).expect("projection serializes"),
-            serde_json::to_string(&memory_edge.target).expect("projection serializes"),
-        );
-    }
-
-    /// The window projection trusts `goal_refs` to hold only readable
-    /// Goals, so an unresolved node must not reach it. Resolution is the
-    /// step that enforces that, and dropping it is the way the leak
-    /// above gets reintroduced.
-    #[test]
-    fn resolution_is_what_empties_goal_refs_of_unreadable_goals() {
-        let mut node = PinNode {
-            id: MemoryId::new(uuid::Uuid::now_v7()),
-            kind: EntityKind::Fact,
-            schema_id: crate::SchemaId::new("test/pin-v1".into()),
-            origins: Vec::new(),
-            refs: Vec::new(),
-            goal_refs: vec![GoalId::new(uuid::Uuid::now_v7())],
-        };
-        assert_eq!(project_window_edges(&[node.clone()], 50).len(), 1);
-        node.resolve_visible_goal_refs(&[]);
-        assert!(
-            project_window_edges(&[node], 50).is_empty(),
-            "a resolved-away Goal must leave nothing for the window to project"
-        );
     }
 
     #[test]

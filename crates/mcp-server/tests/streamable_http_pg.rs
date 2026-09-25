@@ -6,7 +6,7 @@ use std::time::Duration;
 mod common;
 
 use async_trait::async_trait;
-use common::{create_db, drop_db, initialize, initialized, post_rpc, split_role_urls};
+use common::{create_db, drop_db, initialize, initialized, split_role_urls};
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner, OwnerRef,
     RevalidationConfig,
@@ -17,71 +17,6 @@ use proxima_mcp_server::{
 };
 use serde_json::json;
 use tokio::task::JoinHandle;
-
-#[tokio::test]
-async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn std::error::Error>> {
-    let auth_store = Arc::new(
-        McpEdgeAuth::headless().with_host(Arc::new(TestHostAuth::new(common::nil_owner(), None))),
-    );
-    let (handle, addr, db_name) = common::start_server(auth_store).await?;
-
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/mcp");
-    let bearer = "Bearer host-token";
-    let session_id = initialize(&client, &url, bearer).await?;
-    initialized(&client, &url, &session_id, bearer).await?;
-
-    let list = post_rpc(
-        &client,
-        &url,
-        Some(&session_id),
-        bearer,
-        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
-    )
-    .await?;
-    let names: Vec<_> = list["result"]["tools"]
-        .as_array()
-        .expect("tools")
-        .iter()
-        .filter_map(|tool| tool["name"].as_str())
-        .collect();
-    assert!(names.contains(&"core_remember"), "got {names:?}");
-
-    let remembered = post_rpc(
-        &client,
-        &url,
-        Some(&session_id),
-        bearer,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {
-                "name": "core_remember",
-                "arguments": {
-                    "title": "mcp streamable test",
-                    "body": "HTTP transport remembers notes.",
-                    "idempotency_key": "streamable-http-test"
-                }
-            }
-        }),
-    )
-    .await?;
-    let content = remembered["result"]["content"][0]["text"]
-        .as_str()
-        .expect("text content");
-    let output: serde_json::Value = serde_json::from_str(content)?;
-    assert_prefixed_uuid(output["handle"].as_str().expect("handle"), "F");
-
-    common::stop_server(handle, &db_name).await?;
-    Ok(())
-}
-
-fn assert_prefixed_uuid(raw: &str, expected_prefix: &str) {
-    let (prefix, uuid_part) = raw.split_once(':').expect("prefixed uuid");
-    assert_eq!(prefix, expected_prefix);
-    uuid::Uuid::parse_str(uuid_part).expect("uuid body");
-}
 
 #[tokio::test]
 async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {

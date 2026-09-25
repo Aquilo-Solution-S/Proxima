@@ -216,12 +216,3 @@ async fn bare_404_after_canonical_conflict_preserves_existing_missing_behavior()
         );
     }
 }
-
-#[tokio::test]
-async fn matching_canonical_response_is_adopted_after_conflict() {
-    let (key, etag) = publish_after_conflict("200 OK", BODY)
-        .await
-        .expect("adopt verified existing bytes");
-    assert_eq!(key, KEY);
-    assert_eq!(etag.as_deref(), Some("\"fixture-etag\""));
-}

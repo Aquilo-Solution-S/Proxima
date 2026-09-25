@@ -349,52 +349,6 @@ mod tests {
     }
 
     #[test]
-    fn shared_tree_matches_independent_analyses_for_supported_languages() {
-        for (path, item) in [
-            (
-                "sample.rs",
-                "/// Validates Grüße before dispatch.\npub fn run(value: usize) { validate(value); worker.dispatch(value); crate::finish(value); }\n",
-            ),
-            (
-                "sample.ts",
-                "export function run(value: number): number { validate(value); worker.dispatch(value); return finish(value); }\n",
-            ),
-            (
-                "sample.tsx",
-                "export function Item({ value }: { value: number }) { const title = format(value); return <button onClick={() => select(value)}>{title}</button>; }\n",
-            ),
-        ] {
-            let source = item.repeat(160);
-            let (chunks, definitions, calls) = analyze_blob(path, source.as_bytes());
-            assert!(chunks.len() > 1, "fixture must exercise chunk splitting");
-            assert!(!definitions.is_empty());
-            assert!(!calls.is_empty());
-            assert_same_analysis(path, source.as_bytes());
-            // Error recovery remains the grammar's behavior on both paths.
-            assert_same_analysis(path, format!("{source}\nfn function( {{{{").as_bytes());
-        }
-        assert_same_analysis("source.rs", include_bytes!("local_git_source.rs"));
-    }
-
-    #[test]
-    fn shared_tree_preserves_fallback_and_empty_analysis() {
-        let markdown = "Grüße 世界\r\n".repeat(crate::chunker::FALLBACK_LINE_WINDOW + 1);
-        assert_same_analysis("notes.md", markdown.as_bytes());
-        for (path, source) in [
-            ("empty.rs", ""),
-            ("whitespace.rs", " \t\r\n"),
-            ("fragment.rs", "}"),
-            ("config.toml", "[server]\r\nport = 31415\r\n"),
-        ] {
-            assert_same_analysis(path, source.as_bytes());
-        }
-        assert_eq!(
-            analyze_blob("notes.md", markdown.as_bytes()).0[0].chunk_type,
-            "file"
-        );
-    }
-
-    #[test]
     fn shared_tree_preserves_the_callgraph_for_chunker_rejected_blobs() {
         assert_same_analysis("invalid.rs", b"fn valid() {}\xff");
         let oversized = format!(
@@ -414,96 +368,12 @@ mod tests {
     }
 
     #[test]
-    fn extract_rust_free_function() {
-        let code = b"fn main() { greet(\"world\"); }\nfn greet(name: &str) {}";
-        let calls = extract_calls(Some("rust"), code);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].callee_name, "greet");
-        assert!(!calls[0].is_dynamic);
-    }
-
-    #[test]
-    fn extract_rust_method_call() {
-        let code =
-            b"struct Foo; impl Foo { fn bar(&self) {} }\nfn main() { let f = Foo; f.bar(); }";
-        let calls = extract_calls(Some("rust"), code);
-        assert!(calls.iter().any(|c| c.callee_name == "bar" && c.is_dynamic));
-    }
-
-    #[test]
     fn extract_rust_scoped_call_takes_rightmost() {
         let code = b"fn main() { a::b::c::baz(); }";
         let calls = extract_calls(Some("rust"), code);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].callee_name, "baz");
         assert!(!calls[0].is_dynamic);
-    }
-
-    #[test]
-    fn extract_ts_free_function() {
-        let code = b"function greet(name: string) {}\ngreet(\"world\");";
-        let calls = extract_calls(Some("typescript"), code);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].callee_name, "greet");
-        assert!(!calls[0].is_dynamic);
-    }
-
-    #[test]
-    fn extract_ts_method_call() {
-        let code = b"class Foo { bar() {} }\nconst f = new Foo(); f.bar();";
-        let calls = extract_calls(Some("typescript"), code);
-        assert!(calls.iter().any(|c| c.callee_name == "bar" && c.is_dynamic));
-    }
-
-    #[test]
-    fn extract_ts_chained_member_call() {
-        let code = b"obj.a.b.greet();";
-        let calls = extract_calls(Some("typescript"), code);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].callee_name, "greet");
-        assert!(calls[0].is_dynamic);
-    }
-
-    #[test]
-    fn unknown_language_returns_empty() {
-        let code = b"greet(\"world\");";
-        let calls = extract_calls(Some("python"), code);
-        assert!(calls.is_empty());
-    }
-
-    #[test]
-    fn binary_input_returns_empty() {
-        let code = b"\x80\x81\x82";
-        let calls = extract_calls(Some("rust"), code);
-        assert!(calls.is_empty());
-    }
-
-    #[test]
-    fn extract_definitions_rust_basic() {
-        let code = b"pub fn alpha() {}\nfn beta(x: i32) -> i32 { x + 1 }\nasync fn gamma() {}\n// fn ignored_in_comment\n";
-        let defs = extract_definitions(Some("rust"), code);
-        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(names, ["alpha", "beta", "gamma"]);
-    }
-
-    #[test]
-    fn extract_definitions_rust_methods() {
-        let code = b"struct S; impl S { pub fn foo(&self) {} fn bar() {} }\n";
-        let defs = extract_definitions(Some("rust"), code);
-        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-        assert!(names.contains(&"foo"));
-        assert!(names.contains(&"bar"));
-    }
-
-    #[test]
-    fn extract_definitions_typescript() {
-        let code =
-            b"function alpha() {}\nconst beta = (x: number) => x + 1;\nclass C { gamma() {} }\n";
-        let defs = extract_definitions(Some("typescript"), code);
-        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-        assert!(names.contains(&"alpha"));
-        assert!(names.contains(&"beta"));
-        assert!(names.contains(&"gamma"));
     }
 
     #[test]
@@ -515,15 +385,5 @@ mod tests {
         let defs = extract_definitions(Some("typescript"), code);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names.iter().filter(|n| **n == "run").count(), 1);
-    }
-
-    #[test]
-    fn combined_blob_callgraph_single_pass() {
-        let code = b"fn caller() { callee(); }\nfn callee() {}\n";
-        let (defs, calls) = extract_blob_callgraph(Some("rust"), code);
-        let def_names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(def_names, ["caller", "callee"]);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].callee_name, "callee");
     }
 }

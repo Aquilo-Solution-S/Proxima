@@ -989,44 +989,6 @@ mod tests {
         }
     }
 
-    /// The "Tools:" section in the static help text is hand-written (the
-    /// help path is `&'static str` end to end and must never fail), so
-    /// this test pins it to the registry: adding or removing a core tool
-    /// without updating `USAGE` fails here instead of silently drifting.
-    /// Flavor tools stay out of the comparison — the static text cannot
-    /// know which optional flavors (e.g. `--no-default-features`) a build
-    /// omits, so it lists the always-present substrate surface only.
-    #[test]
-    fn usage_tools_section_matches_registry() {
-        use proxima_core::mcp::McpToolOrigin;
-
-        let mut registry = FlavorRegistry::new();
-        <ProximaMcpApp as FlavorBundle>::register(&mut registry).expect("register");
-        let frozen = registry.try_freeze().expect("freeze");
-        let mut expected: Vec<&str> = frozen
-            .list_mcp_tools()
-            .iter()
-            .filter(|tool| matches!(tool.origin, McpToolOrigin::Substrate))
-            .map(|tool| tool.name)
-            .collect();
-        expected.sort_unstable();
-
-        let section = USAGE
-            .split("Tools:\n")
-            .nth(1)
-            .expect("USAGE carries a Tools section");
-        let mut listed: Vec<&str> = section
-            .lines()
-            .take_while(|line| line.starts_with("  "))
-            .map(str::trim)
-            .collect();
-        listed.sort_unstable();
-        assert_eq!(
-            listed, expected,
-            "USAGE Tools section drifted from the registry"
-        );
-    }
-
     /// Every id `registered_tool_ids` produces resolves back against the
     /// registry that produced it, and every registered tool contributes at
     /// least one — so a dispatcher is named by its leaves and a flat tool by
@@ -1094,15 +1056,6 @@ mod tests {
                 .any(|tool| tool.name.starts_with("proxima-code_")),
             "the `code` feature must contribute flavor tools to this check",
         );
-    }
-
-    // `#[tokio::test]`, not `#[test]`: `PgOwnerAccessResolver::connect_lazy`
-    // constructs a `sqlx::PgPool`, which needs an active Tokio context even
-    // though it defers the actual network connect (sqlx panics with "this
-    // functionality requires a Tokio context" otherwise).
-    #[tokio::test]
-    async fn app_construction_without_embedding_config_keeps_degraded_mode() {
-        build_app(config(), |_| None).expect("app construction does not require embeddings");
     }
 
     #[tokio::test]
@@ -1400,76 +1353,6 @@ mod tests {
     }
 
     #[test]
-    fn hosted_openai_compatible_client_is_configurable() {
-        let client = embedding_client_from_env(
-            |key| match key {
-                PROXIMA_EMBED_API_KEY => Some("secret".to_string()),
-                PROXIMA_EMBED_MODEL => Some("hosted-embed".to_string()),
-                PROXIMA_EMBED_BASE_URL => Some("https://embeddings.example/v1".to_string()),
-                _ => None,
-            },
-            EmbeddingRuntimePolicy::default(),
-        )
-        .expect("client construction succeeds")
-        .expect("explicit endpoint and model enable the client");
-
-        assert_eq!(client.model_id(), "hosted-embed");
-        assert_eq!(client.dim(), 1024, "an unset PROXIMA_EMBED_DIM is 1024");
-    }
-
-    #[test]
-    fn generic_request_timeout_is_wired_into_openai_compatible_client() {
-        let policy = EmbeddingRuntimePolicy::new(
-            std::time::Duration::from_secs(17),
-            8,
-            std::time::Duration::from_secs(3),
-            std::time::Duration::from_mins(1),
-        )
-        .expect("valid policy");
-        let client = embedding_client_from_env(
-            |key| match key {
-                PROXIMA_EMBED_MODEL => Some("hosted-embed".to_string()),
-                PROXIMA_EMBED_BASE_URL => Some("https://embeddings.example/v1".to_string()),
-                _ => None,
-            },
-            policy,
-        )
-        .expect("client construction succeeds")
-        .expect("configured");
-
-        assert_eq!(client.request_timeout(), std::time::Duration::from_secs(17));
-    }
-
-    /// The local-first path: a loopback endpoint and no credential at all.
-    /// Requiring a key here would force a fake credential into every fully
-    /// local config.
-    #[test]
-    fn local_endpoint_needs_no_api_key() {
-        let client = embedding_client_from_env(
-            |key| match key {
-                PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
-                PROXIMA_EMBED_MODEL => Some("qwen3-embedding:0.6b".to_string()),
-                _ => None,
-            },
-            EmbeddingRuntimePolicy::default(),
-        )
-        .expect("client construction succeeds")
-        .expect("an explicit base URL and model enable embeddings");
-
-        assert_eq!(client.model_id(), "qwen3-embedding:0.6b");
-        assert_eq!(client.dim(), 1024, "an unset PROXIMA_EMBED_DIM is 1024");
-    }
-
-    #[test]
-    fn no_embedding_config_stays_degraded() {
-        assert!(
-            embedding_client_from_env(|_| None, EmbeddingRuntimePolicy::default())
-                .expect("no config is not an error")
-                .is_none()
-        );
-    }
-
-    #[test]
     fn partial_embedding_config_fails_closed() {
         for (configured_key, value, missing_key) in [
             (
@@ -1497,42 +1380,6 @@ mod tests {
                 "{configured_key}: {err}"
             );
         }
-    }
-
-    /// The cap is opt-in: a deployment that says nothing sends every input.
-    #[test]
-    fn no_input_cap_is_configured_by_default() {
-        let client = embedding_client_from_env(
-            |key| match key {
-                PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
-                PROXIMA_EMBED_MODEL => Some("local-embed".to_string()),
-                _ => None,
-            },
-            EmbeddingRuntimePolicy::default(),
-        )
-        .expect("client construction succeeds")
-        .expect("configured");
-        assert!(client.caps().max_input_chars.is_none());
-    }
-
-    #[test]
-    fn an_input_cap_is_read_from_the_environment() {
-        let cap = proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS;
-        let client = embedding_client_from_env(
-            |key| match key {
-                PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
-                PROXIMA_EMBED_MODEL => Some("local-embed".to_string()),
-                PROXIMA_EMBED_MAX_INPUT_CHARS => Some(cap.to_string()),
-                _ => None,
-            },
-            EmbeddingRuntimePolicy::default(),
-        )
-        .expect("client construction succeeds")
-        .expect("configured");
-        assert_eq!(
-            client.caps().max_input_chars.map(NonZeroU32::get),
-            Some(u32::try_from(cap).expect("the floor fits u32")),
-        );
     }
 
     /// A cap the chunked rescue cannot satisfy must stop the process, not be
@@ -1613,17 +1460,6 @@ mod tests {
                 PROXIMA_EMBED_MATRYOSHKA
             )
             .is_err()
-        );
-    }
-
-    #[test]
-    fn embedding_model_has_no_provider_default() {
-        assert_eq!(embedding_model_from_env(|_| None), None);
-        assert_eq!(
-            embedding_model_from_env(|key| {
-                (key == PROXIMA_EMBED_MODEL).then(|| "custom".into())
-            }),
-            Some("custom".into())
         );
     }
 

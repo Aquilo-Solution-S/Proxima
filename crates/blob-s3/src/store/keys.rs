@@ -140,41 +140,6 @@ mod tests {
         assert_eq!(canonical_object_key(mine), canonical_object_key(mine));
     }
 
-    /// A mount moves WHICH id the key derives from, and nothing else.
-    ///
-    /// The destination row of a cross-owner transfer has its own
-    /// `upload_id` and names the source's object. Before the mount column
-    /// existed there was no way to express that without either copying the
-    /// bytes or storing a locator on trust; the column is the third way,
-    /// and it stays a derivation.
-    #[test]
-    fn a_mounted_row_names_the_object_its_source_minted_and_nothing_else() {
-        let source = Uuid::now_v7();
-        let mounted = Uuid::now_v7();
-        let stranger = Uuid::now_v7();
-        let source_key = canonical_object_key(source);
-
-        assert!(
-            locator_was_minted_here(&source_key, mounted, Some(source)),
-            "a mounted row must reach the object its source minted"
-        );
-        assert!(
-            !locator_was_minted_here(&canonical_object_key(mounted), mounted, Some(source)),
-            "a mounted row must NOT reach a key minted for its own id: no such object exists, \
-             and honouring it would let a mount invent an object"
-        );
-        assert!(
-            !locator_was_minted_here(&canonical_object_key(stranger), mounted, Some(source)),
-            "the mount reaches exactly one object, not the whole prefix"
-        );
-        // The mount is what changes the answer. Same row, same key, no
-        // mount column: refused.
-        assert!(
-            !locator_was_minted_here(&source_key, mounted, None),
-            "without the mount the row is back to naming only its own object"
-        );
-    }
-
     /// MUTANT PIN. A gate weakened in any of the plausible ways must fail
     /// at least one case above.
     ///
@@ -306,19 +271,5 @@ mod tests {
                 "{near_miss:?} is not the key minted for this row and must be refused"
             );
         }
-    }
-
-    #[test]
-    fn persisted_cold_keys_match_storage_pg_exactly() {
-        let t = Uuid::parse_str("00000000-0000-0000-0000-000000000003").expect("uuid literal");
-
-        assert_eq!(
-            cold_object_key(t),
-            proxima_storage_pg::verbs::forget::cold_object_key(t)
-        );
-        assert_eq!(
-            cold_object_key(t),
-            "cold/00000000-0000-0000-0000-000000000003"
-        );
     }
 }

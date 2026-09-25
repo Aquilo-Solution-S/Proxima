@@ -256,11 +256,6 @@ jobs:
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          # self_ingestion_pg shallow-clones the workspace and ingests its
-          # most-recent commits; a single-commit CI checkout would starve
-          # it, so fetch full history here (the test itself bounds depth).
-          fetch-depth: 0
       # Swatinem/rust-cache@v2.9.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:

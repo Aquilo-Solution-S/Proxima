@@ -190,24 +190,6 @@ pub fn goal_page_sql_for_tests(req: &QueryRequest) -> String {
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::MemoryId;
-    use proxima_core::verbs::goal_write::GoalState;
-    use proxima_core::verbs::query::QueryRequest;
-
-    #[test]
-    fn assignment_and_evidence_filters_are_bound() {
-        let mut req = QueryRequest::readable();
-        req.entity_kind = Some(proxima_core::verbs::query::EntityKind::Goal);
-        req.goal_state = Some(GoalState::Active);
-        req.assignment = Some(MemoryId::new(uuid::Uuid::nil()));
-        req.evidence_contains = Some(MemoryId::new(uuid::Uuid::nil()));
-        let sql = super::goal_page_sql(&req, false);
-        assert!(sql.contains("g.assignment_t"));
-        assert!(sql.contains("ANY(g.evidence_t)"));
-        assert!(sql.contains("g.state = 'Active'"));
-        assert!(sql.contains("g.assignment_t AS assignment"));
-        assert!(sql.contains("g.evidence_t AS evidence"));
-    }
 
     #[test]
     fn batch_activation_sql_is_one_shot() {

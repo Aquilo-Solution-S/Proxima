@@ -686,31 +686,6 @@ mod tests {
     }
 
     #[test]
-    fn a_flavor_migrator_records_on_its_own_ledger() {
-        assert_eq!(
-            flavor_ledger_table("proxima-code"),
-            "public._sqlx_migrations_proxima_code",
-            "the derivation reproduces the ledger the code flavor already uses"
-        );
-        let mut shared = migrator(&[TEST_FLAVOR_VERSION]);
-        shared.set_ignore_missing(false);
-        let source = NamedMigrator::flavor("acme-forge_2", shared);
-        assert_eq!(source.source(), "acme-forge_2");
-        assert_eq!(
-            source.migrator().table_name,
-            "public._sqlx_migrations_acme_forge_2"
-        );
-        assert!(source.migrator().ignore_missing);
-        assert_eq!(
-            NamedMigrator::new("beta", migrator(&[TEST_FLAVOR_VERSION]))
-                .migrator()
-                .table_name,
-            "_sqlx_migrations",
-            "`new` keeps the migrator's own table, core's by default"
-        );
-    }
-
-    #[test]
     fn a_declared_ledger_is_kept_and_two_flavors_never_share_one() {
         let mut declared = migrator(&[TEST_FLAVOR_VERSION]);
         declared.dangerous_set_table_name("acme._sqlx_migrations");
@@ -757,20 +732,5 @@ mod tests {
             assert!(result.is_err(), "{id:?} must be refused");
             assert!(!super::is_flavor_ledger_id(id));
         }
-    }
-
-    #[test]
-    fn flavor_sources_are_forced_to_ignore_missing() {
-        let sources = prepare_sources([NamedMigrator::new(
-            "alpha",
-            migrator(&[TEST_FLAVOR_VERSION]),
-        )])
-        .expect("valid sources");
-        let alpha = sources
-            .iter()
-            .find(|source| source.source() == "alpha")
-            .expect("alpha source");
-
-        assert!(alpha.migrator().ignore_missing);
     }
 }

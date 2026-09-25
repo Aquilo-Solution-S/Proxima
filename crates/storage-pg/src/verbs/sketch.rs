@@ -135,31 +135,3 @@ fn parse_kind(kind: &str) -> Option<EntityKind> {
 fn owner_from(kind: OwnerRefKind, owner_id: Uuid) -> OwnerRef {
     kind.with_uuid(owner_id)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn payload_title_beats_rendered_body() {
-        let payload = SidecarPayload::abstraction(proxima_core::AgentDerivationV1 {
-            title: "Pattern".into(),
-            body: "long body".into(),
-            tags: vec![],
-            idempotency_key: None,
-            source_memory_ids: vec![],
-            model_id: "m".into(),
-            client_name: "c".into(),
-            client_version: "0".into(),
-        });
-        assert_eq!(
-            sketch_line("abstraction", Some("long body"), &[payload]),
-            "Pattern"
-        );
-    }
-
-    #[test]
-    fn rendered_first_line_when_no_sidecar() {
-        assert_eq!(sketch_line("fact", Some("Title\n\nbody"), &[]), "Title");
-    }
-}

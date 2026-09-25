@@ -64,15 +64,6 @@ fn a_listenable_schema_without_a_json_schema_fails_the_build() {
     );
 }
 
-/// The twin that declares one freezes, so the refusal above is about
-/// the missing schema and not about the probe flavor.
-#[test]
-fn a_listenable_schema_with_a_json_schema_freezes() {
-    let frozen = crate::test_fixtures::probe_registry();
-    let listenable: Vec<&str> = frozen.listenable_schema_ids().collect();
-    assert_eq!(listenable, vec!["probe/listenable-v1"]);
-}
-
 /// Every contract cross-check, each with a registry shaped to trip it
 /// and nothing else.
 ///

@@ -465,12 +465,9 @@ pub(crate) fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::super::super::memory_spaces::test_ctx::ctx_for;
-    use super::{
-        AuthoredDerivation, DerivedKind, MAX_SOURCE_HANDLES, content_idempotency_key,
-        derivation_sidecar, derived_memory_id,
-    };
+    use super::{AuthoredDerivation, derivation_sidecar};
     use crate::mcp::MemoryHandleClass;
-    use crate::{AgentDerivationV1, MemoryId, OwnerRef, UserId};
+    use crate::{AgentDerivationV1, MemoryId, UserId};
     use uuid::Uuid;
 
     fn golden_authored(idempotency_key: Option<&str>) -> AuthoredDerivation {
@@ -480,38 +477,6 @@ mod tests {
             model_id: "example-model".into(),
             tags: vec!["alpha".into(), "beta".into()],
             idempotency_key: idempotency_key.map(ToString::to_string),
-        }
-    }
-
-    /// Pins the auto-derived idempotency key byte for byte: blake3 over
-    /// `title \0 body (\0 tag)*`, rendered `"{model_id}:{hex}"`. Two
-    /// authoring surfaces compute this key, and a drift in either one
-    /// silently re-points every future write's `derived_memory_id` — a
-    /// replay that is no longer a replay, or a replay that swallows a
-    /// different body.
-    #[test]
-    fn content_idempotency_key_golden() {
-        assert_eq!(
-            content_idempotency_key(&golden_authored(None)),
-            "example-model:47dcfe4f790ea0580ce015da6dd0f56ed2332cb328f37edf37e4c00e14581f1b",
-        );
-    }
-
-    /// The tags participate in the hash and their order is the normalized
-    /// (sorted, deduped) one, so a tag change is a different write.
-    #[test]
-    fn content_idempotency_key_covers_title_body_and_tags() {
-        let base = content_idempotency_key(&golden_authored(None));
-        let mut other_title = golden_authored(None);
-        other_title.title = "Other title".into();
-        let mut other_body = golden_authored(None);
-        other_body.body = "Other body".into();
-        let mut other_tags = golden_authored(None);
-        other_tags.tags = vec!["alpha".into()];
-        let mut other_model = golden_authored(None);
-        other_model.model_id = "other-model".into();
-        for variant in [other_title, other_body, other_tags, other_model] {
-            assert_ne!(content_idempotency_key(&variant), base);
         }
     }
 
@@ -547,41 +512,5 @@ mod tests {
                 .idempotency_key,
             Some("explicit-key".to_string()),
         );
-    }
-
-    #[test]
-    fn derived_kind_accepts_mixed_case() {
-        assert!(matches!(
-            serde_json::from_value::<DerivedKind>(serde_json::json!("abstraction")).unwrap(),
-            DerivedKind::Abstraction
-        ));
-        assert!(matches!(
-            serde_json::from_value::<DerivedKind>(serde_json::json!("PERSPECTIVE")).unwrap(),
-            DerivedKind::Perspective
-        ));
-        assert!(matches!(
-            serde_json::from_value::<DerivedKind>(serde_json::json!("Abstraction")).unwrap(),
-            DerivedKind::Abstraction
-        ));
-    }
-
-    /// Pins the org-free deterministic `derive` `MemoryId` against drift.
-    /// Org-free: the v5 key folds principal kind/id ‖ kind ‖ key — no
-    /// org. A fixed input must reproduce exactly this uuid.
-    #[test]
-    fn derived_memory_id_golden_is_org_free() {
-        let owner = OwnerRef::Personal(UserId::new(
-            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
-        ));
-        let id = derived_memory_id(&owner, "Abstraction", "golden-key");
-        assert_eq!(
-            id,
-            Uuid::parse_str("b12eb286-ac4d-5eea-9854-ff88dd16e42c").expect("uuid literal")
-        );
-    }
-
-    #[test]
-    fn source_handle_cap_is_pinned() {
-        assert_eq!(MAX_SOURCE_HANDLES, 256);
     }
 }

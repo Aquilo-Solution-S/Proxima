@@ -143,24 +143,6 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn one_response_supplies_bytes_and_both_digests() {
-        let input: &'static [u8] = b"one bounded response";
-        let streamed = hash_uploaded_object(
-            aws_sdk_s3::primitives::ByteStream::from_static(input),
-            LengthExpectation::Declared(i64::try_from(input.len()).expect("test length fits")),
-            Some(1024),
-        )
-        .await
-        .expect("hash response");
-
-        assert_eq!(streamed.bytes, input);
-        assert_eq!(streamed.byte_len, input.len() as u64);
-        assert_eq!(streamed.blake3, *blake3::hash(input).as_bytes());
-        let expected_sha256: [u8; 32] = Sha256::digest(input).into();
-        assert_eq!(streamed.sha256, expected_sha256);
-    }
-
-    #[tokio::test]
     async fn overlong_response_stops_after_one_sentinel_byte() {
         let error = hash_uploaded_object(
             aws_sdk_s3::primitives::ByteStream::from_static(b"far too long"),

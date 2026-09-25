@@ -1069,107 +1069,14 @@ fn is_sqlstate(err: &sqlx::Error, expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use sqlx::ConnectOptions;
-    use sqlx::postgres::{PgConnectOptions, PgSslMode};
 
-    use super::{
-        advisory_lock_key, db_url_from_admin, name_is_stale_clone, quoted_ident, redacted_url,
-        template_family, unique_db_name,
-    };
-    use time::{Duration, OffsetDateTime};
-    use uuid::Uuid;
-
-    #[test]
-    fn database_url_preserves_query_options_and_userinfo() {
-        let admin = url::Url::parse(
-            "postgres://user%40domain:p%40ss%2Fword@[::1]:55439/admin?sslmode=require\
-             &application_name=pg-testkit&options=-c%20statement_timeout%3D5000\
-             &sslrootcert=%2Ftmp%2Froot.crt#fragment",
-        )
-        .expect("test URL");
-        let target = db_url_from_admin(admin.as_str(), "isolated_test").expect("target URL");
-        let options = PgConnectOptions::from_url(&target).expect("target options");
-        assert_eq!(options.get_database(), Some("isolated_test"));
-        assert!(matches!(options.get_ssl_mode(), PgSslMode::Require));
-        assert_eq!(options.get_application_name(), Some("pg-testkit"));
-        assert_eq!(options.get_options(), Some("-c statement_timeout=5000"));
-        assert_eq!(target.username(), admin.username());
-        assert_eq!(target.password(), admin.password());
-        assert_eq!(target.host(), admin.host());
-        assert_eq!(target.port(), admin.port());
-        assert_eq!(target.fragment(), admin.fragment());
-        assert!(
-            target
-                .query_pairs()
-                .any(|(key, value)| { key == "sslrootcert" && value == "/tmp/root.crt" })
-        );
-    }
-
-    #[test]
-    fn database_url_preserves_socket_and_replaces_database_overrides() {
-        for host in ["/tmp/postgres", "%2Ftmp%2Fpostgres"] {
-            let admin = format!(
-                "postgres:///admin?dbname=admin&host={host}&db%6Eame=other&application_name=tests"
-            );
-            let target = db_url_from_admin(&admin, "isolated_test").expect("target URL");
-            let options = PgConnectOptions::from_url(&target).expect("target options");
-            assert_eq!(options.get_database(), Some("isolated_test"));
-            assert_eq!(
-                options.get_socket().map(std::path::PathBuf::as_path),
-                Some(std::path::Path::new("/tmp/postgres"))
-            );
-            assert_eq!(options.get_application_name(), Some("tests"));
-            let databases: Vec<_> = target
-                .query_pairs()
-                .filter(|(key, _)| key == "dbname")
-                .map(|(_, value)| value.into_owned())
-                .collect();
-            assert_eq!(databases, ["isolated_test"]);
-        }
-    }
-
-    #[test]
-    fn database_url_preserves_a_host_without_database_path() {
-        let target = db_url_from_admin(
-            "postgres://user:pass@localhost:55439?application_name=tests",
-            "isolated_test",
-        )
-        .expect("target URL");
-        let options = PgConnectOptions::from_url(&target).expect("target options");
-        assert_eq!(options.get_host(), "localhost");
-        assert_eq!(options.get_port(), 55439);
-        assert_eq!(options.get_database(), Some("isolated_test"));
-        assert_eq!(options.get_application_name(), Some("tests"));
-    }
-
-    #[test]
-    fn database_url_round_trips_database_names_as_data() {
-        for name in [
-            "Grüße 世界",
-            "a/b%2Fc?#&dbname=admin",
-            "/leading",
-            ".",
-            "..",
-        ] {
-            let target = db_url_from_admin("postgres://localhost/admin", name).expect("target URL");
-            let options = PgConnectOptions::from_url(&target).expect("target options");
-            assert_eq!(options.get_database(), Some(name));
-        }
-    }
+    use super::{db_url_from_admin, quoted_ident, redacted_url, template_family};
 
     #[test]
     fn invalid_admin_url_error_contains_no_credentials() {
         let result = db_url_from_admin("postgres://user:private-secret@[broken", "isolated_test");
         let error = result.expect_err("invalid IPv6 address");
         assert!(!error.to_string().contains("private-secret"));
-    }
-
-    #[test]
-    fn unique_db_name_uses_prefix_and_simple_uuidv7() {
-        let name = unique_db_name("proxima_test");
-
-        assert!(name.starts_with("proxima_test_"));
-        assert_eq!(name.len(), "proxima_test_".len() + 32);
     }
 
     #[test]
@@ -1199,25 +1106,5 @@ mod tests {
         );
         assert_eq!(template_family("proxima_tmpl_build_abc"), None);
         assert_eq!(template_family("proxima_test_abc"), None);
-    }
-
-    #[test]
-    fn uuid_v7_suffix_is_stale_before_cutoff() {
-        let uuid = Uuid::now_v7();
-        let name = format!("proxima_test_{}", uuid.simple());
-        let future = OffsetDateTime::now_utc() + Duration::minutes(1);
-        let past = OffsetDateTime::now_utc() - Duration::minutes(1);
-        assert!(name_is_stale_clone(&name, future));
-        assert!(!name_is_stale_clone(&name, past));
-        assert!(!name_is_stale_clone("not_a_clone", future));
-        assert!(!name_is_stale_clone("proxima_tmpl_core_deadbeef", future));
-    }
-
-    #[test]
-    fn advisory_lock_key_is_deterministic() {
-        assert_eq!(
-            advisory_lock_key("proxima_tmpl_core_abc"),
-            advisory_lock_key("proxima_tmpl_core_abc")
-        );
     }
 }

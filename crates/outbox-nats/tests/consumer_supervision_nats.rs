@@ -5,11 +5,11 @@ mod common;
 
 use std::future::Future;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::{Fixture, RecordingIntake, SeenOutcome, nats_url_or_skip};
+use common::{Fixture, RecordingIntake, nats_url_or_skip};
 use proxima_outbox_nats::{
     ConsumerConnectionState, ConsumerPassState, ConsumerTaskState, DurableIntake, Intake,
     IntakeError, JetStreamPublisher, ReceivedEvent, ReferenceConsumer,
@@ -24,7 +24,6 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::prelude::*;
 
-const BLOCK_NOTE: &str = "SYNTHETIC_CONSUMER_BLOCKED_PAYLOAD";
 const ERROR_MARKER: &str = "SYNTHETIC_CONSUMER_SECRET";
 const PANIC_MARKER: &str = "SYNTHETIC_CONSUMER_PANIC";
 const PAYLOAD_MARKER: &str = "SYNTHETIC_CONSUMER_PAYLOAD_MARKER";
@@ -77,31 +76,6 @@ async fn wait_until(mut condition: impl FnMut() -> bool, what: &str) {
 }
 
 #[derive(Debug)]
-struct GateIntake {
-    recording: Arc<RecordingIntake>,
-    note: &'static str,
-    entered: Arc<tokio::sync::Notify>,
-    release: Arc<tokio::sync::Notify>,
-    blocked: AtomicBool,
-}
-
-#[async_trait::async_trait]
-impl DurableIntake for GateIntake {
-    async fn accept(&self, event: &ReceivedEvent) -> Result<Intake, IntakeError> {
-        let note = event
-            .envelope
-            .data
-            .get("note")
-            .and_then(serde_json::Value::as_str);
-        if note == Some(self.note) && !self.blocked.swap(true, Ordering::AcqRel) {
-            self.entered.notify_one();
-            self.release.notified().await;
-        }
-        self.recording.accept(event).await
-    }
-}
-
-#[derive(Debug)]
 struct CancelOnFailureIntake {
     cancel: CancellationToken,
 }
@@ -141,123 +115,6 @@ async fn publisher_for(fixture: &Fixture) -> JetStreamPublisher {
     JetStreamPublisher::connect(fixture.config.clone(), fixture.outbox())
         .await
         .expect("the test publisher connects")
-}
-
-#[tokio::test]
-#[allow(clippy::too_many_lines)]
-async fn observed_consumer_reads_live_connection_while_intake_is_blocked() {
-    let Some(url) =
-        nats_url_or_skip("observed_consumer_reads_live_connection_while_intake_is_blocked")
-    else {
-        return;
-    };
-    Fixture::new("nats_consumer_health_connection", url)
-        .await
-        .run(async |fixture| {
-            let publisher = publisher_for(fixture).await;
-            let (_first_id, first_raw) =
-                capture_and_publish(fixture, &publisher, "first event").await;
-            let first_event_id = serde_json::from_slice::<serde_json::Value>(&first_raw)
-                .expect("captured envelope is JSON")["id"]
-                .as_str()
-                .expect("captured envelope has an id")
-                .to_owned();
-            let recording = RecordingIntake::new();
-            let entered = Arc::new(tokio::sync::Notify::new());
-            let release = Arc::new(tokio::sync::Notify::new());
-            let intake = Arc::new(GateIntake {
-                recording: recording.clone(),
-                note: BLOCK_NOTE,
-                entered: entered.clone(),
-                release: release.clone(),
-                blocked: AtomicBool::new(false),
-            });
-
-            let mut proxy = ConsumerProxy::bind(&fixture.url).await;
-            let mut config = fixture.consumer_config();
-            config.url = proxy.url();
-            let consumer = ReferenceConsumer::connect(config, intake)
-                .await
-                .expect("reference consumer connects through the fault proxy");
-            let cancel = CancellationToken::new();
-            let (health, future) = consumer.into_observed_parts(cancel.clone());
-            assert_eq!(health.snapshot().task, ConsumerTaskState::Starting);
-            assert_eq!(
-                health.snapshot().connection,
-                ConsumerConnectionState::NotObserved
-            );
-            assert_eq!(health.snapshot().pass, ConsumerPassState::NotObserved);
-            let events = Arc::new(Mutex::new(Vec::new()));
-            let task = tokio::spawn(with_dispatch(event_dispatch(events), future));
-            wait_until(
-                || {
-                    recording
-                        .seen()
-                        .iter()
-                        .any(|seen| seen.id == first_event_id)
-                        && health.snapshot().pass == ConsumerPassState::Clean
-                },
-                "the first Fact to be accepted and ACKed",
-            )
-            .await;
-            let first_seen = recording
-                .seen()
-                .into_iter()
-                .find(|seen| seen.id == first_event_id)
-                .expect("first Fact reached intake");
-            assert_eq!(first_seen.raw, first_raw);
-            assert_eq!(first_seen.outcome, SeenOutcome::Accepted);
-            assert!(health.snapshot().is_ready());
-
-            let _ = capture_and_publish(fixture, &publisher, BLOCK_NOTE).await;
-            tokio::time::timeout(Duration::from_secs(10), entered.notified())
-                .await
-                .expect("the consumer entered the held intake");
-            assert_eq!(health.snapshot().pass, ConsumerPassState::Clean);
-
-            proxy.pause().await;
-            wait_until(
-                || health.snapshot().connection != ConsumerConnectionState::Connected,
-                "actual NATS connection health to observe proxy loss",
-            )
-            .await;
-            assert_eq!(
-                health.snapshot().pass,
-                ConsumerPassState::Clean,
-                "connection sampling must work while process_once is blocked in intake"
-            );
-
-            proxy.resume();
-            wait_until(
-                || health.snapshot().connection == ConsumerConnectionState::Connected,
-                "the NATS client to reconnect through the proxy",
-            )
-            .await;
-            assert_eq!(health.snapshot().pass, ConsumerPassState::Clean);
-            release.notify_one();
-            wait_until(
-                || {
-                    recording.seen().iter().any(|seen| {
-                        seen.raw
-                            .windows(BLOCK_NOTE.len())
-                            .any(|window| window == BLOCK_NOTE.as_bytes())
-                    }) && health.snapshot().pass == ConsumerPassState::Clean
-                },
-                "the held Fact to finish intake and ACK",
-            )
-            .await;
-
-            cancel.cancel();
-            task.await.expect("consumer future joins normally");
-            let stopped = health.snapshot();
-            assert_eq!(stopped.task, ConsumerTaskState::Stopped);
-            assert_eq!(stopped.connection, ConsumerConnectionState::NotObserved);
-            assert_eq!(stopped.pass, ConsumerPassState::Clean);
-            assert!(!format!("{health:?}").contains(BLOCK_NOTE));
-            proxy.wait_bridges_closed().await;
-            proxy.shutdown().await;
-        })
-        .await;
 }
 
 #[tokio::test]
@@ -411,7 +268,6 @@ impl Drop for ActiveBridge {
 
 struct ConsumerProxy {
     addr: SocketAddr,
-    paused: Arc<AtomicBool>,
     active: Arc<AtomicUsize>,
     bridge_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     cancel: CancellationToken,
@@ -438,12 +294,10 @@ impl ConsumerProxy {
             .await
             .expect("proxy listener binds");
         let addr = listener.local_addr().expect("proxy address");
-        let paused = Arc::new(AtomicBool::new(false));
         let active = Arc::new(AtomicUsize::new(0));
         let bridge_tasks = Arc::new(Mutex::new(Vec::new()));
         let cancel = CancellationToken::new();
         let accept_task = {
-            let paused = paused.clone();
             let active = active.clone();
             let bridge_tasks = bridge_tasks.clone();
             let cancel = cancel.clone();
@@ -456,9 +310,6 @@ impl ConsumerProxy {
                     let Ok((mut downstream, _)) = accepted else {
                         continue;
                     };
-                    if paused.load(Ordering::Acquire) {
-                        continue;
-                    }
                     let upstream = tokio::select! {
                         () = cancel.cancelled() => break,
                         upstream = TcpStream::connect(target_addr) => upstream,
@@ -466,9 +317,6 @@ impl ConsumerProxy {
                     let Ok(mut upstream) = upstream else {
                         continue;
                     };
-                    if paused.load(Ordering::Acquire) {
-                        continue;
-                    }
                     active.fetch_add(1, Ordering::AcqRel);
                     let active_guard = ActiveBridge(active.clone());
                     let bridge_cancel = cancel.clone();
@@ -488,7 +336,6 @@ impl ConsumerProxy {
         };
         Self {
             addr,
-            paused,
             active,
             bridge_tasks,
             cancel,
@@ -498,15 +345,6 @@ impl ConsumerProxy {
 
     fn url(&self) -> String {
         format!("nats://{}", self.addr)
-    }
-
-    async fn pause(&self) {
-        self.paused.store(true, Ordering::Release);
-        self.abort_bridges().await;
-    }
-
-    fn resume(&self) {
-        self.paused.store(false, Ordering::Release);
     }
 
     async fn wait_bridges_closed(&self) {

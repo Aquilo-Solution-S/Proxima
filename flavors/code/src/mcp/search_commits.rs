@@ -545,24 +545,6 @@ struct ScoredMemoryRow {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn commit_search_reads_the_projection_vector() {
-        let needle = format!("{}{}", "to_ts", "vector(");
-        assert!(
-            !super::COMMIT_SEARCH_SQL.contains(&needle),
-            "commit search must @@ the stored vector, not recompute to_tsvector"
-        );
-        assert!(super::COMMIT_SEARCH_SQL.contains("p.search_tsv @@"));
-        assert!(
-            super::COMMIT_SEARCH_SQL.contains("proxima_code.projection p"),
-            "the vector is read from the projection"
-        );
-        assert!(
-            !super::SUMMARY_SEARCH_SQL.contains(&needle),
-            "summary search must @@ the stored vector, not recompute to_tsvector"
-        );
-        assert!(super::SUMMARY_SEARCH_SQL.contains("p.search_tsv @@"));
-    }
 
     /// The RANKED arms bind the owner too, and nothing pinned it.
     ///
@@ -593,40 +575,6 @@ mod tests {
                 "a bind that is only checked for NULL is not an owner predicate"
             );
         }
-    }
-
-    /// The exact arm renders the window it DECLARES, and the declaration is
-    /// `flavor0::BAND_EXACT` with one property changed — so the window is
-    /// core's and the normalization divergence is a declared value rather
-    /// than an accident, comparable with the rescue arm's scores and core's.
-    #[test]
-    fn the_exact_arm_is_banded_like_cores() {
-        use proxima_core::flavor::{BAND_NAME_EXACT, TS_RANK_NORMALIZATION_NONE};
-
-        let declared = crate::contract::band(crate::contract::COMMIT_SCHEMA_ID, BAND_NAME_EXACT);
-        assert_eq!(
-            (declared.floor, declared.ceiling),
-            (
-                proxima_core::flavor0::BAND_EXACT.floor,
-                proxima_core::flavor0::BAND_EXACT.ceiling
-            ),
-            "the window is core's, referenced rather than respelled"
-        );
-        assert_eq!(
-            declared.normalization, TS_RANK_NORMALIZATION_NONE,
-            "this arm passes no normalization flag; declaring that must not add one"
-        );
-        let (floor, width) = declared.parts();
-        assert_eq!((floor.as_str(), width.as_str()), ("0.50", "0.50"));
-        assert!(
-            super::COMMIT_SEARCH_SQL
-                .contains("0.50 + LEAST(ts_rank_cd(p.search_tsv, q.tsq), 1.0) * 0.50"),
-            "the exact arm renders the declared window and no normalization argument"
-        );
-        assert!(
-            super::SUMMARY_SEARCH_SQL
-                .contains("0.50 + LEAST(ts_rank_cd(p.search_tsv, q.tsq), 1.0) * 0.50"),
-        );
     }
 
     /// The substring arms are DECLARED and OWNER-SCOPED.

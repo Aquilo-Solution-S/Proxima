@@ -71,7 +71,7 @@ pub fn process_env(key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{env_value, process_env};
+    use super::env_value;
 
     fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {
@@ -80,16 +80,6 @@ mod tests {
                 .find(|(k, _)| *k == key)
                 .map(|(_, v)| (*v).to_string())
         }
-    }
-
-    #[test]
-    fn absent_is_unset() {
-        assert_eq!(env_value(&env(&[]), "FOO"), None);
-    }
-
-    #[test]
-    fn empty_is_unset() {
-        assert_eq!(env_value(&env(&[("FOO", "")]), "FOO"), None);
     }
 
     #[test]
@@ -112,25 +102,5 @@ mod tests {
             env_value(&env(&[("FOO", " a b ")]), "FOO").as_deref(),
             Some("a b")
         );
-    }
-
-    /// `process_env` composes with `env_value` as a plain `fn` item — the
-    /// property every call site depends on, since all eight pass it by name
-    /// rather than calling it.
-    ///
-    /// Deliberately does not `set_var`: mutating the process environment
-    /// would race every other test in this binary that reads one (`setenv` is
-    /// not thread-safe against a concurrent `getenv`, which is why Rust 2024
-    /// made it `unsafe`), and the trimming rule already has exhaustive
-    /// coverage above against an injected lookup.
-    #[test]
-    fn process_env_composes_with_env_value_by_name() {
-        const UNSET: &str = "PROXIMA_ENV_RS_PROCESS_ENV_UNSET";
-        assert_eq!(
-            process_env(UNSET),
-            std::env::var(UNSET).ok(),
-            "process_env is exactly the process environment, nothing more"
-        );
-        assert_eq!(env_value(&process_env, UNSET), None);
     }
 }

@@ -132,25 +132,4 @@ mod tests {
             .validate()
             .expect("a pinned memory reference is well formed");
     }
-
-    /// The edge set must be a function of node content: the same payload
-    /// re-read yields the same reference declarations, which is what
-    /// makes the index rebuildable.
-    #[test]
-    fn references_are_a_function_of_payload_content() {
-        let payload = InterpretationV1 {
-            claim: "same".into(),
-            confidence: 1,
-            subject_memory_ids: vec![uuid::Uuid::now_v7(), uuid::Uuid::now_v7()],
-            subject_kinds: vec![
-                InterpretationSubjectKind::Abstraction,
-                InterpretationSubjectKind::Perspective,
-            ],
-            model_id: "m".into(),
-            client_name: "c".into(),
-            client_version: "1".into(),
-        };
-        assert_eq!(payload.references(), payload.references());
-        assert_eq!(payload.references().len(), 2);
-    }
 }

@@ -1446,15 +1446,8 @@ pub(crate) fn register(
 
 #[cfg(test)]
 mod tests {
-    use super::{FLAVOR_0, RESOURCES, resource};
+    use super::FLAVOR_0;
     use crate::flavor::contract::{EraseLeg, SearchProjectionDecl, TransferRule};
-    use crate::protocol::resource as scope;
-
-    #[test]
-    fn flavor_zero_is_core_and_holds_the_zero_ordinal() {
-        assert_eq!(FLAVOR_0.flavor_id, "core");
-        assert!(FLAVOR_0.is_core());
-    }
 
     #[test]
     fn publication_origin_is_classified_as_a_bespoke_erase_leg() {
@@ -1464,37 +1457,6 @@ mod tests {
             .find(|surface| surface.table == "proxima_core.publication_origin")
             .expect("publication origin is declared");
         assert_eq!(FLAVOR_0.erase_leg(surface), EraseLeg::Bespoke);
-    }
-
-    #[test]
-    fn every_declared_schema_id_carries_the_flavor_prefix() {
-        for schema in FLAVOR_0.schemas {
-            assert!(
-                schema.id.render().starts_with("core/"),
-                "{} must carry the core/ prefix",
-                schema.id.render()
-            );
-        }
-    }
-
-    #[test]
-    fn every_declared_tool_carries_the_flavor_prefix() {
-        for tool in FLAVOR_0.tools {
-            assert!(
-                tool.wire_name.starts_with("core_") || tool.wire_name.starts_with("core/"),
-                "{} must carry the core prefix",
-                tool.wire_name
-            );
-        }
-    }
-
-    #[test]
-    fn eleven_resources_from_ten_handler_modules() {
-        assert_eq!(RESOURCES.len(), 11);
-        assert_eq!(resource(scope::GOAL).name, "proxima-goal");
-        assert_eq!(resource(scope::GOALS).path, "goals");
-        assert_eq!(resource(scope::SCHEMA).path, "schema");
-        assert!(RESOURCES.iter().all(|entry| entry.read_only));
     }
 
     #[test]

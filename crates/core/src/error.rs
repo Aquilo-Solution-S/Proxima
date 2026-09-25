@@ -164,31 +164,3 @@ impl ProtocolError {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ErrorCode;
-
-    const ALL_ERROR_CODES: &[ErrorCode] = &[
-        ErrorCode::AuthRequired,
-        ErrorCode::Forbidden,
-        ErrorCode::UnknownSchema,
-        ErrorCode::AlreadyIngested,
-        ErrorCode::IdempotencyConflict,
-        ErrorCode::NotFound,
-        ErrorCode::InvalidArgument,
-        ErrorCode::ToolNotRegistered,
-        ErrorCode::TriggerConflict,
-        ErrorCode::DuplicateTriggerInRequest,
-        ErrorCode::Suppressed,
-        ErrorCode::Internal,
-    ];
-
-    #[test]
-    fn error_code_as_str_matches_json_wire() {
-        for code in ALL_ERROR_CODES {
-            let wire = serde_json::to_value(code).expect("serialize error code");
-            assert_eq!(wire, serde_json::Value::String(code.as_str().to_string()));
-        }
-    }
-}

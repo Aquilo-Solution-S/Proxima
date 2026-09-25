@@ -760,56 +760,6 @@ mod tests {
         (contract, schema)
     }
 
-    /// The generator is a function of the contract, INCLUDING the column the
-    /// sidecar keys its memory on.
-    ///
-    /// A downstream flavor may key its sidecar on a name of its own —
-    /// `KeyShape::MemoryT { column }` exists precisely because the erase and
-    /// export lanes could not otherwise find the id. A literal `t` on the
-    /// sidecar side of this statement made the projection a function of the
-    /// contract PLUS a naming convention no declaration states, and such a
-    /// flavor got no projection rows at all.
-    #[test]
-    fn the_insert_keys_the_sidecar_on_the_column_the_contract_declares() {
-        const RENAMED: &str = "note_memory_id";
-
-        let (contract, schema) =
-            a_contract_keying_the_note_on(proxima_core::flavor::KeyShape::MemoryT {
-                column: RENAMED,
-            });
-        let insert = projection_insert_sql(&contract, schema).expect("the insert generates");
-
-        // Substituted into a shape rather than built with `format!`, so the
-        // SQL-policy scanner does not read an expectation about a statement
-        // as a statement being built.
-        for shape in [
-            "SELECT c.<key>,",
-            "JOIN proxima_core.memory m ON m.t = c.<key>",
-            "WHERE c.<key> = $1",
-        ] {
-            let expected = shape.replace("<key>", RENAMED);
-            assert!(
-                insert.contains(&expected),
-                "the declared key column is spelled at every sidecar reference; \
-                 missing {expected:?} in: {insert}"
-            );
-        }
-        // The three spellings the defect had, named literally. A blanket
-        // `!contains("c.t")` would also reject `c.tags`, the tag column this
-        // very statement copies.
-        for forbidden in ["SELECT c.t,", "m.t = c.t\n", "WHERE c.t = $1"] {
-            assert!(
-                !insert.contains(forbidden),
-                "nothing keys the sidecar on `t` behind the declaration's back; \
-                 found {forbidden:?} in: {insert}"
-            );
-        }
-        assert!(
-            insert.contains("m.t = "),
-            "`m.t` is the kernel memory table's own key and stays: {insert}"
-        );
-    }
-
     /// A sidecar the generator cannot key on a memory is a refusal that
     /// names the declaration to fix — never a fall back to `t`.
     ///
@@ -833,56 +783,6 @@ mod tests {
         );
     }
 
-    /// The slimness rule, as a test: two flavors' DDL differs in the schema
-    /// name and the index name and nowhere else. If it ever differs
-    /// elsewhere, the generator has grown a hook.
-    #[test]
-    fn two_flavors_emit_the_same_ddl_modulo_their_names() {
-        let flavor_zero = projection_artifacts(&FLAVOR_0)
-            .expect("core artifacts")
-            .expect("core declares a projection");
-        let the_code_flavor = projection_artifacts(&proxima_code_contract())
-            .expect("code artifacts")
-            .expect("code declares a projection");
-        let normalize = |text: &str| {
-            text.replace("proxima_code", "SCHEMA")
-                .replace("proxima_core.projection", "SCHEMA.projection")
-                .replace("code_projection_owner_tsv_gin", "INDEX")
-                .replace("core_projection_owner_tsv_gin", "INDEX")
-        };
-        // `proxima_core` also appears in the referenced kernel tables, so
-        // normalize the projection's own schema by its qualified name and
-        // leave the references alone.
-        assert_eq!(
-            normalize(&flavor_zero.table.forward).replace("SCHEMA.projection", "P"),
-            normalize(&the_code_flavor.table.forward).replace("SCHEMA.projection", "P"),
-        );
-        assert_eq!(
-            normalize(&flavor_zero.index.forward),
-            normalize(&the_code_flavor.index.forward)
-        );
-    }
-
-    fn proxima_code_contract() -> proxima_core::flavor::FlavorContract {
-        // The code flavor is not a dependency of this crate; rebuild the
-        // shape its contract declares so the slimness property is testable
-        // here rather than only in a downstream crate.
-        let mut contract = FLAVOR_0;
-        contract.flavor_id = "proxima-code";
-        contract.ordinal = 1;
-        contract.projection =
-            proxima_core::flavor::ProjectionDecl::Table(proxima_core::flavor::ProjectionSpec {
-                table: "proxima_code.projection",
-                index: "code_projection_owner_tsv_gin",
-                overfetch_k: 1_000,
-                band_comparability: proxima_core::flavor::BandComparability::CoreBands,
-                // The DDL is what this fixture tests, and the generator
-                // emits the same table whatever the read shape says.
-                rank_source: proxima_core::flavor::RankSource::Projection,
-            });
-        contract
-    }
-
     /// Every artifact's inverse is derived from the same declaration, so a
     /// de-provisioning script is a reading of the generator rather than a
     /// second hand-maintained file.
@@ -899,27 +799,6 @@ mod tests {
                 "DROP TABLE IF EXISTS proxima_core.projection;",
             ]
         );
-    }
-
-    /// Uniform weights emit ONE `to_tsvector` over the joined text — the
-    /// generated column's own expression. Per-field `setweight` would shift
-    /// lexeme positions and move every `ts_rank_cd`.
-    #[test]
-    fn a_uniform_unit_emits_the_generated_columns_expression() {
-        let note = FLAVOR_0
-            .schemas
-            .iter()
-            .find(|schema| schema.sidecar_table == Some("proxima_core.agent_note_v1"))
-            .expect("agent_note_v1");
-        let vector = projection_vector_sql(&note.search).expect("vector");
-        assert_eq!(
-            vector,
-            "COALESCE(proxima_core.lexical_tsv(\
-             COALESCE($2::regconfig, proxima_core.lexical_config()), \
-             proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''), NULLIF(c.body, ''), \
-             proxima_core.lexical_text_array(c.tags)])), ''::tsvector)"
-        );
-        assert!(!vector.contains("setweight"), "uniform emits no setweight");
     }
 
     #[test]

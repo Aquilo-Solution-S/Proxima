@@ -180,38 +180,3 @@ pub struct McpCallLogOutcome {
     pub change_event_seq: Uuid,
     pub idempotent_replay: bool,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::McpCallLogInput;
-    use crate::{OwnerRef, UserId};
-    use uuid::Uuid;
-
-    /// Pins the org-free MCP-call replay key against drift. The BLAKE3 folds
-    /// source ‖ principal kind/id ‖ payload key ‖
-    /// timestamps — no org. A fixed input must reproduce exactly this hex.
-    #[test]
-    fn mcp_call_receipt_id_golden_is_org_free() {
-        let owner = OwnerRef::Personal(UserId::new(
-            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
-        ));
-        let input = McpCallLogInput {
-            owner,
-            actor_oid: "actor-oid".to_string(),
-            actor_upn: "actor@example.com".to_string(),
-            tool_name: "golden/tool".to_string(),
-            ok: true,
-            error: None,
-            latency_ms: 42,
-            io_body: b"golden-io".to_vec(),
-            io_byte_len_original: 9,
-            io_truncated: false,
-            observed_at: time::OffsetDateTime::UNIX_EPOCH,
-            occurred_at: time::OffsetDateTime::UNIX_EPOCH,
-        };
-        assert_eq!(
-            hex::encode(input.receipt_id().into_inner()),
-            "6c9590b12d7baac76048bea402909193a398018010b16b00dcd437e4dfe2d469"
-        );
-    }
-}

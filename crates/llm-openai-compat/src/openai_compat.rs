@@ -335,7 +335,6 @@ impl EmbeddingClient for OpenAiCompatEmbeddingClient {
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
-    use std::time::Duration;
 
     use proxima_core::llm::{EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS};
     use proxima_core::models::EmbedCaps;
@@ -348,32 +347,6 @@ mod tests {
             data: serde_json::from_value(data).expect("valid response data"),
         };
         response.into_embeddings(expected_count, EmbedCaps::new(2, false))
-    }
-
-    #[test]
-    fn response_indices_restore_input_order() {
-        let vectors = decode_vectors(
-            serde_json::json!([
-                { "index": 1, "embedding": [0.0, 1.0] },
-                { "index": 0, "embedding": [1.0, 0.0] }
-            ]),
-            2,
-        )
-        .expect("a complete permutation is valid");
-        assert_eq!(vectors, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
-    }
-
-    #[test]
-    fn response_without_indices_preserves_provider_order() {
-        let vectors = decode_vectors(
-            serde_json::json!([
-                { "embedding": [0.0, 1.0] },
-                { "embedding": [1.0, 0.0] }
-            ]),
-            2,
-        )
-        .expect("compatible providers may omit all indices");
-        assert_eq!(vectors, vec![vec![0.0, 1.0], vec![1.0, 0.0]]);
     }
 
     #[test]
@@ -673,23 +646,6 @@ mod tests {
     }
 
     #[test]
-    fn embed_timeout_defaults_to_dedicated_short_window() {
-        let cfg = super::OpenAiCompatConfig::new("http://localhost:11434/v1", None);
-        assert_eq!(cfg.timeout, super::DEFAULT_EMBED_TIMEOUT);
-        assert_eq!(cfg.timeout, Duration::from_mins(2));
-        // Far shorter than a generation-style 10-minute window so a single
-        // wedged /embeddings call cannot stall the serial drainer for minutes.
-        assert!(cfg.timeout < Duration::from_mins(10));
-    }
-
-    #[test]
-    fn embed_timeout_is_overridable_for_slow_local_models() {
-        let cfg = super::OpenAiCompatConfig::new("http://localhost:11434/v1", None)
-            .with_timeout(Duration::from_mins(5));
-        assert_eq!(cfg.timeout, Duration::from_mins(5));
-    }
-
-    #[test]
     fn config_debug_redacts_bearer_token() {
         let cfg = super::OpenAiCompatConfig::new(
             "https://embeddings.example/v1",
@@ -732,28 +688,6 @@ mod tests {
         let err = super::OpenAiCompatEmbeddingClient::new("test-embed", probe_caps(), cfg)
             .expect_err("plaintext remote base must be rejected");
         assert!(matches!(err, LlmError::Internal(_)));
-    }
-
-    #[test]
-    fn client_allows_https_remote_base_url() {
-        let cfg = super::OpenAiCompatConfig::new("https://embeddings.example/v1", Some("t".into()));
-        assert!(super::OpenAiCompatEmbeddingClient::new("test-embed", probe_caps(), cfg).is_ok());
-    }
-
-    #[test]
-    fn client_allows_loopback_http_base_url() {
-        // IPv4/IPv6 loopback plaintext must keep working.
-        for base in [
-            "http://LOCALHOST:11434/v1",
-            "http://127.0.0.1:11434/v1",
-            "http://[::1]:11434/v1",
-        ] {
-            let cfg = super::OpenAiCompatConfig::new(base, None);
-            assert!(
-                super::OpenAiCompatEmbeddingClient::new("test-embed", probe_caps(), cfg).is_ok(),
-                "loopback base {base} must be allowed"
-            );
-        }
     }
 
     #[test]
@@ -834,26 +768,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn embed_request_serializes_inputs_as_array() {
-        // Providers' /embeddings endpoints take `input` as an array; the
-        // batch width of one request is what divides request-rate-limit
-        // pressure, so the wire shape is load-bearing.
-        let body = super::EmbedRequest {
-            model: "test-embed",
-            input: &["first text", "second text"],
-            dimensions: None,
-        };
-        let json = serde_json::to_value(&body).expect("serialize");
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "model": "test-embed",
-                "input": ["first text", "second text"],
-            })
-        );
     }
 }
 

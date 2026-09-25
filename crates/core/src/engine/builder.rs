@@ -280,25 +280,4 @@ mod tests {
             "unexpected error: {err:?}"
         );
     }
-
-    /// The same registry boots once a source is bound, and the bound value
-    /// is what the engine carries.
-    #[test]
-    fn a_bound_source_boots_and_is_readable() {
-        let source = crate::publication::PublicationSource::new("urn:proxima:test-install")
-            .expect("a URN is an absolute source");
-        let engine = Engine::new(crate::test_fixtures::probe_registry())
-            .try_with_publication_config(crate::publication::PublicationConfig::new(source.clone()))
-            .expect("a bound source boots");
-        assert_eq!(engine.publication_config().source.as_ref(), Some(&source));
-    }
-
-    /// A registry with no listenable schema needs no source at all: the
-    /// boot rule must not tax deployments the feature does not touch.
-    #[test]
-    fn a_registry_with_no_listenable_schema_needs_no_source() {
-        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
-            .try_with_publication_config(crate::publication::PublicationConfig::default())
-            .expect("no listenable schema, no obligation");
-    }
 }

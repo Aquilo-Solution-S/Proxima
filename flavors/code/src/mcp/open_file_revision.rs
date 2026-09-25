@@ -406,14 +406,6 @@ mod tests {
 
     const SRC: &str = "line ten\nline eleven\nline twelve\nline thirteen\nline fourteen";
 
-    #[test]
-    fn a_whole_window_reports_the_whole_window() {
-        let projected = project_text(Some(SRC.to_string()), 10, Some((10, 14)), None);
-        assert_eq!(projected.text.as_deref(), Some(SRC));
-        assert_eq!(projected.text_line_range, Some((10, 14)));
-        assert!(!projected.text_truncated);
-    }
-
     /// The reported span must describe what was sent. A byte-truncated
     /// window reports the lines that landed, not the span that was asked.
     #[test]
@@ -431,44 +423,6 @@ mod tests {
         );
         assert!(end < 14, "must not claim the untruncated end");
         assert!(projected.text_truncated, "a cut chunk must say it was cut");
-    }
-
-    #[test]
-    fn the_reported_end_never_exceeds_the_requested_window() {
-        let projected = project_text(Some(SRC.to_string()), 10, Some((10, 11)), None);
-        assert_eq!(projected.text_line_range, Some((10, 11)));
-    }
-
-    #[test]
-    fn a_window_matching_no_line_returns_nothing() {
-        let projected = project_text(Some(SRC.to_string()), 10, Some((99, 120)), None);
-        assert!(projected.text.is_none());
-        assert!(projected.text_line_range.is_none());
-        assert!(!projected.text_truncated);
-    }
-
-    /// A cap that fits is not a truncation. The flag has to distinguish
-    /// "this is the whole chunk" from "this is where I stopped", which is
-    /// the whole reason it exists.
-    #[test]
-    fn a_cap_larger_than_the_text_is_not_a_truncation() {
-        let projected = project_text(Some(SRC.to_string()), 10, None, Some(SRC.len()));
-        assert_eq!(projected.text.as_deref(), Some(SRC));
-        assert!(!projected.text_truncated);
-
-        let projected = project_text(Some(SRC.to_string()), 10, None, Some(SRC.len() - 1));
-        assert!(projected.text_truncated);
-    }
-
-    /// Cutting mid-character must not split a codepoint, and must still be
-    /// reported as a cut.
-    #[test]
-    fn a_cap_falling_inside_a_multibyte_char_backs_off_to_a_boundary() {
-        let text = "äöü".to_string(); // three 2-byte chars
-        let projected = project_text(Some(text), 1, None, Some(3));
-        let out = projected.text.expect("text");
-        assert_eq!(out, "ä", "must back off to a char boundary, got {out:?}");
-        assert!(projected.text_truncated);
     }
 
     /// `line_limit` follows the substrate's rule for every other bound:

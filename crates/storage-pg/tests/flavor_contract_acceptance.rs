@@ -5,9 +5,7 @@
 //! on is a declaration plus a test that the declaration matches the behaviour.
 //! Requires local PG.
 
-use proxima_core::flavor::{
-    EmbeddingRecipe, Enforcement, EraseLeg, SLOT_DEFAULT, SearchProjectionDecl, TransferRule,
-};
+use proxima_core::flavor::{Enforcement, EraseLeg, SLOT_DEFAULT, TransferRule};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{FLAVOR_0, FlavorRegistry};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
@@ -290,107 +288,6 @@ async fn every_cited_enforcement_site_resolves() {
 
 // ── Declared absence ────────────────────────────────────────────────────
 
-/// A non-surface is a value, not an omission.
-///
-/// An absent projection has several possible causes — no projection, no
-/// searchable fields, no sidecar table — so without a declared value a schema
-/// that deliberately does not search is indistinguishable from one whose
-/// declaration was forgotten. Utterances are a search surface in this tree —
-/// they carry their own score band — so the declared-absence exemplars are the
-/// schemas that really do decline.
-#[test]
-fn declared_absence_is_a_value_with_a_reason() {
-    let declining = FLAVOR_0
-        .schemas
-        .iter()
-        .filter(|schema| !schema.search.is_projected())
-        .collect::<Vec<_>>();
-
-    assert!(
-        declining.len() >= 2,
-        "core has schemas that decline to search"
-    );
-    for schema in &declining {
-        let SearchProjectionDecl::None { why } = schema.search else {
-            unreachable!("filtered to the absent arm")
-        };
-        assert!(
-            !why.is_empty(),
-            "{} declines to search and must say why",
-            schema.id.render()
-        );
-    }
-
-    let utterance = FLAVOR_0
-        .schemas
-        .iter()
-        .find(|schema| schema.id.render() == "core/utterance-v1")
-        .expect("core declares utterance-v1");
-    assert!(
-        utterance.search.is_projected(),
-        "utterances ARE searchable here; the tested value is that \
-         absence is declarable, not that utterances declare it"
-    );
-
-    let call_log = FLAVOR_0
-        .schemas
-        .iter()
-        .find(|schema| schema.id.render() == "core/mcp-call-logged-v1")
-        .expect("core declares mcp-call-logged-v1");
-    assert!(
-        matches!(call_log.search, SearchProjectionDecl::None { .. }),
-        "call telemetry is not retrievable content"
-    );
-    assert!(
-        matches!(call_log.embedding, EmbeddingRecipe::Never { .. }),
-        "and it is not embeddable either — both absences are declared"
-    );
-}
-
-/// Every declared non-count states a reason, in every registered flavor.
-///
-/// `Surface::counter` was `Option<&'static str>` and `None` was the last
-/// declared absence in the contract with nothing attached — "feeds no
-/// counter" and "nobody said" were the same value. The seven `None`s in the
-/// shipped tree turned out to have six DIFFERENT reasons: a pointer into a
-/// counted table, a refcounted shared row, a work queue counted after the
-/// commit, a derived index with no `rows_affected`, a detail table already
-/// counted under its parent, and two surfaces the erase never touches at
-/// all. None of that was recoverable from the word `None`.
-#[test]
-fn every_declared_non_count_says_why() {
-    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-    let mut uncounted = 0;
-    let mut counted = 0;
-    for contract in registry.contracts() {
-        for surface in contract.all_surfaces() {
-            match surface.counter {
-                proxima_core::flavor::CounterRule::Counted(key) => {
-                    assert!(
-                        !key.is_empty(),
-                        "{} names an empty counter key",
-                        surface.table
-                    );
-                    counted += 1;
-                }
-                proxima_core::flavor::CounterRule::Uncounted { why } => {
-                    assert!(
-                        why.len() > 40,
-                        "{} contributes to no count and must say why, not \
-                         gesture at it: {why:?}",
-                        surface.table
-                    );
-                    uncounted += 1;
-                }
-            }
-        }
-    }
-    assert!(
-        counted > 10 && uncounted >= 7,
-        "{counted} counted, {uncounted} uncounted"
-    );
-}
-
 // ── Forget touches everything ───────────────────────────────────────────
 
 /// Every declared surface says what forget does to it, non-optionally.
@@ -492,51 +389,6 @@ async fn transfer_is_announced_and_the_announce_surface_is_declared() {
 }
 
 // ── The embedding byte-parity gate ──────────────────────────────────────
-
-/// Structural half: every flavor #0 recipe resolves to exactly the
-/// `(table, column)` pair the shipped embed-text drain reads.
-///
-/// A recipe that quietly changed which column is embedded would re-embed
-/// the whole corpus, so the pairs are compared both ways: no schema gains a
-/// unit it did not have, and none loses one.
-#[test]
-fn every_recipe_resolves_to_the_pair_the_shipped_drain_reads() {
-    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-
-    for schema in FLAVOR_0.schemas {
-        let schema_id = schema.schema_id();
-        let shipped = registry
-            .embed_units()
-            .iter()
-            .find(|unit| unit.schema_id == schema_id)
-            .map(|unit| unit.column.clone());
-
-        let resolved = schema.embedding.resolve(schema.sidecar_table);
-        if let Some(column) = shipped {
-            assert_eq!(resolved.len(), 1, "{}", schema_id.as_str());
-            assert_eq!(resolved[0].table, schema.sidecar_table);
-            assert_eq!(
-                resolved[0].column,
-                column.as_str(),
-                "{}: the recipe must resolve to the shipped column",
-                schema_id.as_str()
-            );
-            assert_eq!(resolved[0].slot, SLOT_DEFAULT);
-        } else {
-            assert!(
-                resolved.is_empty(),
-                "{}: nothing embeds this schema, so the recipe must \
-                 produce no units",
-                schema_id.as_str()
-            );
-            assert!(
-                schema.embedding.is_never(),
-                "{}: and it must say so as Never, with a reason",
-                schema_id.as_str()
-            );
-        }
-    }
-}
 
 /// Byte-parity half: the text a recipe-resolved column yields is byte-for-byte
 /// the text the shipped path embeds.

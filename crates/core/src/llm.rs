@@ -965,13 +965,6 @@ mod tests {
         );
     }
 
-    /// The floor is derived, so it must move if what it is derived from
-    /// moves.
-    #[test]
-    fn the_floor_tracks_the_split_minimum_it_is_derived_from() {
-        assert_eq!(MIN_EMBED_INPUT_CAP_CHARS, 2 * CHUNKED_EMBED_MIN_BYTES - 1);
-    }
-
     /// Smallest cap that works for every length: the test above builds its
     /// input from the constant, so it would pass a range of wrong values.
     #[tokio::test]

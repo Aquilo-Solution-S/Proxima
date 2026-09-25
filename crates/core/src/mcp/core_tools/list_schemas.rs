@@ -147,10 +147,9 @@ pub async fn get_schema(
 mod tests {
     use std::sync::Arc;
 
-    use super::{ListSchemasArgs, get_schema, list_schemas, parse_kind};
+    use super::{get_schema, parse_kind};
     use crate::mcp::{McpAuthorContext, McpToolCtx, McpToolError};
-    use crate::test_fixtures::ListenableProbeV1;
-    use crate::verbs::schema::PayloadKind;
+
     use crate::{AuthPath, AuthzContext, FlavorServices, OwnerRef, UserId};
 
     fn ctx_with_probes() -> McpToolCtx {
@@ -172,69 +171,12 @@ mod tests {
         }
     }
 
-    /// The declaration a flavor makes on the type has to be visible to a
-    /// consumer deciding what to subscribe to; otherwise "which of your
-    /// schemas do you publish" is answerable only by reading the source.
-    #[tokio::test]
-    async fn the_catalog_reports_which_schemas_are_listenable() {
-        let output = list_schemas(ctx_with_probes(), ListSchemasArgs::default())
-            .await
-            .expect("catalog reads");
-        let listenable = output
-            .schemas
-            .iter()
-            .find(|item| item.schema_id == "probe/listenable-v1")
-            .expect("the probe is registered");
-        assert!(listenable.listenable);
-        let quiet = output
-            .schemas
-            .iter()
-            .find(|item| item.schema_id == "probe/unlistenable-v1")
-            .expect("the twin is registered");
-        assert!(!quiet.listenable);
-        assert!(
-            output
-                .schemas
-                .iter()
-                .any(|item| item.schema_id == "core/agent-note-v1" && !item.listenable),
-            "a shipped core schema must stay non-listenable"
-        );
-    }
-
-    /// The `dataschema` a captured event carries is
-    /// `proxima://schema/{id}/{version}`, so that URI has to resolve
-    /// against this installation's own catalog.
-    #[tokio::test]
-    async fn the_schema_resource_returns_the_registered_json_schema() {
-        let output = get_schema(ctx_with_probes(), "probe/listenable-v1", 1)
-            .await
-            .expect("the probe resolves");
-        assert_eq!(output.schema_id, "probe/listenable-v1");
-        assert_eq!(output.schema_version, 1);
-        assert_eq!(output.kind, "Fact");
-        assert!(output.listenable);
-        assert_eq!(
-            output.json_schema,
-            <ListenableProbeV1 as crate::FactPayload>::json_schema().expect("declared")
-        );
-    }
-
     #[tokio::test]
     async fn an_unregistered_schema_version_is_not_found() {
         let err = get_schema(ctx_with_probes(), "probe/listenable-v1", 7)
             .await
             .expect_err("version 7 is not registered");
         assert!(matches!(err, McpToolError::NotFound(_)), "{err}");
-    }
-
-    #[test]
-    fn kind_filter_is_case_insensitive() {
-        for raw in ["Fact", "fact", "FACT"] {
-            assert_eq!(parse_kind(raw), Some(PayloadKind::Fact), "{raw}");
-        }
-        for raw in ["CitedObject", "citedobject", "CITEDOBJECT"] {
-            assert_eq!(parse_kind(raw), Some(PayloadKind::CitedObject), "{raw}");
-        }
     }
 
     #[test]

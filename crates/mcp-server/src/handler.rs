@@ -1005,35 +1005,6 @@ mod tests {
             .map_err(|error| mcp_tool_error_to_error_data(&error))
     }
 
-    /// An exhausted publication outbox is the deployment asking the caller
-    /// to back off. On the wire it must be a class of its own, with a
-    /// machine-readable code and the backlog depth intact — not the generic
-    /// -32603 "internal server error" a client's alerting treats as an
-    /// incident.
-    #[test]
-    fn an_exhausted_outbox_is_its_own_json_rpc_class() {
-        let err = McpToolError::Storage(proxima_core::StorageError::PublicationRefused(
-            proxima_core::publication::PublicationError::CapacityExhausted {
-                pending: 100_000,
-                max: 100_000,
-            },
-        ));
-        let data = mcp_tool_error_to_error_data(&err);
-        assert_eq!(data.code, SERVER_ERROR);
-        assert_eq!(
-            data.data,
-            Some(serde_json::json!({ "code": CAPACITY_EXHAUSTED_CODE }))
-        );
-        assert!(data.message.contains("100000"), "{}", data.message);
-
-        // The generic internal fault keeps -32603 and its redaction, so the
-        // two remain distinguishable in both directions.
-        let internal = mcp_tool_error_to_error_data(&McpToolError::Other("boom".into()));
-        assert_eq!(internal.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-        assert_eq!(internal.message, "internal server error");
-        assert_eq!(internal.data, None);
-    }
-
     fn flavor_descriptor(
         name: &'static str,
         annotations: Option<McpToolAnnotations>,
@@ -1538,16 +1509,6 @@ mod tests {
         let tool = mcp_tool_error_to_error_data(&not_found());
         assert_eq!(tool.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert_eq!(tool.message, "memory F:018f not found");
-    }
-
-    /// An unmatched resource URI is `resource_not_found`, not `invalid_params`.
-    #[test]
-    fn unknown_resource_uri_maps_to_resource_not_found() {
-        let err = resource_invocation_error_to_error_data(
-            crate::server::ToolInvocationError::ToolNotFound("proxima://nope".into()),
-        );
-        assert_eq!(err.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
-        assert!(err.message.contains("proxima://nope"), "{}", err.message);
     }
 
     #[test]

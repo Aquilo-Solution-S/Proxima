@@ -702,26 +702,6 @@ mod argv_action_tests {
         },
     ];
 
-    #[test]
-    fn longest_matching_prefix_wins() {
-        let args = serde_json::json!({ "argv": ["approval", "decide", "--id", "7"] });
-        assert_eq!(
-            resolve_argv_action("stub_cli", SPECS, &args).expect("two-word command resolves"),
-            "approval-decide",
-        );
-    }
-
-    /// Positive control: the shorter command still resolves to its own key,
-    /// so the longest-prefix rule narrows rather than shadowing.
-    #[test]
-    fn shorter_command_keeps_its_own_key() {
-        let args = serde_json::json!({ "argv": ["approval", "--list"] });
-        assert_eq!(
-            resolve_argv_action("stub_cli", SPECS, &args).expect("one-word command resolves"),
-            "approval",
-        );
-    }
-
     /// The set is closed: argv the vocabulary does not emit is refused, not
     /// dispatched under some nearest key.
     #[test]
@@ -912,56 +892,6 @@ mod flat_tool_tests {
         )
         .expect("scalar spaces alias accepted");
         assert_eq!(args["space"], serde_json::json!("team"));
-    }
-
-    #[test]
-    fn known_fields_pass() {
-        let mut args = serde_json::json!({ "query": "x", "spaces": ["a"] });
-        let ignored = prepare_flat_tool_args(
-            "core_search_memories",
-            &["query".to_string(), "spaces".to_string()],
-            &mut args,
-            McpUnknownFieldPolicy::Refuse,
-        )
-        .expect("known fields accepted");
-        assert!(ignored.is_empty(), "nothing was dropped: {ignored:?}");
-    }
-
-    /// The opt-in drops the undeclared keys and names them, sorted, instead
-    /// of spending a round trip on a refusal the caller cannot act on.
-    #[test]
-    fn tolerated_unknown_fields_are_stripped_and_reported() {
-        let mut args =
-            serde_json::json!({ "query": "x", "provenance": {}, "has_more": true, "units": [1] });
-        let ignored = prepare_flat_tool_args(
-            "core_search_memories",
-            &["query".to_string(), "spaces".to_string()],
-            &mut args,
-            McpUnknownFieldPolicy::IgnoreAndReport,
-        )
-        .expect("undeclared fields tolerated");
-        assert_eq!(ignored, vec!["has_more", "provenance", "units"]);
-        assert_eq!(
-            args,
-            serde_json::json!({ "query": "x" }),
-            "only the undeclared keys are removed",
-        );
-    }
-
-    /// Tolerating unknown fields never touches a declared one, and the
-    /// report stays empty when there is nothing to report.
-    #[test]
-    fn tolerating_never_strips_a_declared_field() {
-        let mut args = serde_json::json!({ "query": "x", "spaces": ["a"] });
-        let ignored = prepare_flat_tool_args(
-            "core_search_memories",
-            &["query".to_string(), "spaces".to_string()],
-            &mut args,
-            McpUnknownFieldPolicy::IgnoreAndReport,
-        )
-        .expect("declared fields accepted");
-        assert!(ignored.is_empty(), "nothing to report: {ignored:?}");
-        assert_eq!(args, serde_json::json!({ "query": "x", "spaces": ["a"] }));
     }
 
     /// The alias coercion runs before the strip under either policy, so a

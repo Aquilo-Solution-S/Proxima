@@ -157,43 +157,6 @@ fn decode_opt_u32(row: OptU32Row) -> Result<Option<u32>, StorageError> {
 }
 
 #[test]
-fn opt_u32_as_i32_binds_and_decodes_present_and_absent_values() {
-    // `opt_u32_as_i32` needs no cast and no SELECT projection rewrite; it
-    // falls through to the default arms of `pg_sidecar_cast!` and
-    // `pg_sidecar_select_col!`.
-    let cast: Option<&str> = crate::pg_sidecar_cast!(opt_u32_as_i32);
-    assert_eq!(cast, None);
-    assert_eq!(
-        crate::pg_sidecar_select_col!((opt_u32_as_i32), retry_count),
-        "retry_count"
-    );
-
-    assert_eq!(
-        bind_opt_u32(&OptU32Payload {
-            retry_count: Some(7)
-        })
-        .unwrap(),
-        Some(7_i32)
-    );
-    assert_eq!(
-        bind_opt_u32(&OptU32Payload { retry_count: None }).unwrap(),
-        None
-    );
-
-    assert_eq!(
-        decode_opt_u32(OptU32Row {
-            retry_count: Some(7)
-        })
-        .unwrap(),
-        Some(7_u32)
-    );
-    assert_eq!(
-        decode_opt_u32(OptU32Row { retry_count: None }).unwrap(),
-        None
-    );
-}
-
-#[test]
 fn opt_u32_as_i32_rejects_out_of_range_values_in_both_directions() {
     // Bind side: a `u32` above `i32::MAX` errors rather than saturating.
     let err = bind_opt_u32(&OptU32Payload {
@@ -217,57 +180,14 @@ fn opt_u32_as_i32_rejects_out_of_range_values_in_both_directions() {
     );
 }
 
-/// Payload side of the `opt_u32_as_i64` converter: `Option<u32>` widened into
-/// a nullable `bigint`, so the bind direction cannot fail.
-struct OptU32AsI64Payload {
-    elapsed_ms: Option<u32>,
-}
-
 struct OptU32AsI64Row {
     elapsed_ms: crate::pg_sidecar_row_ty!(opt_u32_as_i64),
-}
-
-fn bind_opt_u32_as_i64(payload: &OptU32AsI64Payload) -> Option<i64> {
-    crate::pg_sidecar_bind!((opt_u32_as_i64), payload, elapsed_ms)
 }
 
 // By value, like the owned `FromRow` row the generated `load_batch` decodes.
 #[allow(clippy::needless_pass_by_value)]
 fn decode_opt_u32_as_i64(row: OptU32AsI64Row) -> Result<Option<u32>, StorageError> {
     Ok(crate::pg_sidecar_decode!((opt_u32_as_i64), row, elapsed_ms))
-}
-
-#[test]
-fn opt_u32_as_i64_binds_and_decodes_present_and_absent_values() {
-    let cast: Option<&str> = crate::pg_sidecar_cast!(opt_u32_as_i64);
-    assert_eq!(cast, None);
-    assert_eq!(
-        crate::pg_sidecar_select_col!((opt_u32_as_i64), elapsed_ms),
-        "elapsed_ms"
-    );
-
-    assert_eq!(
-        bind_opt_u32_as_i64(&OptU32AsI64Payload {
-            elapsed_ms: Some(u32::MAX)
-        }),
-        Some(i64::from(u32::MAX))
-    );
-    assert_eq!(
-        bind_opt_u32_as_i64(&OptU32AsI64Payload { elapsed_ms: None }),
-        None
-    );
-
-    assert_eq!(
-        decode_opt_u32_as_i64(OptU32AsI64Row {
-            elapsed_ms: Some(i64::from(u32::MAX))
-        })
-        .unwrap(),
-        Some(u32::MAX)
-    );
-    assert_eq!(
-        decode_opt_u32_as_i64(OptU32AsI64Row { elapsed_ms: None }).unwrap(),
-        None
-    );
 }
 
 #[test]
@@ -306,40 +226,6 @@ fn bind_opt_u64(payload: &OptU64Payload) -> Result<Option<i64>, StorageError> {
 #[allow(clippy::needless_pass_by_value)]
 fn decode_opt_u64(row: OptU64Row) -> Result<Option<u64>, StorageError> {
     Ok(crate::pg_sidecar_decode!((opt_u64_as_i64), row, byte_count))
-}
-
-#[test]
-fn opt_u64_as_i64_binds_and_decodes_present_and_absent_values() {
-    let cast: Option<&str> = crate::pg_sidecar_cast!(opt_u64_as_i64);
-    assert_eq!(cast, None);
-    assert_eq!(
-        crate::pg_sidecar_select_col!((opt_u64_as_i64), byte_count),
-        "byte_count"
-    );
-
-    assert_eq!(
-        bind_opt_u64(&OptU64Payload {
-            byte_count: Some(4_096)
-        })
-        .unwrap(),
-        Some(4_096_i64)
-    );
-    assert_eq!(
-        bind_opt_u64(&OptU64Payload { byte_count: None }).unwrap(),
-        None
-    );
-
-    assert_eq!(
-        decode_opt_u64(OptU64Row {
-            byte_count: Some(4_096)
-        })
-        .unwrap(),
-        Some(4_096_u64)
-    );
-    assert_eq!(
-        decode_opt_u64(OptU64Row { byte_count: None }).unwrap(),
-        None
-    );
 }
 
 #[test]

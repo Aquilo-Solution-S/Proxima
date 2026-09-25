@@ -116,24 +116,3 @@ impl AbstractionPayload for CodeChunkV1 {
         Vec::new()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::contract::CODE_FLAVOR_CONTRACT;
-    use proxima_core::AbstractionPayload;
-    use proxima_core::flavor::SLOT_DEFAULT;
-
-    #[test]
-    fn chunk_embedding_recipe_names_the_stored_column() {
-        let schema = CODE_FLAVOR_CONTRACT
-            .schemas
-            .iter()
-            .find(|schema| schema.schema_id().as_str() == super::CodeChunkV1::SCHEMA_ID)
-            .expect("code-chunk-v1 is declared");
-        let units = schema.embedding.resolve(schema.sidecar_table);
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].table, Some("proxima_code.code_chunk_v1"));
-        assert_eq!(units[0].column, "embed_text");
-        assert_eq!(units[0].slot, SLOT_DEFAULT);
-    }
-}

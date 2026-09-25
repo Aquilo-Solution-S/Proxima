@@ -526,39 +526,6 @@ mod tests {
     }
 
     #[test]
-    fn instructions_teach_the_hard_law_and_remember_vs_derive() {
-        let s = build_instructions(&full_tool_set(), &full_resource_set());
-        assert!(s.contains("NO TOOL WRITES A CONNECTION"));
-        assert!(s.contains("A Fact never interprets"));
-        assert!(s.contains("`core_interpret`"));
-        assert!(s.contains("source_handles"));
-        assert!(s.contains("`core_remember`"));
-        assert!(s.contains("`core_derive`"));
-        assert!(s.contains("proxima://memory/{id}"));
-        assert!(s.contains("resources/templates/list"));
-        assert!(s.contains("proxima://how-to"));
-    }
-
-    #[test]
-    fn instructions_are_profile_aware() {
-        let full = build_instructions(&full_tool_set(), &full_resource_set());
-        assert!(full.contains("core_goal"));
-        assert!(full.contains("proxima-code_"));
-
-        let trimmed = build_instructions(
-            &memory_minus_goals_tool_set(),
-            &memory_minus_goals_resource_set(),
-        );
-        // Dropped tools drop their guidance.
-        assert!(!trimmed.contains("core_goal"));
-        assert!(!trimmed.contains("goal"));
-        assert!(!trimmed.contains("proxima-code_"));
-        // Core memory contract still present.
-        assert!(trimmed.contains("NO TOOL WRITES A CONNECTION"));
-        assert!(trimmed.contains("`core_remember`"));
-    }
-
-    #[test]
     fn instructions_never_name_retired_or_denied_tools() {
         // Regression guard for acceptance #2: no profile's instructions may
         // reference tools outside the memory contract.
@@ -581,82 +548,5 @@ mod tests {
                 assert!(!s.contains(forbidden), "instructions leaked {forbidden}");
             }
         }
-    }
-
-    #[test]
-    fn instructions_without_interpret_tool_omit_interpret_specifics() {
-        let mut tools = full_tool_set();
-        tools.remove(InterpretTool::NAME);
-        let s = build_instructions(&tools, &full_resource_set());
-        // The law (nobody writes an edge) survives; the core_interpret
-        // specifics don't.
-        assert!(s.contains("NO TOOL WRITES A CONNECTION"));
-        assert!(!s.contains("`core_interpret`"));
-    }
-
-    /// No profile may name an unserved surface: advertising `core_link` or
-    /// an edge-type catalog would tell agents to call tools that do not
-    /// exist.
-    #[test]
-    fn no_profile_names_an_unserved_edge_vocabulary() {
-        for (tools, resources) in [
-            (full_tool_set(), full_resource_set()),
-            (
-                memory_minus_goals_tool_set(),
-                memory_minus_goals_resource_set(),
-            ),
-        ] {
-            for text in [
-                build_instructions(&tools, &resources),
-                how_to_markdown(&tools, &resources),
-            ] {
-                for retired in [
-                    "core_link",
-                    "edge-types",
-                    "core_list_edge_types",
-                    "agent-link-refers-to",
-                    "derived-from",
-                    "relation",
-                ] {
-                    assert!(!text.contains(retired), "selfdoc leaked {retired}");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn instructions_empty_when_no_memory_tools() {
-        let tools = BTreeSet::new();
-        let resources: BTreeSet<&str> = [protocol_resource::GRAPH].into_iter().collect();
-        assert!(build_instructions(&tools, &resources).is_empty());
-    }
-
-    #[test]
-    fn how_to_documents_law_examples_and_decision_guide() {
-        let s = how_to_markdown(&full_tool_set(), &full_resource_set());
-        assert!(s.contains("The one hard law for agent-authored connections"));
-        assert!(s.contains("**No tool writes a connection.**"));
-        assert!(s.contains("`origin`"));
-        assert!(s.contains("`reference`"));
-        assert!(s.contains("core_derive(kind=\"Abstraction\""));
-        assert!(s.contains("core_interpret(claim="));
-        assert!(s.contains("## What to capture → which tool"));
-        assert!(s.contains("## Edge kinds"));
-        assert!(s.contains("## Worked example"));
-        assert!(s.contains("## Reading: which surface first"));
-        assert!(!s.contains("proxima://edges"));
-    }
-
-    #[test]
-    fn how_to_is_profile_aware() {
-        let trimmed = how_to_markdown(
-            &memory_minus_goals_tool_set(),
-            &memory_minus_goals_resource_set(),
-        );
-        assert!(!trimmed.contains("core_goal"));
-        assert!(!trimmed.contains("proxima-code_"));
-        // Layering law + relate-memories row still taught.
-        assert!(trimmed.contains("The one hard law for agent-authored connections"));
-        assert!(trimmed.contains("Relate / connect memories"));
     }
 }

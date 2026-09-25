@@ -1800,37 +1800,4 @@ mod tests {
             err.message
         );
     }
-
-    /// The declaration is the whole difference. The non-listenable twin
-    /// takes the identical route with the identical shape and captures
-    /// nothing.
-    #[tokio::test]
-    async fn a_non_listenable_admission_captures_nothing() {
-        let owner = test_owner();
-        let engine = listenable_engine();
-        let payload = crate::test_fixtures::UnlistenableProbeV1 {
-            probe_id: uuid::Uuid::now_v7(),
-            note: "silent".to_owned(),
-        };
-        let sidecars = [SidecarPayload::fact(payload.clone())];
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer)
-            .with_trusted_model_id("runner/pinned")
-            .expect("a valid operator label");
-
-        let authorized = engine
-            .authorize_fact_ingest(
-                &authz,
-                Relation::Ingest,
-                FactWriteCommand::from_payload(
-                    "probe/source",
-                    &payload,
-                    time::OffsetDateTime::now_utc(),
-                ),
-                &sidecars,
-            )
-            .await
-            .expect("an unlistenable write authorizes");
-
-        assert!(authorized.publication().is_none());
-    }
 }

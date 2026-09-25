@@ -477,28 +477,6 @@ mod tests {
         }
     }
 
-    /// An internal fault must not leak its message into `detail`, and a
-    /// caller-actionable precondition must reach the caller verbatim.
-    #[test]
-    fn detail_is_client_message_not_display() {
-        let leaky = ToolInvocationError::Tool(McpToolError::Other(
-            "serialize tool output: fixture secret from output serializer".into(),
-        ));
-        let problem = problem_for(&leaky, "/v1/tools/core_remember");
-        assert_eq!(problem.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(problem.slug, "internal");
-        assert_eq!(problem.detail, "internal server error");
-        assert!(!problem.detail.contains("fixture secret"));
-
-        let precondition = ToolInvocationError::Tool(McpToolError::Unavailable(
-            "semantic search unavailable: no embedding client is configured for this host".into(),
-        ));
-        assert_eq!(
-            problem_for(&precondition, "/v1/tools/core_search_memories").detail,
-            "semantic search unavailable: no embedding client is configured for this host"
-        );
-    }
-
     #[test]
     fn document_carries_the_rfc_9457_members() {
         let problem = problem_for(

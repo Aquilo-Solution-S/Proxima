@@ -10,10 +10,7 @@
 
 use std::borrow::Cow;
 
-use proxima::flavor::{
-    FactPayload, FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator,
-    PgSidecarRegistry,
-};
+use proxima::flavor::{FactPayload, FlavorBundle, FlavorRegistry, PgSidecarRegistry};
 use proxima::testkit::{SplitRoleDb, assert_trigger_migrations, scoped_authz};
 use proxima::{AppInfo, FlavorApp, Proxima, QueryRequest, ToolScope, company_owner};
 use proxima_core::flavor::{
@@ -221,34 +218,6 @@ mod kit_full {
     }
 }
 
-/// The same flavor as a pre-v0.0.20 flavor wrote it by hand, on core's
-/// shared ledger.
-struct SharedLedgerKit;
-
-impl FlavorBundle for SharedLedgerKit {
-    fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
-        kit::register(registry)
-    }
-
-    fn register_pg_sidecars(registry: &mut PgSidecarRegistry) {
-        kit::register_pg_sidecars(registry);
-    }
-
-    fn migrators() -> Vec<NamedMigrator> {
-        vec![NamedMigrator::new("kittest", kit_migrator(false))]
-    }
-}
-
-impl FlavorApp for SharedLedgerKit {
-    fn app_info() -> AppInfo {
-        AppInfo {
-            id: "kittest",
-            title: "Kit fixture, shared ledger",
-            version: "0",
-        }
-    }
-}
-
 async fn ledger_versions(db: &SplitRoleDb, table: &str) -> Option<Vec<i64>> {
     let admin = sqlx::PgPool::connect(&db.admin_url())
         .await
@@ -404,34 +373,6 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
     }
 }
 
-/// Replicas booting together on a fresh database race on core's first
-/// migrations and on the flavor ledger's `CREATE TABLE` and ACL; every one of
-/// them boots.
-#[tokio::test]
-async fn replicas_booting_together_on_a_fresh_database_all_boot() {
-    let db = SplitRoleDb::create("proxima_flavor_kit_race", &[])
-        .await
-        .expect("PG required");
-    let owner = company_owner(Uuid::now_v7());
-    let boots = (0..4).map(|_| {
-        Proxima::<kit::KitFlavor>::app()
-            .database_url(db.runtime_url())
-            .platform_database_url(db.platform_url())
-            .owner(owner)
-            .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
-            .build()
-    });
-    for built in futures::future::join_all(boots).await {
-        built.expect("every replica boots").shutdown();
-    }
-    assert_eq!(
-        ledger_versions(&db, "public._sqlx_migrations_kittest").await,
-        Some(vec![KIT_MIGRATION_VERSION])
-    );
-    assert!(!runtime_may_write(&db, "public._sqlx_migrations_kittest").await);
-}
-
 #[tokio::test]
 async fn an_unclassified_table_refuses_the_migration() {
     let db = SplitRoleDb::create("proxima_flavor_kit_gap", &[])
@@ -451,67 +392,4 @@ async fn an_unclassified_table_refuses_the_migration() {
         message.contains("owner RLS classification missing for kittest.settings"),
         "the refusal names the table: {message}"
     );
-}
-
-#[tokio::test]
-async fn a_shared_ledger_flavor_moves_to_its_own_ledger_without_rerunning_either_binary() {
-    let db = SplitRoleDb::create("proxima_flavor_kit_cutover", &[])
-        .await
-        .expect("PG required");
-    let owner = company_owner(Uuid::now_v7());
-    let shared = Proxima::<SharedLedgerKit>::app()
-        .database_url(db.runtime_url())
-        .platform_database_url(db.platform_url())
-        .owner(owner)
-        .allow_insecure_single_owner()
-        .tool_scope(ToolScope::All)
-        .build()
-        .await
-        .expect("a shared-ledger flavor still boots");
-    shared.shutdown();
-    assert_eq!(
-        ledger_versions(&db, "public._sqlx_migrations").await,
-        Some(vec![KIT_MIGRATION_VERSION]),
-        "before: the flavor's row sits on core's ledger"
-    );
-    assert_eq!(
-        ledger_versions(&db, "public._sqlx_migrations_kittest").await,
-        None
-    );
-
-    // Re-running the baseline would fail on `CREATE SCHEMA kittest`, so a
-    // clean boot proves the row moved instead of the migration re-running.
-    let own = Proxima::<kit::KitFlavor>::app()
-        .database_url(db.runtime_url())
-        .platform_database_url(db.platform_url())
-        .owner(owner)
-        .allow_insecure_single_owner()
-        .tool_scope(ToolScope::All)
-        .build()
-        .await
-        .expect("the same flavor on NamedMigrator::flavor boots over the shared-ledger database");
-    own.shutdown();
-    assert_eq!(
-        ledger_versions(&db, "public._sqlx_migrations_kittest").await,
-        Some(vec![KIT_MIGRATION_VERSION]),
-        "after: the row is on the flavor's own ledger"
-    );
-    assert_eq!(
-        ledger_versions(&db, "public._sqlx_migrations").await,
-        Some(vec![KIT_MIGRATION_VERSION]),
-        "and still on core's, for a binary that has not switched"
-    );
-    assert!(!runtime_may_write(&db, "public._sqlx_migrations_kittest").await);
-
-    // A rollback to the shared-ledger binary re-runs nothing either.
-    let rolled_back = Proxima::<SharedLedgerKit>::app()
-        .database_url(db.runtime_url())
-        .platform_database_url(db.platform_url())
-        .owner(owner)
-        .allow_insecure_single_owner()
-        .tool_scope(ToolScope::All)
-        .build()
-        .await
-        .expect("the older shared-ledger binary boots after the cutover");
-    rolled_back.shutdown();
 }

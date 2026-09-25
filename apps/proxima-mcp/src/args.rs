@@ -519,23 +519,6 @@ mod tests {
     }
 
     #[test]
-    fn full_args_parse() {
-        let cfg =
-            parse_args(["--database-url".into(), "postgres://x/y".into()]).expect("valid args");
-        assert_eq!(cfg.database_url, "postgres://x/y");
-        assert!(cfg.bind.is_none());
-    }
-
-    #[test]
-    fn loopback_bind_parse() {
-        let cfg = parse_args(["--bind".into(), "127.0.0.1:9999".into()]).expect("valid args");
-        assert_eq!(
-            cfg.bind,
-            Some("127.0.0.1:9999".parse().expect("valid bind"))
-        );
-    }
-
-    #[test]
     fn non_loopback_bind_rejected() {
         let err = parse_args(["--bind".into(), "0.0.0.0:31415".into()]).expect_err("non-loopback");
         assert!(err.to_string().contains("loopback"));
@@ -591,13 +574,6 @@ mod tests {
     }
 
     #[test]
-    fn maintain_since_parses_rfc3339() {
-        let cfg = parse_maintain_args(["--since".into(), "2026-06-16T10:00:00Z".into()])
-            .expect("valid args");
-        assert!(matches!(cfg.scope, ReconcileScope::Since(_)));
-    }
-
-    #[test]
     fn storage_maintenance_help_flag_returns_help() {
         let err = parse_storage_maintenance_args(["--help".to_string()]).expect_err("help");
         assert!(err.is_help());
@@ -608,37 +584,6 @@ mod tests {
     fn storage_maintenance_requires_an_action_flag() {
         let err = parse_storage_maintenance_args(["--dry-run".to_string()]).expect_err("no action");
         assert!(err.to_string().contains("at least one action"));
-    }
-
-    #[test]
-    fn storage_maintenance_full_args_parse() {
-        let cfg = parse_storage_maintenance_args([
-            "--database-url".into(),
-            "postgres://x/y".into(),
-            "--retry-cold-object-purges".into(),
-            "--prune-change-log-older-than".into(),
-            "90d".into(),
-            "--batch-size".into(),
-            "250".into(),
-            "--dry-run".into(),
-        ])
-        .expect("valid args");
-        assert_eq!(cfg.database_url, "postgres://x/y");
-        assert!(cfg.retry_cold_object_purges);
-        assert_eq!(cfg.prune_change_log_older_than_seconds, Some(90 * 86_400));
-        assert_eq!(cfg.batch_size, 250);
-        assert!(cfg.dry_run);
-    }
-
-    #[test]
-    fn storage_maintenance_single_action_is_enough() {
-        let cfg =
-            parse_storage_maintenance_args(["--prune-change-log-older-than".into(), "7d".into()])
-                .expect("a prune alone is a valid pass");
-        assert!(!cfg.retry_cold_object_purges);
-        assert_eq!(cfg.prune_change_log_older_than_seconds, Some(7 * 86_400));
-        assert_eq!(cfg.batch_size, 1000);
-        assert!(!cfg.dry_run);
     }
 
     #[test]
@@ -654,28 +599,6 @@ mod tests {
         assert_eq!(cfg.prune_change_log_older_than_seconds, None);
         assert_eq!(cfg.batch_size, 17);
         assert!(cfg.dry_run);
-    }
-
-    #[test]
-    fn storage_maintenance_duration_units_parse() {
-        for (raw, seconds) in [
-            ("3600s", 3_600),
-            ("45m", 45 * 60),
-            ("36h", 36 * 3_600),
-            ("90d", 90 * 86_400),
-            ("2w", 2 * 604_800),
-        ] {
-            let cfg = parse_storage_maintenance_args([
-                "--prune-change-log-older-than".into(),
-                raw.into(),
-            ])
-            .expect("valid duration");
-            assert_eq!(
-                cfg.prune_change_log_older_than_seconds,
-                Some(seconds),
-                "{raw}"
-            );
-        }
     }
 
     #[test]

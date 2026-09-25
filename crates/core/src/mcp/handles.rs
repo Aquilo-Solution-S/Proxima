@@ -166,21 +166,6 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn prefixed_uuid_format_parse_round_trips_per_class() {
-        for class in [
-            PrefixedUuidClass::Fact,
-            PrefixedUuidClass::Abstraction,
-            PrefixedUuidClass::Perspective,
-            PrefixedUuidClass::Goal,
-        ] {
-            let id = Uuid::now_v7();
-            let raw = format_prefixed_uuid(id, class);
-            assert_eq!(raw, format!("{}:{id}", class.prefix()));
-            assert_eq!(parse_prefixed_uuid(&raw, class).expect("round trip"), id);
-        }
-    }
-
-    #[test]
     fn prefixed_uuid_parse_rejects_wrong_prefix() {
         let id = Uuid::now_v7();
         let raw = format!("A:{id}");

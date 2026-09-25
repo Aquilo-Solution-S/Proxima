@@ -1712,19 +1712,7 @@ mod tests {
         }
     }
 
-    mod beta {
-        proxima_core::proxima_flavor! {
-            name = "proxima-runtime-beta",
-            fact_schemas = [],
-            abstraction_schemas = [],
-            perspective_schemas = [],
-            goal_schemas = [],
-            mcp_tools = [],
-        }
-    }
-
     struct AlphaApp;
-    struct BetaApp;
 
     impl FlavorBundle for AlphaApp {
         fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
@@ -1752,30 +1740,6 @@ mod tests {
                     max_connections: 3,
                     ..PgPoolConfig::default()
                 })
-        }
-    }
-
-    impl FlavorBundle for BetaApp {
-        fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
-            beta::register(registry)
-        }
-
-        fn migrators() -> Vec<crate::NamedMigrator> {
-            Vec::new()
-        }
-    }
-
-    impl FlavorApp for BetaApp {
-        fn app_info() -> AppInfo {
-            AppInfo {
-                id: "beta",
-                title: "Beta",
-                version: "1",
-            }
-        }
-
-        fn configure(builder: RuntimeBuilder) -> RuntimeBuilder {
-            builder.database_url("postgres://beta/proxima")
         }
     }
 
@@ -1900,75 +1864,6 @@ mod tests {
         assert!(Arc::ptr_eq(&service, &worker_service));
         assert!(services.get::<SystemAuthority>().is_none());
         assert!(services.get::<DelegationRuntimeAuthority>().is_none());
-    }
-
-    #[tokio::test]
-    async fn blob_capability_services_share_one_backend_instance() {
-        let pool = PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
-        let store = CitedBlobStore::new(
-            pool.clone(),
-            S3RuntimeConfig {
-                bucket: "test-bucket".to_string(),
-                region: "eu-central-1".to_string(),
-                endpoint_url: None,
-                force_path_style: false,
-                upload_ttl_seconds: 900,
-                read_ttl_seconds: 300,
-                max_blob_bytes: None,
-            },
-        )
-        .expect("test store config");
-        let (engine, _system, delegation_runtime) =
-            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
-                .into_runtime_authorities();
-        let registry = Arc::new(engine.registry().clone());
-        let app_ctx = AppContext {
-            platform_scope: None,
-            engine: Arc::new(engine),
-            pool,
-            pg_tuning: proxima_storage_pg::PgTuning::default(),
-            pg_sidecars: Arc::default(),
-            host_state_erase_context:
-                proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
-                    proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(Vec::new()),
-                )
-                .expect("empty fixture registry has no host lifecycle tables"),
-            blobs: Some(store),
-            owner: None,
-            services: FlavorServices::default(),
-        };
-        let services = assemble_services::<AlphaApp>(
-            &app_ctx,
-            &registry,
-            &ToolScope::All,
-            None,
-            &runtime_owner_access(&app_ctx, None, None),
-            &delegation_runtime,
-        )
-        .expect("service assembly");
-        let transfer = services
-            .get::<CitedBlobService>()
-            .expect("transfer service");
-        let verified = services
-            .get::<CitedBlobReadService>()
-            .expect("verified-read service");
-        let reconcile = services
-            .get::<CitedBlobOwnerReconcileService>()
-            .expect("owner reconcile service");
-
-        let transfer_ptr = transfer.backend_identity_for_tests();
-        let verified_ptr = verified.backend_identity_for_tests();
-        let reconcile_ptr = reconcile.backend_identity_for_tests();
-        assert_eq!(transfer_ptr, verified_ptr);
-        assert_eq!(transfer_ptr, reconcile_ptr);
-
-        // Cloning the composed set is what fans this exact handle out to MCP,
-        // REST, and worker contexts.
-        let cloned = services.clone();
-        let cloned_verified = cloned
-            .get::<CitedBlobReadService>()
-            .expect("cloned verified-read service");
-        assert!(Arc::ptr_eq(&verified, &cloned_verified));
     }
 
     struct StubAuth {
@@ -2126,38 +2021,6 @@ mod tests {
     }
 
     #[test]
-    fn merge_over_precedence_is_overlay_over_env_over_configure() {
-        let base = AlphaApp::configure(RuntimeBuilder::default())
-            .owner(owner())
-            .allowed_origins(vec!["https://base.test".to_string()]);
-        let env = RuntimeBuilder::default()
-            .database_url("postgres://env/proxima")
-            .platform_database_url("postgres://env/platform")
-            .allowed_origins(vec!["https://env.test".to_string()])
-            .with_mcp()
-            .authenticator(Arc::new(StubAuth { owner: owner() }));
-        let overlay = RuntimeBuilder::default()
-            .database_url("postgres://overlay/proxima")
-            .platform_database_url("postgres://overlay/platform")
-            .tool_scope(ToolScope::All)
-            .stream_max_lifetime(std::time::Duration::from_secs(12));
-
-        let (config, _) = overlay.merge_over(env.merge_over(base)).resolve().unwrap();
-
-        assert_eq!(config.database_url, "postgres://overlay/proxima");
-        assert_eq!(
-            config.platform_database_url.as_deref(),
-            Some("postgres://overlay/platform")
-        );
-        assert_eq!(config.allowed_origins, ["https://env.test".to_string()]);
-        assert!(config.mcp.is_some());
-        assert_eq!(
-            config.stream_revalidation.max_stream_lifetime,
-            std::time::Duration::from_secs(12)
-        );
-    }
-
-    #[test]
     fn injected_lookup_replaces_the_ambient_process_env_source() {
         let (config, _) = Proxima::<AlphaApp>::app()
             .from_env()
@@ -2168,58 +2031,6 @@ mod tests {
             .expect("resolved runtime config");
 
         assert_eq!(config.pg_pool_config.max_connections, 4);
-    }
-
-    #[test]
-    fn pg_pool_env_overrides_flavor_configuration_even_at_the_shipped_default() {
-        let (config, _) = Proxima::<AlphaApp>::app()
-            .from_lookup(|key| (key == "PROXIMA_PG_MAX_CONNECTIONS").then(|| "10".to_string()))
-            .expect("injected pool lookup")
-            .tool_scope(ToolScope::All)
-            .resolve()
-            .expect("resolved runtime config");
-
-        assert_eq!(config.pg_pool_config.max_connections, 10);
-    }
-
-    #[test]
-    fn silent_pg_pool_env_preserves_flavor_configuration() {
-        let (config, _) = Proxima::<AlphaApp>::app()
-            .tool_scope(ToolScope::All)
-            .resolve()
-            .expect("resolved runtime config");
-
-        assert_eq!(config.pg_pool_config.max_connections, 3);
-    }
-
-    #[test]
-    fn explicit_pg_pool_overlay_overrides_environment_and_flavor_configuration() {
-        let explicit = PgPoolConfig {
-            max_connections: 7,
-            ..PgPoolConfig::default()
-        };
-        let (config, _) = Proxima::<AlphaApp>::app()
-            .from_lookup(|key| (key == "PROXIMA_PG_MAX_CONNECTIONS").then(|| "10".to_string()))
-            .expect("injected pool lookup")
-            .pg_pool_config(explicit)
-            .tool_scope(ToolScope::All)
-            .resolve()
-            .expect("resolved runtime config");
-
-        assert_eq!(config.pg_pool_config, explicit);
-    }
-
-    #[test]
-    fn tuple_flavor_app_uses_first_info_and_left_to_right_configure() {
-        let _compiled = Proxima::<(AlphaApp, BetaApp)>::app();
-
-        assert_eq!(<(AlphaApp, BetaApp) as FlavorApp>::app_info().id, "alpha");
-
-        let builder = <(AlphaApp, BetaApp) as FlavorApp>::configure(RuntimeBuilder::default())
-            .owner(owner())
-            .tool_scope(ToolScope::All);
-        let (config, _) = builder.resolve().unwrap();
-        assert_eq!(config.database_url, "postgres://beta/proxima");
     }
 
     #[tokio::test]

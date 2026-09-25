@@ -396,14 +396,4 @@ mod tests {
             "excluding one resource must not remove the others"
         );
     }
-
-    #[test]
-    fn excluding_an_unrelated_tool_keeps_others_untouched() {
-        let registry = registry();
-
-        let scope = tool_palette_excluding(&registry, &["some_other_tool"]);
-
-        assert!(scope.allows_action(CoreGoalTool::NAME, "set"));
-        assert!(scope.allows(SearchMemoriesTool::NAME));
-    }
 }

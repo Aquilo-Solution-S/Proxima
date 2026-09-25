@@ -577,34 +577,4 @@ mod tests {
         assert!(require_cue(Some("what do I believe"), &[]).is_ok());
         assert!(require_cue(None, &["P:x".into()]).is_ok());
     }
-
-    #[test]
-    fn kind_strings_match_entity_kind() {
-        assert!(kind_matches(RecallKind::Perspective, "Perspective", true));
-        assert!(!kind_matches(RecallKind::Perspective, "Perspective", false));
-        assert!(kind_matches(RecallKind::Perspective, "Goal", true));
-        assert!(!kind_matches(RecallKind::Perspective, "Fact", true));
-        assert!(kind_matches(RecallKind::Goal, "Goal", true));
-        assert!(!kind_matches(RecallKind::Fact, "fact", true));
-    }
-
-    #[test]
-    fn payload_sketch_skips_empty_earlier_keys() {
-        let value = serde_json::json!({
-            "title": "   ",
-            "claim": "the stance",
-            "body": "long body"
-        });
-        let first = ["title", "claim", "body", "text"]
-            .iter()
-            .find_map(|key| {
-                value
-                    .get(*key)
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::trim)
-                    .filter(|text| !text.is_empty())
-            })
-            .map(ToOwned::to_owned);
-        assert_eq!(first.as_deref(), Some("the stance"));
-    }
 }

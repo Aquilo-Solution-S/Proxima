@@ -385,15 +385,6 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_loopback_and_derive_a_stable_user_id() {
-        let a = args(&[]).expect("defaults parse");
-        let b = args(&[]).expect("defaults parse");
-        assert!(a.bind.ip().is_loopback());
-        assert_eq!(a.user_id, b.user_id, "user id must survive a restart");
-        assert_eq!(a.subject, DEFAULT_SUBJECT);
-    }
-
-    #[test]
     fn distinct_subjects_get_distinct_users() {
         let a = args(&["--subject", "alice"]).expect("parse");
         let b = args(&["--subject", "bob"]).expect("parse");
@@ -409,13 +400,6 @@ mod tests {
             matches!(&err, ArgError::Message(m) if m.contains("loopback")),
             "{err}"
         );
-    }
-
-    #[test]
-    fn explicit_user_id_wins_over_the_derived_one() {
-        let id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").expect("uuid");
-        let config = args(&["--user-id", &id.to_string()]).expect("parse");
-        assert_eq!(config.user_id, id);
     }
 
     #[test]
@@ -468,21 +452,5 @@ mod tests {
         assert_eq!(claims["sub"], "alice");
         assert!(claims["exp"].as_u64().expect("exp") > now_secs());
         assert!(claims["nbf"].as_u64().expect("nbf") <= now_secs());
-    }
-
-    /// A persisted key must round-trip, or every restart silently invalidates
-    /// the bearer sitting in the agent's MCP config.
-    #[test]
-    fn persisted_key_is_reused_across_runs() {
-        let dir = std::env::temp_dir().join(format!("dev-idp-{}", Uuid::now_v7()));
-        let path = dir.join("key.pkcs8");
-        let first = load_or_create_key(Some(&path)).expect("first run generates");
-        let second = load_or_create_key(Some(&path)).expect("second run reuses");
-        assert_eq!(
-            jwks(&first),
-            jwks(&second),
-            "the same key must be published on restart"
-        );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

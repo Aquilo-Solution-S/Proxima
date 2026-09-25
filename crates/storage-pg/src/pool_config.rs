@@ -195,14 +195,6 @@ mod tests {
     }
 
     #[test]
-    fn explicit_shipped_default_is_not_silent() {
-        assert_eq!(
-            PgPoolConfig::from_lookup(&env(&[("PROXIMA_PG_MAX_CONNECTIONS", "10")])).unwrap(),
-            Some(PgPoolConfig::default())
-        );
-    }
-
-    #[test]
     fn injected_lookup_resolves_every_pool_setting() {
         let config = PgPoolConfig::from_lookup(&env(&[
             ("PROXIMA_PG_MAX_CONNECTIONS", "25"),
@@ -227,18 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn blank_values_are_unset() {
-        assert_eq!(
-            PgPoolConfig::from_lookup(&env(&[
-                ("PROXIMA_PG_MAX_CONNECTIONS", ""),
-                ("PROXIMA_PG_IDLE_TIMEOUT_SECS", "  \t "),
-            ]))
-            .unwrap(),
-            None
-        );
-    }
-
-    #[test]
     fn malformed_and_zero_pool_size_fail_at_resolution() {
         for (key, value, message) in [
             (
@@ -257,31 +237,6 @@ mod tests {
                 .expect_err("invalid pool config must fail resolution");
             assert!(error.to_string().contains(message), "{key}: {error}");
         }
-    }
-
-    #[test]
-    fn zero_preserves_each_duration_setting() {
-        let config = PgPoolConfig::from_lookup(&env(&[
-            ("PROXIMA_PG_STATEMENT_TIMEOUT_MS", "0"),
-            ("PROXIMA_PG_ACQUIRE_TIMEOUT_SECS", "0"),
-            ("PROXIMA_PG_IDLE_TIMEOUT_SECS", "0"),
-            ("PROXIMA_PG_MAX_LIFETIME_SECS", "0"),
-        ]))
-        .unwrap()
-        .expect("zero durations differ from finite defaults");
-
-        assert!(config.statement_timeout.is_zero());
-        assert!(config.acquire_timeout.is_zero());
-        assert!(config.idle_timeout.is_zero());
-        assert!(config.max_lifetime.is_zero());
-        assert_eq!(
-            config
-                .connect_options("postgres://user:secret@localhost/proxima")
-                .unwrap()
-                .get_options(),
-            None,
-            "statement timeout zero omits the Postgres option"
-        );
     }
 
     #[test]

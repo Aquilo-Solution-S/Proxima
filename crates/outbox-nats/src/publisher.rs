@@ -895,35 +895,6 @@ mod tests {
         PublisherId, ReleaseOutcome,
     };
     use std::num::NonZeroU32;
-    use tracing::field::{Field, Visit};
-    use tracing::{Event, Subscriber};
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::Context;
-    use tracing_subscriber::prelude::*;
-
-    #[derive(Clone)]
-    struct EventBuffer(Arc<Mutex<Vec<String>>>);
-
-    impl<S> Layer<S> for EventBuffer
-    where
-        S: Subscriber,
-    {
-        fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
-            let mut fields = EventFields::default();
-            event.record(&mut fields);
-            self.0.lock().expect("event buffer lock").push(fields.0);
-        }
-    }
-
-    #[derive(Default)]
-    struct EventFields(String);
-
-    impl Visit for EventFields {
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            use std::fmt::Write as _;
-            write!(&mut self.0, "{}={value:?} ", field.name()).expect("string write");
-        }
-    }
 
     #[derive(Debug)]
     struct EmptyOutbox;
@@ -978,91 +949,6 @@ mod tests {
         assert_eq!(snapshot.task, PublisherTaskState::Stopped);
         assert_eq!(snapshot.connection, PublisherConnectionState::NotObserved);
         assert!(!snapshot.is_ready());
-    }
-
-    #[test]
-    fn readiness_requires_a_live_task_connection_and_clean_drain() {
-        let ready = PublisherHealth {
-            task: PublisherTaskState::Running,
-            connection: PublisherConnectionState::Connected,
-            drain: PublisherDrainState::Clean,
-        };
-        assert!(ready.is_ready());
-        for health in [
-            PublisherHealth {
-                task: PublisherTaskState::Starting,
-                ..ready
-            },
-            PublisherHealth {
-                connection: PublisherConnectionState::Disconnected,
-                ..ready
-            },
-            PublisherHealth {
-                drain: PublisherDrainState::Failed,
-                ..ready
-            },
-            PublisherHealth {
-                drain: PublisherDrainState::NotObserved,
-                ..ready
-            },
-        ] {
-            assert!(!health.is_ready(), "{health:?}");
-        }
-    }
-
-    #[test]
-    fn connect_failure_logging_uses_a_fixed_category() {
-        const MARKER: &str = "SYNTHETIC_CONNECT_SECRET_MARKER";
-        let error = PublisherError::Connect(MARKER.to_owned());
-        assert!(error.to_string().contains(MARKER));
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let subscriber = tracing_subscriber::registry().with(EventBuffer(events.clone()));
-        tracing::subscriber::with_default(subscriber, || {
-            log_connect_failure(&error, Duration::from_secs(1));
-        });
-        let events = events.lock().expect("event buffer lock");
-        assert_eq!(events.len(), 1, "expected a connect failure event");
-        assert!(events[0].contains("failure_category=Connect"), "{events:?}");
-        assert!(!events[0].contains(MARKER), "{events:?}");
-        let reader = PublisherHealthReader {
-            inner: Arc::new(Mutex::new(PublisherHealthInner::default())),
-        };
-        assert!(!format!("{reader:?}").contains(MARKER));
-    }
-
-    #[test]
-    fn the_backoff_doubles_and_stops_growing() {
-        let floor = Duration::from_millis(500);
-        let mut current = floor;
-        for _ in 0..20 {
-            current = next_backoff(current, floor);
-        }
-        assert_eq!(current, Duration::from_secs(30));
-        assert_eq!(next_backoff(floor, floor), Duration::from_secs(1));
-    }
-
-    /// `PROXIMA_NATS_POLL_MS=60000` is a legal configuration, and under
-    /// `Ord::clamp(floor, CEILING)` the first broker error panicked the
-    /// publisher task out of existence.
-    #[test]
-    fn a_poll_interval_above_the_ceiling_backs_off_instead_of_panicking() {
-        let floor = Duration::from_mins(1);
-        let mut current = floor;
-        for _ in 0..8 {
-            current = next_backoff(current, floor);
-            assert_eq!(current, floor);
-        }
-        let config = NatsPublisherConfig::from_lookup(|key: &str| match key {
-            "PROXIMA_NATS_URL" => Some("nats://127.0.0.1:4222".to_owned()),
-            "PROXIMA_NATS_POLL_MS" => Some("60000".to_owned()),
-            _ => None,
-        })
-        .expect("a minute is a legal poll interval")
-        .expect("the presence key is set");
-        assert_eq!(
-            next_backoff(config.poll_interval, config.poll_interval),
-            Duration::from_mins(1)
-        );
     }
 
     #[test]

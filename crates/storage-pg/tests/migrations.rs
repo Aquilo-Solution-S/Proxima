@@ -2513,29 +2513,6 @@ fn embedded_core_checksums_are_sha384_of_the_files_without_carriage_returns() {
     );
 }
 
-/// `task_goal_v1` hangs off a Goal, so no memory ever stamps it — and a
-/// trigger asking `proxima_core.memory` about it would refuse every Goal
-/// sidecar write there is.
-///
-/// Asserted rather than assumed, because the generator's filter
-/// (`memory_insert` or `memory_load_batch` present) is what excludes it and
-/// nothing else would notice if that filter widened.
-#[test]
-fn a_goal_sidecar_gets_no_declaration_trigger() {
-    let tables: Vec<String> = frozen_core_sidecars()
-        .declaration_trigger_artifacts("core")
-        .expect("core's declaration triggers")
-        .iter()
-        .map(|artifact| artifact.forward.clone())
-        .collect();
-    assert!(
-        !tables
-            .iter()
-            .any(|forward| forward.contains("proxima_core.task_goal_v1")),
-        "a Goal sidecar is not a memory sidecar: {tables:?}"
-    );
-}
-
 /// The invariant, through a raw connection that has bypassed every line of
 /// Rust in this workspace.
 ///

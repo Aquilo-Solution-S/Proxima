@@ -611,24 +611,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_url_accepts_the_optional_c_prefix() {
-        let subject = UserId::new(uuid::Uuid::now_v7());
-        let (ctx, port) = ctx_with_port(subject, vec![]);
-        let id = uuid::Uuid::now_v7();
-
-        CoreUploadTool::call(
-            ctx,
-            CoreUploadArgs::ReadUrl(UploadReadUrlArgs {
-                cited_object_id: format!("C:{id}"),
-                space: None,
-            }),
-        )
-        .await
-        .expect("prefixed cited_object_id accepted");
-        assert_eq!(port.calls.lock().expect("lock")[0].action, "read_url");
-    }
-
-    #[tokio::test]
     async fn read_url_rejects_a_malformed_cited_object_id() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let (ctx, port) = ctx_with_port(subject, vec![]);

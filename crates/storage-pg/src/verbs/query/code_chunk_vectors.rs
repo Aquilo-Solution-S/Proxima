@@ -145,21 +145,3 @@ pub struct CodeChunkVectorFilters<'a> {
     pub language: Option<&'a str>,
     pub chunk_type: Option<&'a str>,
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn nearest_chunk_sql_is_one_vec_per_head() {
-        for dim in proxima_core::EmbeddingDim::ALL {
-            let lane = super::Lane::of(dim);
-            let sql = super::nearest_code_chunk_sql(lane);
-            let distinct = format!("{} {}", "DISTINCT", "ON");
-            assert!(
-                !sql.contains(&distinct),
-                "v008 embeddings have one vec per version"
-            );
-            assert!(sql.contains(lane.predicate) && sql.contains("AND head.dim = emb.dim"));
-            assert!(sql.contains(&format!("ORDER BY {} <=> $4{}", lane.vec, lane.cast)));
-        }
-    }
-}

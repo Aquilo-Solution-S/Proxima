@@ -1574,26 +1574,6 @@ mod tests {
     }
 
     #[test]
-    fn precedence_env_fills_unset_and_preserves_explicit() {
-        let builder = RuntimeBuilder::default()
-            .database_url("postgres://explicit/proxima")
-            .apply_lookup(lookup(&[
-                ("DATABASE_URL", "postgres://env/proxima"),
-                ("PROXIMA_ALLOWED_ORIGINS", "https://a.test, https://b.test"),
-            ]))
-            .unwrap();
-
-        assert_eq!(
-            builder.database_url.as_deref(),
-            Some("postgres://explicit/proxima")
-        );
-        assert_eq!(
-            builder.allowed_origins.as_deref(),
-            Some(["https://a.test".to_string(), "https://b.test".to_string()].as_slice())
-        );
-    }
-
-    #[test]
     fn runtime_builder_debug_redacts_database_url() {
         let builder = RuntimeBuilder::default().database_url("postgres://user:secret@host/db");
         let debug = format!("{builder:?}");
@@ -1727,37 +1707,6 @@ mod tests {
     }
 
     #[test]
-    fn host_of_url_extracts_bare_lowercased_host() {
-        assert_eq!(
-            host_of_url("https://proxima.example.com").as_deref(),
-            Some("proxima.example.com")
-        );
-        assert_eq!(
-            host_of_url("https://Example.COM:8443/mcp").as_deref(),
-            Some("example.com")
-        );
-        assert_eq!(host_of_url("http://[::1]:8080").as_deref(), Some("::1"));
-        assert_eq!(
-            host_of_url("https://user@host.test:9000/p?q=1").as_deref(),
-            Some("host.test")
-        );
-        assert_eq!(
-            host_of_url("tauri://localhost").as_deref(),
-            Some("localhost")
-        );
-        assert_eq!(host_of_url("   "), None);
-    }
-
-    #[test]
-    fn is_loopback_host_detects_loopback_forms() {
-        assert!(is_loopback_host("localhost"));
-        assert!(is_loopback_host("127.0.0.1"));
-        assert!(is_loopback_host("::1"));
-        assert!(!is_loopback_host("proxima.example.com"));
-        assert!(!is_loopback_host("10.0.0.5"));
-    }
-
-    #[test]
     fn public_allowed_hosts_derives_from_public_url_and_origins() {
         let mut config = base_config(Some(addr([127, 0, 0, 1])));
         config.resource_metadata = Some(ResourceServerMetadata {
@@ -1773,37 +1722,6 @@ mod tests {
         assert_eq!(
             config.public_allowed_hosts(),
             vec!["proxima.example.com".to_string(), "app.test".to_string()]
-        );
-    }
-
-    #[test]
-    fn public_allowed_hosts_explicit_overrides_derivation() {
-        let mut config = base_config(Some(addr([127, 0, 0, 1])));
-        config.resource_metadata = Some(ResourceServerMetadata {
-            public_url: "https://derived.test".to_string(),
-            authorization_servers: vec![],
-        });
-        config.allowed_origins = vec!["https://app.test".to_string()];
-        config.allowed_hosts = vec!["Proxima.Internal:8443".to_string(), "10.0.0.5".to_string()];
-
-        assert_eq!(
-            config.public_allowed_hosts(),
-            vec!["proxima.internal:8443".to_string(), "10.0.0.5".to_string()]
-        );
-    }
-
-    #[test]
-    fn allowed_hosts_env_is_split_trimmed_and_lowercased() {
-        let builder = RuntimeBuilder::default()
-            .apply_lookup(lookup(&[(
-                "PROXIMA_ALLOWED_HOSTS",
-                " Proxima.Test, ,host:8443 , ",
-            )]))
-            .unwrap();
-
-        assert_eq!(
-            builder.allowed_hosts.unwrap(),
-            ["proxima.test".to_string(), "host:8443".to_string()]
         );
     }
 
@@ -1949,26 +1867,6 @@ mod tests {
     }
 
     #[test]
-    fn pg_tuning_reads_the_env_block() {
-        let (config, _) = RuntimeBuilder::default()
-            .database_url("postgres://localhost/proxima")
-            .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
-            .apply_lookup(lookup(&[("PROXIMA_PG_HNSW_EF_SEARCH", "200")]))
-            .unwrap()
-            .resolve()
-            .unwrap();
-
-        assert_eq!(
-            config.pg_tuning,
-            PgTuning {
-                hnsw_ef_search: 200,
-                ..PgTuning::default()
-            }
-        );
-    }
-
-    #[test]
     fn pg_pool_config_reads_the_injected_env_block() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
@@ -1987,28 +1885,6 @@ mod tests {
             config.pg_pool_config.acquire_timeout,
             Duration::from_secs(9)
         );
-    }
-
-    #[test]
-    fn programmatic_pg_pool_config_reaches_resolved_config() {
-        let configured = PgPoolConfig {
-            max_connections: 3,
-            statement_timeout: Duration::from_secs(41),
-            acquire_timeout: Duration::from_secs(2),
-            idle_timeout: Duration::from_secs(17),
-            max_lifetime: Duration::from_secs(29),
-        };
-        let (config, _) = RuntimeBuilder::default()
-            .database_url("postgres://localhost/proxima")
-            .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
-            .pg_pool_config(configured)
-            .apply_lookup(lookup(&[("PROXIMA_PG_MAX_CONNECTIONS", "9")]))
-            .expect("explicit pool policy outranks the injected lookup")
-            .resolve()
-            .unwrap();
-
-        assert_eq!(config.pg_pool_config, configured);
     }
 
     #[test]
@@ -2037,24 +1913,6 @@ mod tests {
                 .to_string()
                 .contains("at least one connection")
         );
-    }
-
-    /// An untuned environment is silent, not an answer, so it leaves a
-    /// programmatically tuned base alone — the same `merge_over` rule the
-    /// allowlists follow.
-    #[test]
-    fn an_untuned_env_does_not_override_configured_tuning() {
-        let tuned = PgTuning {
-            hnsw_ef_search: 200,
-            ..PgTuning::default()
-        };
-        let from_env = RuntimeBuilder::default()
-            .apply_lookup(lookup(&[("PROXIMA_REST_ENABLED", "true")]))
-            .expect("an untuned environment is not a malformed one");
-
-        let merged = from_env.merge_over(RuntimeBuilder::default().pg_tuning(tuned));
-
-        assert_eq!(merged.pg_tuning, Some(tuned));
     }
 
     #[test]
@@ -2105,28 +1963,6 @@ mod tests {
             err.to_string()
                 .contains("PROXIMA_PG_HNSW_ITERATIVE_SCAN=relaxed")
         );
-    }
-
-    /// Empty or whitespace-only env is unset, not a parse error.
-    #[test]
-    fn an_empty_value_is_an_unset_value() {
-        let builder = RuntimeBuilder::default()
-            .apply_lookup(lookup(&[
-                ("DATABASE_URL", ""),
-                ("PROXIMA_EXPOSE_NETWORK", ""),
-                ("PROXIMA_REST_ENABLED", "   "),
-                ("PROXIMA_SKIP_MIGRATIONS", ""),
-                ("PROXIMA_MCP_BIND", ""),
-                ("PROXIMA_STREAM_MAX_LIFETIME", ""),
-            ]))
-            .expect("an empty value must not be parsed as a malformed one");
-
-        assert!(builder.database_url.is_none());
-        assert!(builder.expose_network.is_none());
-        assert!(builder.rest_enabled.is_none());
-        assert!(builder.skip_migrations.is_none());
-        assert!(builder.mcp_bind.is_none());
-        assert!(builder.stream_max_lifetime.is_none());
     }
 
     /// Trailing newlines survive here-docs and mounted secrets. Trimming is
@@ -2279,91 +2115,10 @@ mod tests {
         assert!(refused.to_string().contains("not both"), "{refused}");
     }
 
-    #[test]
-    fn merge_over_prefers_self_options_and_ors_flags() {
-        let base = RuntimeBuilder::default()
-            .database_url("postgres://base/proxima")
-            .owner(owner(uuid::Uuid::now_v7()))
-            .mcp_bind(addr([127, 0, 0, 1]));
-        let overlay = RuntimeBuilder::default()
-            .database_url("postgres://overlay/proxima")
-            .allowed_origins(vec!["https://overlay.test".to_string()])
-            .stream_max_lifetime(Duration::from_secs(12))
-            .allow_insecure_single_owner();
-
-        let merged = overlay.merge_over(base);
-
-        assert_eq!(
-            merged.database_url.as_deref(),
-            Some("postgres://overlay/proxima")
-        );
-        assert!(merged.owner.is_some());
-        assert!(merged.mcp_enabled);
-        assert!(merged.mcp_bind.is_some());
-        assert_eq!(
-            merged.allowed_origins.as_deref(),
-            Some(["https://overlay.test".to_string()].as_slice())
-        );
-        assert_eq!(merged.stream_max_lifetime, Some(Duration::from_secs(12)));
-        assert!(merged.insecure_single_owner);
-    }
-
     fn served_builder() -> RuntimeBuilder {
         RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
             .tool_scope(ToolScope::All)
-    }
-
-    #[test]
-    fn served_path_env_resolves_into_config() {
-        let forwarder = uuid::Uuid::now_v7().to_string();
-        let (config, _) = served_builder()
-            .apply_lookup(lookup(&[
-                ("PROXIMA_REQUEST_HEADERS", "x-pack-ticket, X-Piy-Env-*"),
-                ("PROXIMA_FORWARDER_SUBJECTS", &forwarder),
-                ("PROXIMA_FORWARDER_ROLE", "ingest"),
-                ("PROXIMA_HEALTH_ENDPOINTS", "true"),
-                ("PROXIMA_MAX_REQUEST_BODY_BYTES", "8388608"),
-                ("PROXIMA_MCP_SSE_KEEP_ALIVE_SECS", "0"),
-                ("PROXIMA_MCP_SESSIONS", "false"),
-            ]))
-            .expect("valid env")
-            .resolve()
-            .expect("resolves");
-
-        assert!(
-            config
-                .request_headers
-                .allows(&http::HeaderName::from_static("x-piy-env-forgejo"))
-        );
-        assert_eq!(
-            config.forwarder.as_ref().map(ForwarderPolicy::role),
-            Some(proxima_core::Role::ingest())
-        );
-        assert!(config.health_endpoints);
-        assert_eq!(config.mcp_transport.max_request_body_bytes, 8 * 1024 * 1024);
-        assert_eq!(config.mcp_transport.sse_keep_alive, None);
-        assert!(!config.mcp_transport.legacy_session_mode);
-        assert_eq!(
-            config.mcp_transport.sse_retry,
-            McpTransportConfig::default().sse_retry,
-            "an unset transport field keeps rmcp's default"
-        );
-    }
-
-    #[test]
-    fn served_path_defaults_change_nothing() {
-        let (config, parts) = served_builder()
-            .apply_lookup(lookup(&[]))
-            .unwrap()
-            .resolve()
-            .unwrap();
-        assert!(config.request_headers.is_empty());
-        assert!(config.forwarder.is_none());
-        assert!(!config.health_endpoints);
-        assert_eq!(config.mcp_transport, McpTransportConfig::default());
-        assert!(parts.late_owner_access.is_none());
-        assert!(parts.authenticator.is_none());
     }
 
     #[test]

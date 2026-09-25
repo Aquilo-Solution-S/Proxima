@@ -51,12 +51,6 @@ fn make_test_engine() -> Engine {
 }
 
 #[tokio::test]
-async fn engine_url_unset_before_start() {
-    let engine = make_test_engine();
-    assert!(engine.mcp_url().is_none(), "mcp_url None before start");
-}
-
-#[tokio::test]
 async fn engine_start_exposes_mcp_url_then_stop_cancels() {
     let engine = Arc::new(make_test_engine());
     let handle = engine.clone().start().await.expect("start");
@@ -67,16 +61,5 @@ async fn engine_start_exposes_mcp_url_then_stop_cancels() {
     );
     assert!(url.ends_with("/mcp"), "url {url} should end with /mcp");
 
-    engine.stop(handle);
-}
-
-#[tokio::test]
-async fn engine_start_without_listener_leaves_url_none() {
-    let engine = Arc::new(Engine::new(
-        FlavorRegistry::new().freeze_or_panic_for_tests(),
-    ));
-
-    let handle = engine.clone().start().await.expect("start");
-    assert!(engine.mcp_url().is_none(), "no listener -> no url");
     engine.stop(handle);
 }

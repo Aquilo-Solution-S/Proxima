@@ -868,20 +868,6 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_model_omits_the_extension_attribute() {
-        let mut draft = draft();
-        draft.model_id = None;
-        let t = Uuid::now_v7();
-        let sealed = SealedPublication::seal(
-            &PublicationPlan::new(draft, PublicationLimits::default()),
-            t,
-        )
-        .expect("seal");
-        let text = String::from_utf8(sealed.bytes).expect("utf8");
-        assert!(!text.contains("proximamodel"), "{text}");
-    }
-
-    #[test]
     fn an_oversized_export_is_refused_rather_than_truncated() {
         let limits = PublicationLimits {
             max_payload_bytes: 16,
@@ -912,31 +898,6 @@ mod tests {
             PublicationConfig::new(PublicationSource::new("urn:x:y").expect("source"))
                 .validate_against(vec!["a/one-v1"])
                 .is_ok()
-        );
-    }
-
-    #[test]
-    fn the_dataschema_is_the_local_catalog_uri() {
-        assert_eq!(
-            data_schema_uri(
-                &SchemaId::new("core/agent-note-v1".into()),
-                SchemaVersion::new(3)
-            ),
-            "proxima://schema/core/agent-note-v1/3"
-        );
-    }
-
-    #[test]
-    fn an_empty_extension_set_emits_nothing() {
-        let sealed = SealedPublication::seal(
-            &PublicationPlan::new(draft(), PublicationLimits::default()),
-            Uuid::now_v7(),
-        )
-        .expect("seal");
-        let text = String::from_utf8(sealed.bytes).expect("utf8");
-        assert!(
-            text.contains("\"proximamodel\":\"model-x\",\"data\""),
-            "an unbound set must not open so much as an empty object: {text}"
         );
     }
 

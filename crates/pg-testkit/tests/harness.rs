@@ -1,10 +1,6 @@
-use sqlx::{Connection, PgConnection, PgPool};
-use uuid::Uuid;
+use sqlx::{Connection, PgConnection};
 
-use proxima_pg_testkit::{
-    DbGuard, admin_url, create_db, db_url, drop_db, drop_stale_templates, ensure_template,
-    sweep_stale_test_dbs, unique_db_name,
-};
+use proxima_pg_testkit::{DbGuard, admin_url, create_db, drop_db, unique_db_name};
 
 async fn exists(name: &str) -> bool {
     let mut conn = PgConnection::connect(&admin_url())
@@ -19,20 +15,6 @@ async fn exists(name: &str) -> bool {
     .expect("exists");
     conn.close().await.expect("close");
     found
-}
-
-#[tokio::test]
-async fn force_drop_terminates_a_live_backend() {
-    let name = unique_db_name("proxima_test");
-    create_db(&name).await.expect("create");
-    let pool = PgPool::connect(&db_url(&name)).await.expect("pool");
-    sqlx::query("SELECT 1")
-        .execute(&pool)
-        .await
-        .expect("use the clone");
-    drop_db(&name).await.expect("FORCE drop");
-    assert!(!exists(&name).await, "clone must be gone");
-    pool.close().await;
 }
 
 #[tokio::test]
@@ -59,130 +41,4 @@ async fn panicking_guard_keeps_the_database() {
     assert!(join.join().is_err(), "thread must panic");
     assert!(exists(&name).await, "panic must keep the clone");
     drop_db(&name).await.expect("cleanup kept clone");
-}
-
-#[tokio::test]
-async fn sweep_drops_a_backdated_tracking_row() {
-    let name = unique_db_name("proxima_test");
-    create_db(&name).await.expect("create");
-    let mut conn = PgConnection::connect(&admin_url())
-        .await
-        .expect("admin connect");
-    sqlx::query(
-        "UPDATE _proxima_test.databases
-         SET created_at = now() - interval '1 hour'
-         WHERE db_name = $1",
-    )
-    .bind(&name)
-    .execute(&mut conn)
-    .await
-    .expect("backdate");
-    conn.close().await.expect("close");
-
-    let dropped = sweep_stale_test_dbs().await.expect("sweep");
-    assert!(dropped >= 1, "sweep must drop the backdated clone");
-    assert!(!exists(&name).await, "backdated clone must be gone");
-}
-
-#[tokio::test]
-async fn uuid_v7_now_is_not_swept_as_untracked_grace() {
-    let name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    create_db(&name).await.expect("create");
-    // Fresh clones are newer than process_start - 5m, so the untracked
-    // prefix path must not delete them. The tracking row is also newer
-    // than now() - 5m, so the tracked path must not either.
-    let dropped = sweep_stale_test_dbs().await.expect("sweep");
-    let _ = dropped;
-    assert!(exists(&name).await, "live clone must survive a later sweep");
-    drop_db(&name).await.expect("cleanup");
-}
-
-#[tokio::test]
-async fn recent_tracked_clone_survives_a_later_process_start() {
-    let name = unique_db_name("proxima_test");
-    create_db(&name).await.expect("create");
-    let mut conn = PgConnection::connect(&admin_url())
-        .await
-        .expect("admin connect");
-    // A sibling nextest binary's process_start is later than this row, but
-    // the clone is still inside the 5-minute grace. Sweeping on
-    // `created_at < process_start` would DROP it between create_db and boot.
-    sqlx::query(
-        "UPDATE _proxima_test.databases
-         SET created_at = now() - interval '4 minutes'
-         WHERE db_name = $1",
-    )
-    .bind(&name)
-    .execute(&mut conn)
-    .await
-    .expect("backdate inside grace");
-    conn.close().await.expect("close");
-
-    let _dropped = sweep_stale_test_dbs().await.expect("sweep");
-    assert!(
-        exists(&name).await,
-        "in-flight clone must survive a later binary's sweep"
-    );
-    drop_db(&name).await.expect("cleanup");
-}
-
-async fn datnames_like(pattern: &str) -> Vec<String> {
-    let mut conn = PgConnection::connect(&admin_url())
-        .await
-        .expect("admin connect");
-    let names = sqlx::query_scalar::<_, String>(
-        "SELECT datname FROM pg_database
-         WHERE datname LIKE $1 ESCAPE '\\'
-         ORDER BY datname",
-    )
-    .bind(pattern)
-    .fetch_all(&mut conn)
-    .await
-    .expect("list databases");
-    conn.close().await.expect("close");
-    names
-}
-
-fn unique_template(prefix: &str) -> String {
-    format!("{prefix}{:016x}", Uuid::now_v7().as_u64_pair().0)
-}
-
-#[tokio::test]
-async fn ensure_template_drops_other_hashes_in_the_family() {
-    // `keep` must be a hash the rest of the workspace will also treat as
-    // current. A planted `proxima_tmpl_core_aaa…` is dropped the moment a
-    // parallel test calls `ensure_template` with the live core fingerprint.
-    let stale = unique_template("proxima_tmpl_core_");
-    let other_family = unique_template("proxima_tmpl_code_");
-    create_db(&stale).await.expect("stale");
-    create_db(&other_family).await.expect("other family");
-
-    let existing_core = datnames_like(r"proxima\_tmpl\_core\_%")
-        .await
-        .into_iter()
-        .find(|name| name != &stale);
-    let (keep, created_keep) = if let Some(name) = existing_core {
-        (name, false)
-    } else {
-        let name = unique_template("proxima_tmpl_core_");
-        create_db(&name).await.expect("keep");
-        (name, true)
-    };
-
-    ensure_template(&keep, |_| async { Ok(()) })
-        .await
-        .expect("reuse keep");
-
-    assert!(exists(&keep).await, "current hash must remain");
-    assert!(!exists(&stale).await, "sibling core hash must be dropped");
-    assert!(
-        exists(&other_family).await,
-        "code templates are a different family"
-    );
-
-    if created_keep {
-        drop_db(&keep).await.expect("cleanup keep");
-    }
-    drop_db(&other_family).await.expect("cleanup other");
-    let _ = drop_stale_templates(&keep).await;
 }

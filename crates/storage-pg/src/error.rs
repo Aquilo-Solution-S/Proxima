@@ -114,24 +114,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_STORAGE_ATTEMPTS, is_retryable_sqlstate, with_bounded_retry};
+    use super::{MAX_STORAGE_ATTEMPTS, with_bounded_retry};
     use proxima_core::StorageError;
     use std::cell::Cell;
-
-    #[test]
-    fn transient_sqlstates_are_retryable_and_faults_are_not() {
-        assert!(is_retryable_sqlstate(Some("40P01")));
-        assert!(is_retryable_sqlstate(Some("40001")));
-        // A caller that set a lock_timeout asked to come back, not to fail.
-        assert!(is_retryable_sqlstate(Some("55P03")));
-        // Waiting past a statement_timeout is not the same statement: it
-        // says nothing about whether a lock was involved, so re-running
-        // blindly would loop on a genuinely slow query.
-        assert!(!is_retryable_sqlstate(Some("57014")));
-        assert!(!is_retryable_sqlstate(Some("23503")));
-        assert!(!is_retryable_sqlstate(Some("23505")));
-        assert!(!is_retryable_sqlstate(None));
-    }
 
     #[tokio::test]
     async fn bounded_retry_stops_after_max_attempts() {

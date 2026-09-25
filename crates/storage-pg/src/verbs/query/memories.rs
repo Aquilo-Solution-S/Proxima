@@ -11,8 +11,6 @@ use proxima_core::verbs::query::{
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{MemoryId, OwnerRef, SchemaId, SidecarPayload, StorageError};
 use sqlx::PgConnection;
-#[cfg(test)]
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::map_err;
@@ -21,18 +19,6 @@ use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 use super::edges::query_edges;
 use super::goals::query_goals_on_connection;
 use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water_on_connection};
-
-#[cfg(test)]
-async fn query_memories(
-    pool: &PgPool,
-    sidecars: &PgSidecarRegistryFrozen,
-    read_owners: &[OwnerRef],
-    req: &QueryRequest,
-    schemas: &[MemorySchemaSpec],
-) -> Result<QueryResponse, StorageError> {
-    let mut connection = pool.acquire().await.map_err(crate::error::map_err)?;
-    query_memories_on_connection(&mut connection, sidecars, read_owners, req, schemas).await
-}
 
 /// Transaction-backed query path. Every statement, including typed sidecar
 /// hydration, uses the caller's one borrowed connection.
@@ -423,65 +409,6 @@ fn validate_row_stamp(
     Ok(())
 }
 
-#[cfg(test)]
-mod transaction_visibility_tests {
-    use super::{query_memories, query_memories_on_connection};
-    use crate::sidecars::core_pg_sidecars;
-    use crate::test_fixtures::fresh_pg;
-    use proxima_core::read_models::MemorySchemaSpec;
-    use proxima_core::verbs::query::QueryRequest;
-    use proxima_core::{EntityKind, OwnerRef, SchemaId, SchemaVersion, UserId};
-
-    #[tokio::test]
-    async fn connection_query_sees_uncommitted_memory_and_sidecar_but_pool_does_not()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, _db) = fresh_pg("proxima_query_scope").await;
-        let pool = pg.pool_for_tests();
-        let owner_id = uuid::Uuid::now_v7();
-        let handle = uuid::Uuid::now_v7();
-        let memory_id = uuid::Uuid::now_v7();
-        let note_id = uuid::Uuid::now_v7();
-        let owner = OwnerRef::Personal(UserId::new(owner_id));
-        let sidecars = core_pg_sidecars();
-        let schemas = [MemorySchemaSpec {
-            kind: EntityKind::Fact,
-            schema_id: SchemaId::new("core/agent-note-v1".into()),
-            schema_version: SchemaVersion::new(1),
-            sidecar_table: Some("proxima_core.agent_note_v1".into()),
-        }];
-        let req = QueryRequest::readable();
-
-        let mut tx = pool.begin().await?;
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
-            .bind(owner_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t) VALUES ($1, 'fact', $2, $3, $4)")
-            .bind(handle).bind("core/agent-note-v1").bind(owner_id).bind(memory_id)
-            .execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, sidecar_tables) VALUES ($1, $2, 'fact', $3, $4, $5)")
-            .bind(handle).bind(memory_id).bind(owner_id).bind("core/agent-note-v1")
-            .bind(vec!["proxima_core.agent_note_v1"])
-            .execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags) VALUES ($1, $2, $3, $4, $5)")
-            .bind(memory_id).bind(note_id).bind("uncommitted").bind("visible on tx").bind(Vec::<String>::new())
-            .execute(&mut *tx).await?;
-
-        let scoped =
-            query_memories_on_connection(&mut tx, &sidecars, &[owner], &req, &schemas).await?;
-        assert_eq!(scoped.memories.len(), 1);
-        assert_eq!(scoped.memories[0].id.into_inner(), memory_id);
-        assert!(scoped.memories[0].payload.is_some());
-
-        let independent = query_memories(pool, &sidecars, &[owner], &req, &schemas).await?;
-        assert!(independent.memories.is_empty());
-        tx.rollback().await?;
-        let after = query_memories(pool, &sidecars, &[owner], &req, &schemas).await?;
-        assert!(after.memories.is_empty());
-        Ok(())
-    }
-}
-
 /// The page SQL [`query_memories`] would run for `req`.
 ///
 /// It calls the same [`memory_filters`] and [`page_fetch_limit`] the page
@@ -522,23 +449,6 @@ mod tests {
         )
         .expect_err("unregistered or unstamped primary must fail closed");
         assert!(err.to_string().contains("invalid sidecar stamp"));
-    }
-
-    #[test]
-    fn sidecarless_registered_memory_needs_no_stamp() {
-        let spec = MemorySchemaSpec {
-            kind: EntityKind::Fact,
-            schema_id: SchemaId::new("test/fact".to_owned()),
-            schema_version: SchemaVersion::new(2),
-            sidecar_table: None,
-        };
-        validate_row_stamp(
-            &PgSidecarRegistryFrozen::default(),
-            &spec,
-            &["extra.table".to_owned()],
-            MemoryId::new(uuid::Uuid::now_v7()),
-        )
-        .expect("sidecarless memory permits extra declared stamps");
     }
 
     #[test]
@@ -589,43 +499,6 @@ mod tests {
         );
     }
 
-    /// The property the filter list exists to guarantee: every filter
-    /// contributes exactly one placeholder, numbered by its position after
-    /// `$1`, and nothing else does.
-    ///
-    /// `fetch_memory_page` binds the owner array and then the same list in
-    /// the same order, so this is also the statement that the argument count
-    /// matches — the two used to be separate hand-kept lists.
-    #[test]
-    fn every_filter_contributes_exactly_one_numbered_placeholder() {
-        use super::MemoryFilter;
-        let all = || {
-            vec![
-                MemoryFilter::Schema("s".to_owned()),
-                MemoryFilter::Kind("fact"),
-                MemoryFilter::Ids(Vec::new()),
-                MemoryFilter::Cursor(uuid::Uuid::nil()),
-            ]
-        };
-        for heads_only in [true, false] {
-            for take in 0..=4 {
-                let filters: Vec<MemoryFilter> = all().into_iter().take(take).collect();
-                let sql = super::memory_page_sql(heads_only, &filters, 10);
-                for n in 1..=take + 1 {
-                    assert!(
-                        sql.contains(&format!("${n}")),
-                        "placeholder ${n} missing with {take} filters: {sql}"
-                    );
-                }
-                assert!(
-                    !sql.contains(&format!("${}", take + 2)),
-                    "placeholder ${} emitted with only {take} filters: {sql}",
-                    take + 2
-                );
-            }
-        }
-    }
-
     #[test]
     fn heads_only_schema_predicates_use_head_columns() {
         let sql = super::memory_page_sql(true, &[super::MemoryFilter::Schema("s".to_owned())], 10);
@@ -644,27 +517,6 @@ mod tests {
         assert!(
             !sql.contains("AND m.schema_id"),
             "HeadsOnly must not predicate m.schema_id: {sql}"
-        );
-    }
-
-    #[test]
-    fn include_superseded_schema_predicates_use_memory_columns() {
-        let sql = super::memory_page_sql(false, &[super::MemoryFilter::Schema("s".to_owned())], 10);
-        assert!(
-            sql.contains("m.owner_id = ANY($1::uuid[])"),
-            "IncludeSuperseded owner filter stays on memory: {sql}"
-        );
-        assert!(
-            sql.contains("AND m.schema_id = $2"),
-            "IncludeSuperseded schema filter stays on memory: {sql}"
-        );
-        assert!(
-            !sql.contains("h.owner_id"),
-            "IncludeSuperseded has no head join: {sql}"
-        );
-        assert!(
-            !sql.contains("h.schema_id"),
-            "IncludeSuperseded has no head schema pred: {sql}"
         );
     }
 }

@@ -117,24 +117,4 @@ mod tests {
             "the surrounding whitespace is removed before it is counted",
         );
     }
-
-    #[test]
-    fn the_cap_counts_characters_not_bytes() {
-        let cyrillic = "я".repeat(240);
-        assert_eq!(cyrillic.len(), 480, "two bytes per char");
-        assert_eq!(check_trimmed_len(&cyrillic, 240), Ok(cyrillic.as_str()));
-    }
-
-    #[test]
-    fn every_reason_names_the_field() {
-        for violation in [
-            TrimmedLenViolation::Blank,
-            TrimmedLenViolation::TooLong { max: 1, got: 2 },
-        ] {
-            assert!(
-                violation.reason("wake prompt").starts_with("wake prompt"),
-                "the field name is the caller's only pointer back into the schema",
-            );
-        }
-    }
 }

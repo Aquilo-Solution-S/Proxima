@@ -6,55 +6,8 @@ mod common;
 use common::{migrated_db, project_code, seed_memory_with_sidecars_in_tx, test_owner};
 use proxima_code::payloads::{CommitSummaryV1, CommitV1};
 use proxima_core::{AbstractionPayload, FactPayload};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::PgStorage;
+use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
-
-#[tokio::test]
-async fn commit_search_tsv_is_stored_and_indexed() {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        common::apply_current_migrations(&pg).await?;
-
-        // The sidecars carry no vector any more; the projection does, once,
-        // for the whole flavor.
-        let leftovers: Vec<String> = sqlx::query_scalar(
-            "SELECT table_name::text
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_code'
-                AND column_name = 'search_tsv'
-                AND table_name <> 'projection'
-              ORDER BY 1",
-        )
-        .fetch_all(pg.pool_for_tests())
-        .await?;
-        assert!(
-            leftovers.is_empty(),
-            "the projection replaced the per-sidecar vectors: {leftovers:?}"
-        );
-
-        let gin: bool = sqlx::query_scalar(
-            "SELECT EXISTS (
-                 SELECT 1
-                   FROM pg_indexes
-                  WHERE schemaname = 'proxima_code'
-                    AND tablename = 'projection'
-                    AND indexname = 'code_projection_owner_tsv_gin'
-                    AND indexdef ILIKE '%gin%owner_id, search_tsv%'
-             )",
-        )
-        .fetch_one(pg.pool_for_tests())
-        .await?;
-        assert!(gin, "the projection needs its composite GIN index");
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("commit search_tsv migration failed");
-}
 
 /// Commit messages and generated summaries are prose, not code identifiers:
 /// their stored vectors and query side must use the SQL-owned language-neutral

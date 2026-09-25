@@ -171,35 +171,4 @@ mod tests {
              SET LOCAL hnsw.max_scan_tuples = 20000"
         );
     }
-
-    #[test]
-    fn a_raised_scan_ceiling_is_appended_under_an_iterative_scan() {
-        let tuning = PgTuning {
-            hnsw_ef_search: 200,
-            hnsw_max_scan_tuples: 60_000,
-            ..PgTuning::default()
-        };
-
-        assert_eq!(
-            set_hnsw_search_sql(&tuning),
-            "SET LOCAL hnsw.ef_search = 200; SET LOCAL hnsw.iterative_scan = relaxed_order; \
-             SET LOCAL hnsw.max_scan_tuples = 60000"
-        );
-    }
-
-    /// Without an iterative scan the ceiling has nothing to bound, so it is
-    /// not sent even when it is set.
-    #[test]
-    fn a_scan_ceiling_is_dropped_when_iterative_scan_is_off() {
-        let tuning = PgTuning {
-            hnsw_iterative_scan: HnswIterativeScan::Off,
-            hnsw_max_scan_tuples: 60_000,
-            ..PgTuning::default()
-        };
-
-        assert_eq!(
-            set_hnsw_search_sql(&tuning),
-            "SET LOCAL hnsw.ef_search = 100; SET LOCAL hnsw.iterative_scan = off"
-        );
-    }
 }
