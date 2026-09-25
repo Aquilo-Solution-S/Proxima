@@ -43,7 +43,8 @@ pub use goal_write::{
 };
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 pub use memory_authoring::{
-    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, MemoryTarget, SeriesHandle,
+    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EmbeddingMode, MemoryTarget,
+    SeriesHandle,
 };
 pub use pipeline::{MemoryPermit, PermitMode, WritePermit};
 pub use read_verbs::{

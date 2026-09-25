@@ -4,7 +4,8 @@ use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
     AbstractionPayload, AuthzContext, DerivationIdentity, DerivedMemory, DerivedMemoryOutcome,
-    Engine, FactWrite, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner, SeriesHandle,
+    EmbeddingMode, Engine, FactWrite, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner,
+    SeriesHandle,
 };
 use proxima_storage_pg::query::ChunkSeriesHead;
 use uuid::Uuid;
@@ -317,9 +318,14 @@ pub async fn append_code_slices_with_handles(
     if let Some(commit) = source_commit {
         origins.push(commit);
     }
-    // Embed every slice before BEGIN. Intra-file calls are sidecar data,
-    // not kernel pins (`CodeChunkV1::references` is empty); the one
-    // transaction is atomicity of the file group, not sibling visibility.
+    // Intra-file calls are sidecar data, not kernel pins
+    // (`CodeChunkV1::references` is empty); the one transaction is
+    // atomicity of the file group, not sibling visibility.
+    //
+    // Vectors are queued, not embedded here: each slice lands with a
+    // pending embedding job, as every Fact does, and the embedding drain
+    // sends them `PROXIMA_EMBED_BATCH_SIZE` texts per provider request.
+    // Inline, a repository cost one request per chunk (issue #346).
     let reqs = payloads
         .iter()
         .zip(handles)
@@ -335,6 +341,7 @@ pub async fn append_code_slices_with_handles(
                     code_slice_input_contract_id(payload, source_file_revision),
                 ),
             )
+            .map(|memory| memory.embedding_mode(EmbeddingMode::Deferred))
         })
         .collect::<Result<Vec<_>, _>>()?;
     // One repository per group. The scope fence is a per-repository lane

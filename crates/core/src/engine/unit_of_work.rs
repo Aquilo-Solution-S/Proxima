@@ -567,7 +567,8 @@ impl UnitOfWork<'_> {
     }
 
     /// Prepare a batch before opening the write transaction, then append every row.
-    /// An already-open transaction defers embedding. Drop without commit rolls back the batch.
+    /// An already-open transaction defers embedding, as does
+    /// [`crate::EmbeddingMode::Deferred`]. Drop without commit rolls back the batch.
     /// Use sequential `derive_memory` calls when one result is an input to the next.
     ///
     /// # Errors

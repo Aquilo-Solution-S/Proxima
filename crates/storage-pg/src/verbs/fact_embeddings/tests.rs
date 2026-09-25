@@ -13,9 +13,9 @@ mod pg_tests {
     use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
     use proxima_core::verbs::schema::MemoryEmbedUnit;
     use proxima_core::{
-        AccessKind, AuthPath, AuthzContext, Engine, EntityId, EntityKind, FactIngestPort,
-        FlavorRegistry, GroupId, InputContractId, MemoryTarget, Owner, ProtocolError, SchemaId,
-        SchemaVersion, SourceId, StorageError,
+        AccessKind, AuthPath, AuthzContext, EmbeddingMode, Engine, EntityId, EntityKind,
+        FactIngestPort, FlavorRegistry, GroupId, InputContractId, MemoryTarget, Owner,
+        ProtocolError, SchemaId, SchemaVersion, SourceId, StorageError,
     };
     use proxima_pg_testkit::drop_db;
     use uuid::Uuid;
@@ -1278,6 +1278,61 @@ mod pg_tests {
             assert!(
                 accepted > 1,
                 "the text came back split into provider-acceptable pieces: {offered:?}"
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// A writer that asks for a queued vector gets no provider call: the
+    /// job lands with the row, and the drain embeds it with the queue.
+    #[tokio::test]
+    async fn author_derived_queues_the_vector_on_request() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let (engine, authz, origin, offered) =
+                capped_authoring_fixture(&pg, &owner, MIN_EMBED_INPUT_CAP_CHARS).await?;
+            let origins = [origin];
+            let pool = pg.pool_for_tests();
+
+            let outcome = engine
+                .derive_memory(
+                    &authz,
+                    derived_request(owner, &origins, "queued unit".into())?
+                        .embedding_mode(EmbeddingMode::Deferred),
+                )
+                .await?;
+
+            assert!(outcome.embedding_deferred, "the write reports the queue");
+            assert!(
+                offered
+                    .lock()
+                    .expect("test lock is not poisoned")
+                    .is_empty(),
+                "no provider call before the write"
+            );
+            assert_eq!(
+                job_state(pool, outcome.memory_id.into_inner()).await?,
+                ("pending".to_owned(), None, true),
+                "the job is enqueued with the row"
+            );
+            let drained = engine.drain_embedding_jobs(1).await?;
+            assert_eq!((drained.processed, drained.failed), (1, 0));
+            assert_eq!(
+                load_embedding_head_version(
+                    pool,
+                    EntityKind::Abstraction,
+                    outcome.memory_id.into_inner(),
+                    "stub-fact-embed"
+                )
+                .await?,
+                Some(1),
+                "the drain landed the vector"
             );
             Ok(())
         }

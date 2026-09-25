@@ -129,10 +129,12 @@ pub use proxima_core::{
 /// Typed derived-memory writes. `DerivedMemory` infers kind/schema from its payload;
 /// `Engine::derive_memory` resolves actual origin kinds and validates provenance.
 /// `MemoryTarget` distinguishes a new series from a revision. Always retain the returned row ID.
-/// `UnitOfWork::derive_memories` pre-embeds a batch before opening its transaction;
-/// an already-open transaction defers embedding, reported in `DerivedMemoryOutcome`.
+/// `UnitOfWork::derive_memories` embeds each text (one request per text) before opening
+/// its transaction; an already-open transaction or `EmbeddingMode::Deferred` queues it
+/// instead (bulk writers: the drain batches), reported in `DerivedMemoryOutcome`.
 pub use proxima_core::{
-    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EntityKind, MemoryTarget, SeriesHandle,
+    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EmbeddingMode, EntityKind,
+    MemoryTarget, SeriesHandle,
 };
 /// The connection vocabulary a flavor is allowed to speak (docs/16-edges.md).
 ///
