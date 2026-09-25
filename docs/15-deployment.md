@@ -119,7 +119,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_EMBED_MODEL` | when enabled | `provider-embedding-model` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` when embeddings are enabled; must return `PROXIMA_EMBED_DIM`-wide vectors. |
 | `PROXIMA_EMBED_DIM` | no | `768` | Vector width: 384, 768, 1024, 1536, 2048 or 3072. Default `1024`; any other value fails boot. |
 | `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Request `PROXIMA_EMBED_DIM` dimensions from a nested-prefix model wider than that. |
-| `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | `16384` | Longest input, in characters, that will be *sent*. Unset ⇒ no client-side bound. Over-cap input is refused without a request and split; the first piece's vector is stored. Minimum `4095`; below that the split cannot satisfy the cap and boot fails. Set it for a provider that dies on over-long input rather than rejecting it (a local Ollama does) — see docs/10 §Bounding embedding input. |
+| `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | `16384` | Longest input, in characters, that will be *sent*. The default bound is applied before every provider request; an explicit value overrides it. Over-cap input is refused without a request and split; the first piece's vector is stored. Minimum `4095`; below that the split cannot satisfy the cap and boot fails. See docs/10 §Bounding embedding input. |
 | `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | no | `120` | Complete provider-request timeout; range `1..=3600`. Enforced at the generic client boundary and by the shipped HTTP adapter. |
 | `PROXIMA_EMBED_BATCH_SIZE` | no | `32` | Texts per provider call; range `1..=1024`. |
 | `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | no | `5` | Idle worker poll interval; range `1..=3600`. |

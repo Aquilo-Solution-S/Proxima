@@ -36,6 +36,8 @@ const PROXIMA_EMBED_API_KEY: &str = "PROXIMA_EMBED_API_KEY";
 const PROXIMA_EMBED_MATRYOSHKA: &str = "PROXIMA_EMBED_MATRYOSHKA";
 const PROXIMA_EMBED_DIM: &str = "PROXIMA_EMBED_DIM";
 const PROXIMA_EMBED_MAX_INPUT_CHARS: &str = "PROXIMA_EMBED_MAX_INPUT_CHARS";
+const DEFAULT_EMBED_MAX_INPUT_CHARS: NonZeroU32 =
+    NonZeroU32::new(16_384).expect("embedding input default is positive");
 const PROXIMA_TOOL_PROFILE: &str = "PROXIMA_TOOL_PROFILE";
 const PROXIMA_TOOL_ALLOW: &str = "PROXIMA_TOOL_ALLOW";
 const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
@@ -811,11 +813,9 @@ fn oidc_from_env(
 /// for a nested-prefix model (qwen3-embedding, text-embedding-3-*) so the
 /// request asks for that width rather than the model's native one.
 ///
-/// `PROXIMA_EMBED_MAX_INPUT_CHARS` bounds what is *sent*. Unset by default,
-/// because a provider that rejects over-long input cleanly needs no help;
-/// set it for one that does not, such as a local Ollama, whose runner dies
-/// on input past the context it was loaded with. See docs/10 §Bounding
-/// embedding input.
+/// `PROXIMA_EMBED_MAX_INPUT_CHARS` bounds what is *sent*. It defaults to
+/// 16,384 characters; set it explicitly when a provider needs a different
+/// client-side limit. See docs/10 §Bounding embedding input.
 fn embedding_client_from_env(
     lookup: impl Fn(&str) -> Option<String>,
     policy: EmbeddingRuntimePolicy,
@@ -855,10 +855,10 @@ fn embedding_client_from_env(
         ))
     })?;
 
-    let mut caps = proxima_core::models::EmbedCaps::new(dim, matryoshka);
-    if let Some(max) = parse_positive_u32_env(&lookup, PROXIMA_EMBED_MAX_INPUT_CHARS)? {
-        caps = caps.with_max_input_chars(max);
-    }
+    let max_input_chars = parse_positive_u32_env(&lookup, PROXIMA_EMBED_MAX_INPUT_CHARS)?
+        .unwrap_or(DEFAULT_EMBED_MAX_INPUT_CHARS);
+    let caps =
+        proxima_core::models::EmbedCaps::new(dim, matryoshka).with_max_input_chars(max_input_chars);
 
     OpenAiCompatEmbeddingClient::new(
         model,
@@ -873,8 +873,7 @@ fn embedding_client_from_env(
 /// Parse an optional positive integer setting.
 ///
 /// Zero is refused rather than treated as "unset": a cap of zero would
-/// reject every input, and an operator who typed `0` was reaching for
-/// "no limit", which is spelled by leaving the variable out.
+/// reject every input, and the omitted variable uses the finite default.
 fn parse_positive_u32_env(
     lookup: &impl Fn(&str) -> Option<String>,
     key: &'static str,
@@ -884,7 +883,7 @@ fn parse_positive_u32_env(
     };
     raw.parse::<NonZeroU32>().map(Some).map_err(|_| {
         CliError::Runtime(ProximaError::Config(format!(
-            "{key} must be a positive integer, got {raw:?}; omit it for no limit"
+            "{key} must be a positive integer, got {raw:?}"
         )))
     })
 }
@@ -1387,6 +1386,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn embedding_input_cap_defaults_and_allows_override() {
+        let configured = |max: Option<&'static str>| {
+            move |key: &str| match key {
+                PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+                PROXIMA_EMBED_MODEL => Some("local-embed".to_string()),
+                PROXIMA_EMBED_MAX_INPUT_CHARS => max.map(str::to_string),
+                _ => None,
+            }
+        };
+
+        let default_client =
+            embedding_client_from_env(configured(None), EmbeddingRuntimePolicy::default())
+                .expect("default cap configures")
+                .expect("embedding client is configured");
+        assert_eq!(
+            default_client.caps().max_input_chars,
+            NonZeroU32::new(16_384)
+        );
+
+        let override_client =
+            embedding_client_from_env(configured(Some("8192")), EmbeddingRuntimePolicy::default())
+                .expect("explicit cap configures")
+                .expect("embedding client is configured");
+        assert_eq!(
+            override_client.caps().max_input_chars,
+            NonZeroU32::new(8192)
+        );
+    }
+
     /// A cap the chunked rescue cannot satisfy must stop the process, not be
     /// clamped to something workable: the operator picked that number from
     /// their model's context, and silently substituting another means the
@@ -1408,8 +1437,8 @@ mod tests {
     }
 
     /// Zero is the interesting rejection: as a number it parses, and as a cap
-    /// it refuses every input. An operator typing it meant "no limit", which
-    /// is spelled by leaving the variable unset.
+    /// it refuses every input. The finite default remains active when this
+    /// variable is omitted.
     #[test]
     fn an_input_cap_must_be_a_positive_integer() {
         for raw in ["0", "-1", "lots", "16k", ""] {
