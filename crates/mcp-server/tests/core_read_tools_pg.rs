@@ -2,7 +2,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{create_db, db_url, drop_db};
+use common::{create_core_db, db_url, drop_db};
 use proxima_core::FlavorServices;
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::{
@@ -15,7 +15,7 @@ use uuid::Uuid;
 #[tokio::test]
 async fn core_read_resources_return_prefixed_ids_and_author()
 -> Result<(), Box<dyn std::error::Error>> {
-    let db_name = create_db().await?;
+    let db_name = create_core_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_before_owner_rls_migrations().await?;
@@ -118,7 +118,7 @@ async fn core_read_resources_return_prefixed_ids_and_author()
 
 #[tokio::test]
 async fn search_results_expose_structured_memory_id() -> Result<(), Box<dyn std::error::Error>> {
-    let db_name = create_db().await?;
+    let db_name = create_core_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_before_owner_rls_migrations().await?;
@@ -165,7 +165,7 @@ async fn search_results_expose_structured_memory_id() -> Result<(), Box<dyn std:
 
 #[tokio::test]
 async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std::error::Error>> {
-    let db_name = create_db().await?;
+    let db_name = create_core_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_before_owner_rls_migrations().await?;
@@ -239,7 +239,7 @@ async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std
 #[tokio::test]
 async fn goal_resources_list_read_back_wake_config_and_paginate()
 -> Result<(), Box<dyn std::error::Error>> {
-    let db_name = create_db().await?;
+    let db_name = create_core_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_before_owner_rls_migrations().await?;
@@ -340,7 +340,7 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
 #[allow(clippy::too_many_lines)]
 async fn edge_resources_read_back_interpretation_references()
 -> Result<(), Box<dyn std::error::Error>> {
-    let db_name = create_db().await?;
+    let db_name = create_core_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_before_owner_rls_migrations().await?;

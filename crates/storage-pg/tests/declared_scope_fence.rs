@@ -21,8 +21,9 @@ use proxima_core::{
     AuthPath, AuthzContext, FactPayload, FactWrite, FlavorRegistry, Owner, OwnerRef,
     PayloadKeyBuilder, ScopeDecl, ScopeKind, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::access::owner_columns::lock_scope_fence_exclusive_tx;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::{PgSidecarRegistry, PgStorage, register_core_pg_sidecars};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -230,7 +231,7 @@ fn sidecars(
 
 async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(error) = create_db(&db_name).await {
+    if let Err(error) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
     }
     let registry = registry();

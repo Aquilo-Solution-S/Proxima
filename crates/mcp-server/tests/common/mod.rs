@@ -135,6 +135,17 @@ pub async fn create_db() -> Result<String, Box<dyn std::error::Error>> {
     Ok(db_name)
 }
 
+/// Create a test database already migrated through the pre-owner-RLS core
+/// lane, cloned from the core template.
+#[allow(dead_code)]
+pub async fn create_core_db() -> Result<String, Box<dyn std::error::Error>> {
+    let db_name = proxima_pg_testkit::unique_db_name("proxima_test");
+    proxima_storage_pg::test_fixtures::create_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
+    Ok(db_name)
+}
+
 /// The serve task returned by [`start_server`].
 #[allow(dead_code)]
 pub type ServeHandle = tokio::task::JoinHandle<Result<(), proxima_mcp_server::McpServerError>>;

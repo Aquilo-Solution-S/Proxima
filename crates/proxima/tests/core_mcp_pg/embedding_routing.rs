@@ -37,7 +37,9 @@ async fn facade_embeds_and_searches_at_a_non_default_width() {
         proxima_core::llm::EmbeddingDim::D3072,
     ] {
         let db_name = unique_db_name("proxima_core_width_lane");
-        create_db(&db_name).await.expect("PG required for tests");
+        create_split_core_db(&db_name)
+            .await
+            .expect("PG required for tests");
         let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
         let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -311,7 +313,9 @@ impl TwoOwnerFixture {
 async fn each_owner_embeds_and_searches_through_its_own_route() {
     use proxima_core::llm::EmbeddingDim;
     let db_name = unique_db_name("proxima_core_route_owners");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
         let personal_client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D768);
@@ -407,7 +411,9 @@ async fn each_owner_embeds_and_searches_through_its_own_route() {
 async fn a_route_failure_stays_with_its_owner() {
     use proxima_core::llm::EmbeddingDim;
     let db_name = unique_db_name("proxima_core_route_refusal");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
         let personal_client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D768);
@@ -481,7 +487,9 @@ async fn a_route_failure_stays_with_its_owner() {
 async fn one_client_across_owners_ranks_by_score() {
     use proxima_core::llm::EmbeddingDim;
     let db_name = unique_db_name("proxima_core_route_shared");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
         let client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D1024);
@@ -586,7 +594,9 @@ async fn an_owner_moves_to_a_new_model_without_a_search_gap() {
     use proxima_core::EmbeddingSpaceRole;
     use proxima_core::llm::{EmbeddingDim, EmbeddingRoute};
     let db_name = unique_db_name("proxima_core_route_move");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
         let engine = &fixture.built.engine;
@@ -748,7 +758,9 @@ async fn an_owner_moves_to_a_new_model_without_a_search_gap() {
 async fn a_transferred_memory_moves_to_the_destinations_space() {
     use proxima_core::llm::EmbeddingDim;
     let db_name = unique_db_name("proxima_core_route_transfer");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
         let engine = &fixture.built.engine;
@@ -836,7 +848,9 @@ async fn a_transferred_memory_moves_to_the_destinations_space() {
 async fn an_unroutable_owner_is_never_purged() {
     use proxima_core::llm::EmbeddingDim;
     let db_name = unique_db_name("proxima_core_route_purge_refusal");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
         let engine = &fixture.built.engine;

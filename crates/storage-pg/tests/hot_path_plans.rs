@@ -12,8 +12,9 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{EdgeKind, OwnerRef, SchemaId, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::fact_embeddings::claim_embedding_jobs_sql_for_tests;
 use proxima_storage_pg::verbs::query::{
     ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests, inbound_pin_sql_for_tests,
@@ -313,7 +314,7 @@ fn assert_origin_overlap_index(plan: &serde_json::Value, label: &str) {
 #[tokio::test]
 async fn hot_path_plans_use_expected_indexes() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);

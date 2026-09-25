@@ -10,6 +10,7 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{FLAVOR_0, FlavorRegistry};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 // ── Goals don't transfer ────────────────────────────────────────────────
@@ -247,7 +248,7 @@ async fn every_cited_enforcement_site_resolves() {
     );
 
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -358,7 +359,7 @@ async fn transfer_is_announced_and_the_announce_surface_is_declared() {
     );
 
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -401,7 +402,7 @@ async fn transfer_is_announced_and_the_announce_surface_is_declared() {
 #[allow(clippy::too_many_lines)]
 async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -654,7 +655,7 @@ async fn every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces() {
     );
 
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -710,7 +711,7 @@ async fn every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces() {
 #[tokio::test]
 async fn every_column_a_declaration_names_is_a_column_the_catalog_has() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -829,7 +830,7 @@ async fn every_dedupe_key_is_a_uniqueness_the_schema_enforces() {
     );
 
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1003,7 +1004,7 @@ async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
     ];
 
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);

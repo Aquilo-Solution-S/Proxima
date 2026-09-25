@@ -11,8 +11,9 @@ use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{EntityKind, QueryRequest};
 use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerRef, SchemaId, SchemaVersion, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, WRITE_ACT_SCHEMA, write_goal};
 use uuid::Uuid;
 
@@ -38,7 +39,7 @@ fn fact_draft() -> FactWriteCommand {
 #[tokio::test]
 async fn goal_write_replay_terminal_and_write_act() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -178,7 +179,7 @@ async fn goal_write_replay_terminal_and_write_act() {
 #[tokio::test]
 async fn goal_query_projects_assignment_and_evidence_filters() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);

@@ -15,8 +15,9 @@ use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind, RenderBands,
 };
 use proxima_core::{OwnerRef, SchemaId, SchemaVersion, SearchProjectionColumnKind, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 /// The out-of-tree fixture flavor's bands: core's, referenced. Referencing
@@ -351,7 +352,7 @@ async fn seed_embedding(
 #[tokio::test]
 async fn lexical_search_is_sidecar_first_then_owner_admit() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -470,7 +471,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
 #[tokio::test]
 async fn lexical_search_does_not_let_other_owner_fill_overfetch() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -509,7 +510,7 @@ async fn lexical_search_does_not_let_other_owner_fill_overfetch() {
 #[tokio::test]
 async fn tagged_search_scans_flavor_sidecars() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -642,7 +643,7 @@ async fn tagged_search_scans_flavor_sidecars() {
 #[tokio::test]
 async fn lexical_search_matches_german_via_lexical_languages() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -689,7 +690,7 @@ async fn lexical_search_matches_german_via_lexical_languages() {
 #[tokio::test]
 async fn simple_rows_retain_stopwords_after_default_switch() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -739,7 +740,7 @@ async fn simple_rows_retain_stopwords_after_default_switch() {
 #[tokio::test]
 async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -832,7 +833,7 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
 #[tokio::test]
 async fn semantic_search_respects_until() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -908,7 +909,7 @@ async fn semantic_search_respects_until() {
 #[tokio::test]
 async fn tagged_semantic_search_returns_only_tagged_rows() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1021,7 +1022,7 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
 #[tokio::test]
 async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1188,7 +1189,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
 #[tokio::test]
 async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1271,7 +1272,7 @@ async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
 #[tokio::test]
 async fn lexical_language_forget_refuses_while_rows_reference_it() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1339,7 +1340,7 @@ async fn lexical_language_forget_refuses_while_rows_reference_it() {
 #[tokio::test]
 async fn lexical_language_forget_refuses_null_and_the_default() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1374,7 +1375,7 @@ async fn lexical_language_forget_refuses_null_and_the_default() {
 #[tokio::test]
 async fn lexical_remember_trigger_registers_before_the_fk_check() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1422,7 +1423,7 @@ async fn lexical_remember_trigger_registers_before_the_fk_check() {
 #[tokio::test]
 async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1513,7 +1514,7 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
 #[tokio::test]
 async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);

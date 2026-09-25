@@ -717,9 +717,10 @@ where
     Ok(())
 }
 
-/// Drop idle `proxima_tmpl_{core,code}_*` databases other than `keep`.
+/// Drop idle `proxima_tmpl_{core,code,split}_*` databases of `keep`'s
+/// family other than `keep`.
 ///
-/// No-op when `keep` is not a core/code template name. Called from
+/// No-op when `keep` is not a core/code/split template name. Called from
 /// [`ensure_template`]; exposed so a process can GC without rebuilding.
 ///
 /// # Errors
@@ -744,10 +745,21 @@ pub async fn drop_stale_templates(keep: &str) -> Result<usize, sqlx::Error> {
 /// errors, or the last retryable error after retries are exhausted.
 pub async fn create_db_from_template(prefix: &str, template: &str) -> Result<String, sqlx::Error> {
     let name = unique_db_name(prefix);
+    create_named_db_from_template(&name, template).await?;
+    Ok(name)
+}
+
+/// [`create_db_from_template`] under a caller-chosen `name`: the drop-in
+/// for [`create_db`] when the caller already holds the name.
+///
+/// # Errors
+///
+/// As [`create_db_from_template`].
+pub async fn create_named_db_from_template(name: &str, template: &str) -> Result<(), sqlx::Error> {
     let mut conn = connect_admin().await?;
     let statement = format!(
         "CREATE DATABASE {} TEMPLATE {}",
-        quoted_ident(&name),
+        quoted_ident(name),
         quoted_ident(template)
     );
     let mut last_error = None;
@@ -758,13 +770,13 @@ pub async fn create_db_from_template(prefix: &str, template: &str) -> Result<Str
             .await
         {
             Ok(_) => {
-                if let Err(error) = record_db(&mut conn, &name).await {
-                    let _ = drop_db_on(&mut conn, &name).await;
+                if let Err(error) = record_db(&mut conn, name).await {
+                    let _ = drop_db_on(&mut conn, name).await;
                     conn.close().await?;
                     return Err(error);
                 }
                 conn.close().await?;
-                return Ok(name);
+                return Ok(());
             }
             Err(err) if is_sqlstate(&err, SQLSTATE_DATABASE_ACCESSED) => {
                 last_error = Some(err);
@@ -1022,7 +1034,11 @@ async fn drop_stale_templates_on(
 }
 
 fn template_family(name: &str) -> Option<&'static str> {
-    const FAMILIES: [&str; 2] = ["proxima_tmpl_core_", "proxima_tmpl_code_"];
+    const FAMILIES: [&str; 3] = [
+        "proxima_tmpl_core_",
+        "proxima_tmpl_code_",
+        "proxima_tmpl_split_",
+    ];
     FAMILIES.into_iter().find(|prefix| name.starts_with(prefix))
 }
 
@@ -1095,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn template_family_only_core_and_code() {
+    fn template_family_only_core_code_and_split() {
         assert_eq!(
             template_family("proxima_tmpl_core_3f94e256ef4f396f"),
             Some("proxima_tmpl_core_")
@@ -1103,6 +1119,10 @@ mod tests {
         assert_eq!(
             template_family("proxima_tmpl_code_2d01c98992e2f0a0"),
             Some("proxima_tmpl_code_")
+        );
+        assert_eq!(
+            template_family("proxima_tmpl_split_9a41c0d2e6b37f58"),
+            Some("proxima_tmpl_split_")
         );
         assert_eq!(template_family("proxima_tmpl_build_abc"), None);
         assert_eq!(template_family("proxima_test_abc"), None);

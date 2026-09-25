@@ -10,7 +10,8 @@
 //! `GroupId`, so they cannot be asked.
 
 use proxima_core::{GroupId, OwnerAccessPort, OwnerRef, Relation, Role, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
@@ -31,7 +32,7 @@ async fn seed_membership(pool: &sqlx::PgPool, group: GroupId, member: UserId, re
 #[tokio::test]
 async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(error) = create_db(&db_name).await {
+    if let Err(error) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
     }
     let result = async {

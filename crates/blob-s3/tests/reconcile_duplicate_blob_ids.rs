@@ -14,8 +14,9 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::{AuthPath, AuthzContext, ColdObjectStore, Engine, FlavorRegistry, OwnerRef};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
@@ -47,7 +48,7 @@ async fn reconciliation_visits_each_upload_when_blob_ids_cross_a_page() -> TestR
     };
     let client = s3_client(&config).await;
     let database = unique_db_name("proxima_reconcile_duplicates");
-    create_db(&database).await?;
+    create_core_db(&database).await?;
     eprintln!(
         "duplicate-blob-id fixture: database={database} bucket={}",
         config.bucket

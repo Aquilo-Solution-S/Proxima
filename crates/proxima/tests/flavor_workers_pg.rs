@@ -2,6 +2,9 @@
 //! `Proxima::run` spawns what `FlavorBundle::spawn_workers` returns only
 //! once nothing fallible remains before `RunningProxima` owns them.
 
+#[path = "fixtures/split_core_db.rs"]
+mod split_core_db;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -14,7 +17,8 @@ use proxima::{AppInfo, FlavorApp, Proxima, ProximaError, ToolScope, company_owne
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, Role, UserId,
 };
-use proxima_pg_testkit::{create_db, drop_db, split_role_urls, unique_db_name};
+use proxima_pg_testkit::{drop_db, split_role_urls, unique_db_name};
+use split_core_db::create_split_core_db;
 use uuid::Uuid;
 
 /// Counts `spawn_workers` calls instead of spawning: proves whether a
@@ -68,7 +72,9 @@ impl Authenticator for TestAuthenticator {
 #[tokio::test]
 async fn run_that_fails_to_bind_spawns_no_flavor_workers() {
     let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {

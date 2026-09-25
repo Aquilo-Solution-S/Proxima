@@ -1,3 +1,6 @@
+#[path = "fixtures/split_core_db.rs"]
+mod split_core_db;
+
 use std::collections::BTreeSet;
 
 use proxima::flavor::{
@@ -18,7 +21,8 @@ use proxima_core::flavor::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{EntityKind, Role, SearchProjectionColumnKind, UserId};
-use proxima_pg_testkit::{create_db, drop_db, split_role_urls, unique_db_name};
+use proxima_pg_testkit::{drop_db, split_role_urls, unique_db_name};
+use split_core_db::create_split_core_db;
 use uuid::Uuid;
 
 fn authenticated(context: AuthzContext) -> AuthzContext {
@@ -66,7 +70,7 @@ fn sdk_new_series() -> proxima::MemoryTarget {
 #[allow(clippy::too_many_lines)]
 async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
     let db_name = unique_db_name("sdk_derived_identity");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -219,7 +223,7 @@ async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
 #[allow(clippy::too_many_lines)]
 async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
     let db_name = unique_db_name("sdk_derived_session");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -341,7 +345,7 @@ async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
 #[allow(clippy::too_many_lines)]
 async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs() {
     let db_name = unique_db_name("sdk_derived_access");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -524,7 +528,7 @@ async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs(
 async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
     use proxima::flavor::{FactWrite, SeriesHandle};
     let db_name = unique_db_name("sdk_fact_series");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -628,7 +632,7 @@ async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
 #[tokio::test]
 async fn natural_key_selection_uses_the_authorized_payload() {
     let db_name = unique_db_name("sdk_nk_binding");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -1124,7 +1128,9 @@ fn facade_flavor_authoring_symbols_are_reachable() {
 async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloads()
 -> Result<(), Box<dyn std::error::Error>> {
     let db_name = unique_db_name("proxima_facade_sidecar_integrity");
-    create_db(&db_name).await.expect("PG required for tests");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
     let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -1447,7 +1453,7 @@ async fn admin_pool(database: &str) -> Result<sqlx::PgPool, sqlx::Error> {
 async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
     use proxima::flavor::{FactWrite, ToolError, authorized_fact_payloads, authorized_memory_ids};
     let db_name = unique_db_name("sdk_read_scope");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owners = [

@@ -13,8 +13,9 @@ use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
     AccessKind, EntityId, EntityKind, GroupId, OwnerRef, SchemaId, SchemaVersion, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::query_timeseries::{change_history, query_heads};
 use proxima_storage_pg::verbs::wake_timeseries::{
@@ -58,7 +59,7 @@ fn fact(schema: &str, refs: Vec<Uuid>, origins: Vec<Uuid>, kind: &str) -> FactWr
 #[tokio::test]
 async fn walk_query_history_and_transfer_over_one_corpus() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);

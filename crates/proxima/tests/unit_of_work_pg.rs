@@ -1,6 +1,9 @@
 //! Engine `UnitOfWork` — one-shot ingest, multi-write rollback, advisory lock.
 #![allow(clippy::too_many_lines)]
 
+#[path = "fixtures/split_core_db.rs"]
+mod split_core_db;
+
 use proxima::flavor::{FlavorBundle, NamedMigrator};
 use proxima::{AppInfo, AuthPath, AuthzContext, FlavorApp, Proxima, ToolScope, company_owner};
 use proxima_core::storage_ports::SidecarSessionRead;
@@ -15,7 +18,8 @@ use proxima_core::{
     MemoryTarget, SchemaId, SeriesHandle, SimpleTextGoalV1,
 };
 use proxima_core::{ErrorCode, Role, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
+use proxima_pg_testkit::{db_url, drop_db, split_role_urls, unique_db_name};
+use split_core_db::create_split_core_db;
 use uuid::Uuid;
 
 struct EmptyApp;
@@ -110,7 +114,7 @@ fn typed_goal_request(
 #[tokio::test]
 async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
     let db_name = unique_db_name("proxima_typed_goal");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
@@ -326,7 +330,7 @@ async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
 #[allow(clippy::too_many_lines)]
 async fn typed_goal_pending_foreign_perspective_rejects_cross_owner_assignment() {
     let db_name = unique_db_name("proxima_typed_goal_foreign_pending");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
@@ -415,7 +419,7 @@ async fn typed_goal_pending_foreign_perspective_rejects_cross_owner_assignment()
 #[tokio::test]
 async fn unit_of_work_reads_its_own_sidecars_inside_the_transaction() {
     let db_name = unique_db_name("proxima_uow_read");
-    create_db(&db_name).await.expect("PG required");
+    create_split_core_db(&db_name).await.expect("PG required");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner_a = company_owner(Uuid::now_v7());

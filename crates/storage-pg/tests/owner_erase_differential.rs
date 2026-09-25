@@ -119,8 +119,9 @@ use proxima_core::{
     AccessKind, AgentNoteV1, ColdObjectStore, OwnerRef, SchemaId, SchemaVersion, SidecarPayload,
     StorageError, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
 use serde_json::Value;
 use sqlx::PgPool;
@@ -879,7 +880,7 @@ fn timestamp_at(chars: &[char], at: usize) -> Option<usize> {
 
 pub async fn fresh_db(prefix: &str) -> (String, String) {
     let db_name = format!("{prefix}_{}", Uuid::now_v7().simple());
-    create_db(&db_name)
+    create_core_db(&db_name)
         .await
         .expect("PG required: admin connect failed");
     let url = db_url(&db_name);

@@ -97,6 +97,7 @@ use std::collections::BTreeMap;
 
 use crate::PgStorage;
 use crate::core_pg_sidecars;
+use crate::test_fixtures::create_core_db;
 use crate::verbs::memory_timeseries::ingest_fact_timeseries;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
@@ -104,7 +105,7 @@ use proxima_core::{
     AccessKind, AgentNoteV1, EntityId, FactPayload, GroupId, MemoryId, OwnerRef, SchemaId,
     SchemaVersion, SidecarPayload, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -859,7 +860,7 @@ fn timestamp_at(chars: &[char], at: usize) -> Option<usize> {
 
 pub async fn fresh_db(prefix: &str) -> (String, String) {
     let db_name = format!("{prefix}_{}", Uuid::now_v7().simple());
-    create_db(&db_name)
+    create_core_db(&db_name)
         .await
         .expect("PG required: admin connect failed");
     let url = db_url(&db_name);

@@ -2,14 +2,15 @@
 
 use proxima_core::storage_ports::{OwnerMembershipAdminPort, OwnerWritePermit};
 use proxima_core::{AccessKind, GroupId, OwnerRef, Relation, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 #[tokio::test]
 async fn list_group_members_runs_against_v008_schema() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);

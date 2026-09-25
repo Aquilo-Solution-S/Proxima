@@ -29,7 +29,8 @@ use proxima_core::{
     PayloadKeyBuilder, PayloadReference, Relation, SchemaId, SchemaVersion, SeriesHandle,
     SidecarPayload, StorageError, UploadedBlobPayload, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
 use proxima_storage_pg::{PgSidecarRegistry, PgStorage, register_core_pg_sidecars};
 use serde::{Deserialize, Serialize};
@@ -192,7 +193,7 @@ fn sidecars(
 
 async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(error) = create_db(&db_name).await {
+    if let Err(error) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
     }
     let registry = registry();

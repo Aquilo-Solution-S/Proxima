@@ -27,7 +27,8 @@ use proxima_core::{
     AccessKind, EntityId, GroupId, MemoryId, OwnerRef, SchemaId, SchemaVersion, SourceId,
     StorageError, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::{
     PgHostStateLifecyclePort, PgHostStateParticipant, PgPoolConfig, PgStorage, PgTuning,
 };
@@ -734,7 +735,7 @@ fn hex(bytes: &[u8]) -> String {
 
 async fn fresh_pg(max_connections: u32) -> (String, Arc<PgStorage>, Arc<Lifecycle>) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    create_db(&db_name)
+    create_core_db(&db_name)
         .await
         .expect("PG required for host lifecycle tests");
     let config = PgPoolConfig {

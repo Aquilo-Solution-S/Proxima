@@ -7,9 +7,10 @@ use proxima_core::storage_ports::{OwnerInversePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::EntityKind;
 use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerRef, SchemaId, SchemaVersion, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::core_pg_sidecars;
+use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory};
 use uuid::Uuid;
 
@@ -79,7 +80,7 @@ fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
 #[tokio::test]
 async fn export_edges_are_the_pins_already_on_memory() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -142,7 +143,7 @@ fn sketched(kind: &str, text: &str) -> FactWriteCommand {
 #[tokio::test]
 async fn export_carries_cooled_locators_and_sketches() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -293,7 +294,7 @@ async fn export_carries_cooled_locators_and_sketches() {
 #[tokio::test]
 async fn export_carries_registered_citation_sidecar_rows() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -399,7 +400,7 @@ async fn export_carries_registered_citation_sidecar_rows() {
 #[tokio::test]
 async fn export_carries_owner_scoped_opaque_blob_metadata() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -500,7 +501,7 @@ async fn the_bundle_carries_every_exportable_surface_even_when_empty() {
     use proxima_core::flavor::ExportRule;
 
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);

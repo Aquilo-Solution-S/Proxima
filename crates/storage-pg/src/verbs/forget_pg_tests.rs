@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::PgStorage;
 use crate::core_pg_sidecars;
+use crate::test_fixtures::create_core_db;
 use crate::verbs::forget::{
     COLD_FORMAT_VERSION, ColdPurgeEntry, ColdPurgePlan, ColdRecord, ColdRejection, MemoryColdStore,
     cold_object_key, commit_forget, decode_record, encode_record, erase_memory,
@@ -24,7 +25,7 @@ use proxima_core::{
     AccessKind, ColdObjectStore, EdgeEndpoint, EntityId, EntityKind, GroupId,
     MemoryHydrationStatus, OwnerRef, SchemaId, SchemaVersion, StorageError, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db};
 use uuid::Uuid;
 
 /// The forget's registry-resolved legs, exactly as `PgStorage` assembles
@@ -461,7 +462,7 @@ fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
 #[tokio::test]
 async fn forget_hydrate_and_erase() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -659,7 +660,7 @@ async fn forget_hydrate_and_erase() {
 #[tokio::test]
 async fn erase_announce_carries_the_series_handle() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -724,7 +725,7 @@ async fn erase_announce_carries_the_series_handle() {
 #[tokio::test]
 async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -837,7 +838,7 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
 #[tokio::test]
 async fn forget_non_last_t_rewinds_memory_head() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -885,7 +886,7 @@ async fn forget_non_last_t_rewinds_memory_head() {
 #[tokio::test]
 async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -979,7 +980,7 @@ async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
 #[tokio::test]
 async fn series_erase_wins_hot_handle_and_append_retries_then_survives() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1048,7 +1049,7 @@ async fn series_erase_wins_hot_handle_and_append_retries_then_survives() {
 #[tokio::test]
 async fn series_erase_linearizes_with_fully_cooled_headless_series() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1177,7 +1178,7 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
 #[tokio::test]
 async fn series_erase_does_not_cross_one_reused_handle_in_a_batch() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1272,7 +1273,7 @@ async fn series_erase_does_not_cross_one_reused_handle_in_a_batch() {
 #[tokio::test]
 async fn non_head_erase_racing_append_preserves_the_greatest_head() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1351,7 +1352,7 @@ async fn non_head_erase_racing_append_preserves_the_greatest_head() {
 #[tokio::test]
 async fn hydrate_of_older_cooled_version_preserves_newer_head() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1416,7 +1417,7 @@ async fn hydrate_of_older_cooled_version_preserves_newer_head() {
 #[tokio::test]
 async fn historical_restore_may_reuse_a_closed_handle_but_new_pins_may_not() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1580,7 +1581,7 @@ impl ColdObjectStore for BlockingPutCold {
 #[tokio::test]
 async fn concurrent_forget_serializes_before_cold_put() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1664,7 +1665,7 @@ async fn concurrent_forget_serializes_before_cold_put() {
 #[tokio::test]
 async fn oneshot_forget_put_does_not_hold_row_lock() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1714,7 +1715,7 @@ async fn oneshot_forget_put_does_not_hold_row_lock() {
 #[tokio::test]
 async fn commit_forget_reputs_when_a_sidecar_row_lands_after_the_snapshot() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1816,7 +1817,7 @@ async fn commit_forget_reputs_when_a_sidecar_row_lands_after_the_snapshot() {
 #[tokio::test]
 async fn forget_dumps_only_stamped_tables_and_skips_unregistered_scan() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -1895,7 +1896,7 @@ async fn forget_dumps_only_stamped_tables_and_skips_unregistered_scan() {
 #[tokio::test]
 async fn forget_dumps_every_stamped_extra() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -2029,7 +2030,7 @@ fn derived_perspective(origin: Uuid) -> FactWriteCommand {
 #[tokio::test]
 async fn hard_erase_witnesses_each_hot_memory_kind() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -2156,7 +2157,7 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
 #[tokio::test]
 async fn exact_hydrate_restores_witnessed_sole_fact_origin() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -2272,7 +2273,7 @@ async fn exact_hydrate_restores_witnessed_sole_fact_origin() {
 #[tokio::test]
 async fn concurrent_hydrates_recreate_an_empty_memory_head() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -2510,7 +2511,7 @@ async fn concurrent_hydrates_recreate_an_empty_memory_head() {
 #[tokio::test]
 async fn reversed_overlapping_hydration_batches_do_not_deadlock() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -2609,7 +2610,7 @@ async fn reversed_overlapping_hydration_batches_do_not_deadlock() {
 #[tokio::test]
 async fn hydrate_retries_when_cold_digest_changes_under_lock() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -2691,7 +2692,7 @@ async fn hydrate_retries_when_cold_digest_changes_under_lock() {
 #[tokio::test]
 async fn exact_hydrate_restores_memory_and_goal_witness_refs() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -2777,7 +2778,7 @@ async fn exact_hydrate_restores_memory_and_goal_witness_refs() {
 #[tokio::test]
 async fn hydrate_rejects_unknown_and_wrong_kind_witnesses_atomically() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -3031,7 +3032,7 @@ async fn hydrate_rejects_unknown_and_wrong_kind_witnesses_atomically() {
 #[tokio::test]
 async fn a_stamped_sidecar_with_no_row_stops_the_forget() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -3128,7 +3129,7 @@ async fn a_stamped_sidecar_with_no_row_stops_the_forget() {
 #[tokio::test]
 async fn a_legacy_cooled_locator_is_unsupported_and_untouched() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -3203,7 +3204,7 @@ async fn a_legacy_cooled_locator_is_unsupported_and_untouched() {
 #[tokio::test]
 async fn transferred_cooled_source_hydrates_after_target_erase() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -3303,7 +3304,7 @@ async fn transferred_cooled_source_hydrates_after_target_erase() {
 #[tokio::test]
 async fn hydrate_rejects_cold_identity_and_sealed_pin_mismatch() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -3406,7 +3407,7 @@ async fn hydrate_rejects_cold_identity_and_sealed_pin_mismatch() {
 #[tokio::test]
 async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -3511,7 +3512,7 @@ async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
 #[tokio::test]
 async fn forget_and_admit_preserve_grounding_support() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -3664,7 +3665,7 @@ async fn forget_and_admit_preserve_grounding_support() {
 #[tokio::test]
 async fn refused_forget_does_not_leave_untracked_cold_object() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -3720,7 +3721,7 @@ async fn refused_forget_does_not_leave_untracked_cold_object() {
 #[tokio::test]
 async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -3819,7 +3820,7 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
 #[tokio::test]
 async fn forget_of_an_already_cooled_t_reports_not_found() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -3885,7 +3886,7 @@ async fn forget_of_an_already_cooled_t_reports_not_found() {
 #[tokio::test]
 async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -3972,7 +3973,7 @@ async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
 #[tokio::test]
 async fn forget_pinless_abstraction_is_refused() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -4030,7 +4031,7 @@ async fn forget_pinless_abstraction_is_refused() {
 #[tokio::test]
 async fn concurrent_forget_keeps_one_grounding_support() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -4180,7 +4181,7 @@ async fn concurrent_forget_keeps_one_grounding_support() {
 #[tokio::test]
 async fn forget_blocks_admit_until_grounding_rechecked() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -4294,7 +4295,7 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
 #[tokio::test]
 async fn admission_locks_pins_before_series_head() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -4417,7 +4418,7 @@ async fn admission_locks_pins_before_series_head() {
 #[tokio::test]
 async fn admission_locks_existing_head_without_declared_pins() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -4524,7 +4525,7 @@ async fn admission_locks_existing_head_without_declared_pins() {
 #[tokio::test]
 async fn citation_reuse_and_series_erase_share_one_lock_order() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -4675,7 +4676,7 @@ impl ColdObjectStore for FailDeleteCold {
 #[tokio::test]
 async fn commit_forget_aborts_when_owner_transferred() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -4741,7 +4742,7 @@ async fn commit_forget_aborts_when_owner_transferred() {
 #[tokio::test]
 async fn stale_source_erase_does_not_lock_transferred_series() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -4814,7 +4815,7 @@ async fn stale_source_erase_does_not_lock_transferred_series() {
 #[tokio::test]
 async fn a_rolled_back_erase_keeps_the_cold_object_and_its_locator() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -4920,7 +4921,7 @@ impl ColdObjectStore for PurgeRecordingCold {
 #[tokio::test]
 async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -5018,7 +5019,7 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
 #[tokio::test]
 async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -5094,7 +5095,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
 #[tokio::test]
 async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -5233,7 +5234,7 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
     use proxima_core::flavor::{ForgetRule, Surface};
 
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -5321,7 +5322,7 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
 #[tokio::test]
 async fn hydrate_files_no_embedding_job_for_a_never_schema() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -5357,7 +5358,7 @@ async fn hydrate_files_no_embedding_job_for_a_never_schema() {
 #[tokio::test]
 async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
@@ -5869,7 +5870,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
 #[tokio::test]
 async fn authorized_hydration_reports_witness_count_after_erase_race() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
+    if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
