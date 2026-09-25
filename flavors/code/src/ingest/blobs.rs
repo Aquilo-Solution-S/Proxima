@@ -4,7 +4,8 @@ use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
     AbstractionPayload, AuthzContext, DerivationIdentity, DerivedMemory, DerivedMemoryOutcome,
-    Engine, FactWrite, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner, SeriesHandle,
+    EmbeddingMode, Engine, FactWrite, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner,
+    SeriesHandle,
 };
 use proxima_storage_pg::query::ChunkSeriesHead;
 use uuid::Uuid;
@@ -340,7 +341,7 @@ pub async fn append_code_slices_with_handles(
                     code_slice_input_contract_id(payload, source_file_revision),
                 ),
             )
-            .map(DerivedMemory::defer_embedding)
+            .map(|memory| memory.embedding_mode(EmbeddingMode::Deferred))
         })
         .collect::<Result<Vec<_>, _>>()?;
     // One repository per group. The scope fence is a per-repository lane

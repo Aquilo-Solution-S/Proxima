@@ -13,9 +13,9 @@ mod pg_tests {
     use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
     use proxima_core::verbs::schema::MemoryEmbedUnit;
     use proxima_core::{
-        AccessKind, AuthPath, AuthzContext, Engine, EntityId, EntityKind, FactIngestPort,
-        FlavorRegistry, GroupId, InputContractId, MemoryTarget, Owner, ProtocolError, SchemaId,
-        SchemaVersion, SourceId, StorageError,
+        AccessKind, AuthPath, AuthzContext, EmbeddingMode, Engine, EntityId, EntityKind,
+        FactIngestPort, FlavorRegistry, GroupId, InputContractId, MemoryTarget, Owner,
+        ProtocolError, SchemaId, SchemaVersion, SourceId, StorageError,
     };
     use proxima_pg_testkit::drop_db;
     use uuid::Uuid;
@@ -1303,7 +1303,8 @@ mod pg_tests {
             let outcome = engine
                 .derive_memory(
                     &authz,
-                    derived_request(owner, &origins, "queued unit".into())?.defer_embedding(),
+                    derived_request(owner, &origins, "queued unit".into())?
+                        .embedding_mode(EmbeddingMode::Deferred),
                 )
                 .await?;
 

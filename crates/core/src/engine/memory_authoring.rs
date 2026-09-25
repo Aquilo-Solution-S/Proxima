@@ -99,7 +99,7 @@ impl RawDerivedTestRequest<'_> {
             origins,
             extra_refs: self.extra_refs.to_vec(),
             lexical_language: self.lexical_language.map(str::to_owned),
-            defer_embedding: false,
+            embedding_mode: EmbeddingMode::Inline,
         })
     }
 }
@@ -258,6 +258,21 @@ impl DerivationIdentity {
     }
 }
 
+/// When a derived write's vector is embedded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EmbeddingMode {
+    /// Before the write: the vector lands with the row, one text per
+    /// provider request. A provider outage fails the write.
+    #[default]
+    Inline,
+    /// With the write: the row lands with a pending embedding job — the
+    /// lane every Fact takes — and [`Engine::drain_embedding_jobs`] sends
+    /// queued texts up to [`crate::EmbeddingRuntimePolicy::batch_size`] per
+    /// provider request. Searchable semantically once drained; a provider
+    /// outage leaves the job pending. For bulk writers.
+    Deferred,
+}
+
 #[derive(Debug, Clone)]
 /// A typed conclusion or interpretation; the engine resolves source kinds and authority.
 /// Payload kind, schema, and provenance cannot be overwritten by consumers.
@@ -277,7 +292,7 @@ pub struct DerivedMemory {
     pub(crate) identity: Option<DerivationIdentity>,
     pub(crate) extra_refs: Vec<MemoryId>,
     pub(crate) lexical_language: Option<String>,
-    pub(crate) defer_embedding: bool,
+    pub(crate) embedding_mode: EmbeddingMode,
 }
 
 impl DerivedMemory {
@@ -331,7 +346,7 @@ impl DerivedMemory {
             lexical_language: Some(
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
-            defer_embedding: false,
+            embedding_mode: EmbeddingMode::Inline,
         })
     }
     /// Create a Perspective derived from Abstractions.
@@ -357,7 +372,7 @@ impl DerivedMemory {
             lexical_language: Some(
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
-            defer_embedding: false,
+            embedding_mode: EmbeddingMode::Inline,
         })
     }
     /// Create an origin-free Perspective grounded through its payload references.
@@ -379,7 +394,7 @@ impl DerivedMemory {
             lexical_language: Some(
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
-            defer_embedding: false,
+            embedding_mode: EmbeddingMode::Inline,
         }
     }
     /// Add memory reference pins, distinct from derivation origins. Duplicates are removed.
@@ -393,18 +408,11 @@ impl DerivedMemory {
         self.lexical_language = Some(language.into());
         self
     }
-    /// Queue this memory's vector instead of embedding it before the write.
-    ///
-    /// The row lands with a pending embedding job in its own transaction —
-    /// the lane every Fact takes — and [`Engine::drain_embedding_jobs`]
-    /// sends it with other queued texts, up to
-    /// [`crate::EmbeddingRuntimePolicy::batch_size`] per provider request.
-    /// For bulk writers: an inline embed is one text per request. Searchable
-    /// semantically once drained; a provider outage leaves the job pending
-    /// instead of failing the write.
+    /// When this memory's vector is embedded; [`EmbeddingMode::Inline`] by
+    /// default. An already-open unit of work defers regardless.
     #[must_use]
-    pub const fn defer_embedding(mut self) -> Self {
-        self.defer_embedding = true;
+    pub const fn embedding_mode(mut self, mode: EmbeddingMode) -> Self {
+        self.embedding_mode = mode;
         self
     }
 }
@@ -637,7 +645,7 @@ impl Engine {
         authority: &A,
         memory: DerivedMemory,
         session_kinds: &[(MemoryId, EntityKind)],
-        defer_embedding: bool,
+        in_open_transaction: bool,
     ) -> Result<PreparedDerived, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
@@ -678,13 +686,19 @@ impl Engine {
             .await?;
         validate_typed_invocation(&memory, memory_id, kind, operator_kind, &origins)
             .map_err(map_derived_storage_error)?;
+        // An open transaction never waits on a provider round trip.
+        let embedding_mode = if in_open_transaction {
+            EmbeddingMode::Deferred
+        } else {
+            memory.embedding_mode
+        };
         let (embedding, queued_spaces) = self
             .prepare_memory_embedding(
                 write_permit.owner(),
                 memory_id,
                 memory.sidecar_payload.schema_id.as_str(),
                 &memory.text,
-                defer_embedding || memory.defer_embedding,
+                embedding_mode,
             )
             .await?;
         Ok(PreparedDerived {
@@ -820,7 +834,7 @@ impl Engine {
         memory_id: MemoryId,
         schema_id: &str,
         text: &str,
-        defer: bool,
+        mode: EmbeddingMode,
     ) -> Result<(DerivedEmbedding, Vec<crate::EmbeddingSpace>), ProtocolError> {
         if !self.registry().schema_is_embeddable(schema_id) {
             return Ok((DerivedEmbedding::None, Vec::new()));
@@ -830,7 +844,7 @@ impl Engine {
         let Some(client) = route.current_client() else {
             return Ok((DerivedEmbedding::None, queued));
         };
-        if defer {
+        if mode == EmbeddingMode::Deferred {
             let space = client.space().clone();
             return Ok((DerivedEmbedding::Deferred { space }, queued));
         }
