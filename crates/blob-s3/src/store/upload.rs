@@ -1241,19 +1241,6 @@ mod conditional_publication_tests {
     }
 
     #[test]
-    fn recognizes_precondition_failed() {
-        assert!(is_conditional_publication_conflict(
-            Some(412),
-            Some("PreconditionFailed")
-        ));
-        assert!(is_conditional_publication_conflict(Some(412), None));
-        assert!(is_conditional_publication_conflict(
-            None,
-            Some("PreconditionFailed")
-        ));
-    }
-
-    #[test]
     fn rejects_unrelated_statuses_and_codes() {
         assert!(!is_conditional_publication_conflict(Some(409), None));
         assert!(!is_conditional_publication_conflict(

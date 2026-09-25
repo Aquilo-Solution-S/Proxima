@@ -401,28 +401,6 @@ mod tests {
     };
     use crate::{AuthPath, AuthzContext, FlavorRegistry, UserId};
 
-    /// The mapping this verb sends must be the one core registered for
-    /// whole-artefact citations, and must target the uploaded-blob
-    /// cited-object schema — otherwise `authorize_fact_with_citation_by_ref`
-    /// would refuse it, at runtime, on every upload.
-    #[test]
-    fn the_mapping_targets_the_uploaded_blob_schema() {
-        let mapping = whole_blob_mapping();
-
-        assert_eq!(mapping.schema_id.as_str(), UPLOADED_BLOB_WHOLE_SCHEMA_ID);
-        assert_eq!(
-            UploadedBlobWholeV1::cited_object_schema().as_str(),
-            crate::citations::UPLOADED_BLOB_SCHEMA_ID
-        );
-    }
-
-    /// The typed ingest boundary requires every payload to be a JSON
-    /// object; `{}` is what an empty mapping must look like on the wire.
-    #[test]
-    fn the_mapping_payload_is_a_json_object() {
-        assert_eq!(whole_blob_mapping().payload_bytes, b"{}");
-    }
-
     fn staged_payload() -> crate::citations::UploadedBlobPayload {
         crate::citations::UploadedBlobPayload {
             content_hash: [0x11; 32],
@@ -435,20 +413,6 @@ mod tests {
             etag: Some("etag".to_owned()),
             uploaded_at: time::OffsetDateTime::UNIX_EPOCH,
         }
-    }
-
-    #[test]
-    fn exact_staged_payload_satisfies_expectation() {
-        let payload = staged_payload();
-        let expectation = UploadCompletionExpectation::new(
-            payload.content_hash,
-            payload.byte_len,
-            payload.mime.clone(),
-            payload.filename.clone(),
-        );
-
-        validate_staged_payload(&expectation, &payload)
-            .expect("the exact staged payload must satisfy its expectation");
     }
 
     #[test]

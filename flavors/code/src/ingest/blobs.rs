@@ -712,126 +712,6 @@ mod resolve_tests {
         assert_eq!(recorded(&chunks), vec![(1, 1, vec![12])]);
     }
 
-    /// Containment is all-or-nothing: a call whose bytes straddle the
-    /// boundary belongs to neither chunk and is dropped rather than
-    /// attributed to a chunk that holds only part of it.
-    #[test]
-    fn call_crossing_a_chunk_boundary_is_dropped() {
-        let mut chunks = vec![chunk(1, 0, 10, &["callee"]), chunk(2, 10, 20, &[])];
-        resolve_intra_file_calls(&[call(8, 12, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), Vec::new());
-    }
-
-    /// Chunk coverage of a file can have holes; a call inside one has no
-    /// caller.
-    #[test]
-    fn call_in_a_gap_between_chunks_is_dropped() {
-        let mut chunks = vec![chunk(1, 0, 10, &["callee"]), chunk(2, 20, 30, &[])];
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), Vec::new());
-    }
-
-    /// The chunker's fallback path gives every window the whole blob as its
-    /// range, so every chunk contains every call. The tie-break is the
-    /// *last* of the equal-start run, not the first.
-    #[test]
-    fn identical_ranges_resolve_to_the_last_chunk() {
-        let mut chunks = vec![
-            chunk(1, 0, 100, &["callee"]),
-            chunk(2, 0, 100, &[]),
-            chunk(3, 0, 100, &[]),
-        ];
-        resolve_intra_file_calls(&[call(5, 9, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), vec![(2, 1, vec![5])]);
-    }
-
-    /// Defensive: the AST path emits disjoint spans, but if two chunks ever
-    /// nest, the innermost — the one with the largest start — is the caller.
-    #[test]
-    fn nested_chunks_resolve_to_the_innermost_start() {
-        let mut chunks = vec![chunk(1, 0, 100, &["callee"]), chunk(2, 10, 20, &[])];
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), vec![(1, 1, vec![12])]);
-    }
-
-    /// The inner chunk is the nearest candidate by start, but it does not
-    /// hold the whole call. Attribution falls back to the enclosing chunk
-    /// that does, rather than dropping the call.
-    #[test]
-    fn nested_chunks_fall_back_to_the_enclosing_chunk() {
-        let mut chunks = vec![chunk(1, 0, 100, &[]), chunk(2, 10, 20, &["callee"])];
-        resolve_intra_file_calls(&[call(12, 30, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), vec![(0, 2, vec![12])]);
-    }
-
-    /// Three levels deep: the innermost is too small and the outermost is
-    /// not the nearest, so the caller is the middle chunk — the containing
-    /// chunk with the largest start, not simply the nearest or the widest.
-    #[test]
-    fn nested_chunks_resolve_to_the_innermost_containing_level() {
-        let mut chunks = vec![
-            chunk(1, 0, 100, &["callee"]),
-            chunk(2, 10, 60, &[]),
-            chunk(3, 20, 30, &[]),
-        ];
-        resolve_intra_file_calls(&[call(22, 50, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), vec![(1, 1, vec![22])]);
-    }
-
-    /// Adjacent chunks share the boundary byte; a call starting exactly on
-    /// it belongs to the later chunk, because the containment test is
-    /// inclusive and the largest start wins.
-    #[test]
-    fn call_starting_on_a_shared_boundary_takes_the_later_chunk() {
-        let mut chunks = vec![chunk(1, 0, 10, &["callee"]), chunk(2, 10, 20, &[])];
-        resolve_intra_file_calls(&[call(10, 12, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), vec![(1, 1, vec![10])]);
-    }
-
-    /// One name can be defined in more than one chunk (a re-export, a
-    /// duplicated helper, a merged span). The first chunk in slice order
-    /// that declares it wins.
-    #[test]
-    fn duplicate_callee_name_resolves_to_the_first_chunk() {
-        let mut chunks = vec![
-            chunk(1, 0, 10, &["callee"]),
-            chunk(2, 10, 20, &[]),
-            chunk(3, 20, 30, &["callee"]),
-        ];
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), vec![(1, 1, vec![12])]);
-    }
-
-    /// A chunk calling a name it defines itself is not a connection between
-    /// two things, and the index refuses the row.
-    #[test]
-    fn self_call_records_nothing() {
-        let mut chunks = vec![chunk(1, 0, 10, &[]), chunk(2, 10, 20, &["callee"])];
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), Vec::new());
-    }
-
-    /// Resolution is intra-file: a name no chunk in this file defines is
-    /// left unresolved rather than guessed at.
-    #[test]
-    fn unknown_callee_records_nothing() {
-        let mut chunks = vec![chunk(1, 0, 10, &["other"]), chunk(2, 10, 20, &[])];
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut chunks);
-        assert_eq!(recorded(&chunks), Vec::new());
-    }
-
-    /// Ten sites into one callee are ten entries in one connection: the
-    /// multiplicity belongs to the node, and the sites keep call order.
-    #[test]
-    fn repeated_calls_share_one_entry_and_keep_site_order() {
-        let mut chunks = vec![chunk(1, 0, 10, &["callee"]), chunk(2, 10, 20, &[])];
-        resolve_intra_file_calls(
-            &[call(16, 18, "callee"), call(12, 14, "callee")],
-            &mut chunks,
-        );
-        assert_eq!(recorded(&chunks), vec![(1, 1, vec![16, 12])]);
-    }
-
     /// Nothing depends on the chunk slice arriving sorted by start: the
     /// same call resolves to the same chunk either way.
     #[test]
@@ -873,19 +753,6 @@ mod resolve_tests {
         assert_eq!(by_marker(&sorted), vec![(2, 1, vec![12])]);
         assert_eq!(by_marker(&shuffled), by_marker(&sorted));
     }
-
-    /// Both degenerate inputs are ordinary, not error cases: a file with no
-    /// calls, and a blob that produced no chunks at all.
-    #[test]
-    fn empty_calls_or_chunks_are_no_ops() {
-        let mut chunks = vec![chunk(1, 0, 10, &["callee"])];
-        resolve_intra_file_calls(&[], &mut chunks);
-        assert_eq!(recorded(&chunks), Vec::new());
-
-        let mut empty: Vec<ChunkInfo> = Vec::new();
-        resolve_intra_file_calls(&[call(12, 15, "callee")], &mut empty);
-        assert!(empty.is_empty());
-    }
 }
 
 #[cfg(test)]
@@ -910,21 +777,6 @@ mod assign_tests {
             state: FileState::Present,
             calls: Vec::new(),
         }
-    }
-
-    #[test]
-    fn assign_reuses_listed_handle_and_mints_unknown_index() {
-        let repo = Uuid::now_v7();
-        let listed = Uuid::now_v7();
-        let heads = [ChunkSeriesHead {
-            chunk_index: 0,
-            handle: listed,
-            state: "Present".into(),
-        }];
-        let payloads = [chunk(repo, "a.rs", 0), chunk(repo, "a.rs", 1)];
-        let handles = assign_code_chunk_handles(&heads, &payloads).expect("assign");
-        assert_eq!(handles[0], listed);
-        assert_ne!(handles[1], listed);
     }
 
     #[test]

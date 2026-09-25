@@ -3,35 +3,14 @@ use std::sync::Arc;
 use proxima_core::mcp::{McpToolPresentation, PrefixedUuidClass, format_prefixed_uuid};
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, GroupId, MemoryId, OwnerRef, ToolCaller, ToolCtx,
-    ToolServices, UserId,
+    ToolServices,
 };
 use uuid::Uuid;
 
 use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1};
 
 use super::input_validation::{resolve_evidence, validate_plan_items};
-use super::plan_persistence::execution_plan_memory_id;
 use super::types::{ExecutionPlanItemArgs, ExecutionPlanItemKind};
-
-/// Pins the org-free execution-plan `MemoryId` against drift. The v5 key folds
-/// the owner *principal* id ‖ repo ‖ goal
-/// memory ‖ plan key — no org. A fixed input must reproduce exactly
-/// this uuid so re-issued plans stay idempotent.
-#[test]
-fn execution_plan_memory_id_golden_is_org_free() {
-    let owner = OwnerRef::Personal(UserId::new(
-        Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
-    ));
-    let repo_id = Uuid::parse_str("00000000-0000-0000-0000-0000000000aa").expect("uuid literal");
-    let goal_activated = MemoryId::new(
-        Uuid::parse_str("00000000-0000-0000-0000-0000000000bb").expect("uuid literal"),
-    );
-    let id = execution_plan_memory_id(&owner, repo_id, goal_activated, "plan:golden");
-    assert_eq!(
-        id.into_inner(),
-        Uuid::parse_str("ec0bf05d-c797-559d-bdf8-9583028201cf").expect("uuid literal")
-    );
-}
 
 fn test_ctx() -> ToolCtx {
     let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));

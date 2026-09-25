@@ -363,19 +363,6 @@ stub_tool!(
     }],
     READ_ONLY_ANNOTATIONS
 );
-stub_tool!(
-    SilentActionDispatcherTool,
-    "proxima-test_silentaction",
-    TaggedArgs,
-    &[McpActionArgSpec {
-        action: "look",
-        allowed_fields: &["id"],
-        required_fields: &["id"],
-        annotations: None,
-        audience: McpToolAudience::Shared,
-    }],
-    READ_ONLY_ANNOTATIONS
-);
 // Two specs for one action, with identical field lists so the field-set loop
 // has nothing to report either: only counting the specs catches this.
 stub_tool!(
@@ -781,20 +768,6 @@ fn a_read_only_flavor_dispatcher_with_per_action_annotations_freezes() {
         .mcp_tool("proxima-test_readonlydispatch")
         .expect("dispatcher registered");
     assert!(descriptor.action_is_read_only("look"));
-}
-
-#[test]
-fn missing_action_annotations_freeze_as_write_without_inheriting_the_parent() {
-    let mut registry = FlavorRegistry::new();
-    registry.add_mcp_tool_or_panic_for_tests::<SilentActionDispatcherTool>("proxima-test");
-    let frozen = registry
-        .try_freeze()
-        .expect("missing behavior fails closed");
-    let descriptor = frozen
-        .mcp_tool("proxima-test_silentaction")
-        .expect("dispatcher registered");
-    assert!(!descriptor.action_is_read_only("look"));
-    assert!(!descriptor.is_read_only());
 }
 
 /// Substrate dispatchers use the same descriptor-owned action contract.

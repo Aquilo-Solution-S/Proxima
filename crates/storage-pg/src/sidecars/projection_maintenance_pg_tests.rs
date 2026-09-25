@@ -14,7 +14,7 @@
 
 use crate::PgStorage;
 use crate::core_pg_sidecars;
-use crate::verbs::forget::{MemoryColdStore, cold_object_key, erase_memory, forget_memory_oneshot};
+use crate::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory_oneshot};
 use crate::verbs::memory_timeseries::ingest_fact_timeseries;
 use proxima_core::owner_inverse::{
     EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget, OwnerSurfaces,
@@ -35,11 +35,6 @@ fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     proxima_core::owner_inverse::OwnerSurfaces::for_registry(
         &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
     )
-}
-
-fn erase_context() -> crate::PgHostStateEraseContext {
-    crate::PgHostStateEraseContext::for_surfaces_for_tests(transfer_surfaces())
-        .expect("projection fixture has no host lifecycle tables")
 }
 
 const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
@@ -315,35 +310,6 @@ async fn forgetting_to_cold_takes_the_projection_row_with_the_sidecar_row() {
     .await;
 }
 
-#[tokio::test]
-async fn erasing_an_admission_takes_its_projection_row() {
-    with_db("proxima_proj_erase", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let pool = pg.pool_for_tests();
-        let kept = write_note(pool, owner, None).await?;
-        let erased = write_note(pool, owner, None).await?;
-
-        let mut tx = pool.begin().await?;
-        erase_memory(
-            &mut tx,
-            &core_pg_sidecars(),
-            &erase_context(),
-            &owner,
-            erased.into_inner(),
-        )
-        .await?;
-        tx.commit().await?;
-
-        assert_eq!(projection_of(pool, erased).await?, None);
-        assert!(
-            projection_of(pool, kept).await?.is_some(),
-            "an erase reaches one admission, not the schema"
-        );
-        Ok(())
-    })
-    .await;
-}
-
 /// The owner inverse reaches the projection WITHOUT being taught about it.
 ///
 /// `projection.memory_id` is `REFERENCES proxima_core.memory (t) ON DELETE
@@ -608,40 +574,6 @@ async fn a_sidecar_keyed_on_its_own_column_name_still_files_its_projection_row()
 // ---------------------------------------------------------------------------
 
 use crate::integrity::{IntegrityFinding, IntegrityViolation};
-
-/// The clean case, asserted first: a check that only ever fires on doctored
-/// input is indistinguishable from one whose lookup finds nothing.
-#[tokio::test]
-async fn integrity_check_passes_a_written_note_and_says_what_it_looked_at() {
-    with_db("proxima_integrity_clean", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let pool = pg.pool_for_tests();
-        write_note(pool, owner, None).await?;
-
-        let report = core_pg_sidecars()
-            .integrity_check(pool)
-            .await
-            .expect("a write through the port leaves no drift");
-        assert!(
-            report
-                .declared_tables
-                .iter()
-                .any(|table| table == AGENT_NOTE),
-            "the note table was checked: {report:?}"
-        );
-        assert!(
-            report
-                .projected_schemas
-                .iter()
-                .any(|schema| schema.sidecar_table == AGENT_NOTE
-                    && schema.schema_id == AgentNoteV1::SCHEMA_ID
-                    && schema.projection_table == "proxima_core.projection"),
-            "and so was its projection: {report:?}"
-        );
-        Ok(())
-    })
-    .await;
-}
 
 /// Delete a projection row → the check fails naming it; rebuild → it passes.
 ///

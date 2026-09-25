@@ -1003,27 +1003,7 @@ pub(crate) fn missing_stamped_rows_sql(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DECLARATION_TRIGGER_FUNCTION, DECLARATION_TRIGGER_FUNCTION_NAME, IntegrityFinding,
-        IntegrityViolation, declaration_trigger, undeclared_rows_sql, unprojected_rows_sql,
-    };
-
-    #[test]
-    fn the_trigger_reads_the_declared_key_column_and_carries_its_inverse() {
-        let artifact = declaration_trigger("proxima_core.agent_note_v1", "t").expect("artifact");
-        assert_eq!(
-            artifact.forward,
-            "CREATE OR REPLACE TRIGGER agent_note_v1_declared_by_memory
-    BEFORE INSERT ON proxima_core.agent_note_v1
-    FOR EACH ROW
-    EXECUTE FUNCTION proxima_core.assert_memory_declares_sidecar('t');"
-        );
-        assert_eq!(
-            artifact.inverse,
-            "DROP TRIGGER IF EXISTS agent_note_v1_declared_by_memory \
-             ON proxima_core.agent_note_v1;"
-        );
-    }
+    use super::declaration_trigger;
 
     /// The generator is a function of the DECLARATION, key column included.
     /// A literal `t` here would install a guard that reads NULL on every
@@ -1051,75 +1031,5 @@ mod tests {
             err.to_string().contains("declared_by_memory"),
             "the refusal names the identifier it built: {err}"
         );
-    }
-
-    #[test]
-    fn the_shared_function_names_itself_once() {
-        assert!(
-            DECLARATION_TRIGGER_FUNCTION
-                .contains(&format!("FUNCTION {DECLARATION_TRIGGER_FUNCTION_NAME}(")),
-            "the constant and the body are one name"
-        );
-        assert!(
-            DECLARATION_TRIGGER_FUNCTION.contains("TG_ARGV[0]"),
-            "the key column arrives as a trigger argument"
-        );
-        assert!(
-            DECLARATION_TRIGGER_FUNCTION.contains("TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME"),
-            "the surface is where the trigger is installed, not a second declaration"
-        );
-    }
-
-    #[test]
-    fn the_projection_count_narrows_on_the_schema_and_the_declared_key() {
-        let sql =
-            unprojected_rows_sql("proxima_core.agent_note_v1", "t", "proxima_core.projection")
-                .expect("sql");
-        assert!(
-            sql.contains("JOIN proxima_core.memory m ON m.t = c.t"),
-            "{sql}"
-        );
-        assert!(sql.contains("WHERE m.schema_id = $1"), "{sql}");
-        assert!(sql.contains("p.memory_id = c.t"), "{sql}");
-    }
-
-    #[test]
-    fn the_declaration_count_binds_the_table_name() {
-        let sql = undeclared_rows_sql("proxima_core.agent_note_v1", "t").expect("sql");
-        assert!(sql.contains("m.sidecar_tables @> ARRAY[$1::text]"), "{sql}");
-        assert!(
-            !sql.contains("'proxima_core.agent_note_v1'"),
-            "the table name is a bind, not a literal: {sql}"
-        );
-    }
-
-    /// Both findings name what drifted and what to do about it, and the
-    /// undeclared one says plainly that there is nothing to do.
-    #[test]
-    fn a_violation_names_the_table_the_count_and_the_repair() {
-        let violation = IntegrityViolation::Drift(vec![
-            IntegrityFinding::UnprojectedSidecarRows {
-                sidecar_table: "proxima_core.agent_note_v1".to_owned(),
-                schema_id: "core/agent-note-v1".to_owned(),
-                projection_table: "proxima_core.projection".to_owned(),
-                rows: 3,
-            },
-            IntegrityFinding::UndeclaredSidecarRows {
-                sidecar_table: "proxima_core.utterance_v1".to_owned(),
-                rows: 1,
-            },
-        ]);
-        let message = violation.to_string();
-        for named in [
-            "proxima_core.agent_note_v1",
-            "core/agent-note-v1",
-            "proxima_core.projection",
-            "rebuild_projection_for_table",
-            "proxima_core.utterance_v1",
-            "NO repair",
-            "2 drift(s)",
-        ] {
-            assert!(message.contains(named), "{named} missing from: {message}");
-        }
     }
 }

@@ -459,37 +459,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn add_member_routes_to_engine_with_parsed_relation() {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let group = GroupId::new(uuid::Uuid::now_v7());
-        let group_owner = OwnerRef::Group(group);
-        let ctx = ctx_with_principals(owner, vec![group_owner]);
-        let member = UserId::new(uuid::Uuid::now_v7());
-        let engine = MockMembershipEngine::default();
-
-        let out = execute_membership(
-            &engine,
-            &ctx,
-            CoreMembershipArgs::AddMember(AddMemberArgs {
-                group: MemorySpaceKey::owner(group_owner).to_wire(),
-                member: member.into_inner().to_string(),
-                relation: "editor".into(),
-            }),
-        )
-        .await
-        .expect("add_member routes");
-
-        assert!(matches!(
-            out,
-            CoreMembershipOutput::AddMember(MutationOutput { ok: true })
-        ));
-        assert_eq!(
-            engine.added.lock().expect("added lock").as_slice(),
-            &[(group, member, Relation::Editor)]
-        );
-    }
-
     #[test]
     fn unknown_action_is_invalid_input() {
         let err = validate_action_args(

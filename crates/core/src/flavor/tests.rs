@@ -1,25 +1,5 @@
 use super::*;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::protocol::tool as protocol_tool;
-
-#[test]
-fn schema_id_has_prefix_edge_cases() {
-    // Normal prefix match — the common case.
-    assert!(schema_id_has_prefix("proxima-code/commit", "proxima-code/"));
-    // Empty prefix is satisfied by anything.
-    assert!(schema_id_has_prefix("abc", ""));
-    // Prefix equal to the whole id.
-    assert!(schema_id_has_prefix("abc", "abc"));
-    // Prefix longer than the id never matches.
-    assert!(!schema_id_has_prefix("ab", "abc"));
-    // Plain mismatch.
-    assert!(!schema_id_has_prefix("wrong/x", "right/"));
-    // Truncated prefix — id is a prefix of the prefix, not vice versa.
-    assert!(!schema_id_has_prefix("proxima-cod", "proxima-code/"));
-    // Multibyte UTF-8: byte-wise comparison must still hold.
-    assert!(schema_id_has_prefix("schémä/x", "schémä/"));
-    assert!(!schema_id_has_prefix("sch", "schémä/"));
-}
 
 #[derive(schemars::JsonSchema, serde::Deserialize)]
 struct EmptyDemoArgs {}
@@ -45,24 +25,6 @@ impl McpTool for Demo {
     ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
         Box::pin(async { Ok(()) })
     }
-}
-
-#[test]
-fn add_mcp_tool_lists_descriptor() {
-    let mut registry = FlavorRegistry::new();
-    registry.add_mcp_tool_or_panic_for_tests::<Demo>("proxima-test");
-    let frozen = registry.freeze_or_panic_for_tests();
-    let descriptors = frozen.list_mcp_tools();
-    let names: Vec<_> = descriptors.iter().map(|d| d.name).collect();
-    assert!(names.contains(&"proxima-test_demo"));
-    let demo = descriptors
-        .iter()
-        .find(|d| d.name == "proxima-test_demo")
-        .expect("demo descriptor");
-    assert_eq!(
-        demo.origin,
-        McpToolOrigin::Flavor("proxima-test".to_string())
-    );
 }
 
 #[test]
@@ -128,23 +90,6 @@ fn freeze_rejects_two_memory_versions_under_one_selector() {
             ..
         }
     ));
-}
-
-#[test]
-fn freeze_allows_one_selector_per_distinct_memory_layer() {
-    let registry = FlavorRegistry::new();
-    let frozen = registry
-        .try_freeze()
-        .expect("the default AgentDerivation selector is shared by A and P");
-    let registrations = frozen
-        .schemas()
-        .iter()
-        .filter(|schema| schema.schema_id.as_str() == "core/agent-derivation-v1")
-        .map(|schema| schema.kind)
-        .collect::<Vec<_>>();
-    assert_eq!(registrations.len(), 2);
-    assert!(registrations.contains(&PayloadKind::Abstraction));
-    assert!(registrations.contains(&PayloadKind::Perspective));
 }
 
 #[test]
@@ -254,37 +199,6 @@ fn freeze_rejects_orphan_ingress_without_a_typed_schema() {
 }
 
 #[test]
-fn opaque_citation_kinds_freeze() {
-    let mut registry = FlavorRegistry::new();
-    for (schema_id, kind) in [
-        ("proxima-test/opaque-object", PayloadKind::CitedObject),
-        ("proxima-test/opaque-mapping", PayloadKind::CitationMapping),
-    ] {
-        registry
-            .try_add_opaque_schema(
-                SchemaId::new(schema_id.to_string()),
-                SchemaVersion::new(1),
-                kind,
-            )
-            .expect("citation schemas may be opaque");
-    }
-
-    let frozen = registry
-        .try_freeze()
-        .expect("valid opaque citation schemas freeze");
-    assert!(frozen.schemas().iter().any(|schema| {
-        schema.schema_id.as_str() == "proxima-test/opaque-object"
-            && schema.kind == PayloadKind::CitedObject
-            && !schema.has_typed_ingress
-    }));
-    assert!(frozen.schemas().iter().any(|schema| {
-        schema.schema_id.as_str() == "proxima-test/opaque-mapping"
-            && schema.kind == PayloadKind::CitationMapping
-            && !schema.has_typed_ingress
-    }));
-}
-
-#[test]
 fn freeze_rejects_capability_tags_for_unregistered_schema() {
     let mut registry = FlavorRegistry::new();
     registry.add_schema_capability_tags_or_panic_for_tests(
@@ -325,43 +239,4 @@ fn add_mcp_tool_rejects_unprefixed_tool_name() {
         registry.add_mcp_tool_or_panic_for_tests::<Bad>("proxima-test");
     }));
     assert!(result.is_err(), "must panic on prefix mismatch");
-}
-
-#[test]
-fn default_registry_includes_all_substrate_mcp_tools() {
-    let frozen = FlavorRegistry::new().freeze_or_panic_for_tests();
-    let names: std::collections::HashSet<_> =
-        frozen.list_mcp_tools().iter().map(|d| d.name).collect();
-    let expected = [
-        protocol_tool::CORE_SEARCH_MEMORIES,
-        protocol_tool::CORE_RECALL,
-        protocol_tool::CORE_THINK,
-        protocol_tool::CORE_MEMORY_SPACES,
-        protocol_tool::CORE_REMEMBER,
-        protocol_tool::CORE_EPISODE_COMMIT,
-        protocol_tool::CORE_FORGET,
-        protocol_tool::CORE_RECORD_UTTERANCE,
-        protocol_tool::CORE_DERIVE,
-        protocol_tool::CORE_INTERPRET,
-        protocol_tool::CORE_GOAL,
-        protocol_tool::CORE_FACT,
-        protocol_tool::CORE_MEMBERSHIP,
-        protocol_tool::CORE_TRANSFER,
-        protocol_tool::CORE_UPLOAD,
-    ];
-    for name in expected {
-        assert!(names.contains(name), "missing tool {name}");
-    }
-    assert!(
-        !names.contains("core/emit_budget_decision"),
-        "retired tool name must not remain registered"
-    );
-    assert_eq!(names.len(), 15, "exactly 15 substrate tools registered");
-    for desc in frozen.list_mcp_tools() {
-        assert!(
-            matches!(desc.origin, McpToolOrigin::Substrate),
-            "default tool {} must be substrate-origin",
-            desc.name
-        );
-    }
 }

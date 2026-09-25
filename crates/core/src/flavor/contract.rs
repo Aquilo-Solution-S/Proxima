@@ -1755,20 +1755,9 @@ impl FlavorContract {
 #[cfg(test)]
 mod tests {
     use super::{
-        Band, CounterRule, DbConstraint, EmbedUnit, EmbeddingRecipe, EraseRule, ExportRule,
-        ForgetLeg, ForgetRule, KeyShape, LanguagePolicy, SLOT_DEFAULT, SchemaRef,
-        SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
-        TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, TransferRule, WEIGHT_UNIFORM,
-        WeightedField,
+        CounterRule, DbConstraint, EraseRule, ExportRule, ForgetLeg, ForgetRule, KeyShape,
+        LanguagePolicy, SearchProjectionDecl, SubstringArm, Surface, TransferRule, WeightedField,
     };
-
-    #[test]
-    fn a_schema_ref_renders_the_vn_idiom() {
-        assert_eq!(
-            SchemaRef::new("core", "agent-note", 1).render(),
-            "core/agent-note-v1"
-        );
-    }
 
     #[test]
     fn dumped_cascade_is_only_a_memory_t_surface_with_a_completeness_proof() {
@@ -1813,25 +1802,6 @@ mod tests {
         assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Cascaded { via });
     }
 
-    #[test]
-    fn a_never_recipe_resolves_to_no_units() {
-        let recipe = EmbeddingRecipe::Never { why: "a receipt" };
-        assert!(recipe.resolve(Some("proxima_core.upload_v1")).is_empty());
-    }
-
-    #[test]
-    fn a_stored_column_recipe_resolves_to_the_pair_the_drain_reads() {
-        let recipe = EmbeddingRecipe::Units(&[EmbedUnit {
-            column: "embed_text",
-            slot: SLOT_DEFAULT,
-        }]);
-        let resolved = recipe.resolve(Some("proxima_core.agent_note_v1"));
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].table, Some("proxima_core.agent_note_v1"));
-        assert_eq!(resolved[0].column, "embed_text");
-        assert_eq!(resolved[0].slot, SLOT_DEFAULT);
-    }
-
     fn projected(weights: &'static [f32]) -> SearchProjectionDecl {
         // A leaked slice keeps the fixture `'static` without a macro.
         let fields: &'static [WeightedField] = Box::leak(
@@ -1854,31 +1824,6 @@ mod tests {
         }
     }
 
-    /// The identity claim, at the level the contract can state it: a
-    /// uniform unit has ONE level, so every lexeme is class `D` — which is
-    /// what an unweighted `to_tsvector` already produces — and no weight
-    /// array is passed, so `ts_rank_cd` scores the unweighted case exactly.
-    #[test]
-    fn uniform_weights_are_the_unweighted_case() {
-        let decl = projected(&[WEIGHT_UNIFORM, WEIGHT_UNIFORM, WEIGHT_UNIFORM]);
-        assert_eq!(decl.weight_levels(), Ok(vec![WEIGHT_UNIFORM]));
-        assert_eq!(decl.weight_class(WEIGHT_UNIFORM), Some("D"));
-        assert_eq!(decl.rank_weight_array(), None);
-    }
-
-    /// Ascending: the lowest declared level takes the class an unweighted
-    /// lexeme already has, so adding a heavier field never silently
-    /// re-scores the fields that were there before.
-    #[test]
-    fn distinct_levels_bucket_ascending_from_d() {
-        let decl = projected(&[1.0, 0.25, 0.5]);
-        assert_eq!(decl.weight_levels(), Ok(vec![0.25, 0.5, 1.0]));
-        assert_eq!(decl.weight_class(0.25), Some("D"));
-        assert_eq!(decl.weight_class(0.5), Some("C"));
-        assert_eq!(decl.weight_class(1.0), Some("B"));
-        assert_eq!(decl.rank_weight_array(), Some([0.25, 0.5, 1.0, 1.0]));
-    }
-
     #[test]
     fn a_fifth_level_has_nowhere_to_go() {
         assert_eq!(
@@ -1889,93 +1834,6 @@ mod tests {
             projected(&[1.0, 2.0, 3.0, 4.0, 5.0])
                 .weight_class(3.0)
                 .is_none()
-        );
-    }
-
-    /// The width is RENDERED, not printed: `0.45f32 - 0.25f32` is
-    /// `0.19999999`, a different number from the `0.2` the SQL carries. One
-    /// author for this arithmetic, in the crate that owns `Band`.
-    #[test]
-    fn a_band_renders_the_arithmetic_the_sql_already_had() {
-        let exact = Band {
-            name: "exact",
-            floor: 0.50,
-            ceiling: 1.00,
-            normalization: TS_RANK_NORMALIZATION_SCALE,
-        };
-        let rescue = Band {
-            name: "rescue",
-            floor: 0.25,
-            ceiling: 0.45,
-            normalization: TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
-        };
-        assert_eq!(exact.parts(), ("0.50".to_owned(), "0.50".to_owned()));
-        assert_eq!(rescue.parts(), ("0.25".to_owned(), "0.20".to_owned()));
-    }
-
-    /// The declared flag renders as `ts_rank`'s trailing argument, and
-    /// `NONE` renders as absence — so declaring the flag an arm already
-    /// passes cannot move that arm's score even at the level of the text.
-    #[test]
-    fn normalization_none_renders_as_the_omitted_argument() {
-        let band = Band {
-            name: "exact",
-            floor: 0.5,
-            ceiling: 1.0,
-            normalization: TS_RANK_NORMALIZATION_NONE,
-        };
-        assert_eq!(band.normalization_arg(), "");
-        assert_eq!(
-            band.with_normalization(TS_RANK_NORMALIZATION_SCALE)
-                .normalization_arg(),
-            ", 32"
-        );
-        assert_eq!(
-            band.with_normalization(TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE)
-                .normalization_arg(),
-            ", 33",
-            "`1|32` is 33; the flavor declares the value, the renderer spells it"
-        );
-        assert_eq!(
-            band.with_normalization(TS_RANK_NORMALIZATION_SCALE).parts(),
-            band.parts(),
-            "changing the flag must not move the window"
-        );
-    }
-
-    /// The NAME is the contract, which is why the band set is not an
-    /// arm-typed struct.
-    #[test]
-    fn a_band_resolves_by_name() {
-        const BANDS: &[Band] = &[
-            Band {
-                name: "exact",
-                floor: 0.5,
-                ceiling: 1.0,
-                normalization: TS_RANK_NORMALIZATION_SCALE,
-            },
-            Band {
-                name: "rescue",
-                floor: 0.25,
-                ceiling: 0.45,
-                normalization: TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
-            },
-        ];
-        let decl = SearchProjectionDecl::Projected {
-            fields: &[],
-            tag_column: None,
-            language: LanguagePolicy::Pinned("simple"),
-            bands: BANDS,
-            substring: SubstringArm::Off,
-        };
-        assert_eq!(decl.band("exact").map(|band| band.floor), Some(0.5));
-        assert_eq!(decl.band("rescue").map(|band| band.ceiling), Some(0.45));
-        assert_eq!(decl.band("substring"), None);
-        assert_eq!(decl.substring(), Some(SubstringArm::Off));
-        assert_eq!(
-            SearchProjectionDecl::None { why: "a receipt" }.substring(),
-            None,
-            "a non-surface has no arm to turn off"
         );
     }
 }

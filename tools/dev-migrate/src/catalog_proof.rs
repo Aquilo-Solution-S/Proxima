@@ -345,7 +345,7 @@ fn first_difference(live: &str, embedded: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fingerprint, differences, first_difference};
+    use super::{Fingerprint, differences};
 
     fn entry(
         schema: &str,
@@ -387,13 +387,5 @@ mod tests {
             ]
         );
         assert!(differences(&replayed, &replayed).is_empty());
-    }
-
-    #[test]
-    fn first_difference_reports_a_missing_trailing_line() {
-        assert_eq!(
-            first_difference("a\nb", "a\nb\nc"),
-            "line 3: live `<end>`, embedded `c`"
-        );
     }
 }

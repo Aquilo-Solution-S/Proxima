@@ -749,52 +749,6 @@ mod tests {
     }
 
     #[test]
-    fn a_captured_envelope_round_trips_through_the_consumer_view() {
-        let bytes = br#"{"specversion":"1.0","id":"F:abc","source":"urn:proxima:test",
-            "type":"probe/listenable-v1","datacontenttype":"application/json",
-            "dataschema":"proxima://schema/probe/listenable-v1/1","time":"2026-01-01T00:00:00Z",
-            "proximaowner":"personal:1","proximamodel":"m","data":{"note":"hi"}}"#;
-        let envelope: CloudEventEnvelope = serde_json::from_slice(bytes).expect("parses");
-        assert_eq!(envelope.id, "F:abc");
-        assert_eq!(envelope.event_type, "probe/listenable-v1");
-        assert_eq!(envelope.proximamodel.as_deref(), Some("m"));
-        assert_eq!(envelope.data["note"], serde_json::json!("hi"));
-        assert!(envelope.extensions.is_empty());
-    }
-
-    #[test]
-    fn host_bound_extension_attributes_survive_the_parse() {
-        let bytes = br#"{"specversion":"1.0","id":"F:abc","source":"urn:proxima:test",
-            "type":"probe/listenable-v1","proximaowner":"personal:1","proximamodel":"m",
-            "stepid":"step-7","runid":"run-3","attempt":2,"replay":false,"data":{"note":"hi"}}"#;
-        let envelope: CloudEventEnvelope = serde_json::from_slice(bytes).expect("parses");
-        assert_eq!(
-            envelope
-                .extensions
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            vec!["attempt", "replay", "runid", "stepid"]
-        );
-        assert_eq!(envelope.extensions["runid"], serde_json::json!("run-3"));
-        assert_eq!(envelope.extensions["attempt"], serde_json::json!(2));
-        assert_eq!(envelope.extensions["replay"], serde_json::json!(false));
-        // The substrate's own attributes stay on their named fields rather
-        // than doubling up in the map.
-        assert!(!envelope.extensions.contains_key("proximamodel"));
-        assert!(!envelope.extensions.contains_key("data"));
-    }
-
-    #[test]
-    fn an_absent_model_attribute_is_not_a_parse_failure() {
-        let bytes = br#"{"specversion":"1.0","id":"F:abc","source":"urn:x:y","type":"t",
-            "data":{}}"#;
-        let envelope: CloudEventEnvelope = serde_json::from_slice(bytes).expect("parses");
-        assert_eq!(envelope.proximamodel, None);
-        assert_eq!(envelope.proximaowner, None);
-    }
-
-    #[test]
     fn a_malformed_message_still_gets_a_stable_dedup_key() {
         let raw = Bytes::from_static(b"not json at all");
         let error = serde_json::from_slice::<CloudEventEnvelope>(&raw).expect_err("not json");

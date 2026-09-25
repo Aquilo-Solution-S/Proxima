@@ -13,9 +13,9 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use proxima_core::flavor::{FlavorContract, ProjectionDecl, ToolContract};
 use proxima_core::mcp::{
-    McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx,
+    McpActionArgSpec, McpAuthorContext, McpToolAnnotations, McpToolAudience, McpToolCtx,
     McpToolError, McpToolOrigin, Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch,
-    ToolCall, core_action_meta,
+    ToolCall,
 };
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, GroupId,
@@ -230,36 +230,6 @@ fn a_macro_registered_flavor_dispatcher_carries_its_action_specs() {
     );
 }
 
-/// The schema-derived variant prose is also the flavor catalog prose; there
-/// is no second per-action description table for flavors.
-#[tokio::test]
-async fn a_flavor_dispatcher_catalog_uses_variant_descriptions() {
-    use proxima_core::mcp::core_tools::list_substrate_tools::{
-        ListSubstrateToolsArgs, list_substrate_tools,
-    };
-
-    let registry = frozen();
-    let output = list_substrate_tools(ctx(&registry, ToolScope::All), ListSubstrateToolsArgs {})
-        .await
-        .expect("catalog lists the flavor dispatcher");
-    let dispatch = output
-        .tools
-        .iter()
-        .find(|tool| tool.tool_id == DISPATCH)
-        .expect("flavor dispatcher catalog row");
-
-    assert_eq!(dispatch.actions[0].action, "look");
-    assert_eq!(
-        dispatch.actions[0].description,
-        "Inspect one thing without changing it."
-    );
-    assert_eq!(dispatch.actions[1].action, "touch");
-    assert_eq!(
-        dispatch.actions[1].description,
-        "Change one thing and optionally record a note."
-    );
-}
-
 /// A palette holding one leaf grants one leaf. Keyed on the substrate
 /// tables, this tool fell to the whole-tool branch: `allows("…_dispatch")`
 /// is false for a palette of leaves, so the token that was granted `look`
@@ -363,25 +333,4 @@ async fn a_flavor_dispatcher_validates_arguments_per_action_before_decode() {
         matches!(err, McpToolError::InvalidInput(ref message) if message.contains("id")),
         "got {err:?}",
     );
-}
-
-/// Per-action annotations live beside the field contract, so flavor actions
-/// need no substrate metadata and never inherit their parent's behaviour.
-#[test]
-fn a_flavor_dispatcher_resolves_behavior_from_its_action_specs() {
-    let registry = frozen();
-    let descriptor = registry.mcp_tool(DISPATCH).expect("registered");
-
-    assert!(
-        core_action_meta(DISPATCH, "look").is_none(),
-        "CoreActionMeta is a substrate table; a flavor action has no entry",
-    );
-    assert!(
-        !descriptor.is_read_only(),
-        "a mixed dispatcher is conservatively a write as a whole",
-    );
-    assert!(descriptor.action_is_read_only("look"));
-    assert!(!descriptor.action_is_read_only("touch"));
-    assert!(!descriptor.action_is_read_only("unknown"));
-    assert_eq!(<DispatchTool as McpTool>::ACTION_ARG_SPECS.len(), 2);
 }

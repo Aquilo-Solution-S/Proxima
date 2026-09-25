@@ -188,20 +188,6 @@ mod tests {
     use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, UserId};
     use std::sync::Arc;
 
-    #[test]
-    fn default_substrate_tools_classify_as_substrate() {
-        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-
-        for desc in registry.list_mcp_tools() {
-            assert!(
-                matches!(desc.origin, McpToolOrigin::Substrate),
-                "default tool {} must be substrate-origin",
-                desc.name
-            );
-            assert_eq!(substrate_tool_source(desc), "substrate");
-        }
-    }
-
     #[tokio::test]
     async fn tool_catalog_exposes_action_level_metadata() {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));

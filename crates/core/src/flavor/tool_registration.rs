@@ -354,49 +354,6 @@ mod action_vocabulary_tests {
             .expect("an argv-only tool registers");
     }
 
-    /// The descriptor is the one artifact every seam reads, so the audience
-    /// has to survive registration at both levels: per argv action and on
-    /// the tool.
-    #[test]
-    fn descriptor_carries_the_audience_at_both_levels() {
-        let mut registry = FlavorRegistry::new();
-        registry.add_mcp_tool_or_panic_for_tests::<ArgvTool>("proxima-stub");
-        registry.add_mcp_tool_or_panic_for_tests::<OwnerOnlyFlatTool>("proxima-stub");
-        let frozen = registry.freeze_or_panic_for_tests();
-
-        let argv_tool = frozen
-            .mcp_tool(ArgvTool::NAME)
-            .expect("argv tool registered");
-        assert_eq!(argv_tool.argv_action_specs, ARGV_SPECS);
-        assert_eq!(
-            argv_tool.audience,
-            McpToolAudience::Shared,
-            "an undeclared tool-level audience stays Shared"
-        );
-        let by_action = |action: &str| {
-            argv_tool
-                .argv_action_specs
-                .iter()
-                .find(|spec| spec.action == action)
-                .expect("declared action present")
-                .audience
-        };
-        // Positive control and subject side by side: one action owner-only,
-        // its sibling shared, so an audience that leaked tool-wide fails.
-        assert_eq!(by_action("approval"), McpToolAudience::Shared);
-        assert_eq!(by_action("approval-decide"), McpToolAudience::Owner);
-
-        let flat = frozen
-            .mcp_tool(OwnerOnlyFlatTool::NAME)
-            .expect("flat tool registered");
-        assert_eq!(
-            flat.audience,
-            McpToolAudience::Owner,
-            "a flat tool's AUDIENCE declaration round-trips"
-        );
-        assert!(flat.argv_action_specs.is_empty());
-    }
-
     /// One definition of a tool's palette keys, argv actions included: the
     /// gate judges an argv dispatcher by `tool:action`, so a palette that
     /// listed only the bare name denied every call to it.

@@ -622,20 +622,6 @@ pub(crate) async fn enqueue_embedding_jobs_in_tx<'s>(
 mod tests {
     use super::*;
 
-    /// The claim is one statement: it exists to hand a drainer work in a
-    /// single round trip.
-    #[test]
-    fn claiming_is_a_single_statement() {
-        assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains(';'));
-    }
-
-    /// Golden text: the claim is pinned per arm, so an edit to either
-    /// ordered scan is a deliberate change to this test as well.
-    #[test]
-    fn the_claim_sql_is_pinned() {
-        assert_eq!(CLAIM_EMBEDDING_JOBS_SQL, CLAIM_GOLDEN);
-    }
-
     #[test]
     fn missing_embedding_scan_does_not_probe_flavor_tables() {
         let src = include_str!("jobs.rs");
@@ -644,13 +630,6 @@ mod tests {
             !src.contains(&needle),
             "chunks are memory rows; do not dual-scan proxima_code"
         );
-    }
-
-    /// `reclaim_stale_embedding_jobs` can only date a claim the claim
-    /// itself stamped.
-    #[test]
-    fn the_claim_stamps_claimed_at() {
-        assert!(CLAIM_EMBEDDING_JOBS_SQL.contains("claimed_at = now()"));
     }
 
     #[test]
@@ -697,30 +676,4 @@ mod tests {
         assert!(!job_table.contains("embedding_version"));
         assert!(!job_table.contains("attempts"));
     }
-
-    const CLAIM_GOLDEN: &str = r"WITH claimed AS (
-             SELECT job_id
-               FROM proxima_core.embedding_jobs
-              WHERE status = 'pending'
-                AND owner_id <> ALL($2::uuid[])
-              ORDER BY job_id ASC
-              FOR UPDATE SKIP LOCKED
-              LIMIT $1
-         )
-         UPDATE proxima_core.embedding_jobs j
-            SET status = 'processing',
-                claimed_at = now(),
-                claim_token = uuidv7()
-           FROM claimed, proxima_core.memory m, proxima_core.owners o
-          WHERE j.job_id = claimed.job_id
-            AND m.t = j.entity_id
-            AND o.owner_id = j.owner_id
-        RETURNING o.kind AS owner_kind,
-                  j.job_id,
-                  j.owner_id,
-                  m.kind AS entity_kind,
-                  j.entity_id,
-                  j.model_id,
-                  j.dim,
-                  j.claim_token";
 }

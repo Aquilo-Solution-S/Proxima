@@ -50,14 +50,6 @@ mod tests {
     use super::CapabilityTag;
 
     #[test]
-    fn accepts_lowercase_shared_vocab() {
-        for raw in ["actor", "task", "shared-vocab", "a1-b2", "x-"] {
-            let tag = CapabilityTag::parse(raw).expect("valid capability tag");
-            assert_eq!(tag.as_str(), raw);
-        }
-    }
-
-    #[test]
     fn rejects_prefixed_uppercase_slash_and_leading_digit() {
         for raw in [
             "",

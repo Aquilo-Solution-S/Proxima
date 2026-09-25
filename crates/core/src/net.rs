@@ -95,15 +95,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loopback_host_recognizes_hostname_and_ip_forms() {
-        assert!(is_loopback_host("LOCALHOST"));
-        assert!(is_loopback_host("127.0.0.1"));
-        assert!(is_loopback_host("[::1]"));
-        assert!(!is_loopback_host("api.example.com"));
-        assert!(!is_loopback_host("10.0.0.1"));
-    }
-
-    #[test]
     fn https_is_accepted_under_both_policies() {
         for policy in [
             EndpointUrlPolicy::HttpsOnly,

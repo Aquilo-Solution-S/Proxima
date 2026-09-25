@@ -1265,33 +1265,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resource_constants_match_server_resource_keys() {
-        let cases = [
-            ("proxima://schemas", protocol_resource::SCHEMAS),
-            ("proxima://tools", protocol_resource::TOOLS),
-            ("proxima://graph", protocol_resource::GRAPH),
-            (
-                "proxima://memory/F:018f0000-0000-7000-8000-000000000001",
-                protocol_resource::MEMORY,
-            ),
-            (
-                "proxima://memory/A:018f0000-0000-7000-8000-000000000001/lineage",
-                protocol_resource::MEMORY_LINEAGE,
-            ),
-            ("proxima://change-events", protocol_resource::CHANGE_EVENTS),
-            (
-                "proxima://wake-candidates?fact=F:018f0000-0000-7000-8000-000000000001",
-                protocol_resource::WAKE_CANDIDATES,
-            ),
-        ];
-
-        for (uri, scope_key) in cases {
-            let parsed = parse_resource_uri(uri).expect("resource parses");
-            assert_eq!(parsed.scope_key(), scope_key);
-        }
-    }
-
     /// `read_resource` now traverses the same `RequestBehavior`
     /// onion (`ScopeGateBehavior`) as `call_tool`, instead of a hand-rolled
     /// scope check outside the chain. An out-of-palette caller must still

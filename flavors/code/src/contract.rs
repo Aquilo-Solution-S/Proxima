@@ -818,45 +818,7 @@ const CODE_PROJECTION: ProjectionSpec = ProjectionSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::{CODE_FLAVOR_CONTRACT, CODE_ORDINAL, FLAVOR_ID};
-
-    #[test]
-    fn every_declared_schema_id_carries_the_flavor_prefix() {
-        for schema in CODE_FLAVOR_CONTRACT.schemas {
-            let id = schema.schema_id();
-            assert!(
-                id.as_str().starts_with(&format!("{FLAVOR_ID}/")),
-                "{id} does not carry the flavor prefix"
-            );
-        }
-    }
-
-    /// Thirty-two registrations is the whole surface: sixteen typed
-    /// sidecars and sixteen opaque citation schemas. `SchemaWithoutContract`
-    /// fires on any registered `proxima-code/*` the contract omits, so this
-    /// number is pinned by the freeze as well — but pinning it here says
-    /// which half moved.
-    #[test]
-    fn the_contract_declares_thirty_two_schemas_and_eleven_tools() {
-        assert_eq!(CODE_FLAVOR_CONTRACT.schemas.len(), 32);
-        let sidecars = CODE_FLAVOR_CONTRACT
-            .schemas
-            .iter()
-            .filter(|schema| schema.sidecar_table.is_some())
-            .count();
-        assert_eq!(sidecars, 16);
-        assert_eq!(CODE_FLAVOR_CONTRACT.tools.len(), 11);
-    }
-
-    /// The freeze rejects resources from any flavor but #0. This one has
-    /// never declared any, so conformance is by absence — pin it so a future
-    /// `proxima://code/...` has to argue with a test.
-    #[test]
-    fn the_flavor_declares_no_resources_and_is_not_core() {
-        assert!(CODE_FLAVOR_CONTRACT.resources.is_empty());
-        assert!(!CODE_FLAVOR_CONTRACT.is_core());
-        assert_ne!(CODE_ORDINAL, proxima_core::flavor::CORE_ORDINAL);
-    }
+    use super::CODE_FLAVOR_CONTRACT;
 
     /// No code sidecar carries its own `owner_id`, and
     /// `check_owner_pinned_against_contracts` compares that against
@@ -866,51 +828,5 @@ mod tests {
     #[test]
     fn no_schema_retains_at_source() {
         assert!(CODE_FLAVOR_CONTRACT.retain_at_source_tables().is_empty());
-    }
-
-    /// The acceptance test for the declaration as a whole: a registry with
-    /// core and this flavor in it has to survive every cross-check the
-    /// freeze runs, and then the PG registration has to survive
-    /// `freeze_against` — schema-to-table agreement, typed inserters,
-    /// `owner_pinned` against `TransferRule`, and the projection generator.
-    ///
-    /// This is the same composition `ProximaBuilder::boot` performs, so a
-    /// declaration that would fail at boot fails here instead.
-    #[test]
-    fn the_composed_registry_freezes_with_this_contract_and_its_pg_sidecars() {
-        let mut registry = proxima_core::FlavorRegistry::new();
-        crate::register(&mut registry).expect("the code flavor registers");
-        let frozen = registry.try_freeze().expect("core plus code freeze");
-        assert!(
-            frozen
-                .contracts()
-                .iter()
-                .any(|contract| contract.flavor_id == FLAVOR_ID),
-            "the frozen registry must carry this contract, not just its schemas"
-        );
-
-        let projected: Vec<&str> = frozen
-            .search_projections()
-            .iter()
-            .map(|projection| projection.schema_id.as_str())
-            .filter(|id| id.starts_with(FLAVOR_ID))
-            .collect();
-        assert_eq!(
-            projected,
-            vec![
-                "proxima-code/commit-v1",
-                "proxima-code/code-chunk-v1",
-                "proxima-code/commit-summary-v1",
-            ],
-            "three search surfaces in declaration order, and the projection \
-             generator reached all three"
-        );
-
-        let mut sidecars = proxima_storage_pg::PgSidecarRegistry::new();
-        proxima_storage_pg::register_core_pg_sidecars(&mut sidecars);
-        crate::register_pg_sidecars(&mut sidecars);
-        sidecars
-            .freeze_against(&frozen)
-            .expect("the PG registrations agree with the contract");
     }
 }

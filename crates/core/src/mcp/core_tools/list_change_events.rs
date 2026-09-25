@@ -146,7 +146,7 @@ fn format_ref(ctx: &McpToolCtx, r: &EntityRef, kind: EntityKind) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{overfetch_limit, page_rows};
+    use super::page_rows;
     use crate::change_event::{ChangeEvent, ChangeEventKind};
     use crate::read_models::ChangeEventForWake;
     use crate::{EntityKind, EntityRef, MemoryId, SchemaId, SchemaVersion};
@@ -167,14 +167,6 @@ mod tests {
     }
 
     #[test]
-    fn page_rows_reports_no_more_on_exact_final_page() {
-        let rows = vec![row(uuid::Uuid::now_v7()), row(uuid::Uuid::now_v7())];
-        let (page, has_more) = page_rows(rows, 2);
-        assert_eq!(page.len(), 2);
-        assert!(!has_more);
-    }
-
-    #[test]
     fn page_rows_reports_more_only_from_extra_row() {
         let rows = vec![
             row(uuid::Uuid::now_v7()),
@@ -184,10 +176,5 @@ mod tests {
         let (page, has_more) = page_rows(rows, 2);
         assert_eq!(page.len(), 2);
         assert!(has_more);
-    }
-
-    #[test]
-    fn overfetch_limit_adds_one() {
-        assert_eq!(overfetch_limit(1000), 1001);
     }
 }

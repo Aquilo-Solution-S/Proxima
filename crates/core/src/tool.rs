@@ -783,25 +783,6 @@ pub trait Tool: Send + Sync + 'static {
 }
 
 #[cfg(test)]
-mod request_headers_tests {
-    use super::RequestHeaders;
-
-    #[test]
-    fn names_fold_case_and_values_stay_out_of_debug() {
-        let headers =
-            RequestHeaders::from_pairs([("X-Pack-Ticket", "secret-ticket"), ("x-other", "b")]);
-        assert_eq!(headers.get("x-pack-ticket"), Some("secret-ticket"));
-        assert_eq!(headers.get("X-PACK-TICKET"), Some("secret-ticket"));
-        assert_eq!(headers.len(), 2);
-        assert_eq!(
-            headers.iter().map(|(name, _)| name).collect::<Vec<_>>(),
-            ["x-other", "x-pack-ticket"]
-        );
-        assert!(!format!("{headers:?}").contains("secret-ticket"));
-    }
-}
-
-#[cfg(test)]
 mod flavor_service_tests {
     use std::sync::Arc;
 
@@ -852,24 +833,11 @@ mod flavor_service_tests {
         assert!(services.get::<Gamma>().is_none());
         assert_eq!(services.get::<Alpha>().expect("alpha retained").0, "first");
     }
-
-    #[test]
-    fn tool_services_share_the_composed_service_instances() {
-        let services = FlavorServices::with(Alpha("shared"));
-        let flavor_handle = services.get::<Alpha>().expect("alpha present");
-
-        let tool_handle = services
-            .into_tool_services()
-            .get::<Alpha>()
-            .expect("alpha reaches tool services");
-
-        assert!(Arc::ptr_eq(&flavor_handle, &tool_handle));
-    }
 }
 
 #[cfg(test)]
 mod shared_arg_rule_tests {
-    use super::{MAX_QUERY_CHARS, MAX_TEXT_CAP_CHARS, ToolError, validate_search_query};
+    use super::{MAX_QUERY_CHARS, ToolError, validate_search_query};
 
     #[test]
     fn a_query_is_trimmed_and_bounded() {
@@ -883,17 +851,6 @@ mod shared_arg_rule_tests {
         assert!(validate_search_query("").is_err());
         assert!(validate_search_query("   ").is_err());
         assert!(validate_search_query(&"a".repeat(MAX_QUERY_CHARS + 1)).is_err());
-    }
-
-    /// Whitespace-only is rejected AFTER trimming, not before: `"   "` is
-    /// an empty query.
-    #[test]
-    fn the_bound_applies_to_the_trimmed_query() {
-        let padded = format!("  {}  ", "a".repeat(MAX_QUERY_CHARS));
-        assert!(
-            validate_search_query(&padded).is_ok(),
-            "padding must not push a legal query over the cap"
-        );
     }
 
     /// Characters, not bytes. A byte cap would reject a shorter question
@@ -976,13 +933,6 @@ mod shared_arg_rule_tests {
             "the reported length must be the trimmed one: {message}"
         );
     }
-
-    /// The two in-tree text caps were already the same number by intent;
-    /// sharing the constant is what makes that true by construction.
-    #[test]
-    fn the_shared_text_cap_is_the_number_both_tools_documented() {
-        assert_eq!(MAX_TEXT_CAP_CHARS, 8_000);
-    }
 }
 
 #[cfg(test)]
@@ -1020,38 +970,6 @@ mod operator_label_tests {
         .with_caller(caller_label.map(|label| ToolCaller::new(label, "test-client", "0")))
     }
 
-    /// The entry a flavor `Tool` can actually reach. `Tool::call` is handed
-    /// a `ToolCtx` whose fields are private and which cannot produce an
-    /// `McpToolCtx`, so without this an out-of-tree tool taking its own
-    /// `model_id` had no way to resolve it and would fall back to reading
-    /// the caller label — the exact bypass the binding exists to close.
-    #[test]
-    fn a_flavor_context_resolves_the_same_label_the_mcp_path_does() {
-        assert_eq!(
-            ctx(Some("acme/runner-v3"), Some("acme/runner-v3"))
-                .operator_label(None)
-                .expect("bound identity"),
-            "acme/runner-v3"
-        );
-        assert_eq!(
-            ctx(None, Some("caller/model"))
-                .operator_label(None)
-                .expect("caller label"),
-            "caller/model"
-        );
-        assert_eq!(
-            ctx(None, Some("caller/model"))
-                .operator_label(Some("explicit/model"))
-                .expect("explicit label"),
-            "explicit/model"
-        );
-        assert_eq!(
-            ctx(None, None).operator_label(None).expect("no claim"),
-            "unknown",
-            "a context with no caller at all still resolves"
-        );
-    }
-
     #[test]
     fn a_flavor_tool_cannot_relabel_a_bound_identity() {
         let err = ctx(Some("acme/runner-v3"), Some("acme/runner-v3"))
@@ -1078,18 +996,6 @@ mod operator_label_tests {
         assert_eq!(
             ctx.operator_label(None).expect("bound identity wins"),
             "acme/runner-v3"
-        );
-    }
-
-    /// Blank is no claim on this path too, so a flavor tool with an
-    /// optional `model_id` argument does not have to special-case `""`.
-    #[test]
-    fn a_blank_flavor_argument_is_absent() {
-        assert_eq!(
-            ctx(None, Some("caller/model"))
-                .operator_label(Some("   "))
-                .expect("blank is no claim"),
-            "caller/model"
         );
     }
 

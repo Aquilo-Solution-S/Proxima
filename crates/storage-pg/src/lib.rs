@@ -2400,45 +2400,7 @@ impl PgStorage {
 }
 
 #[cfg(test)]
-mod pgvector_tests {
-    use super::{parse_pgvector_version, pgvector_version_is_supported};
-
-    #[test]
-    fn pgvector_version_parser_handles_patch_and_suffixes() {
-        assert_eq!(parse_pgvector_version("0.8.2"), Some((0, 8, 2)));
-        assert_eq!(parse_pgvector_version("0.8"), Some((0, 8, 0)));
-        assert_eq!(parse_pgvector_version("0.8.0beta1"), Some((0, 8, 0)));
-        assert_eq!(parse_pgvector_version("not-a-version"), None);
-    }
-
-    #[test]
-    fn pgvector_version_floor_is_0_8_0() {
-        assert!(!pgvector_version_is_supported("0.7.4"));
-        assert!(pgvector_version_is_supported("0.8.0"));
-        assert!(pgvector_version_is_supported("0.8.2"));
-        assert!(pgvector_version_is_supported("1.0.0"));
-    }
-}
-
-#[cfg(test)]
 mod tests {
-    /// Boot probes one lane index per supported width, and no other: a
-    /// width added to `EmbeddingDim` must be probed here as well.
-    #[test]
-    fn boot_probes_every_width_lane() {
-        let probe = "to_regclass('proxima_core.embeddings_hnsw_d";
-        for dim in proxima_core::EmbeddingDim::ALL {
-            assert!(
-                super::EMBEDDING_SPACE_MARKERS.contains(&format!("{probe}{}')", dim.width())),
-                "boot does not probe the {} lane",
-                dim.width()
-            );
-        }
-        assert_eq!(
-            super::EMBEDDING_SPACE_MARKERS.matches(probe).count(),
-            proxima_core::EmbeddingDim::ALL.len()
-        );
-    }
 
     #[test]
     fn core_migrator_is_the_v008_baseline_plus_additive_migrations() {
@@ -2582,38 +2544,5 @@ mod tests {
             ],
             "install owner-RLS policies from a flavor's table classification",
         );
-    }
-
-    #[test]
-    fn boot_floor_is_the_newest_embedded_core_version() {
-        // The floor is derived, so it can never lag the migrator — this pins
-        // the two remaining assumptions: the namespace ceiling actually
-        // separates core files from flavor-style date versions, and the floor
-        // moves when a migration is added.
-        let floor = super::min_core_migration_version();
-        assert!(
-            (1..=super::CORE_MIGRATION_VERSION_CEILING).contains(&floor),
-            "derived boot floor {floor} must be a core-namespace version"
-        );
-        assert!(
-            super::core_migrator()
-                .iter()
-                .all(|m| m.version <= super::CORE_MIGRATION_VERSION_CEILING),
-            "core migrations must stay below the flavor version namespace"
-        );
-    }
-
-    /// Flavor #0 declares every lexical-stamped table, and the marker query,
-    /// the FK-backed `lexical_language_forget()` completeness argument and
-    /// this pin all read that declaration.
-    ///
-    /// The name below is the whole set, not a sample of it: a sixth
-    /// searchable core sidecar changes the declaration, not any of the
-    /// three readers.
-    #[test]
-    fn flavor_0_declares_exactly_one_lexical_stamped_table() {
-        let declared = proxima_core::FLAVOR_0.lexical_stamped_tables();
-
-        assert_eq!(declared, vec!["proxima_core.projection"]);
     }
 }

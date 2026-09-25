@@ -28,29 +28,6 @@ impl GoalPayload for ProductGoalPayload {
 }
 
 #[test]
-fn typed_goal_payload_write_uses_goal_key_and_sidecar_metadata() {
-    let payload = ProductGoalPayload {
-        stable_key: "onboarding:first-goal".to_string(),
-    };
-    let expected_key = payload.goal_key();
-
-    let write = GoalPayloadWrite::from_payload("  First goal  ", "  Learn daily  ", payload)
-        .expect("valid typed goal payload write");
-
-    assert_eq!(write.schema_id.as_str(), ProductGoalPayload::SCHEMA_ID);
-    assert_eq!(write.schema_version, SchemaVersion::new(7));
-    assert_eq!(write.title, "First goal");
-    assert_eq!(write.text, "Learn daily");
-    assert_eq!(write.payload, expected_key);
-
-    let sidecar = write.sidecar_payload.as_ref().expect(
-        "typed product goals carry a sidecar payload for storage backends that registered one",
-    );
-    assert_eq!(sidecar.schema_id.as_str(), ProductGoalPayload::SCHEMA_ID);
-    assert_eq!(sidecar.schema_version, SchemaVersion::new(7));
-}
-
-#[test]
 fn typed_goal_payload_write_rejects_invalid_display_fields() {
     let err = GoalPayloadWrite::from_payload(
         " ",

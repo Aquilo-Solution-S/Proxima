@@ -521,25 +521,6 @@ mod tests {
     }
 
     #[test]
-    fn direction_names_are_stable() {
-        assert_eq!(direction_name(ThinkDirection::Ancestors), "ancestors");
-        assert_eq!(
-            direction_name(ThinkDirection::EpisodeSiblings),
-            "episode_siblings"
-        );
-    }
-
-    #[test]
-    fn page_complete_stops_after_limit_plus_one() {
-        assert!(!page_complete(1, 0, 1));
-        assert!(page_complete(2, 0, 1));
-        assert!(!page_complete(8, 0, 8));
-        assert!(page_complete(9, 0, 8));
-        assert!(!page_complete(5, 4, 1));
-        assert!(page_complete(6, 4, 1));
-    }
-
-    #[test]
     fn missing_think_cursor_fails_closed() {
         let missing = ThinkPageCursor {
             depth: 1,

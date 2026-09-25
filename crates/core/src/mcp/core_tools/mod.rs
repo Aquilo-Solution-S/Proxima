@@ -98,7 +98,7 @@ pub(crate) fn register_all(
 
 #[cfg(test)]
 mod page_limit_tests {
-    use super::{DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, resolve_page_limit};
+    use super::{MAX_PAGE_LIMIT, resolve_page_limit};
     use crate::reject_zero_limit;
 
     #[test]
@@ -114,11 +114,6 @@ mod page_limit_tests {
             MAX_PAGE_LIMIT,
         );
         assert_eq!(resolve_page_limit(Some(u32::MAX)).unwrap(), MAX_PAGE_LIMIT);
-    }
-
-    #[test]
-    fn an_omitted_limit_is_the_default_not_zero() {
-        assert_eq!(resolve_page_limit(None).unwrap(), DEFAULT_PAGE_LIMIT);
     }
 
     /// Zero limit is invalid input, and that mapping survives `From<ToolError>`

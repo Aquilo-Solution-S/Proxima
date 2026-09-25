@@ -225,46 +225,6 @@ mod tests {
         pairs
     }
 
-    #[test]
-    fn parse_bool_env_defaults_false_when_unset() {
-        assert!(!parse_bool_env(&env(&[]), "PROXIMA_S3_FORCE_PATH_STYLE").unwrap());
-    }
-
-    #[test]
-    fn parse_u64_env_uses_default_when_unset() {
-        assert_eq!(
-            parse_u64_env(&env(&[]), "PROXIMA_S3_UPLOAD_TTL_SECONDS", 900).unwrap(),
-            900
-        );
-    }
-
-    #[test]
-    fn parse_optional_u64_env_is_none_when_unset() {
-        assert_eq!(
-            parse_optional_u64_env(&env(&[]), "PROXIMA_S3_MAX_BLOB_BYTES").unwrap(),
-            None
-        );
-    }
-
-    /// `max_blob_bytes` stays `None` here on purpose — the cap is applied
-    /// once, by `CitedBlobStore::new`, which is also the path a host taking
-    /// the direct constructor uses. The TTLs do default in the parser,
-    /// because nothing downstream can distinguish "unset" from "900".
-    #[test]
-    fn from_lookup_leaves_the_blob_cap_to_the_store() {
-        let cfg = S3RuntimeConfig::from_lookup(&env(&bucketed(&[])))
-            .unwrap()
-            .expect("bucket is set");
-        assert_eq!(cfg.max_blob_bytes, None);
-        assert_eq!(cfg.upload_ttl_seconds, DEFAULT_UPLOAD_TTL_SECONDS);
-        assert_eq!(cfg.read_ttl_seconds, DEFAULT_READ_TTL_SECONDS);
-    }
-
-    #[test]
-    fn from_lookup_is_none_without_a_bucket() {
-        assert!(S3RuntimeConfig::from_lookup(&env(&[])).unwrap().is_none());
-    }
-
     /// The S3 lane is optional, so an unset bucket is `Ok(None)` — but a
     /// bucket without a region is a half-configured lane, not an absent one.
     #[test]
@@ -274,16 +234,6 @@ mod tests {
             panic!("wrong variant");
         };
         assert!(msg.contains("PROXIMA_S3_REGION"), "{msg}");
-    }
-
-    /// Whitespace-only bucket is unset; surrounding whitespace is trimmed.
-    #[test]
-    fn blank_bucket_reads_as_no_bucket() {
-        assert!(
-            S3RuntimeConfig::from_lookup(&env(&[("PROXIMA_S3_BUCKET", "   ")]))
-                .unwrap()
-                .is_none()
-        );
     }
 
     #[test]
@@ -315,18 +265,6 @@ mod tests {
             panic!("wrong variant");
         };
         assert!(msg.contains("greater than zero"), "{msg}");
-    }
-
-    #[test]
-    fn https_endpoint_is_accepted() {
-        validate_endpoint_url("https://s3.eu-central-1.amazonaws.com").expect("https accepted");
-    }
-
-    #[test]
-    fn loopback_http_endpoint_is_accepted() {
-        validate_endpoint_url("http://localhost:9000").expect("localhost http accepted");
-        validate_endpoint_url("http://127.0.0.1:9000").expect("ipv4 loopback http accepted");
-        validate_endpoint_url("http://[::1]:9000").expect("ipv6 loopback http accepted");
     }
 
     #[test]

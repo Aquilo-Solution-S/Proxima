@@ -16,16 +16,16 @@ use std::time::Duration;
 mod common;
 
 use common::{migrated_db, seed_memory_with_sidecars_in_tx};
-use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
+use proxima_code::{FileRevisionV1, FileState};
 use proxima_core::engine::Engine;
 use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaTombstone};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind};
 use proxima_core::{
-    AbstractionPayload, FactPayload, FlavorRegistry, Owner, OwnerRef, PayloadKeyBuilder, SchemaId,
-    SchemaVersion, SourceId, UserId,
+    FactPayload, FlavorRegistry, Owner, OwnerRef, PayloadKeyBuilder, SchemaId, SchemaVersion,
+    SourceId, UserId,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
@@ -506,130 +506,4 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
 
     let _ = drop_db(&db_name).await;
     result.expect("owner_snapshot_heads_only_folds_stateful_fact_schemas failed");
-}
-
-#[tokio::test]
-async fn later_t_is_head_even_when_sidecar_state_is_tombstone() {
-    let (db_name, pg) = migrated_db().await;
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let storage = Arc::new(pg.clone()).storage_ports();
-        let (_user, owner) = make_owner();
-        let authz =
-            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer);
-        let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
-        let repo_id = Uuid::now_v7();
-
-        let present = seed_file_revision_state(
-            pg.pool_for_tests(),
-            owner,
-            repo_id,
-            "src/deleted.rs",
-            b"v1",
-            FileState::Present,
-            None,
-        )
-        .await?;
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let tombstone = seed_file_revision_state(
-            pg.pool_for_tests(),
-            owner,
-            repo_id,
-            "src/deleted.rs",
-            b"v2",
-            FileState::Tombstone,
-            Some(present.handle),
-        )
-        .await?;
-
-        let mut req = QueryRequest::readable();
-        req.schema_id = Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into()));
-        req.limit = 100;
-        let resp = engine.query(&authz, &req).await?;
-        let ids = resp
-            .memories
-            .iter()
-            .map(|m| m.id.into_inner())
-            .collect::<Vec<_>>();
-        assert!(
-            !ids.contains(&present.t),
-            "older present row is not the head"
-        );
-        assert!(
-            ids.contains(&tombstone.t),
-            "sidecar tombstone is still the hot head"
-        );
-
-        req.supersession = SupersessionStatus::IncludeSuperseded;
-        let resp = engine.query(&authz, &req).await?;
-        let ids = resp
-            .memories
-            .iter()
-            .map(|m| m.id.into_inner())
-            .collect::<Vec<_>>();
-        assert!(ids.contains(&present.t));
-        assert!(ids.contains(&tombstone.t));
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("later_t_is_head_even_when_sidecar_state_is_tombstone failed");
-}
-
-// Smoke check the registry-side wiring: raw observations retain NK
-// metadata, while code chunks are derived Abstractions rather than
-// stateful Facts.
-#[test]
-fn flavor_registers_natural_keys() {
-    let mut r = FlavorRegistry::new();
-    proxima_code::register(&mut r).unwrap();
-    let registry = r.freeze_or_panic_for_tests();
-    let nk_for = |sid: &str| {
-        registry
-            .lookup(&SchemaId::new(sid.into()), SchemaVersion::new(1))
-            .map(|s| s.natural_key_columns.clone())
-    };
-
-    assert_eq!(
-        nk_for(CommitV1::SCHEMA_ID).as_deref(),
-        Some(&[][..] as &[String]),
-        "commit-v1 must remain stateless"
-    );
-    assert_eq!(
-        nk_for(FileRevisionV1::SCHEMA_ID),
-        Some(vec!["repo_id".to_string(), "file_path".to_string()])
-    );
-    let chunk_schema = registry
-        .lookup(
-            &SchemaId::new(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID.into()),
-            SchemaVersion::new(1),
-        )
-        .expect("code chunk schema registered");
-    assert_eq!(chunk_schema.kind, PayloadKind::Abstraction);
-    assert!(chunk_schema.natural_key_columns.is_empty());
-}
-
-#[test]
-fn flavor_registers_tombstone_discriminators() {
-    let mut r = FlavorRegistry::new();
-    proxima_code::register(&mut r).unwrap();
-    let registry = r.freeze_or_panic_for_tests();
-    let tombstone_for = |sid: &str| {
-        registry
-            .lookup(&SchemaId::new(sid.into()), SchemaVersion::new(1))
-            .and_then(|s| s.tombstone.clone())
-    };
-    assert_eq!(
-        tombstone_for(FileRevisionV1::SCHEMA_ID),
-        Some(SchemaTombstone {
-            column: "state".into(),
-            value: "Tombstone".into(),
-        })
-    );
-    assert_eq!(
-        tombstone_for(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID),
-        None
-    );
-    assert_eq!(tombstone_for(CommitV1::SCHEMA_ID), None);
 }

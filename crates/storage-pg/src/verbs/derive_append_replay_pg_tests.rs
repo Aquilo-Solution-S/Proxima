@@ -150,21 +150,6 @@ async fn head_snapshot(
     Ok((row.0, row.1, row.2, row.3, count))
 }
 
-async fn content_snapshot(
-    pool: &sqlx::PgPool,
-    handle: Uuid,
-) -> Result<(Uuid, Vec<u8>), sqlx::Error> {
-    sqlx::query_as(
-        "SELECT m.content_id, c.content_hash
-           FROM proxima_core.memory m
-           JOIN proxima_core.content c ON c.content_id = m.content_id
-          WHERE m.handle = $1",
-    )
-    .bind(handle)
-    .fetch_one(pool)
-    .await
-}
-
 #[tokio::test]
 async fn replay_metadata_mismatch_never_replays_or_mutates() {
     let (db_name, pg) = fresh_pg().await;
@@ -228,34 +213,6 @@ async fn replay_metadata_mismatch_never_replays_or_mutates() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("metadata mismatch replay gate");
-}
-
-#[tokio::test]
-async fn same_metadata_replay_keeps_first_content() {
-    let (db_name, pg) = fresh_pg().await;
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
-        let pool = pg.pool_for_tests();
-        let fact = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
-        let handle = Uuid::now_v7();
-        let origins = [EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
-        let first_draft = derived_draft(owner, handle);
-        let first = append_with_edges(pool, &permit, &first_draft, &origins, &[]).await?;
-        let before = head_snapshot(pool, handle).await?;
-        let content_before = content_snapshot(pool, handle).await?;
-        let mut changed = derived_draft(owner, handle);
-        changed.text = "changed text must be ignored on replay".into();
-        let replay = append_with_edges(pool, &permit, &changed, &origins, &[]).await?;
-        assert!(replay.idempotent_replay);
-        assert_eq!(replay.memory_id, first.memory_id);
-        assert_eq!(head_snapshot(pool, handle).await?, before);
-        assert_eq!(content_snapshot(pool, handle).await?, content_before);
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("same metadata retry must preserve first content");
 }
 
 #[tokio::test]

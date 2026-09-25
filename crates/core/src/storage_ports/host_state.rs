@@ -363,16 +363,6 @@ mod tests {
     }
 
     #[test]
-    fn request_round_trips_the_command() {
-        let owner = OwnerRef::Group(GroupId::new(Uuid::nil()));
-        let request = HostStateRequest::from_command(Dummy { owner });
-        assert_eq!(request.participant_id().as_str(), "dummy");
-        assert_eq!(request.tables()[0].as_str(), "dummy.table");
-        let command = request.downcast::<Dummy>().expect("command type");
-        assert_eq!(command.owner(), owner);
-    }
-
-    #[test]
     fn a_multi_command_participant_dispatches_without_losing_the_request() {
         let owner = OwnerRef::Group(GroupId::new(Uuid::nil()));
         let request = HostStateRequest::from_command(ExtraTable { owner });

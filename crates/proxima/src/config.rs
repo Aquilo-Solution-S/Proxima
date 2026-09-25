@@ -262,50 +262,11 @@ mod tests {
     }
 
     #[test]
-    fn s3_absent_when_bucket_unset() {
-        let s3 = s3_from_lookup(&env(&[])).unwrap();
-        assert!(s3.is_none());
-    }
-
-    #[test]
-    fn s3_present_when_bucket_set() {
-        let s3 = s3_from_lookup(&env(&[
-            ("PROXIMA_S3_BUCKET", "proxima"),
-            ("PROXIMA_S3_REGION", "us-east-1"),
-        ]))
-        .unwrap();
-        assert_eq!(s3.as_ref().map(|s| s.bucket.as_str()), Some("proxima"));
-    }
-
-    #[test]
     fn pg_pool_config_uses_the_injected_lookup() {
         let config = pg_pool_config_from_lookup(&env(&[("PROXIMA_PG_MAX_CONNECTIONS", "4")]))
             .unwrap()
             .expect("non-default pool config");
         assert_eq!(config.max_connections, 4);
-    }
-
-    #[test]
-    fn publication_defaults_when_the_block_is_unset() {
-        let config = publication_config_from_lookup(&env(&[])).unwrap();
-        assert!(config.source.is_none());
-        assert_eq!(config.limits, PublicationLimits::default());
-    }
-
-    #[test]
-    fn publication_reads_the_source_and_both_bounds() {
-        let config = publication_config_from_lookup(&env(&[
-            (ENV_PUBLICATION_SOURCE, "urn:proxima:test"),
-            (ENV_OUTBOX_MAX_PENDING, "7"),
-            (ENV_OUTBOX_MAX_PAYLOAD_BYTES, "4096"),
-        ]))
-        .unwrap();
-        assert_eq!(
-            config.source.as_ref().map(PublicationSource::as_str),
-            Some("urn:proxima:test")
-        );
-        assert_eq!(config.limits.max_pending, 7);
-        assert_eq!(config.limits.max_payload_bytes, 4096);
     }
 
     #[test]

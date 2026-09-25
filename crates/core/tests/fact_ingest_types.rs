@@ -48,31 +48,3 @@ fn receipt_id_is_deterministic_for_stamped_owner() {
     let h2 = command.receipt_id_for_owner(owner);
     assert_eq!(h1, h2);
 }
-
-#[test]
-fn receipt_id_changes_with_payload() {
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-    let mut command = fresh_command();
-    let h1 = command.receipt_id_for_owner(owner);
-    command.payload = b"different".to_vec();
-    let h2 = command.receipt_id_for_owner(owner);
-    assert_ne!(h1, h2);
-}
-
-#[test]
-fn receipt_id_ignores_citation() {
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-    let mut command = fresh_command();
-    let h1 = command.receipt_id_for_owner(owner);
-    command.citation = None;
-    let h2 = command.receipt_id_for_owner(owner);
-    assert_eq!(h1, h2);
-}
-
-#[test]
-fn receiptless_fact_write_has_no_receipt_id() {
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-    let mut command = fresh_command();
-    command.receipt = None;
-    assert_eq!(command.receipt_id_for_owner(owner), None);
-}

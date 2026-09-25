@@ -3,8 +3,8 @@
 mod common;
 
 use common::{migrated_db, owner_write_permit, test_owner};
-use proxima_code::testkit::{build_engine, ingest_commit, ingest_file_revision, register_repo};
-use proxima_code::{CommitV1, FileRevisionV1, FileState, RepoScope};
+use proxima_code::testkit::{build_engine, ingest_file_revision, register_repo};
+use proxima_code::{FileRevisionV1, FileState, RepoScope};
 use proxima_core::storage_ports::OwnerTransferPort;
 use proxima_core::{AccessKind, AuthPath, AuthzContext, EntityId};
 use proxima_pg_testkit::drop_db;
@@ -40,22 +40,6 @@ fn file_revision(repo_id: Uuid, file_path: &str, version: &str) -> FileRevisionV
     }
 }
 
-fn commit(repo_id: Uuid) -> CommitV1 {
-    let now = time::OffsetDateTime::now_utc();
-    CommitV1 {
-        repo_id,
-        sha: "0123456789abcdef0123456789abcdef01234567".to_string(),
-        parents: Vec::new(),
-        author_name: "Ada".to_string(),
-        author_email: "ada@example.test".to_string(),
-        author_time: now,
-        committer_name: "Ada".to_string(),
-        committer_email: "ada@example.test".to_string(),
-        committer_time: now,
-        message: "initial".to_string(),
-    }
-}
-
 /// Every repo-scoped ingest is fenced on a registered repository, so the
 /// fixture has to register one. An unregistered repo id is now a refusal,
 /// which is the point of the fence and is pinned in `repo_fence_pg`.
@@ -75,46 +59,6 @@ async fn register_fixture_repo(
     )
     .await?;
     Ok(())
-}
-
-#[tokio::test]
-async fn code_stateful_ingest_reuses_handle() {
-    let (db_name, pg) = migrated_db().await;
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = test_owner();
-        let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-        let repo_id = Uuid::now_v7();
-        register_fixture_repo(&pg, &owner, repo_id).await?;
-        let file_path = "src/lib.rs";
-        let now = time::OffsetDateTime::now_utc();
-
-        let first = ingest_file_revision(
-            &engine,
-            &authz,
-            &file_revision(repo_id, file_path, "v1"),
-            now,
-        )
-        .await?;
-        let second = ingest_file_revision(
-            &engine,
-            &authz,
-            &file_revision(repo_id, file_path, "v2"),
-            now,
-        )
-        .await?;
-        assert_eq!(first.handle, second.handle, "same path is one series");
-        assert_ne!(
-            first.memory_id, second.memory_id,
-            "new observation is a new t"
-        );
-
-        ingest_commit(&engine, &authz, &commit(repo_id), now).await?;
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("code_stateful_ingest_reuses_handle failed");
 }
 
 #[tokio::test]

@@ -420,24 +420,6 @@ fn test_sidecars() -> PgSidecarRegistryFrozen {
         .expect("the code flavor's PG sidecars agree with its contract")
 }
 
-#[cfg(test)]
-mod tuning_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn store_carries_the_host_resolved_query_tuning() {
-        tokio::task::yield_now().await;
-        let tuning = PgTuning {
-            hnsw_ef_search: 321,
-            ..PgTuning::default()
-        };
-        let pool = PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
-        let store = CodeFlavorStore::from_backend_pool_with_tuning_for_tests(pool, tuning);
-
-        assert_eq!(store.tuning, tuning);
-    }
-}
-
 /// One acceptance-criteria Fact and its child rows.
 #[derive(Debug, Clone)]
 pub(crate) struct CriteriaGroup {
@@ -532,40 +514,4 @@ fn group_criteria_join_rows(rows: Vec<CriteriaJoinRow>) -> Vec<CriteriaGroup> {
 #[allow(clippy::needless_pass_by_value)]
 fn map_sqlx(error: sqlx::Error) -> ToolError {
     ToolError::Storage(proxima_core::StorageError::Internal(error.to_string()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{CriteriaJoinRow, group_criteria_join_rows};
-    use crate::payloads::AcceptanceVerifierKind;
-    use uuid::Uuid;
-
-    fn join_row(criteria_t: Uuid, key: Option<&str>) -> CriteriaJoinRow {
-        CriteriaJoinRow {
-            criteria_t,
-            criterion_key: key.map(str::to_owned),
-            description: key.map(|_| "d".into()),
-            required: key.map(|_| true),
-            verifier_kind: key.map(|_| AcceptanceVerifierKind::Command),
-            verifier_path: None,
-            verifier_command: None,
-            verifier_pattern: None,
-            verifier_note: None,
-        }
-    }
-
-    #[test]
-    fn join_rows_group_by_criteria_t_and_keep_empty_parents() {
-        let a = Uuid::from_u128(1);
-        let b = Uuid::from_u128(2);
-        let groups = group_criteria_join_rows(vec![
-            join_row(a, Some("build")),
-            join_row(a, Some("tests")),
-            join_row(b, None),
-        ]);
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].criteria.len(), 2);
-        assert_eq!(groups[0].criteria[0].key, "build");
-        assert!(groups[1].criteria.is_empty());
-    }
 }

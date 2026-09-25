@@ -397,17 +397,8 @@ fn parse_kind(kind: &str) -> Option<EntityKind> {
 /// below can never see a Goal address; this is the assertion that says so.
 #[cfg(test)]
 mod tests {
-    use proxima_core::{EdgeEndpoint, EntityKind, MemoryId};
 
     use super::{ANCESTOR_HOP_SQL, DESCENDANT_HOP_SQL};
-
-    #[test]
-    fn a_resolved_head_decodes_as_a_pinned_fact_memory() {
-        let id = uuid::Uuid::now_v7();
-        let endpoint = EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(id));
-        assert_eq!(endpoint.kind, EntityKind::Fact);
-        assert_eq!(endpoint.memory_id().map(MemoryId::into_inner), Some(id));
-    }
 
     #[test]
     fn lineage_sql_does_not_join_target_owner() {

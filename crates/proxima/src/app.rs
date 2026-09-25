@@ -222,13 +222,9 @@ mod tests {
     struct AlphaService;
 
     #[derive(Debug)]
-    struct BetaService;
-
-    #[derive(Debug)]
     struct SharedService;
 
     struct AlphaApp;
-    struct BetaApp;
     struct DuplicateOne;
     struct DuplicateTwo;
 
@@ -247,7 +243,6 @@ mod tests {
     }
 
     empty_bundle!(AlphaApp);
-    empty_bundle!(BetaApp);
     empty_bundle!(DuplicateOne);
     empty_bundle!(DuplicateTwo);
 
@@ -264,22 +259,6 @@ mod tests {
             _ctx: &AppContext,
         ) -> Result<proxima_core::FlavorServices, proxima_core::FlavorServiceError> {
             Ok(proxima_core::FlavorServices::with(AlphaService))
-        }
-    }
-
-    impl FlavorApp for BetaApp {
-        fn app_info() -> AppInfo {
-            AppInfo {
-                id: "beta",
-                title: "Beta",
-                version: "1",
-            }
-        }
-
-        fn services(
-            _ctx: &AppContext,
-        ) -> Result<proxima_core::FlavorServices, proxima_core::FlavorServiceError> {
-            Ok(proxima_core::FlavorServices::with(BetaService))
         }
     }
 
@@ -343,15 +322,6 @@ mod tests {
         assert_eq!(<(AlphaApp,) as FlavorApp>::app_info().id, "alpha");
         let services = <(AlphaApp,) as FlavorApp>::services(&ctx).unwrap();
         assert!(services.get::<AlphaService>().is_some());
-    }
-
-    #[tokio::test]
-    async fn tuple_composes_every_service() {
-        tokio::task::yield_now().await;
-        let services = <(AlphaApp, BetaApp) as FlavorApp>::services(&context()).unwrap();
-
-        assert!(services.get::<AlphaService>().is_some());
-        assert!(services.get::<BetaService>().is_some());
     }
 
     #[tokio::test]

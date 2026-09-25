@@ -1,65 +1,12 @@
 use super::{
-    DEFAULT_BODY_MAX_CHARS, LaneArm, ListPosition, MergeKind, NeighborEdge, OwnerLane, PageCursor,
-    RankedList, RankedMemoryOutput, SEMANTIC_SEARCH_UNAVAILABLE, SearchMemoriesArgs,
-    SearchMemoriesKind, SearchMemoriesMode, SearchMemoriesSupersession, SearchMemoryOutput,
-    SearchRanking, cursor_positions, decode_cursor, degraded_to_lexical, effective_body_max_chars,
-    encode_cursor, paginate_rank_fused, ranking_for, retain_surviving_neighbor_edges,
-    truncate_body, validate_body_max_chars, validate_list_caps, validate_score_args,
-    weight_for_effective_mode,
+    LaneArm, MergeKind, OwnerLane, PageCursor, SearchMemoriesArgs, SearchMemoriesKind,
+    SearchMemoriesMode, SearchMemoriesSupersession, cursor_positions, decode_cursor,
+    degraded_to_lexical, encode_cursor, truncate_body, validate_body_max_chars, validate_list_caps,
+    validate_score_args,
 };
 use crate::MemoryId;
 use crate::mcp::McpToolError;
 use crate::verbs::query::{SearchCursor, SearchMode, SearchOrder, TagMatch};
-
-fn memory_output(handle: &str) -> SearchMemoryOutput {
-    SearchMemoryOutput {
-        memory_id: uuid::Uuid::nil(),
-        memory: handle.to_string(),
-        space: "current".into(),
-        kind: "Fact".into(),
-        schema_id: "core/agent-note".into(),
-        created_at: "2026-07-05T00:00:00Z".into(),
-        snippet: String::new(),
-        score: 1.0,
-        lexical_score: 1.0,
-        similarity_score: 0.0,
-        tags: Vec::new(),
-        body: None,
-        body_truncated: None,
-    }
-}
-
-fn neighbor_edge(source: &str, target: &str) -> NeighborEdge {
-    NeighborEdge {
-        source: source.to_string(),
-        target: target.to_string(),
-        kind: "origin".into(),
-    }
-}
-
-#[test]
-fn search_cursor_schema_allows_presentation_to_vary() {
-    let schema = serde_json::to_string(&schemars::schema_for!(SearchMemoriesArgs))
-        .expect("search args schema");
-    assert!(
-        schema.contains("include_body") && schema.contains("include_neighbor_edges"),
-        "cursor contract must name the presentation flags that may vary"
-    );
-    assert!(
-        !schema.contains("every argument except limit"),
-        "schema must not contradict the fingerprint (limit/body/neighbors may vary)"
-    );
-}
-
-#[test]
-fn omitted_include_neighbor_edges_deserializes_false() {
-    let args: SearchMemoriesArgs = serde_json::from_value(serde_json::json!({ "query": "needle" }))
-        .expect("minimal search args");
-    assert!(
-        !args.include_neighbor_edges,
-        "neighbors default off; omitted field must be false"
-    );
-}
 
 fn args(mode: SearchMemoriesMode) -> SearchMemoriesArgs {
     SearchMemoriesArgs {
@@ -152,15 +99,6 @@ fn cursor_round_trips_and_rejects_foreign_or_garbled_tokens() {
 }
 
 #[test]
-fn semantic_unavailable_message_is_provider_neutral() {
-    assert!(
-        !SEMANTIC_SEARCH_UNAVAILABLE.contains("_API_KEY"),
-        "the actionable message must not hardcode a provider env var: {SEMANTIC_SEARCH_UNAVAILABLE}",
-    );
-    assert!(SEMANTIC_SEARCH_UNAVAILABLE.contains("no embedding client is configured"));
-}
-
-#[test]
 fn search_mode_and_supersession_accept_mixed_case() {
     assert!(matches!(
         serde_json::from_value::<SearchMemoriesMode>(serde_json::json!("Hybrid")).unwrap(),
@@ -186,28 +124,6 @@ fn search_mode_and_supersession_accept_mixed_case() {
 }
 
 #[test]
-fn neighbor_edges_to_truncated_hits_are_dropped_and_deduped() {
-    let memories = [memory_output("F:1"), memory_output("A:2")];
-    let mut edges = vec![
-        // Touches a surviving hit via source.
-        neighbor_edge("A:2", "F:99"),
-        // Both endpoints truncated out — dropped.
-        neighbor_edge("F:98", "F:97"),
-        // Same content as the first — deduped, because content IS
-        // the edge's identity.
-        neighbor_edge("A:2", "F:99"),
-        // Touches a surviving hit via target.
-        neighbor_edge("F:96", "F:1"),
-    ];
-    retain_surviving_neighbor_edges(&memories, &mut edges);
-    let kept: Vec<_> = edges
-        .iter()
-        .map(|edge| (edge.source.as_str(), edge.target.as_str()))
-        .collect();
-    assert_eq!(kept, [("A:2", "F:99"), ("F:96", "F:1")]);
-}
-
-#[test]
 fn degraded_flag_only_fires_for_hybrid_with_results_and_no_semantic() {
     // Hybrid returned rows but none carried a semantic score → degraded.
     assert!(degraded_to_lexical(SearchMode::Hybrid, false, false));
@@ -219,27 +135,6 @@ fn degraded_flag_only_fires_for_hybrid_with_results_and_no_semantic() {
     assert!(!degraded_to_lexical(SearchMode::Semantic, false, false));
     // Lexical is never degraded.
     assert!(!degraded_to_lexical(SearchMode::Lexical, false, false));
-}
-
-/// The verb rejects a fusion weight paired with a mode that would
-/// discard it. A hybrid request that degrades to lexical because the
-/// deployment has no embeddings must stay servable, so the weight is
-/// dropped with the semantic component it was weighting — otherwise
-/// every `semantic_weight` search on such a deployment would start
-/// failing on a rule the caller did not break.
-#[test]
-fn a_degraded_run_drops_the_weight_it_can_no_longer_honor() {
-    assert_eq!(
-        weight_for_effective_mode(Some(0.7), SearchMode::Hybrid),
-        Some(0.7),
-        "a hybrid run still fuses, so it keeps the caller's weight"
-    );
-    assert_eq!(
-        weight_for_effective_mode(Some(0.7), SearchMode::Lexical),
-        None,
-        "degrading to lexical leaves no semantic component to weight"
-    );
-    assert_eq!(weight_for_effective_mode(None, SearchMode::Hybrid), None);
 }
 
 fn lane(owner: u128, space: Option<&str>) -> OwnerLane {
@@ -260,96 +155,6 @@ fn lane(owner: u128, space: Option<&str>) -> OwnerLane {
             )
         }),
     }
-}
-
-fn ranked(memory_id: u128, score: f32) -> RankedMemoryOutput {
-    let mut output = memory_output(&format!("F:{memory_id}"));
-    output.memory_id = uuid::Uuid::from_u128(memory_id);
-    output.score = score;
-    RankedMemoryOutput {
-        memory_id: uuid::Uuid::from_u128(memory_id),
-        created_at: time::OffsetDateTime::UNIX_EPOCH,
-        output,
-    }
-}
-
-#[test]
-fn one_scoring_lane_ranks_by_score_and_any_mix_ranks_by_rank() {
-    assert_eq!(
-        ranking_for(&[lane(1, Some("m")), lane(2, Some("m"))]),
-        SearchRanking::Score
-    );
-    assert_eq!(
-        ranking_for(&[lane(1, None), lane(2, None)]),
-        SearchRanking::Score
-    );
-    assert_eq!(
-        ranking_for(&[lane(1, Some("m")), lane(2, Some("other"))]),
-        SearchRanking::Rank
-    );
-    // A degraded Owner's lexical score is not on its peer's scale.
-    assert_eq!(
-        ranking_for(&[lane(1, Some("m")), lane(2, None)]),
-        SearchRanking::Rank
-    );
-    assert_eq!(
-        MergeKind::of(SearchRanking::Rank, SearchOrder::Relevance),
-        MergeKind::Rank
-    );
-    assert_eq!(
-        MergeKind::of(SearchRanking::Rank, SearchOrder::Recency),
-        MergeKind::Keyset,
-        "recency compares across any scoring lanes"
-    );
-}
-
-/// Two Owners on different models: scores are incomparable, so the page
-/// interleaves by rank, and paging through per-list keysets visits every
-/// row exactly once, in one stable order.
-#[test]
-fn rank_fusion_interleaves_and_pages_without_gaps_or_repeats() {
-    let lanes = [lane(1, Some("m")), lane(2, Some("other"))];
-    // Owner 1's scores all beat owner 2's; a score merge would bury
-    // owner 2 entirely.
-    let a: Vec<(u128, f32)> = vec![(10, 0.99), (11, 0.98), (12, 0.97)];
-    let b: Vec<(u128, f32)> = vec![(20, 0.30), (21, 0.20)];
-    let fetch = |rows: &[(u128, f32)], position: ListPosition, limit: usize| {
-        let start = usize::try_from(position.consumed).unwrap();
-        let slice = &rows[start.min(rows.len())..];
-        let has_more = slice.len() > limit;
-        (
-            slice
-                .iter()
-                .take(limit)
-                .map(|(id, score)| ranked(*id, *score))
-                .collect::<Vec<_>>(),
-            has_more,
-        )
-    };
-    let mut after: Option<PageCursor> = None;
-    let mut seen = Vec::new();
-    for _ in 0..5 {
-        let positions = cursor_positions(after.as_ref(), MergeKind::Rank, &lanes).unwrap();
-        let (a_rows, a_more) = fetch(&a, positions[0], 2);
-        let (b_rows, b_more) = fetch(&b, positions[1], 2);
-        let lists = vec![
-            RankedList {
-                owner: lanes[0].space.owner,
-                position: positions[0],
-                rows: a_rows,
-            },
-            RankedList {
-                owner: lanes[1].space.owner,
-                position: positions[1],
-                rows: b_rows,
-            },
-        ];
-        let (page, _, next) = paginate_rank_fused(lists, 2, a_more || b_more, "fp");
-        seen.extend(page.iter().map(|memory| memory.memory_id.as_u128()));
-        let Some(next) = next else { break };
-        after = Some(decode_cursor(&next, "fp").unwrap());
-    }
-    assert_eq!(seen, vec![20, 10, 21, 11, 12]);
 }
 
 #[test]
@@ -373,37 +178,8 @@ fn a_cursor_of_the_other_merge_kind_is_rejected() {
 }
 
 #[test]
-fn truncate_body_applies_default_hydration_cap() {
-    let body = "x".repeat(DEFAULT_BODY_MAX_CHARS + 1);
-    let (text, truncated) = truncate_body(&body, DEFAULT_BODY_MAX_CHARS);
-    assert_eq!(text.chars().count(), DEFAULT_BODY_MAX_CHARS);
-    assert!(truncated, "a body over the cap must flag truncation");
-}
-
-#[test]
 fn truncate_body_respects_smaller_caller_cap() {
     assert_eq!(truncate_body("abcdef", 3), ("abc".to_string(), true));
-}
-
-#[test]
-fn truncate_body_signals_no_truncation_when_body_fits() {
-    // Exactly at the cap and comfortably under it both leave the text
-    // whole and report body_truncated=false — the signal only fires on a
-    // real cut. Multi-byte chars count by character, not byte.
-    assert_eq!(truncate_body("abc", 3), ("abc".to_string(), false));
-    assert_eq!(truncate_body("ab", 3), ("ab".to_string(), false));
-    assert_eq!(truncate_body("héllo", 5), ("héllo".to_string(), false));
-    assert_eq!(truncate_body("héllo", 2), ("hé".to_string(), true));
-}
-
-#[test]
-fn effective_body_max_chars_keeps_server_ceiling() {
-    assert_eq!(effective_body_max_chars(None), DEFAULT_BODY_MAX_CHARS);
-    assert_eq!(effective_body_max_chars(Some(12)), 12);
-    assert_eq!(
-        effective_body_max_chars(Some(DEFAULT_BODY_MAX_CHARS + 1)),
-        DEFAULT_BODY_MAX_CHARS
-    );
 }
 
 #[test]

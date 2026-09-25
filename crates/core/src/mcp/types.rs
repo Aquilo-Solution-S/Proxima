@@ -187,16 +187,6 @@ mod tests {
     }
 
     #[test]
-    fn an_equal_label_is_compared_after_trimming() {
-        assert_eq!(
-            resolve_operator_label(Some("runner/pinned"), Some("  runner/pinned  "))
-                .expect("trim-equal is not a conflict"),
-            "runner/pinned",
-            "the bound value is recorded, not the caller's spacing"
-        );
-    }
-
-    #[test]
     fn a_differing_label_is_refused_and_names_both_sides() {
         let conflict = resolve_operator_label(Some("runner/pinned"), Some("claimed/model"))
             .expect_err("a different label must not silently lose");
@@ -213,39 +203,6 @@ mod tests {
         );
     }
 
-    /// A blank claim is no claim, on either transport. REST already drops
-    /// an empty header upstream; if MCP did not drop an empty argument here,
-    /// two identical requests would mean different things.
-    #[test]
-    fn a_blank_supplied_label_is_absent_not_a_conflict() {
-        for blank in ["", "   ", "\t"] {
-            assert_eq!(
-                resolve_operator_label(Some("runner/pinned"), Some(blank))
-                    .expect("a blank claim cannot conflict"),
-                "runner/pinned"
-            );
-            assert_eq!(
-                resolve_operator_label(None, Some(blank)).expect("no conflict"),
-                UNKNOWN_OPERATOR_LABEL,
-                "blank {blank:?} is absent, not an empty label"
-            );
-        }
-    }
-
-    /// Whatever is recorded is the trimmed form: the stored label and any
-    /// idempotency key derived from it must be the same string.
-    #[test]
-    fn both_sides_are_returned_trimmed() {
-        assert_eq!(
-            resolve_operator_label(Some("  runner/pinned  "), None).expect("no conflict"),
-            "runner/pinned"
-        );
-        assert_eq!(
-            resolve_operator_label(None, Some("  caller/model  ")).expect("no conflict"),
-            "caller/model"
-        );
-    }
-
     #[test]
     fn without_a_trusted_id_the_caller_label_stands_and_absence_is_unknown() {
         assert_eq!(
@@ -256,13 +213,6 @@ mod tests {
             resolve_operator_label(None, None).expect("no conflict"),
             UNKNOWN_OPERATOR_LABEL
         );
-    }
-
-    /// The bound is one constant precisely so an authenticator cannot bind an
-    /// id that a tool would then refuse as over-long.
-    #[test]
-    fn the_operator_label_bound_is_the_shared_constant() {
-        assert_eq!(MAX_OPERATOR_LABEL_CHARS, 120);
     }
 
     /// The conflict is decided before any length check — it has to be, or

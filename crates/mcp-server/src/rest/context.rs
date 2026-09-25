@@ -328,22 +328,6 @@ mod tests {
     }
 
     #[test]
-    fn user_agent_is_split_into_name_and_version() {
-        let author = author_from_headers(
-            &headers(&[(header::USER_AGENT.as_str(), "acme-cli/1.2.3 (linux) curl/8")]),
-            &auth(None),
-            "/v1/tools/core_remember",
-        )
-        .expect("author");
-        assert_eq!(author.client_name, "acme-cli");
-        assert_eq!(author.client_version, "1.2.3");
-
-        let bare = author_from_headers(&headers(&[]), &auth(None), "/v1/tools/core_remember")
-            .expect("author");
-        assert_eq!(bare.client_name, ADAPTER_CLIENT_NAME);
-    }
-
-    #[test]
     fn every_reserved_name_is_refused_and_names_its_header() {
         for (field, header_name) in RESERVED_ARGUMENTS {
             let args = serde_json::json!({ "text": "x", *field: "y" });

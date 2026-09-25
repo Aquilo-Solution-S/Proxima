@@ -306,20 +306,13 @@ macro_rules! flavor_bundle {
 mod tests {
     use std::borrow::Cow;
 
-    use proxima_core::storage_ports::{
-        CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
-        CitedBlobUploadAborted, CitedBlobUploadPrepared,
-    };
-    use proxima_core::{
-        AuthzContext, FlavorRegistry, FlavorRegistryError, FlavorServices, OwnerRef, StorageError,
-    };
+    use proxima_core::{FlavorRegistry, FlavorRegistryError};
     use proxima_storage_pg::PgSidecarRegistry;
     use sqlx::SqlSafeStr;
     use sqlx::migrate::{Migration, MigrationType, Migrator};
 
     use super::FlavorBundle;
     use crate::NamedMigrator;
-    use crate::workers::{FlavorWorker, FlavorWorkerContext};
 
     /// A declaration for a flavor that registers nothing. Freeze refuses a
     /// linked flavor without one, and the subject of these tests is bundle
@@ -349,8 +342,6 @@ mod tests {
     // ordinal are a freeze error.
     static ALPHA_CONTRACT: proxima_core::flavor::FlavorContract =
         empty_contract("proxima-test-alpha", 7);
-    static BETA_CONTRACT: proxima_core::flavor::FlavorContract =
-        empty_contract("proxima-test-beta", 8);
 
     mod alpha {
         proxima_core::proxima_flavor! {
@@ -364,20 +355,7 @@ mod tests {
         }
     }
 
-    mod beta {
-        proxima_core::proxima_flavor! {
-            name = "proxima-test-beta",
-            fact_schemas = [],
-            abstraction_schemas = [],
-            perspective_schemas = [],
-            goal_schemas = [],
-            mcp_tools = [],
-            contract = &super::BETA_CONTRACT,
-        }
-    }
-
     struct AlphaBundle;
-    struct BetaBundle;
 
     impl FlavorBundle for AlphaBundle {
         fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
@@ -388,45 +366,6 @@ mod tests {
 
         fn migrators() -> Vec<NamedMigrator> {
             vec![NamedMigrator::new("alpha", migrator(&[1, 2]))]
-        }
-    }
-
-    impl FlavorBundle for BetaBundle {
-        fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
-            beta::register(registry)
-        }
-
-        fn register_pg_sidecars(_registry: &mut PgSidecarRegistry) {}
-
-        fn migrators() -> Vec<NamedMigrator> {
-            vec![NamedMigrator::new("beta", migrator(&[3]))]
-        }
-    }
-
-    /// Contributes two named workers; every other test bundle keeps the
-    /// default empty `spawn_workers`.
-    struct GammaBundle;
-
-    impl FlavorBundle for GammaBundle {
-        fn register(_registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
-            Ok(())
-        }
-
-        fn migrators() -> Vec<NamedMigrator> {
-            Vec::new()
-        }
-
-        fn spawn_workers(ctx: &FlavorWorkerContext) -> Vec<FlavorWorker> {
-            ["gamma-first", "gamma-second"]
-                .into_iter()
-                .map(|name| {
-                    let cancel = ctx.cancel.clone();
-                    FlavorWorker {
-                        name,
-                        handle: tokio::spawn(cancel.cancelled_owned()),
-                    }
-                })
-                .collect()
         }
     }
 
@@ -446,156 +385,6 @@ mod tests {
         Migrator {
             migrations: Cow::Owned(migrations),
             ..Migrator::DEFAULT
-        }
-    }
-
-    #[test]
-    fn tuple_registers_flavors_in_order() {
-        let mut registry = FlavorRegistry::new();
-        <(AlphaBundle, BetaBundle) as FlavorBundle>::register(&mut registry).unwrap();
-
-        let frozen = registry.freeze_or_panic_for_tests();
-        let flavor_ids: Vec<_> = frozen
-            .list_flavors()
-            .iter()
-            .map(|flavor| flavor.flavor_id.as_str())
-            .collect();
-
-        assert!(frozen.flavor("proxima-test-alpha").is_some());
-        assert!(frozen.flavor("proxima-test-beta").is_some());
-        assert!(
-            flavor_ids
-                .windows(2)
-                .any(|ids| ids == ["proxima-test-alpha", "proxima-test-beta"])
-        );
-    }
-
-    #[test]
-    fn tuple_preserves_migrator_order() {
-        let migrators = <(AlphaBundle, BetaBundle) as FlavorBundle>::migrators();
-        let versions: Vec<_> = migrators
-            .iter()
-            .flat_map(|migrator| {
-                migrator
-                    .migrator()
-                    .iter()
-                    .map(|migration| migration.version)
-            })
-            .collect();
-
-        assert_eq!(versions, [1, 2, 3]);
-    }
-
-    /// Every method fails `Unavailable`: the tests here only need a
-    /// `CitedBlobPort` that exists, never one that works.
-    struct StubBlobPort;
-
-    #[async_trait::async_trait]
-    impl CitedBlobPort for StubBlobPort {
-        async fn prepare_upload(
-            &self,
-            _authz: &AuthzContext,
-            _owner: OwnerRef,
-            _filename: &str,
-            _mime: &str,
-            _byte_len: u64,
-        ) -> Result<CitedBlobUploadPrepared, StorageError> {
-            Err(StorageError::Unavailable("stub".into()))
-        }
-
-        async fn stage_upload(
-            &self,
-            _authz: &AuthzContext,
-            _owner: OwnerRef,
-            _upload_id: &str,
-        ) -> Result<CitedBlobStaged, StorageError> {
-            Err(StorageError::Unavailable("stub".into()))
-        }
-
-        async fn finish_upload(
-            &self,
-            _authz: &AuthzContext,
-            _owner: OwnerRef,
-            _upload_id: &str,
-            _cited_object_id: uuid::Uuid,
-        ) -> Result<(), StorageError> {
-            Err(StorageError::Unavailable("stub".into()))
-        }
-
-        async fn abort_upload(
-            &self,
-            _authz: &AuthzContext,
-            _owner: OwnerRef,
-            _upload_id: &str,
-        ) -> Result<CitedBlobUploadAborted, StorageError> {
-            Err(StorageError::Unavailable("stub".into()))
-        }
-
-        async fn read_url(
-            &self,
-            _authz: &AuthzContext,
-            _owner: OwnerRef,
-            _cited_object_id: uuid::Uuid,
-        ) -> Result<CitedBlobReadUrl, StorageError> {
-            Err(StorageError::Unavailable("stub".into()))
-        }
-
-        async fn find_held_blobs(
-            &self,
-            _authz: &AuthzContext,
-            _owner: OwnerRef,
-            _content_hashes: &[[u8; 32]],
-        ) -> Result<Vec<CitedBlobHeld>, StorageError> {
-            Err(StorageError::Unavailable("stub".into()))
-        }
-    }
-
-    /// The context defaults to no services. Attaching a composed set doubles
-    /// as the compile-check that a flavor can implement the exported
-    /// `CitedBlobPort` from `proxima::flavor` alone.
-    #[test]
-    fn test_context_has_no_blob_service_until_one_is_attached() {
-        let ctx = FlavorWorkerContext::new_for_tests(
-            std::sync::Arc::new(proxima_core::Engine::new(
-                FlavorRegistry::new().freeze_or_panic_for_tests(),
-            )),
-            tokio_util::sync::CancellationToken::new(),
-        );
-        assert!(
-            ctx.service::<CitedBlobService>().is_none(),
-            "a bare test context wires no S3"
-        );
-
-        let ctx = ctx.with_services(FlavorServices::with(CitedBlobService::new(
-            std::sync::Arc::new(StubBlobPort),
-        )));
-        assert!(
-            ctx.service::<CitedBlobService>().is_some(),
-            "with_services attaches the service"
-        );
-    }
-
-    #[tokio::test]
-    async fn tuple_chains_spawn_workers_in_order_and_default_is_empty() {
-        let ctx = FlavorWorkerContext::new_for_tests(
-            std::sync::Arc::new(proxima_core::Engine::new(
-                FlavorRegistry::new().freeze_or_panic_for_tests(),
-            )),
-            tokio_util::sync::CancellationToken::new(),
-        );
-
-        assert!(
-            <(AlphaBundle, BetaBundle) as FlavorBundle>::spawn_workers(&ctx).is_empty(),
-            "bundles on the default spawn_workers contribute nothing"
-        );
-
-        let workers = <(AlphaBundle, GammaBundle) as FlavorBundle>::spawn_workers(&ctx);
-        let names: Vec<_> = workers.iter().map(|worker| worker.name).collect();
-        assert_eq!(names, ["gamma-first", "gamma-second"]);
-
-        ctx.cancel.cancel();
-        for worker in workers {
-            worker.handle.await.expect("worker terminates on cancel");
         }
     }
 

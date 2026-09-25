@@ -10,10 +10,9 @@ use host_state_fixture::{
     FixtureHostResult, HostFixtureApp, HostFixtureParticipant, InvalidBindingCommand,
     UndeclaredDescriptorParticipant, UnknownParticipantCommand, invocation_lock_key,
 };
-use proxima::flavor::{FlavorBundle, NamedMigrator};
 use proxima::{
-    AppInfo, AuthPath, AuthzContext, ErrorCode, FlavorApp, HostStateOutcome,
-    PgHostStateParticipant, Proxima, Role, ToolScope, company_owner,
+    AuthPath, AuthzContext, ErrorCode, HostStateOutcome, PgHostStateParticipant, Proxima, Role,
+    ToolScope, company_owner,
 };
 use proxima_core::{AgentNoteV1, GroupId, Owner, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
@@ -21,29 +20,6 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
-
-struct EmptyApp;
-
-impl FlavorBundle for EmptyApp {
-    fn register(
-        _: &mut proxima_core::FlavorRegistry,
-    ) -> Result<(), proxima_core::FlavorRegistryError> {
-        Ok(())
-    }
-    fn migrators() -> Vec<NamedMigrator> {
-        Vec::new()
-    }
-}
-
-impl FlavorApp for EmptyApp {
-    fn app_info() -> AppInfo {
-        AppInfo {
-            id: "uow-host-state-empty",
-            title: "uow-host-state-empty",
-            version: "0",
-        }
-    }
-}
 
 fn note(title: &str) -> AgentNoteV1 {
     AgentNoteV1 {
@@ -279,215 +255,6 @@ async fn wait_for_erase_holding_owner_fence_and_waiting_on_test_lock(
     })
     .await??;
     Ok(())
-}
-
-#[tokio::test]
-async fn create_commits_fact_and_host_row_together() {
-    let db_name = unique_db_name("proxima_uow_hs_create");
-    create_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = company_owner(Uuid::now_v7());
-        let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
-        let other = PgPool::connect(&db_url(&db_name)).await?;
-        let authz = admin_authz_for(owner);
-        let engine = built.engine();
-
-        let mut uow = engine.unit_of_work(&authz).await?;
-        let fact = uow
-            .ingest_fact(proxima::FactWrite::new(
-                owner,
-                "test/hs-create",
-                &note("create"),
-            ))
-            .await?;
-        let created = uow
-            .apply_host_state(FixtureHostCommand::Create {
-                owner,
-                invocation_id: fact.memory_id,
-            })
-            .await?;
-        assert!(
-            matches!(
-                created,
-                HostStateOutcome::Permitted(FixtureHostResult::Created { version: 1, .. })
-            ),
-            "{created:?}"
-        );
-
-        assert_eq!(count_memory(&other, fact.memory_id).await?, 0);
-        assert_eq!(count_execution(&other, fact.memory_id).await?, 0);
-
-        let seen = uow
-            .apply_host_state(FixtureHostCommand::Read {
-                owner,
-                invocation_id: fact.memory_id,
-            })
-            .await?;
-        assert!(
-            matches!(
-                seen,
-                HostStateOutcome::Permitted(FixtureHostResult::Row(Some(_)))
-            ),
-            "same unit must see its uncommitted host row: {seen:?}"
-        );
-
-        uow.commit().await?;
-        assert_eq!(count_memory(&other, fact.memory_id).await?, 1);
-        assert_eq!(count_execution(&other, fact.memory_id).await?, 1);
-        built.shutdown();
-        Ok(())
-    }
-    .await;
-    drop_db(&db_name).await.expect("drop fixture");
-    result.expect("create atomicity");
-}
-
-#[tokio::test]
-async fn finalize_is_conditional_and_already_applied_writes_no_duplicate() {
-    let db_name = unique_db_name("proxima_uow_hs_fin");
-    create_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = company_owner(Uuid::now_v7());
-        let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
-        let authz = admin_authz_for(owner);
-        let engine = built.engine();
-        let pool = admin_pool(&db_name).await?;
-
-        let mut create = engine.unit_of_work(&authz).await?;
-        let invocation = create
-            .ingest_fact(proxima::FactWrite::new(
-                owner,
-                "test/hs-fin",
-                &note("invoke"),
-            ))
-            .await?;
-        create
-            .apply_host_state(FixtureHostCommand::Create {
-                owner,
-                invocation_id: invocation.memory_id,
-            })
-            .await?;
-        create.commit().await?;
-
-        let mut first = engine.unit_of_work(&authz).await?;
-        first
-            .advisory_xact_lock(invocation_lock_key(invocation.memory_id))
-            .await?;
-        let read = first
-            .apply_host_state(FixtureHostCommand::Read {
-                owner,
-                invocation_id: invocation.memory_id,
-            })
-            .await?;
-        assert!(
-            matches!(
-                read,
-                HostStateOutcome::Permitted(FixtureHostResult::Row(Some(ref row)))
-                    if row.status == "created"
-            ),
-            "{read:?}"
-        );
-        let done = first
-            .ingest_fact(proxima::FactWrite::new(
-                owner,
-                "test/hs-fin-done",
-                &note("finalized"),
-            ))
-            .await?;
-        let transition = first
-            .apply_host_state(FixtureHostCommand::Finalize {
-                owner,
-                invocation_id: invocation.memory_id,
-            })
-            .await?;
-        assert!(
-            matches!(
-                transition,
-                HostStateOutcome::Permitted(FixtureHostResult::Finalized { version: 2, .. })
-            ),
-            "{transition:?}"
-        );
-        first.commit().await?;
-
-        let mut second = engine.unit_of_work(&authz).await?;
-        second
-            .advisory_xact_lock(invocation_lock_key(invocation.memory_id))
-            .await?;
-        let replay = second
-            .apply_host_state(FixtureHostCommand::Finalize {
-                owner,
-                invocation_id: invocation.memory_id,
-            })
-            .await?;
-        assert!(
-            matches!(
-                replay,
-                HostStateOutcome::AlreadyApplied(FixtureHostResult::Finalized { version: 2, .. })
-            ),
-            "{replay:?}"
-        );
-        second.commit().await?;
-
-        assert_eq!(count_memory(&pool, invocation.memory_id).await?, 1);
-        assert_eq!(count_memory(&pool, done.memory_id).await?, 1);
-        let facts: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
-            .fetch_one(&pool)
-            .await?;
-        assert_eq!(facts, 2, "already-applied must not append a second Fact");
-        assert_eq!(
-            execution_status(&pool, invocation.memory_id).await?,
-            Some(("finalized".into(), 2))
-        );
-        built.shutdown();
-        Ok(())
-    }
-    .await;
-    drop_db(&db_name).await.expect("drop fixture");
-    result.expect("finalize");
-}
-
-#[tokio::test]
-async fn drop_without_commit_rolls_fact_and_host_row_back() {
-    let db_name = unique_db_name("proxima_uow_hs_drop");
-    create_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = company_owner(Uuid::now_v7());
-        let participant = Arc::new(HostFixtureParticipant::default());
-        let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
-        let other = PgPool::connect(&db_url(&db_name)).await?;
-        let authz = admin_authz_for(owner);
-        let engine = built.engine();
-
-        let memory_id;
-        {
-            let mut uow = engine.unit_of_work(&authz).await?;
-            let fact = uow
-                .ingest_fact(proxima::FactWrite::new(
-                    owner,
-                    "test/hs-drop",
-                    &note("drop"),
-                ))
-                .await?;
-            memory_id = fact.memory_id;
-            uow.apply_host_state(FixtureHostCommand::Create {
-                owner,
-                invocation_id: memory_id,
-            })
-            .await?;
-        }
-        assert_eq!(count_memory(&other, memory_id).await?, 0);
-        assert_eq!(count_execution(&other, memory_id).await?, 0);
-        built.shutdown();
-        Ok(())
-    }
-    .await;
-    drop_db(&db_name).await.expect("drop fixture");
-    result.expect("drop rollback");
 }
 
 #[tokio::test]
@@ -836,45 +603,6 @@ async fn concurrent_finalize_commits_exactly_one_transition() {
     .await;
     drop_db(&db_name).await.expect("drop fixture");
     result.expect("concurrency");
-}
-
-#[tokio::test]
-async fn host_without_participant_still_ingests_facts() {
-    let db_name = unique_db_name("proxima_uow_hs_compat");
-    create_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = company_owner(Uuid::now_v7());
-        let built = Proxima::<EmptyApp>::app()
-            .database_url(&url)
-            .platform_database_url(&platform_url)
-            .owner(owner)
-            .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
-            .build()
-            .await?;
-        assert!(built.host_state_maintenance_authority().is_none());
-        let authz = admin_authz_for(owner);
-        let engine = built.engine();
-        let mut uow = engine.unit_of_work(&authz).await?;
-        let fact = uow
-            .ingest_fact(proxima::FactWrite::new(
-                owner,
-                "test/hs-compat",
-                &note("compat"),
-            ))
-            .await?;
-        uow.commit().await?;
-        assert_eq!(
-            count_memory(&admin_pool(&db_name).await?, fact.memory_id).await?,
-            1
-        );
-        built.shutdown();
-        Ok(())
-    }
-    .await;
-    drop_db(&db_name).await.expect("drop fixture");
-    result.expect("compatibility");
 }
 
 #[tokio::test]

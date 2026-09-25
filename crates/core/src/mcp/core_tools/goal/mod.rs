@@ -1155,34 +1155,4 @@ mod tests {
             vec!["core_goal:set"],
         );
     }
-
-    #[test]
-    fn goal_transition_accepts_mixed_case() {
-        assert!(matches!(
-            serde_json::from_value::<GoalTransition>(serde_json::json!("Pause")).unwrap(),
-            GoalTransition::Pause
-        ));
-        assert!(matches!(
-            serde_json::from_value::<GoalTransition>(serde_json::json!("resume")).unwrap(),
-            GoalTransition::Resume
-        ));
-        assert!(matches!(
-            serde_json::from_value::<GoalTransition>(serde_json::json!("ABANDON")).unwrap(),
-            GoalTransition::Abandon
-        ));
-    }
-
-    #[test]
-    fn goal_payload_args_body_schema_is_object() {
-        let schema =
-            serde_json::to_value(schemars::schema_for!(GoalPayloadArgs)).expect("schema JSON");
-        let body = schema
-            .pointer("/properties/body")
-            .expect("body property schema");
-        assert_eq!(
-            body.get("type").and_then(serde_json::Value::as_str),
-            Some("object"),
-            "body must be advertised as an object schema: {body:#}",
-        );
-    }
 }

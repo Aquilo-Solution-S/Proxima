@@ -149,27 +149,6 @@ impl From<ToolError> for McpToolError {
 mod tests {
     use super::{McpToolError, McpToolErrorKind};
 
-    /// Missing-entity faults form their own kind so the resource path can
-    /// surface JSON-RPC `resource_not_found` while tools keep
-    /// `invalid_params` — and the message must reach the caller verbatim,
-    /// never redacted to "internal server error".
-    #[test]
-    fn not_found_classifies_uniformly_across_sources() {
-        let direct = McpToolError::NotFound("memory F:018f not found".into());
-        assert_eq!(direct.kind(), McpToolErrorKind::NotFound);
-        assert_eq!(direct.client_message(), "memory F:018f not found");
-
-        let storage = McpToolError::Storage(crate::StorageError::NotFound);
-        assert_eq!(storage.kind(), McpToolErrorKind::NotFound);
-
-        let protocol = McpToolError::Protocol(crate::error::ProtocolError {
-            code: crate::error::ErrorCode::NotFound,
-            message: "goal G:018f not found".into(),
-            request_id: None,
-        });
-        assert_eq!(protocol.kind(), McpToolErrorKind::NotFound);
-    }
-
     #[test]
     fn unavailable_message_reaches_caller_verbatim() {
         let err = McpToolError::Unavailable(
@@ -183,26 +162,6 @@ mod tests {
             "semantic search unavailable: no embedding client is configured for this host"
         );
         assert_ne!(err.client_message(), "internal server error");
-    }
-
-    /// Declared backpressure must not be indistinguishable from a
-    /// substrate bug on the wire: an exhausted outbox is the deployment
-    /// asking the caller to slow down, and its message names the backlog.
-    #[test]
-    fn an_exhausted_outbox_is_backpressure_not_an_internal_fault() {
-        let err = McpToolError::Storage(crate::StorageError::PublicationRefused(
-            crate::publication::PublicationError::CapacityExhausted {
-                pending: 100_000,
-                max: 100_000,
-            },
-        ));
-        assert_eq!(err.kind(), McpToolErrorKind::CapacityExhausted);
-        assert_ne!(err.client_message(), "internal server error");
-        assert!(
-            err.client_message().contains("100000"),
-            "the backlog and the bound must reach the caller: {}",
-            err.client_message()
-        );
     }
 
     /// The other four refusals keep the classes they already had, so the

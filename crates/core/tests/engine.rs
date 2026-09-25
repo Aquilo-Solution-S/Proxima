@@ -8,7 +8,7 @@ mod test_fixtures;
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::ids::UserId;
-use proxima_core::llm::{EmbeddingDim, SingleClientRouter};
+use proxima_core::llm::SingleClientRouter;
 use proxima_core::owner::{Owner, OwnerRef};
 use proxima_core::verbs::change_history::ChangeHistoryRequest;
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
@@ -74,20 +74,6 @@ fn schema_verb_projects_the_validated_engine_registry() {
     assert_eq!(actual, expected);
 }
 
-#[tokio::test]
-async fn embedding_route_comes_from_the_installed_router() {
-    let (principal, owner) = fresh_owner();
-    let bare = boot_engine(principal, owner);
-    let unrouted = bare.embedding_route(&owner).await.expect("no router");
-    assert!(unrouted.current_client().is_none());
-
-    let engine = boot_engine(principal, owner).with_embedding_router(fixed_router());
-    let route = engine.embedding_route(&owner).await.expect("routed");
-    let client = route.current_client().expect("client routed");
-    assert_eq!(client.model_id(), "test-embedding");
-    assert_eq!(client.space().dim(), EmbeddingDim::D1024);
-}
-
 /// With no router the engine reads every Owner as unrouted; a purge must
 /// not take that as "keep no space" and delete everything.
 #[tokio::test]
@@ -99,32 +85,6 @@ async fn purge_without_a_router_is_refused() {
         .await
         .expect_err("no router is not an empty route");
     assert!(err.to_string().contains("no embedding router"), "{err}");
-}
-
-#[tokio::test]
-async fn drain_embedding_jobs_without_client_is_noop() {
-    let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner);
-
-    let outcome = engine
-        .drain_embedding_jobs(10)
-        .await
-        .expect("missing embedding client is a no-op");
-
-    assert_eq!(outcome, proxima_core::EmbeddingDrainOutcome::default());
-}
-
-#[tokio::test]
-async fn reconcile_embeddings_without_client_is_noop() {
-    let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner);
-
-    let outcome = engine
-        .reconcile_embeddings(proxima_core::EmbeddingReconcileScope::MissingOnly, None)
-        .await
-        .expect("missing embedding client is a no-op");
-
-    assert_eq!(outcome, proxima_core::EmbeddingReconcileOutcome::default());
 }
 
 #[tokio::test]

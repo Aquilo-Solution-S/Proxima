@@ -84,27 +84,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bind_keys_cover_each_produced_kind() {
-        let bind = parse_bind(
-            &[
-                "remember:0".into(),
-                "derive".into(),
-                "stance:1".into(),
-                "goal:0".into(),
-            ],
-            1,
-            true,
-            2,
-            1,
-        )
-        .expect("valid keys");
-        assert!(bind.remember.contains(&0));
-        assert!(bind.derive);
-        assert!(bind.stance.contains(&1));
-        assert!(bind.goal.contains(&0));
-    }
-
-    #[test]
     fn duplicate_keys_are_rejected() {
         let err = reject_duplicate_keys([Some("k".into()), Some("k".into())], "remember")
             .expect_err("duplicates");

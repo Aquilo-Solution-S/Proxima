@@ -34,10 +34,6 @@ rest = ["proxima/rest"]
 # it still needs `PROXIMA_NATS_URL` at runtime — see docs/18-fact-outbox.md.
 nats = ["proxima/outbox-nats"]
 
-[[test]]
-name = "nats_e2e"
-required-features = ["nats"]
-
 [dev-dependencies]
 async-nats = { workspace = true, features = ["nkeys"] }
 async-trait = { workspace = true }

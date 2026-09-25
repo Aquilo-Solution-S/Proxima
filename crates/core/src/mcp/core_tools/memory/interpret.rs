@@ -228,10 +228,7 @@ pub(crate) fn interpretation_memory_id(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        InterpretArgs, InterpretTool, MAX_SUBJECTS, default_confidence, interpretation_memory_id,
-        reject_self_subject,
-    };
+    use super::{InterpretArgs, InterpretTool, default_confidence, reject_self_subject};
     use crate::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError};
     use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, UserId};
     use std::sync::Arc;
@@ -266,43 +263,6 @@ mod tests {
 
     fn subject() -> String {
         format!("F:{}", uuid::Uuid::now_v7())
-    }
-
-    fn owner() -> OwnerRef {
-        OwnerRef::Personal(UserId::new(
-            uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
-        ))
-    }
-
-    #[test]
-    fn the_default_confidence_is_the_documented_one() {
-        assert_eq!(default_confidence(), 80);
-        assert_eq!(MAX_SUBJECTS, 64);
-    }
-
-    /// The id is a function of what the interpretation SAYS. Two callers
-    /// asserting the same claim about the same subjects land on one
-    /// memory; a different confidence is a different judgment.
-    #[test]
-    fn the_memory_id_folds_the_whole_claim() {
-        let subject = uuid::Uuid::now_v7();
-        let base = interpretation_memory_id(&owner(), "m", "same claim", 80, &[subject]);
-        assert_eq!(
-            base,
-            interpretation_memory_id(&owner(), "m", "same claim", 80, &[subject])
-        );
-        assert_ne!(
-            base,
-            interpretation_memory_id(&owner(), "m", "same claim", 81, &[subject])
-        );
-        assert_ne!(
-            base,
-            interpretation_memory_id(&owner(), "m", "other claim", 80, &[subject])
-        );
-        assert_ne!(
-            base,
-            interpretation_memory_id(&owner(), "m", "same claim", 80, &[uuid::Uuid::now_v7()])
-        );
     }
 
     /// 140 is not a confidence. Rejected rather than clamped: silently

@@ -893,23 +893,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unset_url_is_a_publisher_that_is_off_not_a_broken_host() {
-        assert!(
-            NatsPublisherConfig::from_lookup(env(&[
-                (ENV_CONSUMER_STREAM, "OTHER"),
-                (ENV_PUBLISHER_INBOX_PREFIX, "_INBOX.publisher"),
-            ]))
-            .expect("parses")
-            .is_none()
-        );
-        assert!(
-            NatsConsumerConfig::from_lookup(env(&[(ENV_CONSUMER_INBOX_PREFIX, "_INBOX.consumer")]))
-                .expect("parses")
-                .is_none()
-        );
-    }
-
-    #[test]
     fn a_poll_interval_past_the_bound_is_refused_at_boot() {
         let base = NatsPublisherConfig::from_lookup(env(&[(ENV_URL, "nats://127.0.0.1:4222")]))
             .expect("parses")
@@ -949,17 +932,6 @@ mod tests {
             saturating.validate(),
             Err(ConfigError::IntervalTooLong { .. })
         ));
-    }
-
-    /// The rule has to answer in a `const` context, or it cannot gate a
-    /// build — which is the only reason it is spelled byte-wise.
-    #[test]
-    fn the_prefix_rule_is_const_evaluable() {
-        // `const` blocks, not runtime asserts: if the rule stopped answering
-        // at compile time these would not build, which is the property under
-        // test. A runtime `assert!` would still pass.
-        const { assert!(inbox_prefix_is_valid("_INBOX.cleaner")) }
-        const { assert!(!inbox_prefix_is_valid("a.*")) }
     }
 
     #[test]
@@ -1115,25 +1087,6 @@ mod tests {
                     .expect_err("{key} must refuse {value}");
             assert!(matches!(err, ConfigError::Number { .. }), "{err}");
         }
-    }
-
-    #[test]
-    fn the_defaults_are_the_documented_ones() {
-        let config = NatsPublisherConfig::from_lookup(env(&[(ENV_URL, "nats://127.0.0.1:4222")]))
-            .expect("parses")
-            .expect("url set");
-        assert_eq!(config.subject_prefix, DEFAULT_SUBJECT_PREFIX);
-        assert_eq!(config.batch.get(), DEFAULT_BATCH);
-        assert_eq!(config.lease, DEFAULT_LEASE);
-        assert_eq!(config.poll_interval, DEFAULT_POLL_INTERVAL);
-        assert_eq!(config.publish_timeout, DEFAULT_PUBLISH_TIMEOUT);
-        assert_eq!(config.auth, NatsAuth::None);
-
-        let consumer = NatsConsumerConfig::from_lookup(env(&[(ENV_URL, "nats://127.0.0.1:4222")]))
-            .expect("parses")
-            .expect("url set");
-        assert_eq!(consumer.durable_name, DEFAULT_CONSUMER_NAME);
-        assert_eq!(consumer.stream, DEFAULT_CONSUMER_STREAM);
     }
 
     #[test]

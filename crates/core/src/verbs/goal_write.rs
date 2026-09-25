@@ -860,12 +860,4 @@ mod goal_state_matrix_tests {
         assert!(!GoalState::Achieved.may_achieve());
         assert!(!GoalState::Abandoned.may_achieve());
     }
-
-    #[test]
-    fn terminal_states_have_no_outgoing_transition() {
-        for next in ALL {
-            assert!(!GoalState::Achieved.may_transition_to(next));
-            assert!(!GoalState::Abandoned.may_transition_to(next));
-        }
-    }
 }

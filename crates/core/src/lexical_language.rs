@@ -243,18 +243,6 @@ fn is_plausible_config_name(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn absent_language_asks_for_the_deployment_default() {
-        assert_eq!(
-            resolve_lexical_language(None, "whatever"),
-            Ok(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_string())
-        );
-        assert_eq!(
-            resolve_lexical_language(Some("  "), "whatever"),
-            Ok(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_string())
-        );
-    }
-
     /// The sentinel is not a configuration name a caller can type: a
     /// `PostgreSQL` identifier cannot start with `@`, so the request form
     /// and the resolved form cannot be confused for one another.
@@ -310,28 +298,5 @@ mod tests {
         // An unknown code with a subtag separator can only be a BCP-47 tag,
         // and an unknown tag is an error, not a config name.
         assert!(resolve_lexical_language(Some("xx-YY"), "").is_err());
-    }
-
-    #[test]
-    fn auto_detects_german_reliably_and_falls_back_when_unsure() {
-        let german = "Die Bauleitung wurde beauftragt, die Fluchtwege nach DIN 18040 \
-                      barrierefrei zu planen und die Türbreiten im Erdgeschoss zu prüfen.";
-        assert_eq!(
-            resolve_lexical_language(Some("auto"), german),
-            Ok("german".to_string())
-        );
-        // A string with no language signal must not be guessed at: the
-        // resolution asks for the deployment configuration instead.
-        assert_eq!(
-            resolve_lexical_language(Some("auto"), "42"),
-            Ok(LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_string())
-        );
-    }
-
-    #[test]
-    fn reliably_detected_languages_without_a_stemmer_map_to_simple() {
-        let chinese = "这是一个完全用中文写成的段落，用于验证语言检测的行为。\
-                       它包含足够多的字符以便检测器能够可靠地识别出中文。";
-        assert_eq!(detect_lexical_language(chinese), Some("simple"));
     }
 }

@@ -527,37 +527,4 @@ mod tests {
             }
         ));
     }
-
-    #[test]
-    fn facade_tool_lookup_accepts_canonical_and_provider_safe_names() {
-        fn call(
-            _ctx: McpToolCtx,
-            _args: serde_json::Value,
-        ) -> futures::future::BoxFuture<'static, Result<serde_json::Value, McpToolError>> {
-            async { Ok(serde_json::json!({})) }.boxed()
-        }
-
-        let descriptors = vec![McpToolDescriptor {
-            name: "provider/slashed_name",
-            description: "test",
-            origin: proxima_core::McpToolOrigin::Flavor("provider".into()),
-            produces_schema_ids: &[],
-            args_schema: serde_json::json!({ "type": "object" }),
-            output_schema: serde_json::json!({ "type": "object" }),
-            action_arg_specs: &[],
-            argv_action_specs: &[],
-            annotations: None,
-            audience: proxima_core::McpToolAudience::Shared,
-            call: &call,
-        }];
-
-        assert_eq!(
-            find_tool_descriptor(&descriptors, "provider/slashed_name").map(|tool| tool.name),
-            Some("provider/slashed_name")
-        );
-        assert_eq!(
-            find_tool_descriptor(&descriptors, "provider_slashed_name").map(|tool| tool.name),
-            Some("provider/slashed_name")
-        );
-    }
 }

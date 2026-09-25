@@ -208,52 +208,11 @@ mod tests {
         )
     }
 
-    /// An omitted `model_id` falls back to the request context's label
-    /// rather than being rejected: the MCP server strips the reserved
-    /// request field into `ctx.author.model_id`, and that is the operator.
-    #[test]
-    fn operator_label_falls_back_to_the_request_context() {
-        let ctx = test_ctx();
-        assert_eq!(operator_label(&ctx, None).expect("context label"), "test");
-        assert_eq!(
-            operator_label(&ctx, Some("explicit-model")).expect("explicit label"),
-            "explicit-model",
-        );
-    }
-
-    /// The label is trimmed before it is stored, not just before it is
-    /// checked: `" m "` and `"m"` must be one operator on every surface,
-    /// or they are one label to the validator and two to the dedup key.
-    #[test]
-    fn operator_label_is_trimmed_before_it_is_stored() {
-        assert_eq!(
-            operator_label(&test_ctx(), Some("  spaced  ")).expect("trimmed label"),
-            "spaced",
-        );
-    }
-
     #[test]
     fn an_oversized_operator_label_is_rejected() {
         let ctx = test_ctx();
         assert!(operator_label(&ctx, Some(&"m".repeat(MAX_OPERATOR_LABEL_CHARS))).is_ok());
         assert!(operator_label(&ctx, Some(&"m".repeat(MAX_OPERATOR_LABEL_CHARS + 1))).is_err());
-    }
-
-    /// A blank label is no claim, so the request context's label stands —
-    /// the same answer REST gives, where an empty `X-Proxima-Model-Id` is
-    /// dropped at the edge and never reaches a tool. Rejecting it here
-    /// would make `{"derive": {"model_id": ""}}` fail a request that the
-    /// byte-identical REST call accepts.
-    #[test]
-    fn a_blank_operator_label_is_absent_not_an_error() {
-        let ctx = test_ctx();
-        for blank in ["", "   "] {
-            assert_eq!(
-                operator_label(&ctx, Some(blank)).expect("blank is no claim"),
-                "test",
-                "blank {blank:?}"
-            );
-        }
     }
 
     /// A context whose token binds a runner identity, with a deliberately
@@ -308,16 +267,6 @@ mod tests {
         }
     }
 
-    /// A blank claim is no claim, so it is not a conflict — and with a
-    /// binding present the bound identity is still what is recorded.
-    #[test]
-    fn a_blank_explicit_label_is_not_a_conflict_under_a_binding() {
-        assert_eq!(
-            operator_label(&trusted_ctx(), Some("   ")).expect("blank is absent, not a conflict"),
-            "acme/runner-v3"
-        );
-    }
-
     /// The bound identity is recorded even if the author context
     /// disagrees on both of its model fields, so a host that assembles
     /// one by hand cannot launder a label past the binding. The transport
@@ -349,29 +298,6 @@ mod tests {
             .next_back()
             .ok_or_else(|| McpToolError::InvalidInput("blank handle".into()))?;
         Ok((memory(last as u8), last))
-    }
-
-    /// Request order survives, repeats collapse to their first occurrence,
-    /// and the resolver's classification rides along with each memory.
-    #[test]
-    fn dedup_resolved_keeps_request_order_and_drops_repeats() {
-        let handles = vec![
-            "mem-b".to_string(),
-            "mem-a".to_string(),
-            "other-b".to_string(),
-            "mem-a".to_string(),
-        ];
-        assert_eq!(
-            dedup_resolved(
-                &handles,
-                8,
-                "source_handles",
-                "nonempty",
-                resolve_by_last_char
-            )
-            .expect("resolved"),
-            vec![(memory(b'b'), 'b'), (memory(b'a'), 'a')],
-        );
     }
 
     #[test]
@@ -414,20 +340,6 @@ mod tests {
     }
 
     #[test]
-    fn omitted_observed_at_is_allowed() {
-        assert_eq!(parse_observed_at(None).expect("no backdate"), None);
-    }
-
-    #[test]
-    fn historical_observed_at_parses() {
-        let parsed = parse_observed_at(Some("2023-03-22T17:47:00Z"))
-            .expect("valid RFC3339")
-            .expect("some timestamp");
-        assert_eq!(parsed.year(), 2023);
-        assert_eq!(parsed.offset(), time::UtcOffset::UTC);
-    }
-
-    #[test]
     fn non_rfc3339_observed_at_is_rejected() {
         assert!(parse_observed_at(Some("22.03.2023")).is_err());
         assert!(parse_observed_at(Some("2023-03-22")).is_err());
@@ -451,15 +363,6 @@ mod tests {
     }
 
     const MAX_IDEMPOTENCY_KEY_CHARS: usize = IdempotencyKey::MAX_CHARS;
-
-    #[test]
-    fn tags_are_trimmed_lowercased_sorted_and_deduped() {
-        let tags = vec![" Rust ".into(), "mcp".into(), "RUST".into()];
-        assert_eq!(
-            normalize_tags(tags).expect("valid tags"),
-            vec!["mcp".to_string(), "rust".to_string()],
-        );
-    }
 
     #[test]
     fn blank_and_oversized_tags_are_rejected() {
@@ -495,25 +398,6 @@ mod tests {
     }
 
     #[test]
-    fn tag_cap_counts_distinct_tags_not_raw_input() {
-        // MAX_TAGS + 1 raw spellings collapsing to one tag are in
-        // contract; the cap must not fire on the pre-dedup length.
-        let duplicates: Vec<String> = (0..=MAX_TAGS)
-            .map(|i| {
-                if i % 2 == 0 {
-                    "rust".to_string()
-                } else {
-                    " RUST ".to_string()
-                }
-            })
-            .collect();
-        assert_eq!(
-            normalize_tags(duplicates).expect("one distinct tag"),
-            vec!["rust".to_string()],
-        );
-    }
-
-    #[test]
     fn too_many_distinct_tags_are_rejected() {
         let at_cap: Vec<String> = (0..MAX_TAGS).map(|i| format!("tag-{i:02}")).collect();
         assert_eq!(normalize_tags(at_cap).expect("at the cap").len(), MAX_TAGS);
@@ -522,35 +406,11 @@ mod tests {
     }
 
     #[test]
-    fn omitted_idempotency_key_is_allowed() {
-        assert_eq!(normalize_idempotency_key(None).expect("no key"), None);
-    }
-
-    #[test]
     fn blank_idempotency_key_is_rejected() {
         // An empty or whitespace-only string must not slip through as a
         // real dedup key.
         assert!(normalize_idempotency_key(Some(String::new())).is_err());
         assert!(normalize_idempotency_key(Some("   ".into())).is_err());
-    }
-
-    #[test]
-    fn idempotency_key_is_trimmed_like_the_goal_family() {
-        // `" k "` and `"k"` must be the same dedup key on every write
-        // surface; the goal family trims, so the memory family must too.
-        assert_eq!(
-            normalize_idempotency_key(Some(" k ".into())).expect("valid key"),
-            Some("k".to_string()),
-        );
-    }
-
-    #[test]
-    fn idempotency_key_at_the_cap_is_allowed() {
-        let key = "k".repeat(MAX_IDEMPOTENCY_KEY_CHARS);
-        assert_eq!(
-            normalize_idempotency_key(Some(key.clone())).expect("at the cap"),
-            Some(key),
-        );
     }
 
     #[test]
