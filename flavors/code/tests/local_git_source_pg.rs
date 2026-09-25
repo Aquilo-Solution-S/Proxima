@@ -22,12 +22,18 @@ use proxima_code::{
     CodeChunkV1, CodeFlavorStore, CodeIngestContext, FileRevisionV1, FileState, LocalGitSource,
     RepoScope,
 };
+use proxima_core::llm::{
+    DEFAULT_EMBED_REQUEST_TIMEOUT, DEFAULT_EMBED_STALE_CLAIM_TIMEOUT,
+    DEFAULT_EMBED_WORKER_INTERVAL, EmbeddingClient, EmbeddingDim, EmbeddingRuntimePolicy, LlmError,
+    SingleClientRouter,
+};
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, Cursor, FactPayload, Owner, SchemaId, SchemaVersion,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::Row;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 /// Register the fixture's repository row.
@@ -641,4 +647,129 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
 
     let _ = drop_db(&db_name).await;
     result.expect("head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch failed");
+}
+
+/// Records every provider request's width: 1 for `embed`, the input count
+/// for `embed_many`.
+#[derive(Debug, Default)]
+struct RecordingEmbedding {
+    requests: std::sync::Mutex<Vec<usize>>,
+}
+
+impl RecordingEmbedding {
+    fn requests(&self) -> Vec<usize> {
+        self.requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn record(&self, width: usize) {
+        self.requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(width);
+    }
+}
+
+#[async_trait::async_trait]
+impl EmbeddingClient for RecordingEmbedding {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        self.record(1);
+        Ok(unit_vector())
+    }
+
+    async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
+        self.record(texts.len());
+        Ok(texts.iter().map(|_| unit_vector()).collect())
+    }
+
+    fn model_id(&self) -> &'static str {
+        "recording-code-embed"
+    }
+
+    fn dim(&self) -> usize {
+        EmbeddingDim::D1024.width()
+    }
+}
+
+fn unit_vector() -> Vec<f32> {
+    let mut vector = vec![0.0; EmbeddingDim::D1024.width()];
+    vector[0] = 1.0;
+    vector
+}
+
+/// Ingest sends nothing to the provider: every chunk's vector is queued
+/// with its row, as every Fact's is, and the drain sends the queue
+/// `batch_size` texts per request. Inline, each chunk was its own one-text
+/// request and `PROXIMA_EMBED_BATCH_SIZE` never reached the ingest
+/// (issue #346).
+#[tokio::test]
+async fn ingest_queues_vectors_and_the_drain_sends_them_in_batches() {
+    const BATCH: usize = 4;
+    let (db_name, pg) = migrated_db().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let provider = Arc::new(RecordingEmbedding::default());
+        let engine = build_engine(pg.clone())
+            .with_embedding_router(Arc::new(SingleClientRouter::bind(provider.clone())?))
+            .with_embedding_runtime_policy(EmbeddingRuntimePolicy::new(
+                DEFAULT_EMBED_REQUEST_TIMEOUT,
+                BATCH,
+                DEFAULT_EMBED_WORKER_INTERVAL,
+                DEFAULT_EMBED_STALE_CLAIM_TIMEOUT,
+            )?);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+        let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
+        let repo = fixture_repo();
+        let repo_id = Uuid::now_v7();
+        register_fixture_repo(pg.pool_for_tests(), &owner, repo_id, repo.path()).await;
+        let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
+
+        let (report, _) = source
+            .run_poll(&ingest_ctx, &Cursor::empty(), &mut |_| {})
+            .await?;
+        assert!(report.chunks_emitted >= 3, "expected ≥3 chunks");
+        assert_eq!(
+            provider.requests(),
+            Vec::<usize>::new(),
+            "ingest sends nothing to the provider"
+        );
+        let (pending, queued_chunks, chunks): (i64, i64, i64) = sqlx::query_as(
+            "SELECT \
+                 (SELECT count(*)::bigint FROM proxima_core.embedding_jobs \
+                   WHERE status = 'pending'), \
+                 (SELECT count(*)::bigint FROM proxima_core.embedding_jobs j \
+                    JOIN proxima_code.code_chunk_v1 c ON c.t = j.entity_id \
+                   WHERE j.status = 'pending'), \
+                 (SELECT count(*)::bigint FROM proxima_code.code_chunk_v1)",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(queued_chunks, chunks, "every chunk is queued with its row");
+        let pending = usize::try_from(pending)?;
+        assert!(pending > BATCH, "the queue spans several requests");
+
+        let outcome = engine.drain_embedding_jobs(pending).await?;
+        assert_eq!((outcome.processed, outcome.failed), (pending, 0));
+        let requests = provider.requests();
+        assert_eq!(requests.iter().sum::<usize>(), pending, "{requests:?}");
+        assert_eq!(requests.len(), pending.div_ceil(BATCH), "{requests:?}");
+        assert!(requests.iter().all(|width| *width <= BATCH), "{requests:?}");
+        let unembedded: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_code.code_chunk_v1 c \
+              WHERE NOT EXISTS (SELECT 1 FROM proxima_core.embeddings e \
+                                 WHERE e.entity_id = c.t)",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(unembedded, 0, "the drain landed every chunk's vector");
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("ingest_queues_vectors_and_the_drain_sends_them_in_batches failed");
 }
