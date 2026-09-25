@@ -54,6 +54,26 @@ resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
 
+The MCP server serves protocol revisions `2024-11-05` through
+`2026-07-28`. Up to `2025-11-25` a client opens a session with
+`initialize`; on `2026-07-28` every request carries its version, client and
+capabilities in `_meta`, and `server/discover` replaces the handshake (an
+`initialize` naming `2026-07-28` is answered with `2025-11-25`). Discovery
+returns the same per-caller instructions as `initialize`. `tools/list`,
+`resources/list`, `resources/templates/list` and `server/discover` carry
+`ttlMs: 0` and `cacheScope: "private"`: each is projected from the caller's
+token. A revision newer than `2026-07-28` is refused (-32022, the data lists
+the served revisions) until Proxima implements it.
+
+A host whose tool lists change at runtime attaches a `ToolListNotifier`
+(`CoreMcpTools::with_tool_list_notifier`). The server then advertises
+`tools.listChanged`, registers each `initialize` session and each
+`subscriptions/listen` stream that asks for `toolsListChanged` under its
+owner, and `ToolListNotifier::notify(owner)` sends
+`notifications/tools/list_changed` to that owner's listeners only.
+Registrations are per process; a host with several replicas notifies on
+each.
+
 Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Pins live on the Memory admission (`origins[]` / `refs[]`). A pin is admitted when the writer has write authority on the source and the target exists; target render is independent (`Visible` / `Redacted` / `Unavailable`). There is no Edge table.
 
 Canonical substrate tools:
