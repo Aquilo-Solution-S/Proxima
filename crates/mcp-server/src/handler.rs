@@ -8,6 +8,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use proxima_core::mcp::{
     McpToolAnnotations, McpToolDescriptor, McpToolError, McpToolErrorKind, all_core_resources,
@@ -22,11 +23,11 @@ use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
     DiscoverResult, ErrorData, Implementation, InitializeRequestParams, InitializeResult,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-    ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig, SubscriptionFilter, Tool,
-    ToolAnnotations,
+    ProgressNotificationParam, ProgressToken, ProtocolVersion, ReadResourceRequestParams,
+    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
+    ServerCapabilities, ServerConfig, SubscriptionFilter, Tool, ToolAnnotations,
 };
-use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer, SubscriptionContext};
+use rmcp::service::{MaybeSendFuture, Peer, RequestContext, RoleServer, SubscriptionContext};
 
 use crate::selfdoc;
 
@@ -59,9 +60,29 @@ use proxima_core::ToolScope;
 #[derive(Clone, Debug)]
 pub struct DynamicHandler {
     pub server: McpToolHost,
+    /// Interval of the `notifications/progress` heartbeat a running tool
+    /// call sends when its request carries a progress token.
+    pub progress_heartbeat: Duration,
 }
 
 impl DynamicHandler {
+    /// A handler over `server` with [`crate::DEFAULT_PROGRESS_HEARTBEAT`].
+    #[must_use]
+    pub const fn new(server: McpToolHost) -> Self {
+        Self {
+            server,
+            progress_heartbeat: crate::DEFAULT_PROGRESS_HEARTBEAT,
+        }
+    }
+
+    /// Set the progress heartbeat interval; keep it under the session idle
+    /// timeout ([`crate::McpTransportConfig::progress_heartbeat`]).
+    #[must_use]
+    pub const fn with_progress_heartbeat(mut self, interval: Duration) -> Self {
+        self.progress_heartbeat = interval;
+        self
+    }
+
     /// [`ServerHandler::get_info`] plus `instructions` generated from the
     /// caller's *resolved* tool scope (deployment profile ∩ token
     /// capabilities), the scope `list_tools` advertises. A `memory`-profile
@@ -380,6 +401,10 @@ impl ServerHandler for DynamicHandler {
         let auth = auth_context(&context);
         let (client_name, client_version) = peer_implementation(&context);
         let request_services = request_services(&self.server, &context);
+        let heartbeat = context
+            .meta
+            .get_progress_token()
+            .map(|token| (token, context.peer.clone(), self.progress_heartbeat));
         async move {
             let request_services = request_services?;
             let request_name = request.name.to_string();
@@ -396,8 +421,9 @@ impl ServerHandler for DynamicHandler {
                 .flatten()
                 .map(|tool| CallRecording::start(tool, &args));
             let error_auth = auth.clone();
-            let outcome = server
-                .call_tool_in_request(&canonical_name, args, author, auth, request_services)
+            let call =
+                server.call_tool_in_request(&canonical_name, args, author, auth, request_services);
+            let outcome = with_progress_heartbeat(call, heartbeat)
                 .await
                 .map_err(|err| {
                     tool_invocation_error_to_error_data(server.registry(), err, error_auth.as_ref())
@@ -413,6 +439,39 @@ impl ServerHandler for DynamicHandler {
             let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
             result.structured_content = Some(output);
             Ok(result.into())
+        }
+    }
+}
+
+/// Await `call`, sending `notifications/progress` for the request's token
+/// every interval until it finishes.
+///
+/// rmcp closes a session that carries no traffic for its idle timeout, and
+/// neither SSE pings nor a call still running count: a long tool call lost
+/// its session and its result. Each notification is session traffic, and
+/// tells the client the call is alive. `progress` counts beats — the spec
+/// asks only that it increase — and no total is claimed.
+async fn with_progress_heartbeat<F: Future>(
+    call: F,
+    heartbeat: Option<(ProgressToken, Peer<RoleServer>, Duration)>,
+) -> F::Output {
+    let Some((token, peer, interval)) = heartbeat else {
+        return call.await;
+    };
+    let mut call = std::pin::pin!(call);
+    let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+    let mut beats = 0_u32;
+    loop {
+        tokio::select! {
+            output = &mut call => return output,
+            _ = ticks.tick() => {
+                beats = beats.saturating_add(1);
+                let beat = ProgressNotificationParam::new(token.clone(), f64::from(beats))
+                    .with_message("tool call running");
+                if let Err(err) = peer.notify_progress(beat).await {
+                    tracing::debug!(error = %err, "progress heartbeat not delivered");
+                }
+            }
         }
     }
 }

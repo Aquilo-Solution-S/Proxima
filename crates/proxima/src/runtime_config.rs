@@ -484,8 +484,9 @@ impl RuntimeBuilder {
 
     /// rmcp Streamable HTTP tuning. Its body cap is replaced by
     /// [`Self::max_request_body_bytes`] when that is set. Env equivalents:
-    /// `PROXIMA_MCP_SSE_KEEP_ALIVE_SECS`, `PROXIMA_MCP_SSE_RETRY_SECS`,
-    /// `PROXIMA_MCP_SESSIONS`, `PROXIMA_MCP_JSON_RESPONSE`.
+    /// `PROXIMA_MCP_SSE_KEEP_ALIVE_SECS`, `PROXIMA_MCP_SESSION_IDLE_SECS`,
+    /// `PROXIMA_MCP_SSE_RETRY_SECS`, `PROXIMA_MCP_SESSIONS`,
+    /// `PROXIMA_MCP_JSON_RESPONSE`.
     #[must_use]
     pub const fn mcp_transport(mut self, transport: McpTransportConfig) -> Self {
         self.mcp_transport = Some(transport);
@@ -1353,15 +1354,16 @@ fn oidc_env_keys() -> &'static [&'static str] {
 
 /// The `PROXIMA_MCP_*` transport block: `None` when none is set, else
 /// rmcp's defaults with the set values applied. Seconds of `0` disable the
-/// SSE ping or retry hint.
+/// SSE ping, the session idle timeout, or the retry hint.
 fn mcp_transport_from_lookup(
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<Option<McpTransportConfig>, ProximaError> {
     const KEEP_ALIVE: &str = "PROXIMA_MCP_SSE_KEEP_ALIVE_SECS";
+    const SESSION_IDLE: &str = "PROXIMA_MCP_SESSION_IDLE_SECS";
     const RETRY: &str = "PROXIMA_MCP_SSE_RETRY_SECS";
     const SESSIONS: &str = "PROXIMA_MCP_SESSIONS";
     const JSON_RESPONSE: &str = "PROXIMA_MCP_JSON_RESPONSE";
-    if [KEEP_ALIVE, RETRY, SESSIONS, JSON_RESPONSE]
+    if [KEEP_ALIVE, SESSION_IDLE, RETRY, SESSIONS, JSON_RESPONSE]
         .iter()
         .all(|key| lookup(key).is_none())
     {
@@ -1376,6 +1378,9 @@ fn mcp_transport_from_lookup(
     let mut transport = McpTransportConfig::default();
     if let Some(keep_alive) = optional_secs(KEEP_ALIVE)? {
         transport.sse_keep_alive = keep_alive;
+    }
+    if let Some(idle) = optional_secs(SESSION_IDLE)? {
+        transport.session_idle_timeout = idle;
     }
     if let Some(retry) = optional_secs(RETRY)? {
         transport.sse_retry = retry;
@@ -2135,6 +2140,29 @@ mod tests {
                 .and_then(RuntimeBuilder::resolve);
             assert!(resolved.is_err(), "{pairs:?} must be refused");
         }
+    }
+
+    #[test]
+    fn session_idle_env_sets_the_timeout_and_zero_disables_it() {
+        let transport = |value: &str| {
+            served_builder()
+                .apply_lookup(lookup(&[("PROXIMA_MCP_SESSION_IDLE_SECS", value)]))
+                .and_then(RuntimeBuilder::resolve)
+                .map(|(config, _)| config.mcp_transport)
+        };
+        let set = transport("40").expect("40 s resolves");
+        assert_eq!(set.session_idle_timeout, Some(Duration::from_secs(40)));
+        assert_eq!(set.progress_heartbeat(), Duration::from_secs(20));
+        let never = transport("0").expect("0 resolves");
+        assert_eq!(never.session_idle_timeout, None);
+        assert_eq!(
+            never.progress_heartbeat(),
+            proxima_mcp_server::DEFAULT_PROGRESS_HEARTBEAT
+        );
+        assert!(
+            transport("soon").is_err(),
+            "non-integer seconds are refused"
+        );
     }
 
     #[test]

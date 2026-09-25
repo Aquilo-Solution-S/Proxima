@@ -84,6 +84,7 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_HEALTH_ENDPOINTS` | Serve anonymous `GET /healthz` (process up) and `GET /readyz` (database answers within 2 s and not shutting down) on the MCP listener, outside the Host guard and bearer auth. Default `false`. |
 | `PROXIMA_MAX_REQUEST_BODY_BYTES` | Largest accepted request body on the listener, enforced before auth and again by rmcp. Default `4194304` (4 MiB); `0` is a boot error. |
 | `PROXIMA_MCP_SSE_KEEP_ALIVE_SECS` | SSE ping interval. Default `15`; `0` disables pings. |
+| `PROXIMA_MCP_SESSION_IDLE_SECS` | Close an MCP session after this long without session traffic. Default `300`; `0` never closes one. SSE pings and a tool call still running are not traffic; a running call whose request carries `_meta.progressToken` sends `notifications/progress` every `min(30, idle/2)` s, which is. |
 | `PROXIMA_MCP_SSE_RETRY_SECS` | SSE priming-event retry hint. Default `3`; `0` sends none. |
 | `PROXIMA_MCP_SESSIONS` | Keep a server-side MCP session per client that opens with `initialize`; per-request (`_meta`-versioned) calls are always stateless. Default `true`. |
 | `PROXIMA_MCP_JSON_RESPONSE` | With sessions off, answer simple calls as `application/json` rather than SSE. Default `false`. |

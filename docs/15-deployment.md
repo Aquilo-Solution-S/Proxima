@@ -97,6 +97,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 |---|---|---|---|
 | `DATABASE_URL` | yes | `postgres://user:pass@host:5432/db` | Postgres connection string. |
 | `PROXIMA_MCP_BIND` | yes | `0.0.0.0:8080` | MCP listener address. |
+| `PROXIMA_MCP_SESSION_IDLE_SECS` | no | `3600` | MCP session idle timeout. Default `300`; `0` never closes a session. A tool call without a progress token sends nothing while it runs, so raise this for long synchronous calls, or use `proxima-code_start_ingest_head_snapshot`. |
 | `PROXIMA_EXPOSE_NETWORK=true` | yes | `true` | Required for non-loopback bind. |
 | `PROXIMA_ALLOWED_ORIGINS` | yes | `https://claude.example.com,https://codex.example.com` | Comma-separated listener-wide browser CORS allowlist; never `*`. |
 | `PROXIMA_ALLOWED_HOSTS` | no | `proxima.example.com` | Inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the listener-wide DNS-rebinding guard. Defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins; loopback always permitted. Set only to override. |

@@ -125,7 +125,7 @@ impl CoreMcpTools {
     /// request, authorization, and session semantics.
     #[must_use]
     pub fn into_dynamic_handler(self) -> DynamicHandler {
-        DynamicHandler { server: self.host }
+        DynamicHandler::new(self.host)
     }
 
     /// List all build-time registered MCP tools from the frozen registry.

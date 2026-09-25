@@ -18,7 +18,8 @@ use axum::response::{IntoResponse, Response};
 use http_body_util::Limited;
 use proxima_core::RevalidationConfig;
 use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    StreamableHttpServerConfig, StreamableHttpService,
+    session::local::{LocalSessionManager, SessionConfig},
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -76,13 +77,12 @@ pub fn streamable_http_service_with_transport(
         .with_legacy_session_mode(transport.legacy_session_mode)
         .with_json_response(transport.json_response)
         .with_max_request_body_bytes(transport.max_request_body_bytes);
+    let mut sessions = LocalSessionManager::default();
+    sessions.session_config.keep_alive = transport.session_idle_timeout;
+    let progress_heartbeat = transport.progress_heartbeat();
     StreamableHttpService::new(
-        move || {
-            Ok(DynamicHandler {
-                server: server.clone(),
-            })
-        },
-        Arc::default(),
+        move || Ok(DynamicHandler::new(server.clone()).with_progress_heartbeat(progress_heartbeat)),
+        Arc::new(sessions),
         config,
     )
 }
@@ -168,6 +168,11 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 pub struct McpTransportConfig {
     /// SSE ping interval; `None` disables pings.
     pub sse_keep_alive: Option<Duration>,
+    /// Close a session after this long without session traffic; `None`
+    /// never closes it (rmcp's `SessionConfig::keep_alive`). SSE pings are
+    /// not traffic and neither is a tool call still running: the progress
+    /// heartbeat is, for a call that carries a progress token.
+    pub session_idle_timeout: Option<Duration>,
     /// SSE priming-event retry interval; `None` sends none.
     pub sse_retry: Option<Duration>,
     /// Keep a server-side session per client that opens with `initialize`;
@@ -187,6 +192,7 @@ impl Default for McpTransportConfig {
     fn default() -> Self {
         Self {
             sse_keep_alive: Some(Duration::from_secs(15)),
+            session_idle_timeout: Some(SessionConfig::DEFAULT_KEEP_ALIVE),
             sse_retry: Some(Duration::from_secs(3)),
             legacy_session_mode: true,
             json_response: false,
@@ -194,6 +200,27 @@ impl Default for McpTransportConfig {
         }
     }
 }
+
+impl McpTransportConfig {
+    /// How often a running tool call that carries a progress token sends
+    /// `notifications/progress`: [`DEFAULT_PROGRESS_HEARTBEAT`], or half the
+    /// session idle timeout when that is shorter, so the session never sits
+    /// idle for a whole timeout while the call runs.
+    #[must_use]
+    pub fn progress_heartbeat(&self) -> Duration {
+        self.session_idle_timeout
+            .map_or(DEFAULT_PROGRESS_HEARTBEAT, |idle| {
+                DEFAULT_PROGRESS_HEARTBEAT.min(idle / 2)
+            })
+            .max(MIN_PROGRESS_HEARTBEAT)
+    }
+}
+
+/// Progress heartbeat interval when the idle timeout allows it.
+pub const DEFAULT_PROGRESS_HEARTBEAT: Duration = Duration::from_secs(30);
+
+/// Floor for the heartbeat, so a tiny idle timeout cannot spin it.
+const MIN_PROGRESS_HEARTBEAT: Duration = Duration::from_millis(100);
 
 /// Outermost MCP guard: reject oversized bodies with 413 before auth or parsing.
 /// A declared `Content-Length` over the cap is refused immediately; the body
