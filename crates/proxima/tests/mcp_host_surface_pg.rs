@@ -426,3 +426,147 @@ async fn the_authenticator_is_built_after_the_platform_scope() -> TestResult {
     running.shutdown().await;
     Ok(())
 }
+
+const SLEEP_TOOL: &str = "host_sleep";
+
+/// Sleeps `ms`, then answers — a tool call that sends nothing while it runs.
+#[derive(Debug)]
+struct SleepTools;
+
+#[async_trait]
+impl McpHostTools for SleepTools {
+    fn list(&self, _auth: &proxima::McpAuthContext) -> Vec<McpHostTool> {
+        vec![McpHostTool {
+            name: SLEEP_TOOL.into(),
+            description: "Sleep, then answer.".into(),
+            args_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object"}),
+            annotations: McpToolAnnotations::new().read_only(true).open_world(false),
+        }]
+    }
+
+    async fn call(&self, call: ToolCall) -> Result<Value, McpToolError> {
+        let ms = call.args["ms"].as_u64().unwrap_or(0);
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        Ok(json!({"slept_ms": ms}))
+    }
+}
+
+/// Every JSON message on an SSE response, in order.
+async fn sse_messages(response: reqwest::Response) -> TestResult<Vec<Value>> {
+    let text = response.text().await?;
+    Ok(text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .filter_map(|data| serde_json::from_str(data.trim()).ok())
+        .collect())
+}
+
+/// rmcp closes a session after its idle timeout without session traffic,
+/// and a tool call still running is none: its result was lost (issue #347).
+/// A call that carries a progress token gets a heartbeat that is traffic;
+/// one that does not needs the idle timeout raised or switched off.
+#[tokio::test]
+async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without_one() -> TestResult
+{
+    const SLEEP_MS: u64 = 2_500;
+    let db = SplitRoleDb::create("proxima_session_idle", &[]).await?;
+    let subject = UserId::new(Uuid::now_v7());
+    let serve = |idle: Option<Duration>| {
+        Proxima::<HostApp>::app()
+            .database_url(db.runtime_url())
+            .platform_database_url(db.platform_url())
+            .with_mcp()
+            .mcp_bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .tool_scope(ToolScope::All)
+            .host_tools(Arc::new(SleepTools))
+            .mcp_transport(proxima_mcp_server::McpTransportConfig {
+                session_idle_timeout: idle,
+                ..proxima_mcp_server::McpTransportConfig::default()
+            })
+            .authenticator(Arc::new(StubAuth { subject }))
+            .run()
+    };
+    let client = reqwest::Client::new();
+    let sleep_call = |meta: Value| {
+        json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+               "params": {"name": SLEEP_TOOL, "arguments": {"ms": SLEEP_MS}, "_meta": meta}})
+    };
+
+    let running = serve(Some(Duration::from_secs(1))).await?;
+    let base = format!("http://{}", running.mcp_addr.ok_or("no MCP address")?);
+
+    // With a progress token: beats every 500 ms keep the session, and the
+    // result arrives after them.
+    let session = open_session(&client, &base, subject).await?;
+    let response = mcp_post(&client, &base, subject)
+        .header("Mcp-Session-Id", &session)
+        .json(&sleep_call(json!({"progressToken": "ingest-1"})))
+        .send()
+        .await?;
+    let messages = sse_messages(response).await?;
+    let beats: Vec<&Value> = messages
+        .iter()
+        .filter(|message| message["method"] == "notifications/progress")
+        .collect();
+    assert!(beats.len() >= 2, "{messages:?}");
+    assert!(
+        beats
+            .iter()
+            .all(|beat| beat["params"]["progressToken"] == "ingest-1")
+    );
+    let result = messages.last().ok_or("no messages")?;
+    assert_eq!(result["id"], json!(7), "{messages:?}");
+    assert_eq!(
+        result["result"]["structuredContent"],
+        json!({"slept_ms": SLEEP_MS})
+    );
+
+    // Without one, nothing crosses the session while the call runs: the
+    // session closes under it and the result never arrives.
+    let session = open_session(&client, &base, subject).await?;
+    let response = mcp_post(&client, &base, subject)
+        .header("Mcp-Session-Id", &session)
+        .json(&sleep_call(json!({})))
+        .send()
+        .await?;
+    let messages = sse_messages(response).await?;
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.get("result").is_none()),
+        "{messages:?}"
+    );
+    let after = mcp_post(&client, &base, subject)
+        .header("Mcp-Session-Id", &session)
+        .json(&json!({"jsonrpc": "2.0", "id": 8, "method": "tools/list", "params": {}}))
+        .send()
+        .await?;
+    // rmcp answers 500 (worker gone) or 404 (handle gone): either way the
+    // session is closed.
+    assert!(
+        !after.status().is_success(),
+        "session closed: {}",
+        after.status()
+    );
+    running.shutdown().await;
+
+    // With the idle timeout off, the same call needs no token.
+    let running = serve(None).await?;
+    let base = format!("http://{}", running.mcp_addr.ok_or("no MCP address")?);
+    let session = open_session(&client, &base, subject).await?;
+    let response = mcp_post(&client, &base, subject)
+        .header("Mcp-Session-Id", &session)
+        .json(&sleep_call(json!({})))
+        .send()
+        .await?;
+    let messages = sse_messages(response).await?;
+    let result = messages.last().ok_or("no messages")?;
+    assert_eq!(
+        result["result"]["structuredContent"],
+        json!({"slept_ms": SLEEP_MS}),
+        "{messages:?}"
+    );
+    running.shutdown().await;
+    Ok(())
+}

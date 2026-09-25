@@ -91,6 +91,9 @@ fn memory_keep_set() -> Vec<&'static str> {
 
     #[cfg(feature = "code")]
     {
+        use proxima_code::mcp::ingest_runs::{
+            CodeGetIngestRunTool, CodeStartIngestHeadSnapshotTool,
+        };
         use proxima_code::mcp::open_file_revision::CodeOpenFileRevisionTool;
         use proxima_code::mcp::repos::{
             CodeIngestHeadSnapshotTool, CodeListReposTool, CodeRegisterRepoTool,
@@ -103,6 +106,8 @@ fn memory_keep_set() -> Vec<&'static str> {
             CodeRegisterRepoTool::NAME,
             CodeListReposTool::NAME,
             CodeIngestHeadSnapshotTool::NAME,
+            CodeStartIngestHeadSnapshotTool::NAME,
+            CodeGetIngestRunTool::NAME,
             CodeSearchChunksTool::NAME,
             CodeOpenFileRevisionTool::NAME,
             CodeSearchCommitsTool::NAME,

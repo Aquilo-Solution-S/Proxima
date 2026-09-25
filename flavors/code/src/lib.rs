@@ -128,6 +128,8 @@ proxima::flavor_bundle! {
         mcp::CodeListReposTool,
         mcp::CodeRegisterRepoTool,
         mcp::CodeIngestHeadSnapshotTool,
+        mcp::CodeStartIngestHeadSnapshotTool,
+        mcp::CodeGetIngestRunTool,
         mcp::CodeEraseRepoTool,
         mcp::CodeSearchChunksTool,
         mcp::CodeOpenFileRevisionTool,

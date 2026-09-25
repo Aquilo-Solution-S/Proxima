@@ -8,9 +8,9 @@ mod common;
 use common::{TestDb, test_owner as owner_fixture};
 use proxima_code::mcp::{
     CodeEmitExecutionPlanTool, CodeEmitExecutionRequestTool, CodeEraseRepoTool,
-    CodeIngestHeadSnapshotTool, CodeListReposTool, CodeOpenFileRevisionTool, CodeRegisterRepoTool,
-    CodeRetryExecutionRequestTool, CodeSearchChunksTool, CodeSearchCommitsTool,
-    CodeWorkItemBundleTool,
+    CodeGetIngestRunTool, CodeIngestHeadSnapshotTool, CodeListReposTool, CodeOpenFileRevisionTool,
+    CodeRegisterRepoTool, CodeRetryExecutionRequestTool, CodeSearchChunksTool,
+    CodeSearchCommitsTool, CodeStartIngestHeadSnapshotTool, CodeWorkItemBundleTool,
 };
 use proxima_code::testkit::register_repo;
 use proxima_code::{
@@ -2482,5 +2482,204 @@ async fn a_work_assignment_walk_reaches_both_subjects_its_payload_names()
             "PayloadOnly means the origins array is not lineage: {handles:?}"
         );
     }
+    Ok(())
+}
+
+/// Poll `proxima-code_get_ingest_run` until `run_id` is terminal.
+async fn await_terminal_run(
+    fixture: &TestDb,
+    owner: Owner,
+    registry: &Arc<FlavorRegistryFrozen>,
+    run_id: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let deadline = tokio::time::Instant::now() + Duration::from_mins(1);
+    loop {
+        let read = run_tool::<CodeGetIngestRunTool>(
+            ctx(fixture.pg.clone(), owner, registry.clone()),
+            json!({ "run_id": run_id }),
+        )
+        .await?;
+        if matches!(read["run"]["status"].as_str(), Some("succeeded" | "failed")) {
+            return Ok(read["run"].clone());
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("run {run_id} never finished: {read}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A HEAD ingest is a tracked run (issue #347): a synchronous call longer
+/// than the MCP session idle timeout lost its result, so the async tool
+/// answers at once and the run is read back; the synchronous tool drives a
+/// run too, so its result survives a lost response. One active run per
+/// owner and repository; a run whose driver stopped reads failed and is
+/// retired by the next start.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_head_ingest_is_a_run_started_polled_and_recovered()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let call_ctx = || ctx(fixture.pg.clone(), owner, registry.clone());
+    let temp = TempDir::new()?;
+    init_git_repo_with_files(
+        temp.path(),
+        &[
+            ("src/lib.rs", "pub fn run_marker() -> u64 { 1 }\n"),
+            ("src/two.rs", "pub fn second_marker() -> u64 { 2 }\n"),
+        ],
+    )?;
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        call_ctx(),
+        json!({ "path": temp.path().to_string_lossy() }),
+    )
+    .await?;
+    let repo_handle = registered["repo"]["repo_handle"]
+        .as_str()
+        .ok_or("repo_handle")?
+        .to_owned();
+    let repo_id = Uuid::parse_str(registered["repo"]["repo_id"].as_str().ok_or("repo_id")?)?;
+
+    // The synchronous tool drives a run and names it; the run carries its
+    // report, so a caller whose response was lost reads the same numbers.
+    let synchronous =
+        run_tool::<CodeIngestHeadSnapshotTool>(call_ctx(), json!({ "repo_handle": repo_handle }))
+            .await?;
+    let sync_run = synchronous["run_id"].as_str().ok_or("run_id")?;
+    let recovered =
+        run_tool::<CodeGetIngestRunTool>(call_ctx(), json!({ "repo_handle": repo_handle })).await?;
+    let run = &recovered["run"];
+    assert_eq!(run["run_id"], sync_run, "{recovered}");
+    assert_eq!(
+        (&run["status"], &run["stage"]),
+        (&json!("succeeded"), &json!("done"))
+    );
+    assert_eq!(run["files_emitted"], 2, "{recovered}");
+    assert_eq!(
+        run["chunks_emitted"],
+        synchronous["report"]["chunks_emitted"]
+    );
+    assert!(run["finished_at"].is_string(), "{recovered}");
+
+    // The async tool answers before the ingest and the run finishes behind it.
+    std::fs::write(
+        temp.path().join("src/two.rs"),
+        "pub fn second_marker() -> u64 { 3 }\n",
+    )?;
+    run_git(temp.path(), &["add", "."])?;
+    run_git(
+        temp.path(),
+        &[
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-m",
+            "edit",
+        ],
+    )?;
+    let started = run_tool::<CodeStartIngestHeadSnapshotTool>(
+        call_ctx(),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+    assert_eq!(started["started"], true, "{started}");
+    let async_run = started["run"]["run_id"]
+        .as_str()
+        .ok_or("run_id")?
+        .to_owned();
+    let finished = await_terminal_run(&fixture, owner, &registry, &async_run).await?;
+    assert_eq!(finished["status"], "succeeded", "{finished}");
+    assert_eq!(
+        finished["files_emitted"], 1,
+        "only the edited file moved: {finished}"
+    );
+
+    // Another owner cannot read it.
+    let stranger = run_tool::<CodeGetIngestRunTool>(
+        ctx(fixture.pg.clone(), owner_fixture(), registry.clone()),
+        json!({ "run_id": async_run }),
+    )
+    .await;
+    assert!(stranger.is_err(), "another owner's run is not found");
+
+    // While a run is active, a start returns it and the synchronous tool
+    // refuses, naming it.
+    let pool = fixture.pg.pool_for_tests();
+    let active = proxima_code::testkit::start_run(pool, None, &owner, repo_id).await?;
+    let again = run_tool::<CodeStartIngestHeadSnapshotTool>(
+        call_ctx(),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+    assert_eq!(again["started"], false, "{again}");
+    assert_eq!(again["run"]["run_id"], active.run_id.to_string());
+    let refused =
+        run_tool::<CodeIngestHeadSnapshotTool>(call_ctx(), json!({ "repo_handle": repo_handle }))
+            .await
+            .expect_err("an active run blocks the synchronous ingest");
+    assert!(
+        refused.to_string().contains(&active.run_id.to_string()),
+        "{refused}"
+    );
+
+    // Its driver never heartbeats: after five minutes it reads failed, and
+    // the next start retires it and runs.
+    sqlx::query(
+        "UPDATE proxima_code.repo_ingestion_runs \
+            SET updated_at = now() - interval '6 minutes' WHERE run_id = $1",
+    )
+    .bind(active.run_id)
+    .execute(pool)
+    .await?;
+    let stale = run_tool::<CodeGetIngestRunTool>(
+        call_ctx(),
+        json!({ "run_id": active.run_id.to_string() }),
+    )
+    .await?;
+    assert_eq!(stale["run"]["status"], "failed", "{stale}");
+    assert!(
+        stale["run"]["error_message"]
+            .as_str()
+            .is_some_and(|message| message.contains("abandoned")),
+        "{stale}"
+    );
+    let restarted = run_tool::<CodeStartIngestHeadSnapshotTool>(
+        call_ctx(),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+    assert_eq!(restarted["started"], true, "{restarted}");
+    let (status, finished_at): (String, Option<time::OffsetDateTime>) = sqlx::query_as(
+        "SELECT status::text, finished_at FROM proxima_code.repo_ingestion_runs WHERE run_id = $1",
+    )
+    .bind(active.run_id)
+    .fetch_one(pool)
+    .await?;
+    assert_eq!(
+        status, "failed",
+        "the stale run was retired, not left active"
+    );
+    assert!(finished_at.is_some());
+    let restarted_run = restarted["run"]["run_id"]
+        .as_str()
+        .ok_or("run_id")?
+        .to_owned();
+    await_terminal_run(&fixture, owner, &registry, &restarted_run).await?;
+
+    // A failing ingest records its error on the run.
+    std::fs::remove_dir_all(temp.path().join(".git"))?;
+    let doomed = run_tool::<CodeStartIngestHeadSnapshotTool>(
+        call_ctx(),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+    let doomed_run = doomed["run"]["run_id"].as_str().ok_or("run_id")?.to_owned();
+    let failed = await_terminal_run(&fixture, owner, &registry, &doomed_run).await?;
+    assert_eq!(failed["status"], "failed", "{failed}");
+    assert!(failed["error_message"].is_string(), "{failed}");
     Ok(())
 }
