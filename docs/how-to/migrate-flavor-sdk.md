@@ -1,5 +1,19 @@
 # Migrate the Flavor SDK
 
+## v0.0.23
+
+Pin all Proxima Rust dependencies to the same `v0.0.23` tag. No database
+change. A migration run now refuses a flavor lane that does not continue its
+ledger, before the lane applies anything; it used to run it and fail on the
+SQL, e.g. `schema "forgejo" already exists`
+([migrations.md §Ledger lineage](migrations.md#ledger-lineage)).
+
+| Surface | Upgrade |
+|---|---|
+| A flavor or host lane on core's `public._sqlx_migrations` (`NamedMigrator::new`) | Unchecked. Build it with `NamedMigrator::flavor(id, migrator)` to have it checked: the next run copies its rows onto `public._sqlx_migrations_<id>` and re-runs nothing |
+| `skip_migrations` / `preflight_without_migrations` | Also refuses a flavor lane with a migration its ledger does not record (`LedgerConflict::Unapplied`), as core's preflight already did for core |
+| Exhaustive `match` on `MigrationError` | New variants `Ledger { source, ledger, conflict: LedgerConflict }` and `LedgerRead` |
+
 ## v0.0.22
 
 Pin all Proxima Rust dependencies to the same `v0.0.22` tag. No database
