@@ -773,3 +773,97 @@ async fn ingest_queues_vectors_and_the_drain_sends_them_in_batches() {
     let _ = drop_db(&db_name).await;
     result.expect("ingest_queues_vectors_and_the_drain_sends_them_in_batches failed");
 }
+
+/// Every revision of `path`'s chunk 0, oldest first, as `(file_class,
+/// state)`; a chunk stored without a class reads `source`.
+async fn chunk_zero_classes(
+    pool: &sqlx::PgPool,
+    repo_id: Uuid,
+    path: &str,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT COALESCE(file_class::text, 'source'), state::text \
+           FROM proxima_code.code_chunk_v1 \
+          WHERE repo_id = $1 AND file_path = $2 AND chunk_index = 0 \
+          ORDER BY t",
+    )
+    .bind(repo_id)
+    .bind(path)
+    .fetch_all(pool)
+    .await
+}
+
+/// A poll classes each commit's files by that commit's `.gitattributes`:
+/// the file a commit adds takes effect from that commit on, and the one a
+/// commit deletes stops applying there. Files the commit does not touch
+/// keep the class they were written with (#360).
+#[tokio::test]
+async fn a_poll_classes_each_commit_by_its_own_gitattributes() {
+    let (db_name, pg) = migrated_db().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+        let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
+
+        let repo = fixture_repo();
+        let commit = |message: &str| {
+            git(repo.path(), &["add", "-A"]);
+            git(repo.path(), &["commit", "-q", "-m", message]);
+        };
+        write_file(repo.path(), "gen/api.rs", "pub fn api_v1() {}\n");
+        commit("api v1");
+        write_file(repo.path(), ".gitattributes", "gen/** linguist-generated\n");
+        write_file(repo.path(), "gen/api.rs", "pub fn api_v2() {}\n");
+        commit("mark gen generated, api v2");
+        write_file(repo.path(), "gen/api.rs", "pub fn api_v3() {}\n");
+        commit("api v3");
+
+        let repo_id = Uuid::now_v7();
+        register_fixture_repo(pg.pool_for_tests(), &owner, repo_id, repo.path()).await;
+        let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
+        let (report, cursor) = source
+            .run_poll(&ingest_ctx, &Cursor::empty(), &mut |_| {})
+            .await?;
+        assert_eq!(report.files_by_class.generated, 2, "{report:?}");
+        assert_eq!(
+            report.files_by_class.source
+                + report.files_by_class.generated
+                + report.files_by_class.vendored
+                + report.files_by_class.lockfile,
+            report.files_present_emitted,
+            "{report:?}"
+        );
+        let present = |rows: Vec<(String, String)>| -> Vec<String> {
+            rows.into_iter()
+                .filter(|(_, state)| state == "Present")
+                .map(|(class, _)| class)
+                .collect()
+        };
+        assert_eq!(
+            present(chunk_zero_classes(pg.pool_for_tests(), repo_id, "gen/api.rs").await?),
+            ["source", "generated", "generated"]
+        );
+
+        std::fs::remove_file(repo.path().join(".gitattributes"))?;
+        write_file(repo.path(), "gen/api.rs", "pub fn api_v4() {}\n");
+        commit("gen is hand-written again, api v4");
+        source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
+        assert_eq!(
+            present(chunk_zero_classes(pg.pool_for_tests(), repo_id, "gen/api.rs").await?),
+            ["source", "generated", "generated", "source"]
+        );
+        assert!(
+            present(chunk_zero_classes(pg.pool_for_tests(), repo_id, "src/lib.rs").await?)
+                .iter()
+                .all(|class| class == "source")
+        );
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("a_poll_classes_each_commit_by_its_own_gitattributes failed");
+}

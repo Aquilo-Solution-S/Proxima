@@ -135,6 +135,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
             ("repo_ingestion_runs", "stage"),
             ("file_revision_v1", "state"),
             ("code_chunk_v1", "state"),
+            ("code_chunk_v1", "file_class"),
             ("execution_plan_item_v1", "kind"),
             ("execution_result_v1", "status"),
             ("test_result_v1", "status"),

@@ -52,6 +52,7 @@ const BLOB_BATCH_BYTES: u64 = 8 * 1024 * 1024;
 
 use crate::calls::{ExtractedCall, ExtractedDefinition, analyze_blob};
 use crate::chunker::Chunk;
+use crate::file_class::{FileClass, FileClassCounts, FileClassifier};
 use crate::ingest::{
     ChunkInfo, FileRevisionHead, IngestError, append_code_slices_with_handles, ingest_commit,
     ingest_current_file_revision, ingest_file_revision, plan_file_chunks, resolve_intra_file_calls,
@@ -111,6 +112,11 @@ pub struct IndexReport {
     /// rather than silent: a caller who cannot find a file in search
     /// should be able to see that scope, not a bug, is why.
     pub files_excluded: usize,
+    /// Present files whose chunks this ingest derived, by class. Sums to
+    /// `files_present_emitted`.
+    pub files_by_class: FileClassCounts,
+    /// `chunks_emitted`, by the class of the file each was cut from.
+    pub chunks_by_class: FileClassCounts,
 }
 
 /// Per-commit progress event emitted between commit boundaries
@@ -369,6 +375,9 @@ impl LocalGitSource {
         // every changed path/commit still emits derived code-slice
         // projection rows tied to its own file-revision Fact.
         let mut blob_analysis_cache: HashMap<BlobAnalysisKey, BlobAnalysis> = HashMap::new();
+        // The classifier of the commit last ingested. Rebuilt only when a
+        // commit's diff touches a `.gitattributes`.
+        let mut classifier: Option<FileClassifier> = None;
 
         // `git::log` returns newest-first; process oldest-first so each
         // commit's tree diff against its first parent reflects the
@@ -381,6 +390,7 @@ impl LocalGitSource {
                 &scope,
                 &mut report,
                 &mut blob_analysis_cache,
+                &mut classifier,
             )
             .await?;
             last_ingested_sha = Some(commit_info.sha.clone());
@@ -488,8 +498,19 @@ impl LocalGitSource {
             (changed, deleted, files_excluded)
         };
         let entries = git::ls_tree_paths(&self.repo_path, "HEAD", &changed)?;
-        self.snapshot_apply(ctx, head_sha, &entries, &deleted, files_excluded, None)
-            .await
+        // `.gitattributes` anywhere in the tree can class a changed file,
+        // so the delta still lists the whole tree — but only when there is
+        // a file to class.
+        let classifier = if entries.is_empty() {
+            FileClassifier::default()
+        } else {
+            self.classifier_at(head_sha, None)?
+        };
+        let mut report = self
+            .snapshot_apply(ctx, head_sha, &entries, &deleted, None, &classifier)
+            .await?;
+        report.files_excluded = files_excluded;
+        Ok(report)
     }
 
     async fn snapshot_reconcile(
@@ -500,7 +521,9 @@ impl LocalGitSource {
     ) -> Result<IndexReport, IndexError> {
         // Listing first, contents in bounded batches, so the whole tree's
         // file contents are never resident at once.
-        let within_cap: Vec<git::TreeEntry> = git::ls_tree(&self.repo_path, "HEAD")?
+        let listing = git::ls_tree(&self.repo_path, "HEAD")?;
+        let classifier = self.classifier_at(head_sha, Some(&listing))?;
+        let within_cap: Vec<git::TreeEntry> = listing
             .into_iter()
             .filter(|entry| entry.size <= crate::chunker::MAX_BLOB_BYTES as u64)
             .collect();
@@ -529,15 +552,54 @@ impl LocalGitSource {
             .into_iter()
             .map(|head| head.file_path)
             .collect();
-        self.snapshot_apply(
-            ctx,
-            head_sha,
-            &head_entries,
-            &gone,
-            files_excluded,
-            Some(&prior_heads),
-        )
-        .await
+        let mut report = self
+            .snapshot_apply(
+                ctx,
+                head_sha,
+                &head_entries,
+                &gone,
+                Some(&prior_heads),
+                &classifier,
+            )
+            .await?;
+        report.files_excluded = files_excluded;
+        Ok(report)
+    }
+
+    /// The classifier for `rev`: the built-in rules plus every
+    /// `.gitattributes` in its tree, whatever the repo's scope admits —
+    /// a scope that indexes `src/**` still takes its attributes from the
+    /// root file. `listing` is `rev`'s `ls_tree` when the caller holds it.
+    fn classifier_at(
+        &self,
+        rev: &str,
+        listing: Option<&[git::TreeEntry]>,
+    ) -> Result<FileClassifier, IndexError> {
+        let owned;
+        let listing = if let Some(listing) = listing {
+            listing
+        } else {
+            owned = git::ls_tree(&self.repo_path, rev)?;
+            &owned
+        };
+        let files: Vec<&git::TreeEntry> = listing
+            .iter()
+            .filter(|entry| {
+                FileClassifier::is_attributes_path(&entry.path)
+                    && entry.size <= crate::chunker::MAX_BLOB_BYTES as u64
+            })
+            .collect();
+        if files.is_empty() {
+            return Ok(FileClassifier::default());
+        }
+        let oids: Vec<String> = files.iter().map(|entry| entry.oid.clone()).collect();
+        let blobs = git::cat_blobs(&self.repo_path, &oids)?;
+        Ok(FileClassifier::from_gitattributes(
+            files
+                .iter()
+                .zip(&blobs)
+                .map(|(entry, blob)| (entry.path.as_str(), blob.as_slice())),
+        ))
     }
 
     async fn snapshot_apply(
@@ -546,8 +608,8 @@ impl LocalGitSource {
         head_sha: &str,
         head_entries: &[git::TreeEntry],
         deleted_paths: &[String],
-        files_excluded: usize,
         prior_heads: Option<&HashMap<String, FileRevisionHead>>,
+        classifier: &FileClassifier,
     ) -> Result<IndexReport, IndexError> {
         let empty_heads = HashMap::new();
         let skip_heads = prior_heads.unwrap_or(&empty_heads);
@@ -556,22 +618,17 @@ impl LocalGitSource {
             .cloned()
             .partition(|entry| entry.size <= crate::chunker::MAX_BLOB_BYTES as u64);
         if indexable.is_empty() && deleted_paths.is_empty() && oversized.is_empty() {
-            return Ok(IndexReport {
-                files_excluded,
-                ..IndexReport::default()
-            });
+            return Ok(IndexReport::default());
         }
         let now = time::OffsetDateTime::now_utc();
-        let mut report = IndexReport {
-            files_excluded,
-            ..IndexReport::default()
-        };
+        let mut report = IndexReport::default();
         let mut blob_analysis_cache = HashMap::new();
         let mut pass = IngestPass {
             ctx: *ctx,
             now,
             report: &mut report,
             blob_analysis_cache: &mut blob_analysis_cache,
+            classifier,
         };
         let mut pending_present = Vec::new();
         let mut pending_deleted = Vec::new();
@@ -613,31 +670,44 @@ impl LocalGitSource {
         scope: &ScopeMatcher,
         report: &mut IndexReport,
         blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
+        classifier: &mut Option<FileClassifier>,
     ) -> Result<(), IndexError> {
         let now = time::OffsetDateTime::now_utc();
-        let mut pass = IngestPass {
-            ctx: *ctx,
-            now,
-            report,
-            blob_analysis_cache,
-        };
 
         // Diff this commit against its first parent (or against the
         // empty tree for a root commit, where `ls-tree` of the commit
         // itself enumerates every blob as "added").
         let commit_tree = git::tree_sha(&self.repo_path, &commit_info.sha)?;
+        let mut root_listing = None;
         let (changed, deleted) = if let Some(parent_sha) = commit_info.parents.first() {
             let parent_tree = git::tree_sha(&self.repo_path, parent_sha)?;
             git::diff_paths(&self.repo_path, &parent_tree, &commit_tree)?
         } else {
             // Listing only: a root commit needs the *paths* it added, not
             // the blob contents.
-            let added: Vec<String> = git::ls_tree(&self.repo_path, &commit_info.sha)?
-                .into_iter()
-                .map(|entry| entry.path)
-                .collect();
+            let listing = git::ls_tree(&self.repo_path, &commit_info.sha)?;
+            let added: Vec<String> = listing.iter().map(|entry| entry.path.clone()).collect();
+            root_listing = Some(listing);
             (added, Vec::new())
         };
+        // Before scope filtering: a `.gitattributes` the scope drops still
+        // classes the files it admits.
+        let attributes_changed = changed
+            .iter()
+            .chain(&deleted)
+            .any(|path| FileClassifier::is_attributes_path(path));
+        let classifier = match classifier {
+            Some(current) if !attributes_changed => current,
+            slot => slot.insert(self.classifier_at(&commit_info.sha, root_listing.as_deref())?),
+        };
+        let mut pass = IngestPass {
+            ctx: *ctx,
+            now,
+            report,
+            blob_analysis_cache,
+            classifier,
+        };
+
         // Out-of-scope paths are dropped from BOTH lists. Dropping them
         // only from `changed` would let a delete of a never-indexed path
         // write a tombstone for a file the index has never heard of.
@@ -804,6 +874,7 @@ impl LocalGitSource {
             pass.report.files_present_emitted += 1;
         }
 
+        let file_class = pass.classifier.classify(path, blob);
         let analysis_key = (content_sha256, language.clone());
         let analysis = if let Some(cached) = pass.blob_analysis_cache.get(&analysis_key) {
             pass.report.chunks_reused += cached.chunks.len();
@@ -823,6 +894,7 @@ impl LocalGitSource {
         Ok(PendingPresentBlob {
             path: path.to_string(),
             language,
+            file_class,
             file_revision: file_revision.memory_id,
             source_commit,
             analysis,
@@ -859,11 +931,18 @@ impl LocalGitSource {
         let mut file_chunks = plan_file_chunks(
             self.repo_id,
             &pending.path,
+            pending.file_class,
             &pending.analysis.chunks,
             &pending.analysis.definitions,
             &heads,
         )?;
-        resolve_intra_file_calls(&pending.analysis.calls, &mut file_chunks);
+        // Calls into or out of a lockfile, a bundle or someone else's code
+        // are not the connections a caller walks, and a generated file's
+        // would drown the ones that are.
+        if pending.file_class.is_source() {
+            resolve_intra_file_calls(&pending.analysis.calls, &mut file_chunks);
+        }
+        pass.report.files_by_class.add(pending.file_class, 1);
         self.append_file_chunks(pass, &pending, &file_chunks).await
     }
 
@@ -897,6 +976,7 @@ impl LocalGitSource {
                     &pending.path,
                     prior,
                     pending.language.clone(),
+                    pending.file_class,
                 ));
                 tomb_handles.push(head.handle);
             }
@@ -947,6 +1027,7 @@ impl LocalGitSource {
         for (chunk, outcome) in file_chunks.iter().zip(&outcomes) {
             if !outcome.idempotent_replay {
                 pass.report.chunks_emitted += 1;
+                pass.report.chunks_by_class.add(pending.file_class, 1);
             }
             pass.report.call_references_emitted += chunk.payload.calls.len();
         }
@@ -1003,7 +1084,13 @@ impl LocalGitSource {
                     head.chunk_index
                 ))
             })?;
-            tomb_payloads.push(tombstone_chunk(self.repo_id, &pending.path, prior, None));
+            tomb_payloads.push(tombstone_chunk(
+                self.repo_id,
+                &pending.path,
+                prior,
+                None,
+                FileClass::Source,
+            ));
             tomb_handles.push(head.handle);
         }
         if !tomb_payloads.is_empty() {
@@ -1183,7 +1270,7 @@ enum ChangedPathIngest {
 /// A pass is one commit (`ingest_one_commit`) or one snapshot apply
 /// (`snapshot_apply`), and those two are the only places one is built.
 /// Rule: any function needing two or more of `{ctx, now, report,
-/// blob_analysis_cache}` takes the pass instead.
+/// blob_analysis_cache, classifier}` takes the pass instead.
 ///
 /// Fields are plain and public to the module on purpose — no accessors.
 /// The cache-hit branch in [`LocalGitSource::ingest_present_blob`] holds a
@@ -1195,12 +1282,15 @@ struct IngestPass<'a> {
     now: time::OffsetDateTime,
     report: &'a mut IndexReport,
     blob_analysis_cache: &'a mut HashMap<BlobAnalysisKey, BlobAnalysis>,
+    /// Classes the files of the revision this pass ingests.
+    classifier: &'a FileClassifier,
 }
 
 #[derive(Debug, Clone)]
 struct PendingPresentBlob {
     path: String,
     language: Option<String>,
+    file_class: FileClass,
     file_revision: MemoryId,
     source_commit: Option<MemoryId>,
     analysis: BlobAnalysis,

@@ -12,8 +12,9 @@ use sqlx::{Connection, PgConnection};
 /// The code migration that replaces the v0.0.15 block with the installer.
 const INSTALLER_MIGRATION: i64 = 20_260_924_000_020;
 
-/// Core and the code lane up to (not including) the installer migration:
-/// the v0.0.15 hand-written policies.
+/// Core and every code migration but the installer: the v0.0.15
+/// hand-written policies. Later files are kept: the template already holds
+/// them, and a lane that lacked them would read its ledger as diverged.
 async fn migrate_through_v015(database: &str, pg: &proxima_storage_pg::PgStorage) {
     let _ = pg;
     let (_, platform_url) = proxima_pg_testkit::split_role_urls(database)
@@ -29,7 +30,7 @@ async fn migrate_through_v015(database: &str, pg: &proxima_storage_pg::PgStorage
     let mut v015 = proxima_code::migrator();
     v015.migrations = std::borrow::Cow::Owned(
         v015.iter()
-            .filter(|migration| migration.version < INSTALLER_MIGRATION)
+            .filter(|migration| migration.version != INSTALLER_MIGRATION)
             .cloned()
             .collect(),
     );

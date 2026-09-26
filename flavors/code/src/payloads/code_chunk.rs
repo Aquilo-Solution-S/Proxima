@@ -2,6 +2,7 @@ use proxima_core::{AbstractionPayload, PayloadReference, ScopeKind, proxima_sche
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::file_class::FileClass;
 use crate::repos::CODE_REPO_SCOPE;
 
 use crate::payloads::file_revision::FileState;
@@ -77,6 +78,10 @@ pub struct CodeChunkV1 {
     pub line_range_start: u32,
     pub line_range_end: u32,
     pub state: FileState,
+    /// Class of the file this chunk was cut from. Absent on a chunk written
+    /// before v0.0.24, which reads as `source`.
+    #[serde(default)]
+    pub file_class: FileClass,
     /// Callees this chunk calls, one entry per callee chunk. Resolution is
     /// intra-file; a call whose callee is not a chunk of the same file
     /// resolves to nothing and is simply not recorded.
