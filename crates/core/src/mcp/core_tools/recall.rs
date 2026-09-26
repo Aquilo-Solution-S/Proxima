@@ -556,10 +556,13 @@ async fn embed_query(
     embed: &crate::llm::BoundEmbeddingClient,
     query: &str,
 ) -> Result<crate::SpaceVector, String> {
-    embed.embed_vector(query).await.map_err(|err| {
-        tracing::warn!(error = %err, "embedding provider failed");
-        "embedding provider error".to_string()
-    })
+    embed
+        .embed_query(query, crate::llm::QueryTask::DEFAULT)
+        .await
+        .map_err(|err| {
+            tracing::warn!(error = %err, "embedding provider failed");
+            "embedding provider error".to_string()
+        })
 }
 
 #[cfg(test)]

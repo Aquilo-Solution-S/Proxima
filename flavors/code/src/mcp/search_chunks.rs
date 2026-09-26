@@ -732,7 +732,7 @@ async fn resolve_query_embedding(
         }
         return Ok((ChunkSearchMode::Lexical, None));
     };
-    match embed.embed_vector(query).await {
+    match embed.embed_query(query, CODE_QUERY_TASK).await {
         Ok(vector) => Ok((mode, Some(vector))),
         Err(err) if mode == ChunkSearchMode::Semantic => {
             tracing::warn!(error = %err, "embedding provider failed");
@@ -751,6 +751,11 @@ async fn resolve_query_embedding(
         }
     }
 }
+
+/// The [`QueryTask`](proxima_core::llm::QueryTask) chunk search embeds its
+/// query under, so a route can word code queries apart from memory queries.
+pub const CODE_QUERY_TASK: proxima_core::llm::QueryTask =
+    proxima_core::llm::QueryTask::named("code");
 
 /// `1 / (k + rank)` for a zero-based rank.
 fn reciprocal_rank(rank: usize) -> f32 {

@@ -3,9 +3,13 @@
 use async_trait::async_trait;
 use std::time::Duration;
 
+mod query;
 mod route;
 mod space;
 
+pub use query::{
+    QUERY_PLACEHOLDER, QueryInstruction, QueryInstructionError, QueryInstructions, QueryTask,
+};
 pub use route::{EmbeddingRoute, EmbeddingRouteError, EmbeddingRouter, SingleClientRouter};
 pub use space::{
     BoundEmbeddingClient, EmbeddingDim, EmbeddingSpace, SpaceVector, UnsupportedEmbeddingWidth,

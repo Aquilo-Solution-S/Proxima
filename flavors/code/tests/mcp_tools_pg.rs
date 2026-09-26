@@ -1733,12 +1733,17 @@ impl proxima_core::llm::EmbeddingClient for TopicEmbedding {
     }
 }
 
-/// `ctx`, but the engine carries an embedding model, so chunks are embedded
+/// `ctx`, but the engine embeds through `router`, so chunks are embedded
 /// on ingest and the semantic arm has something to search.
-fn embedding_ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
+fn embedding_ctx(
+    pg: PgStorage,
+    owner: Owner,
+    registry: Arc<FlavorRegistryFrozen>,
+    router: Arc<dyn proxima_core::llm::EmbeddingRouter>,
+) -> McpToolCtx {
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
-    let engine = Arc::new(engine_for_test(pg).with_embedding_router(topic_router()));
+    let engine = Arc::new(engine_for_test(pg).with_embedding_router(router));
     McpToolCtx {
         owner,
         authz,
@@ -1764,6 +1769,17 @@ async fn ingest_topic_repo(
     registry: &Arc<FlavorRegistryFrozen>,
     temp: &TempDir,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    ingest_topic_repo_with(fixture, owner, registry, temp, topic_router()).await
+}
+
+/// [`ingest_topic_repo`] embedding through `router`.
+async fn ingest_topic_repo_with(
+    fixture: &TestDb,
+    owner: Owner,
+    registry: &Arc<FlavorRegistryFrozen>,
+    temp: &TempDir,
+    router: Arc<dyn proxima_core::llm::EmbeddingRouter>,
+) -> Result<String, Box<dyn std::error::Error>> {
     init_git_repo_with_files(
         temp.path(),
         &[
@@ -1780,7 +1796,7 @@ async fn ingest_topic_repo(
         ],
     )?;
     let registered = run_tool::<CodeRegisterRepoTool>(
-        embedding_ctx(fixture.pg.clone(), owner, registry.clone()),
+        embedding_ctx(fixture.pg.clone(), owner, registry.clone(), router.clone()),
         json!({ "path": temp.path().to_string_lossy(), "display_name": "Topic Repo" }),
     )
     .await?;
@@ -1789,7 +1805,7 @@ async fn ingest_topic_repo(
         .expect("repo_id")
         .to_string();
     run_tool::<CodeIngestHeadSnapshotTool>(
-        embedding_ctx(fixture.pg.clone(), owner, registry.clone()),
+        embedding_ctx(fixture.pg.clone(), owner, registry.clone(), router.clone()),
         json!({ "repo_handle": repo_handle }),
     )
     .await?;
@@ -1797,13 +1813,81 @@ async fn ingest_topic_repo(
     // Ingest enqueues embedding_jobs when the engine has a client. Drain
     // claims those jobs; backfill is residue for heads written without a
     // model. Between ingest and this drain the repo is lexical-only.
-    let engine = engine_for_test(fixture.pg.clone()).with_embedding_router(topic_router());
+    let engine = engine_for_test(fixture.pg.clone()).with_embedding_router(router);
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let _ = engine
         .backfill_missing_embeddings(&authz, &owner, 1_000)
         .await;
     let _ = engine.drain_embedding_jobs(1_000).await;
     Ok(repo_handle)
+}
+
+/// [`TopicEmbedding`] that keeps every text it is sent.
+#[derive(Debug, Default)]
+struct RecordingTopicEmbedding(std::sync::Mutex<Vec<String>>);
+
+#[async_trait::async_trait]
+impl proxima_core::llm::EmbeddingClient for RecordingTopicEmbedding {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, proxima_core::llm::LlmError> {
+        self.0.lock().expect("recording").push(text.to_owned());
+        TopicEmbedding.embed(text).await
+    }
+
+    fn model_id(&self) -> &'static str {
+        TopicEmbedding.model_id()
+    }
+
+    fn dim(&self) -> usize {
+        TopicEmbedding.dim()
+    }
+}
+
+/// Code search embeds its query in the route's code instruction, not the
+/// default one, while the chunks it ranks were embedded as they are (#354).
+#[tokio::test]
+async fn code_search_embeds_its_query_in_the_code_instruction()
+-> Result<(), Box<dyn std::error::Error>> {
+    use proxima_code::mcp::search_chunks::CODE_QUERY_TASK;
+    use proxima_core::llm::{
+        BoundEmbeddingClient, QueryInstruction, QueryInstructions, QueryTask, SingleClientRouter,
+    };
+
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    let recording = Arc::new(RecordingTopicEmbedding::default());
+    let bound = BoundEmbeddingClient::bind(recording.clone())?.with_query_instructions(
+        QueryInstructions::default()
+            .with_instruction(QueryTask::DEFAULT, QueryInstruction::new("note: {query}")?)
+            .with_instruction(CODE_QUERY_TASK, QueryInstruction::new("code: {query}")?),
+    );
+    let router = Arc::new(SingleClientRouter::new(bound));
+    ingest_topic_repo_with(&fixture, owner, &registry, &temp, router.clone()).await?;
+    let stored: Vec<String> = recording.0.lock().expect("recording").drain(..).collect();
+    assert!(
+        stored
+            .iter()
+            .any(|text| text.contains("halt_iteration") && !text.starts_with("code: ")),
+        "chunks embed as they are: {stored:?}"
+    );
+
+    let found = run_tool::<CodeSearchChunksTool>(
+        embedding_ctx(fixture.pg.clone(), owner, registry.clone(), router),
+        json!({ "query": "stop going round again", "mode": "semantic", "include_calls": false }),
+    )
+    .await?;
+    assert_eq!(match_paths(&found)[0], "src/control.rs", "{found}");
+    assert_eq!(
+        found["matches"][0]["similarity_score"],
+        json!(1.0),
+        "{found}"
+    );
+    assert_eq!(
+        *recording.0.lock().expect("recording"),
+        ["code: stop going round again"]
+    );
+    Ok(())
 }
 
 /// The contract for a deployment with no embedding model configured, which

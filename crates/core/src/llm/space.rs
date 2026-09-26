@@ -1,7 +1,7 @@
 //! Where vectors live: the widths the store indexes, the space a client
 //! embeds into, and vectors checked against it.
 
-use super::{EmbeddingClient, LlmError};
+use super::{EmbeddingClient, LlmError, QueryInstructions, QueryTask};
 
 /// Declares [`EmbeddingDim`] and its width codec from one list, so a width
 /// cannot be added to the enum and missed by [`EmbeddingDim::ALL`],
@@ -178,7 +178,9 @@ pub struct VectorWidthMismatch {
 ///
 /// The engine installs only bound clients. Binding checks the client's
 /// width once, so every downstream write and query names a width the store
-/// indexes. Dereferences to the client.
+/// indexes. Dereferences to the client, which embeds content as sent; a
+/// search query goes through [`Self::embed_query`] and the binding's
+/// [`QueryInstructions`].
 #[derive(Debug, Clone)]
 pub struct BoundEmbeddingClient {
     client: std::sync::Arc<dyn EmbeddingClient>,
@@ -186,6 +188,7 @@ pub struct BoundEmbeddingClient {
     /// The client as the host bound it, kept through engine wrapping so two
     /// bindings of one host client still compare as the same endpoint.
     origin: std::sync::Arc<dyn EmbeddingClient>,
+    query_instructions: std::sync::Arc<QueryInstructions>,
 }
 
 impl BoundEmbeddingClient {
@@ -204,7 +207,23 @@ impl BoundEmbeddingClient {
             origin: std::sync::Arc::clone(&client),
             client,
             space,
+            query_instructions: std::sync::Arc::default(),
         })
+    }
+
+    /// The same binding, wrapping search queries in `instructions`. The
+    /// space is unchanged: stored vectors never see an instruction.
+    #[must_use]
+    pub fn with_query_instructions(self, instructions: QueryInstructions) -> Self {
+        Self {
+            query_instructions: std::sync::Arc::new(instructions),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn query_instructions(&self) -> &QueryInstructions {
+        &self.query_instructions
     }
 
     #[must_use]
@@ -222,14 +241,18 @@ impl BoundEmbeddingClient {
         SpaceVector::new(self.space.clone(), values)
     }
 
-    /// Embed `text` in this client's space.
+    /// Embed the search `query` for `task` in this client's space, wrapped
+    /// in the binding's instruction for that task, if any.
     ///
     /// # Errors
     ///
     /// The client's [`LlmError`]; [`LlmError::Embed`] when the vector is not
     /// the client's declared width.
-    pub async fn embed_vector(&self, text: &str) -> Result<SpaceVector, LlmError> {
-        let values = self.client.embed(text).await?;
+    pub async fn embed_query(&self, query: &str, task: QueryTask) -> Result<SpaceVector, LlmError> {
+        let values = self
+            .client
+            .embed(&self.query_instructions.render(query, task))
+            .await?;
         self.vector(values)
             .map_err(|err| LlmError::Embed(err.to_string()))
     }
@@ -319,6 +342,59 @@ mod tests {
         assert_eq!(
             super::BoundEmbeddingClient::bind(std::sync::Arc::new(Width(1000))).unwrap_err(),
             super::UnsupportedEmbeddingWidth { width: 1000 }
+        );
+    }
+
+    /// Only a search query is worded by the binding's instruction; content
+    /// embedded through the client goes as sent, and engine wrapping keeps
+    /// the instructions.
+    #[tokio::test]
+    async fn only_a_search_query_carries_the_instruction() {
+        #[derive(Debug, Default)]
+        struct Recording(std::sync::Mutex<Vec<String>>);
+
+        #[async_trait]
+        impl EmbeddingClient for Recording {
+            async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+                self.0.lock().expect("recording").push(text.to_owned());
+                Ok(vec![0.0; 384])
+            }
+
+            fn model_id(&self) -> &'static str {
+                "m"
+            }
+
+            fn dim(&self) -> usize {
+                384
+            }
+        }
+
+        let recording = std::sync::Arc::new(Recording::default());
+        let code = super::QueryTask::named("code");
+        let instruction = |template: &str| {
+            super::super::QueryInstruction::new(template).expect("template holds the placeholder")
+        };
+        let bound = super::BoundEmbeddingClient::bind(recording.clone())
+            .expect("384 is a lane")
+            .with_query_instructions(
+                super::QueryInstructions::default()
+                    .with_instruction(super::QueryTask::DEFAULT, instruction("any: {query}"))
+                    .with_instruction(code, instruction("code: {query}")),
+            )
+            .wrapped(|inner| inner);
+
+        bound.embed("stored text").await.expect("content embeds");
+        bound
+            .embed_query("find it", super::QueryTask::DEFAULT)
+            .await
+            .expect("query embeds");
+        bound
+            .embed_query("find it", code)
+            .await
+            .expect("query embeds");
+        assert_eq!(
+            *recording.0.lock().expect("recording"),
+            ["stored text", "any: find it", "code: find it"]
         );
     }
 

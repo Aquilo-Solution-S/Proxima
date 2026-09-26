@@ -1021,10 +1021,13 @@ async fn embed_query_for_search(
     embed: &BoundEmbeddingClient,
     query: &str,
 ) -> Result<crate::SpaceVector, String> {
-    embed.embed_vector(query).await.map_err(|err| {
-        tracing::warn!(error = %err, "embedding provider failed");
-        EMBEDDING_PROVIDER_UNAVAILABLE.to_string()
-    })
+    embed
+        .embed_query(query, crate::llm::QueryTask::DEFAULT)
+        .await
+        .map_err(|err| {
+            tracing::warn!(error = %err, "embedding provider failed");
+            EMBEDDING_PROVIDER_UNAVAILABLE.to_string()
+        })
 }
 
 /// Drop neighbor edges that no longer touch a surviving (post-truncation)

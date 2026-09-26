@@ -19,6 +19,9 @@ use proxima::{
     Proxima, ProximaError, RunningProxima, RuntimeBuilder, embedding_runtime_policy_from_lookup,
     run_core_and_flavor_migrations,
 };
+use proxima_core::llm::{
+    BoundEmbeddingClient, QueryInstruction, QueryInstructions, QueryTask, SingleClientRouter,
+};
 use proxima_core::protocol::profile as protocol_profile;
 use proxima_core::{
     FlavorRegistry, FlavorRegistryError, OwnerAccessPort, ToolScope, all_core_actions,
@@ -38,6 +41,8 @@ const PROXIMA_EMBED_DIM: &str = "PROXIMA_EMBED_DIM";
 const PROXIMA_EMBED_MAX_INPUT_CHARS: &str = "PROXIMA_EMBED_MAX_INPUT_CHARS";
 const DEFAULT_EMBED_MAX_INPUT_CHARS: NonZeroU32 =
     NonZeroU32::new(16_384).expect("embedding input default is positive");
+const PROXIMA_EMBED_QUERY_INSTRUCTION: &str = "PROXIMA_EMBED_QUERY_INSTRUCTION";
+const PROXIMA_EMBED_QUERY_INSTRUCTION_CODE: &str = "PROXIMA_EMBED_QUERY_INSTRUCTION_CODE";
 const PROXIMA_TOOL_PROFILE: &str = "PROXIMA_TOOL_PROFILE";
 const PROXIMA_TOOL_ALLOW: &str = "PROXIMA_TOOL_ALLOW";
 const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
@@ -667,9 +672,70 @@ fn build_app(
         app = app.authenticator(authenticator).resource_metadata(metadata);
     }
     if let Some(client) = embedding_client_from_env(&lookup, embedding_policy)? {
-        app = app.embed_client(Arc::new(client));
+        app = app.embedding_router(Arc::new(embedding_router_from_env(&lookup, client)?));
     }
     Ok(app)
+}
+
+/// Every Owner embedded through `client`, its search queries worded by the
+/// configured query instructions.
+fn embedding_router_from_env(
+    lookup: &impl Fn(&str) -> Option<String>,
+    client: OpenAiCompatEmbeddingClient,
+) -> Result<SingleClientRouter, CliError> {
+    let bound = BoundEmbeddingClient::bind(Arc::new(client))
+        .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?;
+    Ok(SingleClientRouter::new(bound.with_query_instructions(
+        query_instructions_from_env(lookup)?,
+    )))
+}
+
+/// The instructions `PROXIMA_EMBED_QUERY_INSTRUCTION` (every search query)
+/// and `PROXIMA_EMBED_QUERY_INSTRUCTION_CODE` (code search, over the
+/// default) wrap a search query in before it is embedded. Unset embeds the
+/// query as sent.
+fn query_instructions_from_env(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<QueryInstructions, CliError> {
+    let mut instructions = QueryInstructions::default();
+    if let Some(instruction) = query_instruction_from_env(lookup, PROXIMA_EMBED_QUERY_INSTRUCTION)?
+    {
+        instructions = instructions.with_instruction(QueryTask::DEFAULT, instruction);
+    }
+    if let Some(instruction) =
+        query_instruction_from_env(lookup, PROXIMA_EMBED_QUERY_INSTRUCTION_CODE)?
+    {
+        #[cfg(feature = "code")]
+        {
+            instructions = instructions.with_instruction(
+                proxima_code::mcp::search_chunks::CODE_QUERY_TASK,
+                instruction,
+            );
+        }
+        #[cfg(not(feature = "code"))]
+        {
+            drop(instruction);
+            return Err(CliError::Runtime(ProximaError::Config(format!(
+                "{PROXIMA_EMBED_QUERY_INSTRUCTION_CODE} needs the code flavor, which this build \
+                 does not include"
+            ))));
+        }
+    }
+    Ok(instructions)
+}
+
+/// One query instruction template. `\n` in the value is a newline: formats
+/// such as Qwen3's need one, and an environment value cannot easily hold it.
+fn query_instruction_from_env(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &'static str,
+) -> Result<Option<QueryInstruction>, CliError> {
+    lookup_non_empty(lookup, key)
+        .map(|raw| {
+            QueryInstruction::new(raw.replace("\\n", "\n"))
+                .map_err(|err| CliError::Runtime(ProximaError::Config(format!("{key}: {err}"))))
+        })
+        .transpose()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -826,6 +892,12 @@ fn embedding_client_from_env(
     let matryoshka_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_MATRYOSHKA).is_some();
     let dim_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_DIM).is_some();
     let max_input_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_MAX_INPUT_CHARS).is_some();
+    let query_instruction_is_set = [
+        PROXIMA_EMBED_QUERY_INSTRUCTION,
+        PROXIMA_EMBED_QUERY_INSTRUCTION_CODE,
+    ]
+    .into_iter()
+    .any(|key| lookup_non_empty(&lookup, key).is_some());
 
     if base_url.is_none()
         && model.is_none()
@@ -833,6 +905,7 @@ fn embedding_client_from_env(
         && !matryoshka_is_set
         && !dim_is_set
         && !max_input_is_set
+        && !query_instruction_is_set
     {
         return Ok(None);
     }
@@ -1373,6 +1446,16 @@ mod tests {
                 "4095",
                 PROXIMA_EMBED_BASE_URL,
             ),
+            (
+                PROXIMA_EMBED_QUERY_INSTRUCTION,
+                "Query:{query}",
+                PROXIMA_EMBED_BASE_URL,
+            ),
+            (
+                PROXIMA_EMBED_QUERY_INSTRUCTION_CODE,
+                "Query:{query}",
+                PROXIMA_EMBED_BASE_URL,
+            ),
         ] {
             let err = embedding_client_from_env(
                 |key| (key == configured_key).then(|| value.to_string()),
@@ -1384,6 +1467,68 @@ mod tests {
                 "{configured_key}: {err}"
             );
         }
+    }
+
+    /// The default instruction words every search query and the code one
+    /// code search over it; `\n` is a newline, and a template without the
+    /// placeholder fails boot naming its variable (#354).
+    #[test]
+    fn query_instructions_read_the_default_and_the_code_override() {
+        let unset = query_instructions_from_env(&|_: &str| None).expect("unset configures");
+        assert!(unset.is_empty());
+
+        let default_only = query_instructions_from_env(&|key: &str| {
+            (key == PROXIMA_EMBED_QUERY_INSTRUCTION)
+                .then(|| "Instruct: find the note\\nQuery:{query}".to_string())
+        })
+        .expect("default configures");
+        assert_eq!(
+            default_only.render("q", QueryTask::DEFAULT),
+            "Instruct: find the note\nQuery:q"
+        );
+
+        let missing = query_instructions_from_env(&|key: &str| {
+            (key == PROXIMA_EMBED_QUERY_INSTRUCTION).then(|| "Instruct: no query".to_string())
+        })
+        .expect_err("a template without {query} must not configure");
+        assert!(
+            missing
+                .to_string()
+                .contains(PROXIMA_EMBED_QUERY_INSTRUCTION),
+            "{missing}"
+        );
+    }
+
+    #[cfg(feature = "code")]
+    #[test]
+    fn the_code_query_instruction_words_code_search_only() {
+        use proxima_code::mcp::search_chunks::CODE_QUERY_TASK;
+
+        let both = query_instructions_from_env(&|key: &str| match key {
+            PROXIMA_EMBED_QUERY_INSTRUCTION => Some("note: {query}".to_string()),
+            PROXIMA_EMBED_QUERY_INSTRUCTION_CODE => Some("code: {query}".to_string()),
+            _ => None,
+        })
+        .expect("both configure");
+        assert_eq!(both.render("q", CODE_QUERY_TASK), "code: q");
+        assert_eq!(both.render("q", QueryTask::DEFAULT), "note: q");
+
+        let code_only = query_instructions_from_env(&|key: &str| {
+            (key == PROXIMA_EMBED_QUERY_INSTRUCTION_CODE).then(|| "code: {query}".to_string())
+        })
+        .expect("code configures");
+        assert_eq!(code_only.render("q", CODE_QUERY_TASK), "code: q");
+        assert_eq!(code_only.render("q", QueryTask::DEFAULT), "q");
+    }
+
+    #[cfg(not(feature = "code"))]
+    #[test]
+    fn the_code_query_instruction_needs_the_code_flavor() {
+        let err = query_instructions_from_env(&|key: &str| {
+            (key == PROXIMA_EMBED_QUERY_INSTRUCTION_CODE).then(|| "code: {query}".to_string())
+        })
+        .expect_err("a build without the code flavor has no code search to word");
+        assert!(err.to_string().contains("needs the code flavor"), "{err}");
     }
 
     #[test]

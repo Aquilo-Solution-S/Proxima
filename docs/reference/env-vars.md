@@ -49,6 +49,8 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_EMBED_DIM` | embeddings | `1024` | model of another width | one of 384, 768, 1024, 1536, 2048, 3072; anything else fails boot |
 | `PROXIMA_EMBED_MATRYOSHKA` | embeddings | `false` | nested-prefix model wider than `PROXIMA_EMBED_DIM` | sends a `dimensions` request parameter |
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | embeddings | `16384` | override the client-side input bound | longest input, in characters, sent before chunked rescue; empty/whitespace uses the default; minimum `4095`; invalid values fail boot |
+| `PROXIMA_EMBED_QUERY_INSTRUCTION` | embeddings | unset | instruction-tuned embedding model | template every search query is embedded in; must hold `{query}`; `\n` is a newline; stored vectors are unaffected ([10](../10-configuration.md#query-instructions)) |
+| `PROXIMA_EMBED_QUERY_INSTRUCTION_CODE` | embeddings | unset | code search wording apart from memory search | template for code search queries, over `PROXIMA_EMBED_QUERY_INSTRUCTION`; needs the code flavor |
 | `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | embedding runtime | `120` | slow provider | complete provider request timeout; range `1..=3600`; invalid values fail boot |
 | `PROXIMA_EMBED_BATCH_SIZE` | embedding runtime | `32` | provider batch tuning | texts per provider call; range `1..=1024`; invalid values fail boot |
 | `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | embedding runtime | `5` | worker cadence tuning | idle poll seconds; range `1..=3600`; invalid values fail boot |
