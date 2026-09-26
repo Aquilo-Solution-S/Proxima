@@ -111,7 +111,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_OIDC_SUBJECT_MAP` | yes* | `sub-1:550e8400-e29b-41d4-a716-446655440000` | Legacy single-issuer shorthand `sub:<uuid>,sub2:<uuid2>`; every entry binds to `PROXIMA_OIDC_ISSUER`. Valid only because exactly one issuer is ever accepted here. Has no field for `trusted_model_id` and never certifies a runner. |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist layered on top of the subject map above; never an identity source by itself. |
 | `PROXIMA_REST_ENABLED` | no | `true` | Serve `/v1` on the MCP listener. Default `false`; has no effect unless the binary was built with the `rest` feature. |
-| `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_transfer`). Set `full` to advertise the whole surface incl. `core_transfer` (moves a memory's owner to another group) — logged at startup. |
+| `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_transfer`). Set `full` to advertise the whole surface incl. `core_transfer` (moves a memory's owner to another group) — logged at startup. Set `code` for a code-search deployment (below). |
 | `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. |
 | `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow. Owner erase is not exposed as an MCP action. |
 | `PROXIMA_EMBED_BASE_URL` | when enabled | `https://embeddings.example/v1` | OpenAI-compatible `/embeddings` base. Required with `PROXIMA_EMBED_MODEL` when embeddings are enabled; plaintext `http://` is accepted for loopback only. |
@@ -321,6 +321,14 @@ tool selection, lower blast radius) and fail-closed — `core_transfer` and
 `core_membership` are opt-in via `PROXIMA_TOOL_PROFILE=full`. The profile is not
 itself a security boundary: every tool call remains gated by per-actor authz and
 role checks.
+
+`PROXIMA_TOOL_PROFILE=code` serves code search without memory: it advertises
+`proxima-code_search_chunks`, `proxima-code_open_file_revision`,
+`proxima-code_search_commits` and `proxima-code_list_repos`, and no memory tool or
+memory resource. A call outside the profile is refused, so agents on it cannot
+write memory whatever they are prompted. Repository administration is opt-in:
+`PROXIMA_TOOL_ALLOW=proxima-code_register_repo,proxima-code_start_ingest_head_snapshot,proxima-code_get_ingest_run`.
+A build without the code flavor refuses the profile at startup.
 
 **Per-user tool scope is a host concern, not a substrate feature.** The env
 profile is one deployment-wide ceiling. A host that composes Proxima as a library

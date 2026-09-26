@@ -96,27 +96,39 @@ fn memory_keep_set() -> Vec<&'static str> {
         use proxima_code::mcp::ingest_runs::{
             CodeGetIngestRunTool, CodeStartIngestHeadSnapshotTool,
         };
-        use proxima_code::mcp::open_file_revision::CodeOpenFileRevisionTool;
-        use proxima_code::mcp::repos::{
-            CodeIngestHeadSnapshotTool, CodeListReposTool, CodeRegisterRepoTool,
-        };
-        use proxima_code::mcp::search_chunks::CodeSearchChunksTool;
-        use proxima_code::mcp::search_commits::CodeSearchCommitsTool;
+        use proxima_code::mcp::repos::{CodeIngestHeadSnapshotTool, CodeRegisterRepoTool};
 
+        // code-as-memory
+        ids.extend(code_keep_set());
         ids.extend([
-            // code-as-memory
             CodeRegisterRepoTool::NAME,
-            CodeListReposTool::NAME,
             CodeIngestHeadSnapshotTool::NAME,
             CodeStartIngestHeadSnapshotTool::NAME,
             CodeGetIngestRunTool::NAME,
-            CodeSearchChunksTool::NAME,
-            CodeOpenFileRevisionTool::NAME,
-            CodeSearchCommitsTool::NAME,
         ]);
     }
 
     ids
+}
+
+/// Tool scope keys advertised by the `code` profile: the code flavor's reads
+/// and nothing else — no memory tool, no memory resource, no repository
+/// administration. A code-search deployment built on it cannot author memory
+/// whatever an agent is told; `PROXIMA_TOOL_ALLOW` adds administration back.
+#[cfg(feature = "code")]
+fn code_keep_set() -> [&'static str; 4] {
+    use proxima_code::mcp::open_file_revision::CodeOpenFileRevisionTool;
+    use proxima_code::mcp::repos::CodeListReposTool;
+    use proxima_code::mcp::search_chunks::CodeSearchChunksTool;
+    use proxima_code::mcp::search_commits::CodeSearchCommitsTool;
+    use proxima_core::mcp::McpTool;
+
+    [
+        CodeSearchChunksTool::NAME,
+        CodeOpenFileRevisionTool::NAME,
+        CodeSearchCommitsTool::NAME,
+        CodeListReposTool::NAME,
+    ]
 }
 
 #[cfg(feature = "code")]
@@ -676,6 +688,8 @@ fn build_app(
 enum ToolProfile {
     Full,
     Memory,
+    #[cfg(feature = "code")]
+    Code,
 }
 
 /// Every scope key a token may name: one id per flat tool, one `tool:action`
@@ -739,6 +753,8 @@ fn resolve_tool_scope(
     let mut palette: BTreeSet<String> = match profile {
         ToolProfile::Full => registered_ids.iter().map(|id| (*id).to_string()).collect(),
         ToolProfile::Memory => memory_keep_set().into_iter().map(String::from).collect(),
+        #[cfg(feature = "code")]
+        ToolProfile::Code => code_keep_set().into_iter().map(String::from).collect(),
     };
     palette.extend(allow);
     for id in deny {
@@ -751,10 +767,19 @@ fn parse_tool_profile(raw: &str) -> Result<ToolProfile, CliError> {
     match raw.trim() {
         protocol_profile::FULL => Ok(ToolProfile::Full),
         protocol_profile::MEMORY => Ok(ToolProfile::Memory),
+        #[cfg(feature = "code")]
+        protocol_profile::CODE => Ok(ToolProfile::Code),
+        #[cfg(not(feature = "code"))]
+        protocol_profile::CODE => Err(CliError::Runtime(ProximaError::Config(format!(
+            "{PROXIMA_TOOL_PROFILE} \"{}\" needs the code flavor, which this build does not \
+             include",
+            protocol_profile::CODE
+        )))),
         other => Err(CliError::Runtime(ProximaError::Config(format!(
-            "unknown {PROXIMA_TOOL_PROFILE} {other:?}; expected \"{}\" or \"{}\"",
+            "unknown {PROXIMA_TOOL_PROFILE} {other:?}; expected \"{}\", \"{}\" or \"{}\"",
             protocol_profile::FULL,
-            protocol_profile::MEMORY
+            protocol_profile::MEMORY,
+            protocol_profile::CODE
         )))),
     }
 }
@@ -1284,6 +1309,62 @@ mod tests {
         let err =
             resolve_tool_scope(Some("unknown"), None, None, &[]).expect_err("unknown profile");
         assert!(err.to_string().contains("unknown PROXIMA_TOOL_PROFILE"));
+    }
+
+    /// Against everything this build registers, the `code` profile grants the
+    /// code flavor's four reads and no other tool, action leaf or resource;
+    /// `PROXIMA_TOOL_ALLOW` adds repository administration back (#358).
+    #[cfg(feature = "code")]
+    #[test]
+    fn code_profile_grants_code_reads_only() {
+        let registered = registered_tool_ids().expect("registered ids");
+        let registered: Vec<&str> = registered.iter().map(String::as_str).collect();
+        let granted = |scope: &ToolScope| -> BTreeSet<&str> {
+            registered
+                .iter()
+                .copied()
+                .filter(|id| scope.allows(id))
+                .collect()
+        };
+
+        let code = resolve_tool_scope(Some(protocol_profile::CODE), None, None, &registered)
+            .expect("code profile");
+        assert_eq!(
+            granted(&code),
+            BTreeSet::from([
+                "proxima-code_list_repos",
+                "proxima-code_open_file_revision",
+                "proxima-code_search_chunks",
+                "proxima-code_search_commits",
+            ])
+        );
+        assert!(!code.allows_group_advertisement(protocol_tool::CORE_GOAL));
+
+        let administered = resolve_tool_scope(
+            Some(protocol_profile::CODE),
+            Some("proxima-code_register_repo,proxima-code_start_ingest_head_snapshot"),
+            Some("proxima-code_search_commits"),
+            &registered,
+        )
+        .expect("code profile with administration");
+        assert_eq!(
+            granted(&administered),
+            BTreeSet::from([
+                "proxima-code_list_repos",
+                "proxima-code_open_file_revision",
+                "proxima-code_register_repo",
+                "proxima-code_search_chunks",
+                "proxima-code_start_ingest_head_snapshot",
+            ])
+        );
+    }
+
+    #[cfg(not(feature = "code"))]
+    #[test]
+    fn code_profile_needs_the_code_flavor() {
+        let err = resolve_tool_scope(Some(protocol_profile::CODE), None, None, &[])
+            .expect_err("a build without the code flavor has no code profile");
+        assert!(err.to_string().contains("needs the code flavor"), "{err}");
     }
 
     #[test]

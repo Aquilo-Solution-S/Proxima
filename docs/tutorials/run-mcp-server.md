@@ -22,7 +22,8 @@ Substrate-only (no code flavor): `cargo run -p proxima-mcp --no-default-features
 ## Tool Surface Profiles
 
 The binary default is fail-closed `memory` (hides `core_membership` /
-`core_transfer`). Local full capability uses `PROXIMA_TOOL_PROFILE=full`.
+`core_transfer`). Local full capability uses `PROXIMA_TOOL_PROFILE=full`; a
+code-search-only surface, with no memory tools, uses `PROXIMA_TOOL_PROFILE=code`.
 
 ```sh
 PROXIMA_TOOL_PROFILE=memory cargo run -p proxima-mcp
