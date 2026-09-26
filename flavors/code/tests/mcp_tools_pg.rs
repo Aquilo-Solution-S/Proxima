@@ -2041,8 +2041,12 @@ async fn ingest_topic_repo_with(
     temp: &TempDir,
     router: Arc<dyn proxima_core::llm::EmbeddingRouter>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    init_git_repo_with_files(
-        temp.path(),
+    ingest_embedded_repo(
+        fixture,
+        owner,
+        registry,
+        temp,
+        router,
         &[
             (
                 "docs/notes.md",
@@ -2055,7 +2059,20 @@ async fn ingest_topic_repo_with(
                  }\n",
             ),
         ],
-    )?;
+    )
+    .await
+}
+
+/// Register and ingest a repo of `files`, embedded through `router`.
+async fn ingest_embedded_repo(
+    fixture: &TestDb,
+    owner: Owner,
+    registry: &Arc<FlavorRegistryFrozen>,
+    temp: &TempDir,
+    router: Arc<dyn proxima_core::llm::EmbeddingRouter>,
+    files: &[(&str, &str)],
+) -> Result<String, Box<dyn std::error::Error>> {
+    init_git_repo_with_files(temp.path(), files)?;
     let registered = run_tool::<CodeRegisterRepoTool>(
         embedding_ctx(fixture.pg.clone(), owner, registry.clone(), router.clone()),
         json!({ "path": temp.path().to_string_lossy(), "display_name": "Topic Repo" }),
@@ -2148,6 +2165,72 @@ async fn code_search_embeds_its_query_in_the_code_instruction()
         *recording.0.lock().expect("recording"),
         ["code: stop going round again"]
     );
+    Ok(())
+}
+
+/// A route's code-search weight decides a hybrid ranking the two arms
+/// disagree on, and a call's `semantic_weight` overrides it. `notes.md`
+/// shares a word with the query, so lexical ranks it first; `control.rs`
+/// only means it, so semantic ranks it first; neither contains the query,
+/// so no literal bonus settles it (#355).
+#[tokio::test]
+async fn a_routes_code_weight_decides_hybrid_ranking_and_a_call_overrides_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    use proxima_code::mcp::search_chunks::CODE_QUERY_TASK;
+    use proxima_core::llm::{BoundEmbeddingClient, SemanticWeight, SingleClientRouter};
+
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    let semantic_leaning = Arc::new(SingleClientRouter::new(
+        BoundEmbeddingClient::bind(Arc::new(TopicEmbedding))?
+            .with_semantic_weight(CODE_QUERY_TASK, SemanticWeight::new(1.0)?),
+    ));
+    ingest_embedded_repo(
+        &fixture,
+        owner,
+        &registry,
+        &temp,
+        semantic_leaning.clone(),
+        &[
+            (
+                "docs/notes.md",
+                "# Notes\n\nEvery release goes round the team for review.\n",
+            ),
+            (
+                "src/control.rs",
+                "pub fn halt_iteration(count: usize) -> bool {\n\
+                 \x20   count > 3\n\
+                 }\n",
+            ),
+        ],
+    )
+    .await?;
+    let first = |router: Arc<dyn proxima_core::llm::EmbeddingRouter>, weight: Option<f32>| {
+        let context = embedding_ctx(fixture.pg.clone(), owner, registry.clone(), router);
+        async move {
+            let found = run_tool::<CodeSearchChunksTool>(
+                context,
+                json!({
+                    "query": "stop going round again",
+                    "mode": "hybrid",
+                    "semantic_weight": weight,
+                    "include_calls": false,
+                }),
+            )
+            .await?;
+            Ok::<_, Box<dyn std::error::Error>>(match_paths(&found).remove(0))
+        }
+    };
+
+    assert_eq!(first(topic_router(), None).await?, "docs/notes.md");
+    assert_eq!(
+        first(semantic_leaning.clone(), None).await?,
+        "src/control.rs"
+    );
+    assert_eq!(first(semantic_leaning, Some(0.0)).await?, "docs/notes.md");
+    assert_eq!(first(topic_router(), Some(1.0)).await?, "src/control.rs");
     Ok(())
 }
 

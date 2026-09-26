@@ -9,6 +9,7 @@ mod space;
 
 pub use query::{
     QUERY_PLACEHOLDER, QueryInstruction, QueryInstructionError, QueryInstructions, QueryTask,
+    SemanticWeight, SemanticWeightError,
 };
 pub use route::{EmbeddingRoute, EmbeddingRouteError, EmbeddingRouter, SingleClientRouter};
 pub use space::{

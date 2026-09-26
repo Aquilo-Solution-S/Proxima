@@ -122,6 +122,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | `16384` | Longest input, in characters, that will be *sent*. The default bound is applied before every provider request; an explicit value overrides it. Over-cap input is refused without a request and split; the first piece's vector is stored. Minimum `4095`; below that the split cannot satisfy the cap and boot fails. See docs/10 §Bounding embedding input. |
 | `PROXIMA_EMBED_QUERY_INSTRUCTION` | no | - | Template every search query is embedded in, holding `{query}`; `\n` is a newline. For instruction-tuned models; stored vectors are unaffected. See docs/10 §Query instructions. |
 | `PROXIMA_EMBED_QUERY_INSTRUCTION_CODE` | no | - | Template for code search queries, over `PROXIMA_EMBED_QUERY_INSTRUCTION`. Needs the code flavor. |
+| `PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT` | no | `0.5` | Hybrid code search weight on the semantic ranking, `0.0..=1.0`, when a call names no `semantic_weight`. `0.5` is plain rank fusion; exact literal hits rank first at any weight. Needs the code flavor. See docs/10 §Code search weight. |
 | `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | no | `120` | Complete provider-request timeout; range `1..=3600`. Enforced at the generic client boundary and by the shipped HTTP adapter. |
 | `PROXIMA_EMBED_BATCH_SIZE` | no | `32` | Texts per provider call; range `1..=1024`. |
 | `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | no | `5` | Idle worker poll interval; range `1..=3600`. |

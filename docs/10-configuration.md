@@ -412,6 +412,7 @@ llama.cpp, LM Studio, vLLM) needs no credential:
 | `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` | no | `900` | Processing claim is reclaimable after this crash window. Range `1..=86400`; must be strictly greater than request timeout. |
 | `PROXIMA_EMBED_QUERY_INSTRUCTION` | no | - | Template every search query is embedded in, holding `{query}` ([§Query instructions](#query-instructions)). |
 | `PROXIMA_EMBED_QUERY_INSTRUCTION_CODE` | no | - | Template for code search queries, over `PROXIMA_EMBED_QUERY_INSTRUCTION`. Needs the code flavor. |
+| `PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT` | no | `0.5` | Hybrid code search weight on the semantic ranking when a call names no `semantic_weight` ([§Code search weight](#code-search-weight)). Needs the code flavor. |
 
 Zero, malformed, out-of-range, and unsafe combinations fail boot. Programmatic
 durations must also be integral seconds. The stale
@@ -524,6 +525,25 @@ the wording from the model's card: a model that is not instruction-tuned
 ranks worse with one. A host with its own router attaches instructions per
 client with `BoundEmbeddingClient::with_query_instructions`; a flavor embeds
 its queries under its own `QueryTask`, which falls back to the default.
+
+<a id="code-search-weight"></a>
+### Code search weight
+
+Hybrid `search_chunks` fuses the lexical and the semantic ranking by
+reciprocal rank, `2(1 - w)` on the lexical arm and `2w` on the semantic one,
+then adds the literal bonus: a chunk whose path or text contains the query
+ranks first at every weight. `w = 0.5` is plain rank fusion, today's
+ranking. A call sets `w` with `semantic_weight` (`mode=hybrid` only); without
+one, the route's weight for code search applies —
+`PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT` in `proxima-mcp`,
+`BoundEmbeddingClient::with_semantic_weight(CODE_QUERY_TASK, w)` for a host
+router — else 0.5.
+
+The best value follows the model. A strong code embedding model ranks
+behaviour questions better on its own than fused with the lexical arm, so it
+wants a higher weight; a weak one gains from the lexical arm. There is no
+measured default beyond 0.5 yet. The weight is not `core_search_memories`'
+`semantic_weight`: that one interpolates scores and defaults to 0.6.
 
 ### Blob store reconcile
 
