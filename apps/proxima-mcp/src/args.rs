@@ -60,8 +60,9 @@ Environment:
                                 sub:<uuid>,sub2:<uuid2>; every entry binds
                                 to PROXIMA_OIDC_ISSUER. Mutually exclusive
                                 with PROXIMA_OIDC_SUBJECT_MAP_JSON.
-  PROXIMA_TOOL_PROFILE          Tool profile: memory (fail-closed default) or
+  PROXIMA_TOOL_PROFILE          Tool profile: memory (fail-closed default),
                                 full (opt-in; adds core_transfer/core_membership)
+                                or code (code search reads only, no memory tools)
   PROXIMA_TOOL_ALLOW            Comma-separated canonical tool ids added to profile
   PROXIMA_TOOL_DENY             Comma-separated canonical tool ids removed from profile
   PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS
