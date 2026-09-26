@@ -64,6 +64,9 @@ pub(crate) struct MemoryNaturalKey {
     pub(crate) sidecar_table: String,
     pub(crate) memory_key_column: String,
     pub(crate) columns: Vec<(String, SidecarAtom)>,
+    /// The writer asked for a replay whose Fact is no longer its series head
+    /// to be admitted again ([`latest_observation`]).
+    pub(crate) reobserve_displaced: bool,
 }
 
 /// How an admission's owner-scoped `Content` row is resolved: an id the
@@ -304,12 +307,12 @@ async fn prepare_memory_admission_at(
         }
     }
 
-    if let (Some(source_id), Some(key)) = (source_id.as_deref(), ingest_key.as_deref())
-        && let Some(replay) =
-            load_ingest_replay(tx, owner_id, source_id, key, &refs, &goal_refs).await?
-    {
-        return Ok(PreparedMemoryAdmission::Replay(replay));
-    }
+    let reobservation_key =
+        match replay_decision(tx, admission, owner_id, &refs, &goal_refs).await? {
+            ReplayDecision::Replay(replay) => return Ok(PreparedMemoryAdmission::Replay(replay)),
+            ReplayDecision::Admit => None,
+            ReplayDecision::Reobserve { next_key } => Some(next_key),
+        };
 
     // A new admission takes the owner fence BEFORE arbitrating the owner row.
     // This is the absent-owner half of the transfer order: a transfer may
@@ -364,11 +367,15 @@ async fn prepare_memory_admission_at(
     targets.extend(refs.iter().copied());
     targets.extend(goal_refs.iter().copied());
     targets.extend(options.extra_targets.iter().copied());
+    let mut draft = draft.clone();
+    if reobservation_key.is_some() {
+        draft.ingest_key = reobservation_key;
+    }
     Ok(PreparedMemoryAdmission::New(Box::new(
         PreparedMemoryAdmissionNew {
             owner: *owner,
             owner_id,
-            draft: draft.clone(),
+            draft,
             origins: persisted_origins,
             refs,
             goal_refs,
@@ -537,6 +544,130 @@ async fn load_ingest_replay(
         cited_object_id: None,
         handle: replay_row.0,
     }))
+}
+
+/// What a sourced admission's replay key resolves to, before any fence.
+#[derive(Debug)]
+enum ReplayDecision {
+    /// Unsourced, or a key nothing has claimed: admit.
+    Admit,
+    /// The key's admission — or, for a re-observing write, its newest
+    /// re-observation — still stands: replay it.
+    Replay(FactIngestOutcome),
+    /// A re-observing write whose newest admission a later one displaced:
+    /// admit it again under `next_key`.
+    Reobserve { next_key: String },
+}
+
+/// The replay key a sourced admission arrived under, with the pins a replay
+/// must match.
+#[derive(Debug, Clone, Copy)]
+struct IngestReceipt<'a> {
+    owner_id: Uuid,
+    source_id: &'a str,
+    key: &'a str,
+    refs: &'a [Uuid],
+    goal_refs: &'a [Uuid],
+}
+
+async fn replay_decision(
+    tx: &mut Transaction<'_, Postgres>,
+    admission: MemoryAdmissionDraft<'_>,
+    owner_id: Uuid,
+    refs: &[Uuid],
+    goal_refs: &[Uuid],
+) -> Result<ReplayDecision, StorageError> {
+    let (Some(source_id), Some(key)) = (
+        admission.draft.source_id.as_deref(),
+        admission.draft.ingest_key.as_deref(),
+    ) else {
+        return Ok(ReplayDecision::Admit);
+    };
+    let Some(replay) = load_ingest_replay(tx, owner_id, source_id, key, refs, goal_refs).await?
+    else {
+        return Ok(ReplayDecision::Admit);
+    };
+    if !admission
+        .natural_key
+        .is_some_and(|natural| natural.reobserve_displaced)
+    {
+        return Ok(ReplayDecision::Replay(replay));
+    }
+    let receipt = IngestReceipt {
+        owner_id,
+        source_id,
+        key,
+        refs,
+        goal_refs,
+    };
+    latest_observation(tx, receipt, replay).await
+}
+
+/// Follow a replayed key's re-observations to the newest admission of the
+/// payload, and decide between replaying it and admitting it again.
+///
+/// Re-observation `n` of `key` claims [`reobservation_key`]`(key, n)`, in
+/// order, so the chain has no gaps: every key stays bound to the one `t` it
+/// first claimed (docs/07 §Identity Rules), and a retried re-observation is
+/// found here and replays. The newest admission is displaced when its handle
+/// has moved on to another row — the source went back to a state an earlier
+/// observation already recorded. A cooled admission is never admitted again:
+/// forget keeps its key replaying.
+async fn latest_observation(
+    tx: &mut Transaction<'_, Postgres>,
+    receipt: IngestReceipt<'_>,
+    replay: FactIngestOutcome,
+) -> Result<ReplayDecision, StorageError> {
+    let mut latest = replay;
+    let mut n: u64 = 1;
+    loop {
+        let next_key = reobservation_key(receipt.key, n);
+        if let Some(outcome) = load_ingest_replay(
+            tx,
+            receipt.owner_id,
+            receipt.source_id,
+            &next_key,
+            receipt.refs,
+            receipt.goal_refs,
+        )
+        .await?
+        {
+            latest = outcome;
+            n += 1;
+            continue;
+        }
+        let displaced: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1
+                   FROM proxima_core.memory_head h
+                   JOIN proxima_core.memory m ON m.t = $2 AND m.owner_id = $3
+                  WHERE h.handle = $1 AND h.t <> $2
+             )",
+        )
+        .bind(latest.handle)
+        .bind(latest.memory_id.into_inner())
+        .bind(receipt.owner_id)
+        .fetch_one(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+        return Ok(if displaced {
+            ReplayDecision::Reobserve { next_key }
+        } else {
+            ReplayDecision::Replay(latest)
+        });
+    }
+}
+
+/// The replay key of re-observation `n` of `key`: domain-separated from the
+/// source's own keys, and as opaque as the key it extends (docs/01
+/// §Idempotency-key constraint).
+fn reobservation_key(key: &str, n: u64) -> String {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"proxima-reobservation-v1");
+    hash.update(&(key.len() as u64).to_be_bytes());
+    hash.update(key.as_bytes());
+    hash.update(&n.to_be_bytes());
+    hash.finalize().to_hex().to_string()
 }
 
 /// Claim the sourced replay key after the lifecycle set is held. A concurrent

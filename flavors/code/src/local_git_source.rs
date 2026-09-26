@@ -54,7 +54,8 @@ use crate::calls::{ExtractedCall, ExtractedDefinition, analyze_blob};
 use crate::chunker::Chunk;
 use crate::ingest::{
     ChunkInfo, FileRevisionHead, IngestError, append_code_slices_with_handles, ingest_commit,
-    ingest_file_revision, plan_file_chunks, resolve_intra_file_calls, tombstone_chunk,
+    ingest_current_file_revision, ingest_file_revision, plan_file_chunks, resolve_intra_file_calls,
+    tombstone_chunk,
 };
 use crate::payloads::{CommitV1, FileRevisionV1, FileState};
 use crate::repos::ScopeMatcher;
@@ -798,9 +799,7 @@ impl LocalGitSource {
             indexed_commit_sha: indexed_commit_sha.to_string(),
             state: FileState::Present,
         };
-        let file_revision =
-            ingest_file_revision(pass.ctx.engine(), pass.ctx.authz(), &rev_payload, pass.now)
-                .await?;
+        let file_revision = ingest_path_revision(pass, &rev_payload, source_commit).await?;
         if !file_revision.idempotent_replay {
             pass.report.files_present_emitted += 1;
         }
@@ -843,11 +842,10 @@ impl LocalGitSource {
         // same slices for a revision this pass did not observe, so the pass
         // skips it and leaves the earlier derivation standing.
         //
-        // Ordinary branch work reaches this:
-        // index `main`, index a branch that touches the same path, check
-        // `main` out again. The `already_current` skip does not catch it,
-        // because the current head is by then the *branch's* revision, so
-        // `main`'s revision is re-offered and replays.
+        // A HEAD snapshot never gets here for a revision a later one
+        // displaced (`main` checked out again after a branch, a scope
+        // widened back over a path): `ingest_path_revision` admits that one
+        // again, and it derives like any new revision.
         if pending.replayed {
             pass.report.chunks_reused += pending.analysis.chunks.len();
             return Ok(());
@@ -973,9 +971,7 @@ impl LocalGitSource {
             indexed_commit_sha: commit_sha.to_string(),
             state: FileState::Tombstone,
         };
-        let file_revision =
-            ingest_file_revision(pass.ctx.engine(), pass.ctx.authz(), &rev_payload, pass.now)
-                .await?;
+        let file_revision = ingest_path_revision(pass, &rev_payload, source_commit).await?;
         pass.report.files_tombstoned += 1;
 
         Ok(PendingDeletedPath {
@@ -1024,6 +1020,23 @@ impl LocalGitSource {
             pass.report.chunks_tombstoned += tomb_payloads.len();
         }
         Ok(())
+    }
+}
+
+/// Write a path's file-revision Fact. A commit's diff (`source_commit`) is
+/// history and replays as such; the HEAD snapshot (`None`) reports the
+/// checkout as it is now, so a revision it re-reports after a later one
+/// displaced it heads the path again.
+async fn ingest_path_revision(
+    pass: &IngestPass<'_>,
+    payload: &FileRevisionV1,
+    source_commit: Option<MemoryId>,
+) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, IngestError> {
+    let (engine, authz) = (pass.ctx.engine(), pass.ctx.authz());
+    if source_commit.is_some() {
+        ingest_file_revision(engine, authz, payload, pass.now).await
+    } else {
+        ingest_current_file_revision(engine, authz, payload, pass.now).await
     }
 }
 

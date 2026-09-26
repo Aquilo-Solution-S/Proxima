@@ -30,13 +30,13 @@ pub struct CodeRegisterRepoArgs {
     #[serde(default)]
     #[schemars(
         length(max = MAX_SCOPE_GLOBS),
-        description = "Gitignore-shaped globs limiting ingest to matching paths, for example `src/**` or `packages/*/src/**/*.ts`. `*` stops at a `/`; use `**` to cross directories. Omit or leave empty to consider every tracked file. At most 64 patterns."
+        description = "Gitignore-shaped globs limiting ingest to matching paths, for example `src/**` or `packages/*/src/**/*.ts`. `*` stops at a `/`; use `**` to cross directories. Empty considers every tracked file. Sending either list replaces the whole scope, an omitted one counting as empty; omitting both keeps a registered repository's current scope, so send `[]` to clear it. At most 64 patterns."
     )]
     pub include_globs: Option<Vec<String>>,
     #[serde(default)]
     #[schemars(
         length(max = MAX_SCOPE_GLOBS),
-        description = "Gitignore-shaped globs removing paths from ingest, for example `**/fixtures/**`. Beats include_globs where both match. Omit or leave empty to exclude nothing. At most 64 patterns."
+        description = "Gitignore-shaped globs removing paths from ingest, for example `**/fixtures/**`. Beats include_globs where both match. Empty excludes nothing; include_globs says how the two lists replace or keep a scope. At most 64 patterns."
     )]
     pub exclude_globs: Option<Vec<String>>,
 }

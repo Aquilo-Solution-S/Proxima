@@ -49,6 +49,20 @@ Stateful Fact current-state is a head-by-natural-key query on the sidecar (03).
 Ingest of a stateful Fact with empty `handle` reuses the owned NK head; a
 miss mints. Flavor code does not JOIN `memory_head`.
 
+Re-observation — a stateful Fact write marked `FactWrite::reobserve_if_displaced`
+(a source reporting current state):
+
+| Replay of `key` resolves to | Result |
+|---|---|
+| newest admission of the payload heads its handle | replay it |
+| newest admission is cooled | replay it |
+| a later `t` heads the handle | new `t`, same handle, under `reobservation_key(key, n)` |
+
+`reobservation_key(key, n) = blake3("proxima-reobservation-v1" ‖ len(key) ‖ key ‖ n)`,
+`n = 1, 2, …` claimed in order, so the newest admission is the last hit of the
+walk `key, reobservation_key(key, 1), …`. Every key still names one `(handle, t)`; a retry
+replays. Unmarked writes (history replay) always replay.
+
 <a id="owner-columns"></a>
 
 ## Owner Columns

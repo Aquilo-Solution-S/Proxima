@@ -202,6 +202,9 @@ pub(crate) struct AuthorizedFactCore {
     fact_sidecar_table: Option<String>,
     fact_natural_key_columns: Vec<String>,
     fact_natural_key_values: Option<Vec<(String, SidecarAtom)>>,
+    /// [`crate::engine::FactWrite::reobserve_if_displaced`]. Only the typed Fact
+    /// write sets it; both citing routes leave it `false`.
+    reobserve_displaced: bool,
     sidecar_payloads: Vec<SidecarPayload>,
     links: AuthorizedNodeLinks,
     /// The publication record this admission captures, resolved by the
@@ -226,6 +229,7 @@ impl AuthorizedFactCore {
             fact_sidecar_table,
             fact_natural_key_columns,
             fact_natural_key_values: None,
+            reobserve_displaced: false,
             sidecar_payloads,
             links,
             publication: None,
@@ -426,6 +430,12 @@ impl AuthorizedFactWrite {
         Self { core }
     }
 
+    /// Carry [`crate::engine::FactWrite::reobserve_if_displaced`] to storage.
+    pub(crate) const fn reobserving_displaced(mut self, reobserve: bool) -> Self {
+        self.core.reobserve_displaced = reobserve;
+        self
+    }
+
     /// Index rows storage must assert alongside the Fact row, in the
     /// same transaction.
     #[must_use]
@@ -474,6 +484,14 @@ impl AuthorizedFactWrite {
     #[must_use]
     pub fn fact_natural_key_values(&self) -> Option<&[(String, SidecarAtom)]> {
         self.core.fact_natural_key_values.as_deref()
+    }
+
+    /// Whether a replay whose Fact no longer heads its natural-key series is
+    /// admitted again rather than replayed
+    /// ([`crate::engine::FactWrite::reobserve_if_displaced`]).
+    #[must_use]
+    pub const fn reobserves_displaced(&self) -> bool {
+        self.core.reobserve_displaced
     }
 
     #[must_use]
@@ -720,6 +738,14 @@ impl AuthorizedFactWithCitation {
         self.core.fact_natural_key_values.as_deref()
     }
 
+    /// Whether a replay whose Fact no longer heads its natural-key series is
+    /// admitted again rather than replayed
+    /// ([`crate::engine::FactWrite::reobserve_if_displaced`]).
+    #[must_use]
+    pub const fn reobserves_displaced(&self) -> bool {
+        self.core.reobserve_displaced
+    }
+
     #[must_use]
     pub fn sidecar_payloads(&self) -> &[SidecarPayload] {
         self.core.sidecar_payloads()
@@ -824,6 +850,14 @@ impl AuthorizedFactWithCitationRef {
     #[must_use]
     pub fn fact_natural_key_values(&self) -> Option<&[(String, SidecarAtom)]> {
         self.core.fact_natural_key_values.as_deref()
+    }
+
+    /// Whether a replay whose Fact no longer heads its natural-key series is
+    /// admitted again rather than replayed
+    /// ([`crate::engine::FactWrite::reobserve_if_displaced`]).
+    #[must_use]
+    pub const fn reobserves_displaced(&self) -> bool {
+        self.core.reobserve_displaced
     }
 
     #[must_use]

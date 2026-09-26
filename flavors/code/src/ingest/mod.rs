@@ -17,7 +17,10 @@ pub mod heads;
 mod pg_sidecars;
 pub mod schemas;
 
-pub(crate) use blobs::{ChunkInfo, plan_file_chunks, resolve_intra_file_calls, tombstone_chunk};
+pub(crate) use blobs::{
+    ChunkInfo, ingest_current_file_revision, plan_file_chunks, resolve_intra_file_calls,
+    tombstone_chunk,
+};
 pub use blobs::{
     append_code_slice, append_code_slices, append_code_slices_with_handles,
     assign_code_chunk_handles, code_slice_memory_id_for, existing_code_chunk_handle, ingest_commit,
