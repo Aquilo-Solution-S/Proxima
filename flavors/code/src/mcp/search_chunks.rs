@@ -77,7 +77,7 @@ pub struct CodeSearchChunksArgs {
     )]
     pub repo_handle: Option<String>,
     #[schemars(
-        description = "Optional language filter, for example `rust` or `typescript`. Omit or null for all languages."
+        description = "Optional language filter, one of `rust`, `typescript`, `tsx`, `javascript`, `python`, `go`, `markdown`, `toml`, `json`, `yaml`, `sql`, `text`; `tsx` files are not `typescript`. Any other value is rejected. Omit or null for all languages."
     )]
     pub language: Option<String>,
     #[schemars(description = "Optional chunk type filter. Omit or null for all chunk types.")]
@@ -197,6 +197,21 @@ fn distinctive_terms(query: &str) -> String {
     out.join(" ")
 }
 
+/// Refuse a `language` no chunk can carry. The filter is exact, so an
+/// unknown value would otherwise return an empty page that reads like
+/// "no such code".
+fn reject_unknown_language(language: Option<&str>) -> Result<(), ToolError> {
+    match language {
+        Some(label) if !crate::chunker::LANGUAGE_LABELS.contains(&label) => {
+            Err(ToolError::InvalidInput(format!(
+                "language must be one of {}; got {label:?}",
+                crate::chunker::LANGUAGE_LABELS.join(", ")
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Resolve the requested snippet budget against the ceiling.
 fn effective_snippet_max_chars(requested: Option<usize>) -> usize {
     requested.map_or(DEFAULT_SNIPPET_MAX_CHARS, |max| {
@@ -309,9 +324,10 @@ impl Tool for CodeSearchChunksTool {
                 ));
             }
             proxima_core::reject_zero_limit(args.limit)?;
+            reject_unknown_language(args.language.as_deref())?;
             let snippet_max_chars = effective_snippet_max_chars(args.snippet_max_chars);
             let limit = args.limit.unwrap_or(12).min(50);
-            // The three input checks above stay ahead of this: resolving a
+            // The input checks above stay ahead of this: resolving a
             // repo handle is a DB round trip that can answer `NotFound`, and
             // a request that is malformed *and* names a bad handle must
             // still be told what is malformed about it.
@@ -1280,10 +1296,42 @@ struct CallSiteRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChunkSearchMode, ResolvedChunkQuery, distinctive_terms};
+    use super::{
+        ChunkSearchMode, CodeSearchChunksArgs, ResolvedChunkQuery, distinctive_terms,
+        reject_unknown_language,
+    };
+    use crate::chunker::LANGUAGE_LABELS;
 
     fn id(byte: u8) -> uuid::Uuid {
         uuid::Uuid::from_bytes([byte; 16])
+    }
+
+    #[test]
+    fn language_filter_accepts_exactly_the_chunker_labels() {
+        for label in LANGUAGE_LABELS {
+            assert!(reject_unknown_language(Some(label)).is_ok(), "{label}");
+        }
+        assert!(reject_unknown_language(None).is_ok());
+        for bad in ["Python", "py", "js", "cobol", ""] {
+            assert!(reject_unknown_language(Some(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    /// The agent-facing description lists the accepted labels by hand; this
+    /// keeps it from drifting when the chunker gains one.
+    #[test]
+    fn language_description_names_every_label() {
+        let schema = serde_json::to_value(schemars::schema_for!(CodeSearchChunksArgs))
+            .expect("schema serializes");
+        let description = schema["properties"]["language"]["description"]
+            .as_str()
+            .expect("language has a description");
+        for label in LANGUAGE_LABELS {
+            assert!(
+                description.contains(&format!("`{label}`")),
+                "description is missing `{label}`: {description}"
+            );
+        }
     }
 
     /// The property the rare bands depend on: a question with no identifiers

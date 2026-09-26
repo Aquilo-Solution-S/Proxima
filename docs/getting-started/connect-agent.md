@@ -85,7 +85,8 @@ registered repository's display name, path or directory name
 search covers every visible repository.
 
 To re-index a repository from scratch — which indexes
-built by an earlier version, since chunking and rendering both changed —
+built by an earlier version, since chunking, rendering and language labels
+(`python`, `go` and `javascript` added after v0.0.23) all changed —
 erase it and ingest again:
 
 1. `proxima-code_erase_repo` with `repo_handle` and `confirm_canonical_path`
