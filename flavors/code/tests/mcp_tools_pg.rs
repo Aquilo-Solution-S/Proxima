@@ -135,7 +135,7 @@ mod embedding_failure_regressions {
     }
 
     fn args(mode: &str) -> serde_json::Value {
-        json!({"query": "halt_iteration", "mode": mode, "include_calls": false})
+        json!({"query": "halt_iteration", "mode": mode, "include_calls": false, "verbose": true})
     }
 
     async fn exercise(fixture: &TestDb) -> TestResult<Observed> {
@@ -893,6 +893,99 @@ async fn search_chunks_returns_whole_chunks_and_flags_truncation()
     Ok(())
 }
 
+/// A match carries what an agent reads, cites and opens. A full-text match
+/// points at the line that shares the query's words, `context_lines` returns
+/// the numbered lines around it, a scoped search names its repository once,
+/// and `verbose` adds the diagnostics back.
+#[tokio::test]
+async fn search_chunks_returns_lean_matches_that_point_at_a_line()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    init_git_repo_with_commit(
+        temp.path(),
+        "src/drain.rs",
+        "pub fn drain_queue(queue: &mut Vec<u32>) -> usize {\n    let batch: Vec<u32> = queue.drain(..).collect();\n    let size = batch.len();\n    // retry a failed batch with backoff\n    resend(&batch);\n    size\n}\n",
+    )?;
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Drain Repo" }),
+    )
+    .await?;
+    let repo_handle = registered["repo"]["repo_handle"]
+        .as_str()
+        .expect("repo_handle")
+        .to_owned();
+    run_tool::<CodeIngestHeadSnapshotTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+    let search = |extra: serde_json::Value| {
+        let mut args = json!({
+            "query": "where are failed batches retried",
+            "mode": "lexical",
+            "include_calls": false,
+        });
+        for (key, value) in extra.as_object().expect("object") {
+            args[key] = value.clone();
+        }
+        run_tool::<CodeSearchChunksTool>(ctx(fixture.pg.clone(), owner, registry.clone()), args)
+    };
+
+    let scoped = search(json!({ "repo_handle": "Drain Repo" })).await?;
+    assert_eq!(scoped["repo_handle"], repo_handle.as_str(), "{scoped}");
+    let top = &scoped["matches"][0];
+    assert_eq!(top["file_path"], "src/drain.rs");
+    assert_eq!(top["matched_line"], 4, "{top}");
+    let keys: Vec<&str> = top
+        .as_object()
+        .expect("match object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "handle",
+            "file_path",
+            "chunk_type",
+            "line_range",
+            "snippet",
+            "snippet_truncated",
+            "matched_line",
+            "score"
+        ]
+    );
+
+    let windowed = search(json!({ "repo_handle": "Drain Repo", "context_lines": 1 })).await?;
+    let top = &windowed["matches"][0];
+    assert_eq!(
+        top["snippet"],
+        "3:     let size = batch.len();\n4:     // retry a failed batch with backoff\n5:     resend(&batch);"
+    );
+    assert_eq!(top["snippet_truncated"], true);
+
+    let unscoped = search(json!({ "verbose": true })).await?;
+    assert!(unscoped.get("repo_handle").is_none(), "{unscoped}");
+    let top = &unscoped["matches"][0];
+    assert_eq!(top["repo_handle"], repo_handle.as_str());
+    assert_eq!(top["match_kind"], "full_text");
+    assert_eq!(
+        top["matched_excerpt"],
+        "// retry a failed batch with backoff"
+    );
+    assert_eq!(top["language"], "rust");
+    assert!(top["lexical_score"].as_f64().unwrap_or_default() > 0.0);
+    assert_eq!(top["similarity_score"], 0.0);
+    for key in ["chunk_index", "byte_range"] {
+        assert!(top.get(key).is_some(), "verbose match lacks {key}: {top}");
+    }
+    Ok(())
+}
+
 /// Python has no grammar, so its chunks come from the line-window fallback;
 /// they still need a language label, or `language: "python"` can never
 /// select them. An unknown label is refused rather than answered empty.
@@ -935,6 +1028,7 @@ async fn the_language_filter_finds_fallback_chunked_python()
             "mode": "lexical",
             "language": language,
             "include_calls": false,
+            "verbose": true,
         })
     };
     let python = run_tool::<CodeSearchChunksTool>(
@@ -2152,7 +2246,12 @@ async fn code_search_embeds_its_query_in_the_code_instruction()
 
     let found = run_tool::<CodeSearchChunksTool>(
         embedding_ctx(fixture.pg.clone(), owner, registry.clone(), router),
-        json!({ "query": "stop going round again", "mode": "semantic", "include_calls": false }),
+        json!({
+            "query": "stop going round again",
+            "mode": "semantic",
+            "include_calls": false,
+            "verbose": true,
+        }),
     )
     .await?;
     assert_eq!(match_paths(&found)[0], "src/control.rs", "{found}");

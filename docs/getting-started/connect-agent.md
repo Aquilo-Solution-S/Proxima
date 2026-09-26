@@ -84,6 +84,16 @@ registered repository's display name, path or directory name
 (case-insensitive); a name matching two repositories is rejected. Omitted, a
 search covers every visible repository.
 
+A match carries `handle`, `file_path`, `chunk_type`, `line_range`, `snippet`,
+`snippet_truncated`, `score` and `matched_line`: the first line holding the
+whole query, else, for a full-text match, the first line sharing the most
+query words. `context_lines: N` returns the lines within N of `matched_line`,
+numbered (`2610: …`), instead of the chunk text. A search scoped by
+`repo_handle` names the repository once, in the response's `repo_handle`;
+otherwise each match carries its own. `verbose: true` adds `language`,
+`chunk_index`, `byte_range`, `match_kind`, `matched_excerpt`, `lexical_score`
+and `similarity_score`.
+
 To re-index a repository from scratch — which indexes
 built by an earlier version, since chunking, rendering and language labels
 (`python`, `go` and `javascript` added after v0.0.23) all changed —

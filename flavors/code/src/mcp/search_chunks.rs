@@ -98,6 +98,16 @@ pub struct CodeSearchChunksArgs {
         description = "Maximum characters of chunk text per match. Omit or null for 2000; values above 8000 are clamped, and 0 is rejected. A match whose text was cut carries snippet_truncated=true — read the whole chunk with proxima-code_open_file_revision."
     )]
     pub snippet_max_chars: Option<usize>,
+    #[serde(default)]
+    #[schemars(
+        description = "Return the lines within this many of matched_line, each prefixed with its line number (`2610: …`), as the snippet instead of the chunk text from its start. Applies only to matches that carry matched_line; 0 returns that line alone. snippet_max_chars still caps the result. Omit or null for the chunk text."
+    )]
+    pub context_lines: Option<u32>,
+    #[serde(default)]
+    #[schemars(
+        description = "Add diagnostic fields to each match: language, chunk_index, byte_range, match_kind, matched_excerpt, lexical_score and similarity_score. Defaults to false."
+    )]
+    pub verbose: bool,
 }
 
 const fn default_include_calls() -> bool {
@@ -217,6 +227,22 @@ fn reject_unknown_language(language: Option<&str>) -> Result<(), ToolError> {
     }
 }
 
+/// The argument checks that need no database round trip.
+fn reject_malformed_args(args: &CodeSearchChunksArgs) -> Result<(), ToolError> {
+    if args.snippet_max_chars == Some(0) {
+        return Err(ToolError::InvalidInput(
+            "snippet_max_chars must be at least 1".into(),
+        ));
+    }
+    proxima_core::reject_zero_limit(args.limit)?;
+    reject_unknown_language(args.language.as_deref())
+}
+
+/// A repository's `R…` handle.
+fn format_repo_handle(ctx: &ToolCtx, repo_id: Uuid) -> String {
+    ctx.format_flavor_object(super::REPO_HANDLE_KIND, repo_id, super::REPO_HANDLE_PREFIX)
+}
+
 /// Resolve the requested snippet budget against the ceiling.
 fn effective_snippet_max_chars(requested: Option<usize>) -> usize {
     requested.map_or(DEFAULT_SNIPPET_MAX_CHARS, |max| {
@@ -226,6 +252,11 @@ fn effective_snippet_max_chars(requested: Option<usize>) -> usize {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeSearchChunksOutput {
+    /// The repository a search scoped by `repo_handle` ran in, as its `R…`
+    /// handle. Absent for a search over every visible repository, where
+    /// each match carries its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_handle: Option<String>,
     pub matches: Vec<ChunkMatch>,
     pub calls_edges: Vec<CallEdge>,
     /// At least one further eligible match exists past this page in the
@@ -246,29 +277,54 @@ pub struct CodeSearchChunksOutput {
     pub degraded_to_lexical: bool,
 }
 
+/// One chunk a search found, lean by default: what an agent reads, cites
+/// and opens. `verbose` adds [`ChunkMatchDetail`].
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ChunkMatch {
+    /// The chunk's handle, the name `calls_edges` uses for it.
     pub handle: String,
-    pub repo_handle: String,
+    /// The chunk's repository. Absent when the search was scoped to one,
+    /// which the response's `repo_handle` names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_handle: Option<String>,
     pub file_path: String,
-    pub chunk_index: i32,
-    pub language: Option<String>,
     pub chunk_type: String,
+    /// The chunk's first and last line in the file, 1-based.
     pub line_range: (i64, i64),
-    pub byte_range: (i64, i64),
+    /// The chunk text from its start, or with `context_lines` the numbered
+    /// lines around `matched_line`.
     pub snippet: String,
-    /// `true` when `snippet` is shorter than the chunk it came from. Read the
-    /// whole chunk with `proxima-code_open_file_revision`, or re-run with a
-    /// larger `snippet_max_chars`.
+    /// `true` when `snippet` holds less than the whole chunk: cut at
+    /// `snippet_max_chars`, or a `context_lines` window. Read the whole
+    /// chunk with `proxima-code_open_file_revision`, or re-run with a larger
+    /// `snippet_max_chars` or `context_lines`.
     pub snippet_truncated: bool,
-    pub match_kind: String,
+    /// The file line that best matches the query: the first line holding
+    /// the whole query, else the first line sharing the most query words.
+    /// Absent for a path match and for a chunk only the semantic arm found.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_line: Option<i64>,
-    pub matched_excerpt: Option<String>,
     /// The score this match was ranked by, in the units of the mode that
     /// ran: a lexical band score for `lexical`, cosine similarity for
     /// `semantic`, a fused rank score for `hybrid`. Comparable within one
     /// response, not across modes.
     pub score: f32,
+    #[serde(flatten)]
+    pub detail: Option<ChunkMatchDetail>,
+}
+
+/// The per-match fields a `verbose` search adds.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ChunkMatchDetail {
+    pub language: Option<String>,
+    pub chunk_index: i32,
+    pub byte_range: (i64, i64),
+    /// `path_exact`, `path_contains`, `text_contains` (a line holds the
+    /// whole query) or `full_text`.
+    pub match_kind: String,
+    /// The matched line, trimmed to 480 characters, or the path for a path
+    /// match.
+    pub matched_excerpt: Option<String>,
     /// The lexical band score, `0.0` when only the semantic arm found this
     /// chunk. Reported alongside `score` for the same reason
     /// `core_search_memories` reports it: a fused number alone cannot tell
@@ -311,7 +367,7 @@ pub struct CodeSearchChunksTool;
 
 impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
-    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: semantic (embedding-only) suits a question describing behaviour, lexical (full-text only) an exact identifier, string or path, and hybrid (default) fuses both; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Pages of at most 50: has_more plus an opaque next_cursor passed back as cursor with the same query, mode, and filters. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut. Supports language/chunk_type filters and optional call-neighbour connections with their call sites.";
+    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: semantic (embedding-only) suits a question describing behaviour, lexical (full-text only) an exact identifier, string or path, and hybrid (default) fuses both; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Pages of at most 50: has_more plus an opaque next_cursor passed back as cursor with the same query, mode, and filters. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut, and matched_line, the line that best matches the query when one does; context_lines returns the numbered lines around it instead, and verbose adds per-arm scores and byte ranges. Supports language/chunk_type filters and optional call-neighbour connections with their call sites.";
     const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
 
     type Args = CodeSearchChunksArgs;
@@ -323,13 +379,7 @@ impl Tool for CodeSearchChunksTool {
     ) -> futures::future::BoxFuture<'static, Result<CodeSearchChunksOutput, ToolError>> {
         Box::pin(async move {
             let query = proxima_core::validate_search_query(&args.query)?;
-            if args.snippet_max_chars == Some(0) {
-                return Err(ToolError::InvalidInput(
-                    "snippet_max_chars must be at least 1".into(),
-                ));
-            }
-            proxima_core::reject_zero_limit(args.limit)?;
-            reject_unknown_language(args.language.as_deref())?;
+            reject_malformed_args(&args)?;
             let semantic_weight = requested_semantic_weight(args.semantic_weight, args.mode)?;
             let snippet_max_chars = effective_snippet_max_chars(args.snippet_max_chars);
             let limit = args.limit.unwrap_or(12).min(50);
@@ -404,8 +454,17 @@ impl Tool for CodeSearchChunksTool {
                 &fingerprint,
                 seen,
             );
-            let (matches, chunk_ids) =
-                render_chunk_matches(&ctx, resolved.query, snippet_max_chars, eligible)?;
+            let semantic_reached = eligible
+                .iter()
+                .any(|(_, _, scores)| scores.similarity_score > 0.0);
+            let render = MatchRendering {
+                query: resolved.query,
+                snippet_max_chars,
+                context_lines: args.context_lines,
+                verbose: args.verbose,
+                repo_scoped: resolved.repo_id.is_some(),
+            };
+            let (matches, chunk_ids) = render_chunk_matches(&ctx, &render, eligible)?;
 
             // Phase 3: the call-neighbour pins, only when the caller asks
             // for them and the page phase 2 admitted is non-empty. Keyed on
@@ -420,9 +479,13 @@ impl Tool for CodeSearchChunksTool {
                 degraded_to_lexical: degraded_to_lexical(
                     resolved.requested_mode,
                     effective_mode,
-                    &matches,
+                    matches.is_empty(),
+                    semantic_reached,
                 ),
                 mode: mode_label(resolved.requested_mode).to_string(),
+                repo_handle: resolved
+                    .repo_id
+                    .map(|repo_id| format_repo_handle(&ctx, repo_id)),
                 matches,
                 calls_edges,
                 has_more,
@@ -672,12 +735,23 @@ fn select_chunk_page(
     }
 }
 
+/// How a page of chunks is rendered: the arguments that shape a match but
+/// not which chunks match, so none of them is in the cursor canon.
+struct MatchRendering<'a> {
+    query: &'a str,
+    snippet_max_chars: usize,
+    context_lines: Option<u32>,
+    verbose: bool,
+    /// The search named one repository, which the envelope then carries
+    /// instead of every match.
+    repo_scoped: bool,
+}
+
 /// Render the page into wire matches, and collect the same page's row ids
 /// for the call-neighbour phase.
 fn render_chunk_matches(
     ctx: &ToolCtx,
-    query: &str,
-    snippet_max_chars: usize,
+    render: &MatchRendering<'_>,
     eligible: Vec<(MemoryId, CodeChunkV1, MatchScores)>,
 ) -> Result<(Vec<ChunkMatch>, Vec<Uuid>), ToolError> {
     let mut matches = Vec::with_capacity(eligible.len());
@@ -685,42 +759,98 @@ fn render_chunk_matches(
     for (memory_id, payload, scores) in eligible {
         chunk_ids.push(memory_id.into_inner());
         let (match_kind, matched_line, matched_excerpt) = match_metadata(
-            query,
+            render.query,
             &payload.file_path,
             &payload.text,
             payload.line_range_start,
+            scores.lexical_hit,
         );
+        let (snippet, snippet_truncated) = render_snippet(
+            &payload.text,
+            payload.line_range_start,
+            matched_line.zip(render.context_lines),
+            render.snippet_max_chars,
+        );
+        let detail = if render.verbose {
+            Some(ChunkMatchDetail {
+                language: payload.language,
+                chunk_index: i32::try_from(payload.chunk_index)
+                    .map_err(|_| ToolError::Other("chunk_index exceeds i32".into()))?,
+                byte_range: (
+                    i64::from(payload.byte_range_start),
+                    i64::from(payload.byte_range_end),
+                ),
+                match_kind,
+                matched_excerpt,
+                lexical_score: scores.lexical_score,
+                similarity_score: scores.similarity_score,
+            })
+        } else {
+            None
+        };
         matches.push(ChunkMatch {
             handle: ctx.format_abstraction_memory(memory_id),
-            repo_handle: ctx.format_flavor_object(
-                super::REPO_HANDLE_KIND,
-                payload.repo_id,
-                super::REPO_HANDLE_PREFIX,
-            ),
+            repo_handle: (!render.repo_scoped).then(|| format_repo_handle(ctx, payload.repo_id)),
             file_path: payload.file_path,
-            chunk_index: i32::try_from(payload.chunk_index)
-                .map_err(|_| ToolError::Other("chunk_index exceeds i32".into()))?,
-            language: payload.language,
             chunk_type: payload.chunk_type,
             line_range: (
                 i64::from(payload.line_range_start),
                 i64::from(payload.line_range_end),
             ),
-            byte_range: (
-                i64::from(payload.byte_range_start),
-                i64::from(payload.byte_range_end),
-            ),
-            snippet: payload.text.chars().take(snippet_max_chars).collect(),
-            snippet_truncated: payload.text.chars().count() > snippet_max_chars,
-            match_kind,
+            snippet,
+            snippet_truncated,
             matched_line,
-            matched_excerpt,
             score: scores.score,
-            lexical_score: scores.lexical_score,
-            similarity_score: scores.similarity_score,
+            detail,
         });
     }
     Ok((matches, chunk_ids))
+}
+
+/// A match's snippet and whether it holds less than the whole chunk.
+///
+/// With a `window` of `(matched_line, context_lines)` the snippet is the
+/// lines within `context_lines` of `matched_line`, each prefixed with its
+/// file line number, so a caller can cite a line without opening the file.
+/// Without one it is the chunk text from its start. `max_chars` caps both.
+fn render_snippet(
+    text: &str,
+    line_range_start: u32,
+    window: Option<(i64, u32)>,
+    max_chars: usize,
+) -> (String, bool) {
+    let Some((matched_line, context_lines)) = window else {
+        return (
+            text.chars().take(max_chars).collect(),
+            text.chars().count() > max_chars,
+        );
+    };
+    let line_count = text.lines().count();
+    let offset = usize::try_from(matched_line - i64::from(line_range_start)).unwrap_or(0);
+    let context = usize::try_from(context_lines).unwrap_or(usize::MAX);
+    let first = offset.saturating_sub(context);
+    let last = offset
+        .saturating_add(context)
+        .min(line_count.saturating_sub(1));
+    let window_text = text
+        .lines()
+        .enumerate()
+        .take(last + 1)
+        .skip(first)
+        .map(|(idx, line)| {
+            let number = i64::from(line_range_start) + i64::try_from(idx).unwrap_or(i64::MAX);
+            format!("{number}: {line}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let whole_chunk = first == 0 && last + 1 >= line_count;
+    let cut = window_text.chars().count() > max_chars;
+    let snippet = if cut {
+        window_text.chars().take(max_chars).collect()
+    } else {
+        window_text
+    };
+    (snippet, cut || !whole_chunk)
 }
 
 /// The per-chunk scores a search ranked by, in one place so the ordering
@@ -731,6 +861,8 @@ struct MatchScores {
     score: f32,
     lexical_score: f32,
     similarity_score: f32,
+    /// The lexical arm returned this chunk, whatever its score.
+    lexical_hit: bool,
 }
 
 /// Resolve the requested mode against what the current Owner's embedding
@@ -871,6 +1003,7 @@ fn fuse_candidates(
             ..MatchScores::default()
         });
         entry.lexical_score = row.score;
+        entry.lexical_hit = true;
         entry.score = if mode == ChunkSearchMode::Hybrid {
             entry.score + row.literal_bonus + lexical_share * reciprocal_rank(rank)
         } else {
@@ -924,7 +1057,8 @@ fn ranks_after_chunk_cursor(scores: MatchScores, pos: ChunkCursorPos) -> bool {
 fn degraded_to_lexical(
     requested: ChunkSearchMode,
     effective: ChunkSearchMode,
-    matches: &[ChunkMatch],
+    no_matches: bool,
+    semantic_reached: bool,
 ) -> bool {
     if requested != ChunkSearchMode::Hybrid {
         return false;
@@ -932,8 +1066,8 @@ fn degraded_to_lexical(
     effective == ChunkSearchMode::Lexical
         || proxima::flavor::hybrid_degraded_to_lexical(
             proxima::flavor::SearchMode::Hybrid,
-            matches.is_empty(),
-            matches.iter().any(|m| m.similarity_score > 0.0),
+            no_matches,
+            semantic_reached,
         )
 }
 
@@ -945,11 +1079,18 @@ const fn mode_label(mode: ChunkSearchMode) -> &'static str {
     }
 }
 
+/// How a match was made, the file line it points at, and that line's text.
+///
+/// A line holding the whole query wins. Otherwise a chunk the lexical arm
+/// found (`lexical_hit`) points at its first line sharing the most query
+/// words, the line most likely to be why full text matched; a chunk only
+/// the semantic arm found has no such line and keeps no pointer.
 fn match_metadata(
     query: &str,
     file_path: &str,
     text: &str,
     line_range_start: u32,
+    lexical_hit: bool,
 ) -> (String, Option<i64>, Option<String>) {
     let query_lower = query.to_ascii_lowercase();
     let path_lower = file_path.to_ascii_lowercase();
@@ -964,19 +1105,108 @@ fn match_metadata(
         );
     }
 
+    let pointed = |idx: usize, line: &str| {
+        (
+            i64::try_from(idx)
+                .ok()
+                .map(|offset| i64::from(line_range_start) + offset),
+            Some(line.trim().chars().take(480).collect()),
+        )
+    };
     for (idx, line) in text.lines().enumerate() {
         if line.to_ascii_lowercase().contains(&query_lower) {
-            return (
-                "text_contains".to_string(),
-                i64::try_from(idx)
-                    .ok()
-                    .map(|offset| i64::from(line_range_start) + offset),
-                Some(line.trim().chars().take(480).collect()),
-            );
+            let (matched_line, excerpt) = pointed(idx, line);
+            return ("text_contains".to_string(), matched_line, excerpt);
         }
+    }
+    if lexical_hit && let Some((idx, line)) = line_sharing_most_query_words(query, text) {
+        let (matched_line, excerpt) = pointed(idx, line);
+        return ("full_text".to_string(), matched_line, excerpt);
     }
 
     ("full_text".to_string(), None, None)
+}
+
+/// Question words that point at no particular line of code.
+const POINTER_STOPWORDS: &[&str] = &[
+    "about", "after", "all", "and", "any", "are", "been", "before", "being", "but", "can", "code",
+    "does", "done", "each", "for", "from", "get", "gets", "happen", "happens", "has", "have",
+    "how", "into", "its", "not", "our", "the", "their", "then", "there", "these", "this", "those",
+    "was", "were", "what", "when", "where", "which", "while", "who", "why", "will", "with",
+    "would",
+];
+
+/// Most query words a pointer compares, bounding the per-line work.
+const MAX_POINTER_WORDS: usize = 16;
+
+/// The words of `text`, lowercased, split at non-alphanumerics and at
+/// camel-case humps, so `getModuleScriptSources` and `module_script` both
+/// yield `module` and `script`.
+fn pointer_words(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split(|c: char| !c.is_alphanumeric())
+        .flat_map(|token| {
+            let chars: Vec<char> = token.chars().collect();
+            let mut words = Vec::new();
+            let mut start = 0;
+            for i in 1..chars.len() {
+                let hump = chars[i].is_uppercase()
+                    && (chars[i - 1].is_lowercase()
+                        || chars.get(i + 1).is_some_and(|next| next.is_lowercase()));
+                if hump {
+                    words.push(chars[start..i].iter().collect::<String>());
+                    start = i;
+                }
+            }
+            words.push(chars[start..].iter().collect::<String>());
+            words
+        })
+        .filter(|word| !word.is_empty())
+        .map(|word| word.to_lowercase())
+}
+
+/// Whether two lowercased words are the same word up to its ending:
+/// `retries`/`retry`, `resolved`/`resolution`, `chunk`/`chunker`. Words
+/// under four characters must be equal. An approximation of the stemmer
+/// the lexical arm ranks with, good enough to point at a line.
+fn same_word(a: &str, b: &str) -> bool {
+    let shorter = a.chars().count().min(b.chars().count());
+    if shorter < 4 {
+        return a == b;
+    }
+    let common = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+    common >= 4 && common * 5 >= shorter * 3
+}
+
+/// The first line of `text` sharing the most distinct query words with the
+/// query, with its index, or `None` when no line shares one.
+fn line_sharing_most_query_words<'t>(query: &str, text: &'t str) -> Option<(usize, &'t str)> {
+    let mut terms: Vec<String> = Vec::new();
+    for word in pointer_words(query) {
+        if word.chars().count() >= 3
+            && !POINTER_STOPWORDS.contains(&word.as_str())
+            && !terms.contains(&word)
+        {
+            terms.push(word);
+            if terms.len() == MAX_POINTER_WORDS {
+                break;
+            }
+        }
+    }
+    if terms.is_empty() {
+        return None;
+    }
+    let mut best: Option<(usize, usize, &str)> = None;
+    for (idx, line) in text.lines().enumerate() {
+        let words: Vec<String> = pointer_words(line).collect();
+        let shared = terms
+            .iter()
+            .filter(|term| words.iter().any(|word| same_word(term, word)))
+            .count();
+        if shared > best.map_or(0, |(count, _, _)| count) {
+            best = Some((shared, idx, line));
+        }
+    }
+    best.map(|(_, idx, line)| (idx, line))
 }
 
 async fn load_call_edges(
@@ -1381,11 +1611,208 @@ struct CallSiteRow {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChunkCandidateRow, ChunkSearchMode, CodeChunkVectorCandidate, CodeSearchChunksArgs,
-        ResolvedChunkQuery, SemanticWeight, distinctive_terms, fuse_candidates,
-        reject_unknown_language, requested_semantic_weight, wire_cursor,
+        ChunkCandidateRow, ChunkMatch, ChunkMatchDetail, ChunkSearchMode, CodeChunkVectorCandidate,
+        CodeSearchChunksArgs, CodeSearchChunksOutput, ResolvedChunkQuery, SemanticWeight,
+        distinctive_terms, fuse_candidates, match_metadata, pointer_words, reject_unknown_language,
+        render_snippet, requested_semantic_weight, same_word, wire_cursor,
     };
     use crate::chunker::LANGUAGE_LABELS;
+
+    const CHUNK: &str = "fn drain(queue: &Queue) {\n    let batch = queue.take();\n    // retry a failed batch with backoff\n    send_with_retries(batch);\n}";
+
+    #[test]
+    fn a_full_text_match_points_at_the_line_sharing_most_query_words() {
+        let (kind, line, excerpt) = match_metadata(
+            "where are failed batches retried",
+            "src/drain.rs",
+            CHUNK,
+            40,
+            true,
+        );
+        assert_eq!(kind, "full_text");
+        assert_eq!(line, Some(42), "the line with batch, failed and retry");
+        assert_eq!(
+            excerpt.as_deref(),
+            Some("// retry a failed batch with backoff")
+        );
+    }
+
+    #[test]
+    fn only_a_lexical_hit_gets_a_word_pointer() {
+        let (kind, line, excerpt) = match_metadata(
+            "where are failed batches retried",
+            "src/drain.rs",
+            CHUNK,
+            40,
+            false,
+        );
+        assert_eq!((kind.as_str(), line, excerpt), ("full_text", None, None));
+        let (_, line, _) = match_metadata(
+            "how does the code handle it",
+            "src/drain.rs",
+            CHUNK,
+            40,
+            true,
+        );
+        assert_eq!(line, None, "stopwords and short words point nowhere");
+    }
+
+    #[test]
+    fn a_line_holding_the_whole_query_still_wins() {
+        let (kind, line, _) = match_metadata("queue.take()", "src/drain.rs", CHUNK, 40, true);
+        assert_eq!((kind.as_str(), line), ("text_contains", Some(41)));
+        let (kind, line, _) = match_metadata("drain.rs", "src/drain.rs", CHUNK, 40, true);
+        assert_eq!((kind.as_str(), line), ("path_contains", None));
+    }
+
+    #[test]
+    fn words_split_at_humps_and_underscores_and_match_up_to_their_ending() {
+        let words: Vec<String> =
+            pointer_words("getModuleScriptSources(ASTNode, max_chunk_chars)").collect();
+        assert_eq!(
+            words,
+            [
+                "get", "module", "script", "sources", "ast", "node", "max", "chunk", "chars"
+            ]
+        );
+        for (a, b) in [
+            ("retries", "retry"),
+            ("resolved", "resolution"),
+            ("chunk", "chunker"),
+            ("configuration", "configure"),
+            ("api", "api"),
+        ] {
+            assert!(same_word(a, b), "{a} ~ {b}");
+        }
+        for (a, b) in [("module", "modal"), ("log", "logger"), ("batch", "backoff")] {
+            assert!(!same_word(a, b), "{a} !~ {b}");
+        }
+    }
+
+    #[test]
+    fn a_window_numbers_the_lines_around_the_pointer() {
+        assert_eq!(
+            render_snippet(CHUNK, 40, Some((42, 1)), 2_000),
+            (
+                "41:     let batch = queue.take();\n42:     // retry a failed batch with backoff\n43:     send_with_retries(batch);".to_string(),
+                true
+            )
+        );
+        assert_eq!(
+            render_snippet(CHUNK, 40, Some((40, 0)), 2_000),
+            ("40: fn drain(queue: &Queue) {".to_string(), true),
+        );
+        let (whole, truncated) = render_snippet(CHUNK, 40, Some((42, 10)), 2_000);
+        assert!(whole.starts_with("40: fn drain") && whole.ends_with("44: }"));
+        assert!(!truncated, "a window over the whole chunk holds all of it");
+        let (cut, truncated) = render_snippet(CHUNK, 40, Some((42, 10)), 12);
+        assert_eq!((cut.as_str(), truncated), ("40: fn drain", true));
+    }
+
+    #[test]
+    fn without_a_window_the_snippet_is_the_chunk_from_its_start() {
+        assert_eq!(
+            render_snippet(CHUNK, 40, None, 2_000),
+            (CHUNK.to_string(), false)
+        );
+        assert_eq!(
+            render_snippet(CHUNK, 40, None, 8),
+            ("fn drain".to_string(), true)
+        );
+    }
+
+    fn lean_match(detail: Option<ChunkMatchDetail>) -> ChunkMatch {
+        ChunkMatch {
+            handle: "A:1".into(),
+            repo_handle: None,
+            file_path: "src/drain.rs".into(),
+            chunk_type: "function".into(),
+            line_range: (40, 44),
+            snippet: "fn drain".into(),
+            snippet_truncated: true,
+            matched_line: None,
+            score: 1.5,
+            detail,
+        }
+    }
+
+    /// The default match carries the fields an agent reads, cites and
+    /// opens, and nothing else; not even a null.
+    #[test]
+    fn a_lean_match_serializes_only_what_an_agent_reads() {
+        let lean = serde_json::to_value(lean_match(None)).expect("serializes");
+        let keys: Vec<&str> = lean
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "handle",
+                "file_path",
+                "chunk_type",
+                "line_range",
+                "snippet",
+                "snippet_truncated",
+                "score"
+            ]
+        );
+        let verbose = serde_json::to_value(lean_match(Some(ChunkMatchDetail {
+            language: Some("rust".into()),
+            chunk_index: 3,
+            byte_range: (10, 90),
+            match_kind: "full_text".into(),
+            matched_excerpt: None,
+            lexical_score: 1.5,
+            similarity_score: 0.0,
+        })))
+        .expect("serializes");
+        assert_eq!(verbose["language"], "rust");
+        assert_eq!(verbose["chunk_index"], 3);
+        assert_eq!(verbose["lexical_score"], 1.5);
+        assert!(verbose["matched_excerpt"].is_null());
+    }
+
+    /// The advertised output schema must accept a lean match: the verbose
+    /// fields and the omitted ones are optional properties, not required.
+    #[test]
+    fn the_output_schema_requires_only_the_lean_fields() {
+        let schema = serde_json::to_value(schemars::schema_for!(CodeSearchChunksOutput))
+            .expect("schema serializes");
+        let chunk = &schema["$defs"]["ChunkMatch"];
+        let mut required: Vec<&str> = chunk["required"]
+            .as_array()
+            .expect("required list")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        required.sort_unstable();
+        assert_eq!(
+            required,
+            [
+                "chunk_type",
+                "file_path",
+                "handle",
+                "line_range",
+                "score",
+                "snippet",
+                "snippet_truncated"
+            ]
+        );
+        for verbose_field in [
+            "lexical_score",
+            "similarity_score",
+            "byte_range",
+            "match_kind",
+        ] {
+            assert!(
+                chunk["properties"].get(verbose_field).is_some(),
+                "{verbose_field} is not described"
+            );
+        }
+    }
 
     fn id(byte: u8) -> uuid::Uuid {
         uuid::Uuid::from_bytes([byte; 16])
