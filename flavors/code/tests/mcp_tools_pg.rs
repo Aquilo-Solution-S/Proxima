@@ -1148,6 +1148,66 @@ async fn calls_connect_their_chunks_in_every_grammar() -> Result<(), Box<dyn std
     Ok(())
 }
 
+/// The call-pair cap keeps the connections of the best-ranked page chunks,
+/// from either end, whatever their ids sort as.
+#[tokio::test]
+async fn the_call_pair_cap_follows_page_rank() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    let sources = call_sources("padding");
+    let files = sources
+        .iter()
+        .map(|(path, source)| (*path, source.as_str()))
+        .collect::<Vec<_>>();
+    init_git_repo_with_files(temp.path(), &files)?;
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Rank Repo" }),
+    )
+    .await?;
+    let repo = registered["repo"]["repo_id"].as_str().expect("repo_id");
+    run_tool::<CodeIngestHeadSnapshotTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo }),
+    )
+    .await?;
+
+    // Each file's caller and callee, callers in descending id order: ranked
+    // that way, id order would keep the last pair, not the first.
+    let ends: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT caller.t, callee.t
+           FROM proxima_code.code_chunk_v1 caller
+           JOIN proxima_code.code_chunk_v1 callee ON callee.file_path = caller.file_path
+          WHERE caller.text ~ '^(fn open_store|def load_config|func startServer)'
+            AND callee.text ~ '^(fn build_index|def parse_config|func bindListener)'
+          ORDER BY caller.t DESC",
+    )
+    .fetch_all(fixture.pg.pool_for_tests())
+    .await?;
+    assert_eq!(ends.len(), 3, "one caller and one callee per file");
+    let schema = <CodeChunkV1 as AbstractionPayload>::schema_id();
+    let caller_page = ends.iter().map(|(caller, _)| *caller).collect::<Vec<_>>();
+    let target_page = ends.iter().map(|(_, callee)| *callee).collect::<Vec<_>>();
+    for (end, page) in [("caller", &caller_page), ("callee", &target_page)] {
+        let kept = proxima_storage_pg::query::head_chunk_call_pairs(
+            fixture.pg.pool_for_tests(),
+            &schema,
+            page,
+            1,
+        )
+        .await?;
+        assert_eq!(kept.len(), 1, "{end}: {kept:?}");
+        assert_eq!(
+            (kept[0].caller_t, kept[0].callee_t),
+            (ends[0].0, Some(ends[0].1)),
+            "{end}: the cap keeps the first-ranked chunk's pair: {kept:?}"
+        );
+    }
+    Ok(())
+}
+
 /// The match whose snippet opens on `name`'s definition, asserted to be a
 /// `function` chunk.
 fn function_chunk(found: &serde_json::Value, name: &str, context: &str) -> serde_json::Value {

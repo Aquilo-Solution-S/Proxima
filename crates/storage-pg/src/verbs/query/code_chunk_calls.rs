@@ -16,37 +16,42 @@ use uuid::Uuid;
 
 use crate::error::map_err;
 
-/// `$1` is the page of chunk heads, `$2` the chunk schema, `$3` the pair cap.
+/// `$1` is the page of chunk heads in rank order, `$2` the chunk schema,
+/// `$3` the pair cap.
 ///
 /// A page chunk is a caller by its `t` and a callee by its handle, one
 /// `UNION` branch each so each side reaches the index through its own
-/// btree. A caller row survives only while its chunk is the head of its
-/// series: a caller's superseded revisions keep their index rows, and
-/// without the head join a callee would list each of them as another caller.
+/// btree. A pair ranks by the best page position among its endpoints, so
+/// the cap keeps the connections of the best-ranked chunks. A caller row
+/// survives only while its chunk is the head of its series: a caller's
+/// superseded revisions keep their index rows, and without the head join a
+/// callee would list each of them as another caller.
 const HEAD_CHUNK_CALL_PAIRS_SQL: &str = "WITH page AS (
-        SELECT m.handle
+        SELECT m.handle, array_position($1::uuid[], m.t) AS page_rank
           FROM proxima_core.memory m
           JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
          WHERE m.t = ANY($1::uuid[])
            AND h.schema_id = $2
     ),
     touching AS (
-        SELECT e.caller_memory_id, e.callee_memory_id
+        SELECT e.caller_memory_id, e.callee_memory_id,
+               array_position($1::uuid[], e.caller_memory_id) AS page_rank
           FROM proxima_code.code_chunk_call_v1 e
          WHERE e.caller_memory_id = ANY($1::uuid[])
         UNION
-        SELECT e.caller_memory_id, e.callee_memory_id
+        SELECT e.caller_memory_id, e.callee_memory_id, page.page_rank
           FROM page
           JOIN proxima_code.code_chunk_call_v1 e ON e.callee_memory_id = page.handle
     ),
     pairs AS (
-        SELECT p.caller_memory_id, p.callee_memory_id
+        SELECT p.caller_memory_id, p.callee_memory_id, min(p.page_rank) AS page_rank
           FROM touching p
           JOIN proxima_core.memory caller ON caller.t = p.caller_memory_id
           JOIN proxima_core.memory_head caller_head
             ON caller_head.handle = caller.handle AND caller_head.t = caller.t
          WHERE caller_head.schema_id = $2
-         ORDER BY p.caller_memory_id, p.callee_memory_id
+         GROUP BY p.caller_memory_id, p.callee_memory_id
+         ORDER BY page_rank, p.caller_memory_id, p.callee_memory_id
          LIMIT $3
     )
     SELECT p.caller_memory_id AS caller_t,
@@ -56,7 +61,7 @@ const HEAD_CHUNK_CALL_PAIRS_SQL: &str = "WITH page AS (
       LEFT JOIN proxima_core.memory_head callee_head
         ON callee_head.handle = p.callee_memory_id
        AND callee_head.schema_id = $2
-     ORDER BY p.caller_memory_id, p.callee_memory_id";
+     ORDER BY p.page_rank, p.caller_memory_id, p.callee_memory_id";
 
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 #[doc(hidden)]
@@ -76,8 +81,8 @@ pub struct HeadChunkCallPair {
     pub callee_t: Option<Uuid>,
 }
 
-/// Connections into and out of `chunk_ts`, at most `limit` pairs, ordered
-/// by `(caller_t, callee_handle)`.
+/// Connections into and out of `chunk_ts`, at most `limit` pairs: those of
+/// the earliest chunk in `chunk_ts` first, then by `(caller_t, callee_handle)`.
 ///
 /// # Errors
 ///
