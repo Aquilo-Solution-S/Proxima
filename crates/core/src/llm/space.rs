@@ -1,7 +1,7 @@
 //! Where vectors live: the widths the store indexes, the space a client
 //! embeds into, and vectors checked against it.
 
-use super::{EmbeddingClient, LlmError, QueryInstructions, QueryTask};
+use super::{EmbeddingClient, LlmError, QueryInstructions, QueryTask, SemanticWeight};
 
 /// Declares [`EmbeddingDim`] and its width codec from one list, so a width
 /// cannot be added to the enum and missed by [`EmbeddingDim::ALL`],
@@ -189,6 +189,7 @@ pub struct BoundEmbeddingClient {
     /// bindings of one host client still compare as the same endpoint.
     origin: std::sync::Arc<dyn EmbeddingClient>,
     query_instructions: std::sync::Arc<QueryInstructions>,
+    semantic_weights: std::sync::Arc<std::collections::BTreeMap<QueryTask, SemanticWeight>>,
 }
 
 impl BoundEmbeddingClient {
@@ -208,6 +209,7 @@ impl BoundEmbeddingClient {
             client,
             space,
             query_instructions: std::sync::Arc::default(),
+            semantic_weights: std::sync::Arc::default(),
         })
     }
 
@@ -224,6 +226,26 @@ impl BoundEmbeddingClient {
     #[must_use]
     pub fn query_instructions(&self) -> &QueryInstructions {
         &self.query_instructions
+    }
+
+    /// The same binding, fusing `task`'s hybrid searches at `weight` when the
+    /// caller names none. The best balance follows the model, so it rides on
+    /// the binding; a search that fuses under a task reads it for that task
+    /// only, with no fallback to another task's weight.
+    #[must_use]
+    pub fn with_semantic_weight(self, task: QueryTask, weight: SemanticWeight) -> Self {
+        let mut weights = (*self.semantic_weights).clone();
+        weights.insert(task, weight);
+        Self {
+            semantic_weights: std::sync::Arc::new(weights),
+            ..self
+        }
+    }
+
+    /// The hybrid weight this binding sets for `task`'s searches, if any.
+    #[must_use]
+    pub fn semantic_weight(&self, task: QueryTask) -> Option<SemanticWeight> {
+        self.semantic_weights.get(&task).copied()
     }
 
     #[must_use]

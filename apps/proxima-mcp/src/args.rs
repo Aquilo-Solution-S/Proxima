@@ -83,6 +83,10 @@ Environment:
   PROXIMA_EMBED_QUERY_INSTRUCTION_CODE
                                 Template for code search queries, over the
                                 default (default: none)
+  PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT
+                                Hybrid code search weight on the semantic
+                                ranking when a call names none (0.0..=1.0;
+                                default 0.5)
 
 Maintenance:
   maintain-embeddings      One self-healing pass: orphan sweep, reconcile

@@ -20,7 +20,7 @@ pub const QUERY_PLACEHOLDER: &str = "{query}";
 /// Substrate searches embed under [`QueryTask::DEFAULT`]; a flavor names its
 /// own task, which falls back to the default instruction when the route has
 /// none for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct QueryTask(Option<&'static str>);
 
 impl QueryTask {
@@ -78,6 +78,38 @@ impl QueryInstruction {
 pub struct QueryInstructionError {
     pub template: String,
 }
+
+/// A hybrid search's weight on its semantic ranking, in `0.0..=1.0`; the
+/// lexical ranking gets the complement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SemanticWeight(f32);
+
+impl SemanticWeight {
+    /// Both rankings weighed alike.
+    pub const EVEN: Self = Self(0.5);
+
+    /// # Errors
+    ///
+    /// [`SemanticWeightError`] when `weight` is not a finite value in
+    /// `0.0..=1.0`.
+    pub fn new(weight: f32) -> Result<Self, SemanticWeightError> {
+        if weight.is_finite() && (0.0..=1.0).contains(&weight) {
+            Ok(Self(weight))
+        } else {
+            Err(SemanticWeightError)
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+}
+
+/// A semantic weight outside `0.0..=1.0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("semantic_weight must be within 0.0..=1.0")]
+pub struct SemanticWeightError;
 
 /// The instructions a bound client wraps search queries in: one per named
 /// [`QueryTask`], over a default. Empty embeds every query as sent.

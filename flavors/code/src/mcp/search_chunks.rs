@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use proxima_core::MemoryId;
+use proxima_core::llm::SemanticWeight;
 use proxima_core::mcp::cursor as wire_cursor;
 use proxima_core::verbs::query::like_pattern;
 use proxima_core::{Tool, ToolCtx, ToolError};
@@ -62,6 +63,10 @@ pub struct CodeSearchChunksArgs {
         description = "Ranking mode. `semantic` (embedding-only) for a question describing behaviour; `lexical` (full-text only) for an exact identifier, string or path; `hybrid` (default) fuses both. Without a configured embedding model `hybrid` falls back to lexical and reports degraded_to_lexical=true, and `semantic` is rejected."
     )]
     pub mode: ChunkSearchMode,
+    #[schemars(
+        description = "Hybrid fusion weight on the semantic ranking in 0..=1; the lexical ranking gets the complement, and 0.5 weighs them alike. A chunk whose path or text contains the query ranks first at any weight. Omit or null for the deployment's weight for code search, else 0.5. Only valid with mode=hybrid."
+    )]
+    pub semantic_weight: Option<f32>,
     #[schemars(
         range(min = 1),
         description = "Optional maximum number of chunk matches. Omit or null for 12; values above 50 are clamped, and 0 is rejected."
@@ -325,6 +330,7 @@ impl Tool for CodeSearchChunksTool {
             }
             proxima_core::reject_zero_limit(args.limit)?;
             reject_unknown_language(args.language.as_deref())?;
+            let semantic_weight = requested_semantic_weight(args.semantic_weight, args.mode)?;
             let snippet_max_chars = effective_snippet_max_chars(args.snippet_max_chars);
             let limit = args.limit.unwrap_or(12).min(50);
             // The input checks above stay ahead of this: resolving a
@@ -339,6 +345,7 @@ impl Tool for CodeSearchChunksTool {
                 owner: ctx.owner(),
                 query,
                 requested_mode: args.mode,
+                semantic_weight,
                 repo_id,
                 language: args.language.as_deref(),
                 chunk_type: args.chunk_type.as_deref(),
@@ -357,7 +364,11 @@ impl Tool for CodeSearchChunksTool {
             // which arms run at all: a `semantic` request with no embedding
             // model is an error, not an empty result set, and a `hybrid` one
             // becomes a `lexical` one that reports having done so.
-            let (effective_mode, query_embedding) = resolve_query_embedding(
+            let QueryEmbedding {
+                mode: effective_mode,
+                vector: query_embedding,
+                route_weight,
+            } = resolve_query_embedding(
                 &engine,
                 &resolved.owner,
                 resolved.requested_mode,
@@ -371,6 +382,10 @@ impl Tool for CodeSearchChunksTool {
             let scan = ChunkCandidateScan {
                 resolved: &resolved,
                 effective_mode,
+                semantic_weight: resolved
+                    .semantic_weight
+                    .or(route_weight)
+                    .unwrap_or(SemanticWeight::EVEN),
                 candidate_limit,
                 read_owner_ids: &read_owner_ids,
                 query_embedding: query_embedding.as_ref(),
@@ -436,6 +451,9 @@ struct ResolvedChunkQuery<'a> {
     query: &'a str,
     /// The mode the caller asked for, not the one that will run.
     requested_mode: ChunkSearchMode,
+    /// The hybrid weight the caller asked for. A route's default is, like the
+    /// effective mode, a deployment fact and not bound here.
+    semantic_weight: Option<SemanticWeight>,
     repo_id: Option<Uuid>,
     language: Option<&'a str>,
     chunk_type: Option<&'a str>,
@@ -451,17 +469,21 @@ impl ResolvedChunkQuery<'_> {
     /// bytes, so the element order, the `mode_label` rendering, and the
     /// `json!([...]).to_string()` canon all have to stay as they are. A
     /// switch to a named-object canon is a cursor version bump, not a
-    /// refactor.
+    /// refactor. A requested `semantic_weight` is appended as a seventh
+    /// value, its bits, so a query without one keeps exactly those bytes.
     fn fingerprint(&self) -> String {
-        let canon = serde_json::json!([
-            self.owner.external_key(),
-            self.query,
-            mode_label(self.requested_mode),
-            self.repo_id,
-            self.language,
-            self.chunk_type,
-        ]);
-        wire_cursor::fingerprint(&canon.to_string())
+        let mut canon = vec![
+            serde_json::json!(self.owner.external_key()),
+            serde_json::json!(self.query),
+            serde_json::json!(mode_label(self.requested_mode)),
+            serde_json::json!(self.repo_id),
+            serde_json::json!(self.language),
+            serde_json::json!(self.chunk_type),
+        ];
+        if let Some(weight) = self.semantic_weight {
+            canon.push(serde_json::json!(weight.get().to_bits()));
+        }
+        wire_cursor::fingerprint(&serde_json::Value::Array(canon).to_string())
     }
 
     /// The lexical arm's sidecar scan over this query, with the run-time
@@ -493,6 +515,9 @@ struct ChunkCandidateScan<'a> {
     resolved: &'a ResolvedChunkQuery<'a>,
     /// The mode that will actually run, after `resolve_query_embedding`.
     effective_mode: ChunkSearchMode,
+    /// The weight hybrid fusion runs at: the caller's, else the route's,
+    /// else even.
+    semantic_weight: SemanticWeight,
     candidate_limit: i64,
     read_owner_ids: &'a [Uuid],
     /// The query embedding and the space it was embedded in, `None` when
@@ -515,7 +540,12 @@ async fn collect_candidates(
     let semantic_rows = scan_semantic_candidates(ctx, pool, scan).await?;
 
     // Admit: Query HeadsOnly. Content hits on a superseded t drop.
-    let fused = fuse_candidates(scan.effective_mode, &lexical_rows, &semantic_rows);
+    let fused = fuse_candidates(
+        scan.effective_mode,
+        scan.semantic_weight,
+        &lexical_rows,
+        &semantic_rows,
+    );
     if fused.is_empty() {
         return Ok((Vec::new(), HashMap::new()));
     }
@@ -719,9 +749,9 @@ async fn resolve_query_embedding(
     owner: &proxima_core::Owner,
     mode: ChunkSearchMode,
     query: &str,
-) -> Result<(ChunkSearchMode, Option<proxima_core::SpaceVector>), ToolError> {
+) -> Result<QueryEmbedding, ToolError> {
     if mode == ChunkSearchMode::Lexical {
-        return Ok((ChunkSearchMode::Lexical, None));
+        return Ok(QueryEmbedding::lexical());
     }
     let route = engine.search_route(owner).await;
     let Some(embed) = route.current_client() else {
@@ -730,10 +760,14 @@ async fn resolve_query_embedding(
                 SEMANTIC_CHUNK_SEARCH_UNAVAILABLE.to_string(),
             ));
         }
-        return Ok((ChunkSearchMode::Lexical, None));
+        return Ok(QueryEmbedding::lexical());
     };
     match embed.embed_query(query, CODE_QUERY_TASK).await {
-        Ok(vector) => Ok((mode, Some(vector))),
+        Ok(vector) => Ok(QueryEmbedding {
+            mode,
+            vector: Some(vector),
+            route_weight: embed.semantic_weight(CODE_QUERY_TASK),
+        }),
         Err(err) if mode == ChunkSearchMode::Semantic => {
             tracing::warn!(error = %err, "embedding provider failed");
             Err(ToolError::Unavailable(
@@ -747,9 +781,49 @@ async fn resolve_query_embedding(
                 error = %err,
                 "hybrid chunk search query embedding unavailable; degrading to lexical",
             );
-            Ok((ChunkSearchMode::Lexical, None))
+            Ok(QueryEmbedding::lexical())
         }
     }
+}
+
+/// What the current Owner's route makes of a chunk search.
+struct QueryEmbedding {
+    /// The mode that will run.
+    mode: ChunkSearchMode,
+    /// The query embedding, `None` when the semantic arm does not run.
+    vector: Option<proxima_core::SpaceVector>,
+    /// The route's hybrid weight for code search, if it sets one.
+    route_weight: Option<SemanticWeight>,
+}
+
+impl QueryEmbedding {
+    const fn lexical() -> Self {
+        Self {
+            mode: ChunkSearchMode::Lexical,
+            vector: None,
+            route_weight: None,
+        }
+    }
+}
+
+/// The caller's `semantic_weight`, refused outside `0.0..=1.0` and outside
+/// `mode=hybrid`, as `core_search_memories` does: a knob only hybrid fusion
+/// reads would otherwise look like a ranking that ignored the caller.
+fn requested_semantic_weight(
+    weight: Option<f32>,
+    mode: ChunkSearchMode,
+) -> Result<Option<SemanticWeight>, ToolError> {
+    let Some(weight) = weight else {
+        return Ok(None);
+    };
+    let weight =
+        SemanticWeight::new(weight).map_err(|err| ToolError::InvalidInput(err.to_string()))?;
+    if mode != ChunkSearchMode::Hybrid {
+        return Err(ToolError::InvalidInput(
+            "semantic_weight applies only to mode=hybrid".into(),
+        ));
+    }
+    Ok(Some(weight))
 }
 
 /// The [`QueryTask`](proxima_core::llm::QueryTask) chunk search embeds its
@@ -772,18 +846,23 @@ fn reciprocal_rank(rank: usize) -> f32 {
 /// which reproduces the candidate scan's
 /// `ORDER BY score DESC, memory_id DESC`.
 ///
-/// `Hybrid` sums each arm's reciprocal rank and adds the literal bonus on
-/// top. The bonus is 4.0 at the smallest and a reciprocal rank is at most
-/// `1/61`, so a chunk whose path or text literally contains the query
-/// outranks every chunk that merely resembles it, however strong the
-/// resemblance. That is the one place where a caller has said exactly what
-/// they want, and rank fusion on its own would let a confident embedding
-/// neighbour bury it.
+/// `Hybrid` sums each arm's reciprocal rank, weighted `2(1 - w)` for the
+/// lexical arm and `2w` for the semantic one, and adds the literal bonus on
+/// top. At the even weight both factors are exactly 1, which is plain rank
+/// fusion. The bonus is 4.0 at the smallest and a weighted reciprocal rank
+/// sum is at most `2/61`, so a chunk whose path or text literally contains
+/// the query outranks every chunk that merely resembles it, at any weight
+/// and however strong the resemblance. That is the one place where a caller
+/// has said exactly what they want, and rank fusion on its own would let a
+/// confident embedding neighbour bury it.
 fn fuse_candidates(
     mode: ChunkSearchMode,
+    weight: SemanticWeight,
     lexical: &[ChunkCandidateRow],
     semantic: &[CodeChunkVectorCandidate],
 ) -> Vec<MatchScores> {
+    let semantic_share = 2.0 * weight.get();
+    let lexical_share = 2.0 - semantic_share;
     let mut by_id: HashMap<uuid::Uuid, MatchScores> =
         HashMap::with_capacity(lexical.len() + semantic.len());
     for (rank, row) in lexical.iter().enumerate() {
@@ -793,7 +872,7 @@ fn fuse_candidates(
         });
         entry.lexical_score = row.score;
         entry.score = if mode == ChunkSearchMode::Hybrid {
-            entry.score + row.literal_bonus + reciprocal_rank(rank)
+            entry.score + row.literal_bonus + lexical_share * reciprocal_rank(rank)
         } else {
             row.score
         };
@@ -805,7 +884,7 @@ fn fuse_candidates(
         });
         entry.similarity_score = row.similarity_score;
         entry.score = if mode == ChunkSearchMode::Hybrid {
-            entry.score + reciprocal_rank(rank)
+            entry.score + semantic_share * reciprocal_rank(rank)
         } else {
             row.similarity_score
         };
@@ -1302,8 +1381,9 @@ struct CallSiteRow {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChunkSearchMode, CodeSearchChunksArgs, ResolvedChunkQuery, distinctive_terms,
-        reject_unknown_language,
+        ChunkCandidateRow, ChunkSearchMode, CodeChunkVectorCandidate, CodeSearchChunksArgs,
+        ResolvedChunkQuery, SemanticWeight, distinctive_terms, fuse_candidates,
+        reject_unknown_language, requested_semantic_weight, wire_cursor,
     };
     use crate::chunker::LANGUAGE_LABELS;
 
@@ -1393,6 +1473,7 @@ mod tests {
             owner: owner(1),
             query: "parse_chunk",
             requested_mode: ChunkSearchMode::Hybrid,
+            semantic_weight: None,
             repo_id: Some(id(9)),
             language: Some("rust"),
             chunk_type: Some("function"),
@@ -1453,6 +1534,13 @@ mod tests {
                     ..resolved()
                 },
             ),
+            (
+                "semantic_weight",
+                ResolvedChunkQuery {
+                    semantic_weight: Some(weight(0.8)),
+                    ..resolved()
+                },
+            ),
         ];
 
         for (field, flipped) in cases {
@@ -1484,6 +1572,123 @@ mod tests {
             language_only.fingerprint(),
             chunk_type_only.fingerprint(),
             "language and chunk_type are interchangeable in the cursor canon"
+        );
+    }
+
+    fn weight(value: f32) -> SemanticWeight {
+        SemanticWeight::new(value).expect("weight in range")
+    }
+
+    /// A cursor minted before `semantic_weight` existed still resumes: a
+    /// query without a weight fingerprints the six-value canon byte for
+    /// byte, and two weights fingerprint apart (#355).
+    #[test]
+    fn an_unweighted_query_keeps_the_six_value_canon() {
+        let six_values = serde_json::json!([
+            owner(1).external_key(),
+            "parse_chunk",
+            "hybrid",
+            Some(id(9)),
+            Some("rust"),
+            Some("function"),
+        ]);
+        assert_eq!(
+            resolved().fingerprint(),
+            wire_cursor::fingerprint(&six_values.to_string())
+        );
+        let weighted = |value| ResolvedChunkQuery {
+            semantic_weight: Some(weight(value)),
+            ..resolved()
+        };
+        assert_ne!(weighted(0.7).fingerprint(), weighted(0.8).fingerprint());
+    }
+
+    fn lexical(id_byte: u8, literal_bonus: f32) -> ChunkCandidateRow {
+        ChunkCandidateRow {
+            memory_id: id(id_byte),
+            score: 1.0 + literal_bonus,
+            literal_bonus,
+        }
+    }
+
+    fn semantic(id_byte: u8) -> CodeChunkVectorCandidate {
+        CodeChunkVectorCandidate {
+            memory_id: id(id_byte),
+            similarity_score: 0.5,
+        }
+    }
+
+    fn fused_order(
+        value: f32,
+        lexical: &[ChunkCandidateRow],
+        semantic: &[CodeChunkVectorCandidate],
+    ) -> Vec<uuid::Uuid> {
+        fuse_candidates(ChunkSearchMode::Hybrid, weight(value), lexical, semantic)
+            .into_iter()
+            .map(|scores| scores.memory_id)
+            .collect()
+    }
+
+    /// The even weight is plain rank fusion; the ends follow one arm; and a
+    /// literal hit ranks first at every weight (#355).
+    #[test]
+    fn the_weight_moves_the_fusion_but_not_a_literal_hit() {
+        let lexical_arm = [lexical(1, 0.0), lexical(2, 0.0)];
+        let semantic_arm = [semantic(3), semantic(2)];
+
+        let even = fuse_candidates(
+            ChunkSearchMode::Hybrid,
+            SemanticWeight::EVEN,
+            &lexical_arm,
+            &semantic_arm,
+        );
+        let both = even
+            .iter()
+            .find(|scores| scores.memory_id == id(2))
+            .expect("in both arms");
+        assert_eq!(
+            both.score.to_bits(),
+            (1.0_f32 / 62.0 + 1.0 / 62.0).to_bits()
+        );
+        assert_eq!(even[0].memory_id, id(2));
+
+        assert_eq!(
+            fused_order(1.0, &lexical_arm, &semantic_arm)[..2],
+            [id(3), id(2)]
+        );
+        assert_eq!(
+            fused_order(0.0, &lexical_arm, &semantic_arm)[..2],
+            [id(1), id(2)]
+        );
+
+        let literal_last = [lexical(4, 0.0), lexical(5, 4.0)];
+        for value in [0.0, 0.5, 1.0] {
+            assert_eq!(
+                fused_order(value, &literal_last, &[semantic(4)])[0],
+                id(5),
+                "weight {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_semantic_weight_is_refused_out_of_range_or_off_hybrid() {
+        for bad in [-0.1, 1.1, f32::NAN] {
+            let err = requested_semantic_weight(Some(bad), ChunkSearchMode::Hybrid)
+                .expect_err("out of range");
+            assert!(err.to_string().contains("within 0.0..=1.0"), "{err}");
+        }
+        for mode in [ChunkSearchMode::Lexical, ChunkSearchMode::Semantic] {
+            let err = requested_semantic_weight(Some(0.5), mode).expect_err("not hybrid");
+            assert!(err.to_string().contains("only to mode=hybrid"), "{err}");
+        }
+        assert_eq!(
+            requested_semantic_weight(None, ChunkSearchMode::Semantic).expect("omitted"),
+            None
+        );
+        assert_eq!(
+            requested_semantic_weight(Some(1.0), ChunkSearchMode::Hybrid).expect("in range"),
+            Some(weight(1.0))
         );
     }
 

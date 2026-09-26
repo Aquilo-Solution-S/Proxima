@@ -20,7 +20,8 @@ use proxima::{
     run_core_and_flavor_migrations,
 };
 use proxima_core::llm::{
-    BoundEmbeddingClient, QueryInstruction, QueryInstructions, QueryTask, SingleClientRouter,
+    BoundEmbeddingClient, QueryInstruction, QueryInstructions, QueryTask, SemanticWeight,
+    SingleClientRouter,
 };
 use proxima_core::protocol::profile as protocol_profile;
 use proxima_core::{
@@ -43,6 +44,7 @@ const DEFAULT_EMBED_MAX_INPUT_CHARS: NonZeroU32 =
     NonZeroU32::new(16_384).expect("embedding input default is positive");
 const PROXIMA_EMBED_QUERY_INSTRUCTION: &str = "PROXIMA_EMBED_QUERY_INSTRUCTION";
 const PROXIMA_EMBED_QUERY_INSTRUCTION_CODE: &str = "PROXIMA_EMBED_QUERY_INSTRUCTION_CODE";
+const PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT: &str = "PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT";
 const PROXIMA_TOOL_PROFILE: &str = "PROXIMA_TOOL_PROFILE";
 const PROXIMA_TOOL_ALLOW: &str = "PROXIMA_TOOL_ALLOW";
 const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
@@ -690,16 +692,51 @@ fn build_app(
 }
 
 /// Every Owner embedded through `client`, its search queries worded by the
-/// configured query instructions.
+/// configured query instructions and code search fused at the configured
+/// weight.
 fn embedding_router_from_env(
     lookup: &impl Fn(&str) -> Option<String>,
     client: OpenAiCompatEmbeddingClient,
 ) -> Result<SingleClientRouter, CliError> {
     let bound = BoundEmbeddingClient::bind(Arc::new(client))
-        .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?;
-    Ok(SingleClientRouter::new(bound.with_query_instructions(
-        query_instructions_from_env(lookup)?,
-    )))
+        .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?
+        .with_query_instructions(query_instructions_from_env(lookup)?);
+    let bound = match code_semantic_weight_from_env(lookup)? {
+        None => bound,
+        #[cfg(feature = "code")]
+        Some(weight) => {
+            bound.with_semantic_weight(proxima_code::mcp::search_chunks::CODE_QUERY_TASK, weight)
+        }
+        #[cfg(not(feature = "code"))]
+        Some(_) => {
+            return Err(CliError::Runtime(ProximaError::Config(format!(
+                "{PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT} needs the code flavor, which this build \
+                 does not include"
+            ))));
+        }
+    };
+    Ok(SingleClientRouter::new(bound))
+}
+
+/// `PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT`: the hybrid weight code search fuses
+/// at when a call names none. Unset leaves both rankings weighed alike.
+fn code_semantic_weight_from_env(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<SemanticWeight>, CliError> {
+    lookup_non_empty(lookup, PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT)
+        .map(|raw| {
+            raw.trim()
+                .parse::<f32>()
+                .ok()
+                .and_then(|weight| SemanticWeight::new(weight).ok())
+                .ok_or_else(|| {
+                    CliError::Runtime(ProximaError::Config(format!(
+                        "{PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT} must be a number within \
+                         0.0..=1.0, got {raw:?}"
+                    )))
+                })
+        })
+        .transpose()
 }
 
 /// The instructions `PROXIMA_EMBED_QUERY_INSTRUCTION` (every search query)
@@ -920,6 +957,7 @@ fn embedding_client_from_env(
     let query_instruction_is_set = [
         PROXIMA_EMBED_QUERY_INSTRUCTION,
         PROXIMA_EMBED_QUERY_INSTRUCTION_CODE,
+        PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT,
     ]
     .into_iter()
     .any(|key| lookup_non_empty(&lookup, key).is_some());
@@ -1537,6 +1575,11 @@ mod tests {
                 "Query:{query}",
                 PROXIMA_EMBED_BASE_URL,
             ),
+            (
+                PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT,
+                "0.8",
+                PROXIMA_EMBED_BASE_URL,
+            ),
         ] {
             let err = embedding_client_from_env(
                 |key| (key == configured_key).then(|| value.to_string()),
@@ -1600,6 +1643,32 @@ mod tests {
         .expect("code configures");
         assert_eq!(code_only.render("q", CODE_QUERY_TASK), "code: q");
         assert_eq!(code_only.render("q", QueryTask::DEFAULT), "q");
+    }
+
+    /// `PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT` reads a number in `0.0..=1.0`
+    /// and fails boot on anything else, naming the variable (#355).
+    #[test]
+    fn the_code_semantic_weight_reads_a_number_in_range() {
+        let read = |raw: &'static str| {
+            code_semantic_weight_from_env(&move |key: &str| {
+                (key == PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT).then(|| raw.to_string())
+            })
+        };
+        assert_eq!(
+            code_semantic_weight_from_env(&|_: &str| None).expect("unset configures"),
+            None
+        );
+        assert_eq!(
+            read("0.8").expect("in range"),
+            Some(SemanticWeight::new(0.8).expect("in range"))
+        );
+        for bad in ["1.5", "-0.1", "NaN", "most"] {
+            let err = read(bad).expect_err("out of range");
+            assert!(
+                err.to_string().contains(PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT),
+                "{bad}: {err}"
+            );
+        }
     }
 
     #[cfg(not(feature = "code"))]
