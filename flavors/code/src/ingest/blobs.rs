@@ -94,18 +94,26 @@ async fn ingest_local_git_fact<P>(
     payload: &P,
     citation: CitationSpec,
     observed_at: time::OffsetDateTime,
+    observation: Observation,
 ) -> Result<FactIngestOutcome, IngestError>
 where
     P: proxima_core::FactPayload + Clone,
 {
-    Ok(engine
-        .ingest_fact(
-            authz,
-            FactWrite::new(authz.principal(), LOCAL_GIT_SOURCE_ID, payload)
-                .observed_at(observed_at)
-                .citation(citation),
-        )
-        .await?)
+    let write = FactWrite::new(authz.principal(), LOCAL_GIT_SOURCE_ID, payload)
+        .observed_at(observed_at)
+        .citation(citation);
+    let write = match observation {
+        Observation::Current => write.reobserve_if_displaced(),
+        Observation::Historical => write,
+    };
+    Ok(engine.ingest_fact(authz, write).await?)
+}
+
+/// What a local-git Fact reports: the checkout as it is now, or a commit.
+#[derive(Debug, Clone, Copy)]
+enum Observation {
+    Current,
+    Historical,
 }
 
 /// Current series handle for this owner's chunk at `(repo, path, index)`.
@@ -226,6 +234,7 @@ pub async fn ingest_commit(
             CODE_COMMIT_WHOLE_SCHEMA,
         ),
         observed_at,
+        Observation::Historical,
     )
     .await
 }
@@ -243,14 +252,42 @@ pub async fn ingest_file_revision(
         engine,
         authz,
         payload,
-        CitationSpec::v1(
-            CODE_BLOB_SCHEMA,
-            payload.content_sha256,
-            CODE_BLOB_WHOLE_SCHEMA,
-        ),
+        file_blob_citation(payload),
         observed_at,
+        Observation::Historical,
     )
     .await
+}
+
+/// [`ingest_file_revision`] for the checkout as it is now (a HEAD
+/// snapshot). Checking out a commit indexed before, or widening a scope
+/// back over a path, re-reports a revision the index already holds; its
+/// receipt key replays to a Fact a later revision displaced, and this write
+/// admits it again so it heads the path once more
+/// ([`proxima_core::engine::FactWrite::reobserve_if_displaced`]).
+pub(crate) async fn ingest_current_file_revision(
+    engine: &Engine,
+    authz: &AuthzContext,
+    payload: &FileRevisionV1,
+    observed_at: time::OffsetDateTime,
+) -> Result<FactIngestOutcome, IngestError> {
+    ingest_local_git_fact(
+        engine,
+        authz,
+        payload,
+        file_blob_citation(payload),
+        observed_at,
+        Observation::Current,
+    )
+    .await
+}
+
+fn file_blob_citation(payload: &FileRevisionV1) -> CitationSpec {
+    CitationSpec::v1(
+        CODE_BLOB_SCHEMA,
+        payload.content_sha256,
+        CODE_BLOB_WHOLE_SCHEMA,
+    )
 }
 
 /// Atomic derived code-slice Abstractions for one file revision, plus the

@@ -189,7 +189,7 @@ Every event carries:
 
 | Field | Meaning |
 |---|---|
-| `ingest_key` | Sourced Fact replay. Same `(owner, source_id, ingest_key)` → same `(handle, t)`. |
+| `ingest_key` | Sourced Fact replay. Same `(owner, source_id, ingest_key)` → same `(handle, t)`. A current-state write re-observes a replay its series has moved past under a derived key (see [07 §Identity Rules](07-storage.md#identity-rules)). |
 | `source_id` | Which source emitted this. |
 | `owner` | `Owner` — scope of this event (whose Reality slice). Source sets at emit time from its config or per-event observation context. |
 | `schema_id` | Which registered schema this event conforms to (component 03). |

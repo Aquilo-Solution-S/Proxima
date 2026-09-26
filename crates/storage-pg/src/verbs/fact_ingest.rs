@@ -94,6 +94,7 @@ pub(crate) fn fact_natural_key(
     sidecar_table: Option<&str>,
     columns: &[String],
     authorized_values: Option<&[(String, SidecarAtom)]>,
+    reobserve_displaced: bool,
     payloads: &[SidecarPayload],
     registry: &PgSidecarRegistryFrozen,
 ) -> Result<Option<super::memory_timeseries::MemoryNaturalKey>, StorageError> {
@@ -148,6 +149,7 @@ pub(crate) fn fact_natural_key(
         sidecar_table: table.to_owned(),
         memory_key_column: key_column.to_owned(),
         columns: values,
+        reobserve_displaced,
     }))
 }
 

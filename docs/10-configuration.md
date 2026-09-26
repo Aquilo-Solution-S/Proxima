@@ -89,7 +89,7 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_MCP_SESSIONS` | Keep a server-side MCP session per client that opens with `initialize`; per-request (`_meta`-versioned) calls are always stateless. Default `true`. |
 | `PROXIMA_MCP_JSON_RESPONSE` | With sessions off, answer simple calls as `application/json` rather than SSE. Default `false`. |
 | `PROXIMA_RUNTIME_GRANTS` | Grant the runtime role its DML privileges at boot, after migrating and before the runtime pool connects ([15](15-deployment.md)). Default `false`. |
-| `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `memory` (default, fail-closed) or `full` (opt-in). |
+| `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `memory` (default, fail-closed), `full` (opt-in), or `code` (the code flavor's search and read tools, no memory tools; [15](15-deployment.md)). |
 | `PROXIMA_TOOL_ALLOW` | Optional comma-separated canonical scope keys unioned into the resolved profile. |
 | `PROXIMA_TOOL_DENY` | Optional comma-separated canonical scope keys subtracted from the resolved profile. |
 | `PROXIMA_PUBLICATION_SOURCE` | Producer identity URI stamped into every published CloudEvent `source` (see [18](18-fact-outbox.md)). **Required** once ≥1 listenable Fact type is registered; boot fails otherwise. Never caller-supplied. |

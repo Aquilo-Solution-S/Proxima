@@ -36,6 +36,7 @@ impl FactIngestPort for PgStorage {
             authorized.fact_sidecar_table(),
             authorized.fact_natural_key_columns(),
             authorized.fact_natural_key_values(),
+            authorized.reobserves_displaced(),
             sidecar_payloads,
             &self.sidecars,
         )?;
@@ -101,6 +102,7 @@ impl FactIngestPort for PgStorage {
             authorized.fact_sidecar_table(),
             authorized.fact_natural_key_columns(),
             authorized.fact_natural_key_values(),
+            authorized.reobserves_displaced(),
             sidecar_payloads,
             &self.sidecars,
         )?;
@@ -167,6 +169,7 @@ impl FactIngestPort for PgStorage {
             authorized.fact_sidecar_table(),
             authorized.fact_natural_key_columns(),
             authorized.fact_natural_key_values(),
+            authorized.reobserves_displaced(),
             sidecar_payloads,
             &self.sidecars,
         )?;

@@ -294,6 +294,7 @@ Rules:
 | Rule | Consequence |
 |---|---|
 | each observation is a new Fact | no Fact update |
+| re-reporting a displaced observation as current is a new observation | `FactWrite::reobserve_if_displaced` (see [07 §Identity Rules](07-storage.md#identity-rules)) |
 | no Fact `supersedes` | current state is not lineage |
 | head query orders by memory creation/observation time | latest row per natural key |
 | tombstone is a Fact under the same schema/key | deletion is observed state |
