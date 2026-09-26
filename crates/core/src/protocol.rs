@@ -63,4 +63,5 @@ pub mod resource {
 pub mod profile {
     pub const FULL: &str = "full";
     pub const MEMORY: &str = "memory";
+    pub const CODE: &str = "code";
 }
