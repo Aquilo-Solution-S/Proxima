@@ -438,6 +438,199 @@ async fn an_ingest_scope_excludes_fixtures_and_tombstones_what_leaves_it()
     Ok(())
 }
 
+/// A scope narrowed and widened back at the same HEAD brings back the files
+/// it tombstoned, and narrowing it again removes them again. Each widened or
+/// narrowed pass re-reports a revision the series already holds; it has to
+/// head the path again rather than replay behind the later one (#357).
+#[tokio::test]
+async fn widening_a_scope_restores_what_narrowing_tombstoned()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    init_git_repo_with_files(
+        temp.path(),
+        &[
+            ("src/lib.rs", "pub fn widen_kept_marker() -> u64 { 1 }\n"),
+            (
+                "fixtures/plugins/a.rs",
+                "pub fn widen_dropped_marker() -> u64 { 2 }\n",
+            ),
+        ],
+    )?;
+    let path = temp.path().to_string_lossy().into_owned();
+    let register = |scope: serde_json::Value| {
+        let mut args = json!({ "path": path, "display_name": "Widen Repo" });
+        if let (Some(args), Some(scope)) = (args.as_object_mut(), scope.as_object()) {
+            args.extend(scope.clone());
+        }
+        run_tool::<CodeRegisterRepoTool>(ctx(fixture.pg.clone(), owner, registry.clone()), args)
+    };
+    let repo = register(json!({})).await?["repo"]["repo_id"]
+        .as_str()
+        .expect("repo_id")
+        .to_string();
+    let ingest = || {
+        run_tool::<CodeIngestHeadSnapshotTool>(
+            ctx(fixture.pg.clone(), owner, registry.clone()),
+            json!({ "repo_handle": repo }),
+        )
+    };
+    let dropped_file_is_live = || async {
+        let found = run_tool::<CodeSearchChunksTool>(
+            ctx(fixture.pg.clone(), owner, registry.clone()),
+            json!({ "query": "widen_dropped_marker", "repo_handle": repo, "mode": "lexical" }),
+        )
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(
+            match_paths(&found).contains(&"fixtures/plugins/a.rs".to_string()),
+        )
+    };
+
+    ingest().await?;
+    assert!(dropped_file_is_live().await?);
+
+    register(json!({ "exclude_globs": ["**/fixtures/**"] })).await?;
+    let narrowed = ingest().await?;
+    assert_eq!(narrowed["report"]["files_tombstoned"], 1, "{narrowed}");
+    assert!(!dropped_file_is_live().await?);
+
+    // Omitting both lists keeps the stored scope; `[]` clears it.
+    let kept = register(json!({})).await?;
+    assert_eq!(
+        kept["repo"]["exclude_globs"],
+        json!(["**/fixtures/**"]),
+        "{kept}"
+    );
+    register(json!({ "include_globs": [], "exclude_globs": [] })).await?;
+    let widened = ingest().await?;
+    assert_eq!(widened["report"]["files_present_emitted"], 1, "{widened}");
+    assert_eq!(widened["report"]["chunks_emitted"], 1, "{widened}");
+    assert!(
+        dropped_file_is_live().await?,
+        "widening the scope must make the tombstoned file searchable again: {widened}"
+    );
+
+    register(json!({ "exclude_globs": ["**/fixtures/**"] })).await?;
+    let narrowed_again = ingest().await?;
+    assert_eq!(
+        narrowed_again["report"]["files_tombstoned"], 1,
+        "{narrowed_again}"
+    );
+    assert!(!dropped_file_is_live().await?);
+    Ok(())
+}
+
+/// Checking out a commit indexed before makes its content the searchable
+/// head again, including a file the branch in between added, and it does so
+/// on every round trip (#357).
+#[tokio::test]
+async fn returning_to_an_indexed_commit_restores_its_content()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    init_git_repo_with_files(
+        temp.path(),
+        &[("src/a.rs", "pub fn alphamainzebra() -> u8 { 1 }\n")],
+    )?;
+    run_git(temp.path(), &["checkout", "-q", "-b", "base"])?;
+    run_git(temp.path(), &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(
+        temp.path().join("src/a.rs"),
+        "pub fn betafeaturequokka() -> u8 { 2 }\n",
+    )?;
+    std::fs::write(
+        temp.path().join("src/b.rs"),
+        "pub fn gammabranchonlyotter() -> u8 { 3 }\n",
+    )?;
+    run_git(temp.path(), &["add", "."])?;
+    run_git(
+        temp.path(),
+        &[
+            "-c",
+            "user.name=Proxima Test",
+            "-c",
+            "user.email=proxima-test@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "feature revision",
+        ],
+    )?;
+    run_git(temp.path(), &["checkout", "-q", "base"])?;
+
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Round Trip" }),
+    )
+    .await?;
+    let repo = registered["repo"]["repo_id"]
+        .as_str()
+        .expect("repo_id")
+        .to_string();
+    let checkout_and_ingest = |branch: &'static str| {
+        let registry = registry.clone();
+        let pg = fixture.pg.clone();
+        let repo = repo.clone();
+        let root = temp.path().to_path_buf();
+        async move {
+            run_git(&root, &["checkout", "-q", branch])?;
+            run_tool::<CodeIngestHeadSnapshotTool>(
+                ctx(pg, owner, registry),
+                json!({ "repo_handle": repo }),
+            )
+            .await
+        }
+    };
+    let live = || async {
+        let mut markers = Vec::new();
+        for marker in [
+            "alphamainzebra",
+            "betafeaturequokka",
+            "gammabranchonlyotter",
+        ] {
+            let found = run_tool::<CodeSearchChunksTool>(
+                ctx(fixture.pg.clone(), owner, registry.clone()),
+                json!({ "query": marker, "repo_handle": repo, "mode": "lexical", "include_calls": false }),
+            )
+            .await?;
+            if !match_paths(&found).is_empty() {
+                markers.push(marker);
+            }
+        }
+        Ok::<_, Box<dyn std::error::Error>>(markers)
+    };
+
+    checkout_and_ingest("base").await?;
+    assert_eq!(live().await?, ["alphamainzebra"]);
+    for round in 1..=2 {
+        checkout_and_ingest("feature").await?;
+        assert_eq!(
+            live().await?,
+            ["betafeaturequokka", "gammabranchonlyotter"],
+            "round {round}: the branch's content must be live"
+        );
+        let back = checkout_and_ingest("base").await?;
+        assert_eq!(
+            back["report"]["files_present_emitted"], 1,
+            "round {round}: {back}"
+        );
+        assert_eq!(
+            back["report"]["files_tombstoned"], 1,
+            "round {round}: {back}"
+        );
+        assert_eq!(
+            live().await?,
+            ["alphamainzebra"],
+            "round {round}: the checked-out commit's content must be live again"
+        );
+    }
+    Ok(())
+}
+
 /// Erasure is the supported way to re-index a repository from scratch, which
 /// is what a chunker or render upgrade needs: a HEAD snapshot re-derives only
 /// files whose content moved, so files that never change cannot be

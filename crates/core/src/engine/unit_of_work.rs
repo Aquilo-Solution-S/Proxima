@@ -32,6 +32,7 @@ pub struct FactWrite<'a, P: FactPayload> {
     handle: Option<crate::SeriesHandle>,
     lexical_language: Option<String>,
     refs: Vec<MemoryId>,
+    reobserve_displaced: bool,
 }
 
 impl<P: FactPayload> std::fmt::Debug for FactWrite<'_, P> {
@@ -70,6 +71,7 @@ impl<'a, P: FactPayload> FactWrite<'a, P> {
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
             refs: Vec::new(),
+            reobserve_displaced: false,
         }
     }
 
@@ -107,6 +109,21 @@ impl<'a, P: FactPayload> FactWrite<'a, P> {
         self.refs.extend(refs);
         self
     }
+
+    /// Admit this payload again when its receipt key replays to a Fact that
+    /// no longer heads its natural-key series: the source is back in a state
+    /// it already reported, and the head has to say so.
+    ///
+    /// For a writer reporting CURRENT state. A writer replaying history keeps
+    /// the default, so re-reading old observations replays them instead of
+    /// moving the head back. A retry still replays: the re-admission claims
+    /// its own replay key (docs/07 §Identity Rules). No effect without a
+    /// natural key.
+    #[must_use]
+    pub const fn reobserve_if_displaced(mut self) -> Self {
+        self.reobserve_displaced = true;
+        self
+    }
 }
 
 /// A [`FactWrite`] that owns its source id and payload, so the write can
@@ -120,6 +137,7 @@ struct OwnedFactWrite<P: FactPayload> {
     handle: Option<crate::SeriesHandle>,
     lexical_language: Option<String>,
     refs: Vec<MemoryId>,
+    reobserve_displaced: bool,
 }
 
 impl<P: FactPayload + Clone> FactWrite<'_, P> {
@@ -133,6 +151,7 @@ impl<P: FactPayload + Clone> FactWrite<'_, P> {
             handle: self.handle,
             lexical_language: self.lexical_language.clone(),
             refs: self.refs.clone(),
+            reobserve_displaced: self.reobserve_displaced,
         }
     }
 }
@@ -148,6 +167,7 @@ impl<P: FactPayload> OwnedFactWrite<P> {
             handle: self.handle,
             lexical_language: self.lexical_language.clone(),
             refs: self.refs.clone(),
+            reobserve_displaced: self.reobserve_displaced,
         }
     }
 }
@@ -853,7 +873,8 @@ impl UnitOfWork<'_> {
                 &self.written,
                 &self.written_kinds,
             )
-            .await?;
+            .await?
+            .reobserving_displaced(spec.reobserve_displaced);
         self.engine
             .validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
