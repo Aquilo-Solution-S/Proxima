@@ -410,6 +410,8 @@ llama.cpp, LM Studio, vLLM) needs no credential:
 | `PROXIMA_EMBED_BATCH_SIZE` | no | `32` | Texts per provider call. Range `1..=1024`. Custom clients remain usable because batching is host policy, not a core provider constant. |
 | `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | no | `5` | Idle in-process worker poll interval. Range `1..=3600`. |
 | `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` | no | `900` | Processing claim is reclaimable after this crash window. Range `1..=86400`; must be strictly greater than request timeout. |
+| `PROXIMA_EMBED_QUERY_INSTRUCTION` | no | - | Template every search query is embedded in, holding `{query}` ([§Query instructions](#query-instructions)). |
+| `PROXIMA_EMBED_QUERY_INSTRUCTION_CODE` | no | - | Template for code search queries, over `PROXIMA_EMBED_QUERY_INSTRUCTION`. Needs the code flavor. |
 
 Zero, malformed, out-of-range, and unsafe combinations fail boot. Programmatic
 durations must also be integral seconds. The stale
@@ -497,6 +499,31 @@ Cron/deploy command form:
 ```yaml
 command: ["proxima-mcp", "maintain-embeddings"]
 ```
+
+<a id="query-instructions"></a>
+### Query instructions
+
+Instruction-tuned embedding models (Qwen3-Embedding, jina-code-embeddings)
+embed a document as it is and a search query inside a task instruction.
+`PROXIMA_EMBED_QUERY_INSTRUCTION` is that template for every search query —
+`core_search_memories`, `core_recall` with a `question`, and code chunk
+search — and `PROXIMA_EMBED_QUERY_INSTRUCTION_CODE` replaces it for code
+search. Each must hold `{query}`, which the query replaces; `\n` in the value
+is a newline. Unset, a query is embedded as sent.
+
+```sh
+export PROXIMA_EMBED_QUERY_INSTRUCTION_CODE='Instruct: Given a question about a code repository, retrieve the code snippet that answers it\nQuery:{query}'
+```
+
+For jina-code-embeddings, the model card's `nl2code` task:
+`Find the most relevant code snippet given the following query:\n{query}`.
+
+Only queries are wrapped. Stored vectors never see an instruction, so
+setting or changing one re-embeds nothing and takes effect on restart. Use
+the wording from the model's card: a model that is not instruction-tuned
+ranks worse with one. A host with its own router attaches instructions per
+client with `BoundEmbeddingClient::with_query_instructions`; a flavor embeds
+its queries under its own `QueryTask`, which falls back to the default.
 
 ### Blob store reconcile
 

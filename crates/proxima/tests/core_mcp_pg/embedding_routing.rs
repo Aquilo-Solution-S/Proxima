@@ -165,6 +165,97 @@ impl proxima_core::llm::EmbeddingClient for RecordingRouteEmbedding {
     }
 }
 
+/// Memory search and recall embed their query in the route's default
+/// instruction, not a flavor's; the Fact they find was embedded as it is
+/// (#354).
+#[tokio::test]
+async fn memory_search_embeds_its_query_in_the_default_instruction() {
+    use proxima_core::llm::{QueryInstruction, QueryInstructions, QueryTask, SingleClientRouter};
+
+    let db_name = unique_db_name("proxima_core_query_instruction");
+    create_split_core_db(&db_name)
+        .await
+        .expect("PG required for tests");
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let recorder = RecordingRouteEmbedding::new(
+            "instructed-embed",
+            proxima_core::llm::EmbeddingDim::D1024,
+        );
+        let instructions = QueryInstructions::default()
+            .with_instruction(QueryTask::DEFAULT, QueryInstruction::new("note: {query}")?)
+            .with_instruction(
+                QueryTask::named("code"),
+                QueryInstruction::new("code: {query}")?,
+            );
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
+            .owner(owner)
+            .embedding_router(Arc::new(SingleClientRouter::new(
+                recorder.bound().with_query_instructions(instructions),
+            )))
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+
+        let remembered = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_remember",
+            serde_json::json!({
+                "title": "needle fact",
+                "body": "needle survey notes",
+                "idempotency_key": "query-instruction-needle"
+            }),
+        )
+        .await?;
+        built.engine.drain_embedding_jobs(10).await?;
+        let stored = recorder.texts();
+        assert!(
+            !stored.is_empty() && stored.iter().all(|text| !text.starts_with("note: ")),
+            "a Fact embeds as it is: {stored:?}"
+        );
+
+        let found = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_search_memories",
+            serde_json::json!({ "query": "needle", "mode": "semantic", "kind": "Fact" }),
+        )
+        .await?;
+        assert_eq!(
+            found["memories"][0]["memory"], remembered["handle"],
+            "{found}"
+        );
+        call_test_model_tool(
+            &tools,
+            authz,
+            owner,
+            "core_recall",
+            serde_json::json!({ "question": "needle" }),
+        )
+        .await?;
+        assert_eq!(
+            recorder.texts()[stored.len()..],
+            ["note: needle", "note: needle"]
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.unwrap_or_else(|err| panic!("query instruction end to end failed: {err}"));
+}
+
 /// A caller with a personal space and a group space, each its own data
 /// Owner, served by one runtime whose router the test rewires.
 struct TwoOwnerFixture {

@@ -77,6 +77,12 @@ Environment:
                                 Processing-claim crash timeout
                                 (default 900; range 1..=86400; must be
                                 greater than request timeout)
+  PROXIMA_EMBED_QUERY_INSTRUCTION
+                                Template every search query is embedded in;
+                                holds {query}, \n is a newline (default: none)
+  PROXIMA_EMBED_QUERY_INSTRUCTION_CODE
+                                Template for code search queries, over the
+                                default (default: none)
 
 Maintenance:
   maintain-embeddings      One self-healing pass: orphan sweep, reconcile
