@@ -478,6 +478,24 @@ fn push_bounded_piece(
     }
 }
 
+/// Every language label [`detect_language`] or [`fallback_language`] can
+/// emit, which is the closed set a chunk's `language` takes. The
+/// `search_chunks` language filter accepts exactly these.
+pub const LANGUAGE_LABELS: &[&str] = &[
+    "rust",
+    "typescript",
+    "tsx",
+    "javascript",
+    "python",
+    "go",
+    "markdown",
+    "toml",
+    "json",
+    "yaml",
+    "sql",
+    "text",
+];
+
 /// File-extension -> language string for AST path.
 /// Returns None for unknown extensions (fallback path uses extension
 /// for language label separately).
@@ -509,6 +527,9 @@ pub fn fallback_language(file_path: &str) -> Option<&'static str> {
         "rs" => Some("rust"),
         "ts" | "mts" | "cts" => Some("typescript"),
         "tsx" => Some("tsx"),
+        "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
+        "py" | "pyi" => Some("python"),
+        "go" => Some("go"),
         "md" | "markdown" => Some("markdown"),
         "toml" => Some("toml"),
         "json" => Some("json"),
@@ -523,6 +544,44 @@ pub fn fallback_language(file_path: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use std::fmt::Write;
+
+    /// A label outside [`LANGUAGE_LABELS`] would be stored on a chunk that
+    /// the `search_chunks` language filter then refuses to name.
+    #[test]
+    fn every_emitted_language_label_is_listed() {
+        let paths = [
+            "a.rs", "a.ts", "a.mts", "a.cts", "a.tsx", "a.js", "a.jsx", "a.mjs", "a.cjs", "a.py",
+            "a.pyi", "a.go", "a.md", "a.markdown", "a.toml", "a.json", "a.yaml", "a.yml",
+            "a.sql", "a.txt", "A.PY", "Makefile", "a.unknown",
+        ];
+        for path in paths {
+            for label in [detect_language(path), fallback_language(path)]
+                .into_iter()
+                .flatten()
+            {
+                assert!(
+                    LANGUAGE_LABELS.contains(&label),
+                    "{path}: label {label} missing from LANGUAGE_LABELS"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn python_go_and_javascript_get_a_language_label() {
+        for (path, label) in [
+            ("httpx/_client.py", "python"),
+            ("stubs/api.pyi", "python"),
+            ("cmd/server/main.go", "go"),
+            ("src/index.js", "javascript"),
+            ("src/App.jsx", "javascript"),
+            ("scripts/build.mjs", "javascript"),
+            ("config/jest.cjs", "javascript"),
+        ] {
+            assert_eq!(fallback_language(path), Some(label), "{path}");
+            assert_eq!(detect_language(path), None, "{path} has no grammar yet");
+        }
+    }
 
     /// `U+0000` is valid UTF-8, so "is it UTF-8" does not classify these as
     /// binary — and the chunk text would reach a Postgres `text` column,

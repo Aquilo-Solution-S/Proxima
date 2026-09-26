@@ -632,6 +632,71 @@ async fn search_chunks_returns_whole_chunks_and_flags_truncation()
     Ok(())
 }
 
+/// Python has no grammar, so its chunks come from the line-window fallback;
+/// they still need a language label, or `language: "python"` can never
+/// select them. An unknown label is refused rather than answered empty.
+#[tokio::test]
+async fn the_language_filter_finds_fallback_chunked_python()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    init_git_repo_with_files(
+        temp.path(),
+        &[
+            ("pkg/client.py", "def language_label_marker():\n    return 1\n"),
+            ("src/lib.rs", "pub fn language_label_marker() -> u64 { 1 }\n"),
+        ],
+    )?;
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Label Repo" }),
+    )
+    .await?;
+    let repo = registered["repo"]["repo_id"].as_str().expect("repo_id");
+    run_tool::<CodeIngestHeadSnapshotTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo }),
+    )
+    .await?;
+
+    let search = |language: &str| {
+        json!({
+            "query": "language_label_marker",
+            "repo_handle": repo,
+            "mode": "lexical",
+            "language": language,
+            "include_calls": false,
+        })
+    };
+    let python = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        search("python"),
+    )
+    .await?;
+    assert_eq!(match_paths(&python), ["pkg/client.py"], "{python}");
+    assert_eq!(python["matches"][0]["language"], "python");
+    let rust = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        search("rust"),
+    )
+    .await?;
+    assert_eq!(match_paths(&rust), ["src/lib.rs"], "{rust}");
+
+    let refused = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        search("Python"),
+    )
+    .await
+    .expect_err("an unknown language label must be refused");
+    assert!(
+        refused.to_string().contains("language must be one of"),
+        "unexpected error: {refused}"
+    );
+    Ok(())
+}
+
 /// One file carrying a NUL must not fail the whole snapshot.
 ///
 /// `U+0000` is valid UTF-8, so the chunker's "is it UTF-8" binary heuristic
