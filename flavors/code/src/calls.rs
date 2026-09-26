@@ -123,6 +123,8 @@ enum LangKind {
     Rust,
     Typescript,
     Tsx,
+    Python,
+    Go,
 }
 
 impl LangKind {
@@ -131,6 +133,8 @@ impl LangKind {
             Some("rust") => Some(Self::Rust),
             Some("typescript") => Some(Self::Typescript),
             Some("tsx") => Some(Self::Tsx),
+            Some("python") => Some(Self::Python),
+            Some("go") => Some(Self::Go),
             _ => None,
         }
     }
@@ -139,6 +143,8 @@ impl LangKind {
             Self::Rust => rust_lang(),
             Self::Typescript => ts_lang(),
             Self::Tsx => tsx_lang(),
+            Self::Python => python_lang(),
+            Self::Go => go_lang(),
         }
     }
     fn defs_query(self) -> &'static Query {
@@ -146,6 +152,8 @@ impl LangKind {
             Self::Rust => rust_defs_query(),
             Self::Typescript => ts_defs_query(),
             Self::Tsx => tsx_defs_query(),
+            Self::Python => python_defs_query(),
+            Self::Go => go_defs_query(),
         }
     }
     fn calls_query(self) -> &'static Query {
@@ -153,6 +161,8 @@ impl LangKind {
             Self::Rust => rust_calls_query(),
             Self::Typescript => ts_calls_query(),
             Self::Tsx => tsx_calls_query(),
+            Self::Python => python_calls_query(),
+            Self::Go => go_calls_query(),
         }
     }
 }
@@ -168,6 +178,14 @@ fn ts_lang() -> &'static Language {
 fn tsx_lang() -> &'static Language {
     static L: OnceLock<Language> = OnceLock::new();
     L.get_or_init(|| tree_sitter_typescript::LANGUAGE_TSX.into())
+}
+fn python_lang() -> &'static Language {
+    static L: OnceLock<Language> = OnceLock::new();
+    L.get_or_init(|| tree_sitter_python::LANGUAGE.into())
+}
+fn go_lang() -> &'static Language {
+    static L: OnceLock<Language> = OnceLock::new();
+    L.get_or_init(|| tree_sitter_go::LANGUAGE.into())
 }
 
 // Rust grammar:
@@ -224,6 +242,48 @@ const TS_CALLS_SRC: &str = r"
   function: (member_expression property: (property_identifier) @method.name)) @call.method
 ";
 
+// Python grammar:
+//   `function_definition` covers free functions and methods both; a
+//   decorated one sits inside `decorated_definition`, and the definition
+//   range here excludes its decorators.
+const PYTHON_DEFS_SRC: &str = r"
+(function_definition name: (identifier) @def.name) @def
+";
+
+// Python grammar fields:
+//   call.function: <expr>
+//     (identifier)            — free call    (`foo()`)
+//     (attribute .attribute)  — method call  (`o.foo()`, `a.b.foo()`)
+// A subscripted callee (`handlers[k]()`) is a runtime value and is not
+// captured.
+const PYTHON_CALLS_SRC: &str = r"
+(call
+  function: (identifier) @free.name) @call.free
+(call
+  function: (attribute attribute: (identifier) @method.name)) @call.method
+";
+
+// Go grammar:
+//   function_declaration.name — `func foo()`
+//   method_declaration.name   — `func (r *T) foo()`, a field_identifier
+const GO_DEFS_SRC: &str = r"
+(function_declaration name: (identifier) @def.name) @def
+(method_declaration name: (field_identifier) @def.name) @def
+";
+
+// Go grammar fields:
+//   call_expression.function: <expr>
+//     (identifier)                  — free call               (`foo()`)
+//     (selector_expression .field)  — method or package call  (`r.foo()`, `pkg.Foo()`)
+// Go spells a method call and a package-qualified call alike, so both are
+// method-style (`is_dynamic`).
+const GO_CALLS_SRC: &str = r"
+(call_expression
+  function: (identifier) @free.name) @call.free
+(call_expression
+  function: (selector_expression field: (field_identifier) @method.name)) @call.method
+";
+
 fn rust_defs_query() -> &'static Query {
     static Q: OnceLock<Query> = OnceLock::new();
     Q.get_or_init(|| Query::new(rust_lang(), RUST_DEFS_SRC).expect("rust defs query"))
@@ -247,6 +307,22 @@ fn tsx_defs_query() -> &'static Query {
 fn tsx_calls_query() -> &'static Query {
     static Q: OnceLock<Query> = OnceLock::new();
     Q.get_or_init(|| Query::new(tsx_lang(), TS_CALLS_SRC).expect("tsx calls query"))
+}
+fn python_defs_query() -> &'static Query {
+    static Q: OnceLock<Query> = OnceLock::new();
+    Q.get_or_init(|| Query::new(python_lang(), PYTHON_DEFS_SRC).expect("python defs query"))
+}
+fn python_calls_query() -> &'static Query {
+    static Q: OnceLock<Query> = OnceLock::new();
+    Q.get_or_init(|| Query::new(python_lang(), PYTHON_CALLS_SRC).expect("python calls query"))
+}
+fn go_defs_query() -> &'static Query {
+    static Q: OnceLock<Query> = OnceLock::new();
+    Q.get_or_init(|| Query::new(go_lang(), GO_DEFS_SRC).expect("go defs query"))
+}
+fn go_calls_query() -> &'static Query {
+    static Q: OnceLock<Query> = OnceLock::new();
+    Q.get_or_init(|| Query::new(go_lang(), GO_CALLS_SRC).expect("go calls query"))
 }
 
 // ---------------------------------------------------------------------
@@ -374,6 +450,65 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].callee_name, "baz");
         assert!(!calls[0].is_dynamic);
+    }
+
+    #[test]
+    fn python_definitions_and_calls_are_extracted() {
+        let code = b"@cache\ndef load(path):\n    return parse(read(path))\n\nclass Client:\n    def send(self, request):\n        self.transport.handle(request)\n        handlers[request.kind]()\n";
+        let (defs, calls) = extract_blob_callgraph(Some("python"), code);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["load", "send"]);
+        let text = std::str::from_utf8(code).expect("utf8");
+        assert!(
+            text[defs[0].byte_start as usize..].starts_with("def load"),
+            "a definition's range starts at `def`, after its decorators"
+        );
+        let calls: Vec<(&str, bool)> = calls
+            .iter()
+            .map(|c| (c.callee_name.as_str(), c.is_dynamic))
+            .collect();
+        for expected in [("parse", false), ("read", false), ("handle", true)] {
+            assert!(calls.contains(&expected), "{expected:?} missing: {calls:?}");
+        }
+        assert_eq!(
+            calls.len(),
+            3,
+            "a subscripted callee is not captured: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn go_definitions_and_calls_are_extracted() {
+        let code = b"package main\n\ntype Server struct{}\n\nfunc (s *Server) Serve() error {\n\treturn listen(s.addr())\n}\n\nfunc main() {\n\tfmt.Println(run())\n}\n";
+        let (defs, calls) = extract_blob_callgraph(Some("go"), code);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["Serve", "main"]);
+        let mut calls: Vec<(&str, bool)> = calls
+            .iter()
+            .map(|c| (c.callee_name.as_str(), c.is_dynamic))
+            .collect();
+        calls.sort_unstable();
+        assert_eq!(
+            calls,
+            [
+                ("Println", true),
+                ("addr", true),
+                ("listen", false),
+                ("run", false)
+            ]
+        );
+    }
+
+    #[test]
+    fn python_and_go_share_the_chunkers_parse() {
+        assert_same_analysis(
+            "pkg/client.py",
+            b"def a():\n    b()\n\ndef b():\n    pass\n",
+        );
+        assert_same_analysis(
+            "cmd/main.go",
+            b"package main\n\nfunc a() { b() }\n\nfunc b() {}\n",
+        );
     }
 
     #[test]

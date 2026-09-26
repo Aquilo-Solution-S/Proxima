@@ -10,9 +10,9 @@
 //! tied to actual content density across languages and indent styles.
 //! O(1) range lookups via a precomputed prefix sum.
 //!
-//! Languages without a vendored tree-sitter grammar fall back to
-//! whole-file (when small) or non-overlapping line windows and emit
-//! `chunk_type="file"`.
+//! Grammars: Rust, TypeScript, TSX, Python and Go. Languages without a
+//! vendored tree-sitter grammar fall back to whole-file (when small) or
+//! non-overlapping line windows and emit `chunk_type="file"`.
 //!
 //! Pure module: parses bytes, returns chunks. No I/O, no async.
 
@@ -312,6 +312,11 @@ fn is_substantive(node: &Node) -> bool {
 
 fn node_kind_label(node: &Node) -> &'static str {
     match node.kind() {
+        // Python keeps a decorator outside the definition it decorates, in a
+        // wrapper whose `definition` field is the function or class.
+        "decorated_definition" => node
+            .child_by_field_name("definition")
+            .map_or("block", |definition| node_kind_label(&definition)),
         "function_declaration"
         | "function_definition"
         | "function_item"
@@ -342,6 +347,8 @@ fn ts_language_for(language: Option<&'static str>) -> Option<Language> {
         Some("rust") => Some(tree_sitter_rust::LANGUAGE.into()),
         Some("typescript") => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         Some("tsx") => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
+        Some("python") => Some(tree_sitter_python::LANGUAGE.into()),
+        Some("go") => Some(tree_sitter_go::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -510,6 +517,8 @@ pub fn detect_language(file_path: &str) -> Option<&'static str> {
         "rs" => Some("rust"),
         "ts" | "mts" | "cts" => Some("typescript"),
         "tsx" => Some("tsx"),
+        "py" | "pyi" => Some("python"),
+        "go" => Some("go"),
         _ => None,
     }
 }
@@ -589,18 +598,121 @@ mod tests {
 
     #[test]
     fn python_go_and_javascript_get_a_language_label() {
-        for (path, label) in [
-            ("httpx/_client.py", "python"),
-            ("stubs/api.pyi", "python"),
-            ("cmd/server/main.go", "go"),
-            ("src/index.js", "javascript"),
-            ("src/App.jsx", "javascript"),
-            ("scripts/build.mjs", "javascript"),
-            ("config/jest.cjs", "javascript"),
+        for (path, label, grammar) in [
+            ("httpx/_client.py", "python", true),
+            ("stubs/api.pyi", "python", true),
+            ("cmd/server/main.go", "go", true),
+            ("src/index.js", "javascript", false),
+            ("src/App.jsx", "javascript", false),
+            ("scripts/build.mjs", "javascript", false),
+            ("config/jest.cjs", "javascript", false),
         ] {
             assert_eq!(fallback_language(path), Some(label), "{path}");
-            assert_eq!(detect_language(path), None, "{path} has no grammar yet");
+            assert_eq!(
+                detect_language(path),
+                grammar.then_some(label),
+                "{path}: grammar {grammar}"
+            );
         }
+    }
+
+    /// A Python function of about `lines` padded statements, prefixed by
+    /// `decorator` when given.
+    fn python_function(name: &str, lines: usize, decorator: Option<&str>) -> String {
+        let mut out = decorator.map_or_else(String::new, |d| format!("@{d}\n"));
+        let _ = writeln!(out, "def {name}(value):");
+        for line in 0..lines {
+            let _ = writeln!(
+                out,
+                "    total_{line} = value + {line}  # padding statement"
+            );
+        }
+        out.push_str("    return value\n\n");
+        out
+    }
+
+    /// Every definition sits whole inside one chunk: a syntax-aware cut never
+    /// falls inside a function that fits the budget.
+    fn assert_definitions_whole(path: &str, source: &str, chunks: &[Chunk]) {
+        let language = detect_language(path);
+        let definitions = crate::calls::extract_definitions(language, source.as_bytes());
+        assert!(!definitions.is_empty(), "{path}: no definitions found");
+        for definition in definitions {
+            assert!(
+                chunks
+                    .iter()
+                    .any(|chunk| chunk.byte_range_start <= definition.byte_start
+                        && definition.byte_end <= chunk.byte_range_end),
+                "{path}: {} is split across chunks",
+                definition.name
+            );
+        }
+    }
+
+    #[test]
+    fn python_chunks_on_definitions_with_their_decorators() {
+        let source = [
+            python_function("first", 40, None),
+            python_function("second", 40, Some("retry(times=3)")),
+            python_function("third", 40, None),
+        ]
+        .concat();
+        let chunks = chunk_blob("pkg/jobs.py", source.as_bytes());
+        assert!(chunks.len() >= 3, "{chunks:#?}");
+        for chunk in &chunks {
+            assert_eq!(chunk.language, Some("python"));
+            assert_eq!(chunk.chunk_type, "function", "{}", chunk.text);
+            assert!(chunk.text.chars().count() <= MAX_CHUNK_CHARS);
+        }
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.text.starts_with("@retry(times=3)\ndef second")),
+            "the decorator stays with its function"
+        );
+        assert_definitions_whole("pkg/jobs.py", &source, &chunks);
+    }
+
+    #[test]
+    fn a_python_class_over_budget_splits_between_its_methods() {
+        let mut source = String::from("class Client:\n    \"\"\"Sends requests.\"\"\"\n\n");
+        for method in 0..6 {
+            for line in python_function(&format!("method_{method}"), 20, None).lines() {
+                if line.is_empty() {
+                    source.push('\n');
+                } else {
+                    let _ = writeln!(source, "    {line}");
+                }
+            }
+        }
+        let chunks = chunk_blob("pkg/client.py", source.as_bytes());
+        assert!(chunks.len() > 1, "a class over budget is not one chunk");
+        assert!(chunks.iter().all(|chunk| chunk.chunk_type != "file"));
+        assert_definitions_whole("pkg/client.py", &source, &chunks);
+    }
+
+    #[test]
+    fn go_chunks_label_types_and_functions() {
+        let mut source = String::from("package server\n\n");
+        // Over `TARGET_CHUNK_CHARS`, so the struct does not merge with the
+        // package clause into a `block`.
+        source.push_str("type Server struct {\n");
+        for field in 0..60 {
+            let _ = writeln!(source, "\tField{field} string // padding field comment");
+        }
+        source.push_str("}\n\nfunc (s *Server) Serve() error {\n");
+        for line in 0..40 {
+            let _ = writeln!(source, "\ts.Field{line} = listen(\"padding statement\")");
+        }
+        source.push_str("\treturn nil\n}\n");
+        let chunks = chunk_blob("server/server.go", source.as_bytes());
+        let kinds: Vec<(&str, bool)> = chunks
+            .iter()
+            .map(|chunk| (chunk.chunk_type, chunk.language == Some("go")))
+            .collect();
+        assert!(kinds.contains(&("class", true)), "{kinds:?}");
+        assert!(kinds.contains(&("function", true)), "{kinds:?}");
+        assert_definitions_whole("server/server.go", &source, &chunks);
     }
 
     /// `U+0000` is valid UTF-8, so "is it UTF-8" does not classify these as

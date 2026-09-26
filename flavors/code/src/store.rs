@@ -3,8 +3,9 @@ use proxima_core::{
 };
 use proxima_storage_pg::query::{
     ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
-    active_goals_for_memory_targets_on_connection, nearest_code_chunk_candidates_on_connection,
-    owned_chunk_series_heads, owned_file_revision_heads, owned_present_file_revision_heads_except,
+    HeadChunkCallPair, active_goals_for_memory_targets_on_connection, head_chunk_call_pairs,
+    nearest_code_chunk_candidates_on_connection, owned_chunk_series_heads,
+    owned_file_revision_heads, owned_present_file_revision_heads_except,
     readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
 };
 use proxima_storage_pg::{
@@ -246,6 +247,32 @@ impl CodeFlavorStore {
             &crate::payloads::CodeChunkV1::schema_id(),
             repo_id,
             file_path,
+        )
+        .await
+        .map_err(|error| ToolError::Other(error.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|error| ToolError::Other(error.to_string()))?;
+        Ok(rows)
+    }
+
+    /// Call connections into and out of the chunk heads `chunk_ts`, callee
+    /// handles resolved to their current head. Candidates: both endpoints
+    /// still go through the caller's authorized read.
+    pub(crate) async fn head_chunk_call_pairs(
+        &self,
+        owner_scope: Option<&OwnerScope>,
+        chunk_ts: &[uuid::Uuid],
+        limit: usize,
+    ) -> Result<Vec<HeadChunkCallPair>, ToolError> {
+        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+            .await
+            .map_err(|error| ToolError::Other(error.to_string()))?;
+        let rows = head_chunk_call_pairs(
+            &mut *tx,
+            &crate::payloads::CodeChunkV1::schema_id(),
+            chunk_ts,
+            i64::try_from(limit).unwrap_or(i64::MAX),
         )
         .await
         .map_err(|error| ToolError::Other(error.to_string()))?;

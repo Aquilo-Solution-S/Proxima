@@ -2,6 +2,7 @@
 //! Payload projection: selected rows hydrate through typed PG sidecar loaders.
 
 mod citations;
+mod code_chunk_calls;
 mod code_chunk_vectors;
 mod code_series_heads;
 mod edges;
@@ -14,6 +15,9 @@ mod series_handle;
 
 pub(crate) use citations::citation_of_fact_on_connection;
 pub(crate) use citations::facts_citing_object_on_connection;
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use code_chunk_calls::head_chunk_call_pairs_sql_for_tests;
+pub use code_chunk_calls::{HeadChunkCallPair, head_chunk_call_pairs};
 pub use code_chunk_vectors::{
     CodeChunkVectorCandidate, CodeChunkVectorFilters, nearest_code_chunk_candidates,
     nearest_code_chunk_candidates_on_connection,
