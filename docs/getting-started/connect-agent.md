@@ -78,7 +78,8 @@ backlog above has drained — `hybrid` ranks lexically and reports
 fails outright, since it has no other arm to fall back on.
 
 To re-index a repository from scratch — which indexes
-built by an earlier version, since chunking and rendering both changed —
+built by an earlier version, since chunking, rendering and language labels
+(`python`, `go` and `javascript` added after v0.0.23) all changed —
 erase it and ingest again:
 
 1. `proxima-code_erase_repo` with `repo_handle` and `confirm_canonical_path`
