@@ -438,6 +438,74 @@ async fn an_ingest_scope_excludes_fixtures_and_tombstones_what_leaves_it()
     Ok(())
 }
 
+/// `repo_handle` on the read tools takes a repository's display name, path
+/// or directory name as well as its handle, case-insensitively, and refuses a
+/// name two repositories share (#356).
+#[tokio::test]
+async fn read_tools_resolve_a_repository_by_name_or_path() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let parent = TempDir::new()?;
+    let mut repos = Vec::new();
+    for (group, display_name, marker) in [
+        ("alpha", "Alpha Service", "quartzalphamarker"),
+        ("beta", "Beta Service", "zirconbetamarker"),
+    ] {
+        let root = parent.path().join(group).join("shared");
+        std::fs::create_dir_all(&root)?;
+        let text = format!("pub fn {marker}() -> u8 {{ 1 }}\n");
+        init_git_repo_with_files(&root, &[("src/lib.rs", text.as_str())])?;
+        let registered = run_tool::<CodeRegisterRepoTool>(
+            ctx(fixture.pg.clone(), owner, registry.clone()),
+            json!({ "path": root.to_string_lossy(), "display_name": display_name }),
+        )
+        .await?;
+        let handle = registered["repo"]["repo_handle"]
+            .as_str()
+            .expect("repo_handle")
+            .to_string();
+        run_tool::<CodeIngestHeadSnapshotTool>(
+            ctx(fixture.pg.clone(), owner, registry.clone()),
+            json!({ "repo_handle": handle }),
+        )
+        .await?;
+        repos.push(registered["repo"].clone());
+    }
+    let search = |query: &'static str, repo: String| {
+        run_tool::<CodeSearchChunksTool>(
+            ctx(fixture.pg.clone(), owner, registry.clone()),
+            json!({ "query": query, "repo_handle": repo, "mode": "lexical", "include_calls": false }),
+        )
+    };
+
+    let by_name = search("quartzalphamarker", "alpha SERVICE".into()).await?;
+    assert_eq!(match_paths(&by_name), ["src/lib.rs"], "{by_name}");
+    let other_repo = search("zirconbetamarker", "Alpha Service".into()).await?;
+    assert!(match_paths(&other_repo).is_empty(), "{other_repo}");
+
+    let beta_path = repos[1]["canonical_path"].as_str().expect("canonical_path");
+    let opened = run_tool::<CodeOpenFileRevisionTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": beta_path, "file_path": "src/lib.rs" }),
+    )
+    .await?;
+    assert_eq!(
+        opened["revision"]["repo_handle"], repos[1]["repo_handle"],
+        "{opened}"
+    );
+
+    let shared = search("quartzalphamarker", "Shared".into())
+        .await
+        .expect_err("a directory name two repositories share must be refused");
+    assert!(
+        shared.to_string().contains("matched multiple repos"),
+        "unexpected error: {shared}"
+    );
+    Ok(())
+}
+
 /// Erasure is the supported way to re-index a repository from scratch, which
 /// is what a chunker or render upgrade needs: a HEAD snapshot re-derives only
 /// files whose content moved, so files that never change cannot be

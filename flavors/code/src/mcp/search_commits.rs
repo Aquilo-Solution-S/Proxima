@@ -31,7 +31,7 @@ pub struct CodeSearchCommitsArgs {
     )]
     pub limit: Option<u32>,
     #[schemars(
-        description = "Optional repo handle filter, typically `R...`. Omit or null to search all visible repos."
+        description = "Optional repository filter: an `R…` repo_handle, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead. Omit or null to search all visible repos."
     )]
     pub repo_handle: Option<String>,
     #[schemars(

@@ -75,7 +75,14 @@ embedding similarity fused by reciprocal rank. `lexical` and `semantic`
 select a single arm. With no embedding model configured — or before the
 backlog above has drained — `hybrid` ranks lexically and reports
 `degraded_to_lexical: true` rather than quietly returning less; `semantic`
-fails outright, since it has no other arm to fall back on.
+fails outright, since it has no other arm to fall back on. With embeddings,
+start a question about behaviour in `semantic` and an exact identifier, string
+or path in `lexical`.
+
+`repo_handle` on the search and read tools takes the `R…` handle or a
+registered repository's display name, path or directory name
+(case-insensitive); a name matching two repositories is rejected. Omitted, a
+search covers every visible repository.
 
 To re-index a repository from scratch — which indexes
 built by an earlier version, since chunking and rendering both changed —
