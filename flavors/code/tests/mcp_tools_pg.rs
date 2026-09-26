@@ -645,8 +645,14 @@ async fn the_language_filter_finds_fallback_chunked_python()
     init_git_repo_with_files(
         temp.path(),
         &[
-            ("pkg/client.py", "def language_label_marker():\n    return 1\n"),
-            ("src/lib.rs", "pub fn language_label_marker() -> u64 { 1 }\n"),
+            (
+                "pkg/client.py",
+                "def language_label_marker():\n    return 1\n",
+            ),
+            (
+                "src/lib.rs",
+                "pub fn language_label_marker() -> u64 { 1 }\n",
+            ),
         ],
     )?;
     let registered = run_tool::<CodeRegisterRepoTool>(

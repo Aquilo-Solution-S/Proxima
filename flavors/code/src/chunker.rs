@@ -550,9 +550,29 @@ mod tests {
     #[test]
     fn every_emitted_language_label_is_listed() {
         let paths = [
-            "a.rs", "a.ts", "a.mts", "a.cts", "a.tsx", "a.js", "a.jsx", "a.mjs", "a.cjs", "a.py",
-            "a.pyi", "a.go", "a.md", "a.markdown", "a.toml", "a.json", "a.yaml", "a.yml",
-            "a.sql", "a.txt", "A.PY", "Makefile", "a.unknown",
+            "a.rs",
+            "a.ts",
+            "a.mts",
+            "a.cts",
+            "a.tsx",
+            "a.js",
+            "a.jsx",
+            "a.mjs",
+            "a.cjs",
+            "a.py",
+            "a.pyi",
+            "a.go",
+            "a.md",
+            "a.markdown",
+            "a.toml",
+            "a.json",
+            "a.yaml",
+            "a.yml",
+            "a.sql",
+            "a.txt",
+            "A.PY",
+            "Makefile",
+            "a.unknown",
         ];
         for path in paths {
             for label in [detect_language(path), fallback_language(path)]
