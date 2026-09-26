@@ -59,7 +59,7 @@ pub struct CodeSearchChunksArgs {
     pub query: String,
     #[serde(default)]
     #[schemars(
-        description = "Ranking mode: `hybrid` (default) fuses full-text and embedding similarity, `lexical` is full-text only, `semantic` is embedding-only. Without a configured embedding model `hybrid` falls back to lexical and reports degraded_to_lexical=true, and `semantic` is rejected."
+        description = "Ranking mode. `semantic` (embedding-only) for a question describing behaviour; `lexical` (full-text only) for an exact identifier, string or path; `hybrid` (default) fuses both. Without a configured embedding model `hybrid` falls back to lexical and reports degraded_to_lexical=true, and `semantic` is rejected."
     )]
     pub mode: ChunkSearchMode,
     #[schemars(
@@ -73,7 +73,7 @@ pub struct CodeSearchChunksArgs {
     )]
     pub cursor: Option<String>,
     #[schemars(
-        description = "Optional repo handle filter, typically `R...`. Omit or null to search all visible repos."
+        description = "Optional repository filter: an `R…` repo_handle, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead. Omit or null to search all visible repos."
     )]
     pub repo_handle: Option<String>,
     #[schemars(
@@ -306,7 +306,7 @@ pub struct CodeSearchChunksTool;
 
 impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
-    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: hybrid (default) fuses full-text with embedding similarity, lexical is full-text only, semantic is embedding-only; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Pages of at most 50: has_more plus an opaque next_cursor passed back as cursor with the same query, mode, and filters. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut. Supports language/chunk_type filters and optional call-neighbour connections with their call sites.";
+    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: semantic (embedding-only) suits a question describing behaviour, lexical (full-text only) an exact identifier, string or path, and hybrid (default) fuses both; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Pages of at most 50: has_more plus an opaque next_cursor passed back as cursor with the same query, mode, and filters. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut. Supports language/chunk_type filters and optional call-neighbour connections with their call sites.";
     const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
 
     type Args = CodeSearchChunksArgs;

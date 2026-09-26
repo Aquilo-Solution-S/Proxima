@@ -10,7 +10,9 @@ use super::sql::resolve_repo_identifier;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeOpenFileRevisionArgs {
-    #[schemars(description = "Repo handle from code search output, typically `R...`.")]
+    #[schemars(
+        description = "The repository: an `R…` repo_handle from search output, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead."
+    )]
     pub repo_handle: String,
     #[schemars(
         description = "Repo-relative file path to open at the current indexed head revision."
