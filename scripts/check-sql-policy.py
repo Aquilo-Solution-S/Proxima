@@ -865,7 +865,9 @@ def run_fixture(path: Path) -> int:
 # 140 -> 142: width lanes name each lane's partial-index expression and
 # predicate as closed-enum literals, so the code-chunk neighbour scan and the
 # recall canary became fixed-fragment builders.
-EXPECTED_DYNAMIC_SQL_SITES = 140
+# 140 -> 141: the code hot-path plan guard EXPLAINs the call-pair query, a
+# compile-time `&'static str` with every value bound. No production site added.
+EXPECTED_DYNAMIC_SQL_SITES = 141
 
 
 def run_self_test() -> int:

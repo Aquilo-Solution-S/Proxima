@@ -12,7 +12,9 @@ use proxima_code::mcp::search_commits::{
 use proxima_code::{CodeChunkV1, FileRevisionV1};
 use proxima_core::{AbstractionPayload, FactPayload};
 use proxima_pg_testkit::drop_db;
-use proxima_storage_pg::query::file_revision_heads_sql_for_tests;
+use proxima_storage_pg::query::{
+    file_revision_heads_sql_for_tests, head_chunk_call_pairs_sql_for_tests,
+};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -290,6 +292,29 @@ async fn code_hot_path_plans_use_expected_indexes() {
                 || plan.to_string().contains("memory_head_owner_schema_idx"),
             "file-revision heads must use nk or head index; plan:\n{plan}"
         );
+
+        // A page's chunks are callers by `t` and callees by handle: each
+        // side of the call index must be reached through its own index.
+        // Sorting is back on: with it off, the `UNION` can only merge
+        // presorted branches, and the callee side walks the primary key.
+        sqlx::query("SET LOCAL enable_sort = on")
+            .execute(&mut *tx)
+            .await?;
+        let calls = head_chunk_call_pairs_sql_for_tests();
+        let calls_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {calls}");
+        // SQL-POLICY: fixed-fragment
+        let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(calls_explain))
+            .bind(vec![chunk_t])
+            .bind(CodeChunkV1::SCHEMA_ID)
+            .bind(200_i64)
+            .fetch_one(&mut *tx)
+            .await?;
+        for index in ["code_chunk_call_v1_pkey", "idx_code_chunk_call_callee"] {
+            assert!(
+                plan.to_string().contains(index),
+                "call pairs must use {index}; plan:\n{plan}"
+            );
+        }
 
         tx.rollback().await?;
         Ok(())

@@ -986,12 +986,205 @@ async fn search_chunks_returns_lean_matches_that_point_at_a_line()
     Ok(())
 }
 
-/// Python has no grammar, so its chunks come from the line-window fallback;
-/// they still need a language label, or `language: "python"` can never
+/// `lines` padding statements, so each function outgrows the merge target
+/// and chunks on its own.
+fn padded_body(indent: &str, lines: usize, statement: &str) -> String {
+    let mut body = String::new();
+    for line in 0..lines {
+        body.push_str(indent);
+        body.push_str(&statement.replace("{n}", &line.to_string()));
+        body.push('\n');
+    }
+    body
+}
+
+/// One caller→callee pair per grammar, both bodies padded past the merge
+/// target so each function chunks on its own. Only a callee pads with
+/// `checksum`, so that word finds the callee chunk alone. `caller_note`
+/// words the caller's padding, so a second call re-writes the file.
+fn call_sources(caller_note: &str) -> [(&'static str, String); 3] {
+    [
+        (
+            "src/store.rs",
+            format!(
+                "fn open_store() {{\n{}    build_index();\n}}\n\nfn build_index() {{\n{}}}\n",
+                padded_body(
+                    "    ",
+                    40,
+                    &format!("let value_{{n}} = {{n}}; // {caller_note} statement here")
+                ),
+                padded_body(
+                    "    ",
+                    40,
+                    "let digest_{n} = {n}; // checksum statement here"
+                ),
+            ),
+        ),
+        (
+            "pkg/config.py",
+            format!(
+                "def load_config(path):\n{}    return parse_config(path)\n\n\ndef parse_config(path):\n{}    return path\n",
+                padded_body(
+                    "    ",
+                    40,
+                    &format!("total_{{n}} = len(path) + {{n}}  # {caller_note} statement")
+                ),
+                padded_body(
+                    "    ",
+                    40,
+                    "digest_{n} = len(path) + {n}  # checksum statement"
+                ),
+            ),
+        ),
+        // Go opens on a `package` clause, which merges into a following
+        // function still under the merge target, so Go pads further.
+        (
+            "cmd/main.go",
+            format!(
+                "package main\n\nfunc startServer() {{\n{}\tbindListener()\n}}\n\nfunc bindListener() {{\n{}}}\n",
+                padded_body(
+                    "\t",
+                    50,
+                    &format!("value{{n}} := {{n}} // {caller_note} statement here")
+                ),
+                padded_body("\t", 50, "digest{n} := {n} // checksum statement here"),
+            ),
+        ),
+    ]
+}
+
+/// Rust, Python and Go connect a caller's chunk to its callee's, and a
+/// search reaching either end returns the call with its site. The index
+/// names a callee by series handle; the edge must still point at the
+/// callee's current chunk, and a caller edit must not leave its superseded
+/// revision behind as a second caller.
+#[tokio::test]
+async fn calls_connect_their_chunks_in_every_grammar() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    let sources = call_sources("padding");
+    let files = sources
+        .iter()
+        .map(|(path, source)| (*path, source.as_str()))
+        .collect::<Vec<_>>();
+    init_git_repo_with_files(temp.path(), &files)?;
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Calls Repo" }),
+    )
+    .await?;
+    let repo = registered["repo"]["repo_id"].as_str().expect("repo_id");
+    for revision in ["initial", "caller edited"] {
+        if revision != "initial" {
+            for (path, source) in call_sources("revised") {
+                std::fs::write(temp.path().join(path), source)?;
+            }
+            run_git(temp.path(), &["add", "."])?;
+            run_git(
+                temp.path(),
+                &[
+                    "-c",
+                    "user.name=Proxima Test",
+                    "-c",
+                    "user.email=proxima-test@example.com",
+                    "commit",
+                    "-m",
+                    "edit the callers",
+                ],
+            )?;
+        }
+        run_tool::<CodeIngestHeadSnapshotTool>(
+            ctx(fixture.pg.clone(), owner, registry.clone()),
+            json!({ "repo_handle": repo }),
+        )
+        .await?;
+        for (caller, callee, language) in [
+            ("open_store", "build_index", "rust"),
+            ("load_config", "parse_config", "python"),
+            ("startServer", "bindListener", "go"),
+        ] {
+            let context = format!("{language}, {revision}");
+            let search = |query: &str| {
+                run_tool::<CodeSearchChunksTool>(
+                    ctx(fixture.pg.clone(), owner, registry.clone()),
+                    json!({
+                        "query": query,
+                        "repo_handle": repo,
+                        "mode": "lexical",
+                        "language": language,
+                        "verbose": true,
+                    }),
+                )
+            };
+            let outbound = search(caller).await?;
+            let source_chunk = function_chunk(&outbound, caller, &context);
+            let inbound = search("checksum").await?;
+            let target_chunk = function_chunk(&inbound, callee, &context);
+
+            let out = edges_where(&outbound, "source", &source_chunk["handle"]);
+            assert_eq!(out.len(), 1, "{context}: one callee: {outbound}");
+            assert_eq!(
+                out[0]["target"], target_chunk["handle"],
+                "{context}: the call points at the callee's current chunk: {outbound}"
+            );
+            assert_eq!(out[0]["sites"][0]["callee_name"], callee, "{}", out[0]);
+            assert_eq!(out[0]["sites"][0]["is_dynamic"], false, "{}", out[0]);
+
+            let into = edges_where(&inbound, "target", &target_chunk["handle"]);
+            assert_eq!(
+                into.len(),
+                1,
+                "{context}: one caller, not one per caller revision: {inbound}"
+            );
+            assert_eq!(
+                into[0]["source"], source_chunk["handle"],
+                "{context}: {inbound}"
+            );
+            assert_eq!(into[0]["sites"][0]["callee_name"], callee, "{}", into[0]);
+        }
+    }
+    Ok(())
+}
+
+/// The match whose snippet opens on `name`'s definition, asserted to be a
+/// `function` chunk.
+fn function_chunk(found: &serde_json::Value, name: &str, context: &str) -> serde_json::Value {
+    let chunk = found["matches"]
+        .as_array()
+        .expect("matches")
+        .iter()
+        .find(|m| {
+            let snippet = m["snippet"].as_str().unwrap_or_default();
+            ["fn ", "def ", "func "]
+                .iter()
+                .any(|keyword| snippet.starts_with(&format!("{keyword}{name}(")))
+        })
+        .unwrap_or_else(|| panic!("{context}: no chunk opens on {name}: {found}"))
+        .clone();
+    assert_eq!(chunk["chunk_type"], "function", "{context}: {chunk}");
+    chunk
+}
+
+/// The `calls_edges` whose `end` is `handle`.
+fn edges_where<'a>(
+    found: &'a serde_json::Value,
+    end: &str,
+    handle: &serde_json::Value,
+) -> Vec<&'a serde_json::Value> {
+    found["calls_edges"]
+        .as_array()
+        .expect("calls_edges")
+        .iter()
+        .filter(|edge| &edge[end] == handle)
+        .collect()
+}
+
+/// Python chunks carry a language label, or `language: "python"` can never
 /// select them. An unknown label is refused rather than answered empty.
 #[tokio::test]
-async fn the_language_filter_finds_fallback_chunked_python()
--> Result<(), Box<dyn std::error::Error>> {
+async fn the_language_filter_finds_python() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let registry = registry_for_mcp();

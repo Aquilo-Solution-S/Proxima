@@ -47,9 +47,13 @@ pub struct CodeCallSiteV1 {
 /// it and asserts one `reference` index row per entry, in the chunk's own
 /// write transaction. The callee is a field and the site data is in
 /// `sites`, so the index row carries nothing of its own.
+///
+/// It holds the callee's series handle, not a `t`: ingest names a file's
+/// callees before any of its chunks is written. A reader resolves it to the
+/// series' current head.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeCallV1 {
-    #[schemars(description = "Memory id of the callee `code-chunk-v1` Abstraction.")]
+    #[schemars(description = "Series handle of the callee `code-chunk-v1` Abstraction.")]
     pub callee_memory_id: uuid::Uuid,
     #[schemars(description = "Call sites in this chunk that reach that callee, in file order.")]
     pub sites: Vec<CodeCallSiteV1>,

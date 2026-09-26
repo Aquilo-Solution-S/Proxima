@@ -1215,43 +1215,27 @@ async fn load_call_edges(
     chunk_ids: &[uuid::Uuid],
 ) -> Result<Vec<CallEdge>, ToolError> {
     let pool = code_store(ctx)?;
-    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
-        .await
-        .map_err(ToolError::Storage)?;
-    let pair_rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
-        "SELECT caller_memory_id, callee_memory_id
-           FROM proxima_code.code_chunk_call_v1
-          WHERE caller_memory_id = ANY($1::uuid[])
-             OR callee_memory_id = ANY($1::uuid[])
-          ORDER BY caller_memory_id, callee_memory_id
-          LIMIT $2",
-    )
-    .bind(chunk_ids)
-    .bind(i64::try_from(MAX_CALL_EDGES).unwrap_or(i64::MAX))
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(map_storage)?;
-    let mut seen: HashSet<(uuid::Uuid, uuid::Uuid)> = HashSet::new();
-    let mut pairs: Vec<(MemoryId, MemoryId)> = Vec::new();
-    for (caller, callee) in pair_rows {
-        if seen.insert((caller, callee)) {
-            pairs.push((MemoryId::new(caller), MemoryId::new(callee)));
-        }
-    }
+    // The index names a callee by series handle, never by `t`: ingest names
+    // every callee of a file before any of its chunks is written. The head
+    // join that turns the handle into the `t` a match carries is backend
+    // SQL, and it drops rows a superseded caller revision left behind.
+    let pairs = pool
+        .head_chunk_call_pairs(pool.owner_scope(), chunk_ids, MAX_CALL_EDGES)
+        .await?;
     if pairs.is_empty() {
         return Ok(Vec::new());
     }
     // Hydrate the sites from the caller chunks' payload rows. The index
     // answers "is there a connection"; this is the node answering "what is
     // it", and it is one query for the whole page.
-    let sources = pairs
+    let sources = pairs.iter().map(|pair| pair.caller_t).collect::<Vec<_>>();
+    let callees = pairs
         .iter()
-        .map(|(source, _)| source.into_inner())
+        .map(|pair| pair.callee_handle)
         .collect::<Vec<_>>();
-    let targets = pairs
-        .iter()
-        .map(|(_, target)| target.into_inner())
-        .collect::<Vec<_>>();
+    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+        .await
+        .map_err(ToolError::Storage)?;
     let site_rows: Vec<CallSiteRow> = sqlx::query_as(
         "SELECT caller_memory_id, callee_memory_id, callee_name, is_dynamic,
                 byte_start, byte_end
@@ -1261,13 +1245,18 @@ async fn load_call_edges(
           ORDER BY caller_memory_id, callee_memory_id, site_index",
     )
     .bind(&sources)
-    .bind(&targets)
+    .bind(&callees)
     .fetch_all(&mut *tx)
     .await
     .map_err(map_storage)?;
     tx.commit().await.map_err(map_storage)?;
-    let readable = readable_call_endpoints(ctx, engine, &pairs).await?;
-    let shown = |id: MemoryId| {
+    let endpoints = pairs
+        .iter()
+        .flat_map(|pair| std::iter::once(pair.caller_t).chain(pair.callee_t))
+        .collect::<Vec<_>>();
+    let readable = readable_call_endpoints(ctx, engine, &endpoints).await?;
+    let shown = |id: uuid::Uuid| {
+        let id = MemoryId::new(id);
         readable
             .contains(&id)
             .then(|| ctx.format_abstraction_memory(id))
@@ -1287,11 +1276,11 @@ async fn load_call_edges(
 
     Ok(pairs
         .into_iter()
-        .map(|(source, target)| {
+        .map(|pair| {
             let pair_sites = sites
-                .remove(&(source.into_inner(), target.into_inner()))
+                .remove(&(pair.caller_t, pair.callee_handle))
                 .unwrap_or_default();
-            let source = shown(source);
+            let source = shown(pair.caller_t);
             CallEdge {
                 sites: if source.is_some() {
                     pair_sites
@@ -1299,7 +1288,7 @@ async fn load_call_edges(
                     Vec::new()
                 },
                 source,
-                target: shown(target),
+                target: pair.callee_t.and_then(shown),
             }
         })
         .collect())
@@ -1307,22 +1296,18 @@ async fn load_call_edges(
 
 /// The call endpoints this caller may read.
 ///
-/// The index row belongs to the caller chunk's Owner; the callee id it holds
+/// The index row belongs to the caller chunk's Owner; the callee it names
 /// does not. Both endpoints pass the same read check as any other memory, so
 /// an unreadable one comes back `null`, id and all.
 async fn readable_call_endpoints(
     ctx: &ToolCtx,
     engine: &proxima_core::Engine,
-    pairs: &[(MemoryId, MemoryId)],
+    endpoints: &[uuid::Uuid],
 ) -> Result<HashSet<MemoryId>, ToolError> {
-    let endpoints = pairs
-        .iter()
-        .flat_map(|(source, target)| [source.into_inner(), target.into_inner()])
-        .collect::<Vec<_>>();
     Ok(proxima::flavor::authorized_memory_ids(
         engine,
         ctx.authz(),
-        &endpoints,
+        endpoints,
         proxima_core::EntityKind::Abstraction,
         Some(<CodeChunkV1 as proxima_core::AbstractionPayload>::schema_id()),
         endpoints.len(),

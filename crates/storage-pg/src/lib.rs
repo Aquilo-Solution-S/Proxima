@@ -62,10 +62,13 @@ pub mod sidecars;
 pub mod query {
     #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
     pub use crate::verbs::query::file_revision_heads_sql_for_tests;
+    #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+    pub use crate::verbs::query::head_chunk_call_pairs_sql_for_tests;
     pub use crate::verbs::query::{
         ActiveGoalTargetRow, ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters,
-        FileRevisionHeadRow, MAX_SNAPSHOT_EDGES, active_goals_for_memory_targets,
-        active_goals_for_memory_targets_on_connection, nearest_code_chunk_candidates,
+        FileRevisionHeadRow, HeadChunkCallPair, MAX_SNAPSHOT_EDGES,
+        active_goals_for_memory_targets, active_goals_for_memory_targets_on_connection,
+        head_chunk_call_pairs, nearest_code_chunk_candidates,
         nearest_code_chunk_candidates_on_connection, owned_chunk_series_heads,
         owned_file_revision_heads, owned_present_chunk_indexes,
         owned_present_file_revision_heads_except, readable_chunk_head_ts_for_file,

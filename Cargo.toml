@@ -84,12 +84,15 @@ aws-sdk-s3 = { version = "1", default-features = false, features = [
     "rt-tokio",
 ] }
 
-# tree-sitter deps for the code flavor (Rust + TypeScript). Core and grammar
-# crates version independently and must stay ABI-compatible, so bump them as a
-# set and let CI confirm they parse (workspace nextest, code flavor default-on).
+# tree-sitter deps for the code flavor (Rust, TypeScript, Python, Go). Core
+# and grammar crates version independently and must stay ABI-compatible, so
+# bump them as a set and let CI confirm they parse (workspace nextest, code
+# flavor default-on).
 tree-sitter = "0.27"
 tree-sitter-rust = "0.24"
 tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
 
 [profile.release]
 lto = "thin"
