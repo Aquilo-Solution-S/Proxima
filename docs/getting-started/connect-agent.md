@@ -94,10 +94,26 @@ otherwise each match carries its own. `verbose: true` adds `language`,
 `chunk_index`, `byte_range`, `match_kind`, `matched_excerpt`, `lexical_score`
 and `similarity_score`.
 
+Ingest classes every file as `source`, `generated`, `vendored` or `lockfile`:
+lockfiles by name (`Cargo.lock`, `package-lock.json`, `pnpm-lock.yaml`,
+`go.sum`, any `*.lock`), then the repository's own `.gitattributes`
+(`linguist-generated`, `linguist-vendored`, `-diff`/`binary`), then built-in
+paths (`vendor/`, `node_modules/`, `__snapshots__/`, `*.snap`, `*.min.js`,
+`*.min.css`, `*.map`) and the Go `// Code generated … DO NOT EDIT.` header.
+`-linguist-generated` or `-linguist-vendored` turns a built-in path off. Every
+class stays searchable. A non-source match carries `file_class`; `hybrid`
+ranks every source match above every other one, while `lexical` and
+`semantic` rank all classes together. `file_class: "generated"` searches that
+class alone, in any mode. A lockfile chunk embeds only its path and lines,
+and only source files declare calls. The ingest report counts files and
+chunks per class in `files_by_class` and `chunks_by_class`. A class is set
+when a file's content is ingested: editing `.gitattributes` reclasses a file
+the next time it changes.
+
 To re-index a repository from scratch — which indexes
 built by an earlier version, since chunking and call extraction (Python and
-Go now parse), rendering and language labels (`python`, `go` and
-`javascript`) all changed after v0.0.23 —
+Go now parse), rendering, language labels (`python`, `go` and
+`javascript`) and file classes all changed after v0.0.23 —
 erase it and ingest again:
 
 1. `proxima-code_erase_repo` with `repo_handle` and `confirm_canonical_path`

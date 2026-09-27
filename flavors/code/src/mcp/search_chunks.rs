@@ -25,6 +25,7 @@ use crate::contract::{
     CHUNK_BAND_RARE_ALL, CHUNK_BAND_RARE_ANY, CHUNK_BAND_RESCUE_ANY, CHUNK_BAND_STRICT,
     CODE_CHUNK_SCHEMA_ID,
 };
+use crate::file_class::FileClass;
 use crate::payloads::{CodeChunkV1, FileState};
 use proxima_storage_pg::query::{CodeChunkVectorCandidate, CodeChunkVectorFilters};
 
@@ -87,6 +88,11 @@ pub struct CodeSearchChunksArgs {
     pub language: Option<String>,
     #[schemars(description = "Optional chunk type filter. Omit or null for all chunk types.")]
     pub chunk_type: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional file class filter: `source`, `generated` (generated code, snapshots, minified bundles, source maps), `vendored` (vendored and third-party code) or `lockfile`. Omit or null for every class; hybrid then ranks every source match above every other one."
+    )]
+    pub file_class: Option<FileClass>,
     #[serde(default = "default_include_calls")]
     #[schemars(
         description = "Whether to include neighbouring call connections, in both directions. Defaults to true."
@@ -148,6 +154,10 @@ struct ChunkCursorPos {
     score_bits: u32,
     memory_id: Uuid,
     seen: u32,
+    /// The last row's [`MatchScores::tier`]. Absent from a cursor minted
+    /// before tiers existed, when every row was tier 0.
+    #[serde(default)]
+    tier: u8,
 }
 
 /// Reciprocal-rank-fusion damping constant, at its conventional value.
@@ -289,6 +299,10 @@ pub struct ChunkMatch {
     pub repo_handle: Option<String>,
     pub file_path: String,
     pub chunk_type: String,
+    /// The class of the file the chunk was cut from: `generated`,
+    /// `vendored` or `lockfile`. Absent for source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_class: Option<FileClass>,
     /// The chunk's first and last line in the file, 1-based.
     pub line_range: (i64, i64),
     /// The chunk text from its start, or with `context_lines` the numbered
@@ -367,7 +381,7 @@ pub struct CodeSearchChunksTool;
 
 impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
-    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: semantic (embedding-only) suits a question describing behaviour, lexical (full-text only) an exact identifier, string or path, and hybrid (default) fuses both; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Pages of at most 50: has_more plus an opaque next_cursor passed back as cursor with the same query, mode, and filters. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut, and matched_line, the line that best matches the query when one does; context_lines returns the numbered lines around it instead, and verbose adds per-arm scores and byte ranges. Supports language/chunk_type filters and optional call-neighbour connections with their call sites.";
+    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: semantic (embedding-only) suits a question describing behaviour, lexical (full-text only) an exact identifier, string or path, and hybrid (default) fuses both; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Pages of at most 50: has_more plus an opaque next_cursor passed back as cursor with the same query, mode, and filters. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut, and matched_line, the line that best matches the query when one does; context_lines returns the numbered lines around it instead, and verbose adds per-arm scores and byte ranges. Supports language/chunk_type/file_class filters and optional call-neighbour connections with their call sites. Generated, vendored and lockfile chunks stay searchable, carry file_class, and rank after every source match in hybrid mode unless file_class asks for them.";
     const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
 
     type Args = CodeSearchChunksArgs;
@@ -399,6 +413,7 @@ impl Tool for CodeSearchChunksTool {
                 repo_id,
                 language: args.language.as_deref(),
                 chunk_type: args.chunk_type.as_deref(),
+                file_class: args.file_class,
                 exact_pattern: like_pattern(query),
             };
             let fingerprint = resolved.fingerprint();
@@ -442,19 +457,17 @@ impl Tool for CodeSearchChunksTool {
             };
             let (rows, score_by_id) = collect_candidates(&ctx, &pool, &engine, &scan).await?;
 
-            let ChunkPage {
-                eligible,
-                has_more,
-                next_cursor,
-            } = select_chunk_page(
+            let page = select_chunk_page(
                 rows,
                 &score_by_id,
                 after,
                 usize::try_from(limit).unwrap_or(usize::MAX),
                 &fingerprint,
                 seen,
+                resolved.source_first(),
             );
-            let semantic_reached = eligible
+            let semantic_reached = page
+                .eligible
                 .iter()
                 .any(|(_, _, scores)| scores.similarity_score > 0.0);
             let render = MatchRendering {
@@ -464,7 +477,7 @@ impl Tool for CodeSearchChunksTool {
                 verbose: args.verbose,
                 repo_scoped: resolved.repo_id.is_some(),
             };
-            let (matches, chunk_ids) = render_chunk_matches(&ctx, &render, eligible)?;
+            let (matches, chunk_ids) = render_chunk_matches(&ctx, &render, page.eligible)?;
 
             // Phase 3: the call-neighbour pins, only when the caller asks
             // for them and the page phase 2 admitted is non-empty. Keyed on
@@ -488,8 +501,8 @@ impl Tool for CodeSearchChunksTool {
                     .map(|repo_id| format_repo_handle(&ctx, repo_id)),
                 matches,
                 calls_edges,
-                has_more,
-                next_cursor,
+                has_more: page.has_more,
+                next_cursor: page.next_cursor,
             })
         })
     }
@@ -520,6 +533,7 @@ struct ResolvedChunkQuery<'a> {
     repo_id: Option<Uuid>,
     language: Option<&'a str>,
     chunk_type: Option<&'a str>,
+    file_class: Option<FileClass>,
     exact_pattern: String,
 }
 
@@ -533,7 +547,9 @@ impl ResolvedChunkQuery<'_> {
     /// `json!([...]).to_string()` canon all have to stay as they are. A
     /// switch to a named-object canon is a cursor version bump, not a
     /// refactor. A requested `semantic_weight` is appended as a seventh
-    /// value, its bits, so a query without one keeps exactly those bytes.
+    /// value, its bits, so a query without one keeps exactly those bytes;
+    /// a `file_class` filter after it, as its name — a string, which no
+    /// weight's bits can be.
     fn fingerprint(&self) -> String {
         let mut canon = vec![
             serde_json::json!(self.owner.external_key()),
@@ -546,7 +562,19 @@ impl ResolvedChunkQuery<'_> {
         if let Some(weight) = self.semantic_weight {
             canon.push(serde_json::json!(weight.get().to_bits()));
         }
+        if let Some(class) = self.file_class {
+            canon.push(serde_json::json!(class.as_str()));
+        }
         wire_cursor::fingerprint(&serde_json::Value::Array(canon).to_string())
+    }
+
+    /// A hybrid search over every class ranks each source match above
+    /// every non-source one. Keyed on the requested mode, like the cursor:
+    /// a hybrid search that degrades to lexical keeps the order it asked
+    /// for. A lexical or semantic search, or one naming a class, ranks as
+    /// its arm does.
+    fn source_first(&self) -> bool {
+        self.requested_mode == ChunkSearchMode::Hybrid && self.file_class.is_none()
     }
 
     /// The lexical arm's sidecar scan over this query, with the run-time
@@ -561,6 +589,8 @@ impl ResolvedChunkQuery<'_> {
             repo_id: self.repo_id,
             language: self.language,
             chunk_type: self.chunk_type,
+            file_class: self.file_class.map(FileClass::as_str),
+            source_first: self.source_first(),
             exact_pattern: &self.exact_pattern,
             candidate_limit,
             distinctive,
@@ -679,6 +709,7 @@ async fn scan_semantic_candidates(
             repo_id: scan.resolved.repo_id,
             language: scan.resolved.language,
             chunk_type: scan.resolved.chunk_type,
+            file_class: scan.resolved.file_class.map(FileClass::as_str),
         },
         usize::try_from(scan.candidate_limit).unwrap_or(0),
     )
@@ -695,6 +726,10 @@ struct ChunkPage {
 
 /// Drop absent files and anything an earlier page already returned, cut the
 /// page to `page_len`, and mint the resume token when more remain.
+///
+/// `rows` arrive in fused order. With `source_first` every non-source row
+/// moves to tier 1 behind every source row; the sort is stable, so each
+/// tier keeps the fused order.
 fn select_chunk_page(
     rows: Vec<(MemoryId, CodeChunkV1)>,
     score_by_id: &HashMap<Uuid, MatchScores>,
@@ -702,6 +737,7 @@ fn select_chunk_page(
     page_len: usize,
     fingerprint: &str,
     seen: u32,
+    source_first: bool,
 ) -> ChunkPage {
     let mut eligible = Vec::new();
     for (memory_id, payload) in rows {
@@ -709,12 +745,14 @@ fn select_chunk_page(
             continue;
         }
         let raw_id = memory_id.into_inner();
-        let scores = score_by_id.get(&raw_id).copied().unwrap_or_default();
+        let mut scores = score_by_id.get(&raw_id).copied().unwrap_or_default();
+        scores.tier = u8::from(source_first && !payload.file_class.is_source());
         if after.is_some_and(|pos| !ranks_after_chunk_cursor(scores, pos)) {
             continue;
         }
         eligible.push((memory_id, payload, scores));
     }
+    eligible.sort_by_key(|(_, _, scores)| scores.tier);
     let has_more = eligible.len() > page_len;
     eligible.truncate(page_len);
     let next_cursor = (has_more && !eligible.is_empty()).then(|| {
@@ -725,6 +763,7 @@ fn select_chunk_page(
                 score_bits: scores.score.to_bits(),
                 memory_id: scores.memory_id,
                 seen: seen.saturating_add(u32::try_from(eligible.len()).unwrap_or(u32::MAX)),
+                tier: scores.tier,
             },
         )
     });
@@ -793,6 +832,7 @@ fn render_chunk_matches(
             repo_handle: (!render.repo_scoped).then(|| format_repo_handle(ctx, payload.repo_id)),
             file_path: payload.file_path,
             chunk_type: payload.chunk_type,
+            file_class: (!payload.file_class.is_source()).then_some(payload.file_class),
             line_range: (
                 i64::from(payload.line_range_start),
                 i64::from(payload.line_range_end),
@@ -863,6 +903,9 @@ struct MatchScores {
     similarity_score: f32,
     /// The lexical arm returned this chunk, whatever its score.
     lexical_hit: bool,
+    /// Ranks before `score`: 1 for a non-source chunk in a search that puts
+    /// source first, else 0. Set once the payload is read.
+    tier: u8,
 }
 
 /// Resolve the requested mode against what the current Owner's embedding
@@ -1037,14 +1080,15 @@ fn fuse_candidates(
 }
 
 /// True when `scores` sorts strictly after the last emitted row
-/// (`score DESC, memory_id DESC`).
+/// (`tier ASC, score DESC, memory_id DESC`).
 fn ranks_after_chunk_cursor(scores: MatchScores, pos: ChunkCursorPos) -> bool {
     let score = f32::from_bits(pos.score_bits);
-    match scores.score.total_cmp(&score) {
-        std::cmp::Ordering::Less => true,
-        std::cmp::Ordering::Equal => scores.memory_id < pos.memory_id,
-        std::cmp::Ordering::Greater => false,
-    }
+    scores
+        .tier
+        .cmp(&pos.tier)
+        .then_with(|| score.total_cmp(&scores.score))
+        .then_with(|| pos.memory_id.cmp(&scores.memory_id))
+        .is_gt()
 }
 
 /// Whether a `hybrid` search ended up ranked lexically only.
@@ -1321,6 +1365,10 @@ struct ChunkSidecarScan<'a> {
     repo_id: Option<uuid::Uuid>,
     language: Option<&'a str>,
     chunk_type: Option<&'a str>,
+    file_class: Option<&'static str>,
+    /// Order source chunks ahead of the rest before the candidate cut, so
+    /// a vendored tree full of hits cannot fill the budget ahead of them.
+    source_first: bool,
     exact_pattern: &'a str,
     candidate_limit: i64,
     distinctive: &'a str,
@@ -1356,6 +1404,8 @@ async fn scan_chunk_sidecar(
         .bind(scan.candidate_limit)
         .bind(scan.distinctive)
         .bind(scan.read_owner_ids)
+        .bind(scan.file_class)
+        .bind(scan.source_first)
         .fetch_all(&mut *tx)
         .await
         .map_err(map_storage)?;
@@ -1467,12 +1517,14 @@ static CHUNK_GIN_SQL: LazyLock<String> = LazyLock::new(|| {
             AND ($2::uuid IS NULL OR c.repo_id = $2)
             AND ($3::text IS NULL OR c.language = $3)
             AND ($5::text IS NULL OR c.chunk_type = $5)
+            AND ($9::text IS NULL OR COALESCE(c.file_class::text, 'source') = $9)
             AND (
                 p.search_tsv @@ q.tsq
                 OR (q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq)
                 OR (q.rare_any_tsq IS NOT NULL AND p.search_tsv @@ q.rare_any_tsq)
             )
-          ORDER BY score DESC, c.t DESC
+          ORDER BY ($10::bool AND COALESCE(c.file_class::text, 'source') <> 'source'),
+                   score DESC, c.t DESC
           LIMIT $6"
     )
 });
@@ -1521,12 +1573,14 @@ static CHUNK_LIKE_SQL: LazyLock<String> = LazyLock::new(|| {
             AND ($2::uuid IS NULL OR c.repo_id = $2)
             AND ($3::text IS NULL OR c.language = $3)
             AND ($5::text IS NULL OR c.chunk_type = $5)
+            AND ($8::text IS NULL OR COALESCE(c.file_class::text, 'source') = $8)
             AND (
                 lower(c.file_path) = lower($1)
                 OR lower(c.file_path) LIKE $4 ESCAPE '\\'
                 OR lower(c.text) LIKE $4 ESCAPE '\\'
             )
-          ORDER BY score DESC, c.t DESC
+          ORDER BY ($9::bool AND COALESCE(c.file_class::text, 'source') <> 'source'),
+                   score DESC, c.t DESC
           LIMIT $6"
     )
 });
@@ -1567,6 +1621,8 @@ async fn scan_chunk_sidecar_like(
         .bind(scan.chunk_type)
         .bind(scan.candidate_limit)
         .bind(scan.read_owner_ids)
+        .bind(scan.file_class)
+        .bind(scan.source_first)
         .fetch_all(&mut *tx)
         .await
         .map_err(map_storage)?;
@@ -1596,10 +1652,12 @@ struct CallSiteRow {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChunkCandidateRow, ChunkMatch, ChunkMatchDetail, ChunkSearchMode, CodeChunkVectorCandidate,
-        CodeSearchChunksArgs, CodeSearchChunksOutput, ResolvedChunkQuery, SemanticWeight,
-        distinctive_terms, fuse_candidates, match_metadata, pointer_words, reject_unknown_language,
-        render_snippet, requested_semantic_weight, same_word, wire_cursor,
+        CHUNK_CURSOR, ChunkCandidateRow, ChunkCursorPos, ChunkMatch, ChunkMatchDetail, ChunkPage,
+        ChunkSearchMode, CodeChunkV1, CodeChunkVectorCandidate, CodeSearchChunksArgs,
+        CodeSearchChunksOutput, FileClass, FileState, HashMap, MatchScores, MemoryId,
+        ResolvedChunkQuery, SemanticWeight, distinctive_terms, fuse_candidates, match_metadata,
+        pointer_words, ranks_after_chunk_cursor, reject_unknown_language, render_snippet,
+        requested_semantic_weight, same_word, select_chunk_page, wire_cursor,
     };
     use crate::chunker::LANGUAGE_LABELS;
 
@@ -1712,6 +1770,7 @@ mod tests {
             repo_handle: None,
             file_path: "src/drain.rs".into(),
             chunk_type: "function".into(),
+            file_class: None,
             line_range: (40, 44),
             snippet: "fn drain".into(),
             snippet_truncated: true,
@@ -1889,6 +1948,7 @@ mod tests {
             repo_id: Some(id(9)),
             language: Some("rust"),
             chunk_type: Some("function"),
+            file_class: None,
             exact_pattern: "%parse\\_chunk%".to_string(),
         }
     }
@@ -1953,6 +2013,13 @@ mod tests {
                     ..resolved()
                 },
             ),
+            (
+                "file_class",
+                ResolvedChunkQuery {
+                    file_class: Some(FileClass::Lockfile),
+                    ..resolved()
+                },
+            ),
         ];
 
         for (field, flipped) in cases {
@@ -2013,6 +2080,107 @@ mod tests {
             ..resolved()
         };
         assert_ne!(weighted(0.7).fingerprint(), weighted(0.8).fingerprint());
+        let classed = |class| ResolvedChunkQuery {
+            file_class: Some(class),
+            ..resolved()
+        };
+        assert_ne!(
+            classed(FileClass::Generated).fingerprint(),
+            classed(FileClass::Vendored).fingerprint()
+        );
+    }
+
+    fn chunk_row(id_byte: u8, class: FileClass) -> (MemoryId, CodeChunkV1) {
+        (
+            MemoryId::new(id(id_byte)),
+            CodeChunkV1 {
+                repo_id: id(9),
+                file_path: format!("f{id_byte}.rs"),
+                chunk_index: 0,
+                text: String::new(),
+                language: Some("rust".into()),
+                chunk_type: "function".into(),
+                byte_range_start: 0,
+                byte_range_end: 0,
+                line_range_start: 1,
+                line_range_end: 1,
+                state: FileState::Present,
+                file_class: class,
+                calls: Vec::new(),
+            },
+        )
+    }
+
+    fn page_ids(page: &ChunkPage) -> Vec<uuid::Uuid> {
+        page.eligible
+            .iter()
+            .map(|(memory_id, ..)| memory_id.into_inner())
+            .collect()
+    }
+
+    /// Source first puts every source row ahead of every other one and
+    /// keeps the fused order inside each tier; without it the fused order
+    /// stands. Paging resumes inside the right tier (#360).
+    #[test]
+    fn source_first_pages_every_source_match_ahead_of_the_rest() {
+        // Fused order: 5 (lockfile), 4, 3 (vendored), 2, 1.
+        let rows = vec![
+            chunk_row(5, FileClass::Lockfile),
+            chunk_row(4, FileClass::Source),
+            chunk_row(3, FileClass::Vendored),
+            chunk_row(2, FileClass::Source),
+            chunk_row(1, FileClass::Source),
+        ];
+        let scores: HashMap<uuid::Uuid, MatchScores> = (1..=5_u8)
+            .map(|byte| {
+                (
+                    id(byte),
+                    MatchScores {
+                        memory_id: id(byte),
+                        score: f32::from(byte),
+                        ..MatchScores::default()
+                    },
+                )
+            })
+            .collect();
+
+        let arm_order = select_chunk_page(rows.clone(), &scores, None, 10, "fp", 0, false);
+        assert_eq!(page_ids(&arm_order), [id(5), id(4), id(3), id(2), id(1)]);
+
+        let first = select_chunk_page(rows.clone(), &scores, None, 2, "fp", 0, true);
+        assert_eq!(page_ids(&first), [id(4), id(2)]);
+        let cursor = first.next_cursor.expect("more remain");
+        let pos: ChunkCursorPos = CHUNK_CURSOR.decode("fp", &cursor).expect("decodes");
+        let second = select_chunk_page(rows.clone(), &scores, Some(pos), 2, "fp", 2, true);
+        assert_eq!(page_ids(&second), [id(1), id(5)]);
+        let pos: ChunkCursorPos = CHUNK_CURSOR
+            .decode("fp", &second.next_cursor.expect("one left"))
+            .expect("decodes");
+        let third = select_chunk_page(rows, &scores, Some(pos), 2, "fp", 4, true);
+        assert_eq!(page_ids(&third), [id(3)]);
+        assert!(!third.has_more);
+    }
+
+    /// A cursor minted before tiers existed carries none and resumes as
+    /// tier 0, which every row was.
+    #[test]
+    fn a_cursor_without_a_tier_resumes_in_tier_zero() {
+        let legacy = serde_json::json!({
+            "score_bits": 2.0_f32.to_bits(),
+            "memory_id": id(2),
+            "seen": 1,
+        });
+        let pos: ChunkCursorPos = serde_json::from_value(legacy).expect("decodes");
+        assert_eq!(pos.tier, 0);
+        let scores = |byte: u8, tier: u8| MatchScores {
+            memory_id: id(byte),
+            score: f32::from(byte),
+            tier,
+            ..MatchScores::default()
+        };
+        assert!(ranks_after_chunk_cursor(scores(1, 0), pos));
+        assert!(!ranks_after_chunk_cursor(scores(3, 0), pos));
+        assert!(ranks_after_chunk_cursor(scores(3, 1), pos));
     }
 
     fn lexical(id_byte: u8, literal_bonus: f32) -> ChunkCandidateRow {

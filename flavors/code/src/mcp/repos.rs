@@ -6,8 +6,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::IndexReport;
 use crate::repos::{MAX_SCOPE_GLOBS, RepoRecord, RepoRegistryError};
+use crate::{FileClassCounts, IndexReport};
 
 use super::CodeToolCtxExt;
 use super::code_store;
@@ -178,6 +178,13 @@ pub struct IndexReportItem {
     /// them — check the repo's scope in proxima-code_list_repos before
     /// concluding a file is missing.
     pub files_excluded: usize,
+    /// Present files ingested, by class: `source`, `generated`,
+    /// `vendored`, `lockfile`. Every class is indexed and searchable;
+    /// non-source files rank after source in hybrid search and declare no
+    /// calls.
+    pub files_by_class: FileClassCounts,
+    /// `chunks_emitted`, by the class of the file each was cut from.
+    pub chunks_by_class: FileClassCounts,
 }
 
 #[derive(Debug)]
@@ -564,6 +571,8 @@ impl From<IndexReport> for IndexReportItem {
             chunks_tombstoned: report.chunks_tombstoned,
             call_references_emitted: report.call_references_emitted,
             files_excluded: report.files_excluded,
+            files_by_class: report.files_by_class,
+            chunks_by_class: report.chunks_by_class,
         }
     }
 }

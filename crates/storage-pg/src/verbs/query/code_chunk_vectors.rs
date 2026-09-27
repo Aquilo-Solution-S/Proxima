@@ -48,6 +48,7 @@ fn nearest_code_chunk_sql(lane: Lane) -> String {
                         AND ($2::uuid IS NULL OR c.repo_id = $2)
                         AND ($5::text IS NULL OR c.language = $5)
                         AND ($6::text IS NULL OR c.chunk_type = $6)
+                        AND ($8::text IS NULL OR COALESCE(c.file_class::text, 'source') = $8)
                       ORDER BY {vec} <=> $4{cast}
                       LIMIT $7",
         vec = lane.vec,
@@ -67,7 +68,7 @@ pub struct CodeChunkVectorCandidate {
 /// restricted to `owner`'s own scope and to chunks matching the structural
 /// filters, best-first.
 ///
-/// `repo_id`, `language` and `chunk_type` are the same optional filters
+/// `repo_id`, `language`, `chunk_type` and `file_class` are the same optional filters
 /// `proxima-code_search_chunks` applies to its lexical scan; pushing them
 /// into this query rather than filtering afterwards is what keeps the
 /// nearest-neighbour budget spent on rows the caller can actually use. A
@@ -131,6 +132,7 @@ pub async fn nearest_code_chunk_candidates_on_connection(
         .bind(filters.language)
         .bind(filters.chunk_type)
         .bind(limit)
+        .bind(filters.file_class)
         .fetch_all(&mut *connection)
         .await
         .map_err(map_err)
@@ -144,4 +146,7 @@ pub struct CodeChunkVectorFilters<'a> {
     pub repo_id: Option<uuid::Uuid>,
     pub language: Option<&'a str>,
     pub chunk_type: Option<&'a str>,
+    /// `source`, `generated`, `vendored` or `lockfile`; a chunk stored
+    /// without a class is `source`.
+    pub file_class: Option<&'a str>,
 }

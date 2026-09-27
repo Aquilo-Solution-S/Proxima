@@ -9,6 +9,7 @@ use proxima_storage_pg::sidecars::{
 use proxima_storage_pg::verbs::fact_ingest::{FactIngestSidecarFuture, PgFactSidecar};
 use sqlx::{Postgres, Transaction};
 
+use crate::file_class::FileClass;
 use crate::payloads::{
     AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceSummaryV1, AcceptanceVerificationStatus,
     AcceptanceVerificationV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1, CodeCallSiteV1,
@@ -279,9 +280,10 @@ impl PgMemorySidecar for CodeChunkV1 {
             sqlx::query(
                 "INSERT INTO proxima_code.code_chunk_v1
                     (t, repo_id, file_path, chunk_index, text, language, chunk_type,
-                     byte_range_start, byte_range_end, line_range_start, line_range_end, state)
+                     byte_range_start, byte_range_end, line_range_start, line_range_end, state,
+                     file_class)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                         $12::proxima_code.file_state)",
+                         $12::proxima_code.file_state, $13::proxima_code.file_class)",
             )
             .bind(memory_id.into_inner())
             .bind(self.repo_id)
@@ -295,6 +297,7 @@ impl PgMemorySidecar for CodeChunkV1 {
             .bind(i64::from(self.line_range_start))
             .bind(i64::from(self.line_range_end))
             .bind(file_state_to_str(self.state))
+            .bind(self.file_class.as_str())
             .execute(tx.as_mut())
             .await
             .map_err(proxima_storage_pg::map_err)?;
@@ -337,6 +340,7 @@ struct CodeChunkPayloadRow {
     line_range_start: i64,
     line_range_end: i64,
     state: String,
+    file_class: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -370,7 +374,8 @@ impl PgMemoryPayload for CodeChunkV1 {
                 .fetch_all_by_memory_ids(
                     "SELECT t, repo_id, file_path, chunk_index, text, language,
                             chunk_type, byte_range_start, byte_range_end,
-                            line_range_start, line_range_end, state::text AS state
+                            line_range_start, line_range_end, state::text AS state,
+                            COALESCE(file_class, 'source')::text AS file_class
                        FROM proxima_code.code_chunk_v1
                       WHERE t = ANY($1::uuid[])",
                     memory_ids,
@@ -425,6 +430,12 @@ impl PgMemoryPayload for CodeChunkV1 {
                         line_range_start: u32::try_from(row.line_range_start).unwrap_or(u32::MAX),
                         line_range_end: u32::try_from(row.line_range_end).unwrap_or(u32::MAX),
                         state: parse_file_state(&row.state)?,
+                        file_class: FileClass::parse(&row.file_class).ok_or_else(|| {
+                            StorageError::Internal(format!(
+                                "invalid code chunk file_class {}",
+                                row.file_class
+                            ))
+                        })?,
                         calls: calls_by_caller.get(&row.t).cloned().unwrap_or_default(),
                     };
                     Ok((memory_id, SidecarPayload::abstraction(payload)))

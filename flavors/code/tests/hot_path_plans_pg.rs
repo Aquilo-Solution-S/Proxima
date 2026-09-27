@@ -126,6 +126,8 @@ async fn code_hot_path_plans_use_expected_indexes() {
             .bind(20_i64)
             .bind("")
             .bind(vec![owner.stored_owner_id()])
+            .bind(None::<String>)
+            .bind(true)
             .fetch_one(&mut *tx)
             .await?;
         let chunk_plan = plan.to_string();
@@ -198,6 +200,8 @@ async fn code_hot_path_plans_use_expected_indexes() {
                     .bind(binds.kind)
                     .bind(20_i64)
                     .bind(&owner_ids)
+                    .bind(None::<String>)
+                    .bind(true)
                     .fetch_one(&mut *tx)
                     .await?
             } else if label == "commit" {

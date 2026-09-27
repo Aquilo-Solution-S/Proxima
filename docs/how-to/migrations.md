@@ -13,6 +13,23 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.24
+
+| Lane | Migration |
+|---|---|
+| Code flavor | `20260927000020_v024_file_class.sql`: enum `proxima_code.file_class` (`source`, `generated`, `vendored`, `lockfile`) and a nullable `code_chunk_v1.file_class`; `embed_text` is re-added so a lockfile chunk embeds `(lockfile) path:start-end` only |
+
+Existing databases upgrade in place. Re-adding the STORED `embed_text`
+column rewrites `code_chunk_v1` once, under an ACCESS EXCLUSIVE lock — budget
+a full table rewrite. Stored `embed_text` values stay byte for byte on every
+existing chunk, so no vector goes stale.
+
+Chunks written before v0.0.24 carry no class and read as `source`. A file
+gets its class the next time its content is ingested; to class a whole
+repository at once, erase it and ingest again
+([connect-agent](../getting-started/connect-agent.md)). The column is
+nullable so a cold dump taken before v0.0.24 still hydrates.
+
 ## v0.0.20
 
 | Lane | Migration |

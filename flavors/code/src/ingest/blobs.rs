@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::calls::{ExtractedCall, ExtractedDefinition};
 use crate::chunker::Chunk;
+use crate::file_class::FileClass;
 use crate::payloads::{
     CodeCallSiteV1, CodeCallV1, CodeChunkV1, CommitV1, FileRevisionV1, FileState,
 };
@@ -34,7 +35,7 @@ const CODE_SLICE_OPERATOR_MODEL: &str = "proxima-code/local-git-source";
 /// position. A HEAD snapshot still skips unchanged blobs; re-derive
 /// after a chunker change is `proxima-code_erase_repo` plus a fresh
 /// register.
-const CODE_SLICE_IDENTITY: &[u8] = b"proxima-code/code-slice:local-git-file-facts-v4";
+const CODE_SLICE_IDENTITY: &[u8] = b"proxima-code/code-slice:local-git-file-facts-v5";
 const CODE_SLICE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x8d, 0xb6, 0x89, 0x67, 0x17, 0x34, 0x44, 0x11, 0xaa, 0xe6, 0x68, 0xef, 0x6c, 0x2a, 0x31, 0x8d,
 ]);
@@ -451,8 +452,17 @@ pub fn code_slice_memory_id_for(payload: &CodeChunkV1, source_file_revision: Mem
 /// (`fact_embeddings::text::load_embedding_text`). Header plus body: the header
 /// makes a retrieved chunk actionable (file and lines) and carries lexical
 /// signal from the path; the body is what a question about the code matches.
+/// A lockfile chunk renders its header alone: pinned versions are not a
+/// question anyone asks by meaning. Keep equal to the sidecar's generated
+/// `embed_text`.
 fn render_code_slice(payload: &CodeChunkV1) -> String {
     match payload.state {
+        crate::payloads::FileState::Present if payload.file_class == FileClass::Lockfile => {
+            format!(
+                "(lockfile) {}:{}-{}",
+                payload.file_path, payload.line_range_start, payload.line_range_end
+            )
+        }
         crate::payloads::FileState::Present => format!(
             "{}:{}-{}\n{}",
             payload.file_path, payload.line_range_start, payload.line_range_end, payload.text
@@ -499,6 +509,7 @@ pub(crate) struct ChunkInfo {
 pub(crate) fn plan_file_chunks(
     repo_id: Uuid,
     file_path: &str,
+    file_class: FileClass,
     chunks: &[Chunk],
     definitions: &[ExtractedDefinition],
     heads: &[ChunkSeriesHead],
@@ -518,6 +529,7 @@ pub(crate) fn plan_file_chunks(
             line_range_start: chunk.line_range_start,
             line_range_end: chunk.line_range_end,
             state: FileState::Present,
+            file_class,
             calls: Vec::new(),
         });
     }
@@ -659,14 +671,15 @@ fn resolve_call_endpoints(
 }
 
 /// Build a tombstone `CodeChunkV1` payload for a `(repo, path, idx)`.
-/// `language` is `None` when the file itself was deleted; for shrink
-/// tombstones the file's current language is preserved so the head
-/// view stays self-consistent.
+/// `language` is `None` and `file_class` is `Source` when the file itself
+/// was deleted; for shrink tombstones the file's current language and class
+/// are preserved so the head view stays self-consistent.
 pub(crate) fn tombstone_chunk(
     repo_id: Uuid,
     path: &str,
     chunk_index: u32,
     language: Option<String>,
+    file_class: FileClass,
 ) -> CodeChunkV1 {
     CodeChunkV1 {
         repo_id,
@@ -680,6 +693,7 @@ pub(crate) fn tombstone_chunk(
         line_range_start: 0,
         line_range_end: 0,
         state: FileState::Tombstone,
+        file_class,
         // A tombstone slice asserts that the position is gone. It calls
         // nothing, so it declares nothing and its index rows disappear
         // with it.
@@ -716,6 +730,7 @@ mod resolve_tests {
                 line_range_start: 0,
                 line_range_end: 0,
                 state: FileState::Present,
+                file_class: crate::file_class::FileClass::Source,
                 calls: Vec::new(),
             },
             item_names: item_names.iter().map(|n| (*n).to_string()).collect(),
@@ -819,6 +834,7 @@ mod assign_tests {
             line_range_start: 0,
             line_range_end: 0,
             state: FileState::Present,
+            file_class: crate::file_class::FileClass::Source,
             calls: Vec::new(),
         }
     }

@@ -5,6 +5,7 @@
 pub mod calls;
 pub mod chunker;
 pub mod contract;
+pub mod file_class;
 mod ingest;
 pub mod local_git_source;
 pub mod mcp;
@@ -13,6 +14,7 @@ pub mod payloads;
 mod repos;
 mod store;
 
+pub use file_class::{FileClass, FileClassCounts, FileClassifier};
 pub use ingest::{
     ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
     ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA, ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA, CODE_BLOB_SCHEMA,
@@ -178,6 +180,7 @@ mod tests {
             line_range_start: 1,
             line_range_end: 1,
             state: FileState::Present,
+            file_class: super::FileClass::Source,
             calls: vec![CodeCallV1 {
                 callee_memory_id: callee,
                 sites: vec![
