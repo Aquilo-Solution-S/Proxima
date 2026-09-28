@@ -83,21 +83,22 @@ pub enum FlavorRegistryError {
          declare the effect on each action spec instead"
     )]
     DispatcherToolEffect { name: &'static str },
-    /// A tool whose `Args` is an internally tagged enum — so its schema
-    /// carries `x-proxima-actions` and MCP clients see a dispatcher —
+    /// A tool whose `Args` is an internally tagged enum — so registration
+    /// derived a dispatcher schema and MCP clients see a dispatcher —
     /// declared no `ACTION_ARG_SPECS`. Nothing then enumerates its
     /// actions: the scope gate falls back to whole-tool grants, the
     /// catalog lists none, REST serves no action route, and arguments are
     /// validated against every variant's fields merged together.
     #[error(
-        "tool {name} has an internally tagged `Args` (its schema carries \
-         x-proxima-actions) but declares no ACTION_ARG_SPECS, so nothing enumerates its \
+        "tool {name} has an internally tagged `Args` (a dispatcher schema) but declares \
+         no ACTION_ARG_SPECS, so nothing enumerates its \
          actions: set `const ACTION_ARG_SPECS` on the tool, or give it a plain struct \
          `Args`"
     )]
     DispatcherWithoutActionSpecs { name: &'static str },
     /// A tool's `ACTION_ARG_SPECS` and its schemars-derived
-    /// `x-proxima-actions` do not describe the same dispatcher.
+    /// [`McpDispatcherSchema`](crate::mcp::McpDispatcherSchema) do not
+    /// describe the same dispatcher.
     #[error("tool {name} has inconsistent ACTION_ARG_SPECS: {message}")]
     InvalidActionSpecs { name: &'static str, message: String },
     /// A tool declared both `ACTION_ARG_SPECS` and `ARGV_ACTION_SPECS`.

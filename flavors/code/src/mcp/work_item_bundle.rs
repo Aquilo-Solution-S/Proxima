@@ -23,7 +23,7 @@ use super::sql::{map_storage, owner_columns};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeWorkItemBundleArgs {
     #[schemars(
-        description = "`F...` handle for a proxima-code/work-requested-v1 or proxima-code/test-requested-v1 Fact."
+        description = "`F:<uuid>` of a proxima-code/work-requested-v1 or proxima-code/test-requested-v1 Fact."
     )]
     pub handle: String,
 }
@@ -115,7 +115,7 @@ pub struct CodeWorkItemBundleTool;
 
 impl Tool for CodeWorkItemBundleTool {
     const NAME: &'static str = "proxima-code_work_item_bundle";
-    const DESCRIPTION: &'static str = "Read a Goal-native Code work/test item bundle: request, repo, criteria, dependencies, evidence, target Perspectives, active-goal provenance, and results.";
+    const DESCRIPTION: &'static str = "Read one work or test request with its repo, criteria, dependencies, evidence, assigned Perspectives, originating Goal, and results.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
 

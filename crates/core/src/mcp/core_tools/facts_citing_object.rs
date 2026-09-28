@@ -25,8 +25,7 @@ const CITATION_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::Fingerpri
 pub struct FactsCitingObjectArgs {
     /// Cited object uuid, optionally prefixed as `C:<uuid>`.
     pub cited_object_id: String,
-    /// Max citing Facts per page; values above 200 are clamped, 0 is
-    /// rejected, default 50.
+    /// Max citing Facts per page; default 50, values above 200 are clamped.
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub limit: Option<u32>,

@@ -184,18 +184,31 @@ and object-root output normalization described below.
 - The emitted schema is JSON Schema draft 2020-12 and **`$ref`-free /
   `$defs`-free**.
 - Field descriptions originate only from the Rust type: a `///`
-  doc-comment or `#[schemars(description = "...")]`.
+  doc-comment or `#[schemars(description = "...")]`. A doc comment's hard
+  wraps are rejoined; blank lines and list items keep their break.
 - A recursive tool argument type is a registration error.
+- **The wire is plain JSON Schema** — `tools/list`, `GET /v1/tools`:
+  no `x-` keyword, no `$schema` (MCP's default dialect is 2020-12), no root
+  `title` (a Rust type name), no non-standard `format` (`uint32`, `int64`,
+  …; bounds stay as `minimum`). Budgeted by
+  `apps/proxima-mcp/tests/end_to_end.rs` (`TOOLS_LIST_BUDGET`).
 - A tool's `Output` type is its output schema, produced the same way by
-  `mcp_output_schema<T: JsonSchema>()` and carried on
-  `McpToolDescriptor.output_schema` / MCP `outputSchema`. It is a sibling
-  of `mcp_tool_schema`, not a caller of it: the action-dispatch
-  normalization below is an argument-side pass. MCP requires an object
-  output root: object-only `anyOf` / `oneOf` unions gain `type: "object"`
-  without changing their branches. Non-object outputs and recursion fail
-  registration; use an empty struct instead of `()`. Host schemas use the
-  same rule; invalid host tools are omitted with a warning. The handler
-  refuses non-object `structuredContent` as an internal error.
+  `mcp_output_schema<T: JsonSchema>()` — under the **serialize** contract,
+  so a `#[serde(skip_serializing_if)]` field is optional — and carried on
+  `McpToolDescriptor.output_schema`. It is a sibling of `mcp_tool_schema`,
+  not a caller of it: the action-dispatch normalization below is an
+  argument-side pass. MCP requires an object output root: object-only
+  `anyOf` / `oneOf` unions gain `type: "object"` without changing their
+  branches. Non-object outputs and recursion fail registration; use an
+  empty struct instead of `()`. Host schemas use the same rule; invalid
+  host tools are omitted with a warning. The handler refuses non-object
+  `structuredContent` as an internal error.
+- MCP `outputSchema` is `mcp_wire_output_schema(output_schema)`: validation
+  keywords only — no `description`, `title`, `examples`, `default`. Model
+  APIs carry a tool's name, description and input schema, never its output
+  schema, so output prose is payload; the registry keeps the documented
+  schema for the REST OpenAPI document. Host tools are projected the same
+  way.
 - Tool outputs are *also* advertised by registered-schema-id reference
   (`McpToolDescriptor.produces_schema_ids`) and resolved against the
   `FlavorRegistry`. The two answer different questions: `output_schema` is
@@ -209,21 +222,31 @@ A dispatcher is any tool whose argument type is an internally-tagged enum
 `core_goal`, `core_fact`, `core_membership`, `core_transfer`, `core_upload` —
 and a flavor declares its own the same way, through `proxima_flavor!`.
 
-Their argument schema is normalized into a client-safe shape after
-`schemars` generation, because MCP clients reject an `inputSchema` whose root
-is not `type: object` or that carries a root `oneOf`/`anyOf`/`allOf`:
+Registration derives a typed per-action contract from the `Args` enum —
+`McpToolDescriptor.dispatcher_schema: Option<McpDispatcherSchema>`, one
+`McpActionSchema { action, description, argument_schema }` per variant —
+and renders the client-facing `inputSchema` from it, because MCP clients
+reject a root that is not `type: object` or carries `oneOf`/`anyOf`/`allOf`:
 
-- The per-variant `oneOf` is flattened into one object: a unioned top-level
-  `properties` map, an `action` string-enum discriminator, and
-  `additionalProperties: false`.
-- Per-action metadata is published under the `x-proxima-actions` schema
-  extension — variant-derived `description`, closed `$ref`-free
-  `argument_schema`, `allowed_fields`, `required_fields`, and
-  `field_descriptions` keyed by action. The `proxima://tools` catalog mirrors
-  the same `argument_schema` and field sets and, for flavor actions, the
-  variant description; substrate action prose remains the curated
-  `CoreActionMeta` description. Fields shared across actions carry a neutral
-  root description that points back to this metadata.
+```text
+{ type: object, required: [action], additionalProperties: false,
+  properties: {
+    action: { enum: [..], description: guide },   one line per action:
+                                                  "- set: <variant doc>
+                                                   Required: a, b. Optional: c."
+    <field>: as declared, when every action naming it agrees;
+             else nullability widened, prose "Depends on `action`:
+             - set, modify: <text>\n- mark_achieved: <text>" } }
+```
+
+- `McpDispatcherSchema::render(permitted)` is the one renderer: whole at
+  registration (`args_schema`), narrowed per caller by
+  `McpToolDescriptor::input_schema`, so a caller's enum, field set, guide
+  and per-action prose name only actions it may run.
+- Action prose is the variant's doc comment, substrate and flavor alike.
+- `proxima://tools` and the OpenAPI action operations read
+  `McpActionSchema.argument_schema` and its derived field sets.
+- Registration refuses a field two actions give incompatible schemas.
 - **Argument validation is strict and pre-decode**, for every dispatcher
   including a flavor's. Before an action's arguments are deserialized, any
   field outside that action's `allowed_fields`, or a missing
@@ -251,8 +274,8 @@ Three carriers, split authority:
 | Surface | What it is |
 |---|---|
 | `McpToolDescriptor.action_arg_specs` | THE enumeration and per-action behavior authority. Every scope/role gate, catalog, REST method gate, and OpenAPI operation reads its `effect`. |
-| `x-proxima-actions` | Derived from the `Args` type by the schema pass: variant description, action-only `argument_schema`, and allowed/required fields with their prose. |
-| `CoreActionMeta` | Substrate-only decoration: per-action scope key, curated description, and produced schema ids. Never an existence or behavior claim. |
+| `McpToolDescriptor.dispatcher_schema` | Derived from the `Args` type by the schema pass: per action, the variant description and the action-only `argument_schema` its field sets derive from. |
+| `CoreActionMeta` | Substrate-only decoration: per-action scope key and produced schema ids. Never an existence or behavior claim. |
 
 `FlavorRegistry::try_freeze` refuses a registry where the first two disagree
 (see [08 §Freeze Guards](08-core-and-flavors.md#freeze-guards)).
@@ -264,10 +287,10 @@ is the sole answer for substrate and flavor dispatchers; anything but
 read/write dispatchers therefore admit a viewer and `QUERY` only on the
 read-only action.
 
-A flavor action's enum-variant doc comment becomes
-`x-proxima-actions.<action>.description`; the tool catalog and OpenAPI action
-operation render that derived text. No second flavor description constant or
-runtime registry exists.
+An action's enum-variant doc comment becomes
+`McpActionSchema.description`; the action guide, the tool catalog and the
+OpenAPI action operation render that derived text. No second description
+constant or runtime registry exists.
 
 ## Goal Wake Config
 

@@ -55,8 +55,12 @@ pub struct EpisodeRememberItem {
     #[schemars(length(max = 20000), description = "Fact body, 1 to 20000 chars.")]
     pub body: String,
     #[serde(default)]
+    #[schemars(description = "Search tags, at most 16, 1 to 48 chars each; stored lowercase.")]
     pub tags: Vec<String>,
     #[serde(default)]
+    #[schemars(
+        description = "Optional stable note key, 1 to 180 chars, unique within this call. Same key and content returns the existing Fact."
+    )]
     pub idempotency_key: Option<String>,
 }
 
@@ -70,16 +74,24 @@ pub struct EpisodeDeriveItem {
     )]
     pub body: String,
     #[serde(default)]
+    #[schemars(description = "Search tags, at most 16, 1 to 48 chars each; stored lowercase.")]
     pub tags: Vec<String>,
     #[schemars(
-        description = "Source handles for the F→A / A→A proof. Intra-episode keys: `remember:N`."
+        description = "What the Abstraction is made from, at least one and all one kind: Facts (`F:<uuid>` or this call's 0-based `remember:N`) or Abstractions (`A:<uuid>`)."
     )]
     pub source_handles: Vec<String>,
     #[serde(default)]
+    #[schemars(description = "Author label, 1 to 120 chars. Omit for the host-supplied model id.")]
     pub model_id: Option<String>,
     #[serde(default)]
+    #[schemars(
+        description = "Optional key, 1 to 180 chars. Omit to key on model_id, title, body and tags."
+    )]
     pub idempotency_key: Option<String>,
     #[serde(default)]
+    #[schemars(
+        description = "Lexical language: a PostgreSQL text-search config (e.g. 'german'), an ISO 639 / BCP-47 code (e.g. 'de'), or 'auto'. Omit for the database default."
+    )]
     pub language: Option<String>,
 }
 
@@ -94,10 +106,11 @@ pub struct EpisodeStanceItem {
     #[schemars(range(max = 100), description = "Confidence 0..=100. Defaults to 80.")]
     pub confidence: u8,
     #[schemars(
-        description = "Subjects of the claim (`F:`/`A:`/`P:` or intra-episode `remember:N` / `derive` / `stance:N`)."
+        description = "1 to 64 memories the claim is about: `F:<uuid>`, `A:<uuid>` or `P:<uuid>`, or this call's `remember:N`, `derive` or an earlier `stance:N` (0-based)."
     )]
     pub subjects: Vec<String>,
     #[serde(default)]
+    #[schemars(description = "Author label, 1 to 120 chars. Omit for the host-supplied model id.")]
     pub model_id: Option<String>,
 }
 
@@ -107,17 +120,18 @@ pub struct EpisodeGoalItem {
     pub payload: GoalPayloadArgs,
     #[schemars(
         length(min = 1),
-        description = "Abstraction evidence (`A:` or intra-episode `derive`). Operator-authored Goals require Abstraction evidence only."
+        description = "Abstractions motivating the goal: `A:<uuid>` or this call's `derive`."
     )]
     pub evidence: Vec<String>,
     #[serde(default)]
     #[schemars(
-        description = "Assignment Perspective (`P:` or intra-episode `stance:N`). Omit to use caller Perspective context."
+        description = "Perspective the goal is assigned to: `P:<uuid>` or this call's `stance:N`. Required unless the host supplies a caller Perspective."
     )]
     pub target_perspective: Option<String>,
     #[serde(default)]
     pub wake: Option<GoalWakeArgs>,
     #[serde(default)]
+    #[schemars(description = "Optional replay key, 1 to 180 chars, unique within this call.")]
     pub idempotency_key: Option<String>,
 }
 
@@ -144,10 +158,13 @@ pub struct EpisodeCommitArgs {
     #[serde(default)]
     #[schemars(
         length(max = 32),
-        description = "Local keys to pin to the write-act (`remember:N`, `derive`, `stance:N`, `goal:N`). Only listed produced nodes pin this write-act."
+        description = "0-based keys of items to link to this call's write-act Fact: `remember:N`, `derive`, `stance:N`, `goal:N`. A bound item must be new; one that replays an existing write fails the call."
     )]
     pub bind: Vec<String>,
     #[serde(default)]
+    #[schemars(
+        description = "Memory space key from core_memory_spaces for every item. Omit for current owner."
+    )]
     pub space: Option<String>,
 }
 
@@ -190,7 +207,7 @@ struct EpisodeWrite<'a> {
 
 impl McpTool for EpisodeCommitTool {
     const NAME: &'static str = protocol_tool::CORE_EPISODE_COMMIT;
-    const DESCRIPTION: &'static str = "Commit one episode in a single transaction: remember Facts, optional derive, stance[], goal[], mint a write-act Fact, and pin only bind[] members to that act (`remember:N`, `derive`, `stance:N`, `goal:N`). Not a connect verb.";
+    const DESCRIPTION: &'static str = "Write several items in one transaction, in this order: Facts (remember), one Abstraction (derive), interpretation Perspectives (stance), Active Goals (goal); at least one item. Later items can name earlier ones by 0-based key (`remember:N`, `derive`, `stance:N`). Also writes a write-act Fact; items listed in bind reference it.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
     type Args = EpisodeCommitArgs;
     type Output = EpisodeCommitOutput;

@@ -17,11 +17,11 @@ use super::sql::{map_storage, resolve_repo_identifier};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeRegisterRepoArgs {
     #[schemars(
-        description = "Absolute or relative local filesystem path to a Git repository. The path is canonicalized before registration."
+        description = "Absolute or relative path on the Proxima server to a Git repository (a directory containing `.git`). Canonicalized before registration."
     )]
     pub path: String,
     #[schemars(
-        description = "Optional display name. Omit or null to use the repository directory name."
+        description = "Display name for a new registration; omit for the directory name. Ignored when the path is already registered."
     )]
     pub display_name: Option<String>,
     #[schemars(
@@ -71,7 +71,7 @@ pub struct CodeRegisterRepoOutput {
 pub struct CodeListReposArgs {
     #[schemars(
         range(min = 1),
-        description = "Max repos per page; values above 200 are clamped, 0 is rejected, default 50."
+        description = "Max repos per page; default 50, values above 200 are clamped."
     )]
     #[serde(default)]
     pub limit: Option<u32>,
@@ -505,7 +505,7 @@ pub struct CodeEraseRepoTool;
 
 impl Tool for CodeEraseRepoTool {
     const NAME: &'static str = "proxima-code_erase_repo";
-    const DESCRIPTION: &'static str = "Erase one registered repository and every Fact, Abstraction, edge, embedding and receipt derived from it. Irreversible; requires Admin on the owner and the canonical path as confirmation. Also the supported way to re-index a repository from scratch after a Proxima upgrade changes chunking.";
+    const DESCRIPTION: &'static str = "Irreversibly erase one registered repository and every memory ingested or derived from it (Facts, Abstractions, Perspectives, embeddings). Needs Admin and the canonical path as confirmation. Also the way to re-index from scratch after an upgrade changes chunking.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Destructive(Replay::NonIdempotent));
 
     type Args = CodeEraseRepoArgs;

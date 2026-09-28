@@ -37,12 +37,12 @@ impl AcceptanceVerifierKind {
 pub struct AcceptanceVerifierSpecV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(
-        description = "Optional repo-relative file path for file_exists, diff_scope, or reviewer context. Omit or null when not path-based."
+        description = "Repo-relative path; required for file_exists, then at most 1000 chars."
     )]
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(
-        description = "Optional command argv for command verification. Omit or null for non-command criteria."
+        description = "Command argv; required and non-empty for command, each argument 1 to 2000 chars."
     )]
     pub command: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,7 +60,7 @@ pub struct AcceptanceVerifierSpecV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AcceptanceCriterionV1 {
     #[schemars(
-        description = "Stable criterion key used by verifier evidence, for example `build` or `tests`."
+        description = "Criterion key, e.g. `build`: 1 to 80 ASCII letters, digits, `-` or `_`, unique within its list."
     )]
     pub key: String,
     #[schemars(

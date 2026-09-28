@@ -14,7 +14,6 @@ pub const CORE_TRANSFER_ACTIONS: &[CoreActionMeta] = &[CoreActionMeta {
     tool: CoreTransferTool::NAME,
     action: "transfer_to_owner",
     scope_key: protocol_action::CORE_TRANSFER_TO_OWNER,
-    description: "Transfer a memory's owner to another owner — a deliberate owner move, not a share or ACL flag. The series leaves the prior owner's view entirely. Requires admin on the source owner and group-manage on the destination. Goals do not transfer.",
     produces_schema_ids: &[],
 }];
 
@@ -24,21 +23,16 @@ pub struct CoreTransferTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum CoreTransferArgs {
+    /// Needs admin on the memory's current space and manage rights on the destination group.
     TransferToOwner(TransferToOwnerArgs),
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TransferToOwnerArgs {
-    /// Memory reference: `F:<uuid>`, `A:<uuid>`, or `P:<uuid>`. The
-    /// current owner (looked up from storage, not trusted from the
-    /// caller) must grant the caller write/manage (`Relation::Admin`)
-    /// authority. Goal references (`G:<uuid>`) are refused: goals do not
+    /// The memory to move: `F:<uuid>`, `A:<uuid>` or `P:<uuid>`. Goals do not
     /// transfer.
     pub entity: String,
-    /// Destination owner as an external owner key — the same
-    /// `group:<uuid>` spelling the `X-Proxima-Owner` header takes. Must
-    /// be a group the caller manages: group-manage is the receiving
-    /// side's consent.
+    /// Destination owner key, `group:<uuid>`: a group the caller manages.
     pub to_owner: String,
 }
 
@@ -49,7 +43,8 @@ pub struct TransferOutput {
 
 impl McpTool for CoreTransferTool {
     const NAME: &'static str = protocol_tool::CORE_TRANSFER;
-    const DESCRIPTION: &'static str = "Owner-transfer dispatcher — transfer_to_owner.";
+    const DESCRIPTION: &'static str =
+        "Move a memory into a group you manage. Not a share: it leaves its current space.";
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[McpActionArgSpec {
         action: "transfer_to_owner",
         allowed_fields: &["entity", "to_owner"],

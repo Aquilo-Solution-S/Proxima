@@ -3,7 +3,7 @@
 //! `McpToolDescriptor::action_arg_specs` is THE enumeration of a dispatcher's
 //! actions. Every seam reads it: the scope gate, argument validation,
 //! `proxima://tools`, and the REST action routes. A tool whose `Args` is an
-//! internally tagged enum has `x-proxima-actions` stamped on its schema, so
+//! internally tagged enum derives a dispatcher schema, so
 //! clients see a dispatcher — and one registered with an empty spec slice is
 //! gated whole, validated against every variant's fields merged together,
 //! lists no actions in `proxima://tools`, and serves no REST action route.
@@ -212,20 +212,21 @@ fn a_macro_registered_flavor_dispatcher_carries_its_action_specs() {
         .collect();
     assert_eq!(declared, ["look", "touch"]);
 
-    let derived: Vec<&String> = descriptor
-        .args_schema
-        .get("x-proxima-actions")
-        .and_then(serde_json::Value::as_object)
-        .expect("the schema pass stamps the extension")
-        .keys()
+    let derived: Vec<&str> = descriptor
+        .dispatcher_schema
+        .as_ref()
+        .expect("the schema pass derives the dispatcher")
+        .actions
+        .iter()
+        .map(|action| action.action.as_str())
         .collect();
     assert_eq!(derived, ["look", "touch"]);
     assert_eq!(
-        descriptor.resolved_action_description("look"),
+        descriptor.action_description("look"),
         Some("Inspect one thing without changing it."),
     );
     assert_eq!(
-        descriptor.resolved_action_description("touch"),
+        descriptor.action_description("touch"),
         Some("Change one thing and optionally record a note."),
     );
 }

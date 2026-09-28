@@ -72,10 +72,9 @@ pub async fn list_substrate_tools(
 ///
 /// Driven by the descriptor's `action_arg_specs`, which is THE enumeration
 /// of a dispatcher's actions. `core_action_meta` is decoration a substrate
-/// action gets and a flavor action does not — scope key, curated prose, and
-/// produced schema ids — so it is looked up per already-known action rather
-/// than iterated. Flavor prose comes from the enum-variant description derived
-/// into the tool schema. Driving the loop from `all_core_actions()`
+/// action gets and a flavor action does not — scope key and produced schema
+/// ids — so it is looked up per already-known action rather than iterated.
+/// Every action's prose is its enum-variant doc comment. Driving the loop from `all_core_actions()`
 /// meant a flavor dispatcher listed no actions at all in `proxima://tools`:
 /// present in the catalog, described as if it were flat.
 pub(super) fn substrate_tool_actions(
@@ -94,7 +93,7 @@ pub(super) fn substrate_tool_actions(
                     |meta| meta.scope_key.to_string(),
                 ),
                 description: desc
-                    .resolved_action_description(spec.action)
+                    .action_description(spec.action)
                     .unwrap_or_default()
                     .to_string(),
                 produces_schema_ids: meta
@@ -105,13 +104,9 @@ pub(super) fn substrate_tool_actions(
                     .collect(),
                 annotations: McpToolAnnotations::registered(spec.effect),
                 argument_schema: desc
-                    .args_schema
-                    .get("x-proxima-actions")
-                    .and_then(serde_json::Value::as_object)
-                    .and_then(|actions| actions.get(spec.action))
-                    .and_then(|metadata| metadata.get("argument_schema"))
+                    .action_argument_schema(spec.action)
                     .cloned()
-                    .expect("frozen dispatcher action must carry argument_schema metadata"),
+                    .expect("try_freeze matched every spec to a derived action schema"),
                 allowed_fields: spec
                     .allowed_fields
                     .iter()
@@ -237,7 +232,9 @@ mod tests {
             .expect("core_goal descriptor");
         assert_eq!(
             decompose.argument_schema,
-            descriptor.args_schema["x-proxima-actions"]["decompose"]["argument_schema"]
+            *descriptor
+                .action_argument_schema("decompose")
+                .expect("decompose argument schema")
         );
     }
 }

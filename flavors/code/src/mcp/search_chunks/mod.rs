@@ -43,8 +43,7 @@ use super::sql::{map_storage, resolve_repo_identifier};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ChunkSearchMode {
-    /// Full-text bands plus the exact path/substring arms. Never needs an
-    /// embedding client.
+    /// Full-text plus exact path/substring match; no embeddings needed.
     Lexical,
     /// Nearest neighbours of the query embedding only.
     Semantic,
@@ -62,16 +61,16 @@ pub struct CodeSearchChunksArgs {
     pub query: String,
     #[serde(default)]
     #[schemars(
-        description = "Ranking mode. `semantic` (embedding-only) for a question describing behaviour; `lexical` (full-text only) for an exact identifier, string or path; `hybrid` (default) fuses both. Without a configured embedding model `hybrid` falls back to lexical and reports degraded_to_lexical=true, and `semantic` is rejected."
+        description = "hybrid (default) fuses both. Use lexical for exact identifiers, strings or paths; semantic for questions describing behaviour. semantic fails when embeddings can't run; hybrid then ranks lexically and sets degraded_to_lexical, as it does when nothing searched is embedded yet."
     )]
     pub mode: ChunkSearchMode,
     #[schemars(
-        description = "Hybrid fusion weight on the semantic ranking in 0..=1; the lexical ranking gets the complement, and 0.5 weighs them alike. A chunk whose path or text contains the query ranks first at any weight. Omit or null for the deployment's weight for code search, else 0.5. Only valid with mode=hybrid."
+        description = "Hybrid weight of the semantic ranking in 0..=1; lexical gets the rest. A chunk whose path or text contains the query ranks first at any weight. Omit for the deployment's code-search weight, else 0.5. Only with mode=hybrid."
     )]
     pub semantic_weight: Option<f32>,
     #[schemars(
         range(min = 1),
-        description = "Optional maximum number of chunk matches. Omit or null for 12; values above 50 are clamped, and 0 is rejected."
+        description = "Max matches; default 12, values above 50 are clamped."
     )]
     pub limit: Option<u32>,
     #[serde(default)]
@@ -80,14 +79,16 @@ pub struct CodeSearchChunksArgs {
     )]
     pub cursor: Option<String>,
     #[schemars(
-        description = "Optional repository filter: an `R…` repo_handle, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead. Omit or null to search all visible repos."
+        description = "Optional repository filter: an `R:<uuid>` repo_handle, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead. Omit or null to search all visible repos."
     )]
     pub repo_handle: Option<String>,
     #[schemars(
         description = "Optional language filter, one of `rust`, `typescript`, `tsx`, `javascript`, `python`, `go`, `markdown`, `toml`, `json`, `yaml`, `sql`, `text`; `tsx` files are not `typescript`. Any other value is rejected. Omit or null for all languages."
     )]
     pub language: Option<String>,
-    #[schemars(description = "Optional chunk type filter. Omit or null for all chunk types.")]
+    #[schemars(
+        description = "`function` or `class` (also struct/enum/trait/impl/interface) for a chunk that is one definition; `block` for small definitions merged into one chunk; `file` for plain line windows. Omit when looking for a symbol by name."
+    )]
     pub chunk_type: Option<String>,
     #[serde(default)]
     #[schemars(
@@ -95,14 +96,12 @@ pub struct CodeSearchChunksArgs {
     )]
     pub file_class: Option<FileClass>,
     #[serde(default = "default_include_calls")]
-    #[schemars(
-        description = "Whether to include neighbouring call connections, in both directions. Defaults to true."
-    )]
+    #[schemars(description = "Include callers and callees of each match, with call sites.")]
     pub include_calls: bool,
     #[serde(default)]
     #[schemars(
         range(min = 1),
-        description = "Maximum characters of chunk text per match. Omit or null for 2000; values above 8000 are clamped, and 0 is rejected. A match whose text was cut carries snippet_truncated=true — read the whole chunk with proxima-code_open_file_revision."
+        description = "Chunk text chars per match; default 2000, values above 8000 are clamped. A cut match has snippet_truncated=true; read the rest with proxima-code_open_file_revision."
     )]
     pub snippet_max_chars: Option<usize>,
     #[serde(default)]
@@ -112,7 +111,7 @@ pub struct CodeSearchChunksArgs {
     pub context_lines: Option<u32>,
     #[serde(default)]
     #[schemars(
-        description = "Add diagnostic fields to each match: language, chunk_index, byte_range, match_kind, matched_excerpt, lexical_score and similarity_score. Defaults to false."
+        description = "Add language, chunk index, byte range, match details, and per-arm scores to each match."
     )]
     pub verbose: bool,
 }
@@ -382,7 +381,7 @@ pub struct CodeSearchChunksTool;
 
 impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
-    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: semantic (embedding-only) suits a question describing behaviour, lexical (full-text only) an exact identifier, string or path, and hybrid (default) fuses both; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Pages of at most 50: has_more plus an opaque next_cursor passed back as cursor with the same query, mode, and filters. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut, and matched_line, the line that best matches the query when one does; context_lines returns the numbered lines around it instead, and verbose adds per-arm scores and byte ranges. Supports language/chunk_type/file_class filters and optional call-neighbour connections with their call sites. Generated, vendored and lockfile chunks stay searchable, carry file_class, and rank after every source match in hybrid mode unless file_class asks for them. An unfiltered hybrid search takes semantic neighbours for source and for the other classes as two sets, each up to the candidate budget, so a non-source vector cannot take a source slot.";
+    const DESCRIPTION: &'static str = "Search indexed code (latest revision) by identifier, path, string or plain-English question. Each match has chunk text, matched_line and optional call neighbours. In hybrid mode, generated, vendored and lockfile code ranks after source unless file_class selects it.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
 
     type Args = CodeSearchChunksArgs;

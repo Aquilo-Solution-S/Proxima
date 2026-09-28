@@ -34,7 +34,7 @@ pub struct MemorySpacesTool;
 
 impl McpTool for MemorySpacesTool {
     const NAME: &'static str = protocol_tool::CORE_MEMORY_SPACES;
-    const DESCRIPTION: &'static str = "List memory spaces this caller may use. Space keys are selectors only; every use is re-authorized.";
+    const DESCRIPTION: &'static str = "List the memory spaces you can use and their keys (`current`, `personal:<uuid>`, `group:<uuid>`) for other tools' space/spaces arguments.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = MemorySpacesArgs;
     type Output = MemorySpacesOutput;

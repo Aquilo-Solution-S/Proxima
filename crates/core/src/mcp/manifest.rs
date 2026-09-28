@@ -146,7 +146,6 @@ pub struct CoreActionMeta {
     pub tool: &'static str,
     pub action: &'static str,
     pub scope_key: &'static str,
-    pub description: &'static str,
     pub produces_schema_ids: &'static [&'static str],
 }
 

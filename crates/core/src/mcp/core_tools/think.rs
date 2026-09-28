@@ -22,17 +22,27 @@ pub struct ThinkTool;
 pub struct ThinkArgs {
     #[schemars(
         length(min = 1, max = 8),
-        description = "Seed handles (`F:`/`A:`/`P:`). Ancestors/descendants walk the first seed; siblings use all seeds."
+        description = "Start memories: `F:<uuid>`, `A:<uuid>` or `P:<uuid>`. Every direction walks from all seeds."
     )]
     pub seeds: Vec<String>,
     #[serde(default)]
+    #[schemars(
+        description = "ancestors (default): what the seeds were made from or are about, recursively. descendants: memories made from the seeds, recursively. episode_siblings: other memories that reference what a seed references, e.g. items bound in one core_episode_commit."
+    )]
     pub direction: ThinkDirection,
     #[serde(default = "default_depth")]
-    #[schemars(range(min = 1), description = "Hop depth 1..=8, default 3.")]
+    #[schemars(
+        range(min = 1),
+        description = "Hops to walk; values above 8 are clamped. Ignored for episode_siblings."
+    )]
     pub depth: u32,
     #[serde(default = "default_limit")]
+    #[schemars(description = "Visits per page, at least 1; values above 200 are clamped.")]
     pub limit: u32,
     #[serde(default)]
+    #[schemars(
+        description = "next_cursor from the previous page; keep seeds, direction and depth unchanged."
+    )]
     pub cursor: Option<String>,
 }
 
@@ -71,7 +81,7 @@ pub struct ThinkVisit {
 
 impl McpTool for ThinkTool {
     const NAME: &'static str = protocol_tool::CORE_THINK;
-    const DESCRIPTION: &'static str = "Paged graph walk from seeds. Directions: ancestors, descendants, episode_siblings. No ANN. Hydrate bodies separately via proxima://memory/{id}. Cursor pages, not a live stream.";
+    const DESCRIPTION: &'static str = "Walk provenance links from seed memories and return sketches, page by page. Not a search. Read full bodies via proxima://memory/{id}.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = ThinkArgs;
     type Output = ThinkOutput;

@@ -18,8 +18,7 @@ pub struct CodeEmitExecutionRequestTool;
 
 impl Tool for CodeEmitExecutionRequestTool {
     const NAME: &'static str = "proxima-code_emit_execution_request";
-    const DESCRIPTION: &'static str =
-        "Emit a repo-scoped proxima-code/work-requested-v1 Fact for an Active Goal.";
+    const DESCRIPTION: &'static str = "Record a work request (proxima-code/work-requested-v1 Fact) for one repo, with optional acceptance criteria. The activated Goal must be Active and assigned to the host-supplied caller Perspective.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[ExecutionRequestV1::SCHEMA_ID];
 

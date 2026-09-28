@@ -19,7 +19,7 @@ pub struct RecordUtteranceArgs {
     #[schemars(description = "Who produced the utterance: `user` or `agent`.")]
     pub speaker: Speaker,
     #[schemars(
-        description = "Stable id grouping the utterances of one conversation. Leading and trailing whitespace is removed."
+        description = "Non-empty stable id grouping the utterances of one conversation; surrounding whitespace is removed."
     )]
     pub conversation_id: String,
     #[schemars(
@@ -28,7 +28,7 @@ pub struct RecordUtteranceArgs {
     )]
     pub text: String,
     #[schemars(
-        description = "Optional stable idempotency key; replaying the same key is a no-op, not a duplicate."
+        description = "Optional key, 1 to 180 chars. Resending the same key with the same speaker, conversation_id and text returns the existing Fact; changed content under the same key writes a new Fact."
     )]
     pub idempotency_key: Option<String>,
     #[serde(default)]

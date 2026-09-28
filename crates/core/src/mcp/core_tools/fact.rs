@@ -17,14 +17,12 @@ pub const CORE_FACT_ACTIONS: &[CoreActionMeta] = &[
         tool: CoreFactTool::NAME,
         action: "citation_of_fact",
         scope_key: protocol_action::CORE_FACT_CITATION_OF_FACT,
-        description: "Return the owner-scoped citation mapping and cited object for one Fact.",
         produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreFactTool::NAME,
         action: "facts_citing_object",
         scope_key: protocol_action::CORE_FACT_FACTS_CITING_OBJECT,
-        description: "Return owner-scoped Facts whose citation mapping points at a cited object.",
         produces_schema_ids: &[],
     },
 ];
@@ -35,7 +33,9 @@ pub struct CoreFactTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum CoreFactArgs {
+    /// Return one Fact's citation, or citation=null if none.
     CitationOfFact(CitationOfFactArgs),
+    /// Return citing Facts newest first.
     FactsCitingObject(FactsCitingObjectArgs),
 }
 
@@ -48,8 +48,8 @@ pub enum CoreFactOutput {
 
 impl McpTool for CoreFactTool {
     const NAME: &'static str = protocol_tool::CORE_FACT;
-    const DESCRIPTION: &'static str =
-        "Fact/citation dispatcher — citation_of_fact/facts_citing_object.";
+    const DESCRIPTION: &'static str = "Read citations: the cited object behind one Fact, or \
+         every Fact that cites one object.";
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "citation_of_fact",

@@ -31,20 +31,17 @@ pub struct InterpretArgs {
     )]
     pub claim: String,
     #[serde(default = "default_confidence")]
-    #[schemars(
-        range(max = 100),
-        description = "Confidence in the claim, 0 to 100. Defaults to 80."
-    )]
+    #[schemars(range(max = 100), description = "Confidence in the claim.")]
     pub confidence: u8,
     #[schemars(
         length(max = 64),
-        description = "Memory handles the claim is about (`F...`, `A...`, or `P...`), at most 64. Any layer may be a subject: the interpretation is the source, so layering is satisfied by construction."
+        description = "At least one memory the claim is about, of any layer: `F:<uuid>`, `A:<uuid>` or `P:<uuid>`."
     )]
     pub subjects: Vec<String>,
     #[serde(default)]
     #[schemars(
         length(max = 120),
-        description = "Optional model/agent label recorded as operator provenance. Defaults to the reserved `model_id` request-context field."
+        description = "Label of the model/agent authoring this. Omit for the host-supplied model id."
     )]
     pub model_id: Option<String>,
     #[serde(default)]
@@ -69,8 +66,9 @@ pub struct InterpretTool;
 
 impl McpTool for InterpretTool {
     const NAME: &'static str = protocol_tool::CORE_INTERPRET;
-    const DESCRIPTION: &'static str =
-        "Author an interpretation Perspective: a claim about existing memories, with a confidence.";
+    const DESCRIPTION: &'static str = "Author a Perspective that interprets memories of any \
+         layer: a claim with a confidence that points at its subjects rather than being made from \
+         them. For a stance made from Abstractions, use core_derive kind=Perspective.";
     // Idempotent by content: the interpretation's memory id is folded from
     // the claim, so re-asserting it lands on one memory.
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::Idempotent));

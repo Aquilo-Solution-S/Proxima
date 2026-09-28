@@ -6,7 +6,7 @@ use crate::payloads::AcceptanceCriterionV1;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitExecutionRequestArgs {
     #[schemars(
-        description = "Repo handle from code search/list context, typically `R...` in wake output. This selects the repo for the execution request."
+        description = "Repository the work is for: `R:<uuid>` from proxima-code_list_repos or search output."
     )]
     pub repo_handle: String,
     #[schemars(
@@ -21,17 +21,15 @@ pub struct CodeEmitExecutionRequestArgs {
     pub instructions: String,
     #[schemars(
         length(max = 240),
-        description = "Stable idempotency key for this requested work slice, 1 to 240 chars. Reuse only for exact replay."
+        description = "Stable key for this request; reuse only for an exact replay."
     )]
     pub idempotency_key: String,
     #[schemars(
-        description = "`F...` goal-activated Fact memory handle for the Active Goal that caused this planner wake. This is not a `G...` Goal handle."
+        description = "`F:<uuid>` goal-activated Fact for the Active Goal that caused this planner wake (not a `G:<uuid>` Goal handle). Recorded as the request's origin."
     )]
     pub goal_activated_memory: String,
     #[serde(default)]
-    #[schemars(
-        description = "Optional additional Fact memory handles (`F...`) used as evidence for the execution request. Use `[]` when no separate Fact evidence is needed; never Goal, Abstraction, or Perspective handles."
-    )]
+    #[schemars(description = "Extra evidence Facts (`F:<uuid>` only).")]
     pub evidence: Vec<String>,
     #[serde(default)]
     #[schemars(
@@ -74,7 +72,7 @@ pub struct ExecutionPlanItemArgs {
     #[serde(default)]
     #[schemars(description = "Plan item kind. Defaults to `implementation`.")]
     pub kind: ExecutionPlanItemKind,
-    #[schemars(description = "Unique item key inside this plan, 1 to 80 ASCII chars.")]
+    #[schemars(description = "Unique within the plan: 1 to 80 ASCII letters, digits, `-` or `_`.")]
     pub key: String,
     #[schemars(description = "Short human-readable execution-request title, 1 to 240 chars.")]
     pub title: String,
@@ -86,22 +84,22 @@ pub struct ExecutionPlanItemArgs {
     #[schemars(description = "Item keys that must complete before this item can dispatch.")]
     pub depends_on: Vec<String>,
     #[serde(default)]
-    #[schemars(description = "Optional acceptance criteria for this work slice.")]
+    #[schemars(description = "kind=implementation only.")]
     pub acceptance_criteria: Vec<AcceptanceCriterionV1>,
     #[serde(default)]
-    #[schemars(description = "Required criteria for a `test` item.")]
+    #[schemars(
+        description = "kind=test only, and then required: at least one with required=true."
+    )]
     pub test_criteria: Vec<AcceptanceCriterionV1>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitExecutionPlanArgs {
-    #[schemars(description = "Repo handle from code search/list context.")]
+    #[schemars(description = "`R:<uuid>` repo handle from code search or list output.")]
     pub repo_handle: String,
-    #[schemars(description = "`F...` goal-activated Fact memory handle for the Active Goal.")]
+    #[schemars(description = "`F:<uuid>` goal-activated Fact for the Active Goal.")]
     pub goal_activated_memory: String,
-    #[schemars(
-        description = "`A...` Abstraction proof input for the A→A execution-plan derivation. This should be the planning context/synthesis Abstraction grounded in the active Goal."
-    )]
+    #[schemars(description = "`A:<uuid>` of the planning Abstraction this plan is derived from.")]
     pub plan_source_memory: String,
     #[serde(default)]
     #[schemars(
@@ -112,12 +110,10 @@ pub struct CodeEmitExecutionPlanArgs {
     #[schemars(description = "Optional concise summary of the plan synthesis.")]
     pub plan_summary: Option<String>,
     #[serde(default)]
-    #[schemars(
-        description = "Optional additional Fact memory handles used as evidence for every item."
-    )]
+    #[schemars(description = "Extra evidence Facts (`F:<uuid>` only) for every item.")]
     pub evidence: Vec<String>,
     #[schemars(
-        description = "Ordered implementation/test items. Dependencies may reference only earlier item keys."
+        description = "1 to 20 items, in order; depends_on may name only earlier item keys."
     )]
     pub items: Vec<ExecutionPlanItemArgs>,
 }
@@ -143,13 +139,9 @@ pub struct CodeEmitExecutionPlanOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeRetryExecutionRequestArgs {
-    #[schemars(
-        description = "`F...` memory handle for the prior proxima-code/work-requested-v1 Fact being retried."
-    )]
+    #[schemars(description = "`F:<uuid>` of the prior proxima-code/work-requested-v1 Fact.")]
     pub prior_execution_request: String,
-    #[schemars(
-        description = "`P...` Perspective memory handle for the worker context that should receive the retry assignment."
-    )]
+    #[schemars(description = "`P:<uuid>` of the worker Perspective receiving the retry.")]
     pub target_perspective: String,
     #[schemars(
         description = "Stable idempotency key for this retry request. Reuse only for exact replay."
@@ -162,13 +154,11 @@ pub struct CodeRetryExecutionRequestArgs {
     pub title: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional instructions to append to the prior request. Omit or null when the retry needs no extra guidance."
+        description = "Text appended to the prior instructions; the combined instructions must stay within 20000 chars."
     )]
     pub instructions_append: Option<String>,
     #[serde(default)]
-    #[schemars(
-        description = "Optional additional Fact memory handles (`F...`) for retry evidence. Use `[]` when no extra evidence is needed; never Goal, Abstraction, or Perspective handles."
-    )]
+    #[schemars(description = "Extra evidence Facts (`F:<uuid>` only).")]
     pub evidence: Vec<String>,
 }
 

@@ -166,8 +166,9 @@ ones (`core_goal`, `core_fact`, `core_membership`, `core_transfer`,
 must be `action`: this surface injects `"action"` into the body on the
 narrowed route, and `try_freeze` refuses a dispatcher tagged on anything else
 (see [12 §Action-Dispatch Tools](12-tool-manifest.md#action-dispatch-tools)).
-Dispatchers advertise a flattened schema with an `action` discriminator and
-per-action field sets under `x-proxima-actions`. REST exposes both forms:
+Dispatchers advertise a flat schema with an `action` discriminator, rendered
+from the typed per-action contract (`McpDispatcherSchema`). REST exposes both
+forms:
 
 - `POST /v1/tools/core_goal` — body carries `action`, as on MCP.
 - `POST /v1/tools/core_goal/set` — the adapter injects
@@ -175,7 +176,7 @@ per-action field sets under `x-proxima-actions`. REST exposes both forms:
 
 The narrowed form is the better REST citizen and the better OpenAPI
 operation: its request schema is the generated
-`x-proxima-actions.set.argument_schema`. Generation removes only the
+`McpActionSchema.argument_schema` of `set`. Generation removes only the
 action-root discriminator, closes that root, and hoists its root
 conditional/combinator field names; nested property subtrees remain
 unchanged. OpenAPI consumes that generated value directly and removes only
@@ -197,9 +198,9 @@ Two failure modes must be explicit rather than silent:
 There is no tool-level or `CoreActionMeta` fallback; anything but
 `ReadOnly` is write/`POST`. The same spec drives the
 owner-role gate, scope-filtered catalogs, REST method gate, and OpenAPI
-operation. A flavor enum variant's doc comment is derived into
-`x-proxima-actions.<action>.description` and rendered by the catalog and
-OpenAPI action operation.
+operation. An enum variant's doc comment is derived into
+`McpActionSchema.description` and rendered by the action guide, the catalog
+and the OpenAPI action operation.
 
 ## Call Context
 
@@ -393,9 +394,9 @@ dialect, so the newer floor costs nothing in schema fidelity.
 | path per resource | `ResourceContract.uri_template` |
 | `post` / `query` operations | `query` when the effect is `ReadOnly`: whole tool, the join over the caller-visible actions; action route, `action_is_read_only()` |
 | `operationId` | structurally tagged `tool` / `action` / `resource` target with byte-length-prefixed name components and an explicit method tag |
-| `summary` / `description` | `McpToolDescriptor.description`; substrate action description from `CoreActionMeta`, flavor action description from `x-proxima-actions.<action>.description` |
-| request schema | `args_schema` for the whole tool; `x-proxima-actions.<action>.argument_schema` for an action route |
-| success response schema | `output_schema`, derived from the tool's Rust `Output` type |
+| `summary` / `description` | `McpToolDescriptor.description`; action description from `McpActionSchema.description` (the variant doc comment) |
+| request schema | `args_schema` narrowed to the caller's actions for the whole tool; `McpActionSchema.argument_schema` for an action route |
+| success response schema | `output_schema`, derived from the tool's Rust `Output` type — documented, unlike MCP `outputSchema` |
 | `x-proxima-read-only`, `-destructive`, `-idempotent` | projected from `ToolEffect`: whole-tool operation the join over the caller-visible actions; action route `McpActionArgSpec.effect` |
 | security scheme | HTTP bearer |
 

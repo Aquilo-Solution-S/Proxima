@@ -59,7 +59,7 @@ fn host_tool(output_schema: Value) -> McpHostTool {
 }
 
 #[test]
-fn host_object_union_metadata_has_object_type_and_retains_its_branches() {
+fn host_object_union_metadata_has_object_type_and_retains_its_branches_without_prose() {
     for union in ["oneOf", "anyOf"] {
         let schema = json!({
             "title": "HostUnion",
@@ -71,7 +71,11 @@ fn host_object_union_metadata_has_object_type_and_retains_its_branches() {
         let metadata = host_tool_metadata(host_tool(schema.clone())).expect("object union listed");
         let metadata = serde_json::to_value(metadata).unwrap();
         assert_eq!(metadata["outputSchema"]["type"], "object");
-        assert_eq!(metadata["outputSchema"]["title"], schema["title"]);
+        // The wire output schema is structural: annotation keywords go.
+        assert!(
+            metadata["outputSchema"].get("title").is_none(),
+            "{metadata}"
+        );
         assert_eq!(metadata["outputSchema"][union], schema[union]);
     }
 }

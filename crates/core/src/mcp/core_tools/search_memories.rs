@@ -118,26 +118,28 @@ pub struct SearchMemoriesArgs {
     )]
     pub query: String,
     #[serde(default = "default_mode")]
-    #[schemars(description = "Search mode: lexical, semantic, or hybrid. Defaults to hybrid.")]
+    #[schemars(
+        description = "Default hybrid. semantic fails without embeddings; hybrid falls back to lexical per space and sets degraded_to_lexical."
+    )]
     pub mode: SearchMemoriesMode,
     #[serde(default = "default_limit")]
     #[schemars(
         range(min = 1),
-        description = "Maximum number of memories to return. Defaults to 8; values above 50 are clamped, and 0 is rejected."
+        description = "Max results per page; values above 50 are clamped."
     )]
     pub limit: u32,
     #[serde(default = "default_supersession")]
     #[schemars(
-        description = "Supersession filter: heads_only returns only current heads by default; all includes superseded history."
+        description = "heads_only (default): latest version of each memory only. all: include older versions."
     )]
     pub supersession: SearchMemoriesSupersession,
     #[serde(default)]
-    #[schemars(
-        description = "Optional memory kind filter: Fact, Abstraction, or Perspective. Omit or null for all kinds."
-    )]
+    #[schemars(description = "Omit for all kinds.")]
     pub kind: Option<SearchMemoriesKind>,
     #[serde(default)]
-    #[schemars(description = "Optional schema_id filter. Omit or null for all schemas.")]
+    #[schemars(
+        description = "Only this schema, e.g. `core/agent-note-v1`; ids via `proxima://schemas`."
+    )]
     pub schema_id: Option<String>,
     #[serde(default)]
     #[schemars(
@@ -146,7 +148,7 @@ pub struct SearchMemoriesArgs {
     )]
     pub tags: Vec<String>,
     #[serde(default)]
-    #[schemars(description = "Tag filter mode: any or all. Defaults to any.")]
+    #[schemars(description = "Whether a result needs any or all of `tags`.")]
     pub tag_match: TagMatch,
     #[serde(default)]
     #[schemars(description = "Optional inclusive lower created_at bound as an RFC3339 timestamp.")]
@@ -155,7 +157,7 @@ pub struct SearchMemoriesArgs {
     #[schemars(description = "Optional inclusive upper created_at bound as an RFC3339 timestamp.")]
     pub until: Option<String>,
     #[serde(default)]
-    #[schemars(description = "Result ordering: relevance or recency. Defaults to relevance.")]
+    #[schemars(description = "recency = newest first.")]
     pub order: SearchOrder,
     #[serde(default)]
     #[schemars(
@@ -169,16 +171,16 @@ pub struct SearchMemoriesArgs {
     pub semantic_weight: Option<f32>,
     #[serde(default = "default_include_neighbor_edges")]
     #[schemars(
-        description = "Include neighbor edges touching matched memories. Defaults to false."
+        description = "Also return origin/reference links (source, target, kind) touching the results."
     )]
     pub include_neighbor_edges: bool,
     #[serde(default)]
-    #[schemars(description = "Include hydrated body text in each result. Defaults to false.")]
+    #[schemars(description = "Include each result's body (see body_max_chars).")]
     pub include_body: bool,
     #[serde(default)]
     #[schemars(
         range(min = 1),
-        description = "Optional max character count for hydrated body text, at least 1; values above 8000 are clamped to 8000 (also the default). Applies only when include_body=true. When a body is cut to this cap the result carries body_truncated=true; fetch the full text via proxima://memory/{id}."
+        description = "Body character cap for include_body; default 8000, larger values are clamped. A cut body sets body_truncated=true; read the full text via proxima://memory/{id}."
     )]
     pub body_max_chars: Option<usize>,
     #[serde(default)]
@@ -243,7 +245,7 @@ pub struct SearchMemoryOutput {
 
 impl McpTool for SearchMemoriesTool {
     const NAME: &'static str = protocol_tool::CORE_SEARCH_MEMORIES;
-    const DESCRIPTION: &'static str = "Search owner-scoped memories by lexical, semantic, or hybrid ranking. Defaults to current heads only; pass supersession=all for full history. Set include_body=true to hydrate body text in the same batched read; a body cut to body_max_chars is flagged with body_truncated=true. Drop weak hits with min_score, tune hybrid fusion with semantic_weight, and page past the 50-result cap by passing next_cursor back as cursor.";
+    const DESCRIPTION: &'static str = "Search memories by text, with kind/schema/tag/time/space filters. Latest versions only unless supersession=all; pages of at most 50.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = SearchMemoriesArgs;
     type Output = SearchMemoriesOutput;
