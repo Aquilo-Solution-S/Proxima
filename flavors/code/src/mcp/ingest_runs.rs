@@ -13,6 +13,7 @@
 //! `RUN_STALE_AFTER` (5 min) lost its process, reads as failed, and is retired by
 //! the next start.
 
+use proxima_core::mcp::{Replay, ToolEffect};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -285,8 +286,7 @@ pub struct CodeStartIngestHeadSnapshotTool;
 impl Tool for CodeStartIngestHeadSnapshotTool {
     const NAME: &'static str = "proxima-code_start_ingest_head_snapshot";
     const DESCRIPTION: &'static str = "Start ingesting the current HEAD tree of one registered local Git repository in the background and return its ingestion run at once. Poll proxima-code_get_ingest_run until status is succeeded or failed. When a run of this repository is already active, returns that run instead of starting another.";
-    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> =
-        Some(super::WRITE_IDEMPOTENT);
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::Idempotent));
 
     type Args = CodeStartIngestHeadSnapshotArgs;
     type Output = CodeStartIngestHeadSnapshotOutput;
@@ -339,7 +339,7 @@ pub struct CodeGetIngestRunTool;
 impl Tool for CodeGetIngestRunTool {
     const NAME: &'static str = "proxima-code_get_ingest_run";
     const DESCRIPTION: &'static str = "Read one ingestion run: status (queued, running, succeeded, failed), stage, counters, error and timestamps. A succeeded run carries files_by_class and chunks_by_class, the same per-class counts as the ingest report; a run that has not succeeded reports zeros. Name the run by run_id, or a repository by repo_handle for its most recent run.";
-    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
 
     type Args = CodeGetIngestRunArgs;
     type Output = CodeGetIngestRunOutput;

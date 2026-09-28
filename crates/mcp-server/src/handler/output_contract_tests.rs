@@ -54,7 +54,7 @@ fn host_tool(output_schema: Value) -> McpHostTool {
         description: "Output contract fixture".into(),
         args_schema: json!({"type": "object"}),
         output_schema,
-        annotations: proxima_core::McpToolAnnotations::new().read_only(true),
+        effect: proxima_core::ToolEffect::ReadOnly,
     }
 }
 

@@ -690,7 +690,7 @@ mod tests {
     use crate::auth::{AuthError, Credentials};
     use crate::error::ErrorCode;
     use crate::mcp::{
-        McpActionArgSpec, McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolError,
+        McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError, Replay, ToolEffect,
     };
     use crate::query::QueryRequest;
     use crate::{FactPayload, FlavorRegistry, GroupId, PayloadKeyBuilder, Relation};
@@ -709,8 +709,7 @@ mod tests {
     impl McpTool for WorkerTool {
         const NAME: &'static str = TOOL_NAME;
         const DESCRIPTION: &'static str = "delegation test worker";
-        const ANNOTATIONS: Option<McpToolAnnotations> =
-            Some(McpToolAnnotations::new().read_only(false).open_world(false));
+        const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
         type Args = WorkerArgs;
         type Output = WorkerOutput;
 
@@ -739,14 +738,14 @@ mod tests {
                 action: "run",
                 allowed_fields: &[],
                 required_fields: &[],
-                annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+                effect: ToolEffect::Additive(Replay::NonIdempotent),
                 audience: McpToolAudience::Shared,
             },
             McpActionArgSpec {
                 action: "other",
                 allowed_fields: &[],
                 required_fields: &[],
-                annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+                effect: ToolEffect::Additive(Replay::NonIdempotent),
                 audience: McpToolAudience::Shared,
             },
         ];

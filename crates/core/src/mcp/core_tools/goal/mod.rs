@@ -5,6 +5,7 @@ use crate::engine::{
 use crate::mcp::{
     CoreActionMeta, McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError,
 };
+use crate::mcp::{Replay, ToolEffect};
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::tool::validate_trimmed_len;
 use crate::verbs::goal_write::{
@@ -16,8 +17,6 @@ use crate::verbs::schema::PayloadKind;
 use crate::{InputContractId, ModelId, OperatorId, PromptVersion, SchemaId, SchemaVersion, ToolId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-use super::{WRITE_IDEMPOTENT, WRITE_NON_IDEMPOTENT};
 
 const MAX_CHILD_GOALS: usize = 50;
 const MCP_OPERATOR_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
@@ -191,14 +190,14 @@ impl McpTool for CoreGoalTool {
                 "idempotency_key",
             ],
             required_fields: &["schema_id", "title", "text", "evidence"],
-            annotations: Some(WRITE_NON_IDEMPOTENT),
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "transition",
             allowed_fields: &["goal", "transition", "idempotency_key"],
             required_fields: &["goal", "transition"],
-            annotations: Some(WRITE_NON_IDEMPOTENT),
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
@@ -216,14 +215,14 @@ impl McpTool for CoreGoalTool {
                 "idempotency_key",
             ],
             required_fields: &["goal", "schema_id", "title", "text"],
-            annotations: Some(WRITE_NON_IDEMPOTENT),
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "mark_achieved",
             allowed_fields: &["goal", "evidence", "idempotency_key"],
             required_fields: &["goal", "evidence"],
-            annotations: Some(WRITE_NON_IDEMPOTENT),
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
@@ -235,7 +234,7 @@ impl McpTool for CoreGoalTool {
                 "idempotency_key",
             ],
             required_fields: &["parent_goal", "children", "idempotency_key"],
-            annotations: Some(WRITE_IDEMPOTENT),
+            effect: ToolEffect::Additive(Replay::Idempotent),
             audience: McpToolAudience::Shared,
         },
     ];

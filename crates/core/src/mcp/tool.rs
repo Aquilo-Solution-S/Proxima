@@ -73,11 +73,10 @@ pub struct McpToolDescriptor {
     /// with `action_arg_specs`: registration refuses a tool declaring both,
     /// so nothing downstream has to decide which vocabulary wins.
     pub argv_action_specs: &'static [McpArgvActionSpec],
-    /// What a flat tool declared about its own behaviour, or `None` when it
-    /// declared nothing. Substrate flat tools may still resolve through
-    /// `core_tool_annotations`. Dispatcher behavior lives on
-    /// `action_arg_specs`; this field is not an action fallback.
-    pub annotations: Option<crate::mcp::McpToolAnnotations>,
+    /// What a flat tool declared it does ([`crate::Tool::EFFECT`]), or
+    /// `None` for a dispatcher — whose effect is its actions' — and for a
+    /// flat tool that declared nothing, which `try_freeze` refuses.
+    pub effect: Option<crate::mcp::ToolEffect>,
     /// Tool-level audience: [`McpToolAudience::Owner`] means every key of
     /// this tool — the bare name and each `tool:action` leaf — belongs to
     /// the owner alone. See [`McpToolAudience`] for what the declaration is
@@ -87,40 +86,38 @@ pub struct McpToolDescriptor {
 }
 
 impl McpToolDescriptor {
-    /// What this tool does as a whole.
+    /// What this tool does as a whole: a flat tool's declaration, a
+    /// dispatcher's [`ToolEffect::join`](crate::mcp::ToolEffect::join) over
+    /// every action.
     ///
-    /// A dispatcher's action specs are the authority, so its whole-tool answer
-    /// is a conservative aggregate: read-only only when every action is an
-    /// explicit read, and other hints only when every action agrees. Flat
-    /// tools resolve their own declaration, then the core manifest.
-    ///
-    /// `FlavorRegistry::try_freeze` guarantees this returns `Some` for every
-    /// registered flat tool. A dispatcher always returns an aggregate.
+    /// `FlavorRegistry::try_freeze` guarantees `Some` for every registered
+    /// tool.
     #[must_use]
-    pub fn resolved_annotations(&self) -> Option<crate::mcp::McpToolAnnotations> {
-        if !self.action_arg_specs.is_empty() {
-            let first = self.action_arg_specs.first()?;
-            let common = |field: fn(crate::mcp::McpToolAnnotations) -> Option<bool>| {
-                let first = first.annotations.and_then(field);
-                self.action_arg_specs
-                    .iter()
-                    .all(|spec| spec.annotations.and_then(field) == first)
-                    .then_some(first)
-                    .flatten()
-            };
-            return Some(crate::mcp::McpToolAnnotations {
-                read_only: Some(
-                    self.action_arg_specs.iter().all(|spec| {
-                        spec.annotations.and_then(|value| value.read_only) == Some(true)
-                    }),
-                ),
-                destructive: common(|value| value.destructive),
-                idempotent: common(|value| value.idempotent),
-                open_world: common(|value| value.open_world),
-            });
+    pub fn effect(&self) -> Option<crate::mcp::ToolEffect> {
+        if self.action_arg_specs.is_empty() && self.argv_action_specs.is_empty() {
+            return self.effect;
         }
-        self.annotations
-            .or_else(|| crate::mcp::core_tool_annotations(self.name))
+        crate::mcp::ToolEffect::strongest(self.actions().map(|(_, effect)| effect))
+    }
+
+    /// The MCP hints this tool's [`Self::effect`] projects to.
+    #[must_use]
+    pub fn annotations(&self) -> Option<crate::mcp::McpToolAnnotations> {
+        self.effect()
+            .map(crate::mcp::McpToolAnnotations::registered)
+    }
+
+    /// Every action of either dispatcher vocabulary with its declared
+    /// effect, in declaration order; empty for a flat tool.
+    pub fn actions(&self) -> impl Iterator<Item = (&'static str, crate::mcp::ToolEffect)> + '_ {
+        self.action_arg_specs
+            .iter()
+            .map(|spec| (spec.action, spec.effect))
+            .chain(
+                self.argv_action_specs
+                    .iter()
+                    .map(|spec| (spec.action, spec.effect)),
+            )
     }
 
     /// The descriptor-owned contract for one dispatcher action.
@@ -129,25 +126,6 @@ impl McpToolDescriptor {
         self.action_arg_specs
             .iter()
             .find(|spec| spec.action == action)
-    }
-
-    /// What one dispatcher action declares about its behaviour.
-    ///
-    /// There is deliberately no tool-level fallback. A dispatcher action is
-    /// a separately gated call surface, and inheriting the parent declaration
-    /// would make a later write action read-only under a read-only parent.
-    /// Silence therefore stays fail-closed and is interpreted as a write by
-    /// [`Self::action_is_read_only`].
-    ///
-    /// This is the `action`-tagged half only. Callers classifying an action
-    /// of *any* dispatcher want [`Self::effective_action_annotations`].
-    #[must_use]
-    pub fn resolved_action_annotations(
-        &self,
-        action: &str,
-    ) -> Option<crate::mcp::McpToolAnnotations> {
-        self.action_arg_spec(action)
-            .and_then(|spec| spec.annotations)
     }
 
     /// The descriptor-owned contract for one argv-keyed action.
@@ -173,40 +151,30 @@ impl McpToolDescriptor {
         resolve_argv_action(self.name, self.argv_action_specs, args).ok()
     }
 
-    /// The annotations that classify one action of this tool, whatever keys
-    /// it. **The single precedence rule** — every read/write decision about
-    /// an action goes through here so the rule lives once.
+    /// What one action of this tool does. **The single classification
+    /// rule** — every read/write decision about an action goes through here.
     ///
-    /// - `action`-tagged dispatcher: the action spec alone, never the parent
-    ///   (see [`Self::resolved_action_annotations`] for why).
-    /// - argv-keyed dispatcher: the argv spec's own annotations when it
-    ///   declared any, else the tool's declaration (see
-    ///   [`McpArgvActionSpec::annotations`] for why the two directions
-    ///   differ).
-    /// - flat tool, or a key the vocabulary does not emit: the tool's
-    ///   declaration, which is what the whole-tool gate would have used.
+    /// - dispatcher (either vocabulary): the action's own declaration, never
+    ///   the tool's; a key the vocabulary does not emit is `None`.
+    /// - flat tool: the tool's declaration, which is what the whole-tool
+    ///   gate reads.
     #[must_use]
-    pub fn effective_action_annotations(
-        &self,
-        action: &str,
-    ) -> Option<crate::mcp::McpToolAnnotations> {
-        if !self.action_arg_specs.is_empty() {
-            return self.resolved_action_annotations(action);
+    pub fn action_effect(&self, action: &str) -> Option<crate::mcp::ToolEffect> {
+        if self.action_arg_specs.is_empty() && self.argv_action_specs.is_empty() {
+            return self.effect;
         }
-        if let Some(spec) = self.argv_action_spec(action) {
-            return spec.annotations.or_else(|| self.resolved_annotations());
-        }
-        self.resolved_annotations()
+        self.actions()
+            .find(|(declared, _)| *declared == action)
+            .map(|(_, effect)| effect)
     }
 
     /// Whether the owner-role gate should treat one action as a read.
-    /// Silence — after [`Self::effective_action_annotations`] has applied
-    /// every fallback — is a write.
+    /// Silence — an action [`Self::action_effect`] does not know — is a
+    /// write.
     #[must_use]
     pub fn action_is_read_only(&self, action: &str) -> bool {
-        self.effective_action_annotations(action)
-            .and_then(|annotations| annotations.read_only)
-            .unwrap_or(false)
+        self.action_effect(action)
+            .is_some_and(crate::mcp::ToolEffect::is_read_only)
     }
 
     /// Client-facing prose for one dispatcher action.
@@ -234,9 +202,8 @@ impl McpToolDescriptor {
     /// write, and guessing "read" would hand a viewer a mutation.
     #[must_use]
     pub fn is_read_only(&self) -> bool {
-        self.resolved_annotations()
-            .and_then(|annotations| annotations.read_only)
-            .unwrap_or(false)
+        self.effect()
+            .is_some_and(crate::mcp::ToolEffect::is_read_only)
     }
 
     /// Every [`ToolScope`](crate::ToolScope) key the scope gate judges a
@@ -299,7 +266,7 @@ impl std::fmt::Debug for McpToolDescriptor {
             .field("output_schema", &self.output_schema)
             .field("action_arg_specs", &self.action_arg_specs)
             .field("argv_action_specs", &self.argv_action_specs)
-            .field("annotations", &self.annotations)
+            .field("effect", &self.effect)
             .field("audience", &self.audience)
             .field("call", &"<callable>")
             .finish()
@@ -311,9 +278,8 @@ pub struct McpActionArgSpec {
     pub action: &'static str,
     pub allowed_fields: &'static [&'static str],
     pub required_fields: &'static [&'static str],
-    /// Behaviour of this action. `None` is deliberately a write: callers
-    /// must opt into read authorization and retry-safe `QUERY` exposure.
-    pub annotations: Option<crate::mcp::McpToolAnnotations>,
+    /// What this action does. See [`crate::mcp::ToolEffect`].
+    pub effect: crate::mcp::ToolEffect,
     /// Who this action is for. See [`McpToolAudience`].
     pub audience: McpToolAudience,
 }
@@ -335,20 +301,11 @@ pub struct McpActionArgSpec {
 pub struct McpArgvActionSpec {
     pub action: &'static str,
     pub argv_prefix: &'static [&'static str],
-    /// Behaviour of this action, or `None` to classify from the tool's own
-    /// declaration. Unlike [`McpActionArgSpec::annotations`], `None` here
-    /// falls back rather than meaning write: `try_freeze` requires a
-    /// tool-level `ANNOTATIONS` on every tool with no `action_arg_specs`
-    /// (see `FlavorRegistryError::UndeclaredToolBehavior`), so an argv
-    /// dispatcher always has one to fall back to and the fallback is as
-    /// fail-closed as the declaration it reads. A tagged dispatcher has no
-    /// such guarantee, which is why silence there stays a write.
-    ///
-    /// Declaring it is what lets a dispatcher whose commands are mostly
-    /// reads keep those reads authorized for a read-capable-only owner —
-    /// and retry-safe on `QUERY` — under a tool that must declare itself
-    /// writable because some of its commands write.
-    pub annotations: Option<crate::mcp::McpToolAnnotations>,
+    /// What this action does. See [`crate::mcp::ToolEffect`]. Declared per
+    /// command, so a dispatcher whose commands are mostly reads keeps those
+    /// reads authorized for a read-capable-only owner — and retry-safe on
+    /// `QUERY` — while its writes stay writes.
+    pub effect: crate::mcp::ToolEffect,
     /// Who this action is for. See [`McpToolAudience`].
     pub audience: McpToolAudience,
 }
@@ -597,10 +554,9 @@ pub trait McpTool: Send + Sync + 'static {
     /// A tool declares this or [`Self::ACTION_ARG_SPECS`], never both;
     /// registration refuses the pair.
     const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = &[];
-    /// MCP behaviour hints for a flat tool. See [`crate::Tool::ANNOTATIONS`].
-    /// Dispatchers ignore this parent declaration and resolve only from their
-    /// action specs. Forwarded from `Tool` by the blanket impl below.
-    const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = None;
+    /// What a flat tool does. See [`crate::Tool::EFFECT`]. Forwarded from
+    /// `Tool` by the blanket impl below.
+    const EFFECT: Option<crate::mcp::ToolEffect> = None;
     /// Tool-level audience. See [`McpToolDescriptor::audience`]; forwarded
     /// from `Tool` by the blanket impl below.
     const AUDIENCE: McpToolAudience = McpToolAudience::Shared;
@@ -631,7 +587,7 @@ where
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = T::PRODUCES_SCHEMA_IDS;
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = <T as crate::Tool>::ACTION_ARG_SPECS;
     const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = <T as crate::Tool>::ARGV_ACTION_SPECS;
-    const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = <T as crate::Tool>::ANNOTATIONS;
+    const EFFECT: Option<crate::mcp::ToolEffect> = <T as crate::Tool>::EFFECT;
     const AUDIENCE: McpToolAudience = <T as crate::Tool>::AUDIENCE;
     const UNKNOWN_FIELD_POLICY: McpUnknownFieldPolicy = <T as crate::Tool>::UNKNOWN_FIELD_POLICY;
 
@@ -684,7 +640,7 @@ where
 #[cfg(test)]
 mod argv_action_tests {
     use super::{McpArgvActionSpec, McpToolAudience, resolve_argv_action};
-    use crate::mcp::{McpToolError, McpToolErrorKind};
+    use crate::mcp::{McpToolError, McpToolErrorKind, Replay, ToolEffect};
 
     /// Two commands sharing a first word, so only longest-prefix matching
     /// can tell them apart.
@@ -692,13 +648,13 @@ mod argv_action_tests {
         McpArgvActionSpec {
             action: "approval",
             argv_prefix: &["approval"],
-            annotations: None,
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
         McpArgvActionSpec {
             action: "approval-decide",
             argv_prefix: &["approval", "decide"],
-            annotations: None,
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
     ];

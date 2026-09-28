@@ -36,8 +36,8 @@ pub use handles::{
     parse_prefixed_uuid,
 };
 pub use manifest::{
-    CoreActionMeta, McpToolAnnotations, all_core_actions, all_core_resources, canonical_scope_keys,
-    canonical_scope_keys_excluding, core_action_meta, core_tool_annotations,
+    CoreActionMeta, McpToolAnnotations, Replay, ToolEffect, all_core_actions, all_core_resources,
+    canonical_scope_keys, canonical_scope_keys_excluding, core_action_meta,
 };
 pub use names::{provider_safe_tool_name, tool_name_matches};
 pub use presentation::{McpPresentationExt, McpToolPresentation};

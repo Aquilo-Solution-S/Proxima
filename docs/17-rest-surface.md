@@ -111,7 +111,7 @@ therefore reachable by **both** `QUERY` and `POST`; write tools accept
 
 | Behavior declaration | Methods |
 |---|---|
-| flat-tool or action `read_only: true` | `QUERY`, `POST` |
+| flat-tool or action `ToolEffect::ReadOnly` | `QUERY`, `POST` |
 | anything else | `POST` |
 
 `POST` is retained alongside `QUERY` rather than replaced. Middleboxes
@@ -131,7 +131,7 @@ client, proxy, or client library may replay a failed read without
 asking whether replay is safe.
 
 The read/write distinction remains authoritative where it already is:
-`read_only` selects `may_read` versus `may_write` inside
+`ToolEffect::ReadOnly` selects `may_read` versus `may_write` inside
 `ScopeGateBehavior`, and reaches clients through the manifest and
 through OpenAPI. `GET /v1/resources/…` remains the browsable read
 surface, which is why resources exist as a separate concept.
@@ -193,9 +193,9 @@ Two failure modes must be explicit rather than silent:
   error.
 
 `POST` vs `QUERY` is resolved only from the action's
-`McpActionArgSpec.annotations`, for substrate and flavor dispatchers alike.
-There is no tool-level or `CoreActionMeta` fallback; missing annotations or
-missing `read_only` fails closed as write/`POST`. The same spec drives the
+`McpActionArgSpec.effect`, for substrate and flavor dispatchers alike.
+There is no tool-level or `CoreActionMeta` fallback; anything but
+`ReadOnly` is write/`POST`. The same spec drives the
 owner-role gate, scope-filtered catalogs, REST method gate, and OpenAPI
 operation. A flavor enum variant's doc comment is derived into
 `x-proxima-actions.<action>.description` and rendered by the catalog and
@@ -391,12 +391,12 @@ dialect, so the newer floor costs nothing in schema fidelity.
 | path per tool | `McpToolDescriptor.name` |
 | path per dispatcher action | `McpToolDescriptor.action_arg_specs` |
 | path per resource | `ResourceContract.uri_template` |
-| `post` / `query` operations | `is_read_only()` / `action_is_read_only()` |
+| `post` / `query` operations | `query` when the effect is `ReadOnly`: whole tool, the join over the caller-visible actions; action route, `action_is_read_only()` |
 | `operationId` | structurally tagged `tool` / `action` / `resource` target with byte-length-prefixed name components and an explicit method tag |
 | `summary` / `description` | `McpToolDescriptor.description`; substrate action description from `CoreActionMeta`, flavor action description from `x-proxima-actions.<action>.description` |
 | request schema | `args_schema` for the whole tool; `x-proxima-actions.<action>.argument_schema` for an action route |
 | success response schema | `output_schema`, derived from the tool's Rust `Output` type |
-| `x-proxima-read-only`, `-destructive`, `-idempotent` | flat tool `resolved_annotations()`; dispatcher `McpActionArgSpec.annotations` |
+| `x-proxima-read-only`, `-destructive`, `-idempotent` | projected from `ToolEffect`: whole-tool operation the join over the caller-visible actions; action route `McpActionArgSpec.effect` |
 | security scheme | HTTP bearer |
 
 The document is generated per caller and reflects that caller's

@@ -1,5 +1,6 @@
 //! `core/search_memories` — owner-scoped lexical/semantic/hybrid memory search.
 
+use crate::mcp::ToolEffect;
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -243,6 +244,7 @@ pub struct SearchMemoryOutput {
 impl McpTool for SearchMemoriesTool {
     const NAME: &'static str = protocol_tool::CORE_SEARCH_MEMORIES;
     const DESCRIPTION: &'static str = "Search owner-scoped memories by lexical, semantic, or hybrid ranking. Defaults to current heads only; pass supersession=all for full history. Set include_body=true to hydrate body text in the same batched read; a body cut to body_max_chars is flagged with body_truncated=true. Drop weak hits with min_score, tune hybrid fusion with semantic_weight, and page past the 50-result cap by passing next_cursor back as cursor.";
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = SearchMemoriesArgs;
     type Output = SearchMemoriesOutput;
 

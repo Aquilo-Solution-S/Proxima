@@ -368,7 +368,7 @@ impl McpToolHost {
         {
             let mut request = request;
             request
-                .try_insert(McpHostToolCall::new(tool.name.clone(), tool.annotations))
+                .try_insert(McpHostToolCall::new(tool.name.clone(), tool.effect))
                 .map_err(|err| McpToolError::Other(format!("request services: {err}")))?;
             let ctx = self.ctx_for_request(author, &auth, request)?;
             reject_nul_in_args(&args)?;
@@ -914,7 +914,7 @@ mod tests {
     #[async_trait::async_trait]
     impl McpHostTools for OutputHostTools {
         fn list(&self, _: &McpAuthContext) -> Vec<McpHostTool> {
-            vec![host_tool("host_output", true)]
+            vec![host_tool("host_output", READ)]
         }
 
         async fn call(&self, _: ToolCall) -> Result<serde_json::Value, McpToolError> {
@@ -960,13 +960,17 @@ mod tests {
         }
     }
 
-    fn host_tool(name: &str, read_only: bool) -> McpHostTool {
+    const READ: proxima_core::ToolEffect = proxima_core::ToolEffect::ReadOnly;
+    const WRITE: proxima_core::ToolEffect =
+        proxima_core::ToolEffect::Additive(proxima_core::Replay::NonIdempotent);
+
+    fn host_tool(name: &str, effect: proxima_core::ToolEffect) -> McpHostTool {
         McpHostTool {
             name: name.into(),
             description: format!("{name} fixture"),
             args_schema: serde_json::json!({"type": "object"}),
             output_schema: serde_json::json!({"type": "object"}),
-            annotations: proxima_core::McpToolAnnotations::new().read_only(read_only),
+            effect,
         }
     }
 
@@ -974,17 +978,17 @@ mod tests {
     impl McpHostTools for EchoHostTools {
         fn list(&self, _auth: &McpAuthContext) -> Vec<McpHostTool> {
             vec![
-                host_tool("host_echo", true),
-                host_tool("host_write", false),
+                host_tool("host_echo", READ),
+                host_tool("host_write", WRITE),
                 // Shadowed by the registry's own tool of this name.
-                host_tool("core_memory_spaces", true),
+                host_tool("core_memory_spaces", READ),
                 // A registry tool's name in another spelling, a scope-key
                 // shape, an action-leaf shape, a repeat, and an overlong name.
-                host_tool("core:memory_spaces", true),
-                host_tool("resource:graph", false),
-                host_tool("core_goal:set", false),
-                host_tool("host_echo", false),
-                host_tool(&"h".repeat(MAX_HOST_TOOL_NAME_CHARS + 1), true),
+                host_tool("core:memory_spaces", READ),
+                host_tool("resource:graph", WRITE),
+                host_tool("core_goal:set", WRITE),
+                host_tool("host_echo", WRITE),
+                host_tool(&"h".repeat(MAX_HOST_TOOL_NAME_CHARS + 1), READ),
             ]
         }
 

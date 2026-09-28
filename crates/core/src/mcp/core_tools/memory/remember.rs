@@ -1,4 +1,5 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{Replay, ToolEffect};
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
 use crate::verbs::fact_ingest::{
@@ -103,6 +104,7 @@ pub struct RememberTool;
 impl McpTool for RememberTool {
     const NAME: &'static str = protocol_tool::CORE_REMEMBER;
     const DESCRIPTION: &'static str = "Append an agent-observed Fact. Optional idempotency_key collapses only exact replays with the same content; changed content with the same key writes a new version and advances the note head pointer. core_search_memories returns heads by default; pass supersession=all for full history.";
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
     type Args = RememberArgs;
     type Output = RememberOutput;
 

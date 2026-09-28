@@ -792,7 +792,7 @@ unit.commit().await?;
 | scope | one owner; only this flavor's Fact/Abstraction/Perspective schemas; each id expanded to its whole series |
 | references | a row holding a foreign key into an erased `t` is erased with it; a referencing table with no declared memory key refuses |
 | authority | Admin on the owner, or the host's `Engine::system_unit_of_work` |
-| tools | the calling tool's `ToolContract` must say `destructive: true` |
+| tools | the calling action's `ToolEffect` is `Destructive`, and the flavor's contract names the tool |
 | bound | 256 series / 1024 versions per call: page `Ids`; loop `AdmittedBefore` while `more_remaining` |
 | errors | `Refused` names every offender and deleted nothing; `Retryable`: run the unit again |
 
@@ -1155,7 +1155,7 @@ Tool contract:
 | Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional `ToolCaller`, optional caller Self Perspective, optional Engine, typed ToolServices |
 | Storage | tools: Engine + `FlavorServices` store. Host extra-table: `AppContext::host()` → `ProximaHost::{clone_pool_for_host, pg_tuning_for_host}`, wrap immediately. Atomic host-state with Facts: Host API `UnitOfWork::apply_host_state` only. No `proxima_core.*` SQL |
 | Writes | emit typed Facts / A/P / Goals through registered schemas; no tool writes an edge |
-| Destructive | `ToolContract.destructive` equals the tool's resolved MCP `destructiveHint` (freeze refuses a disagreement); only a destructive tool may call `UnitOfWork::erase_own_series` |
+| Effect | `const EFFECT: Option<ToolEffect>` on a flat tool, `effect` on each action spec of a dispatcher — one declaration; gates, MCP hints, REST `QUERY` and `OpenAPI` derive from it ([12 §Tool Effect](12-tool-manifest.md#tool-effect)). Only a `Destructive` action may call `UnitOfWork::erase_own_series` |
 
 MCP JSON is protocol boundary only. Flavor SDK tool code targets `Tool`;
 MCP is an adapter projection.

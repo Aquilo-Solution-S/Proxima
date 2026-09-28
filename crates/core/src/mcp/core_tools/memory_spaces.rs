@@ -1,3 +1,4 @@
+use crate::mcp::ToolEffect;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +35,7 @@ pub struct MemorySpacesTool;
 impl McpTool for MemorySpacesTool {
     const NAME: &'static str = protocol_tool::CORE_MEMORY_SPACES;
     const DESCRIPTION: &'static str = "List memory spaces this caller may use. Space keys are selectors only; every use is re-authorized.";
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = MemorySpacesArgs;
     type Output = MemorySpacesOutput;
 

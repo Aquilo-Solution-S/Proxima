@@ -7,11 +7,11 @@
 //! accepted twin proves only that freeze can fail.
 
 use super::fixtures::{
-    CITATION_WITH_A_SIDECAR, DECLARES_A_RESOURCE, DUPLICATE_ORDINAL, EMPTY, FIXTURE_FLAVOR,
-    FOREIGN_SCHEMA, TOOL_ACTIONS_DISAGREE, TOOL_AGREES, TOOL_DESTRUCTIVENESS_DISAGREES,
-    TOOL_IDEMPOTENCE_DISAGREES, UNENFORCED_REFUSAL, UNREGISTERED_SCHEMA, UNREGISTERED_TOOL,
-    register_fixture_schema, register_fixture_schema_of_kind, register_fixture_tool,
-    register_uniformity_schemas, registration_without_a_contract,
+    CITATION_WITH_A_SIDECAR, DECLARES_A_RESOURCE, DUPLICATE_ORDINAL, EMPTY, FIXTURE_ACTIONS,
+    FIXTURE_EFFECT, FIXTURE_FLAVOR, FOREIGN_SCHEMA, TOOL_ACTIONS_DISAGREE, TOOL_AGREES,
+    UNENFORCED_REFUSAL, UNREGISTERED_SCHEMA, UNREGISTERED_TOOL, register_fixture_schema,
+    register_fixture_schema_of_kind, register_fixture_tool, register_uniformity_schemas,
+    registration_without_a_contract,
 };
 use super::leg_fixtures::{
     BESPOKE_LEG_FOR_NOTHING, BESPOKE_LEG_OVER_A_CASCADE, BESPOKE_TRANSFER_LEG_FOR_NOTHING,
@@ -27,6 +27,7 @@ use super::projection_fixtures::{
     PROJECTED_SIDECAR_WRONG_KEY, PROJECTION_A_QUERY_REACHES, PROJECTION_NO_QUERY_REACHES,
     PROJECTION_OUTSIDE_THE_MERGE, TOO_MANY_WEIGHT_LEVELS, WEIGHTS_NOT_UNIFORM,
 };
+use crate::mcp::ToolEffect;
 use crate::verbs::schema::PayloadKind;
 use crate::{FlavorRegistry, FlavorRegistryError};
 
@@ -434,7 +435,7 @@ fn each_contract_cross_check_rejects_its_own_shape() {
         (
             "the contract's action list is not the dispatcher's",
             |registry| {
-                register_fixture_tool(registry, false);
+                register_fixture_tool(registry, &[], FIXTURE_EFFECT);
                 registry.contracts.push(&TOOL_ACTIONS_DISAGREE);
             },
             |err| {
@@ -549,35 +550,27 @@ fn each_contract_cross_check_rejects_its_own_shape() {
             },
         ),
         (
-            "the contract claims an idempotence the registration denies",
-            |registry| {
-                register_fixture_tool(registry, false);
-                registry.contracts.push(&TOOL_IDEMPOTENCE_DISAGREES);
-            },
+            "a flat tool declares no effect",
+            |registry| register_fixture_tool(registry, &[], None),
             |err| {
                 matches!(
                     err,
-                    FlavorRegistryError::ToolIdempotenceDisagreement {
-                        declared: true,
-                        resolved: false,
-                        ..
+                    FlavorRegistryError::UndeclaredToolBehavior {
+                        name: "test_flavor_flat"
                     }
                 )
             },
         ),
         (
-            "the contract admits an erase the wire never warns about",
+            "a dispatcher declares a tool-level effect beside its actions'",
             |registry| {
-                register_fixture_tool(registry, false);
-                registry.contracts.push(&TOOL_DESTRUCTIVENESS_DISAGREES);
+                register_fixture_tool(registry, FIXTURE_ACTIONS, Some(ToolEffect::ReadOnly));
             },
             |err| {
                 matches!(
                     err,
-                    FlavorRegistryError::ToolDestructivenessDisagreement {
-                        declared: true,
-                        resolved: false,
-                        ..
+                    FlavorRegistryError::DispatcherToolEffect {
+                        name: "test_flavor_flat"
                     }
                 )
             },
@@ -663,12 +656,12 @@ fn the_shapes_the_new_refusals_must_accept_freeze() {
     }
 }
 
-/// The accepted twin of the two tool-annotation refusals: a declaration
-/// that copies its registration exactly freezes.
+/// The accepted twin of the two behaviour refusals: a flat tool that
+/// declares one effect, named by its flavor's contract, freezes.
 #[test]
-fn a_tool_declared_as_its_registration_describes_it_freezes() {
+fn a_flat_tool_declaring_one_effect_freezes() {
     let mut registry = FlavorRegistry::new();
-    register_fixture_tool(&mut registry, false);
+    register_fixture_tool(&mut registry, &[], FIXTURE_EFFECT);
     registry.contracts.push(&TOOL_AGREES);
     if let Err(err) = registry.try_freeze() {
         panic!("freeze refused a tool declaration that agrees with its registration: {err}");

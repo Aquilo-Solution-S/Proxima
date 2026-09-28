@@ -191,7 +191,7 @@ fn ceiling_keyword(spec: &serde_json::Value) -> Option<&'static str> {
 /// In-tree suites run this over the core registry and over `proxima-code`;
 /// an out-of-tree flavor can call it on its own frozen registry to get the
 /// same guarantee. This deliberately is *not* enforced in `try_freeze` —
-/// unlike an undeclared `ANNOTATIONS`, which stops a gate from working, a
+/// unlike an undeclared `EFFECT`, which stops a gate from working, a
 /// bound stated only in prose is a documentation defect and should not stop
 /// an existing deployment from booting.
 #[must_use]

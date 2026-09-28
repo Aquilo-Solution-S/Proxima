@@ -8,6 +8,7 @@
 //! Core `memory` is not in the content SQL. `core_search_memories` never
 //! scans this table.
 
+use proxima_core::mcp::ToolEffect;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
@@ -382,7 +383,7 @@ pub struct CodeSearchChunksTool;
 impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
     const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: semantic (embedding-only) suits a question describing behaviour, lexical (full-text only) an exact identifier, string or path, and hybrid (default) fuses both; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Pages of at most 50: has_more plus an opaque next_cursor passed back as cursor with the same query, mode, and filters. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut, and matched_line, the line that best matches the query when one does; context_lines returns the numbered lines around it instead, and verbose adds per-arm scores and byte ranges. Supports language/chunk_type/file_class filters and optional call-neighbour connections with their call sites. Generated, vendored and lockfile chunks stay searchable, carry file_class, and rank after every source match in hybrid mode unless file_class asks for them. An unfiltered hybrid search takes semantic neighbours for source and for the other classes as two sets, each up to the candidate budget, so a non-source vector cannot take a source slot.";
-    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
 
     type Args = CodeSearchChunksArgs;
     type Output = CodeSearchChunksOutput;

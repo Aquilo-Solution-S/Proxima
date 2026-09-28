@@ -1,5 +1,5 @@
 use super::*;
-use crate::mcp::{McpToolCtx, McpToolError};
+use crate::mcp::{McpToolCtx, McpToolError, ToolEffect};
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
 struct DemoOutput {}
@@ -14,11 +14,7 @@ impl McpTool for Demo {
     const DESCRIPTION: &'static str = "test";
     // Required: `try_freeze` refuses to seal a flavor tool whose behaviour
     // the owner-role gate cannot resolve.
-    const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = Some(
-        crate::mcp::McpToolAnnotations::new()
-            .read_only(true)
-            .open_world(false),
-    );
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = EmptyDemoArgs;
     type Output = DemoOutput;
 

@@ -1436,19 +1436,17 @@ impl ProjectionDecl {
 
 /// One registered MCP tool, as the contract sees it: a wire name and the
 /// action leaves the scope gate authorizes at.
+///
+/// It states no behaviour. What a tool does is its
+/// [`ToolEffect`](crate::mcp::ToolEffect), declared once on the tool and
+/// per action; the contract names the tool so a flavor-scoped erase can
+/// require that the calling tool is the named flavor's own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ToolContract {
     pub wire_name: &'static str,
     /// Empty ⇒ flat tool, scope key is the wire name.
     /// Non-empty ⇒ scope keys are `"<wire_name>:<action>"`.
     pub actions: &'static [&'static str],
-    pub idempotent: bool,
-    /// The tool destroys data, and may therefore call
-    /// [`crate::UnitOfWork::erase_own_series`]. Freeze holds it equal to the
-    /// resolved MCP `destructive` annotation, so the one declaration that
-    /// admits the erase is the one that makes a client ask before
-    /// auto-approving the call.
-    pub destructive: bool,
 }
 
 /// One `proxima://` resource.

@@ -1,4 +1,5 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
+use crate::mcp::{Replay, ToolEffect};
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
 use crate::{
@@ -184,6 +185,9 @@ impl McpTool for DeriveTool {
     const NAME: &'static str = protocol_tool::CORE_DERIVE;
     const DESCRIPTION: &'static str =
         "Author an Abstraction or Perspective derived from existing memory handles.";
+    // Idempotent by content: the derived memory id is folded from the
+    // claim, so re-asserting it lands on one memory.
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::Idempotent));
     type Args = DeriveArgs;
     type Output = DeriveOutput;
 

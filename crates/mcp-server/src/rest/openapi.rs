@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use proxima_core::FlavorRegistryFrozen;
 use proxima_core::flavor::ResourceContract;
-use proxima_core::mcp::{McpToolAnnotations, McpToolDescriptor, all_core_resources};
+use proxima_core::mcp::{McpToolAnnotations, McpToolDescriptor, ToolEffect, all_core_resources};
 use serde_json::{Map, Value, json};
 
 use crate::McpAuthContext;
@@ -311,9 +311,9 @@ fn collect_tool_paths(
                     tool.name, action
                 )
             });
-        // Per-action, not tool-level. The spec is the same authority the
-        // owner-role gate and router read; missing annotations stay a write.
-        let action_annotations = spec.annotations.unwrap_or_default();
+        // Per-action, not tool-level: the spec's effect is the same
+        // authority the owner-role gate and router read.
+        let action_annotations = McpToolAnnotations::registered(spec.effect);
         let action_description = tool
             .resolved_action_description(action)
             .unwrap_or(tool.description);
@@ -387,7 +387,7 @@ fn collect_resource_path(resource: &ResourceContract, paths: &mut BTreeMap<Strin
         // read, which is why they exist as a separate concept from tools.
         produces_schema_ids: &[],
         output_schema: None,
-        annotations: McpToolAnnotations::new().read_only(true),
+        annotations: McpToolAnnotations::registered(ToolEffect::ReadOnly),
     };
     let mut item = Map::new();
     item.insert("get".to_string(), operation.render("get"));

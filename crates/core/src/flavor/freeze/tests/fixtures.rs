@@ -208,8 +208,6 @@ pub(super) static UNREGISTERED_TOOL: FlavorContract = contract(
     &[ToolContract {
         wire_name: "test_flavor_absent",
         actions: &[],
-        idempotent: true,
-        destructive: false,
     }],
     &[],
 );
@@ -225,62 +223,43 @@ pub(super) static TOOL_ACTIONS_DISAGREE: FlavorContract = contract(
     &[ToolContract {
         wire_name: "test_flavor_flat",
         actions: &["compose"],
-        idempotent: false,
-        destructive: false,
     }],
     &[],
 );
 
-/// The registration's annotations say a second call is a second write;
-/// the declaration claims idempotence.
-pub(super) static TOOL_IDEMPOTENCE_DISAGREES: FlavorContract = contract(
-    9,
-    &[],
-    &[ToolContract {
-        wire_name: "test_flavor_flat",
-        actions: &[],
-        idempotent: true,
-        destructive: false,
-    }],
-    &[],
-);
-
-/// The declaration admits `erase_own_series`; the registration's annotations
-/// never tell a client the tool destroys anything.
-pub(super) static TOOL_DESTRUCTIVENESS_DISAGREES: FlavorContract = contract(
-    10,
-    &[],
-    &[ToolContract {
-        wire_name: "test_flavor_flat",
-        actions: &[],
-        idempotent: false,
-        destructive: true,
-    }],
-    &[],
-);
-
-/// The same flat tool declared exactly as its registration describes it.
+/// The flat fixture tool, named by its flavor's contract.
 pub(super) static TOOL_AGREES: FlavorContract = contract(
     11,
     &[],
     &[ToolContract {
         wire_name: "test_flavor_flat",
         actions: &[],
-        idempotent: false,
-        destructive: false,
     }],
     &[],
 );
 
-/// A flat MCP tool registration, so a contract's tool declaration has a
-/// registration to disagree with.
+/// One action for a fixture dispatcher.
+pub(super) const FIXTURE_ACTIONS: &[crate::mcp::McpActionArgSpec] =
+    &[crate::mcp::McpActionArgSpec {
+        action: "look",
+        allowed_fields: &[],
+        required_fields: &[],
+        effect: crate::mcp::ToolEffect::ReadOnly,
+        audience: crate::mcp::McpToolAudience::Shared,
+    }];
+
+/// An MCP tool registration under the fixture flavor, so a contract's tool
+/// declaration has a registration to disagree with.
 ///
-/// Flat, not a dispatcher: a dispatcher fixture would have to carry a
-/// hand-written `x-proxima-actions` extension agreeing with its specs
-/// field-set for field-set, which is a different validator's subject.
-/// Empty `action_arg_specs` against a declared action is the same
-/// disagreement with none of that machinery.
-pub(super) fn register_fixture_tool(registry: &mut FlavorRegistry, idempotent: bool) {
+/// Flat unless `action_arg_specs` is non-empty. A dispatcher fixture carries
+/// no `x-proxima-actions` extension, so it only reaches the checks that run
+/// before `validate_dispatcher_action_specs` — which is where the behaviour
+/// check sits.
+pub(super) fn register_fixture_tool(
+    registry: &mut FlavorRegistry,
+    action_arg_specs: &'static [crate::mcp::McpActionArgSpec],
+    effect: Option<crate::mcp::ToolEffect>,
+) {
     // Registrations live for the process; a leaked closure gives the
     // descriptor the `'static` call handle its field type demands.
     let call: crate::mcp::McpCallFn = Box::leak(Box::new(
@@ -291,25 +270,24 @@ pub(super) fn register_fixture_tool(registry: &mut FlavorRegistry, idempotent: b
     ));
     registry.mcp_tools.push(crate::mcp::McpToolDescriptor {
         name: "test_flavor_flat",
-        description: "a fixture's flat tool",
+        description: "a fixture's tool",
         origin: crate::mcp::McpToolOrigin::Flavor(FIXTURE_FLAVOR.to_owned()),
         produces_schema_ids: &[],
         args_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
-        action_arg_specs: &[],
+        action_arg_specs,
         argv_action_specs: &[],
-        // Declared, or `validate_tools_declare_behavior` refuses the
-        // fixture for saying nothing at all and the contract check is
-        // never reached.
-        annotations: Some(
-            crate::mcp::McpToolAnnotations::new()
-                .read_only(false)
-                .idempotent(idempotent),
-        ),
+        effect,
         audience: crate::mcp::McpToolAudience::Shared,
         call,
     });
 }
+
+/// A flat tool's effect that `validate_tools_declare_behavior` accepts, so
+/// a fixture reaches the check it is about.
+pub(super) const FIXTURE_EFFECT: Option<crate::mcp::ToolEffect> = Some(
+    crate::mcp::ToolEffect::Additive(crate::mcp::Replay::NonIdempotent),
+);
 
 /// A fixture's ingress. Never called: the registries these fixtures build
 /// are meant to be REFUSED, so nothing reaches a payload parser.

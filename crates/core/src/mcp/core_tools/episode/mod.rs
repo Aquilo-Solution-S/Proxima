@@ -2,6 +2,7 @@
 
 mod bind;
 
+use crate::mcp::{Replay, ToolEffect};
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -190,6 +191,7 @@ struct EpisodeWrite<'a> {
 impl McpTool for EpisodeCommitTool {
     const NAME: &'static str = protocol_tool::CORE_EPISODE_COMMIT;
     const DESCRIPTION: &'static str = "Commit one episode in a single transaction: remember Facts, optional derive, stance[], goal[], mint a write-act Fact, and pin only bind[] members to that act (`remember:N`, `derive`, `stance:N`, `goal:N`). Not a connect verb.";
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
     type Args = EpisodeCommitArgs;
     type Output = EpisodeCommitOutput;
 

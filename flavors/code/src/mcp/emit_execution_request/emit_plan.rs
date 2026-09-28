@@ -1,3 +1,4 @@
+use proxima_core::mcp::{Replay, ToolEffect};
 use std::collections::HashMap;
 
 use proxima_core::verbs::fact_ingest::FactIngestOutcome;
@@ -33,8 +34,7 @@ pub struct CodeEmitExecutionPlanTool;
 impl Tool for CodeEmitExecutionPlanTool {
     const NAME: &'static str = "proxima-code_emit_execution_plan";
     const DESCRIPTION: &'static str = "Atomically emit repo-scoped implementation/test request Facts and the execution-plan Abstraction that references them.";
-    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> =
-        Some(crate::mcp::WRITE_NON_IDEMPOTENT);
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[
         CodeExecutionPlanV1::SCHEMA_ID,
         ExecutionRequestV1::SCHEMA_ID,

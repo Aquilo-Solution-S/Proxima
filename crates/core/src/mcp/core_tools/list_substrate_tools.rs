@@ -103,7 +103,7 @@ pub(super) fn substrate_tool_actions(
                     .iter()
                     .map(|id| (*id).to_string())
                     .collect(),
-                annotations: spec.annotations.unwrap_or_default(),
+                annotations: McpToolAnnotations::registered(spec.effect),
                 argument_schema: desc
                     .args_schema
                     .get("x-proxima-actions")
