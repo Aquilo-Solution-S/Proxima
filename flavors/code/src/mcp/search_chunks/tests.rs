@@ -721,3 +721,110 @@ fn derived_exact_pattern_is_not_fingerprinted() {
     };
     assert_eq!(base.fingerprint(), rewritten.fingerprint());
 }
+
+/// The candidate cap is 1,000 per arm. A window of that size, with the
+/// other classes as near as source at every rank, still pages every
+/// source match before any other class, and each arm's rank 0 still
+/// scores as a rank 0.
+#[test]
+fn a_full_window_pages_source_before_equally_near_other_classes() {
+    const WINDOW: u128 = 1_000;
+    let source: Vec<_> = (0..WINDOW).map(semantic_at).collect();
+    let other: Vec<_> = (0..WINDOW).map(|n| semantic_at(WINDOW + n)).collect();
+    let fused = fuse_candidates(
+        ChunkSearchMode::Hybrid,
+        SemanticWeight::EVEN,
+        &[],
+        &[&source, &other],
+    );
+    let rank0: f32 = 1.0 / 61.0;
+    let score_of = |n: u128| {
+        fused
+            .iter()
+            .find(|scores| scores.memory_id == uuid::Uuid::from_u128(n))
+            .expect("present")
+            .score
+    };
+    assert_eq!(score_of(0).to_bits(), rank0.to_bits());
+    assert_eq!(score_of(WINDOW).to_bits(), rank0.to_bits());
+
+    let score_by_id: HashMap<uuid::Uuid, MatchScores> = fused
+        .iter()
+        .copied()
+        .map(|scores| (scores.memory_id, scores))
+        .collect();
+    let rows: Vec<_> = fused
+        .iter()
+        .map(|scores| {
+            let class = if scores.memory_id.as_u128() < WINDOW {
+                FileClass::Source
+            } else {
+                FileClass::Generated
+            };
+            (
+                MemoryId::new(scores.memory_id),
+                chunk_of(scores.memory_id, class),
+            )
+        })
+        .collect();
+
+    let mut after = None;
+    let mut seen = 0u32;
+    let mut got = Vec::with_capacity((WINDOW as usize) * 2);
+    for _ in 0..50 {
+        let page = select_chunk_page(rows.clone(), &score_by_id, after, 50, "fp", seen, true);
+        assert!(!page.eligible.is_empty(), "a full window fills every page");
+        got.extend(page_ids(&page));
+        if !page.has_more {
+            break;
+        }
+        let cursor = page.next_cursor.expect("a full page mints a cursor");
+        let pos: ChunkCursorPos = CHUNK_CURSOR.decode("fp", &cursor).expect("decodes");
+        seen = pos.seen;
+        after = Some(pos);
+    }
+    assert_eq!(got.len(), (WINDOW as usize) * 2);
+    let mut unique = got.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), got.len(), "a page must not repeat a chunk");
+    assert!(
+        got[..WINDOW as usize]
+            .iter()
+            .all(|memory_id| memory_id.as_u128() < WINDOW),
+        "the first thousand matches are source"
+    );
+    assert!(
+        got[WINDOW as usize..]
+            .iter()
+            .all(|memory_id| memory_id.as_u128() >= WINDOW),
+        "other classes start only after source is exhausted"
+    );
+    assert_eq!(got[0], uuid::Uuid::from_u128(0));
+    assert_eq!(got[WINDOW as usize], uuid::Uuid::from_u128(WINDOW));
+}
+
+fn semantic_at(n: u128) -> CodeChunkVectorCandidate {
+    CodeChunkVectorCandidate {
+        memory_id: uuid::Uuid::from_u128(n),
+        similarity_score: 0.9,
+    }
+}
+
+fn chunk_of(memory_id: uuid::Uuid, class: FileClass) -> CodeChunkV1 {
+    CodeChunkV1 {
+        repo_id: id(9),
+        file_path: format!("{memory_id}.rs"),
+        chunk_index: 0,
+        text: String::new(),
+        language: Some("rust".into()),
+        chunk_type: "function".into(),
+        byte_range_start: 0,
+        byte_range_end: 0,
+        line_range_start: 1,
+        line_range_end: 1,
+        state: FileState::Present,
+        file_class: class,
+        calls: Vec::new(),
+    }
+}

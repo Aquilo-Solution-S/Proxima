@@ -714,38 +714,36 @@ async fn scan_semantic_candidates(
     let limit = usize::try_from(scan.candidate_limit).unwrap_or(0);
     match semantic_scan(scan.resolved) {
         SemanticScan::One(filters) => Ok((
-            pool.nearest_code_chunk_candidates(
-                ctx.authz().owner_scope(),
-                ctx.owner(),
-                query,
-                filters,
-                limit,
-            )
-            .await?,
+            nearest_chunks(ctx, pool, query, filters, limit).await?,
             Vec::new(),
         )),
         SemanticScan::Split { source, non_source } => {
-            // Two scans, not one filtered after the fact: the limit is
-            // applied inside each scan.
+            // The limit applies inside each scan. One shared call: the two
+            // paths differ only in the class predicate.
             let (source, non_source) = tokio::try_join!(
-                pool.nearest_code_chunk_candidates(
-                    ctx.authz().owner_scope(),
-                    ctx.owner(),
-                    query,
-                    source,
-                    limit,
-                ),
-                pool.nearest_code_chunk_candidates(
-                    ctx.authz().owner_scope(),
-                    ctx.owner(),
-                    query,
-                    non_source,
-                    limit,
-                ),
+                nearest_chunks(ctx, pool, query, source, limit),
+                nearest_chunks(ctx, pool, query, non_source, limit),
             )?;
             Ok((source, non_source))
         }
     }
+}
+
+async fn nearest_chunks(
+    ctx: &ToolCtx,
+    pool: &crate::CodeFlavorStore,
+    query: &proxima_core::SpaceVector,
+    filters: CodeChunkVectorFilters<'_>,
+    limit: usize,
+) -> Result<Vec<CodeChunkVectorCandidate>, ToolError> {
+    pool.nearest_code_chunk_candidates(
+        ctx.authz().owner_scope(),
+        ctx.owner(),
+        query,
+        filters,
+        limit,
+    )
+    .await
 }
 
 /// How many neighbour scans an unfiltered hybrid search spends, and with
