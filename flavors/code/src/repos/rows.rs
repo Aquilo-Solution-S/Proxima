@@ -1,9 +1,23 @@
 use super::records::{RepoIngestionRun, RepoRecord, RunStage, RunStatus};
 use super::scope::RepoScope;
+use crate::file_class::FileClassCounts;
 use uuid::Uuid;
 
 fn u32_from_i32(v: i32) -> u32 {
     u32::try_from(v).unwrap_or(0)
+}
+
+fn usize_from_i32(v: i32) -> usize {
+    usize::try_from(u32_from_i32(v)).unwrap_or(usize::MAX)
+}
+
+fn class_counts(source: i32, generated: i32, vendored: i32, lockfile: i32) -> FileClassCounts {
+    FileClassCounts {
+        source: usize_from_i32(source),
+        generated: usize_from_i32(generated),
+        vendored: usize_from_i32(vendored),
+        lockfile: usize_from_i32(lockfile),
+    }
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -34,6 +48,14 @@ pub(super) struct RunRow {
     abstractions_emitted: i32,
     embeddings_landed: i32,
     citations_emitted: i32,
+    files_source: i32,
+    files_generated: i32,
+    files_vendored: i32,
+    files_lockfile: i32,
+    chunks_source: i32,
+    chunks_generated: i32,
+    chunks_vendored: i32,
+    chunks_lockfile: i32,
     error_message: Option<String>,
     started_at: time::OffsetDateTime,
     updated_at: time::OffsetDateTime,
@@ -56,6 +78,18 @@ impl From<RunRow> for RepoIngestionRun {
             abstractions_emitted: u32_from_i32(row.abstractions_emitted),
             embeddings_landed: u32_from_i32(row.embeddings_landed),
             citations_emitted: u32_from_i32(row.citations_emitted),
+            files_by_class: class_counts(
+                row.files_source,
+                row.files_generated,
+                row.files_vendored,
+                row.files_lockfile,
+            ),
+            chunks_by_class: class_counts(
+                row.chunks_source,
+                row.chunks_generated,
+                row.chunks_vendored,
+                row.chunks_lockfile,
+            ),
             error_message: row.error_message,
             started_at: row.started_at,
             updated_at: row.updated_at,

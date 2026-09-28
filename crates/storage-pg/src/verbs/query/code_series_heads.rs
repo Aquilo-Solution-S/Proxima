@@ -203,6 +203,57 @@ pub async fn owned_chunk_series_heads<'e, E: PgExecutor<'e>>(
     unique_chunk_series_heads(rows)
 }
 
+/// The class stored on one file's current present chunk head.
+///
+/// `file_class` is `source` when the chunk was written before the column
+/// existed. One row per path: the lowest present `chunk_index`. A path
+/// with no present chunk is absent.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct ChunkHeadClass {
+    pub file_path: String,
+    pub file_class: String,
+}
+
+/// Class of each named path's current present chunk head, owned by `owner`.
+///
+/// An empty `file_paths` returns no rows and does not query.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` on query failure.
+pub async fn owned_chunk_head_classes<'e, E: PgExecutor<'e>>(
+    pool: E,
+    owner: Owner,
+    schema_id: &SchemaId,
+    repo_id: Uuid,
+    file_paths: &[String],
+) -> Result<Vec<ChunkHeadClass>, StorageError> {
+    if file_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_as(
+        "SELECT DISTINCT ON (c.file_path) \
+                c.file_path, \
+                COALESCE(c.file_class::text, 'source') AS file_class \
+           FROM proxima_code.code_chunk_v1 c \
+           JOIN proxima_core.memory m ON m.t = c.t \
+           JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t \
+          WHERE h.owner_id = $1 \
+            AND c.repo_id = $2 \
+            AND h.schema_id = $3 \
+            AND c.state = 'Present' \
+            AND c.file_path = ANY($4) \
+          ORDER BY c.file_path, c.chunk_index",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(repo_id)
+    .bind(schema_id.as_str())
+    .bind(file_paths)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)
+}
+
 pub(crate) fn unique_chunk_series_heads(
     rows: Vec<ChunkSeriesHead>,
 ) -> Result<Vec<ChunkSeriesHead>, StorageError> {

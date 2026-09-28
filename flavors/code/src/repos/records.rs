@@ -1,6 +1,8 @@
 use std::str::FromStr;
 use uuid::Uuid;
 
+use crate::file_class::FileClassCounts;
+
 #[derive(Debug, Clone)]
 pub struct RepoRecord {
     pub repo_id: Uuid,
@@ -143,6 +145,12 @@ pub struct RepoIngestionRun {
     pub abstractions_emitted: u32,
     pub embeddings_landed: u32,
     pub citations_emitted: u32,
+    /// Present files this run derived chunks for, by class. Zeros until
+    /// the run succeeds. Tombstones are in `files_emitted` and not here.
+    pub files_by_class: FileClassCounts,
+    /// Chunks this run emitted, by the class of the file each was cut from.
+    /// Zeros until the run succeeds.
+    pub chunks_by_class: FileClassCounts,
     pub error_message: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: time::OffsetDateTime,
@@ -163,6 +171,8 @@ pub struct StageCounters {
     pub abstractions_emitted: u32,
     pub embeddings_landed: u32,
     pub citations_emitted: u32,
+    pub files_by_class: FileClassCounts,
+    pub chunks_by_class: FileClassCounts,
 }
 
 impl StageCounters {
@@ -178,6 +188,18 @@ impl StageCounters {
             abstractions_emitted: 0,
             embeddings_landed: 0,
             citations_emitted: 0,
+            files_by_class: FileClassCounts {
+                source: 0,
+                generated: 0,
+                vendored: 0,
+                lockfile: 0,
+            },
+            chunks_by_class: FileClassCounts {
+                source: 0,
+                generated: 0,
+                vendored: 0,
+                lockfile: 0,
+            },
         }
     }
 }

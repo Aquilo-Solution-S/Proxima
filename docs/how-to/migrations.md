@@ -13,6 +13,14 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.25
+
+| Lane | Migration |
+|---|---|
+| Code flavor | `20260928000020_v025_ingest_run_class_counts.sql`: eight integer columns on `repo_ingestion_runs` (`files_source`, `files_generated`, `files_vendored`, `files_lockfile`, `chunks_source`, `chunks_generated`, `chunks_vendored`, `chunks_lockfile`), each default 0 |
+
+`proxima-code_get_ingest_run` reads them as `files_by_class` and `chunks_by_class`. A run that has not succeeded, and every run written before this file, reads as zeros. No rewrite of `code_chunk_v1`.
+
 ## v0.0.24
 
 | Lane | Migration |

@@ -8,7 +8,7 @@ use common::{migrated_db, test_owner};
 use proxima_code::testkit::{
     advance_stage, mark_failed, mark_succeeded, register_repo, start_run, sweep_orphaned_runs,
 };
-use proxima_code::{RunStage, RunStatus, StageCounters};
+use proxima_code::{FileClassCounts, RunStage, RunStatus, StageCounters};
 use proxima_core::Owner;
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
@@ -46,15 +46,26 @@ async fn run_transitions_and_failure_persist() {
         .await?;
         assert_eq!(r2.status, RunStatus::Running);
         assert_eq!(r2.stage, RunStage::Facts);
-        let r3 = mark_succeeded(
-            pg.pool_for_tests(),
-            None,
-            run.run_id,
-            &StageCounters::zeroed(),
-        )
-        .await?;
+        let counted = StageCounters {
+            files_by_class: FileClassCounts {
+                source: 2,
+                generated: 3,
+                vendored: 1,
+                lockfile: 4,
+            },
+            chunks_by_class: FileClassCounts {
+                source: 5,
+                generated: 6,
+                vendored: 7,
+                lockfile: 8,
+            },
+            ..StageCounters::zeroed()
+        };
+        let r3 = mark_succeeded(pg.pool_for_tests(), None, run.run_id, &counted).await?;
         assert_eq!(r3.status, RunStatus::Succeeded);
         assert!(r3.finished_at.is_some());
+        assert_eq!(r3.files_by_class, counted.files_by_class);
+        assert_eq!(r3.chunks_by_class, counted.chunks_by_class);
 
         let repo_id2 = Uuid::now_v7();
         register_repo(

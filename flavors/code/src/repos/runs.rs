@@ -84,6 +84,8 @@ pub async fn start_run_with_created(
                    commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
                    chunks_tombstoned, ast_edges_emitted, abstractions_emitted, \
                    embeddings_landed, citations_emitted, \
+                   files_source, files_generated, files_vendored, files_lockfile, \
+                   chunks_source, chunks_generated, chunks_vendored, chunks_lockfile, \
                    error_message, started_at, updated_at, finished_at",
     )
     .bind(new_run_id)
@@ -102,6 +104,8 @@ pub async fn start_run_with_created(
                 commits_emitted, files_emitted, chunks_emitted, chunks_reused,
                 chunks_tombstoned, ast_edges_emitted, abstractions_emitted,
                 embeddings_landed, citations_emitted,
+                files_source, files_generated, files_vendored, files_lockfile,
+                chunks_source, chunks_generated, chunks_vendored, chunks_lockfile,
                 error_message, started_at, updated_at, finished_at
            FROM proxima_code.repo_ingestion_runs
           WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3
@@ -137,6 +141,8 @@ pub async fn get_active_run(
                 commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
                 chunks_tombstoned, ast_edges_emitted, abstractions_emitted, \
                 embeddings_landed, citations_emitted, \
+                   files_source, files_generated, files_vendored, files_lockfile, \
+                   chunks_source, chunks_generated, chunks_vendored, chunks_lockfile, \
                 error_message, started_at, updated_at, finished_at \
          FROM proxima_code.repo_ingestion_runs \
          WHERE owner_kind = $1 AND owner_id = $2 \
@@ -234,6 +240,8 @@ pub async fn get_owner_run(
                 commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
                 chunks_tombstoned, ast_edges_emitted, abstractions_emitted, \
                 embeddings_landed, citations_emitted, \
+                   files_source, files_generated, files_vendored, files_lockfile, \
+                   chunks_source, chunks_generated, chunks_vendored, chunks_lockfile, \
                 error_message, started_at, updated_at, finished_at \
          FROM proxima_code.repo_ingestion_runs \
          WHERE run_id = $1 AND owner_kind = $2 AND owner_id = $3",
@@ -264,6 +272,8 @@ pub async fn latest_run(
                 commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
                 chunks_tombstoned, ast_edges_emitted, abstractions_emitted, \
                 embeddings_landed, citations_emitted, \
+                   files_source, files_generated, files_vendored, files_lockfile, \
+                   chunks_source, chunks_generated, chunks_vendored, chunks_lockfile, \
                 error_message, started_at, updated_at, finished_at \
          FROM proxima_code.repo_ingestion_runs \
          WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3 \
@@ -294,6 +304,8 @@ pub async fn get_run(
                 commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
                 chunks_tombstoned, ast_edges_emitted, abstractions_emitted, \
                 embeddings_landed, citations_emitted, \
+                   files_source, files_generated, files_vendored, files_lockfile, \
+                   chunks_source, chunks_generated, chunks_vendored, chunks_lockfile, \
                 error_message, started_at, updated_at, finished_at \
          FROM proxima_code.repo_ingestion_runs \
          WHERE run_id = $1",
@@ -323,12 +335,16 @@ pub async fn advance_stage(
             commits_emitted = $3, files_emitted = $4, chunks_emitted = $5, \
             chunks_reused = $6, chunks_tombstoned = $7, ast_edges_emitted = $8, \
             abstractions_emitted = $9, embeddings_landed = $10, citations_emitted = $11, \
+            files_source = $12, files_generated = $13, files_vendored = $14, files_lockfile = $15, \
+            chunks_source = $16, chunks_generated = $17, chunks_vendored = $18, chunks_lockfile = $19, \
             updated_at = now() \
           WHERE run_id = $1 AND status NOT IN ('succeeded', 'failed') \
           RETURNING run_id, repo_id, status, stage, \
                     commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
                     chunks_tombstoned, ast_edges_emitted, abstractions_emitted, \
                     embeddings_landed, citations_emitted, \
+                   files_source, files_generated, files_vendored, files_lockfile, \
+                   chunks_source, chunks_generated, chunks_vendored, chunks_lockfile, \
                     error_message, started_at, updated_at, finished_at",
     )
     .bind(run_id)
@@ -342,6 +358,14 @@ pub async fn advance_stage(
     .bind(i32_from_u32(counters.abstractions_emitted))
     .bind(i32_from_u32(counters.embeddings_landed))
     .bind(i32_from_u32(counters.citations_emitted))
+    .bind(i32_from_usize(counters.files_by_class.source))
+    .bind(i32_from_usize(counters.files_by_class.generated))
+    .bind(i32_from_usize(counters.files_by_class.vendored))
+    .bind(i32_from_usize(counters.files_by_class.lockfile))
+    .bind(i32_from_usize(counters.chunks_by_class.source))
+    .bind(i32_from_usize(counters.chunks_by_class.generated))
+    .bind(i32_from_usize(counters.chunks_by_class.vendored))
+    .bind(i32_from_usize(counters.chunks_by_class.lockfile))
     .fetch_optional(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -373,6 +397,8 @@ pub async fn begin_run(
                     commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
                     chunks_tombstoned, ast_edges_emitted, abstractions_emitted, \
                     embeddings_landed, citations_emitted, \
+                   files_source, files_generated, files_vendored, files_lockfile, \
+                   chunks_source, chunks_generated, chunks_vendored, chunks_lockfile, \
                     error_message, started_at, updated_at, finished_at",
     )
     .bind(run_id)
@@ -399,12 +425,16 @@ pub async fn mark_succeeded(
             commits_emitted = $2, files_emitted = $3, chunks_emitted = $4, \
             chunks_reused = $5, chunks_tombstoned = $6, ast_edges_emitted = $7, \
             abstractions_emitted = $8, embeddings_landed = $9, citations_emitted = $10, \
+            files_source = $11, files_generated = $12, files_vendored = $13, files_lockfile = $14, \
+            chunks_source = $15, chunks_generated = $16, chunks_vendored = $17, chunks_lockfile = $18, \
             updated_at = now(), finished_at = now() \
           WHERE run_id = $1 AND status NOT IN ('succeeded', 'failed') \
           RETURNING run_id, repo_id, status, stage, \
                     commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
                     chunks_tombstoned, ast_edges_emitted, abstractions_emitted, \
                     embeddings_landed, citations_emitted, \
+                   files_source, files_generated, files_vendored, files_lockfile, \
+                   chunks_source, chunks_generated, chunks_vendored, chunks_lockfile, \
                     error_message, started_at, updated_at, finished_at",
     )
     .bind(run_id)
@@ -417,6 +447,14 @@ pub async fn mark_succeeded(
     .bind(i32_from_u32(counters.abstractions_emitted))
     .bind(i32_from_u32(counters.embeddings_landed))
     .bind(i32_from_u32(counters.citations_emitted))
+    .bind(i32_from_usize(counters.files_by_class.source))
+    .bind(i32_from_usize(counters.files_by_class.generated))
+    .bind(i32_from_usize(counters.files_by_class.vendored))
+    .bind(i32_from_usize(counters.files_by_class.lockfile))
+    .bind(i32_from_usize(counters.chunks_by_class.source))
+    .bind(i32_from_usize(counters.chunks_by_class.generated))
+    .bind(i32_from_usize(counters.chunks_by_class.vendored))
+    .bind(i32_from_usize(counters.chunks_by_class.lockfile))
     .fetch_optional(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -497,6 +535,8 @@ pub async fn mark_failed(
                     commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
                     chunks_tombstoned, ast_edges_emitted, abstractions_emitted, \
                     embeddings_landed, citations_emitted, \
+                   files_source, files_generated, files_vendored, files_lockfile, \
+                   chunks_source, chunks_generated, chunks_vendored, chunks_lockfile, \
                     error_message, started_at, updated_at, finished_at",
     )
     .bind(run_id)
@@ -531,4 +571,8 @@ async fn terminal_or_not_found(
 
 fn i32_from_u32(v: u32) -> i32 {
     i32::try_from(v).unwrap_or(i32::MAX)
+}
+
+fn i32_from_usize(value: usize) -> i32 {
+    i32_from_u32(u32::try_from(value).unwrap_or(u32::MAX))
 }
